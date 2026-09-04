@@ -192,6 +192,14 @@ def merge_stub_dir(root: Path, target_origin: Path, landed_commit: str) -> tuple
         "  echo '{\"comments\":[],\"reviews\":[],\"labels\":[],\"state\":\"OPEN\"}'\n"
         "  exit 0\n"
         "fi\n"
+        "if [ \"$1\" = api ] && [ \"$2\" = graphql ]; then\n"
+        "  echo '[{\"data\":{\"repository\":{\"pullRequest\":{\"reviews\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}}}]'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"$1\" = api ]; then\n"
+        "  echo '[[]]'\n"
+        "  exit 0\n"
+        "fi\n"
         f'git -C "{target_origin}" update-ref refs/heads/main "{landed_commit}"\n'
     )
     gh.chmod(0o755)
@@ -405,6 +413,16 @@ def self_change_cases() -> None:
             f"got exit {code}\n{out}",
         )
 
+        # The current-main copy must carry its versioned grammar with it. A
+        # stale checkout is the reason this route exists; importing that
+        # checkout's approval_binding.py makes a newly added grammar API crash
+        # before admission. Make the local copy unusable so success proves the
+        # fetched verifier ran with the dependency from the same main commit.
+        stale_grammar = candidate.parents[1] / "health/approval_binding.py"
+        stale_grammar.write_text(
+            'raise RuntimeError("stale local approval_binding was imported")\n'
+        )
+
         code, out = run(
             [
                 sys.executable,
@@ -427,19 +445,91 @@ def self_change_cases() -> None:
             f"got exit {code}\n{out}",
         )
         calls = log.read_text()
-        call_lines = calls.splitlines()
+        # The GraphQL query is multiline inside one shell argument, so count
+        # only logged command starts rather than every physical log line.
+        call_lines = [line for line in calls.splitlines() if line.startswith("gh ")]
         check(
             "the current-main copy performed admission before merging",
-            len(call_lines) == 3
-            and all("gh pr view" in line for line in call_lines[:2])
-            and "gh pr merge" in call_lines[2],
-            f"expected two admission reads and one merge call; got:\n{calls}",
+            len(call_lines) == 5
+            and "/issues/1/comments" in call_lines[0]
+            and "/pulls/1/comments" in call_lines[1]
+            and "gh api graphql" in call_lines[2]
+            and "gh pr view" in call_lines[3]
+            and "gh pr merge" in call_lines[4],
+            f"expected four admission reads and one merge call; got:\n{calls}",
+        )
+
+        # Transition direction: the version immediately before this fix wrote
+        # only the fetched script under this basename and then invoked it
+        # without --run-current-main-copy. The new script must recognize that
+        # handoff and bootstrap once into the complete same-commit tree.
+        legacy_root = root / "legacy-single-file"
+        legacy_root.mkdir()
+        legacy_origin, legacy_work = build_fixture(legacy_root, "absent")
+        legacy_head = git_output(legacy_origin, "rev-parse", "refs/heads/feature")
+        legacy_base = git_output(legacy_origin, "merge-base", "main", "feature")
+        legacy_tree = git_output(legacy_origin, "rev-parse", f"{legacy_head}^{{tree}}")
+        legacy_landed = git_output(
+            legacy_origin,
+            "commit-tree",
+            legacy_tree,
+            "-p",
+            legacy_base,
+            "-m",
+            "squashed landing",
+        )
+        legacy_bindir, legacy_log = merge_stub_dir(
+            legacy_root, legacy_origin, legacy_landed
+        )
+        legacy_copy = candidate.parent / ".gh-merge-verified-current-main-legacy"
+        shutil.copy2(TOOL, legacy_copy)
+        legacy_env = {
+            **os.environ,
+            "PATH": f"{legacy_bindir}:{os.environ.get('PATH', '')}",
+            "GH_MERGE_VERIFIED_REMOTE": str(legacy_origin),
+        }
+        code, out = run(
+            [
+                sys.executable,
+                str(legacy_copy),
+                "1",
+                "--repo",
+                "fixture/repo",
+                "--expect-head",
+                legacy_head,
+            ],
+            cwd=legacy_work,
+            env=legacy_env,
+        )
+        legacy_copy.unlink()
+        check(
+            "a legacy single-file handoff bootstraps the matching main dependency tree",
+            code == 0
+            and "byte-identical verifier from dev-hermit main" in out
+            and "VERIFIED" in out
+            and "stale local approval_binding" not in out,
+            f"got exit {code}\n{out}",
+        )
+        legacy_calls = [
+            line
+            for line in legacy_log.read_text().splitlines()
+            if line.startswith("gh ")
+        ]
+        check(
+            "the legacy handoff performed admission before merging",
+            len(legacy_calls) == 5
+            and "/issues/1/comments" in legacy_calls[0]
+            and "/pulls/1/comments" in legacy_calls[1]
+            and "gh api graphql" in legacy_calls[2]
+            and "gh pr view" in legacy_calls[3]
+            and "gh pr merge" in legacy_calls[4],
+            f"expected four admission reads and one merge call; got:\n{legacy_log.read_text()}",
         )
         leftovers = list(candidate.parent.glob(".gh-merge-verified-current-main-*"))
         check(
-            "the fetched script is removed after execution",
+            "the fetched verifier trees are removed after execution",
             leftovers == [],
-            f"temporary copies remain: {leftovers}",
+            f"temporary paths remain: {leftovers}",
         )
         scratch = git_output(
             candidate.parents[2],
@@ -491,6 +581,14 @@ def race_cases() -> None:
             "#!/bin/bash\n"
             "if [ \"$1\" = pr ] && [ \"$2\" = view ]; then\n"
             "  echo '{\"comments\":[],\"reviews\":[],\"labels\":[],\"state\":\"OPEN\"}'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$1\" = api ] && [ \"$2\" = graphql ]; then\n"
+            "  echo '[{\"data\":{\"repository\":{\"pullRequest\":{\"reviews\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}}}]'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$1\" = api ]; then\n"
+            "  echo '[[]]'\n"
             "  exit 0\n"
             "fi\n"
             "echo 'Merged pull request'\nexit 0\n"
@@ -808,16 +906,24 @@ def single_issuer_cases() -> None:
                            {"name": "passed-review-codex"}],
                 "reviews": [],
                 "comments": [
-                    {"html_url": "c/1",
+                    {"id": 900001,
+                     "html_url": "https://github.com/fixture/repo/pull/1#issuecomment-900001",
+                     "created_at": "2026-09-04T00:00:01Z",
+                     "updated_at": "2026-09-04T00:00:01Z",
                      "body": f"[hermit2, {claude}, unresolved, devbig014, role=review]\n"
                              f"APPROVED-AT: claude {head} BY {claude}"},
-                    {"html_url": "c/2",
+                    {"id": 900002,
+                     "html_url": "https://github.com/fixture/repo/pull/1#issuecomment-900002",
+                     "created_at": "2026-09-04T00:00:02Z",
+                     "updated_at": "2026-09-04T00:00:02Z",
                      "body": f"[hermit2, {codex}, unresolved, devbig014, role=review]\n"
                              f"APPROVED-AT: codex {head} BY {codex}"},
                 ],
             }
             payload = root / "view.json"
             payload.write_text(json.dumps(doc))
+            issue_payload = root / "issue-comments.json"
+            issue_payload.write_text(json.dumps([doc["comments"]]))
 
             bindir = root / "bin"
             bindir.mkdir()
@@ -828,6 +934,13 @@ def single_issuer_cases() -> None:
             # tempt a weaker assertion than "it actually merged".
             gh.write_text(
                 "#!/bin/bash\n"
+                'if [ "$1" = api ] && [ "$2" = graphql ]; then\n'
+                "  echo '[{\"data\":{\"repository\":{\"pullRequest\":{\"reviews\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}}}]'\n"
+                "  exit 0\nfi\n"
+                'if [ "$1" = api ] && [[ "$*" = *"/issues/1/comments"* ]]; then\n'
+                f'  cat {issue_payload}\n  exit 0\nfi\n'
+                'if [ "$1" = api ]; then\n'
+                "  echo '[[]]'\n  exit 0\nfi\n"
                 'if [ "$1" = pr ] && [ "$2" = view ]; then\n'
                 f'  cat {payload}\n  exit 0\nfi\n'
                 f'if [ "$1" = pr ] && [ "$2" = merge ]; then\n'

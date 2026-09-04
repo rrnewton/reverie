@@ -689,12 +689,27 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
     has_round = {reviewer: bool(values) for reviewer, values in rounds.items()}
     raw_comments = entry.get("comments")
     comments = (
-        [comment for comment in raw_comments if isinstance(comment, dict)]
+        [
+            {**comment, "_review_surface": "issue-comment"}
+            for comment in raw_comments
+            if isinstance(comment, dict)
+        ]
         if isinstance(raw_comments, list)
         else []
     )
     head = str(entry.get("headRefOid") or "").lower()
     malformed: list[tuple[str, str]] = []
+    review_order_error: str | None = None
+    if comments:
+        try:
+            comments = approval_authority.canonical_review_records(comments)
+        except approval_authority.ReviewRecordError as error:
+            # Missing event/version metadata cannot be repaired by trusting the
+            # endpoint's incidental array order. Empty evidence makes every
+            # claimed cache label fail closed below, while this diagnostic says
+            # why the authority was unavailable.
+            comments = []
+            review_order_error = str(error)
     has_approval: dict[str, bool] = {}
     unlabeled_bindings: list[str] = []
     for reviewer, expected in review_contract.PASSED_REVIEW_LABELS.items():
@@ -715,7 +730,11 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
             unlabeled = approval_authority.classify_approval(
                 head,
                 approval_authority.lane_shas(
-                    comments, reviewer, malformed, refusals=unlabeled_refusals
+                    comments,
+                    reviewer,
+                    malformed,
+                    refusals=unlabeled_refusals,
+                    current_head=head,
                 ),
                 refused=bool(unlabeled_refusals),
             )
@@ -735,7 +754,11 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
             continue
         refusals: list[str] = []
         shas = approval_authority.lane_shas(
-            comments, reviewer, malformed, refusals=refusals
+            comments,
+            reviewer,
+            malformed,
+            refusals=refusals,
+            current_head=head,
         )
         binding = approval_authority.classify_approval(
             head, shas, refused=bool(refusals)
@@ -747,6 +770,8 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
             # present-but-unverified state.
             invalid_labels.append(f"{expected}:{binding}")
     invalid_labels.extend(f"malformed-binding:{line}" for _, line in malformed)
+    if review_order_error is not None:
+        invalid_labels.append(f"review-event-order:{review_order_error}")
     # Reported alongside the label diagnostics, and deliberately not folded into
     # them: an unlabeled binding is a MISSING CACHE over a real review, which is a
     # different condition from a cache that no longer holds.
@@ -2316,6 +2341,11 @@ def render_report(statuses: Sequence[RepoStatus], warn_threshold: int, engine: s
                 audit.current_approvals == "complete" for audit in audits
             )
             invalid = sum(bool(audit.invalid_labels) for audit in audits)
+            lines.append(
+                "    Review protocol source: issue comments returned by `gh pr list`; "
+                "reporting only, not merge admission. Native reviews and inline review "
+                "comments are evaluated by the landing authority, not by this summary."
+            )
             lines.append(
                 "    Review protocol: "
                 f"labeled={len(audits)} complete={complete} "

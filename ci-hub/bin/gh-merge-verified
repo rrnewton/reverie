@@ -440,9 +440,6 @@ _REFUSAL_SHAPED = re.compile(r"CHANGES[-\s]?REQUESTED", re.IGNORECASE)
 _REFUSAL_WITH_LANE = re.compile(
     r"CHANGES[-\s]?REQUESTED[^\n]{0,40}?\b(claude|codex)\b", re.IGNORECASE
 )
-
-
-
 def fetch_current_main_tool() -> tuple[pathlib.Path | None, str, str, str]:
     """Fetch this tool's main branch and resolve its script blob and commit.
 
@@ -554,13 +551,19 @@ def without_current_main_flag(argv: list[str]) -> list[str]:
 
 
 def execute_current_main_copy(argv: list[str]) -> None:
-    """Run the exact script fetched from dev-hermit main.
+    """Run the exact verifier and its Python dependencies from dev-hermit main.
 
-    This function does not admit or merge anything. It writes the fetched blob
-    beside the invoked script so the current-main copy can find the same
-    ``ci-hub/health`` and ``ci-hub/lib`` dependencies, checks the written bytes,
-    and starts that copy with this request flag removed. The fetched copy then
-    performs its ordinary self-check and every ordinary admission check.
+    This function does not admit or merge anything. It materializes the fetched
+    verifier, its marker grammar, and that grammar's versioned helpers as one
+    temporary tree, checks every written blob, and starts that copy with this
+    request flag removed. The fetched copy then performs its ordinary self-check
+    and every ordinary admission check.
+
+    The complete support set matters during the first invocation after a grammar
+    change lands. The previous implementation fetched only this script and left
+    it importing ``approval_binding.py`` from the caller's stale checkout. A new
+    verifier calling a new grammar API then crashed before admission -- the exact
+    recovery path for a stale checkout was itself unusable.
     """
     tool_dir, blob, main_commit, error = fetch_current_main_tool()
     if error:
@@ -574,52 +577,91 @@ def execute_current_main_copy(argv: list[str]) -> None:
         )
     assert tool_dir is not None
 
-    temporary: pathlib.Path | None = None
+    temporary_root: pathlib.Path | None = None
     try:
         try:
-            descriptor, raw_path = tempfile.mkstemp(
-                prefix=".gh-merge-verified-current-main-", dir=tool_dir
+            temporary_root = pathlib.Path(
+                tempfile.mkdtemp(
+                    prefix=".gh-merge-verified-current-main-tree-", dir=tool_dir
+                )
             )
-            temporary = pathlib.Path(raw_path)
         except OSError as exc:
             die(
                 7,
-                "gh-merge-verified: REFUSING TO MERGE -- cannot create the temporary current-main copy",
+                "gh-merge-verified: REFUSING TO MERGE -- cannot create the temporary current-main tree",
                 f"  beside {__file__}: {exc}",
                 "  NOTHING WAS ATTEMPTED. Make this checkout writable, then re-run the same command.",
             )
-        try:
-            with os.fdopen(descriptor, "wb") as output:
-                materialize = subprocess.run(
-                    ["git", "-C", str(tool_dir), "cat-file", "blob", blob],
-                    stdout=output,
-                    stderr=subprocess.PIPE,
+        support_paths = (
+            "ci-hub/bin/gh-merge-verified",
+            "ci-hub/health/approval_binding.py",
+            "ci-hub/lib/bounded_capture.py",
+            "ci-hub/lib/ops_state.py",
+        )
+        expected: dict[str, str] = {}
+        for relative in support_paths:
+            rc, expected_blob, detail = run(
+                ["git", "-C", str(tool_dir), "rev-parse", f"{main_commit}:{relative}"]
+            )
+            if rc != 0:
+                die(
+                    7,
+                    "gh-merge-verified: REFUSING TO MERGE -- fetched main but could not resolve a verifier dependency",
+                    f"  {relative}: {detail.strip()}",
+                    "  NOTHING WAS ATTEMPTED. Repair the git object store or fetch, then re-run.",
                 )
+            expected[relative] = expected_blob.strip()
+
+            destination = temporary_root / relative
+            try:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with destination.open("wb") as output:
+                    materialize = subprocess.run(
+                        ["git", "-C", str(tool_dir), "cat-file", "blob", expected[relative]],
+                        stdout=output,
+                        stderr=subprocess.PIPE,
+                    )
+            except OSError as exc:
+                die(
+                    7,
+                    "gh-merge-verified: REFUSING TO MERGE -- could not write the current-main verifier tree",
+                    f"  {relative}: {exc}",
+                    "  NOTHING WAS ATTEMPTED. Repair the checkout or its permissions, then re-run.",
+                )
+            if materialize.returncode != 0:
+                detail = materialize.stderr.decode(errors="replace").strip()
+                die(
+                    7,
+                    "gh-merge-verified: REFUSING TO MERGE -- fetched main but could not read a verifier dependency",
+                    f"  {relative} ({expected[relative][:12]}): {detail}",
+                    "  NOTHING WAS ATTEMPTED. Repair the git object store or fetch, then re-run.",
+                )
+            rc, written, _ = run(
+                ["git", "-C", str(tool_dir), "hash-object", str(destination)]
+            )
+            if rc != 0 or written.strip() != expected[relative]:
+                die(
+                    7,
+                    "gh-merge-verified: REFUSING TO MERGE -- a written current-main dependency does not match",
+                    f"  {relative}: expected {expected[relative][:12]}, got {written.strip()[:12]}",
+                    "  NOTHING WAS ATTEMPTED. Remove the incomplete temporary tree, repair the checkout, and re-run.",
+                )
+
+        temporary = temporary_root / "ci-hub/bin/gh-merge-verified"
+        try:
             os.chmod(temporary, 0o700)
         except OSError as exc:
             die(
                 7,
-                "gh-merge-verified: REFUSING TO MERGE -- could not write the current-main copy",
-                f"  beside {__file__}: {exc}",
+                "gh-merge-verified: REFUSING TO MERGE -- could not make the current-main verifier executable",
+                f"  {temporary}: {exc}",
                 "  NOTHING WAS ATTEMPTED. Repair the checkout or its permissions, then re-run.",
             )
-        if materialize.returncode != 0:
-            detail = materialize.stderr.decode(errors="replace").strip()
+        if expected["ci-hub/bin/gh-merge-verified"] != blob:
             die(
                 7,
-                "gh-merge-verified: REFUSING TO MERGE -- fetched main but could not read its verifier",
-                f"  blob {blob[:12]}: {detail}",
-                "  NOTHING WAS ATTEMPTED. Repair the git object store or fetch, then re-run.",
-            )
-        rc, written, _ = run(
-            ["git", "-C", str(tool_dir), "hash-object", str(temporary)]
-        )
-        if rc != 0 or written.strip() != blob:
-            die(
-                7,
-                "gh-merge-verified: REFUSING TO MERGE -- the written current-main copy does not match",
-                f"  the fetched blob {blob[:12]}; NOTHING WAS ATTEMPTED.",
-                "  Remove the incomplete temporary file if it remains, repair the checkout, and re-run.",
+                "gh-merge-verified: REFUSING TO MERGE -- fetched main named two different verifier blobs",
+                f"  {blob[:12]} versus {expected['ci-hub/bin/gh-merge-verified'][:12]}; NOTHING WAS ATTEMPTED.",
             )
         print(
             "gh-merge-verified: running the byte-identical verifier from dev-hermit main "
@@ -650,18 +692,91 @@ def execute_current_main_copy(argv: list[str]) -> None:
         code = returncode if returncode >= 0 else 128 - returncode
         raise SystemExit(code)
     finally:
-        if temporary is not None:
+        if temporary_root is not None:
             try:
-                temporary.unlink()
+                shutil.rmtree(temporary_root)
             except FileNotFoundError:
                 pass
             except OSError as exc:
                 print(
-                    f"gh-merge-verified: warning: could not remove temporary current-main copy "
-                    f"{temporary}: {exc}",
-                    "  Remove that named file manually; it is no longer used by this run.",
+                    f"gh-merge-verified: warning: could not remove temporary current-main tree "
+                    f"{temporary_root}: {exc}",
+                    "  Remove that named directory manually; it is no longer used by this run.",
                     file=sys.stderr,
                 )
+
+
+def _github_review_records(pr: str, repo: str, grammar) -> "list[dict] | None":
+    """Read every review surface with stable ids and version timestamps."""
+    records: list[dict] = []
+    for path, surface in (
+        (f"repos/{repo}/issues/{pr}/comments?per_page=100", "issue-comment"),
+        (
+            f"repos/{repo}/pulls/{pr}/comments?per_page=100",
+            "pull-review-comment",
+        ),
+    ):
+        rc, output, _ = run(
+            gh_argv(["gh", "api", "--paginate", "--slurp", path])
+        )
+        if rc != 0:
+            return None
+        try:
+            pages = json.loads(output)
+        except json.JSONDecodeError:
+            return None
+        try:
+            records.extend(grammar.review_records_from_rest_pages(pages, surface))
+        except grammar.ReviewRecordError:
+            return None
+    parts = repo.split("/")
+    if len(parts) != 2 or not all(parts):
+        return None
+    owner, name = parts
+    rc, output, _ = run(
+        gh_argv(
+            [
+                "gh",
+                "api",
+                "graphql",
+                "--paginate",
+                "--slurp",
+                "-f",
+                f"owner={owner}",
+                "-f",
+                f"name={name}",
+                "-F",
+                f"number={pr}",
+                "-f",
+                f"query={grammar.NATIVE_REVIEWS_QUERY}",
+            ]
+        )
+    )
+    if rc != 0:
+        return None
+    def read_permission(path: str) -> object:
+        permission_rc, permission_output, _ = run(
+            gh_argv(["gh", "api", path])
+        )
+        if permission_rc != 0:
+            raise grammar.ReviewRecordError(
+                f"current review authorization query failed for {path}"
+            )
+        try:
+            return json.loads(permission_output)
+        except json.JSONDecodeError as error:
+            raise grammar.ReviewRecordError(
+                f"current review authorization query returned malformed JSON for {path}"
+            ) from error
+
+    try:
+        records.extend(grammar.native_review_records_from_graphql(json.loads(output)))
+        records = grammar.annotate_current_review_authority(
+            records, repo, read_permission
+        )
+    except (json.JSONDecodeError, grammar.ReviewRecordError):
+        return None
+    return records
 
 
 def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
@@ -675,17 +790,22 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     went through 3m42s later because the check never asked. Two defects reached
     main, one a recipe that prints MERGES-CLEAN about a base it never fetched.
 
-    Of the 184 pull requests merged that day, seven carried such a marker; five
-    named an EARLIER sha, which is the correct clearing path. TWO named their
-    merged head: pull/2434 and pull/2591.
+    Of the 184 pull requests merged that day, seven carried such a marker. Five
+    named an earlier sha. An earlier implementation treated the push alone as
+    clearance; the shared authority now requires evidence that the objection
+    was actually answered.
 
     THE RULE IS EXACT-HEAD AND FAILS CLOSED:
       * a refusal naming this head blocks even if an APPROVED-AT also names it.
         Two reviewers disagreeing is not settled by whoever posted last -- that
         is a coin toss -- so this stops and makes a human choose.
-      * pushing the fix moves the sha, so the refusal stops naming the head.
-        That is the ordinary way through and needs no override.
-      * CHANGES-REQUESTED-WITHDRAWN-AT at the same sha also clears it.
+      * a refusal on an earlier sha remains visible until its issuer approves a
+        later head or an authorized exact retirement records that the objection
+        was resolved. A push alone proves neither.
+      * a currently authorized GitHub actor may record that one exact objection is resolved
+        with CHANGES-REQUESTED-WITHDRAWN-AT in the refusal's lane at the current
+        repaired head plus
+        RETIRES <the refusing comment id>.
     There is deliberately no --force. An override in a landing path is what
     somebody in a hurry reaches for, and somebody in a hurry is the failure.
 
@@ -698,203 +818,19 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     guard a false negative merges over a block while a false positive costs one
     push, so this over-blocks on purpose.
     """
-    rc, out, _ = run(gh_argv(["gh", "pr", "view", pr, "--repo", repo,
-                              "--json", "comments,reviews"]))
-    if rc != 0:
+    grammar = _load_grammar()
+    fetched = _github_review_records(pr, repo, grammar)
+    if fetched is None:
         return ["__UNREADABLE__"]
     try:
-        doc = json.loads(out)
-    except json.JSONDecodeError:
+        records = grammar.canonical_review_records(fetched)
+    except grammar.ReviewRecordError:
         return ["__UNREADABLE__"]
-
-    bodies = [c.get("body") or "" for c in doc.get("comments", [])]
-    bodies += [r.get("body") or "" for r in doc.get("reviews", [])]
-    native = [r for r in doc.get("reviews", [])
-              if (r.get("state") or "") == "CHANGES_REQUESTED"]
-
-    grammar = _load_grammar()
-
-    # ⚠️ WITHDRAWALS ARE TRACKED PER LANE. Blocking stays lane-agnostic (see the
-    # policy note below) because that direction fails CLOSED; clearing must not,
-    # or one family discharges another's refusal. Reproduced live on hermit#2613.
-    blocking, withdrawn = [], set()
-    # (kind, lane, sha) already accepted, oldest first. A verdict is issued once;
-    # a later copy of it is a CITATION and must not block again.
-    #
-    # ⚠️ THIS CHANGES NOTHING TODAY, AND THAT IS STATED RATHER THAN IMPLIED.
-    # Measured 2026-08-25 on the cases that break the gate -- hermit#2615's five
-    # markers for two verdicts, and a reviewer citing their own answered refusal
-    # while approving -- this path already returned the right answer, because its
-    # near-miss check is `_REFUSAL_NEARMISS.match`, anchored, so a mid-line
-    # citation never matched it at all. The gate scans the whole line and does not
-    # have that accidental immunity.
-    #
-    # It is here because the immunity IS accidental. This net was once "the token
-    # ANYWHERE in the line" and was narrowed and restored across ff2a3d83/7db64676;
-    # if it is ever widened again this path acquires the citation defect instantly,
-    # and one landing path fixed while the other is not is a divergence this file's
-    # own comments record happening twice.
-    issued: list[tuple[str | None, str, str | None, str | None]] = []
-    # ⚠️ ELIGIBILITY COMES FROM THE SHARED GRAMMAR, so a line that cannot bind an
-    # approval cannot trigger a refusal here either. This function's fail-closed
-    # fallback matches a refusal-shaped line ANYWHERE, which is the right policy
-    # for a landing guard and the wrong thing to point at a fenced example: it
-    # refused 6 of the 12 heads it blocked on 2026-08-25, and because those lines
-    # name no head, pushing never cleared them.
-    eligible = grammar.marker_lines
-    for body in bodies:
-        _author = grammar.comment_author(body or "")
-        for line in eligible(body):
-            # ⚠️ THIS PRE-FILTER USED TO READ `if not head or head not in line`,
-            # AND IT MADE THE FAIL-CLOSED BRANCH BELOW UNREACHABLE. Requiring the
-            # full 40-hex in the raw line skipped exactly the two shapes the
-            # over-block was written for, before they could reach it. Measured
-            # 2026-08-25 by calling this function directly:
-            #
-            #   CHANGES-REQUESTED-AT: claude b3ca4e15        -> []  NOT BLOCKED
-            #   CHANGES-REQUESTED-AT: claude — see above     -> []  NOT BLOCKED
-            #   CHANGES-REQUESTED-AT: claude <full 40-hex>   -> blocked
-            #
-            # Abbreviated shas are normal in these markers -- hermit#2176's own
-            # refusal is written `b3ca4e15…` -- so the common form was invisible
-            # to the guard while the docstring said it over-blocked. And `not head`
-            # skipped EVERY line when the head could not be resolved, which is the
-            # reassuring direction: unable to check read as nothing to report.
-            #
-            # Now: a refusal-shaped line is always evaluated. Binding is decided
-            # below, where an abbreviated sha can be prefix-matched and a missing
-            # one can fail closed.
-            if not (_REFUSAL_WITH_LANE.search(line) or (head and head in line)):
-                continue
-            parsed = grammar.parse_marker(line)
-            if parsed is not None:
-                kind, _lane, sha = parsed
-                # Bind by PREFIX in both directions: markers are routinely written
-                # with an abbreviated sha, and an exact-string compare against the
-                # 40-hex silently treats `b3ca4e15` as naming some other commit.
-                if not (sha and head and (head.startswith(sha) or sha.startswith(head))):
-                    if kind == grammar.MARKER_REFUSED and not sha:
-                        # A refusal we cannot bind is not a refusal that does not
-                        # apply. Fail closed, same choice as the unparseable case.
-                        # Lane None: no withdrawal can prove it owns this one.
-                        blocking.append((None, line.strip()))
-                    continue
-                # POLICY: BLOCKING is deliberately lane-agnostic -- a refusal in
-                # ANY lane stops this merge, and a lander only needs to know
-                # whether anybody said no.
-                #
-                # ⚠️ CLEARING IS NOT, AND THAT ASYMMETRY IS THE WHOLE POINT. This
-                # code destructured the lane and threw it away, so ANY lane's
-                # withdrawal discharged EVERY lane's refusal. Lane-agnostic
-                # blocking fails CLOSED and is right; lane-agnostic clearing fails
-                # OPEN and let one family retract another's block. Measured on
-                # hermit#2613: a claude withdrawal cleared an unwithdrawn codex
-                # refusal and both landers reported the head ready.
-                #
-                # A withdrawal that names no lane clears NOTHING -- it cannot say
-                # whose refusal it discharges, and honouring it hands the same
-                # unilateral clear back through the laneless spelling.
-                if kind == grammar.MARKER_WITHDRAWN:
-                    # ⚠️ AND BY ITS ISSUER, NOT ONLY ITS LANE. Lane-only clearing
-                    # has exactly the shape the note above rejects, one level
-                    # down: a lane is staffed by SEVERAL AGENTS, so agent B's
-                    # withdrawal discharged agent A's refusal in the same lane.
-                    # Measured 2026-08-26 by driving this function directly --
-                    # a hermit-007 refusal plus a hermit-005 withdrawal returned
-                    # blocking=0. Same defect as hermit#2613's cross-lane clear,
-                    # same fail-open direction, one scope narrower.
-                    #
-                    # An UNSIGNED withdrawal clears NOTHING, for the reason the
-                    # laneless one does not: it cannot say whose refusal it
-                    # discharges, and honouring it hands the unilateral clear
-                    # straight back through the unsigned spelling.
-                    _w = grammar.marker_issuer(line) or _author
-                    if _lane and _w:
-                        withdrawn.add((str(_lane).lower(), _w))
-                elif kind == grammar.MARKER_REFUSED:
-                    _l = str(_lane).lower() if _lane else None
-                    if grammar.is_citation(issued, _author, kind, _l, sha):
-                        continue
-                    issued.append((_author, kind, _l, sha))
-                    blocking.append((_l, grammar.marker_issuer(line) or _author,
-                                     line.strip()))
-                continue
-            # POLICY: over-block on a refusal-shaped line the grammar cannot
-            # parse. For a landing guard a false negative merges over a block
-            # while a false positive costs one push, so an unparseable refusal
-            # naming this head is treated as a refusal. This is the same
-            # fail-closed choice the authority now makes at its gate, expressed
-            # here as blocking rather than as a non-zero exit.
-            # ⚠️ CONVERGED ONTO THE SHARED RULE. This used to be a local regex
-            # matching the token ANYWHERE in the line, which is why a sentence
-            # discussing another pull request's refusal blocked a merge here while
-            # changes-requested-gate allowed it. One definition now, so the two
-            # landers cannot disagree about what is even refusal-shaped.
-            if grammar.refusal_shaped(line):
-                # ⚠️ EXCEPT A TEMPLATE. `CHANGES-REQUESTED-AT: <lane> <sha>` in a
-                # comment teaching the grammar is documentation, and it carries no
-                # sha -- so the ordinary clearing path (push, the sha moves, the
-                # refusal stops naming the head) can NEVER clear it. Blocking on it
-                # is a permanent refusal of a head nobody objected to.
-                # `changes-requested-gate` already skipped it at 32faa7e2 while this
-                # path still refused it: one rule, two homes, immediate divergence.
-                # Now shared, so they cannot disagree again.
-                if grammar.is_template(line):
-                    continue
-                # ⚠️ AND A NEAR-MISS REFUSAL THAT NAMES A SUPERSEDED SHA HAS ALREADY
-                # BEEN CLEARED THE ORDINARY WAY. This branch used to block on any
-                # refusal-shaped line whatever sha it named, so
-                # `CHANGES-REQUESTED: claude <old-sha>` refused every future head
-                # FOREVER -- the author pushes the fix, the sha moves, and the line
-                # still blocks because nothing ever compared it to the head.
-                # `changes-requested-gate` extracts the sha and binds by prefix;
-                # this now does the same, so the two agree and the ordinary clearing
-                # path works for the near-miss family too.
-                #
-                # A refusal with NO readable sha still blocks: unbindable is not
-                # inapplicable, which is the fail-closed choice this branch exists
-                # to make.
-                # ⚠️ NEITHER A LANE NOR A SHA MEANS PROSE, NOT A VERDICT. The
-                # near-miss grammar is case-insensitive and allows a space, so an
-                # ordinary sentence opening a review -- "Changes requested, on the
-                # deleted value pin alone." -- is refusal-shaped and was blocking
-                # here with no sha to ever stop naming the head. Pushing could not
-                # clear it. Same defect the sibling lander had at
-                # changes-requested-gate; fixed in both, with the same
-                # discriminator, so they cannot drift.
-                #
-                # Somebody asserting a verdict supplies a lane or a sha; somebody
-                # writing a sentence supplies neither. This narrows what counts as
-                # a refusal ATTEMPT and leaves the withdrawal path alone --
-                # widening withdrawal would let an accidental sentence CLEAR a
-                # real refusal, which is the dangerous direction.
-                if (
-                    _SHA_IN_LINE.search(line) is None
-                    and _LANE_IN_LINE.search(line) is None
-                ):
-                    continue
-                near_sha = _SHA_IN_LINE.search(line)
-                if near_sha and head and not (
-                    head.startswith(near_sha.group(1))
-                    or near_sha.group(1).startswith(head)
-                ):
-                    continue
-                # Unparseable: the lane is unknown, so no withdrawal clears it.
-                _nsha = near_sha.group(1) if near_sha else None
-                if grammar.is_citation(issued, _author, grammar.MARKER_REFUSED, None, _nsha):
-                    continue
-                issued.append((_author, grammar.MARKER_REFUSED, None, _nsha))
-                blocking.append((None, _author, line.strip()))
-    # ⚠️ EACH REFUSAL IS CLEARED ONLY BY ITS OWN LANE **AND ITS OWN ISSUER**. A
-    # refusal whose lane or issuer could not be read is cleared by nobody -- its
-    # owner is unknown, so no withdrawal can prove it owns it. All of them still
-    # clear the ordinary way: the author pushes and the sha stops naming the head.
-    live = [text for lane, issuer, text in blocking
-            if lane is None or issuer is None
-            or (lane, issuer) not in withdrawn]
-    live += ["(GitHub review state CHANGES_REQUESTED)" for _ in native]
-    return live
-
+    try:
+        unresolved = grammar.unresolved_review_objections(records, head)
+    except grammar.ReviewRecordError:
+        return ["__UNREADABLE__"]
+    return [str(item.get("message") or "unresolved review objection") for item in unresolved]
 
 def stale_review_labels(
     pr: str, repo: str, head: str, single_issuer: "list[str] | None" = None
@@ -942,7 +878,7 @@ def stale_review_labels(
     """
     grammar = _load_grammar()
     rc, out, _ = run(gh_argv(["gh", "pr", "view", pr, "--repo", repo,
-                              "--json", "labels,comments,reviews"]))
+                              "--json", "labels"]))
     if rc != 0:
         return ["__UNREADABLE__"]
     try:
@@ -958,7 +894,13 @@ def stale_review_labels(
     if not labelled:
         return []
 
-    comments = list(doc.get("comments", [])) + list(doc.get("reviews", []))
+    fetched = _github_review_records(pr, repo, grammar)
+    if fetched is None:
+        return ["__UNREADABLE__"]
+    try:
+        comments = grammar.canonical_review_records(fetched)
+    except grammar.ReviewRecordError:
+        return ["__UNREADABLE__"]
     stale = []
     # lane -> the agents that bound THIS head on it. `None` in the set means a
     # binding whose issuer neither the marker nor the comment's disclosure tag
@@ -968,7 +910,9 @@ def stale_review_labels(
         if lane not in grammar.LANES:
             continue
         issuers: list = []
-        shas = grammar.lane_shas(comments, lane, [], issuers=issuers)
+        shas = grammar.lane_shas(
+            comments, lane, [], issuers=issuers, current_head=head
+        )
         state = grammar.classify_approval(head, shas)
         if state != grammar.BOUND_CURRENT:
             bound = shas[-1][:12] if shas else "nothing"
@@ -1065,6 +1009,15 @@ def main() -> None:
             "  Pass the PR number first; run --help for examples and exit-code meanings.",
         )
     atexit.register(cleanup_scratch)
+
+    # TRANSITION COMPATIBILITY. Before this version, --run-current-main-copy
+    # materialized only this one script under this prefix. If such an older
+    # caller fetches this version, do not let the new script import the older
+    # checkout's marker grammar. Bootstrap once into the complete, same-commit
+    # verifier tree. The script inside that tree has its ordinary name, so this
+    # cannot recurse.
+    if pathlib.Path(__file__).name.startswith(".gh-merge-verified-current-main-"):
+        execute_current_main_copy(argv)
 
     pr = argv[0]
     if not pr.isdigit():
@@ -1201,7 +1154,8 @@ def main() -> None:
                 "",
                 "  An APPROVED-AT at the same head does NOT override this.",
                 "  TO PROCEED: push the fix (the sha moves and the refusal stops naming the head),",
-                f"  or have the reviewer post CHANGES-REQUESTED-WITHDRAWN-AT: <family> {head}",
+                "  or, after verifying the objection is resolved, have a currently authorized GitHub actor post",
+                f"  CHANGES-REQUESTED-WITHDRAWN-AT: <family> {head} plus RETIRES <comment-id>.",
                 "  There is deliberately no override flag.",
                 "  FALSE POSITIVE? The match is anchored to column 0, so an unindented quotation",
                 "  of a marker re-asserts it. Indent quoted markers by one space.")

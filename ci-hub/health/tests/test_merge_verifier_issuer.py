@@ -48,20 +48,77 @@ def _load(name: str, path: pathlib.Path):
 tool = _load("gh_merge_verified_issuer_under_test", BIN / "gh-merge-verified")
 
 
+_NEXT_COMMENT_ID = 900000
+
+
 def _comment(agent: str | None, *lines: str) -> dict:
+    global _NEXT_COMMENT_ID
+    _NEXT_COMMENT_ID += 1
     head = [f"[hermit2, {agent}, unresolved, devbig014, role=review]"] if agent else []
-    return {"body": "\n".join([*head, *lines]), "html_url": f"c/{agent}"}
+    return {
+        "id": _NEXT_COMMENT_ID,
+        "body": "\n".join([*head, *lines]),
+        "html_url": (
+            "https://github.com/rrnewton/dev-hermit/pull/1"
+            f"#issuecomment-{_NEXT_COMMENT_ID}"
+        ),
+        "created_at": "2026-09-04T00:00:01Z",
+        "updated_at": "2026-09-04T00:00:01Z",
+    }
+
+
+def _install_run(comments: list[dict], labels: list[str]):
+    def fake(argv, **_kwargs):
+        joined = " ".join(argv)
+        if " api graphql " in f" {joined} ":
+            return (
+                0,
+                json.dumps(
+                    [
+                        {
+                            "data": {
+                                "repository": {
+                                    "pullRequest": {
+                                        "reviews": {
+                                            "nodes": [],
+                                            "pageInfo": {
+                                                "hasNextPage": False,
+                                                "endCursor": None,
+                                            },
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                ),
+                "",
+            )
+        if "/issues/1/comments" in joined:
+            return 0, json.dumps([comments]), ""
+        if "/pulls/1/comments" in joined:
+            return 0, "[[]]", ""
+        if " pr view " in f" {joined} ":
+            return (
+                0,
+                json.dumps(
+                    {
+                        "labels": [
+                            {"name": f"passed-review-{lane}"} for lane in labels
+                        ]
+                    }
+                ),
+                "",
+            )
+        raise AssertionError(f"unexpected gh call: {argv!r}")
+
+    return fake
 
 
 def _run(lanes: list[str], comments: list[dict]):
     """``(stale, single_issuer)`` for a PR carrying `lanes` and `comments`."""
-    doc = {
-        "labels": [{"name": f"passed-review-{l}"} for l in lanes],
-        "comments": comments,
-        "reviews": [],
-    }
     saved = tool.run
-    tool.run = lambda *a, **k: (0, json.dumps(doc), "")
+    tool.run = _install_run(comments, lanes)
     try:
         one: list[str] = []
         stale = tool.stale_review_labels("1", "rrnewton/dev-hermit", HEAD,
@@ -117,8 +174,8 @@ def test_an_unattributable_binding_declines_to_answer() -> None:
     stale, one = _run(
         ["claude", "codex"],
         [
-            {"body": f"APPROVED-AT: claude {HEAD}", "html_url": "c/1"},
-            {"body": f"APPROVED-AT: codex {HEAD}", "html_url": "c/2"},
+            _comment(None, f"APPROVED-AT: claude {HEAD}"),
+            _comment(None, f"APPROVED-AT: codex {HEAD}"),
         ],
     )
     assert stale == [] and one == [], (stale, one)
@@ -132,7 +189,7 @@ def test_one_known_issuer_plus_one_unknown_declines() -> None:
         ["claude", "codex"],
         [
             _comment("hermit-011", f"APPROVED-AT: claude {HEAD} BY hermit-011"),
-            {"body": f"APPROVED-AT: codex {HEAD}", "html_url": "c/2"},
+            _comment(None, f"APPROVED-AT: codex {HEAD}"),
         ],
     )
     assert one == [], one
@@ -188,16 +245,12 @@ def test_the_stale_label_rule_is_unchanged() -> None:
 def test_omitting_the_out_param_is_unchanged_behaviour() -> None:
     """Every existing caller passes no `single_issuer`. They must be untouched,
     and in particular must not crash on the new code path."""
-    doc = {
-        "labels": [{"name": "passed-review-claude"}, {"name": "passed-review-codex"}],
-        "comments": [
-            _comment("hermit-011", f"APPROVED-AT: claude {HEAD} BY hermit-011"),
-            _comment("hermit-011", f"APPROVED-AT: codex {HEAD} BY hermit-011"),
-        ],
-        "reviews": [],
-    }
+    comments = [
+        _comment("hermit-011", f"APPROVED-AT: claude {HEAD} BY hermit-011"),
+        _comment("hermit-011", f"APPROVED-AT: codex {HEAD} BY hermit-011"),
+    ]
     saved = tool.run
-    tool.run = lambda *a, **k: (0, json.dumps(doc), "")
+    tool.run = _install_run(comments, ["claude", "codex"])
     try:
         assert tool.stale_review_labels("1", "rrnewton/dev-hermit", HEAD) == []
     finally:

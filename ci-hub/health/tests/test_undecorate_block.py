@@ -55,7 +55,14 @@ OTHER = "e211b9d01e635aac45c4558f12cab57764f6be3c"
 
 
 def _c(body: str, when: str) -> dict:
-    return {"body": body, "createdAt": when, "html_url": "https://example/c"}
+    record_id = 1 if when.startswith("2026-08-12") else 2
+    return {
+        "id": record_id,
+        "body": body,
+        "createdAt": when,
+        "includesCreatedEdit": False,
+        "html_url": f"https://example.test/c/{record_id}",
+    }
 
 
 APPROVAL = _c(f"APPROVED-AT: claude {SHA}", "2026-08-12T18:15:20Z")

@@ -68,7 +68,33 @@ def _withdrawal(body_tail: str = "") -> str:
 
 class ShaLessRefusalStaysClosedUnlessPreciselyRetired(unittest.TestCase):
     def _evaluate(self, bodies, ids):
-        return _gate().evaluate(bodies, HEAD, ids)
+        gate = _gate()
+        grammar = gate._load_grammar()
+        records = [
+            {
+                "id": record_id,
+                "body": body,
+                "user": {
+                    "login": grammar.comment_author(body) or "fixture-reviewer"
+                },
+                "_review_surface": "issue-comment",
+                "created_at": f"2026-09-04T08:{position:02d}:00Z",
+                "updated_at": f"2026-09-04T08:{position:02d}:00Z",
+            }
+            for position, (record_id, body) in enumerate(zip(ids, bodies))
+        ]
+        records = grammar.annotate_current_review_authority(
+            records,
+            "rrnewton/hermit",
+            lambda path: {
+                "role_name": "write",
+                "permission": "write",
+                "user": {
+                    "login": path.split("/collaborators/", 1)[1].split("/", 1)[0]
+                },
+            },
+        )
+        return gate.evaluate(bodies, HEAD, ids, records=records)
 
     def test_alone_it_is_indeterminate_not_a_pass(self):
         code, message = self._evaluate([BARE_REFUSAL], [REFUSAL_ID])

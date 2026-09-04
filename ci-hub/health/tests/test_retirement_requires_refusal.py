@@ -31,8 +31,40 @@ gate = _load("retirement_refusal_gate", GATE)
 def _withdrawal(target: int) -> str:
     return (
         "[hermit2, hermit-030, unresolved, host, role=reviewer]\n"
-        f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {OLD_HEAD} BY hermit-030\n"
+        f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {NEW_HEAD} BY hermit-030\n"
         f"RETIRES {target}"
+    )
+
+
+def _records(refusal: str, withdrawal: str) -> list[dict]:
+    records = [
+        {
+            "id": COMMENT_ID,
+            "body": refusal,
+            "user": {"login": grammar.comment_author(refusal) or "fixture-reviewer"},
+            "_review_surface": "issue-comment",
+            "created_at": "2026-09-04T08:00:00Z",
+            "updated_at": "2026-09-04T08:00:00Z",
+        },
+        {
+            "id": WITHDRAWAL_ID,
+            "body": withdrawal,
+            "user": {
+                "login": grammar.comment_author(withdrawal) or "fixture-reviewer"
+            },
+            "_review_surface": "issue-comment",
+            "created_at": "2026-09-04T08:01:00Z",
+            "updated_at": "2026-09-04T08:01:00Z",
+        },
+    ]
+    return grammar.annotate_current_review_authority(
+        records,
+        "rrnewton/hermit",
+        lambda path: {
+            "role_name": "write",
+            "permission": "write",
+            "user": {"login": path.split("/collaborators/", 1)[1].split("/", 1)[0]},
+        },
     )
 
 
@@ -50,11 +82,13 @@ def test_a_non_refusal_comment_remains_fail_closed_but_cannot_be_retired() -> No
     assert markers == [(gate.REFUSAL, None, OLD_HEAD[:8], COMMENT_ID)]
     assert not grammar.comment_contains_refusal(NON_REFUSAL)
 
+    records = _records(NON_REFUSAL, _withdrawal(COMMENT_ID))
     code, reason = gate.evaluate(
-        [NON_REFUSAL, _withdrawal(COMMENT_ID)],
+        [record["body"] for record in records],
         NEW_HEAD,
         [COMMENT_ID, WITHDRAWAL_ID],
         require_answered=True,
+        records=records,
     )
     assert code == gate.BLOCKED, reason
     assert "DOES NOT CONTAIN A REFUSAL" in reason, reason
@@ -71,11 +105,13 @@ def test_a_heading_formatted_refusal_is_still_found_and_can_be_retired() -> None
         (gate.REFUSAL, "claude", OLD_HEAD, COMMENT_ID)
     ]
 
+    records = _records(refusal, _withdrawal(COMMENT_ID))
     code, reason = gate.evaluate(
-        [refusal, _withdrawal(COMMENT_ID)],
+        [record["body"] for record in records],
         NEW_HEAD,
         [COMMENT_ID, WITHDRAWAL_ID],
         require_answered=True,
+        records=records,
     )
     assert code == gate.OK, reason
 
@@ -100,10 +136,12 @@ def test_a_genuine_sha_less_refusal_keeps_its_precise_exit() -> None:
         "CHANGES-REQUESTED because the boundary check is missing."
     )
     assert grammar.comment_contains_refusal(refusal)
+    records = _records(refusal, _withdrawal(COMMENT_ID))
     code, reason = gate.evaluate(
-        [refusal, _withdrawal(COMMENT_ID)],
+        [record["body"] for record in records],
         NEW_HEAD,
         [COMMENT_ID, WITHDRAWAL_ID],
         require_answered=True,
+        records=records,
     )
     assert code == gate.OK, reason

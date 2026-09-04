@@ -32,6 +32,20 @@ def _pr(
     head="a" * 40,
     comments=(),
 ):
+    review_comments = [
+        {
+            "id": f"IC_fixture_{number}_{position}",
+            "author": {"login": "fixture-reviewer"},
+            "url": (
+                f"https://github.com/rrnewton/hermit/pull/{number}"
+                f"#issuecomment-{number * 1000 + position}"
+            ),
+            "body": body,
+            "createdAt": f"2026-09-04T00:00:{position:02d}Z",
+            "includesCreatedEdit": False,
+        }
+        for position, body in enumerate(comments, 1)
+    ]
     return {
         "number": number,
         "title": f"pr {number}",
@@ -39,7 +53,7 @@ def _pr(
         "mergeable": mergeable,
         "mergeStateStatus": merge_state,
         "labels": [{"name": label} for label in labels],
-        "comments": [{"body": body} for body in comments],
+        "comments": review_comments,
         "statusCheckRollup": rollup,
         "headRefOid": head,
     }
@@ -1424,6 +1438,9 @@ class RenderTests(unittest.TestCase):
         self.assertIn("dual_review=1", report)
         self.assertIn("current_dual_approval=0", report)
         self.assertIn("approval=partial", report)
+        self.assertIn("issue comments returned by `gh pr list`", report)
+        self.assertIn("reporting only, not merge admission", report)
+        self.assertIn("Native reviews and inline review comments", report)
         self.assertIn("missing=current-approval-codex", report)
 
 

@@ -510,9 +510,12 @@ gate "[\"CHANGES-REQUESTED-AT: claude $CUR\"]" \
 gate "[\"APPROVED-AT: claude $CUR\"]" \
   && ok "changes-requested-gate: a clean head still merges" \
   || bad "changes-requested-gate: clean head now blocked -- over-blocking"
+gate "[\"[hermit2, hermit-007, unresolved, devbig014, role=reviewer]\\nCHANGES-REQUESTED: claude $CUR\",\"[hermit2, hermit-007, unresolved, devbig014, role=reviewer]\\nCHANGES-REQUESTED-WITHDRAWN-AT: claude $CUR\"]" \
+  && ok "changes-requested-gate: the issuer's withdrawal still clears a suffix-less refusal" \
+  || bad "the issuer's withdrawal no longer clears a suffix-less refusal"
 gate "[\"CHANGES-REQUESTED: claude $CUR\",\"CHANGES-REQUESTED-WITHDRAWN-AT: claude $CUR\"]" \
-  && ok "changes-requested-gate: a withdrawal still clears a suffix-less refusal" \
-  || bad "withdrawal no longer clears a suffix-less refusal"
+  && bad "an unsigned generic withdrawal cleared an unsigned suffix-less refusal" \
+  || ok "an unsigned generic withdrawal still clears nothing"
 
 
 # --- THE ASSERTION THE MUTATION CONTROL HAS ALWAYS WAITED FOR ------------------
@@ -835,7 +838,7 @@ fi
 if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
   mutant="$tmp/approval_binding-reconflate-malformed.py"
   sed \
-    's/if a.gate and gating:/if a.gate and (gating or malformed):  # MUTANT: syntax debt reconflated with authority/' \
+    's/if a.gate and (gating or reconciled):/if a.gate and (gating or reconciled or malformed):  # MUTANT: syntax debt reconflated with authority/' \
     "$tool" >"$mutant"
   if ! grep -q 'MUTANT: syntax debt reconflated with authority' "$mutant"; then
     bad "separation mutation control could not locate the authority gate"
@@ -924,14 +927,11 @@ else
 fi
 
 
-# ⚠️ AN UNANSWERED REFUSAL THAT NAMES NO ISSUER AND ONE THAT NAMES A DEPARTED
-# AGENT LOOK IDENTICAL IN `state=REFUSED`, AND THEIR REMEDIES ARE OPPOSITE. The
-# first is retired by ANY agent via `RETIRES #<comment-id>` in
-# ci-hub/bin/changes-requested-gate; the second is retired by its issuer alone, so
-# a departed issuer leaves it retirable by nobody. Measured 2026-08-26 over 35
-# open rrnewton/hermit pull requests: 22 unanswered refusals at head, 5 naming no
-# issuer and 13 naming a departed one, and the tool's output could not tell them
-# apart -- so the census had to be rebuilt by hand before anyone could act.
+# Keep the issuer split as provenance, not as a permission boundary. A current
+# currently authorized GitHub actor with a matching valid disclosure may retire
+# either form with one canonical withdrawal
+# carrying the exact refusing comment id; a generic approval or unquoted
+# withdrawal from another member still clears nothing.
 #
 # Both directions are asserted, because a counter that always says "none" and one
 # that always says "present" are each useless in a way the other's test hides.
@@ -947,10 +947,10 @@ if grep -q '^refusal_issuer_summary=1 unanswered refusal(s) at head across 1 PR(
 else
   bad "an unsigned refusal was not reported as naming no issuer: $out"
 fi
-if grep -q 'RETIRES #<comment-id>' <<<"$out"; then
-  ok "the remedy names the mechanism that can actually retire an unsigned refusal"
+if grep -q 'RETIRES #<the exact refusing comment id>' <<<"$out"; then
+  ok "the remedy names the exact mechanism that retires an objection"
 else
-  bad "the remedy did not name RETIRES, so the reader is told to ask a nonexistent author"
+  bad "the remedy did not name exact RETIRES, so the reader cannot resolve the objection"
 fi
 
 cat >"$tmp/refusal-signed.json" <<JSON
@@ -964,6 +964,11 @@ if grep -q '^refusal_issuer_summary=1 unanswered refusal(s) at head across 1 PR(
   ok "a refusal carrying a disclosure tag is counted as naming an issuer"
 else
   bad "a signed refusal was miscounted; the split cannot separate the two remedies: $out"
+fi
+if grep -q 'currently authorized GitHub actor with a matching valid disclosure' <<<"$out"; then
+  ok "the signed-refusal remedy no longer depends on a departed issuer"
+else
+  bad "the signed-refusal remedy still leaves a departed issuer as a permanent gate: $out"
 fi
 
 # The negative half. Without it the counter could report "present" unconditionally.

@@ -105,7 +105,14 @@ SHA_FORMS = [
 
 
 def _comment(body: str, when: str) -> dict:
-    return {"body": body, "createdAt": when, "html_url": "https://example/c"}
+    record_id = 1 if when.startswith("2026-08-12") else 2
+    return {
+        "id": record_id,
+        "body": body,
+        "createdAt": when,
+        "includesCreatedEdit": False,
+        "html_url": f"https://example.test/c/{record_id}",
+    }
 
 
 def main() -> int:

@@ -16,7 +16,8 @@ a verdict, because citation suppression lives above it. So this uses the two
 citation-aware, label-independent instruments:
     positive -> approval_binding.lane_shas(comments, lane, ...)
     negative -> changes-requested-gate's evaluate(bodies, head, ids)
-and it reads BOTH comment surfaces: issues/N/comments AND pulls/N/comments.
+and it reads all three review surfaces: issues/N/comments, pulls/N/reviews and
+pulls/N/comments.
 
 THE CHANGE AUTHOR MUST NOT SUPPLY EITHER REVIEW LANE. GitHub's account identity
 cannot establish that here because agents share one account. The disclosure tag
@@ -41,6 +42,35 @@ def gh(args):
         raise RuntimeError(p.stderr.strip()[:160] or f"gh exited {p.returncode}")
     return json.loads(p.stdout)
 
+
+def gh_pages(path, surface):
+    pages = gh(["api", path, "--paginate", "--slurp"])
+    try:
+        return ab.review_records_from_rest_pages(pages, surface)
+    except ab.ReviewRecordError as error:
+        raise RuntimeError(
+            f"{path.split('?')[0]} returned malformed review records: {error}"
+        ) from error
+
+
+def native_reviews(repo, pr):
+    parts = repo.split("/")
+    if len(parts) != 2 or not all(parts):
+        raise RuntimeError(f"repository name {repo!r} is not owner/name")
+    owner, name = parts
+    pages = gh(
+        [
+            "api", "graphql", "--paginate", "--slurp",
+            "-f", f"owner={owner}", "-f", f"name={name}",
+            "-F", f"number={pr}", "-f", f"query={ab.NATIVE_REVIEWS_QUERY}",
+        ]
+    )
+    try:
+        return ab.native_review_records_from_graphql(pages)
+    except ab.ReviewRecordError as error:
+        raise RuntimeError(str(error)) from error
+
+
 def lane_status(comments, lane, head, change_author):
     """Return one lane's state, excluding markers issued by the change author."""
     refs = []
@@ -52,6 +82,7 @@ def lane_status(comments, lane, head, change_author):
         citations=[],
         refusals=refs,
         issuers=issuers,
+        current_head=head,
     ) or []
     if len(shas) != len(issuers):
         raise RuntimeError(
@@ -88,40 +119,45 @@ def lane_status(comments, lane, head, change_author):
         ),
     }
 
-def scan_result(pr, d, ic, rc):
-    """Evaluate one pull request from its API response and two comment streams."""
+def scan(repo, pr, pace=2.0):
+    d = gh(["api", f"repos/{repo}/pulls/{pr}"])
     head, state, draft = d["head"]["sha"], d["state"], d["draft"]
-    comments = [
-        {
-            "id": c["id"],
-            "body": c.get("body") or "",
-            "html_url": c.get("html_url") or c.get("url") or "?",
-        }
-        for c in ic + rc
-    ]
-    if d.get("body"):
-        comments.insert(0, {"id": "body", "body": d["body"],
-                            "html_url": d.get("html_url") or "?"})
-    bodies = [c["body"] for c in comments]
-    ids = [c["id"] for c in comments]
+    ic = gh_pages(
+        f"repos/{repo}/issues/{pr}/comments?per_page=100", "issue-comment"
+    )
+    reviews = native_reviews(repo, pr)
+    rc = gh_pages(
+        f"repos/{repo}/pulls/{pr}/comments?per_page=100", "pull-review-comment"
+    )
+    records = [*ic, *reviews, *rc]
+    try:
+        records = ab.annotate_current_review_authority(
+            records,
+            repo,
+            lambda path: gh(["api", path]),
+        )
+        comments = ab.canonical_review_records(records)
+    except ab.ReviewRecordError as error:
+        raise RuntimeError(str(error)) from error
+    bodies = [str(comment.get("body") or "") for comment in comments]
+    ids = [ab.comment_database_id(comment) for comment in comments]
     change_author = ab.comment_author(d.get("body") or "")
     lanes = {
         lane: lane_status(comments, lane, head, change_author)
         for lane in ("claude", "codex")
     }
-    gate_rc, gate_msg = crg.evaluate(bodies, head, ids)
+    gate_rc, gate_msg = crg.evaluate(
+        bodies,
+        head,
+        ids,
+        native_refusal_ids=crg.native_changes_requested_ids(records),
+        records=comments,
+    )
+    time.sleep(pace)
     return {"pr": pr, "head": head, "state": state, "draft": draft,
             "gate_rc": gate_rc, "gate": gate_msg.split("--")[0].strip(),
             "mergeable": d.get("mergeable"), "change_author": change_author,
             "lanes": lanes}
-
-def scan(repo, pr, pace=2.0):
-    d = gh(["api", f"repos/{repo}/pulls/{pr}"])
-    ic = gh(["api", f"repos/{repo}/issues/{pr}/comments?per_page=100"])
-    rc = gh(["api", f"repos/{repo}/pulls/{pr}/comments?per_page=100"])
-    result = scan_result(pr, d, ic, rc)
-    time.sleep(pace)
-    return result
 
 def classify(r):
     """⚠️ ORDER-INDEPENDENT ON PURPOSE. The first version tested codex before claude
@@ -156,16 +192,6 @@ def self_test() -> int:
             "html_url": f"c/{agent}",
         }
 
-    def P(agent):
-        return {
-            "body": f"[hermit2, {agent}, unresolved, devbig014, role=impl]",
-            "draft": False,
-            "head": {"sha": head},
-            "html_url": "p/1",
-            "mergeable": True,
-            "state": "open",
-        }
-
     def R(gate=0, claude=False, codex=False, cref=0, xref=0, merge=True,
           state="open", draft=False):
         return {"state": state, "draft": draft, "gate_rc": gate, "mergeable": merge,
@@ -177,30 +203,28 @@ def self_test() -> int:
         if got != expect:
             bad.append(f"{label}: expected {expect!r}, got {got!r}")
 
-    author_result = scan_result(1, P("change-author"), [C("change-author")], [])
-    author_marker = author_result["lanes"]["codex"]
+    author_marker = lane_status([C("change-author")], "codex", head, "change-author")
     if author_marker["at_head"] or author_marker["self_authored_at_head"] != 1:
         bad.append(f"change author's marker satisfied the lane: {author_marker!r}")
 
-    unattributed_marker = scan_result(
-        1,
-        P("change-author"),
+    unattributed_marker = lane_status(
         [{"body": f"APPROVED-AT: codex {head}", "id": "unknown"}],
-        [],
-    )["lanes"]["codex"]
+        "codex",
+        head,
+        "change-author",
+    )
     if (
         unattributed_marker["at_head"]
         or unattributed_marker["unattributed_at_head"] != 1
     ):
         bad.append(f"unattributed marker satisfied the lane: {unattributed_marker!r}")
 
-    independent_result = scan_result(
-        1,
-        P("change-author"),
+    independent_marker = lane_status(
         [C("change-author"), C("independent-reviewer")],
-        [],
+        "codex",
+        head,
+        "change-author",
     )
-    independent_marker = independent_result["lanes"]["codex"]
     if not independent_marker["at_head"]:
         bad.append(
             "independent reviewer's marker did not satisfy the lane: "

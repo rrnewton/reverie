@@ -53,6 +53,7 @@ def _gate():
 class WithdrawalNamesItsRefusal(unittest.TestCase):
     def setUp(self) -> None:
         self.gate = _gate()
+        self.grammar = self.gate._load_grammar()
         data = json.loads(FIXTURE.read_text())
         self.head = data["head"]
         by_role = {c["role"]: c for c in data["comments"]}
@@ -63,44 +64,79 @@ class WithdrawalNamesItsRefusal(unittest.TestCase):
     def _quote(self, target_id: int) -> str:
         return f"{self.w12['body']}\n\nRETIRES {target_id}\n"
 
+    def _records(self, bodies: list[str], ids: list[int]) -> list[dict]:
+        records = [
+            {
+                "id": record_id,
+                "body": body,
+                "user": {
+                    "login": self.grammar.comment_author(body) or "fixture-reviewer"
+                },
+                "_review_surface": "issue-comment",
+                "created_at": f"2026-09-04T00:00:{position:02d}Z",
+                "updated_at": f"2026-09-04T00:00:{position:02d}Z",
+            }
+            for position, (record_id, body) in enumerate(zip(ids, bodies), 1)
+        ]
+        return self.grammar.annotate_current_review_authority(
+            records,
+            "rrnewton/hermit",
+            lambda path: {
+                "role_name": "write",
+                "permission": "write",
+                "user": {
+                    "login": path.split("/collaborators/", 1)[1].split("/", 1)[0]
+                },
+            },
+        )
+
     def test_the_real_pair_still_blocks_when_only_one_refusal_is_named(self) -> None:
         """THE DELIVERABLE. hermit-012 withdraws by quotation; hermit-015 still blocks."""
+        bodies = [self.r12["body"], self.r15["body"], self._quote(self.r12["id"])]
+        ids = [self.r12["id"], self.r15["id"], self.w12["id"]]
         rc, msg = self.gate.evaluate(
-            [self.r12["body"], self.r15["body"], self._quote(self.r12["id"])],
+            bodies,
             self.head,
-            ids=[self.r12["id"], self.r15["id"], self.w12["id"]],
+            ids=ids,
+            records=self._records(bodies, ids),
         )
         self.assertEqual(rc, self.gate.BLOCKED, msg)
-        self.assertIn("1 refusal(s) bound to the exact head", msg)
+        self.assertIn("1 unresolved refusal(s) bind the exact head", msg)
+        self.assertIn("1 other refusal(s) WERE answered", msg)
 
     def test_naming_the_other_agents_refusal_does_not_retire_your_own(self) -> None:
         """⚠️ THE CONTROL. Proves the id is matched, not merely present."""
+        bodies = [self.r12["body"], self.r15["body"], self._quote(self.r15["id"])]
+        ids = [self.r12["id"], self.r15["id"], self.w12["id"]]
         rc, msg = self.gate.evaluate(
-            [self.r12["body"], self.r15["body"], self._quote(self.r15["id"])],
+            bodies,
             self.head,
-            ids=[self.r12["id"], self.r15["id"], self.w12["id"]],
+            ids=ids,
+            records=self._records(bodies, ids),
         )
         self.assertEqual(rc, self.gate.BLOCKED, msg)
 
     def test_a_quoted_withdrawal_still_clears_when_it_is_the_only_refusal(self) -> None:
         """And it must not over-block: naming your own sole refusal clears."""
+        bodies = [self.r12["body"], self._quote(self.r12["id"])]
+        ids = [self.r12["id"], self.w12["id"]]
         rc, msg = self.gate.evaluate(
-            [self.r12["body"], self._quote(self.r12["id"])],
+            bodies,
             self.head,
-            ids=[self.r12["id"], self.w12["id"]],
+            ids=ids,
+            records=self._records(bodies, ids),
         )
         self.assertEqual(rc, self.gate.OK, msg)
 
-    def test_an_unquoted_withdrawal_keeps_the_legacy_lane_wide_clear(self) -> None:
-        """Deliberate: retiring nothing would flip live heads to BLOCKED at once.
-        The collapse is reported instead, which is the transition state."""
+    def test_one_generic_withdrawal_cannot_clear_two_refusals(self) -> None:
+        """A generic withdrawal clears at most its issuer's refusal."""
         rc, msg = self.gate.evaluate(
             [self.r12["body"], self.r15["body"], self.w12["body"]],
             self.head,
             ids=[self.r12["id"], self.r15["id"], self.w12["id"]],
         )
-        self.assertEqual(rc, self.gate.OK, msg)
-        self.assertIn("ONE WITHDRAWAL CLEARED MORE THAN ONE REFUSAL", msg)
+        self.assertEqual(rc, self.gate.BLOCKED, msg)
+        self.assertIn("1 refusal(s) bound", msg)
 
     def test_the_fixture_is_the_real_pair_and_keeps_the_property_that_matters(self) -> None:
         """If someone regenerates the fixture from tagged comments, the issuer-based

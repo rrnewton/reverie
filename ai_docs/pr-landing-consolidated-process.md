@@ -88,7 +88,9 @@ cannot derive:
       "head_sha": "<exact-40-hex>",
       "validation_evidence": "clean-validate-record",
       "policy_class": "ci-hygiene",
-      "assigned_agent": "hermit-ci"
+      "assigned_agent": "hermit-ci",
+      "review_objections_resolved": false,
+      "review_evidence_digest": null
     }
   ]
 }
@@ -98,6 +100,25 @@ Allowed evidence classes and their semantics come from the canonical skill/user 
 an old branch name or label into `head_sha`. Mechanism labels use the same stable
 `mechanism:<lowercase-hyphenated-slug>` on the task and PR. Diff-derived candidates without a known
 mapping remain explicitly unclassified.
+
+Set `review_objections_resolved` to `true` only after the repository review authority accepts a
+canonical `CHANGES-REQUESTED-WITHDRAWN-AT` record carrying `RETIRES <exact refusing comment id>`
+from a GitHub actor whose current repository permission is `triage`, `write`, `maintain`, or
+`admin`. The immutable event author must match the disclosure identity and any `BY` identity;
+the disclosure's role text is audit metadata only. The withdrawal must use the refusal's lane,
+bind the current exact `head_sha`, and be strictly later than the current version of the refusal;
+naming the old refused head is stale and does not resolve the current head.
+
+Obtain `review_evidence_digest` mechanically from `nodes[].review_evidence_digest` in an
+uncontexted exact-head `plan --format json`, then copy that exact digest beside the same
+`head_sha` into the caller-owned context. The review authority decides whether the objection was
+resolved; the digest only binds that decision to the complete native-review, issue-comment, and
+inline-comment snapshot it evaluated, including the exact retirement actor's current repository
+permission. Any review event, body, state, author, head, or permission change makes the context
+stale; unavailable permission evidence makes the snapshot unavailable rather than preserving an
+older authorization. This fact suppresses only GitHub's aggregate `CHANGES_REQUESTED` hold, which
+can remain stale after the exact objection is resolved. It does not supply an approval, satisfy a
+required review, or weaken any validation, conflict, or exact-head check.
 
 ### 2. Produce and archive one plan
 

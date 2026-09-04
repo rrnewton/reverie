@@ -73,6 +73,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -87,7 +88,11 @@ import bounded_capture  # noqa: E402
 import ops_state  # noqa: E402
 
 SHA40 = re.compile(r"\b[0-9a-f]{40}\b")
-RETIRES = re.compile(r"\bRETIRES\s+#?(\d{6,})\b", re.IGNORECASE)
+# An exact retirement is an assertion, not a token that prose may happen to
+# quote. Keep this as one complete prose line outside fenced/indented code.
+RETIRES = re.compile(r"^\s*RETIRES\s+#?(\d{6,})\s*$", re.IGNORECASE)
+_RETIRES_ASSERTION = re.compile(r"^RETIRES(?:\s|$)", re.IGNORECASE)
+_COMMENT_URL_ID = re.compile(r"#(?:issuecomment|pullrequestreview)-(\d+)\b")
 LANES = ("claude", "codex")
 CRITICAL_CLASSES = frozenset(
     {"hermit-syscall", "detcore-scheduling", "reverie-api"}
@@ -129,8 +134,8 @@ def classify_approval(
     `comment_shas` are the head SHAs named by that lane's role-tagged review
     comments, oldest first. The NEWEST is what the lane last bound itself to.
 
-    `unanswered` says this lane holds a refusal that its OWN ISSUER never
-    discharged. It outranks every approval, and it is a STRICTLY STRONGER
+    `unanswered` says this lane holds a refusal that was never discharged. It
+    outranks every approval, and it is a STRICTLY STRONGER
     condition than `refused`: `refused` asks whether the refusal was the lane's
     last word in time, `unanswered` asks whether the agent who wrote it ever
     took it back. A colleague approving afterwards satisfies the first and not
@@ -161,8 +166,9 @@ def classify_approval(
     but indistinguishable from a refusal nobody had addressed, so the head read
     as freshly blocked and was re-dispatched as such.
 
-    WHO CLEARS IT IS UNCHANGED: its own issuer, or a later approval that
-    `unanswered` permits. A moved head is a REASON TO GO LOOK AGAIN, not a
+    WHO CLEARS IT: its own issuer may reverse it, or a current reviewer or
+    coordinator may precisely retire the named refusal after verifying the
+    objection is resolved. A moved head is a REASON TO GO LOOK AGAIN, not a
     discharge.
 
     ⚠️ THIS RENAMES A STATE, IT DOES NOT MOVE AN ADMISSION BOUNDARY. Every
@@ -314,6 +320,59 @@ def gh_mutate(args: list[str]) -> None:
         raise GitHubUnavailable(
             f"gh {' '.join(args)} failed with exit {out.returncode}: {detail}"
         )
+
+
+def _gh_pages(path: str, surface: str) -> list[dict[str, Any]]:
+    pages = gh_json(["api", path, "--paginate", "--slurp"])
+    try:
+        return review_records_from_rest_pages(pages, surface)
+    except ReviewRecordError as error:
+        raise GitHubUnavailable(
+            f"{path.split('?')[0]} returned malformed review records: {error}"
+        ) from error
+
+
+def github_review_records(repo: str, pr: object) -> list[dict[str, Any]]:
+    """Read and canonically order every review-bearing GitHub surface."""
+    parts = repo.split("/")
+    if len(parts) != 2 or not all(parts):
+        raise GitHubUnavailable(f"repository name {repo!r} is not owner/name")
+    owner, name = parts
+    records = _gh_pages(
+        f"repos/{repo}/issues/{pr}/comments?per_page=100", "issue-comment"
+    )
+    records.extend(
+        _gh_pages(
+            f"repos/{repo}/pulls/{pr}/comments?per_page=100",
+            "pull-review-comment",
+        )
+    )
+    pages = gh_json(
+        [
+            "api",
+            "graphql",
+            "--paginate",
+            "--slurp",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={name}",
+            "-F",
+            f"number={pr}",
+            "-f",
+            f"query={NATIVE_REVIEWS_QUERY}",
+        ]
+    )
+    try:
+        records.extend(native_review_records_from_graphql(pages))
+        records = annotate_current_review_authority(
+            records,
+            repo,
+            lambda path: gh_json(["api", path]),
+        )
+        return canonical_review_records(records)
+    except ReviewRecordError as error:
+        raise GitHubUnavailable(str(error)) from error
 
 
 def github_actions_enabled(repo: str) -> bool:
@@ -889,6 +948,41 @@ _DISCLOSURE = re.compile(
     rf"^(?:\[[^\]\n]*\][ \t]*)*?\[\s*[a-z0-9]+\s*,\s*({_AGENT_ID})\s*,", re.I | re.M
 )
 
+_BRACKET_GROUP = re.compile(r"\[([^\]\n]*)\]")
+def _first_disclosure_fields(body: str) -> "list[str] | None":
+    """Fields from the comment's opening disclosure-shaped tag.
+
+    Role tags such as ``[review agent, ...]`` are not disclosures and may
+    precede one. Once a bracket has a team, agent and third field, however, it
+    is the author's disclosure candidate: a malformed or unauthorized first
+    candidate refuses rather than letting a later copied reviewer tag speak.
+    """
+    for raw in (body or "").splitlines():
+        if not raw.strip():
+            continue
+        if raw.startswith(("    ", "\t")):
+            return None
+        line = raw.lstrip()
+        if line.startswith(">"):
+            return None
+        offset = 0
+        while True:
+            match = _BRACKET_GROUP.match(line, offset)
+            if match is None:
+                break
+            fields = [field.strip() for field in match.group(1).split(",")]
+            if (
+                len(fields) >= 3
+                and re.fullmatch(r"[a-z0-9]+", fields[0], re.IGNORECASE)
+                and re.fullmatch(_AGENT_ID, fields[1], re.IGNORECASE)
+            ):
+                return fields
+            offset = match.end()
+            while offset < len(line) and line[offset] in " \t":
+                offset += 1
+        return None
+    return None
+
 
 def comment_author(body: str) -> "str | None":
     """The agent that WROTE this comment, or None when it does not say."""
@@ -896,13 +990,33 @@ def comment_author(body: str) -> "str | None":
     return m.group(1).lower() if m else None
 
 
+def retirement_author(body: str) -> "str | None":
+    """Identity named by a syntactically valid disclosure, else ``None``.
+
+    A ``BY`` clause is a marker assertion, not a substitute for the comment's
+    process-bound disclosure.  When both are present they must agree; otherwise
+    the retirement is ambiguous and carries no authority. The self-declared
+    role remains audit metadata only: current repository permission, fetched
+    independently from GitHub, is the authorization fact.
+    """
+    fields = _first_disclosure_fields(body)
+    if fields is None or len(fields) != 5:
+        return None
+    role = fields[4].lower()
+    if not role.startswith("role=") or re.fullmatch(
+        _AGENT_ID, role.removeprefix("role=")
+    ) is None:
+        return None
+    author = fields[1].lower()
+    return author if comment_author(body) == author else None
+
+
 def comment_issuer(body: str) -> "str | None":
     """Who issued a comment's marker, or None when the comment does not say.
 
     A marker's own ``BY`` clause wins over the surrounding disclosure tag. This
-    is the same ownership rule used for approvals, withdrawals and refusals; it
-    lives here so the two refusal readers cannot disagree about who may retire a
-    refusal.
+    is the ownership rule used for approvals, generic withdrawals and refusals;
+    precise retirement authority is checked separately from its disclosure.
     """
     for line in (body or "").split("\n"):
         named = marker_issuer(line)
@@ -912,24 +1026,552 @@ def comment_issuer(body: str) -> "str | None":
 
 
 def retirement_targets(body: str) -> list[str]:
-    """Comment ids named by ``RETIRES`` in ``body``, in document order."""
-    return [match.group(1) for match in RETIRES.finditer(body or "")]
+    """Comment ids asserted by canonical ``RETIRES`` lines, in document order."""
+    targets = []
+    for line in marker_lines(body or ""):
+        match = RETIRES.match(line)
+        if match is not None:
+            targets.append(match.group(1))
+    return targets
+
+
+def contains_retires_assertion(body: str) -> bool:
+    """Whether prose contains a standalone ``RETIRES`` assertion of any shape.
+
+    A malformed precise-retirement attempt must not silently become a generic
+    same-issuer withdrawal.  Code blocks and blockquotes remain citations, while
+    the same heading/list/emphasis decoration accepted for verdicts is harmless.
+    """
+    for raw in marker_lines(body or ""):
+        stripped = raw.strip()
+        if stripped.startswith(">") or (
+            stripped.startswith("`") and stripped.endswith("`")
+        ):
+            continue
+        normalized = strip_decoration(raw)
+        if _RETIRES_ASSERTION.match(normalized) is not None:
+            return True
+    return False
+
+
+def comment_database_id(record: dict[str, Any]) -> "str | None":
+    """Numeric GitHub comment/review id, including GraphQL-record URL fallback."""
+    for field in ("fullDatabaseId", "databaseId", "database_id", "id"):
+        value = record.get(field)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return str(value)
+        if isinstance(value, str) and value.isdigit():
+            return value
+    for field in ("url", "html_url"):
+        match = _COMMENT_URL_ID.search(str(record.get(field) or ""))
+        if match is not None:
+            return match.group(1)
+    return None
+
+
+class ReviewRecordError(ValueError):
+    """A review record cannot support an identity- or order-sensitive decision."""
+
+
+AUTHORIZED_REVIEW_PERMISSIONS = frozenset({"admin", "maintain", "write", "triage"})
+
+
+def review_record_actor(record: dict[str, Any]) -> "str | None":
+    """The immutable GitHub login that owns a review record."""
+    for field in ("user", "author"):
+        value = record.get(field)
+        if not isinstance(value, dict):
+            continue
+        login = value.get("login")
+        if isinstance(login, str) and login.strip():
+            return login.strip().casefold()
+    return None
+
+
+def annotate_current_review_authority(
+    records: "Sequence[dict[str, Any]]",
+    repo: str,
+    read_json: "Callable[[str], object]",
+) -> list[dict[str, Any]]:
+    """Bind exact retirement claims to a currently authorized GitHub actor.
+
+    The disclosure identifies the process-bound agent.  Its role field is audit
+    metadata only; it does not authenticate the GitHub account that published
+    the record.  For every
+    record that tries to retire an objection, independently read that actor's
+    current repository permission and retain the result beside the immutable
+    ``user.login``/``author.login`` field.  Missing actors, malformed permission
+    replies and API failures refuse the whole review read; none may degrade to a
+    self-declared role in comment prose.
+    """
+    candidates: dict[int, str] = {}
+    actors: set[str] = set()
+    for position, record in enumerate(records):
+        if not retirement_targets(str(record.get("body") or "")):
+            continue
+        claim = retirement_claim(str(record.get("body") or ""))
+        actor = review_record_actor(record)
+        if claim is None or actor is None or actor != claim[3].casefold():
+            continue
+        candidates[position] = actor
+        actors.add(actor)
+
+    authorized: dict[str, str] = {}
+    for actor in sorted(actors):
+        try:
+            payload = read_json(f"repos/{repo}/collaborators/{actor}/permission")
+        except Exception as error:
+            raise ReviewRecordError(
+                f"cannot determine current review authorization for GitHub actor {actor}: {error}"
+            ) from error
+        if not isinstance(payload, dict):
+            raise ReviewRecordError(
+                f"current review authorization for GitHub actor {actor} is not an object"
+            )
+        payload_user = payload.get("user")
+        payload_login = (
+            payload_user.get("login")
+            if isinstance(payload_user, dict)
+            else None
+        )
+        role_name = payload.get("role_name")
+        permission = payload.get("permission")
+        if (
+            not isinstance(payload_login, str)
+            or payload_login.casefold() != actor
+        ):
+            raise ReviewRecordError(
+                f"current review authorization for GitHub actor {actor} is malformed"
+            )
+        permission_candidates = [
+            value.casefold()
+            for value in (role_name, permission)
+            if isinstance(value, str) and value
+        ]
+        if not permission_candidates:
+            raise ReviewRecordError(
+                f"current review authorization for GitHub actor {actor} is malformed"
+            )
+        authorized_permission = next(
+            (
+                candidate
+                for candidate in permission_candidates
+                if candidate in AUTHORIZED_REVIEW_PERMISSIONS
+            ),
+            None,
+        )
+        if authorized_permission is not None:
+            authorized[actor] = authorized_permission
+
+    annotated: list[dict[str, Any]] = []
+    for position, record in enumerate(records):
+        preserved = dict(record)
+        if retirement_targets(str(record.get("body") or "")):
+            actor = candidates.get(position)
+            preserved["_current_review_actor_authorized"] = (
+                actor is not None and actor in authorized
+            )
+            preserved["_current_review_actor_login"] = review_record_actor(record)
+            preserved["_current_review_actor_permission"] = (
+                authorized.get(actor) if actor is not None else None
+            )
+        annotated.append(preserved)
+    return annotated
+
+
+NATIVE_REVIEWS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviews(first: 100, after: $endCursor) {
+        nodes {
+          fullDatabaseId
+          id
+          url
+          author { login }
+          body
+          state
+          submittedAt
+          updatedAt
+          lastEditedAt
+          includesCreatedEdit
+          commit { oid }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+""".strip()
+
+
+def native_review_records_from_graphql(pages: object) -> list[dict[str, Any]]:
+    """Flatten the paginated GraphQL native-review projection or refuse it."""
+    if not isinstance(pages, list):
+        raise ReviewRecordError("native-review query did not return page objects")
+    if not pages:
+        raise ReviewRecordError("native-review query returned no page")
+    records: list[dict[str, Any]] = []
+    cursors: set[str] = set()
+    for page_number, page in enumerate(pages, 1):
+        if not isinstance(page, dict):
+            raise ReviewRecordError(
+                f"native-review page {page_number} is not an object"
+            )
+        if "errors" in page:
+            errors = page["errors"]
+            if not isinstance(errors, list) or errors:
+                raise ReviewRecordError(
+                    f"native-review page {page_number} contains GraphQL errors"
+                )
+        try:
+            reviews = page["data"]["repository"]["pullRequest"]["reviews"]
+            nodes = reviews["nodes"]
+            page_info = reviews["pageInfo"]
+        except (KeyError, TypeError):
+            raise ReviewRecordError(
+                f"native-review page {page_number} has no complete reviews connection"
+            ) from None
+        if not isinstance(nodes, list) or any(not isinstance(node, dict) for node in nodes):
+            raise ReviewRecordError(
+                f"native-review page {page_number} has a malformed reviews.nodes array"
+            )
+        if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
+            raise ReviewRecordError(
+                f"native-review page {page_number} has malformed pageInfo"
+            )
+        has_next = page_info["hasNextPage"]
+        cursor = page_info.get("endCursor")
+        if has_next:
+            if not isinstance(cursor, str) or not cursor or cursor in cursors:
+                raise ReviewRecordError(
+                    f"native-review page {page_number} has no new endCursor"
+                )
+            if page_number == len(pages):
+                raise ReviewRecordError(
+                    "native-review query ended while pageInfo.hasNextPage is true"
+                )
+            cursors.add(cursor)
+        elif page_number != len(pages):
+            raise ReviewRecordError(
+                f"native-review page {page_number} says it is final but more pages follow"
+            )
+        for node in nodes:
+            state = node.get("state")
+            if not isinstance(state, str) or state.upper() not in {
+                "APPROVED",
+                "CHANGES_REQUESTED",
+                "COMMENTED",
+                "DISMISSED",
+                "PENDING",
+            }:
+                raise ReviewRecordError(
+                    f"native-review page {page_number} has a review with malformed state"
+                )
+            preserved = dict(node)
+            preserved["_review_surface"] = "pull-request-review"
+            records.append(preserved)
+    return records
+
+
+def review_records_from_rest_pages(
+    pages: object, surface: str
+) -> list[dict[str, Any]]:
+    """Flatten REST pages while retaining their authoritative source type.
+
+    REST records remain otherwise unchanged, including ``user.login``, numeric
+    id, URL, body, and creation/update timestamps.  The source discriminator is
+    assigned by the caller from the endpoint it actually queried rather than
+    trusted from returned or fixture data.
+    """
+    if (
+        not isinstance(pages, list)
+        or not pages
+        or any(not isinstance(page, list) for page in pages)
+    ):
+        raise ReviewRecordError("REST review query did not return page arrays")
+    if any(not isinstance(record, dict) for page in pages for record in page):
+        raise ReviewRecordError("REST review query returned a non-object record")
+    records: list[dict[str, Any]] = []
+    for page in pages:
+        for record in page:
+            preserved = dict(record)
+            preserved["_review_surface"] = surface
+            records.append(preserved)
+    return records
+
+
+def _github_time(value: object) -> "datetime.datetime | None":
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def review_record_event_time(record: dict[str, Any]) -> "datetime.datetime | None":
+    """Return the record's real creation/submission event time."""
+    submitted = _github_time(record.get("submitted_at") or record.get("submittedAt"))
+    if submitted is not None:
+        return submitted
+    return _github_time(record.get("created_at") or record.get("createdAt"))
+
+
+def review_record_version_time(record: dict[str, Any]) -> "datetime.datetime | None":
+    """Return when the currently-read body became authoritative.
+
+    Issue comments and inline review comments are editable, so their creation
+    time is not the identity of the body being evaluated.  Their latest update
+    time is.  A GraphQL issue-comment record that explicitly says it was never
+    edited may use its creation time when that projection omits ``updatedAt``.
+    Submitted native reviews expose their original ``submittedAt`` plus the
+    current object's ``updatedAt`` and, for a body edit, ``lastEditedAt``.  A
+    native review may also be dismissed after submission, so submission time
+    alone is never enough to identify the version being evaluated.
+
+    Missing or contradictory metadata returns ``None``.  Exact retirement must
+    then fail closed rather than infer chronology from endpoint concatenation.
+    """
+    submitted_value = record.get("submitted_at") or record.get("submittedAt")
+    submitted = _github_time(submitted_value)
+    if submitted is not None:
+        updated_value = record.get("updated_at") or record.get("updatedAt")
+        updated = _github_time(updated_value)
+        if updated is None:
+            # REST supplies a stable numeric id and submitted_at but no current
+            # version timestamp.  `includesCreatedEdit == false` rules out one
+            # body-edit shape, but does not rule out a later review dismissal.
+            # Production readers therefore combine the numeric GraphQL database
+            # id with GraphQL updatedAt and refuse a submittedAt-only record.
+            return None
+        if updated < submitted:
+            return None
+        last_edited_value = record.get("last_edited_at") or record.get("lastEditedAt")
+        last_edited = _github_time(last_edited_value)
+        if last_edited_value is not None and last_edited is None:
+            return None
+        if last_edited is not None and last_edited < submitted:
+            return None
+        return max(updated, last_edited or updated)
+
+    created = _github_time(record.get("created_at") or record.get("createdAt"))
+    if created is None:
+        return None
+    updated_value = record.get("updated_at") or record.get("updatedAt")
+    updated = _github_time(updated_value)
+    if updated is None:
+        # `gh pr view --json comments` exposes this boolean even on projections
+        # that omit updatedAt.  False proves the current body is the created body;
+        # missing/true does not prove which version was reviewed.
+        if record.get("includesCreatedEdit") is False:
+            updated = created
+        else:
+            return None
+    if updated < created:
+        return None
+    return updated
+
+
+def review_record_head(record: dict[str, Any]) -> "str | None":
+    """Exact commit reviewed by a native GitHub review, when present."""
+    commit = record.get("commit")
+    oid = commit.get("oid") if isinstance(commit, dict) else None
+    if isinstance(oid, str) and SHA40.fullmatch(oid.lower()):
+        return oid.lower()
+    commit_id = record.get("commit_id") or record.get("commitId")
+    if isinstance(commit_id, str) and SHA40.fullmatch(commit_id.lower()):
+        return commit_id.lower()
+    return None
+
+
+def review_record_has_authority(record: dict[str, Any]) -> bool:
+    """Whether ordering this record can change review authority."""
+    if str(record.get("state") or "").upper() in {
+        "APPROVED",
+        "CHANGES_REQUESTED",
+        "DISMISSED",
+    }:
+        return True
+    body = str(record.get("body") or "")
+    return any(marker_assertion(line) for line in marker_lines(body))
+
+
+def canonical_review_records(
+    records: "Sequence[dict[str, Any]]",
+) -> list[dict[str, Any]]:
+    """Validate and order records from all GitHub review surfaces.
+
+    The three REST/GraphQL containers are independently ordered.  Concatenating
+    them makes endpoint choice decide whether an approval, refusal or withdrawal
+    appears later. Use the real creation/submission event time as the common
+    ordering key and the stable numeric GitHub id only as a deterministic
+    tie-breaker. Keep that event order distinct from body freshness: exact
+    retirement compares the latest versions and still requires a *strictly
+    later* version time, so the tie-break can never manufacture that evidence.
+    """
+    ordered: list[tuple[datetime.datetime, int, dict[str, Any]]] = []
+    seen: set[str] = set()
+    for position, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise ReviewRecordError(f"review record {position} is not an object")
+        record_id = comment_database_id(record)
+        if record_id is None:
+            raise ReviewRecordError(
+                f"review record {position} has no stable numeric GitHub id"
+            )
+        if record_id in seen:
+            raise ReviewRecordError(
+                f"review record id {record_id} appears more than once"
+            )
+        seen.add(record_id)
+        event_time = review_record_event_time(record)
+        version_time = review_record_version_time(record)
+        if event_time is None or version_time is None:
+            raise ReviewRecordError(
+                f"review record {record_id} has no readable immutable event/version time"
+            )
+        if (
+            record.get("_review_surface") == "pull-request-review"
+            and str(record.get("state") or "").upper()
+            in {"APPROVED", "CHANGES_REQUESTED"}
+            and review_record_head(record) is None
+        ):
+            raise ReviewRecordError(
+                f"native review record {record_id} has no exact reviewed commit"
+            )
+        surface = record.get("_review_surface")
+        if surface is not None and surface not in {
+            "issue-comment",
+            "pull-review-comment",
+            "pull-request-review",
+        }:
+            raise ReviewRecordError(
+                f"review record {record_id} has no recognized review surface"
+            )
+        ordered.append((event_time, int(record_id), record))
+
+    # Numeric database ids are stable only within their GitHub object type.  If
+    # two authority-bearing records from different surfaces have the same
+    # timestamp, sorting by those unrelated ids invents chronology.  Refuse the
+    # ambiguity instead of deciding which verdict happened later.
+    by_time: dict[datetime.datetime, list[dict[str, Any]]] = {}
+    for event_time, _record_id, record in ordered:
+        if review_record_has_authority(record):
+            by_time.setdefault(event_time, []).append(record)
+    for event_time, tied in by_time.items():
+        if len({str(record.get("_review_surface")) for record in tied}) > 1:
+            raise ReviewRecordError(
+                "review authority chronology is ambiguous across GitHub surfaces at "
+                + event_time.isoformat()
+            )
+    ordered.sort(key=lambda item: (item[0], item[1]))
+    return [record for _time, _id, record in ordered]
+
+
+def retirement_claim(
+    body: str,
+) -> "tuple[str, str, str, str] | None":
+    """One exact objection retirement as ``(comment, lane, sha, author)``.
+
+    The comment carrying the claim supplies repository and pull-request context.
+    Authority additionally requires exactly one canonical withdrawal, exactly
+    one ``RETIRES`` target, an exact head binding, and a valid disclosure. A
+    marker ``BY`` clause, when present, must agree with the disclosure and the
+    immutable GitHub actor. Current repository permission supplies authority;
+    the disclosure's role text does not. Multiple targets or withdrawal markers
+    are ambiguous and carry no authority.
+    """
+    author = retirement_author(body)
+    targets = retirement_targets(body)
+    withdrawals: list[tuple[str, str, str | None]] = []
+    for raw in marker_lines(body or ""):
+        parsed = parse_marker(raw)
+        if parsed is None or parsed[0] != MARKER_WITHDRAWN:
+            continue
+        withdrawals.append((parsed[1], parsed[2], marker_issuer(raw)))
+    if author is None or len(targets) != 1 or len(withdrawals) != 1:
+        return None
+    lane, sha, marker_author = withdrawals[0]
+    if marker_author is not None and marker_author != author:
+        return None
+    return targets[0], lane, sha, author
 
 
 def retirement_allowed(
-    refusal_issuer: "str | None", claimants: "Sequence[str | None]"
+    refusal_lane: "str | None",
+    current_head: "str | None",
+    claims: "Sequence[tuple[str, str, str, str]]",
 ) -> bool:
-    """Whether any claimant may retire a refusal with this issuer.
+    """Whether an exact authorized claim resolves this refusal at current head.
 
-    A refusal with a readable issuer may be retired only by that issuer. A
-    refusal with no readable issuer keeps the existing escape hatch: any
-    claimant may retire it by naming its GitHub comment id.
+    The original issuer is deliberately irrelevant.  The claim is evidence that
+    a currently authorized GitHub actor examined the named objection and
+    recorded that it is resolved. Exact comment identity links the claim to the old
+    refusal. The withdrawal lane must match that refusal, while the withdrawal
+    head must match the current repaired head; requiring the old refused head
+    here would make every fix commit impossible to retire. A stale-head record
+    carries no authority for the current head.
     """
-    if not claimants:
+    if current_head is None:
         return False
-    if refusal_issuer is None:
+    for _target, claim_lane, claim_sha, _author in claims:
+        # A readable refusal lane must agree. A genuinely unbindable refusal has
+        # no lane to compare; its exact comment id remains its only supported
+        # exit, as it was before this issuer-policy change.
+        if refusal_lane is not None and claim_lane != refusal_lane:
+            continue
+        if not sha_names_same_head(claim_sha, current_head):
+            continue
         return True
-    return refusal_issuer in claimants
+    return False
+
+
+def retirement_record_allowed(
+    refusal_record: dict[str, Any],
+    refusal_lane: "str | None",
+    current_head: "str | None",
+    claim_records: "Sequence[dict[str, Any]]",
+) -> bool:
+    """Whether a later record precisely retires this current refusal version.
+
+    A numeric comment id identifies a GitHub object, not an immutable body: an
+    issue or inline comment can be edited after somebody retired its earlier
+    text.  Therefore the current refusal body is retired only by an authorized
+    exact claim whose own version time is strictly later than the refusal's
+    current version time.  Missing timestamps, equal timestamps, an edit after
+    the withdrawal, and a guessed future id all remain blocking.
+    """
+    if refusal_record.get("_retirement_targetable") is False:
+        return False
+    refusal_id = comment_database_id(refusal_record)
+    refusal_time = review_record_version_time(refusal_record)
+    if refusal_id is None or refusal_time is None:
+        return False
+    for claim_record in claim_records:
+        if claim_record.get("_current_review_actor_authorized") is not True:
+            continue
+        claim = retirement_claim(str(claim_record.get("body") or ""))
+        if claim is None or claim[0] != refusal_id:
+            continue
+        actor = review_record_actor(claim_record)
+        if actor is None or actor != claim[3].casefold():
+            continue
+        if claim_record.get("_current_review_actor_login") != actor:
+            continue
+        if claim_record.get("_current_review_actor_permission") not in (
+            AUTHORIZED_REVIEW_PERMISSIONS
+        ):
+            continue
+        claim_time = review_record_version_time(claim_record)
+        if claim_time is None or claim_time <= refusal_time:
+            continue
+        if retirement_allowed(refusal_lane, current_head, [claim]):
+            return True
+    return False
 
 
 def sha_names_same_head(a: "str | None", b: "str | None") -> bool:
@@ -1057,6 +1699,98 @@ def comment_contains_refusal(body: str) -> bool:
     return False
 
 
+def review_record_refusals(
+    record: dict[str, Any],
+) -> list[tuple["str | None", "str | None", str]]:
+    """Refusal assertions carried by one normalized GitHub review record."""
+    found: list[tuple[str | None, str | None, str]] = []
+    for raw in marker_lines(str(record.get("body") or "")):
+        line = strip_decoration(raw)
+        parsed = parse_marker(line)
+        if parsed is not None and parsed[0] == MARKER_REFUSED:
+            found.append((parsed[1], parsed[2], line.strip()))
+            continue
+        starts = marker_assertion_starts(line)
+        if len(starts) != 1:
+            continue
+        near = near_miss_refusal(line, starts[0])
+        if near is None or near.start() != starts[0]:
+            continue
+        tail = line[near.end() :]
+        if is_template(tail) or _REFUSAL_STATEMENT_TAIL.match(tail) is None:
+            continue
+        lane_match = re.search(r"\b(claude|codex)\b", tail[:40], re.IGNORECASE)
+        sha_match = SHA40.search(tail)
+        found.append(
+            (
+                lane_match.group(1).lower() if lane_match else None,
+                sha_match.group(0).lower() if sha_match else None,
+                line.strip(),
+            )
+        )
+
+    if not found and str(record.get("state") or "").upper() == "CHANGES_REQUESTED":
+        found.append(
+            (
+                None,
+                review_record_head(record),
+                "(GitHub review state CHANGES_REQUESTED)",
+            )
+        )
+    return found
+
+
+def accepted_exact_retirements(
+    records: "Sequence[dict[str, Any]]", current_head: str
+) -> list[dict[str, Any]]:
+    """Exact, current-authorized RETIRES records accepted for this head."""
+    ordered = canonical_review_records(records)
+    by_id = {
+        record_id: record
+        for record in ordered
+        if (record_id := comment_database_id(record)) is not None
+    }
+    claims: dict[str, list[dict[str, Any]]] = {}
+    for record in ordered:
+        claim = retirement_claim(str(record.get("body") or ""))
+        if claim is not None:
+            claims.setdefault(claim[0], []).append(record)
+
+    accepted: list[dict[str, Any]] = []
+    for target, claim_records in claims.items():
+        refusal = by_id.get(target)
+        if refusal is None:
+            continue
+        contexts = review_record_refusals(refusal)
+        if len(contexts) != 1:
+            continue
+        lane, _sha, _message = contexts[0]
+        if not retirement_record_allowed(
+            refusal, lane, current_head, claim_records
+        ):
+            continue
+        for claim_record in claim_records:
+            claim = retirement_claim(str(claim_record.get("body") or ""))
+            if (
+                claim is not None
+                and claim[0] == target
+                and claim_record.get("_current_review_actor_authorized") is True
+                and retirement_record_allowed(
+                    refusal, lane, current_head, [claim_record]
+                )
+            ):
+                accepted.append(
+                    {
+                        "target": target,
+                        "issuer": comment_issuer(str(refusal.get("body") or "")),
+                        "retired_by": claim[3],
+                        "record": claim_record,
+                    }
+                )
+                break
+    return accepted
+
+
 #: Inline code with prose around it is a citation. This is retained for the
 #: citation count only; whether the line is malformed is decided by the shared
 #: assertion boundary.
@@ -1084,12 +1818,14 @@ def lane_shas(
     refusals: list[str] | None = None,
     issuers: list[tuple[str, "str | None"]] | None = None,
     unanswered: list[tuple[str, "str | None"]] | None = None,
+    unanswered_records: list[dict[str, Any]] | None = None,
+    current_head: str | None = None,
 ) -> list[str]:
     """SHAs a lane EXPLICITLY bound itself to, oldest first. Never inferred.
 
     `unanswered` is an OUT-PARAMETER carrying the refusals in this lane that
-    their OWN ISSUER never took back and no entitled withdrawal retired by
-    comment id, as (sha, issuer) pairs, oldest first.
+    were neither reversed by their issuer nor retired by an exact authorized
+    ``RETIRES <comment-id>`` record, as (sha, issuer) pairs, oldest first.
 
     ⚠️ AN APPROVAL FROM SOMEBODY ELSE DOES NOT DISCHARGE A REFUSAL, and until
     this parameter existed it did. The clearing rule below is chronological --
@@ -1108,10 +1844,12 @@ def lane_shas(
       * the refusal's OWN issuer, by approving the same lane afterwards. That
         is a reviewer changing their mind, which is what the chronological rule
         was written for and is still honoured exactly.
-      * a canonical withdrawal may name exactly one refusing comment with
-        `RETIRES <comment-id>`. A signed refusal still requires its own issuer;
-        an unsigned refusal keeps the existing gate's exit through any claimant.
-      * NOBODY ELSE. Another agent's approval is recorded, binds normally in
+      * a currently authorized GitHub actor with a matching valid disclosure may post one canonical
+        withdrawal carrying exactly one `RETIRES <comment-id>`. The target must
+        be that exact refusal, its lane must agree, and the withdrawal must bind
+        the current repaired head. The original issuer's identity is not part of
+        this decision.
+      * NOBODY ELSE. Another agent's generic approval is recorded, binds normally in
         `found`, and leaves the refusal standing -- so the lane reports REFUSED
         while showing an approval, which is the honest description of a lane
         that disagrees with itself.
@@ -1126,13 +1864,9 @@ def lane_shas(
     that already exists -- a canonical `CHANGES-REQUESTED-WITHDRAWN-AT` comment
     carrying `RETIRES <comment-id>`, or a push, which moves the head.
 
-    ⚠️ AND THE COST, NAMED RATHER THAN LEFT TO BE DISCOVERED: a refusal naming
-    an issuer is un-clearable by anyone but that issuer, so an agent that
-    refuses and then goes away parks the head until someone pushes.
-    That is the "answered versus abandoned" problem arriving from the other
-    side, and it is a real trade, not a free win. It is the safer direction --
-    a parked head is visible and a silently-overridden refusal is not -- but a
-    reader hitting a stuck head should know this is why.
+    A departed issuer therefore does not park a resolved objection forever. It
+    also does not make the objection disappear: without the exact retirement
+    record the refusal remains unanswered and blocks exactly as before.
 
     `refusals` is an OUT-PARAMETER, in the style of `malformed`: when supplied,
     every SHA this lane refused at is appended, oldest first. It exists because
@@ -1183,6 +1917,36 @@ def lane_shas(
     # applied. The mandatory colon, lane, and full SHA remain unchanged.
     if malformed is None:
         malformed = []
+
+    # Live GitHub records carry event/version metadata. Once any record carries
+    # it, require the complete stream to identify every object and its current
+    # version, then establish one cross-surface order here before applying the
+    # chronological approval/refusal rules below. Body-only legacy fixtures may
+    # retain explicit list order, but they cannot authorize exact retirement:
+    # `retirement_record_allowed` requires the real metadata on both records.
+    if any(
+        any(
+            field in comment
+            for field in (
+                "created_at",
+                "createdAt",
+                "updated_at",
+                "updatedAt",
+                "submitted_at",
+                "submittedAt",
+            )
+        )
+        for comment in comments
+    ):
+        try:
+            comments = canonical_review_records(comments)
+        except ReviewRecordError as error:
+            finding = ("?", f"UNREADABLE REVIEW EVENT ORDER: {error}")
+            if finding not in malformed:
+                malformed.append(finding)
+            if pr_number is not None and malformed_prs is not None:
+                malformed_prs[finding] = pr_number
+            return []
 
     # `_undecorate` / `_undecorate_block` are module-level so the lander shares them.
     reject_legacy = re.compile(
@@ -1273,31 +2037,34 @@ def lane_shas(
     # first. A verdict is issued once; a later copy of the same author's verdict is
     # a CITATION and must neither bind nor be reported as a malformed attempt.
     issued: list[tuple[str | None, str, str | None, str | None]] = []
-    # Refusals in THIS lane that their own issuer has not taken back, as
+    # Refusals in THIS lane that have not been reversed or precisely retired, as
     # (sha, issuer, comment-id), oldest first. The comment id is retained only
     # inside this function so `RETIRES <comment-id>` can address one refusal;
     # the public `unanswered` out-parameter remains (sha, issuer).
     # Maintained unconditionally rather than only
     # when the caller asks: the discharge rule has to see every marker in order,
     # and computing it twice is how two readers of one grammar drift apart.
-    outstanding: list[tuple[str, "str | None", object | None]] = []
+    outstanding: list[
+        tuple[
+            str,
+            "str | None",
+            object | None,
+            dict[str, Any],
+            str,
+            "str | None",
+        ]
+    ] = []
 
-    # A RETIRES claim has authority only when it accompanies a canonical
-    # withdrawal. Collect claims first because the existing gate treats the
-    # named refusal as retired regardless of where the withdrawal appears in the
-    # comment stream. The entitlement rule is shared with that gate below.
-    retire_claims: dict[str, list["str | None"]] = {}
+    # A RETIRES claim has authority only when it is the one exact, current-head-bound
+    # target of a canonical withdrawal carrying a valid disclosure from a GitHub
+    # actor whose current repository permission was independently fetched.
+    # Collect claims first because a resolution can appear after the refusal.
+    retire_claims: dict[str, list[dict[str, Any]]] = {}
     for c in comments:
         body = c.get("body") or ""
-        lines = [_undecorate_block(line) for line in marker_lines(body)]
-        if not any(
-            parsed is not None and parsed[0] == MARKER_WITHDRAWN
-            for parsed in (parse_marker(line) for line in lines)
-        ):
-            continue
-        who = comment_issuer(body)
-        for target in retirement_targets(body):
-            retire_claims.setdefault(target, []).append(who)
+        claim = retirement_claim(body)
+        if claim is not None:
+            retire_claims.setdefault(claim[0], []).append(c)
 
     for c in comments:
         body = c.get("body") or ""
@@ -1312,17 +2079,28 @@ def lane_shas(
         # A rejection contributes NOTHING, even if the same comment also carries
         # an APPROVED-AT-shaped line -- a comment quoting the convention, or
         # quoting the approval it supersedes, must not bind as a positive.
-        comment_id = c.get("id")
+        comment_id = comment_database_id(c)
         refusal_issuer = comment_issuer(body)
+        refusal_entries = review_record_refusals(c)
+        all_refusal_bindings = [
+            (refusal_lane, refusal_sha)
+            for refusal_lane, refusal_sha, _message in refusal_entries
+        ]
+        refusal_bindings = [
+            binding for binding in all_refusal_bindings if refuses_lane(binding)
+        ]
         named_retirement = (
             comment_id is not None
-            and retirement_allowed(
-                refusal_issuer, retire_claims.get(str(comment_id), [])
+            and len(all_refusal_bindings) == 1
+            and len(refusal_bindings) == 1
+            and retirement_record_allowed(
+                c,
+                refusal_bindings[0][0],
+                current_head,
+                retire_claims.get(str(comment_id), []),
             )
         )
-        comment_refuses_lane = any(
-            refuses_lane(refusal_binding(line)) for line in lines
-        )
+        comment_refuses_lane = bool(refusal_bindings)
         relevant_rejection = comment_refuses_lane and not named_retirement
         # ⚠️ AN EXPLICIT WITHDRAWAL IS THE ESCAPE HATCH, AND WITHOUT IT THE
         # DISCHARGE RULE HAS NO DOOR. `CHANGES-REQUESTED-WITHDRAWN-AT` is the
@@ -1335,7 +2113,8 @@ def lane_shas(
         # discharges only its own author's refusal, and an unsigned one
         # discharges nothing. Otherwise the unilateral clear this change removes
         # comes straight back through a different keyword.
-        precise_withdrawal = bool(retirement_targets(body))
+        precise_withdrawal = contains_retires_assertion(body)
+        unquoted_retractors: list[str] = []
         for line in lines:
             parsed_withdrawal = parse_marker(line)
             if (
@@ -1346,9 +2125,24 @@ def lane_shas(
             ):
                 retractor = marker_issuer(line) or author
                 if retractor is not None:
-                    outstanding[:] = [
-                        held for held in outstanding if held[1] != retractor
-                    ]
+                    unquoted_retractors.append(retractor)
+
+        def apply_unquoted_retractions() -> None:
+            for retractor in unquoted_retractors:
+                # A generic withdrawal retracts one earlier objection from this
+                # issuer. Processing in canonical record order makes an older
+                # withdrawal powerless against a later refusal; a count, rather
+                # than a set, keeps two objections independent.
+                index = next(
+                    (
+                        index
+                        for index, held in enumerate(outstanding)
+                        if held[1] == retractor
+                    ),
+                    None,
+                )
+                if index is not None:
+                    outstanding.pop(index)
 
         # A retired refusal no longer clears an earlier approval or contributes
         # an unanswered refusal. Skip the whole comment rather than allowing an
@@ -1405,24 +2199,34 @@ def lane_shas(
                 # not compare the refused SHA to head, so a refusal at a stale SHA
                 # refuses exactly as it did before. Capturing it only lets a reader
                 # see WHICH head a lane blocked.
-                for line in lines:
-                    refusal = refusal_binding(line)
-                    if refuses_lane(refusal):
-                        assert refusal is not None
-                        refusals.append(refusal[1])
+                refusals.extend(
+                    refusal_sha or ""
+                    for _refusal_lane, refusal_sha in refusal_bindings
+                )
             # WHO refused, so a later approval can be asked whether it is the
             # same agent. Recorded on the same lines the `refusals` block reads,
             # but unconditionally -- authority must not depend on whether the
             # caller happened to pass an out-parameter.
-            for line in lines:
-                refusal = refusal_binding(line)
-                if refuses_lane(refusal):
-                    assert refusal is not None
-                    outstanding.append((
-                        refusal[1],
-                        marker_issuer(line) or author,
+            for refusal_lane, refusal_sha in refusal_bindings:
+                matching_line = next(
+                    (
+                        message
+                        for entry_lane, entry_sha, message in refusal_entries
+                        if (entry_lane, entry_sha) == (refusal_lane, refusal_sha)
+                    ),
+                    "(GitHub review state CHANGES_REQUESTED)",
+                )
+                outstanding.append(
+                    (
+                        refusal_sha or "",
+                        refusal_issuer,
                         comment_id,
-                    ))
+                        c,
+                        matching_line,
+                        refusal_lane,
+                    )
+                )
+            apply_unquoted_retractions()
             found.clear()
             # ⚠️ AND THE ISSUERS WITH THEM. `issuers` is documented as
             # INDEX-ALIGNED with the returned shas, and clearing one list without
@@ -1439,6 +2243,7 @@ def lane_shas(
             if issuers is not None:
                 issuers.clear()
             continue
+        apply_unquoted_retractions()
         for _idx, line in enumerate(lines):
             raw_line = raw_lines[_idx] if _idx < len(raw_lines) else line
             binding = approved_binding(line)
@@ -1491,6 +2296,12 @@ def lane_shas(
                     _lane_m = re.search(r"\b(claude|codex)\b", line, re.I)
                     _kind = (MARKER_REFUSED if refusal_shaped(line) or "CHANGES-REQUESTED" in line.upper()
                              else MARKER_APPROVED)
+                    if (
+                        _kind == MARKER_REFUSED
+                        and _lane_m is not None
+                        and _lane_m.group(1).lower() != lane
+                    ):
+                        continue
                     if is_citation(
                         issued, author, _kind,
                         _lane_m.group(1).lower() if _lane_m else None,
@@ -1561,8 +2372,68 @@ def lane_shas(
                 if issuers is not None:
                     issuers.append((sha, marker_issuer(line) or author))
     if unanswered is not None:
-        unanswered.extend((sha, issuer) for sha, issuer, _cid in outstanding)
+        unanswered.extend(
+            (sha, issuer)
+            for sha, issuer, _cid, _record, _line, _refusal_lane in outstanding
+        )
+    if unanswered_records is not None:
+        unanswered_records.extend(
+            {
+                "id": str(comment_id) if comment_id is not None else None,
+                "lane": refusal_lane,
+                "sha": sha,
+                "issuer": issuer,
+                "message": line,
+                "record": record,
+            }
+            for sha, issuer, comment_id, record, line, refusal_lane in outstanding
+        )
     return found
+
+
+def unresolved_review_objections(
+    records: "Sequence[dict[str, Any]]", current_head: str
+) -> list[dict[str, Any]]:
+    """Return every unresolved objection from all supported GitHub surfaces.
+
+    This is the shared decision used by approval reporting and both merge
+    boundaries.  The lane evaluator owns the chronology, exact retirement,
+    same-issuer approval and generic-withdrawal rules; this wrapper merely runs
+    it for the two existing review lanes and removes the duplicate produced by
+    a lane-less native GitHub refusal.
+    """
+    ordered = canonical_review_records(records)
+    malformed: list[tuple[str, str]] = []
+    unresolved: list[dict[str, Any]] = []
+    for lane in LANES:
+        lane_unresolved: list[dict[str, Any]] = []
+        lane_shas(
+            ordered,
+            lane,
+            malformed,
+            unanswered_records=lane_unresolved,
+            current_head=current_head,
+        )
+        unresolved.extend(lane_unresolved)
+    if malformed:
+        detail = "; ".join(sorted({message for _where, message in malformed}))
+        raise ReviewRecordError(detail)
+
+    unique: dict[tuple[object, ...], dict[str, Any]] = {}
+    for item in unresolved:
+        lane = item["lane"]
+        if item["message"] == "(GitHub review state CHANGES_REQUESTED)":
+            lane = None
+            item = {**item, "lane": None}
+        key = (
+            item.get("id"),
+            lane,
+            item.get("sha"),
+            item.get("issuer"),
+            item.get("message"),
+        )
+        unique.setdefault(key, item)
+    return list(unique.values())
 
 
 def local_receipt_heads(comments: list[dict[str, Any]], repo: str) -> list[str]:
@@ -1648,9 +2519,7 @@ def collect_live(
         if not tracked and pr_number is None:
             return None
         head = pr["headRefOid"]
-        comments = gh_json(
-            ["api", f"repos/{repo}/issues/{pr['number']}/comments?per_page=100", "--paginate"]
-        ) or []
+        comments = github_review_records(repo, pr["number"])
         runs = (gh_json(["api", f"repos/{repo}/actions/runs?head_sha={head}"]) or {}).get(
             "workflow_runs", []
         )
@@ -1675,7 +2544,10 @@ def collect_live(
                 lane = label.rsplit("-", 1)[-1]
                 shas = lane_shas(
                     comments, lane, malformed, pr["number"], malformed_prs,
-                    refusals=refusals, unanswered=unanswered, issuers=issuers,
+                    refusals=refusals,
+                    unanswered=unanswered,
+                    issuers=issuers,
+                    current_head=head,
                 )
             rows.append(
                 {
@@ -1694,19 +2566,10 @@ def collect_live(
                     ),
                     # The ISSUER of every unanswered refusal at this head, in
                     # order, with None preserved for one whose disclosure tag
-                    # cannot be read. WHY IT IS PUBLISHED RATHER THAN DERIVED BY
-                    # EACH READER: whether a refusal can be retired AT ALL depends
-                    # on this value and on nothing else in the row, and the two
-                    # cases point opposite ways. A refusal with NO readable issuer
-                    # is retired by ANY agent naming it, which
-                    # `ci-hub/bin/changes-requested-gate` has done since
-                    # 2026-08-25 via `RETIRES #<comment-id>`. A refusal whose
-                    # issuer IS named is retired by that issuer alone, so if they
-                    # have left the fleet it can be retired by nobody. Measured
-                    # 2026-08-26 across 35 open rrnewton/hermit pull requests: 22
-                    # unanswered refusals at head, 4 with a live issuer, 13 with a
-                    # departed one and 5 with none. Reading the row could not tell
-                    # those apart, so the census had to be rebuilt by hand.
+                    # cannot be read. This is descriptive provenance, not a
+                    # retirement authority: an exact authorized RETIRES record
+                    # may resolve the objection regardless of whether this issuer
+                    # is still present.
                     "refusal_issuers": [w for _s, w in unanswered if _s == head],
                     "runs_at_head": len(runs),
                     "mergeable": pr.get("mergeable"),
@@ -1747,7 +2610,10 @@ def collect_live(
             issuers: list[tuple[str, "str | None"]] = []
             shas = lane_shas(
                 comments, lane, malformed, pr["number"], malformed_prs,
-                refusals=refusals, unanswered=unanswered, issuers=issuers,
+                refusals=refusals,
+                unanswered=unanswered,
+                issuers=issuers,
+                current_head=head,
             )
             # ⚠️ `if not shas` ALONE DROPPED EVERY UNLABELLED REFUSAL. A refusal
             # contributes no SHA, so the row that would have carried it was
@@ -1775,19 +2641,10 @@ def collect_live(
                     ),
                     # The ISSUER of every unanswered refusal at this head, in
                     # order, with None preserved for one whose disclosure tag
-                    # cannot be read. WHY IT IS PUBLISHED RATHER THAN DERIVED BY
-                    # EACH READER: whether a refusal can be retired AT ALL depends
-                    # on this value and on nothing else in the row, and the two
-                    # cases point opposite ways. A refusal with NO readable issuer
-                    # is retired by ANY agent naming it, which
-                    # `ci-hub/bin/changes-requested-gate` has done since
-                    # 2026-08-25 via `RETIRES #<comment-id>`. A refusal whose
-                    # issuer IS named is retired by that issuer alone, so if they
-                    # have left the fleet it can be retired by nobody. Measured
-                    # 2026-08-26 across 35 open rrnewton/hermit pull requests: 22
-                    # unanswered refusals at head, 4 with a live issuer, 13 with a
-                    # departed one and 5 with none. Reading the row could not tell
-                    # those apart, so the census had to be rebuilt by hand.
+                    # cannot be read. This is descriptive provenance, not a
+                    # retirement authority: an exact authorized RETIRES record
+                    # may resolve the objection regardless of whether this issuer
+                    # is still present.
                     "refusal_issuers": [w for _s, w in unanswered if _s == head],
                     "runs_at_head": len(runs),
                     "mergeable": pr.get("mergeable"),
@@ -1892,7 +2749,10 @@ def collect_fixture(
                     malformed,
                     pr["number"],
                     malformed_prs,
-                    refusals=refusals, unanswered=unanswered, issuers=issuers,
+                    refusals=refusals,
+                    unanswered=unanswered,
+                    issuers=issuers,
+                    current_head=pr["head"],
                 )
             else:
                 shas = pr.get("lane_shas", {}).get(lane, [])
@@ -1918,19 +2778,10 @@ def collect_fixture(
                     ),
                     # The ISSUER of every unanswered refusal at this head, in
                     # order, with None preserved for one whose disclosure tag
-                    # cannot be read. WHY IT IS PUBLISHED RATHER THAN DERIVED BY
-                    # EACH READER: whether a refusal can be retired AT ALL depends
-                    # on this value and on nothing else in the row, and the two
-                    # cases point opposite ways. A refusal with NO readable issuer
-                    # is retired by ANY agent naming it, which
-                    # `ci-hub/bin/changes-requested-gate` has done since
-                    # 2026-08-25 via `RETIRES #<comment-id>`. A refusal whose
-                    # issuer IS named is retired by that issuer alone, so if they
-                    # have left the fleet it can be retired by nobody. Measured
-                    # 2026-08-26 across 35 open rrnewton/hermit pull requests: 22
-                    # unanswered refusals at head, 4 with a live issuer, 13 with a
-                    # departed one and 5 with none. Reading the row could not tell
-                    # those apart, so the census had to be rebuilt by hand.
+                    # cannot be read. This is descriptive provenance, not a
+                    # retirement authority: an exact authorized RETIRES record
+                    # may resolve the objection regardless of whether this issuer
+                    # is still present.
                     "refusal_issuers": [w for _s, w in unanswered if _s == pr["head"]],
                     "runs_at_head": pr.get("runs_at_head", 1),
                     "mergeable": pr.get("mergeable"),
@@ -1955,7 +2806,10 @@ def collect_fixture(
             if "comments" in pr:
                 shas = lane_shas(
                     comments, lane, malformed, pr["number"], malformed_prs,
-                    refusals=refusals, unanswered=unanswered, issuers=issuers,
+                    refusals=refusals,
+                    unanswered=unanswered,
+                    issuers=issuers,
+                    current_head=pr["head"],
                 )
             else:
                 shas = pr.get("lane_shas", {}).get(lane, [])
@@ -1979,19 +2833,10 @@ def collect_fixture(
                     ),
                     # The ISSUER of every unanswered refusal at this head, in
                     # order, with None preserved for one whose disclosure tag
-                    # cannot be read. WHY IT IS PUBLISHED RATHER THAN DERIVED BY
-                    # EACH READER: whether a refusal can be retired AT ALL depends
-                    # on this value and on nothing else in the row, and the two
-                    # cases point opposite ways. A refusal with NO readable issuer
-                    # is retired by ANY agent naming it, which
-                    # `ci-hub/bin/changes-requested-gate` has done since
-                    # 2026-08-25 via `RETIRES #<comment-id>`. A refusal whose
-                    # issuer IS named is retired by that issuer alone, so if they
-                    # have left the fleet it can be retired by nobody. Measured
-                    # 2026-08-26 across 35 open rrnewton/hermit pull requests: 22
-                    # unanswered refusals at head, 4 with a live issuer, 13 with a
-                    # departed one and 5 with none. Reading the row could not tell
-                    # those apart, so the census had to be rebuilt by hand.
+                    # cannot be read. This is descriptive provenance, not a
+                    # retirement authority: an exact authorized RETIRES record
+                    # may resolve the objection regardless of whether this issuer
+                    # is still present.
                     "refusal_issuers": [w for _s, w in unanswered if _s == pr["head"]],
                     "runs_at_head": pr.get("runs_at_head", 1),
                     "mergeable": pr.get("mergeable"),
@@ -2864,30 +3709,10 @@ def main() -> int:
         else:
             print("malformed_state=none")
 
-        # ⚠️ AN UNANSWERED REFUSAL IS NOT ONE CONDITION BUT TWO, AND THEIR
-        # REMEDIES POINT OPPOSITE WAYS -- reported here because reading
-        # `state=REFUSED` alone gave both the same answer, which is "ask the
-        # reviewer", and for one of them there is nobody to ask.
-        #
-        # A refusal that names NO issuer is the RETIRABLE one. A canonical
-        # withdrawal carrying `RETIRES #<comment-id>` retires it for any claimant
-        # in both this reader and `ci-hub/bin/changes-requested-gate`; the gate
-        # reports that the claimant may not be the author. A comment id is
-        # assigned by GitHub and cannot go missing, which is why that identity
-        # was chosen over the issuer.
-        #
-        # A refusal that DOES name an issuer is retirable by that issuer ALONE. So
-        # if they have left the fleet it is retirable by nobody, in either
-        # consumer, and no amount of re-review moves it. Measured 2026-08-26
-        # across 35 open rrnewton/hermit pull requests: 22 unanswered refusals at
-        # head over 13 pull requests -- 4 issuers live, 13 departed, 5 absent. TEN
-        # of the thirteen pull requests carried at least one refusal no live agent
-        # could retire, and nothing in this tool's output said so.
-        #
-        # This reports the split. It does not retire anything and it does not read
-        # the fleet: whether a NAMED issuer is still live is a separate question
-        # with its own freshness rules, and answering it here would put a live
-        # read on the path of a verdict.
+        # Preserve the issuer split as provenance, not as a permission boundary.
+        # A currently authorized GitHub actor may precisely retire either form by
+        # naming the exact refusing comment. Generic approval and unquoted
+        # withdrawal remain issuer-scoped, so this does not erase disagreement.
         refusal_rows = [r for r in rows if r.get("refusal_issuers")]
         named = sum(1 for r in refusal_rows for w in r["refusal_issuers"] if w)
         unnamed = sum(1 for r in refusal_rows for w in r["refusal_issuers"] if not w)
@@ -2900,12 +3725,12 @@ def main() -> int:
                 f"{named} name an issuer, {unnamed} name none"
             )
             print(
-                "refusal_issuer_remedy=a refusal naming NO issuer is retired by any "
-                "agent posting a canonical withdrawal carrying RETIRES #<comment-id>; "
-                "approval_binding and changes-requested-gate both honor it. A refusal "
-                "naming an issuer is "
-                "retired by that issuer alone, so a departed issuer leaves it "
-                "retirable by nobody -- escalate rather than re-review"
+                "refusal_issuer_remedy=after verifying the objection is resolved, a "
+                "currently authorized GitHub actor with a matching valid disclosure may post one canonical "
+                "withdrawal carrying RETIRES #<the exact refusing comment id>. The "
+                "withdrawal lane must match the refusal and its head must match the "
+                "current pull-request head; a generic approval or "
+                "unquoted withdrawal from another reviewer does not retire it"
             )
         else:
             print("refusal_issuer_state=none")

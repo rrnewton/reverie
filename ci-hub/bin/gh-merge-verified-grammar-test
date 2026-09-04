@@ -9,19 +9,11 @@ refusal, while the lander stripped decoration and did not. The lander being the
 stricter of the two was luck, not design -- and the next drift is not guaranteed
 to fall the safe way.
 
-WHAT IS AND IS NOT SHARED. The GRAMMAR is shared: what a marker line says. The
-POLICY is not, and should not be. A landing guard and a review board legitimately
-differ, and the lander is deliberately the stricter:
-
-    lane-agnostic          a refusal in ANY lane stops the merge; the authority
-                           is per-lane because a board must report per-lane
-    withdrawal             CHANGES-REQUESTED-WITHDRAWN-AT clears a block here
-    native review state    GitHub's own CHANGES_REQUESTED blocks here
-    over-block             a refusal-shaped line the grammar cannot parse blocks
-
-Those four are why "just call approval_binding and delete the rest" is the wrong
-refactor: every one of them would be lost, and every loss is in the merge-more
-direction. This bracket pins both halves -- one grammar, and the policy intact.
+WHAT IS SHARED. The grammar and the unresolved-objection decision are both
+shared. A refusal from any lane or supported GitHub review surface stops the
+merge; only the shared authority may decide that an exact objection was later
+resolved. This bracket pins the lander to that one implementation so a future
+fix cannot leave reporting and the final merge boundary with opposite answers.
 """
 
 from __future__ import annotations
@@ -48,15 +40,11 @@ MIXED_MENTION_AND_ASSERTION = (
 def by(agent: str, *lines: str) -> str:
     """A comment body carrying a disclosure tag, so the markers have an AUTHOR.
 
-    ⚠️ THE FIXTURES USED TO BE UNSIGNED, AND THAT STOPPED BEING EXPRESSIVE ENOUGH.
-    Clearing is now scoped to a refusal's own ISSUER as well as its own lane, so a
-    cell that says "a withdrawal clears" has to be able to say WHOSE. An unsigned
-    body cannot, and under the fail-closed rule it clears nothing -- which made
-    two escape-hatch cells read as regressions when they are the rule working.
-    The PROPERTY those cells pin is unchanged and still pinned below; only the
-    fixture learned to name a speaker, which every real fleet comment already
-    does. The unsigned behaviour is not dropped -- it is pinned explicitly, in
-    its own cells, instead of being implied by silence.
+    Generic clearing is scoped to a refusal's issuer as well as its lane, so a
+    cell that says "a withdrawal clears" has to say whose. The exact RETIRES path
+    instead requires a valid disclosure matching a currently authorized GitHub
+    actor, binds one comment id and lane, and names the current head. The role
+    field is audit metadata only. Both behaviors are pinned below.
     """
     tag = f"[hermit2, {agent}, unresolved, devbig014, role=reviewer]"
     return tag + "\n\n" + "\n".join(lines)
@@ -74,7 +62,107 @@ def load(path: pathlib.Path, name: str):
     return module
 
 
-def probe_comments(module, bodies: list[str]) -> bool:
+def _time(second: int) -> str:
+    return f"2026-09-04T00:00:{second:02d}Z"
+
+
+def _comment_record(item: str | dict, position: int) -> dict:
+    record = dict(item) if isinstance(item, dict) else {"body": item}
+    record.setdefault("id", 900000 + position)
+    disclosure = re.search(r"\[hermit2,\s*([^,\]]+)", str(record.get("body") or ""))
+    record.setdefault(
+        "user",
+        {"login": disclosure.group(1) if disclosure else "fixture-reviewer"},
+    )
+    record.setdefault("created_at", _time(position))
+    record.setdefault("updated_at", record["created_at"])
+    return record
+
+
+def _native_record(item: dict, position: int) -> dict:
+    record = dict(item)
+    database_id = record.pop("database_id", 910000 + position)
+    record.setdefault("fullDatabaseId", database_id)
+    record.setdefault("id", f"PRR_fixture_{database_id}")
+    record.setdefault("author", {"login": "fixture-reviewer"})
+    record.setdefault(
+        "url", f"https://github.com/o/r/pull/1#pullrequestreview-{database_id}"
+    )
+    record.setdefault("submittedAt", _time(position))
+    record.setdefault("updatedAt", record["submittedAt"])
+    record.setdefault("lastEditedAt", None)
+    record.setdefault("includesCreatedEdit", False)
+    record.setdefault("commit", {"oid": SHA})
+    return record
+
+
+def _install_review_responses(
+    module,
+    *,
+    issue: list[dict] | None = None,
+    native: list[dict] | None = None,
+    inline: list[dict] | None = None,
+    labels: list[str] | None = None,
+    permission: str | None = "write",
+) -> None:
+    """Install production-shaped REST and GraphQL review responses."""
+    issue = issue or []
+    native = native or []
+    inline = inline or []
+
+    def fake_run(argv, **_kwargs):
+        joined = " ".join(argv)
+        if " api " in f" {joined} " and "graphql" in argv:
+            return (
+                0,
+                json.dumps(
+                    [
+                        {
+                            "data": {
+                                "repository": {
+                                    "pullRequest": {
+                                        "reviews": {
+                                            "nodes": native,
+                                            "pageInfo": {
+                                                "hasNextPage": False,
+                                                "endCursor": None,
+                                            },
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                ),
+                "",
+            )
+        if "/issues/" in joined and "/comments" in joined:
+            return 0, json.dumps([issue]), ""
+        if "/pulls/" in joined and "/comments" in joined:
+            return 0, json.dumps([inline]), ""
+        if "/collaborators/" in joined and "/permission" in joined:
+            actor = joined.split("/collaborators/", 1)[1].split("/permission", 1)[0]
+            return (
+                0,
+                json.dumps(
+                    {"permission": permission, "user": {"login": actor}}
+                ),
+                "",
+            )
+        if " pr view " in f" {joined} ":
+            return (
+                0,
+                json.dumps({"labels": [{"name": name} for name in labels or []]}),
+                "",
+            )
+        raise AssertionError(f"unexpected gh call: {argv!r}")
+
+    module.run = fake_run
+
+
+def probe_comments(
+    module, bodies: list[str | dict], *, permission: str | None = "write"
+) -> bool:
     """Like `probe`, but the bodies are SEPARATE COMMENTS.
 
     ⚠️ CONCATENATING TWO SIGNED BODIES INTO ONE STRING DOES NOT MAKE TWO
@@ -85,20 +173,63 @@ def probe_comments(module, bodies: list[str]) -> bool:
     passes or fails for a reason unrelated to the property it names. Two authors
     means two comments, which is also the only shape the real API returns.
     """
-    module.run = lambda argv, **kw: (
-        0,
-        json.dumps({"comments": [{"body": b} for b in bodies], "reviews": []}),
-        "",
-    )
+    comments = [_comment_record(item, i) for i, item in enumerate(bodies, 1)]
+    _install_review_responses(module, issue=comments, permission=permission)
     return len(module.blocking_changes_requests("1", "o/r", SHA)) > 0
 
 
 def probe(module, body: str) -> bool:
-    module.run = lambda argv, **kw: (
-        0,
-        json.dumps({"comments": [{"body": body}], "reviews": []}),
-        "",
+    return probe_comments(module, [body])
+
+
+def probe_native_retirement(
+    module,
+    withdrawal_head: str,
+    *,
+    target: int = 900001,
+    marker: bool = True,
+    refusal_updated_at: str = "2026-09-04T00:00:01Z",
+    withdrawal_created_at: str = "2026-09-04T00:00:02Z",
+    include_updated_at: bool = True,
+) -> bool:
+    """True when an old native refusal still blocks the current repaired head."""
+    withdrawal = _comment_record(
+        {
+            "id": 900002,
+            "body": by(
+                "hermit-005",
+                "CHANGES-REQUESTED-WITHDRAWN-AT: " f"claude {withdrawal_head}",
+                f"RETIRES {target}",
+            ),
+            "created_at": withdrawal_created_at,
+            "updated_at": withdrawal_created_at,
+        },
+        2,
     )
+    native = _native_record(
+        {
+            "database_id": 900001,
+            "state": "CHANGES_REQUESTED",
+            "body": (
+                by("hermit-007", f"CHANGES-REQUESTED-AT: claude {OTHER}")
+                if marker
+                else "Please fix the unchecked failure."
+            ),
+            "submittedAt": "2026-09-04T00:00:01Z",
+            "updatedAt": refusal_updated_at,
+        },
+        1,
+    )
+    if not include_updated_at:
+        native.pop("updatedAt", None)
+    _install_review_responses(module, issue=[withdrawal], native=[native])
+    return len(module.blocking_changes_requests("1", "o/r", SHA)) > 0
+
+
+def probe_inline_comments(module, comments: list[dict]) -> bool:
+    """True when a refusal in the pull-review-comment container blocks."""
+    inline = [_comment_record(item, i) for i, item in enumerate(comments, 1)]
+    _install_review_responses(module, inline=inline)
     return len(module.blocking_changes_requests("1", "o/r", SHA)) > 0
 
 
@@ -127,6 +258,7 @@ CASES = [
     ("codex refusal blocks too", f"CHANGES-REQUESTED-AT: codex {SHA}", True),
     # POLICY, over-block: unparseable but refusal-shaped, naming this head.
     ("unparseable refusal shape blocks", f"CHANGES REQUESTED for {SHA} -- see below", True),
+    ("canonical sha-less refusal blocks", "CHANGES-REQUESTED-AT: claude", True),
     ("historical REJECT spelling blocks", f"REJECT: claude {SHA}", True),
     ("withdrawal clears",
      by("hermit-007",
@@ -149,7 +281,7 @@ CASES = [
         f"CHANGES-REQUESTED-AT: codex {SHA}",
         f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
         f"CHANGES-REQUESTED-WITHDRAWN-AT: codex {SHA}"), False),
-    # ⚠️ A WITHDRAWAL CLEARS ITS OWN ISSUER'S REFUSAL ONLY, one scope narrower
+    # ⚠️ AN UNQUOTED WITHDRAWAL CLEARS ITS OWN ISSUER'S REFUSAL ONLY, one scope narrower
     # than the lane rule above and for the identical reason. A LANE IS STAFFED BY
     # SEVERAL AGENTS, so lane-only clearing let agent B discharge agent A's block
     # inside one lane. Measured 2026-08-26 by driving `blocking_changes_requests`
@@ -162,6 +294,162 @@ CASES = [
     ("the issuer's own withdrawal still clears, across comments",
      [by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}"),
       by("hermit-007", f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}")], False),
+    ("another reviewer can retire one exact resolved objection",
+     [{"url": "https://github.com/o/r/pull/1#issuecomment-900001",
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"url": "https://github.com/o/r/pull/1#issuecomment-900002",
+       "body": by("hermit-005",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "RETIRES 900001")}], False),
+    ("another reviewer can precisely retire a sha-less refusal",
+     [{"url": "https://github.com/o/r/pull/1#issuecomment-900001",
+       "body": by("hermit-007", "CHANGES-REQUESTED-AT: claude")},
+      {"url": "https://github.com/o/r/pull/1#issuecomment-900002",
+       "body": by("hermit-005",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "RETIRES 900001")}], False),
+    ("another reviewer's unquoted withdrawal still does NOT clear",
+     [{"url": "https://github.com/o/r/pull/1#issuecomment-900001",
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"url": "https://github.com/o/r/pull/1#issuecomment-900002",
+       "body": by("hermit-005",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}")}], True),
+    ("RETIRES naming another comment does NOT clear",
+     [{"url": "https://github.com/o/r/pull/1#issuecomment-900001",
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"url": "https://github.com/o/r/pull/1#issuecomment-900002",
+       "body": by("hermit-005",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "RETIRES 900099")}], True),
+    ("a same-issuer wrong-target RETIRES cannot fall back to generic withdrawal",
+     [{"id": 900001,
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"id": 900002,
+       "body": by("hermit-007",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "RETIRES 900099")}], True),
+    ("a same-issuer RETIRES targeting non-refusal prose cannot fall back",
+     [{"id": 900001,
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"id": 900099, "body": by("hermit-007", "Looks good after the fix.")},
+      {"id": 900002,
+       "body": by("hermit-007",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "RETIRES 900099")}], True),
+    ("a multi-target retirement is ambiguous and does NOT clear",
+     [{"url": "https://github.com/o/r/pull/1#issuecomment-900001",
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"url": "https://github.com/o/r/pull/1#issuecomment-900002",
+       "body": by("hermit-005",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "RETIRES 900001", "RETIRES 900099")}], True),
+    ("a same-issuer multi-target RETIRES cannot fall back to generic withdrawal",
+     [{"id": 900001,
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"id": 900002,
+       "body": by("hermit-007",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "RETIRES 900001", "RETIRES 900099")}], True),
+    ("self-declared role text does not override current repository authorization",
+     [{"id": 900001,
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"id": 900002,
+       "body": "[hermit2, hermit-007, unresolved, devbig014, role=implementation]\n\n"
+               f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}\n"
+               "RETIRES 900001"}], False),
+    ("a same-issuer RETIRES whose BY disagrees with disclosure cannot fall back",
+     [{"id": 900001,
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"id": 900002,
+       "body": by("hermit-007",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA} BY hermit-008",
+                  "RETIRES 900001")}], True),
+    ("a target comment with two refusals is ambiguous and does NOT clear",
+     [{"url": "https://github.com/o/r/pull/1#issuecomment-900001",
+       "body": by("hermit-007",
+                  f"CHANGES-REQUESTED-AT: claude {SHA}",
+                  f"CHANGES-REQUESTED-AT: codex {SHA}")},
+      {"url": "https://github.com/o/r/pull/1#issuecomment-900002",
+       "body": by("hermit-005",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "RETIRES 900001")}], True),
+    ("a same-issuer ambiguous target cannot fall back to generic withdrawal",
+     [{"id": 900001,
+       "body": by("hermit-007",
+                  f"CHANGES-REQUESTED-AT: claude {SHA}",
+                  f"CHANGES-REQUESTED-AT: codex {SHA}")},
+      {"id": 900002,
+       "body": by("hermit-007",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "RETIRES 900001")}], True),
+    ("a prose RETIRES mention does NOT clear",
+     [{"url": "https://github.com/o/r/pull/1#issuecomment-900001",
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"url": "https://github.com/o/r/pull/1#issuecomment-900002",
+       "body": by("hermit-005",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "Example only; do not post `RETIRES 900001`.")}], True),
+    ("a fenced RETIRES example does NOT clear",
+     [{"url": "https://github.com/o/r/pull/1#issuecomment-900001",
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"url": "https://github.com/o/r/pull/1#issuecomment-900002",
+       "body": by("hermit-005",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "```text", "RETIRES 900001", "```")}], True),
+    ("a retirement bound to another head does NOT clear",
+     [{"url": "https://github.com/o/r/pull/1#issuecomment-900001",
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"url": "https://github.com/o/r/pull/1#issuecomment-900002",
+       "body": by("hermit-005",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {OTHER}",
+                  "RETIRES 900001")}], True),
+    ("a retirement posted before its target refusal does NOT clear",
+     [{"id": 900002,
+       "created_at": _time(1), "updated_at": _time(1),
+       "body": by("hermit-007",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "RETIRES 900001")},
+      {"id": 900001,
+       "created_at": _time(2), "updated_at": _time(2),
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")}], True),
+    ("a refusal edited after its retirement is not the retired version",
+     [{"id": 900001,
+       "created_at": _time(1), "updated_at": _time(3),
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"id": 900002,
+       "created_at": _time(2), "updated_at": _time(2),
+       "body": by("hermit-007",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "RETIRES 900001")}], True),
+    ("equal refusal and retirement version times fail closed",
+     [{"id": 900001,
+       "created_at": _time(1), "updated_at": _time(2),
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"id": 900002,
+       "created_at": _time(2), "updated_at": _time(2),
+       "body": by("hermit-007",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "RETIRES 900001")}], True),
+    ("missing refusal version time is unreadable and blocks",
+     [{"id": 900001,
+       "created_at": _time(1), "updated_at": None,
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"id": 900002,
+       "body": by("hermit-007",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "RETIRES 900001")}], True),
+    ("a later refusal remains live after an earlier one is retired",
+     [{"id": 900001,
+       "created_at": _time(1), "updated_at": _time(1),
+       "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
+      {"id": 900002,
+       "created_at": _time(2), "updated_at": _time(2),
+       "body": by("hermit-007",
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                  "RETIRES 900001")},
+      {"id": 900003,
+       "created_at": _time(3), "updated_at": _time(3),
+       "body": by("hermit-008", f"CHANGES-REQUESTED-AT: claude {SHA}")}], True),
     ("a later approval by another issuer does NOT clear",
      [by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}"),
       by("hermit-005", f"APPROVED-AT: claude {SHA}")], True),
@@ -181,7 +469,8 @@ CASES = [
     ("unlaned withdrawal clears nothing",
      f"CHANGES-REQUESTED-AT: claude {SHA}\nCHANGES-REQUESTED-WITHDRAWN-AT {SHA}", True),
     ("approval alone passes", f"APPROVED-AT: claude {SHA}", False),
-    ("refusal at another sha passes", f"CHANGES-REQUESTED-AT: claude {OTHER}", False),
+    ("an unresolved refusal at another sha still blocks",
+     f"CHANGES-REQUESTED-AT: claude {OTHER}", True),
 ]
 
 
@@ -191,15 +480,8 @@ STALE_OLD = "94d9a86545d7" + "0" * 28
 
 def probe_labels(module, labels, comments) -> bool:
     """True when the lander REFUSES on a stale passed-review label."""
-    module.run = lambda argv, **kw: (
-        0,
-        json.dumps({
-            "labels": [{"name": n} for n in labels],
-            "comments": [{"body": b} for b in comments],
-            "reviews": [],
-        }),
-        "",
-    )
+    issue = [_comment_record(item, i) for i, item in enumerate(comments, 1)]
+    _install_review_responses(module, issue=issue, labels=labels)
     return len(module.stale_review_labels("1", "o/r", STALE_HEAD)) > 0
 
 
@@ -219,6 +501,145 @@ LABEL_CASES = [
      [f"APPROVED-AT: codex {STALE_OLD}", f"APPROVED-AT {STALE_HEAD}"], True),
     ("no passed-review label imposes no requirement",
      [], [f"APPROVED-AT: codex {STALE_OLD}"], False),
+    (
+        "current-head exact retirement preserves the repaired head's approval",
+        ["passed-review-claude"],
+        [
+            {"id": 900003, "body": by("hermit-005", f"APPROVED-AT: claude {STALE_HEAD}")},
+            {
+                "id": "IC_opaque_refusal",
+                "url": "https://github.com/o/r/pull/1#issuecomment-900001",
+                "body": by(
+                    "hermit-007", f"CHANGES-REQUESTED-AT: claude {STALE_OLD}"
+                ),
+            },
+            {
+                "id": "IC_opaque_withdrawal",
+                "url": "https://github.com/o/r/pull/1#issuecomment-900002",
+                "body": by(
+                    "hermit-005",
+                    f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {STALE_HEAD}",
+                    "RETIRES 900001",
+                ),
+            },
+        ],
+        False,
+    ),
+    (
+        "stale-head retirement does not preserve the repaired head's approval",
+        ["passed-review-claude"],
+        [
+            {"id": 900003, "body": by("hermit-005", f"APPROVED-AT: claude {STALE_HEAD}")},
+            {
+                "id": "IC_opaque_refusal",
+                "url": "https://github.com/o/r/pull/1#issuecomment-900001",
+                "body": by(
+                    "hermit-007", f"CHANGES-REQUESTED-AT: claude {STALE_OLD}"
+                ),
+            },
+            {
+                "id": "IC_opaque_withdrawal",
+                "url": "https://github.com/o/r/pull/1#issuecomment-900002",
+                "body": by(
+                    "hermit-005",
+                    f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {STALE_OLD}",
+                    "RETIRES 900001",
+                ),
+            },
+        ],
+        True,
+    ),
+]
+
+NATIVE_RETIREMENT_CASES = [
+    (
+        "old-head native refusal plus current-head exact retirement clears",
+        SHA,
+        False,
+    ),
+    (
+        "old-head native refusal plus stale-head retirement still blocks",
+        OTHER,
+        True,
+    ),
+    (
+        "markerless native refusal plus current-head exact retirement clears",
+        SHA,
+        False,
+        900001,
+        False,
+    ),
+    (
+        "markerless native refusal plus stale-head retirement still blocks",
+        OTHER,
+        True,
+        900001,
+        False,
+    ),
+    (
+        "markerless native refusal plus wrong-id retirement still blocks",
+        SHA,
+        True,
+        900099,
+        False,
+    ),
+]
+
+NATIVE_VERSION_CASES = [
+    (
+        "a native refusal edited after retirement remains live",
+        {
+            "withdrawal_head": SHA,
+            "refusal_updated_at": "2026-09-04T00:00:03Z",
+            "withdrawal_created_at": "2026-09-04T00:00:02Z",
+        },
+        True,
+    ),
+    (
+        "a native retirement posted before the refusal remains blocked",
+        {
+            "withdrawal_head": SHA,
+            "refusal_updated_at": "2026-09-04T00:00:02Z",
+            "withdrawal_created_at": "2026-09-04T00:00:01Z",
+        },
+        True,
+    ),
+    (
+        "a submittedAt-only native refusal is unreadable rather than retired",
+        {"withdrawal_head": SHA, "include_updated_at": False},
+        True,
+    ),
+]
+
+INLINE_COMMENT_CASES = [
+    (
+        "inline review-comment refusal is visible",
+        [
+            {
+                "id": 900001,
+                "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}"),
+            }
+        ],
+        True,
+    ),
+    (
+        "inline review-comment refusal has the same exact retirement path",
+        [
+            {
+                "id": 900001,
+                "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}"),
+            },
+            {
+                "id": 900002,
+                "body": by(
+                    "hermit-005",
+                    f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                    "RETIRES 900001",
+                ),
+            },
+        ],
+        False,
+    ),
 ]
 
 
@@ -235,13 +656,61 @@ def main() -> int:
         if not ok:
             failures.append(name)
 
+    authority_pair = [
+        {
+            "id": 920001,
+            "user": {"login": "hermit-007"},
+            "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {OTHER}"),
+        },
+        {
+            "id": 920002,
+            "user": {"login": "hermit-005"},
+            "body": by(
+                "hermit-005",
+                f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+                "RETIRES 920001",
+            ),
+        },
+    ]
+    for name, comments, permission, want_block in (
+        (
+            "a currently authorized GitHub actor can retire the exact objection",
+            authority_pair,
+            "write",
+            False,
+        ),
+        (
+            "a read-only GitHub actor cannot retire the exact objection",
+            authority_pair,
+            "read",
+            True,
+        ),
+        (
+            "missing current permission cannot retire the exact objection",
+            authority_pair,
+            None,
+            True,
+        ),
+        (
+            "a GitHub actor that differs from the disclosure cannot retire",
+            [authority_pair[0], {**authority_pair[1], "user": {"login": "outsider"}}],
+            "write",
+            True,
+        ),
+    ):
+        got = probe_comments(lander, comments, permission=permission)
+        ok = got == want_block
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}: blocks={got} want={want_block}")
+        if not ok:
+            failures.append(name)
+
     # STRUCTURAL: the grammar must come from the authority, not from here.
     source = LANDER.read_text()
-    if "parse_marker" not in source:
-        failures.append("lander no longer calls the shared parse_marker")
-        print("  FAIL  lander does not call parse_marker")
+    if "unresolved_review_objections" not in source:
+        failures.append("lander no longer calls the shared review authority")
+        print("  FAIL  lander does not call unresolved_review_objections")
     else:
-        print("  PASS  lander calls the shared parse_marker")
+        print("  PASS  lander calls the shared review authority")
 
     private = re.findall(r"CHANGES-REQUESTED-AT[\"']\s*\)", source)
     if private:
@@ -279,7 +748,39 @@ def main() -> int:
         if not ok:
             failures.append(name)
 
-    total = len(CASES) + len(LABEL_CASES) + 4
+    for case in NATIVE_RETIREMENT_CASES:
+        name, withdrawal_head, want_block, *rest = case
+        target, marker = rest if rest else (900001, True)
+        got = probe_native_retirement(
+            lander, withdrawal_head, target=target, marker=marker
+        )
+        ok = got == want_block
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}: blocks={got} want={want_block}")
+        if not ok:
+            failures.append(name)
+
+    for name, kwargs, want_block in NATIVE_VERSION_CASES:
+        got = probe_native_retirement(lander, **kwargs)
+        ok = got == want_block
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}: blocks={got} want={want_block}")
+        if not ok:
+            failures.append(name)
+
+    for name, comments, want_block in INLINE_COMMENT_CASES:
+        got = probe_inline_comments(lander, comments)
+        ok = got == want_block
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}: blocks={got} want={want_block}")
+        if not ok:
+            failures.append(name)
+
+    total = (
+        len(CASES)
+        + len(LABEL_CASES)
+        + len(NATIVE_RETIREMENT_CASES)
+        + len(NATIVE_VERSION_CASES)
+        + len(INLINE_COMMENT_CASES)
+        + 8
+    )
     print(f"\nassertions: {total - len(failures)} passed, {len(failures)} failed")
     if failures:
         print("RESULT: FAIL")

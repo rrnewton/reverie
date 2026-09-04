@@ -1,17 +1,14 @@
 """`comment_author` must find a disclosure tag sitting behind a role tag -- and
 must never take one out of somebody else's quoted comment.
 
-⚠️ WHY THIS MATTERS MORE THAN A PARSER DETAIL. Withdrawal is issuer-bound: only a
-refusal's own author may take it back. A refusal whose author the parser cannot
-read is therefore undischargeable BY ANYONE, permanently. Measured 2026-08-26,
-three refusals holding three open pull requests were classified UNATTRIBUTED
-purely because their author wrote `[review agent, claude-opus-5]` in front of
-`[hermit2, <agent>, ...]`.
+⚠️ WHY THIS MATTERS MORE THAN A PARSER DETAIL. Generic approvals and unquoted
+withdrawals remain issuer-bound, while an exact RETIRES record requires a valid
+reviewer/coordinator disclosure. Losing that tag either strands ordinary review
+history or makes an exact resolution carry no authority.
 
 ⚠️ AND THE OPPOSITE FAILURE IS WORSE. Reading a tag out of a QUOTED comment would
-attribute one agent's refusal to another and let the wrong agent withdraw it --
-an attribution transfer, which is the thing issuer binding exists to stop. Every
-quoting shape below is asserted to yield None.
+attribute one agent's refusal to another and let a generic withdrawal clear it.
+Every quoting shape below is asserted to yield None.
 """
 
 from __future__ import annotations

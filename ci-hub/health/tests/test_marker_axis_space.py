@@ -39,7 +39,15 @@ def load(p):
     try: s.loader.exec_module(m)
     except SystemExit: pass
     return m
-def c(b,t): return {"body":b,"createdAt":t,"html_url":"u"}
+def c(b,t):
+    record_id = {"T1": 1, "T2": 2, "T3": 3}[t]
+    return {
+        "id": record_id,
+        "body": b,
+        "createdAt": f"2026-09-04T00:00:0{record_id}Z",
+        "includesCreatedEdit": False,
+        "html_url": f"https://example.test/c/{record_id}",
+    }
 
 # ---- THE AXES -------------------------------------------------------------
 LEAD   = {"none":"", "h2":"## ", "quote":"> ", "word":"CODEX-LANE ", "q+h2":"> ## "}
@@ -62,11 +70,14 @@ def main(path):
     for lead,trail,shaf,sep,lane,sha,comp in itertools.product(
             LEAD,TRAIL,SHAF,SEP,LANE,WHICH,COMPOSE):
         ref = line("CHANGES-REQUESTED-AT", lead,trail,shaf,sep,lane,sha)
-        app = f"APPROVED-AT: claude {SHA}"
-        if COMPOSE[comp]==1:      cs=[c(f"APPROVED-AT: claude {SHA}","T1"), c(ref,"T2")]
-        elif COMPOSE[comp]==2:    cs=[c(f"APPROVED-AT: claude {SHA}","T1"), c(ref+"\n"+app,"T2")]
-        else:                     cs=[c(f"APPROVED-AT: claude {SHA}","T1"), c(ref,"T2"), c(app,"T3")]
-        bound, flagged = outcome(m, cs)
+        # A malformed marker under CODEX-LANE belongs to the codex row, not
+        # the claude row. A canonical marker's explicit lane remains decisive.
+        row_lane = "codex" if lead == "word" and m.parse_marker(ref) is None else "claude"
+        app = f"APPROVED-AT: {row_lane} {SHA}"
+        if COMPOSE[comp]==1:      cs=[c(f"APPROVED-AT: {row_lane} {SHA}","T1"), c(ref,"T2")]
+        elif COMPOSE[comp]==2:    cs=[c(f"APPROVED-AT: {row_lane} {SHA}","T1"), c(ref+"\n"+app,"T2")]
+        else:                     cs=[c(f"APPROVED-AT: {row_lane} {SHA}","T1"), c(ref,"T2"), c(app,"T3")]
+        bound, flagged = outcome(m, cs, row_lane)
         mention = lead in {"quote", "q+h2"}
         if mention:
             ok = bound == SHA and not flagged
