@@ -165,7 +165,8 @@ typedef struct {
 #define X86_32_SYS_SETPGID 57
 #define X86_32_SYS_SETSID 66
 
-/* Keep this synthetic CPU identity aligned with Hermit's ptrace backend. */
+/* Keep these base values and indexed-leaf behavior aligned with Detcore's
+ * synthetic CPU identity. DBT-specific feature masks are applied below. */
 static const cpuid_result_t basic_cpuid[] = {
     CPUID_RESULT(0x0000000D, 0x756E6547, 0x6C65746E, 0x49656E69),
     CPUID_RESULT(0x00000663, 0x00000800, 0x90B82201, 0x078BFBFD),
@@ -1186,6 +1187,11 @@ static void *resource_lock;
 static bool read_app(const void *address, void *value, size_t size);
 static bool write_app(void *address, const void *value, size_t size);
 
+static bool cpuid_leaf_uses_subleaf(uint32_t leaf) {
+  return leaf == UINT32_C(0x04) || leaf == UINT32_C(0x07) ||
+         leaf == UINT32_C(0x0b) || leaf == UINT32_C(0x0d);
+}
+
 static cpuid_result_t deterministic_cpuid(uint32_t leaf, uint32_t subleaf) {
   cpuid_result_t result = {0};
 
@@ -1196,11 +1202,11 @@ static cpuid_result_t deterministic_cpuid(uint32_t leaf, uint32_t subleaf) {
     result = extended_cpuid[leaf - UINT32_C(0x80000000)];
   }
 
+  if (subleaf != 0 && cpuid_leaf_uses_subleaf(leaf))
+    return (cpuid_result_t){0};
   if (leaf == 1)
     result.ecx &= ~BIT32(30); /* RDRAND */
   if (leaf == 7) {
-    if (subleaf != 0)
-      return (cpuid_result_t){0};
     result.ebx &= ~(LEAF7_EBX_TSX | BIT32(18) | LEAF7_EBX_AVX512);
     result.ecx &= ~LEAF7_ECX_AVX512;
     result.edx &= ~LEAF7_EDX_AVX512;

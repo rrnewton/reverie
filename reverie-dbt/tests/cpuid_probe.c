@@ -50,8 +50,12 @@ int main(void) {
   const uint32_t leaf7_ebx_mask = LEAF7_EBX_TSX | BIT32(18) | LEAF7_EBX_AVX512;
   cpuid_result_t leaf0 = cpuid(0, 0);
   cpuid_result_t leaf1 = cpuid(1, 0);
+  cpuid_result_t leaf4 = cpuid(4, 0);
+  cpuid_result_t leaf4_subleaf1 = cpuid(4, 1);
   cpuid_result_t leaf7 = cpuid(7, 0);
   cpuid_result_t leaf7_subleaf1 = cpuid(7, 1);
+  cpuid_result_t leaf_b = cpuid(0xb, 0);
+  cpuid_result_t leaf_b_subleaf1 = cpuid(0xb, 1);
   cpuid_result_t unsupported = cpuid(UINT32_C(0x40000000), 0);
   char vendor[13] = {0};
   int iteration;
@@ -65,6 +69,11 @@ int main(void) {
   check(equal(leaf1,
               (cpuid_result_t){0x00000663, 0x00000800, 0x90B82201, 0x078BFBFD}),
         "unexpected deterministic leaf 1");
+  check(equal(leaf4,
+              (cpuid_result_t){0x00000120, 0x01C0003F, 0x0000003F, 0x00000001}),
+        "unexpected deterministic leaf 4");
+  check(equal(leaf4_subleaf1, (cpuid_result_t){0}),
+        "unsupported leaf 4 subleaf is nonzero");
   check(equal(leaf7,
               (cpuid_result_t){0x00000000, 0x001807A9, 0x00000000, 0x00000000}),
         "unexpected deterministic leaf 7");
@@ -77,6 +86,11 @@ int main(void) {
         "AVX-512 remains advertised in leaf 7 EDX");
   check(equal(leaf7_subleaf1, (cpuid_result_t){0}),
         "unsupported leaf 7 subleaf is nonzero");
+  check(equal(leaf_b,
+              (cpuid_result_t){0x00000000, 0x00000001, 0x00000100, 0x00000001}),
+        "unexpected deterministic leaf 0xb");
+  check(equal(leaf_b_subleaf1, (cpuid_result_t){0}),
+        "unsupported leaf 0xb subleaf is nonzero");
   check(equal(unsupported, (cpuid_result_t){0}),
         "unsupported CPUID leaf is nonzero");
 

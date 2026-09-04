@@ -117,7 +117,14 @@ fn build_deterministic_cpuid_table(
         .iter()
         .enumerate()
         .filter(|(_, registers)| **registers != [0; 4])
-        .map(|(function, registers)| cpuid_entry(function as u32, *registers))
+        .map(|(function, registers)| {
+            let function = function as u32;
+            if standard_leaf_uses_subleaf(function) {
+                indexed_cpuid_entry(function, 0, *registers)
+            } else {
+                cpuid_entry(function, *registers)
+            }
+        })
         .chain(
             xstate
                 .iter()
@@ -133,6 +140,11 @@ fn build_deterministic_cpuid_table(
         .collect::<Vec<_>>();
     assert_unique_function_indices(&entries);
     CpuId::from_entries(&entries).expect("fixed CPUID profile must fit in KVM's table")
+}
+
+/// Whether ECX selects a subleaf for a basic leaf in the advertised profile.
+fn standard_leaf_uses_subleaf(function: u32) -> bool {
+    matches!(function, 0x04 | 0x07 | 0x0b | 0x0d)
 }
 
 fn assert_unique_function_indices(entries: &[kvm_cpuid_entry2]) {
@@ -382,7 +394,9 @@ mod tests {
             leaf(1, 0).ecx & (bit(26) | bit(27) | bit(28)),
             bit(26) | bit(27) | bit(28)
         );
+        assert_eq!(leaf(4, 0).flags, KVM_CPUID_FLAG_SIGNIFCANT_INDEX);
         assert!(entries.iter().all(|entry| entry.function != 7));
+        assert_eq!(leaf(0xb, 0).flags, KVM_CPUID_FLAG_SIGNIFCANT_INDEX);
         assert_eq!(leaf(0xd, 0).eax & 0x7, 0x7);
         assert_eq!(leaf(0x8000_0000, 0).eax, 0x8000_000a);
         assert_eq!(leaf(0x8000_0000, 0).ebx, u32::from_le_bytes(*b"Genu"));
