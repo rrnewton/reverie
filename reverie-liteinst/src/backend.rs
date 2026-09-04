@@ -644,6 +644,22 @@ fn configure_in_guest_command_preload(command: &mut Command, preload: PathBuf) {
     command.env("LD_PRELOAD", ld_preload);
 }
 
+fn configure_in_guest_address_space(command: &mut Command) {
+    unsafe {
+        command.pre_exec(|| {
+            let current = libc::personality(0xffff_ffff);
+            if current == -1 {
+                return Err(reverie::syscalls::Errno::last());
+            }
+            let personality = current as libc::c_ulong | libc::ADDR_NO_RANDOMIZE as libc::c_ulong;
+            if libc::personality(personality) == -1 {
+                return Err(reverie::syscalls::Errno::last());
+            }
+            Ok(())
+        });
+    }
+}
+
 fn inherit_stdio(command: &mut Command) {
     command.stdin(reverie::process::Stdio::inherit());
     command.stdout(reverie::process::Stdio::inherit());
@@ -939,6 +955,7 @@ where
         (None, None, None)
     };
 
+    configure_in_guest_address_space(&mut command);
     configure_in_guest_command_preload(&mut command, preload);
 
     let mut log_task = None;
@@ -1598,6 +1615,151 @@ mod tests {
         assert!(child.stderr.is_none());
         let status = child.wait().unwrap();
         assert!(status.success());
+    }
+
+    #[test]
+    fn in_guest_address_space_preserves_caller_layout_and_parent() {
+        const CHILD_ENV: &str = "REVERIE_LITEINST_ADDRESS_SPACE_TEST_CHILD";
+        let mut stack = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut stack) },
+            0
+        );
+        let original_personality = unsafe { libc::personality(0xffff_ffff) };
+        assert_ne!(original_personality, -1);
+        if let Ok(expected) = std::env::var(CHILD_ENV) {
+            let expected: Vec<u64> = expected
+                .split(',')
+                .map(|value| value.parse().unwrap())
+                .collect();
+            assert_eq!(original_personality as u64, expected[0]);
+            assert_eq!(stack.rlim_cur, expected[1]);
+            assert_eq!(stack.rlim_max, expected[2]);
+            return;
+        }
+
+        let caller_personality =
+            (original_personality & !libc::ADDR_NO_RANDOMIZE) | libc::ADDR_COMPAT_LAYOUT;
+        let expected_personality = caller_personality | libc::ADDR_NO_RANDOMIZE;
+        let caller_stack = libc::rlimit {
+            rlim_cur: stack.rlim_cur.min(4 * 1024 * 1024),
+            rlim_max: stack.rlim_max,
+        };
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "backend::tests::in_guest_address_space_preserves_caller_layout_and_parent",
+            "--test-threads=1",
+        ]);
+        command.env(
+            CHILD_ENV,
+            format!(
+                "{expected_personality},{},{}",
+                caller_stack.rlim_cur, caller_stack.rlim_max
+            ),
+        );
+        unsafe {
+            command.pre_exec(move || {
+                if libc::personality(caller_personality as libc::c_ulong) == -1
+                    || libc::setrlimit(libc::RLIMIT_STACK, &caller_stack) == -1
+                {
+                    return Err(reverie::syscalls::Errno::last());
+                }
+                Ok(())
+            });
+        }
+        configure_in_guest_address_space(&mut command);
+        configure_in_guest_address_space(&mut command);
+        let output = command.try_into_std().unwrap().output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            unsafe { libc::personality(0xffff_ffff) },
+            original_personality
+        );
+        let mut after = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut after) },
+            0
+        );
+        assert_eq!(after.rlim_cur, stack.rlim_cur);
+        assert_eq!(after.rlim_max, stack.rlim_max);
+    }
+
+    #[test]
+    fn in_guest_address_space_errors_abort_exec_without_diagnostics() {
+        for deny_query in [true, false] {
+            for initialize in [false, true] {
+                let mut command = Command::new("/bin/true");
+                command.stderr(reverie::process::Stdio::null());
+                unsafe {
+                    command.pre_exec(move || {
+                        let mut filter = [
+                            libc::sock_filter {
+                                code: (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+                                jt: 0,
+                                jf: 0,
+                                k: 0,
+                            },
+                            libc::sock_filter {
+                                code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+                                jt: 0,
+                                jf: 3,
+                                k: libc::SYS_personality as u32,
+                            },
+                            libc::sock_filter {
+                                code: (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+                                jt: 0,
+                                jf: 0,
+                                k: 16,
+                            },
+                            libc::sock_filter {
+                                code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+                                jt: u8::from(!deny_query),
+                                jf: u8::from(deny_query),
+                                k: 0xffff_ffff,
+                            },
+                            libc::sock_filter {
+                                code: (libc::BPF_RET | libc::BPF_K) as u16,
+                                jt: 0,
+                                jf: 0,
+                                k: libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
+                            },
+                            libc::sock_filter {
+                                code: (libc::BPF_RET | libc::BPF_K) as u16,
+                                jt: 0,
+                                jf: 0,
+                                k: libc::SECCOMP_RET_ALLOW,
+                            },
+                        ];
+                        let program = libc::sock_fprog {
+                            len: filter.len() as u16,
+                            filter: filter.as_mut_ptr(),
+                        };
+                        if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1
+                            || libc::prctl(libc::PR_SET_SECCOMP, 2, &program) == -1
+                        {
+                            return Err(reverie::syscalls::Errno::last());
+                        }
+                        Ok(())
+                    });
+                }
+                if initialize {
+                    configure_in_guest_address_space(&mut command);
+                }
+                let result = command.try_into_std().unwrap().spawn();
+                if initialize {
+                    assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EACCES));
+                } else {
+                    assert!(result.unwrap().wait().unwrap().success());
+                }
+            }
+        }
     }
 
     #[test]
