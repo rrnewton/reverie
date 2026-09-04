@@ -388,11 +388,12 @@ doctor-full:
 doctor-qemu:
 	@scripts/doctor.sh qemu
 
-# Install this clone's git pre-commit hooks (core.hooksPath -> .githooks). Wired
+# Install this clone's Git hooks (core.hooksPath -> the durable common Git
+# directory's dev-hermit-hooks dispatchers). Wired
 # as a prerequisite of every install-deps profile so a fresh clone/worktree gets
 # the blocking pin-drift + hygiene pre-commit hook WITHOUT a separate manual step.
-# core.hooksPath is per-repo local config (not tracked), so it must be set once
-# per checkout; this is that step.
+# core.hooksPath is per-repository local config (not tracked), so it must be set
+# once per clone; linked worktrees share the installed dispatcher copies.
 install-hooks:
 	@scripts/setup-hooks.sh
 

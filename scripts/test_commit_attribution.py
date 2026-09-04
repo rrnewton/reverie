@@ -244,6 +244,78 @@ class RepositoryRangeTests(unittest.TestCase):
 
 
 class HookAndInstallerTests(unittest.TestCase):
+    TRACKED_HOOKS = (
+        "pre-commit",
+        "commit-msg",
+        "pre-push",
+        "reference-transaction",
+    )
+
+    def installer_repo(self, repo: Path) -> None:
+        """Create the smallest repository that exercises the real installer."""
+
+        hooks = repo / ".githooks"
+        scripts = repo / "scripts"
+        hooks.mkdir(parents=True)
+        scripts.mkdir()
+        shutil.copy2(CHECKER, scripts / CHECKER.name)
+        shutil.copy2(INSTALLER, scripts / INSTALLER.name)
+        shutil.copy2(DISPATCHER, hooks / DISPATCHER.name)
+        shutil.copy2(COMMIT_HOOK, hooks / COMMIT_HOOK.name)
+        for path in (
+            scripts / CHECKER.name,
+            scripts / INSTALLER.name,
+            hooks / DISPATCHER.name,
+            hooks / COMMIT_HOOK.name,
+        ):
+            path.chmod(0o755)
+
+        for name in ("pre-commit", "pre-push", "reference-transaction"):
+            path = hooks / name
+            path.write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' {name} >> .hook-runs\n"
+            )
+            path.chmod(0o755)
+
+        (repo / "tracked").write_text("seed\n")
+        run("git", "init", "-q", "-b", "main", cwd=repo)
+        run("git", "config", "user.name", "fixture agent", cwd=repo)
+        run("git", "config", "user.email", "fixture@example.com", cwd=repo)
+        run("git", "add", ".", cwd=repo)
+        seeded = run(
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-q",
+            "-m",
+            "seed",
+            cwd=repo,
+        )
+        self.assertEqual(0, seeded.returncode, seeded.stderr)
+
+    def install_from_linked_worktree(self, repo: Path, linked: Path) -> Path:
+        added = run(
+            "git", "worktree", "add", "--detach", str(linked), "HEAD", cwd=repo
+        )
+        self.assertEqual(0, added.returncode, added.stderr)
+        installed = run(str(linked / "scripts" / INSTALLER.name), cwd=linked)
+        self.assertEqual(0, installed.returncode, installed.stderr)
+        configured = Path(
+            run("git", "config", "--get", "core.hooksPath", cwd=repo).stdout.strip()
+        )
+        self.assertTrue(configured.is_dir(), configured)
+        return configured
+
+    @staticmethod
+    def commit_environment() -> dict[str, str]:
+        return {
+            "HERMIT_COMMIT_MACHINE": "devbig030",
+            "HERMIT_COMMIT_MODEL_FAMILY": "codex",
+            "DG_AGENT_NAME": "fixture-agent",
+        }
+
     def hooked_repo(self, repo: Path, email: str, name: str = "Ryan Newton") -> None:
         run("git", "init", "-q", "-b", "main", cwd=repo)
         run("git", "config", "user.name", name, cwd=repo)
@@ -414,6 +486,167 @@ class HookAndInstallerTests(unittest.TestCase):
                     env={"HERMIT_COMMIT_MACHINE": "devbig030"},
                 )
                 self.assertEqual(0, checked.returncode, checked.stderr)
+
+    def test_linked_worktree_install_survives_removing_installer_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo = base / "repo"
+            linked = base / "installer-worktree"
+            repo.mkdir()
+            self.installer_repo(repo)
+            configured = self.install_from_linked_worktree(repo, linked)
+
+            for name in self.TRACKED_HOOKS:
+                installed_hook = configured / name
+                self.assertTrue(installed_hook.is_file(), installed_hook)
+                self.assertFalse(installed_hook.is_symlink(), installed_hook)
+                self.assertTrue(os.access(installed_hook, os.X_OK), installed_hook)
+                self.assertNotIn(str(linked), installed_hook.read_text())
+
+            removed = run("git", "worktree", "remove", str(linked), cwd=repo)
+            self.assertEqual(0, removed.returncode, removed.stderr)
+            self.assertFalse(linked.exists())
+            self.assertNotIn(
+                str(linked),
+                run("git", "config", "--get", "core.hooksPath", cwd=repo).stdout,
+            )
+
+            checked = run(
+                str(repo / "scripts" / INSTALLER.name), "--check", cwd=repo
+            )
+            self.assertEqual(0, checked.returncode, checked.stderr)
+
+            for name in ("pre-commit", "pre-push", "reference-transaction"):
+                invoked = run(str(configured / name), cwd=repo)
+                self.assertEqual(0, invoked.returncode, invoked.stderr)
+            calls = (repo / ".hook-runs").read_text().splitlines()
+            self.assertEqual(
+                ["pre-commit", "pre-push", "reference-transaction"], calls
+            )
+
+    def test_durable_commit_dispatch_rejects_bad_and_accepts_clean_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo = base / "repo"
+            linked = base / "installer-worktree"
+            repo.mkdir()
+            self.installer_repo(repo)
+            self.install_from_linked_worktree(repo, linked)
+            removed = run("git", "worktree", "remove", str(linked), cwd=repo)
+            self.assertEqual(0, removed.returncode, removed.stderr)
+
+            before = run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
+            (repo / "tracked").write_text("bad attribution\n")
+            run("git", "add", "--", "tracked", cwd=repo)
+            rejected = run(
+                "git",
+                "commit",
+                "-q",
+                "-m",
+                "missing attribution",
+                "--",
+                "tracked",
+                cwd=repo,
+                env=self.commit_environment(),
+            )
+            self.assertEqual(1, rejected.returncode)
+            self.assertIn("commit-attribution: REFUSED", rejected.stderr)
+            self.assertEqual(
+                before, run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
+            )
+
+            accepted = run(
+                "git",
+                "commit",
+                "-q",
+                "-m",
+                "attributed change",
+                "-m",
+                DISCLOSURE_030,
+                "--",
+                "tracked",
+                cwd=repo,
+                env=self.commit_environment(),
+            )
+            self.assertEqual(0, accepted.returncode, accepted.stderr)
+            self.assertNotEqual(
+                before, run("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
+            )
+
+    def test_dispatch_refuses_missing_and_non_executable_tracked_hook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo = base / "repo"
+            linked = base / "installer-worktree"
+            repo.mkdir()
+            self.installer_repo(repo)
+            self.install_from_linked_worktree(repo, linked)
+            removed = run("git", "worktree", "remove", str(linked), cwd=repo)
+            self.assertEqual(0, removed.returncode, removed.stderr)
+
+            tracked_hook = repo / ".githooks" / "commit-msg"
+            saved_hook = repo / ".githooks" / "commit-msg.saved"
+            tracked_hook.rename(saved_hook)
+            (repo / "tracked").write_text("missing hook\n")
+            run("git", "add", "--", "tracked", cwd=repo)
+            missing = run(
+                "git",
+                "commit",
+                "-q",
+                "-m",
+                "cannot bypass missing hook",
+                "--",
+                "tracked",
+                cwd=repo,
+                env=self.commit_environment(),
+            )
+            self.assertEqual(1, missing.returncode)
+            self.assertIn("tracked commit-msg hook is missing", missing.stderr)
+
+            saved_hook.rename(tracked_hook)
+            tracked_hook.chmod(0o644)
+            non_executable = run(
+                "git",
+                "commit",
+                "-q",
+                "-m",
+                "cannot bypass non-executable hook",
+                "--",
+                "tracked",
+                cwd=repo,
+                env=self.commit_environment(),
+            )
+            self.assertEqual(1, non_executable.returncode)
+            self.assertIn(
+                "tracked commit-msg hook is not executable", non_executable.stderr
+            )
+
+    def test_installer_check_refuses_corrupted_or_non_executable_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo = base / "repo"
+            linked = base / "installer-worktree"
+            repo.mkdir()
+            self.installer_repo(repo)
+            configured = self.install_from_linked_worktree(repo, linked)
+
+            installed_hook = configured / "pre-commit"
+            installed_hook.chmod(0o644)
+            non_executable = run(
+                str(linked / "scripts" / INSTALLER.name), "--check", cwd=linked
+            )
+            self.assertEqual(1, non_executable.returncode)
+            self.assertIn(
+                "is not an executable installed copy", non_executable.stderr
+            )
+
+            installed_hook.write_text("#!/bin/sh\nexit 0\n")
+            installed_hook.chmod(0o755)
+            checked = run(
+                str(linked / "scripts" / INSTALLER.name), "--check", cwd=linked
+            )
+            self.assertEqual(1, checked.returncode)
+            self.assertIn("is not an executable installed copy", checked.stderr)
 
 
 sys.path.insert(0, str(ROOT / "scripts"))

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install repository-local hooks through one common dispatcher.
+# Install repository-local hooks through one common dispatcher implementation.
 # Every registered product worktree shares one of the common Git directories
 # below, so configuring the parent + initialized submodules covers present and
 # future slots on this machine.
@@ -16,8 +16,16 @@ esac
 
 dispatcher="$root/.githooks/dev-hermit-hook-dispatch"
 [ -x "$dispatcher" ] || { echo "missing executable dispatcher: $dispatcher" >&2; exit 1; }
+managed_marker='# dev-hermit-managed-hook-dispatch-v1'
+grep -Fqx "$managed_marker" "$dispatcher" || {
+  echo "hook install REFUSED: dispatcher lacks managed marker: $dispatcher" >&2
+  exit 1
+}
 
-# Install every client-side hook name up front. The dispatcher delegates to a
+# Install every client-side hook name up front. Each installed regular file is
+# a self-contained copy: a symlink to this worktree would dangle as soon as a
+# disposable linked worktree is removed, and Git silently treats a dangling
+# hook as success. The dispatcher delegates to a
 # tracked <repo>/.githooks/<name> when one exists, so adding a tracked hook later
 # does not require replacing or regenerating this local composite directory.
 hooks=(
@@ -52,16 +60,23 @@ for repo in "${repos[@]}"; do
   for hook in "${hooks[@]}"; do
     target="$composite/$hook"
     if [ "$mode" = check ]; then
-      [ -L "$target" ] && [ "$(readlink -f -- "$target")" = "$dispatcher" ] || {
-        echo "hook check REFUSED: $target is not bound to $dispatcher" >&2
+      if [ ! -f "$target" ] || [ -L "$target" ] || [ ! -x "$target" ] || \
+          ! cmp -s -- "$dispatcher" "$target"; then
+        echo "hook check REFUSED: $target is not an executable installed copy of $dispatcher" >&2
         exit 1
-      }
+      fi
     else
-      if [ -e "$target" ] && [ ! -L "$target" ]; then
+      if [ -e "$target" ] && [ ! -L "$target" ] && \
+          ! grep -Fqx "$managed_marker" "$target"; then
         echo "hook install REFUSED: unmanaged file exists at $target" >&2
         exit 1
       fi
-      ln -sfn "$dispatcher" "$target"
+      temporary=$(mktemp "$composite/.${hook}.XXXXXX")
+      if ! install -m 0755 "$dispatcher" "$temporary"; then
+        rm -f -- "$temporary"
+        exit 1
+      fi
+      mv -f -- "$temporary" "$target"
     fi
   done
 
@@ -81,13 +96,15 @@ for repo in "${repos[@]}"; do
     # the REMOTE what the ref points at. The path is resolved at run time from
     # the superproject root so this works from submodules and contains no
     # absolute path.
+    # This is Git's shell alias and is expanded only when the alias runs.
+    # shellcheck disable=SC2016
     git -C "$repo" config alias.pushv '!f() { r=$(git rev-parse --show-superproject-working-tree 2>/dev/null); [ -n "$r" ] || r=$(git rev-parse --show-toplevel); t="$r/ci-hub/bin/git-push-verified"; if [ -x "$t" ]; then "$t" "$@"; else echo "git pushv: tool missing at $t; falling back is NOT safe -- verify the remote by hand" >&2; return 1; fi; }; f'
   fi
   installed=$((installed + 1))
 done
 
 echo "repository hooks: mode=$mode repositories=$installed"
-echo "Repository-local .githooks remain active through the composite dispatcher."
+echo "Repository-local .githooks remain active through durable composite dispatcher copies."
 echo "Policy: .githooks/hygiene-policy.md"
 echo "Override an oversized-but-intended file with: HERMIT_HYGIENE_OVERRIDE=1 git commit ..."
 echo "Every push polls GitHub current-main workflow truth; RED warns but does not block a fix."

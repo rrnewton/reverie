@@ -68,12 +68,14 @@ output of `ci-hub/bin/who-am-i --tag --role ROLE` on the first body line:
 
 The machine and agent are separate derived fields, not inferences from author
 email, branch name, host alias, or a free-form team string.
-`scripts/setup-hooks.sh` derives this clone's machine token from the hostname
-and installs a composite `commit-msg` hook in the common Git directory for the
-parent and every initialized submodule. Product worktrees share those common
-directories. The dispatcher checks the machine, agent, and model family and
-then delegates to each repository's own tracked `.githooks/<hook>`, so
-installing attribution never disables a product guard.
+`scripts/setup-hooks.sh` installs regular composite hook dispatchers in the
+durable common Git directory for the parent and every initialized submodule.
+Product worktrees share those common directories. Each installed dispatcher
+resolves the active worktree at invocation time, then delegates to that
+repository's own tracked `.githooks/<hook>`, so running the installer from a
+temporary worktree cannot bind every hook to that temporary path. The tracked
+`commit-msg` hook runs `scripts/check_commit_attribution.py`, which checks the
+machine, agent, and model family without disabling a product guard.
 
 The earlier final-line form `[<role>, <model>] [<team>, devbigNNN]` remains an
 explicit compatibility path for stored history and noninteractive producers

@@ -59,7 +59,7 @@
 #     HERMIT_HYGIENE_MAX_GROWTH_KB=256   HERMIT_HYGIENE_CEILING_KB=2048
 # ---------------------------------------------------------------------------
 #
-# Install:  scripts/setup-hooks.sh   (sets core.hooksPath=.githooks)
+# Install:  scripts/setup-hooks.sh   (sets core.hooksPath to durable dispatcher copies)
 # Policy:   .githooks/hygiene-policy.md
 
 set -u
