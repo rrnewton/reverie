@@ -27,6 +27,7 @@ pub use stats::LiteinstDispatchPath;
 pub use stats::LiteinstPatchDecision;
 pub mod rpc;
 mod runtime;
+mod runtime_domain;
 mod tool_host;
 
 // AUTONOMOUS-BOT-IMPLEMENTED

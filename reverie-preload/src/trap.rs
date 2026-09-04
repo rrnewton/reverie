@@ -31,6 +31,64 @@ use crate::seccomp::TrustedGate;
 use crate::signal;
 const SYS_SECCOMP_CODE: libc::c_int = 1;
 
+pub struct RuntimeEntryHooks {
+    pub enter: unsafe extern "C" fn(),
+    pub leave: unsafe extern "C" fn(),
+}
+
+unsafe extern "C" fn no_runtime_entry() {}
+
+static DEFAULT_RUNTIME_ENTRY_HOOKS: RuntimeEntryHooks = RuntimeEntryHooks {
+    enter: no_runtime_entry,
+    leave: no_runtime_entry,
+};
+
+static RUNTIME_ENTRY_HOOKS: AtomicPtr<RuntimeEntryHooks> =
+    AtomicPtr::new((&raw const DEFAULT_RUNTIME_ENTRY_HOOKS).cast_mut());
+
+/// Register process-lifetime, allocation-free ownership hooks before interception.
+/// Each activation retains its matching leave hook until ordinary scope exit.
+///
+/// # Safety
+/// Hooks must be nonblocking, nonpanicking, signal-safe and reentrant. They must
+/// remain loaded for the process lifetime and cannot retain a signal-frame borrow.
+pub unsafe fn register_runtime_entry_hooks(hooks: &'static RuntimeEntryHooks) -> io::Result<()> {
+    let hooks = (hooks as *const RuntimeEntryHooks).cast_mut();
+    match RUNTIME_ENTRY_HOOKS.compare_exchange(
+        (&raw const DEFAULT_RUNTIME_ENTRY_HOOKS).cast_mut(),
+        hooks,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => Ok(()),
+        Err(current) if current == hooks => Ok(()),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "runtime entry hooks already registered",
+        )),
+    }
+}
+
+struct RuntimeEntryGuard {
+    leave: unsafe extern "C" fn(),
+}
+
+impl RuntimeEntryGuard {
+    fn enter() -> Self {
+        let hooks = RUNTIME_ENTRY_HOOKS.load(Ordering::Acquire);
+        unsafe { ((*hooks).enter)() };
+        Self {
+            leave: unsafe { (*hooks).leave },
+        }
+    }
+}
+
+impl Drop for RuntimeEntryGuard {
+    fn drop(&mut self) {
+        unsafe { (self.leave)() };
+    }
+}
+
 core::arch::global_asm!(
     r#"
     .text
@@ -154,6 +212,7 @@ fn dispatch_event(event: &mut SyscallEvent) {
 /// [`SyscallEvent::defer_to`]. A dispatcher that requests deferred signal-frame
 /// resumption is rejected with `-ENOTSUP` because no signal frame exists here.
 pub fn dispatch_direct(number: i64, args: [u64; 6], instruction_pointer: u64) -> i64 {
+    let _runtime = RuntimeEntryGuard::enter();
     let mut event = SyscallEvent::direct(number, args, instruction_pointer);
     dispatch_event(&mut event);
     if event.resume_address().is_some() {
@@ -180,6 +239,7 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
     info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
 ) {
+    let _runtime = RuntimeEntryGuard::enter();
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-133): Review fail-closed SIGSYS provenance validation.
     if signal_number != libc::SIGSYS

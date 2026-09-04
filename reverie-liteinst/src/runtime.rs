@@ -960,6 +960,10 @@ fn install_runtime(
     instructions: InstructionSubscriptions,
     vdso_sites: &[reverie_ptrace::VdsoSyscallSite],
 ) -> io::Result<()> {
+    let _runtime = crate::runtime_domain::Entry::enter();
+    unsafe {
+        reverie_preload::trap::register_runtime_entry_hooks(&crate::runtime_domain::PRELOAD_HOOKS)?
+    };
     PATCH_PUBLICATION.store(publication as u8, Ordering::Release);
     prepare_instrumentation()?;
     install_vdso_sites(vdso_sites)?;
@@ -1563,7 +1567,9 @@ unsafe fn set_mapping_protection(start: u64, len: u64, protection: i32) -> io::R
     Ok(())
 }
 
-struct InstallGuard;
+struct InstallGuard {
+    _runtime: crate::runtime_domain::Entry,
+}
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -1589,9 +1595,10 @@ impl Drop for InstallGuard {
 }
 
 fn lock_installation() -> io::Result<InstallGuard> {
+    let runtime = crate::runtime_domain::Entry::enter();
     INSTALL_HELD
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .map(|_| InstallGuard)
+        .map(|_| InstallGuard { _runtime: runtime })
         .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "LiteInst installation is busy"))
 }
 
@@ -2318,6 +2325,7 @@ unsafe extern "C" fn instruction_sigsegv_handler(
     info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
 ) {
+    let _runtime = crate::runtime_domain::Entry::enter();
     if signal != libc::SIGSEGV || context.is_null() {
         emit_in_guest_stage(b"instruction-sigsegv-invalid-context");
         unsafe { deliver_default_sigsegv() };
@@ -2495,6 +2503,7 @@ unsafe fn set_instruction_native(kind: InstructionEventKind, enabled: bool) -> i
 }
 
 unsafe fn installed_instruction_hook(context: *mut HookContext, kind: InstructionEventKind) {
+    let _runtime = crate::runtime_domain::Entry::enter();
     if context.is_null() || enter_rcb_handler().is_err() {
         unsafe { exit_now(122) };
     }
@@ -2569,6 +2578,7 @@ unsafe extern "C" fn installed_rdtscp_hook(context: *mut HookContext) {
 }
 
 unsafe fn installed_syscall_hook_for(context: *mut HookContext, number: Option<i64>) {
+    let _runtime = crate::runtime_domain::Entry::enter();
     if context.is_null() {
         unsafe {
             exit_now(122);
@@ -2627,6 +2637,48 @@ unsafe fn installed_syscall_hook_for(context: *mut HookContext, number: Option<i
 
 unsafe extern "C" fn installed_syscall_hook(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, None) }
+}
+
+#[cfg(test)]
+pub(crate) fn domain_test_syscall(number: i64) -> i64 {
+    TOOL_MODE.store(TOOL_REVERIE, Ordering::Relaxed);
+    let mut context: HookContext = unsafe { core::mem::zeroed() };
+    context.rax = number as u64;
+    unsafe { installed_syscall_hook_for(&mut context, None) };
+    context.rax as i64
+}
+
+#[cfg(test)]
+pub(crate) fn domain_test_instruction() -> u64 {
+    let mut previous = 0i32;
+    assert_eq!(
+        unsafe {
+            raw_syscall6(
+                libc::SYS_prctl,
+                [
+                    libc::PR_GET_TSC as u64,
+                    (&raw mut previous) as u64,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        },
+        0
+    );
+    let mut context: HookContext = unsafe { core::mem::zeroed() };
+    unsafe { installed_instruction_hook(&mut context, InstructionEventKind::Rdtsc) };
+    assert_eq!(
+        unsafe {
+            raw_syscall6(
+                libc::SYS_prctl,
+                [libc::PR_SET_TSC as u64, previous as u64, 0, 0, 0, 0],
+            )
+        },
+        0
+    );
+    context.rax | context.rdx << 32
 }
 
 unsafe extern "C" fn installed_vdso_time_hook(context: *mut HookContext) {
@@ -2708,6 +2760,7 @@ fn record_enabled_fallback_stats(stats: crate::stats::GuestStatsHooks, address: 
 
 impl SyscallDispatcher for LiteinstDispatcher {
     fn dispatch(&self, event: &mut PreloadSyscallEvent) {
+        let _runtime = crate::runtime_domain::Entry::enter();
         if tool_callback_active() {
             self.stats.record_path(crate::stats::IN_GUEST_NESTED_SIGSYS);
             let mut nested = SyscallEvent {
@@ -2796,6 +2849,7 @@ impl SyscallDispatcher for LiteinstDispatcher {
 }
 
 unsafe extern "C" fn tool_trampoline() {
+    let _runtime = crate::runtime_domain::Entry::enter();
     let event = CURRENT_EVENT.get();
     if event.is_null() {
         unsafe {
@@ -2831,6 +2885,7 @@ fn protect_runtime_control(event: &mut SyscallEvent) -> bool {
 }
 
 unsafe fn process_syscall(event: &mut SyscallEvent) {
+    let _runtime = crate::runtime_domain::Entry::enter();
     let tool_mode = TOOL_MODE.load(Ordering::Relaxed);
     // AUTONOMOUS-BOT-IMPLEMENTED
     if matches!(event.number, libc::SYS_execve | libc::SYS_execveat) {

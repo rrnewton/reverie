@@ -41,20 +41,30 @@ static COMMITTED_STACKS: SpinMutex<Vec<Box<[u8]>>> = SpinMutex::new(Vec::new());
 
 struct DispatchScratchScope {
     _allocation_scope: crate::patch_alloc::DispatchAllocationScope,
+    _runtime: crate::runtime_domain::Entry,
 }
 
 impl DispatchScratchScope {
     fn enter() -> Self {
-        COMMITTED_STACKS.lock().clear();
+        let runtime = crate::runtime_domain::Entry::enter();
+        let allocation_scope = crate::patch_alloc::enter_dispatch();
+        let mut stacks = COMMITTED_STACKS.lock();
+        #[cfg(test)]
+        crate::runtime_domain::tests::at(crate::runtime_domain::tests::SCRATCH_ENTER);
+        stacks.clear();
         Self {
-            _allocation_scope: crate::patch_alloc::enter_dispatch(),
+            _allocation_scope: allocation_scope,
+            _runtime: runtime,
         }
     }
 }
 
 impl Drop for DispatchScratchScope {
     fn drop(&mut self) {
-        COMMITTED_STACKS.lock().clear();
+        let mut stacks = COMMITTED_STACKS.lock();
+        #[cfg(test)]
+        crate::runtime_domain::tests::at(crate::runtime_domain::tests::SCRATCH_DROP);
+        stacks.clear();
     }
 }
 
@@ -142,6 +152,7 @@ unsafe fn install_tool_inner<T>(
 where
     T: Tool + 'static,
 {
+    let _runtime = crate::runtime_domain::Entry::enter();
     let rpc = CoordinatorRpc::<T::GlobalState>::connect(coordinator)?;
     runtime::reserve_coordinator_fd(rpc.raw_fd())?;
     let stats =
@@ -188,6 +199,7 @@ where
 }
 
 pub(crate) fn dispatch(event: &mut SyscallEvent) {
+    let _runtime = crate::runtime_domain::Entry::enter();
     match HANDLER.get() {
         Some(handler) => handler.dispatch(event),
         None => event.result = -i64::from(libc::ENOSYS),
@@ -195,6 +207,7 @@ pub(crate) fn dispatch(event: &mut SyscallEvent) {
 }
 
 pub(crate) fn dispatch_instruction(kind: runtime::InstructionEventKind, context: &mut HookContext) {
+    let _runtime = crate::runtime_domain::Entry::enter();
     match HANDLER.get() {
         Some(handler) => handler.dispatch_instruction(kind, context),
         None => fatal(126),
@@ -209,6 +222,27 @@ struct ToolHost<T: Tool> {
     instruction_subscriptions: runtime::InstructionSubscriptions,
     states: SpinMutex<HashMap<i32, T::ThreadState>>,
     stats: crate::stats::GuestStatsHooks,
+}
+
+#[cfg(test)]
+pub(crate) fn install_domain_test_tool(
+    rpc: CoordinatorRpc<crate::runtime_domain::tests::DomainGlobal>,
+) {
+    use crate::runtime_domain::tests::DomainTool;
+    let _runtime = crate::runtime_domain::Entry::enter();
+    let host = ToolHost::<DomainTool> {
+        tool: SpinMutex::new(Some(DomainTool)),
+        rpc,
+        root_pid: raw_pid(libc::SYS_getpid),
+        subscriptions: [Sysno::getpid].into_iter().collect(),
+        instruction_subscriptions: runtime::InstructionSubscriptions {
+            cpuid: false,
+            rdtsc: true,
+        },
+        states: SpinMutex::new(HashMap::new()),
+        stats: crate::stats::GuestStatsHooks::DISABLED,
+    };
+    assert!(HANDLER.set(Box::new(host)).is_ok());
 }
 
 impl<T> ToolHandler for ToolHost<T>
@@ -226,8 +260,12 @@ where
         // support requires per-thread RPC/state ownership before relaxing the
         // clone guard below.
         let mut tool_slot = self.tool.lock();
+        #[cfg(test)]
+        crate::runtime_domain::tests::at(crate::runtime_domain::tests::TOOL);
         let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
         let mut states = self.states.lock();
+        #[cfg(test)]
+        crate::runtime_domain::tests::at(crate::runtime_domain::tests::STATES);
         let is_new = !states.contains_key(&tid.as_raw());
         let state = states
             .entry(tid.as_raw())
@@ -385,8 +423,12 @@ where
         let pid = raw_pid(libc::SYS_getpid);
         let ppid = (pid != self.root_pid).then(|| raw_pid(libc::SYS_getppid));
         let tool_slot = self.tool.lock();
+        #[cfg(test)]
+        crate::runtime_domain::tests::at(crate::runtime_domain::tests::TOOL);
         let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
         let mut states = self.states.lock();
+        #[cfg(test)]
+        crate::runtime_domain::tests::at(crate::runtime_domain::tests::STATES);
         let is_new = !states.contains_key(&tid.as_raw());
         let state = states
             .entry(tid.as_raw())
@@ -1024,8 +1066,12 @@ pub struct LocalStackGuard {
 
 impl Drop for LocalStackGuard {
     fn drop(&mut self) {
+        let _runtime = crate::runtime_domain::Entry::enter();
         if let Some(arena) = self.arena.take() {
-            COMMITTED_STACKS.lock().push(arena);
+            let mut stacks = COMMITTED_STACKS.lock();
+            #[cfg(test)]
+            crate::runtime_domain::tests::at(crate::runtime_domain::tests::STACK_COMMIT);
+            stacks.push(arena);
         }
     }
 }

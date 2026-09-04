@@ -91,7 +91,10 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
 #[reverie::tool]
 impl<G: GlobalTool> GlobalRPC<G> for CoordinatorRpc<G> {
     async fn send_rpc(&self, message: G::Request) -> G::Response {
+        let _runtime = crate::runtime_domain::Entry::enter();
         let mut connection = self.connection.lock();
+        #[cfg(test)]
+        crate::runtime_domain::tests::at(crate::runtime_domain::tests::RPC);
         // Fork detection without a per-hop syscall: the common round-trip only
         // reads the atfork flag. It is set exclusively in a freshly forked
         // child, so `getpid`/`gettid` are issued only when a fork has actually
