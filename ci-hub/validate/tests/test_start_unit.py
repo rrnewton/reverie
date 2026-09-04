@@ -750,7 +750,12 @@ class StartUnitTest(unittest.TestCase):
         start_unit.HOST_TMP_ROOT = self.original_host_tmp_root
         self.temporary.cleanup()
 
-    def invoke(self, extra: list[str] | None = None) -> tuple[int, str, str]:
+    def invoke(
+        self,
+        extra: list[str] | None = None,
+        *,
+        run: start_unit.Runner | None = None,
+    ) -> tuple[int, str, str]:
         out = io.StringIO()
         err = io.StringIO()
         argv = [
@@ -769,7 +774,7 @@ class StartUnitTest(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = start_unit.main(
                 argv,
-                run=self.fake,
+                run=run or self.fake,
                 environment=self.environment,
                 root=self.root,
                 sleep=lambda _seconds: None,
@@ -944,6 +949,135 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual("codex/fixture-branch", record["branch"])
         self.assertEqual(3600, record["validate_lock_child_deadline_seconds"])
         self.assertEqual(3239, record["hermit_run_timeout_seconds"])
+
+    def test_entry_cleanup_purges_completed_checkout_before_creating_next(self) -> None:
+        stale, _record = self.managed_cleanup_record("entry-stale")
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(0, rc, error)
+        self.assertFalse(stale.exists())
+        self.assertIn(
+            "validate-run: ENTRY-CLEANUP state=ready removed=1 ", error
+        )
+        batch_index = next(
+            index
+            for index, command in enumerate(self.fake.commands)
+            if wrkslots_action(command, "remove-validate-batch")
+        )
+        create_index = next(
+            index
+            for index, command in enumerate(self.fake.commands)
+            if wrkslots_action(command, "create")
+        )
+        self.assertLess(batch_index, create_index)
+
+    def test_entry_cleanup_refuses_after_one_bounded_backlog_batch(self) -> None:
+        stale = [
+            self.managed_cleanup_record(f"entry-backlog-{index:03d}")[0]
+            for index in range(130)
+        ]
+
+        started = time.monotonic()
+        rc, _output, error = self.invoke()
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertLess(elapsed, 1.0)
+        self.assertEqual(8, sum(not path.exists() for path in stale))
+        self.assertEqual(122, sum(path.exists() for path in stale))
+        self.assertIn("removed 8 checkout(s)", error)
+        self.assertIn("waiting on 122 deferred checkout(s)", error)
+        self.assertIn(str(stale[8]), error)
+        self.assertIn("ci-hub validate-run --sweep-completed", error)
+        self.assertIn("the validate NEVER RAN", error)
+        self.assertFalse(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+        batches = [
+            command
+            for command in self.fake.commands
+            if wrkslots_action(command, "remove-validate-batch")
+        ]
+        self.assertEqual(1, len(batches))
+        self.assertEqual(8, batches[0].count("--slot"))
+
+    def test_entry_cleanup_refuses_provider_live_process_retention(self) -> None:
+        stale, _record = self.managed_cleanup_record("entry-live")
+        holder = subprocess.Popen(["sleep", "60"], cwd=stale, text=True)
+        self.addCleanup(holder.kill)
+
+        def run(command: list[str], **kwargs: object):
+            if wrkslots_action(command, "remove-validate-batch"):
+                observed = Path(os.readlink(f"/proc/{holder.pid}/cwd"))
+                self.assertEqual(stale, observed)
+                self.fake.validate_batch_retained[stale.name] = (
+                    f"live process {holder.pid} cwd={observed} uses slot"
+                )
+            return self.fake(command, **kwargs)
+
+        rc, _output, error = self.invoke(run=run)
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertTrue(stale.exists())
+        self.assertIn(str(stale), error)
+        self.assertIn(f"live process {holder.pid}", error)
+        self.assertIn("let it exit or stop it", error)
+        self.assertFalse(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+
+    def test_entry_cleanup_preserves_running_checkout_and_allows_concurrency(self) -> None:
+        running, _record = self.managed_cleanup_record(
+            "entry-running", state="running"
+        )
+
+        def run(command: list[str], **kwargs: object):
+            if (
+                command[:3] == ["systemctl", "--user", "show"]
+                and "validate-entry-running.service" in command
+            ):
+                return completed(
+                    command,
+                    stdout=(
+                        "LoadState=loaded\nActiveState=active\nSubState=running\n"
+                        "InvocationID=entry-running-fixture\n"
+                    ),
+                )
+            return self.fake(command, **kwargs)
+
+        rc, _output, error = self.invoke(run=run)
+
+        self.assertEqual(0, rc, error)
+        self.assertTrue(running.exists())
+        self.assertIn("retained-running=1", error)
+        self.assertFalse(
+            any(
+                wrkslots_action(command, "remove-validate-batch")
+                for command in self.fake.commands
+            )
+        )
+        self.assertTrue(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+
+    def test_in_place_launch_does_not_run_disposable_checkout_cleanup(self) -> None:
+        stale, _record = self.managed_cleanup_record("in-place-unrelated")
+        self.fake.validate_batch_retained[stale.name] = "provider retained"
+
+        rc, _output, error = self.invoke(["--in-place"])
+
+        self.assertEqual(0, rc, error)
+        self.assertTrue(stale.exists())
+        self.assertFalse(
+            any(
+                wrkslots_action(command, "remove-validate-batch")
+                for command in self.fake.commands
+            )
+        )
+        self.assertFalse(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
 
     def test_detached_source_does_not_infer_main_branch(self) -> None:
         self.fake.source_branch = None

@@ -2677,6 +2677,66 @@ def sweep_completed_checkouts(
     }
 
 
+class ValidateEntryCleanupRefused(RuntimeError):
+    """A new disposable checkout cannot be created while cleanup is incomplete."""
+
+
+def require_validate_entry_cleanup(
+    root: Path, *, run: Runner, tool_root: Path = ROOT
+) -> None:
+    """Run one bounded cleanup batch and refuse entry while old work remains.
+
+    An active validation is not old work and does not block another admitted run.
+    Every other retained row, a bookkeeping error, or a deferred checkout means
+    this invocation must not add another disposable checkout to the backlog.
+    """
+    started = time.monotonic()
+    try:
+        report = sweep_completed_checkouts(root, run=run, tool_root=tool_root)
+    except (OSError, RuntimeError, ValueError) as error:
+        elapsed = time.monotonic() - started
+        raise ValidateEntryCleanupRefused(
+            "validation checkout cleanup could not complete before entry "
+            f"after {elapsed:.3f}s: {error}"
+        ) from error
+    elapsed = time.monotonic() - started
+    retained = list(report["retained"])
+    running = [row for row in retained if row.get("reason") == "unit-running"]
+    blocked = [row for row in retained if row.get("reason") != "unit-running"]
+    deferred = list(report["deferred"])
+    bookkeeping_errors = list(report["bookkeeping_errors"])
+    removed = list(report["removed"])
+    removed_cargo_homes = list(report["removed_cargo_homes"])
+
+    if blocked or deferred or bookkeeping_errors:
+        if blocked:
+            first_kind = "retained"
+            first = blocked[0]
+        elif bookkeeping_errors:
+            first_kind = "bookkeeping error"
+            first = bookkeeping_errors[0]
+        else:
+            first_kind = "deferred"
+            first = deferred[0]
+        location = first.get("checkout") or first.get("record") or "(unknown)"
+        reason = " ".join(str(first.get("reason", "unknown reason")).split())
+        raise ValidateEntryCleanupRefused(
+            "validation checkout cleanup is incomplete after "
+            f"{elapsed:.3f}s: removed {len(removed)} checkout(s) and "
+            f"{len(removed_cargo_homes)} Cargo home(s); waiting on "
+            f"{len(deferred)} deferred checkout(s), {len(blocked)} retained "
+            f"checkout(s), and {len(bookkeeping_errors)} bookkeeping error(s); "
+            f"first {first_kind}: {location}: {reason}"
+        )
+
+    print(
+        "validate-run: ENTRY-CLEANUP state=ready "
+        f"removed={len(removed)} removed-cargo-homes={len(removed_cargo_homes)} "
+        f"retained-running={len(running)} elapsed={elapsed:.3f}s",
+        file=sys.stderr,
+    )
+
+
 # Seeded from the shared cache rather than started empty, and seeded with these
 # two subtrees rather than all of it. Both choices are measured, not aesthetic;
 # the numbers are in `test_private_cargo_home.py` and in the commit message.
@@ -4528,6 +4588,9 @@ def main(
         if args.in_place:
             checkout = source_checkout
         else:
+            require_validate_entry_cleanup(
+                state_root, run=run, tool_root=tool_root
+            )
             # DEFAULT: validate the COMMIT, not the tree that claims to be at it.
             checkout_parent = (
                 frozen_checkout_parent(state_root)
@@ -4775,6 +4838,14 @@ def main(
         remove_current_fresh_checkout()
         remove_private_cargo_home(private_cargo_home, run=run)
         remove_runtime_root(runtime_root, run=run)
+        if isinstance(error, ValidateEntryCleanupRefused):
+            return refuse(
+                str(error),
+                "run `ci-hub validate-run --sweep-completed` until it reports "
+                "deferred=0, no non-running RETAINED rows, and "
+                "bookkeeping-errors=0. If a retained path names a live process, "
+                "let it exit or stop it before retrying this validate",
+            )
         return refuse(
             str(error),
             "the unit did not start; check `ci-hub validate-lock status` for a held box "

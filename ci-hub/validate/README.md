@@ -75,6 +75,15 @@ terminal runs whose waiter was interrupted, including its recorded private
 Cargo home. Before removing a checkout, the sweep copies any untracked `*.jsonl` receipt to
 `ignored/validate/orphaned-receipts/<unit>/`.
 
+Before creating any new disposable validation checkout, `ci-hub validate-run`
+runs one bounded cleanup batch. It creates the new checkout only when the batch
+leaves no deferred checkout, no non-running retained checkout, and no
+bookkeeping error. A refusal names the first path and reason and directs the
+caller to `ci-hub validate-run --sweep-completed`; running validation checkouts
+remain eligible for normal concurrent admission and are never removed by this
+gate. `--in-place` creates no validation checkout and therefore does not run the
+entry cleanup.
+
 `ci-hub validate-run` prints `E2E_RESULTS` and `RUNNER_LOGS` paths for Hermit
 runs and records the same paths as `e2e_result_root` and
 `safe_ci_dag_runner_log_dir` in `ignored/validate/runs/<unit>.json`. They live
