@@ -108,6 +108,7 @@ class RunRecord(TypedDict, total=False):
     branch: str | None
     checkout: str
     source_checkout: str
+    materialized_target: bool
     temporary_checkout: bool
     cargo_home: str
     log: str
@@ -273,6 +274,7 @@ COMMON_FIELDS = frozenset(
 VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
     {
         "source_checkout",
+        "materialized_target",
         "branch",
         "temporary_checkout",
         "cargo_home",
@@ -708,6 +710,10 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
             raise _error("pane_role", "validation handles require observer-only")
         if not isinstance(value.get("temporary_checkout"), bool):
             raise _error("temporary_checkout", "must be a boolean")
+        if "materialized_target" in value and not isinstance(
+            value.get("materialized_target"), bool
+        ):
+            raise _error("materialized_target", "must be a boolean when present")
         has_slot = "wrkslots_slot" in value
         has_generation = "wrkslots_generation" in value
         if has_slot != has_generation:
@@ -718,6 +724,27 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
         if has_slot:
             _required_text(value, "wrkslots_slot")
             _positive_integer(value, "wrkslots_generation")
+        if value.get("materialized_target") is True:
+            if value.get("temporary_checkout") is not True:
+                raise _error(
+                    "materialized_target",
+                    "requires temporary_checkout=true",
+                )
+            if not has_slot:
+                raise _error(
+                    "materialized_target",
+                    "requires an exact wrkslots identity",
+                )
+            if value.get("source_checkout") == value.get("checkout"):
+                raise _error(
+                    "materialized_target",
+                    "requires distinct source and validation checkouts",
+                )
+            if kind is RunKind.FROZEN_VALIDATE:
+                raise _error(
+                    "materialized_target",
+                    "is incompatible with frozen validation",
+                )
         for field in (
             "source_checkout",
             "cargo_home",

@@ -96,6 +96,48 @@ class RunRegistryContractTests(unittest.TestCase):
                         validation_handle(branch=branch)
                     )
 
+    def test_materialized_target_provenance_is_optional_and_typed(self) -> None:
+        historical = run_registry.parse_current_record(validation_handle())
+        self.assertNotIn("materialized_target", historical.raw)
+        current = run_registry.parse_current_record(
+            validation_handle(
+                materialized_target=True,
+                wrkslots_slot="validate-fresh-exact",
+                wrkslots_generation=7,
+            )
+        )
+        self.assertIs(current.raw["materialized_target"], True)
+
+        for value in (None, 0, "true"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    RuntimeError, "validation-run-handle-materialized_target"
+                ):
+                    run_registry.parse_current_record(
+                        validation_handle(materialized_target=value)
+                    )
+
+        for updates in (
+            {"materialized_target": True},
+            {
+                "materialized_target": True,
+                "temporary_checkout": False,
+                "wrkslots_slot": "validate-fresh-exact",
+                "wrkslots_generation": 7,
+            },
+            {
+                "materialized_target": True,
+                "source_checkout": "/tmp/checkout",
+                "wrkslots_slot": "validate-fresh-exact",
+                "wrkslots_generation": 7,
+            },
+        ):
+            with self.subTest(updates=updates):
+                with self.assertRaisesRegex(
+                    RuntimeError, "validation-run-handle-materialized_target"
+                ):
+                    run_registry.parse_current_record(validation_handle(**updates))
+
     def test_validation_wrkslots_identity_is_paired_positive_and_optional(self) -> None:
         historical = run_registry.parse_current_record(validation_handle())
         self.assertNotIn("wrkslots_generation", historical.raw)

@@ -157,10 +157,9 @@ normalize_github_remote(){
 
 # ⚠️ LEAVE THE CALLER'S CHECKOUT AS WE FOUND IT.
 #
-# This script detaches "$WT" at origin/main in several places -- to materialize
-# an exact head for just-in-time validation, to clean up after a conflicted
-# rebase, and after a successful push. Every one of those previously left the
-# worktree ON MAIN when the lander exited, including on the ABANDON path.
+# This script changes "$WT" during its rebase paths -- including cleanup after a
+# conflicted rebase and parking after a successful push. Those paths previously
+# left the worktree ON MAIN when the lander exited, including on ABANDON.
 #
 # THAT SILENTLY DESTROYS THE CALLER'S BRANCH, and by a route that does not look
 # like this script's fault. The caller hands us a worktree sitting on their
@@ -198,6 +197,7 @@ restore_entry_checkout(){
   fi || echo "land-pr: WARNING: could not restore $WT to $ENTRY_REF; it is left at ${now:-unknown}. Check the branch before your next force-push." >&2
 }
 trap restore_entry_checkout EXIT
+WT_MUTATED=0
 
 remote_url=$(git -C "$WT" remote get-url origin 2>/dev/null || true)
 checkout_repo=$(normalize_github_remote "$remote_url") || checkout_repo=
@@ -342,9 +342,8 @@ fi
 # command, silently and at a distance. The route, measured on
 # rrnewton/hermit#2448 which was wiped three times before anyone saw why:
 #
-#   1. the just-in-time gate fails, so the restore at the top of that block
-#      leaves HEAD detached at origin/main and `abandon` exits without
-#      touching it again;
+#   1. a landing path that already changed the checkout fails while HEAD is
+#      detached at origin/main and `abandon` exits without touching it again;
 #   2. the shared worktree now LOOKS like a checkout of the branch and is
 #      actually main;
 #   3. the next `push --force-with-lease HEAD:$BR` -- from a later lander run,
@@ -363,6 +362,7 @@ fi
 # acts when WT and ORIG are both set and ORIG still resolves. Failure to park
 # is reported, never fatal -- an abandon must still abandon.
 park_worktree_off_main(){
+  [ "${WT_MUTATED:-0}" -eq 1 ] || return 0
   [ -n "${WT:-}" ] && [ -n "${ORIG:-}" ] || return 0
   git -C "$WT" rev-parse --verify -q "${ORIG}^{commit}" >/dev/null 2>&1 || return 0
   git -C "$WT" checkout -q --detach "$ORIG" 2>/dev/null \
@@ -431,14 +431,10 @@ if [ "$VRC" -ne 0 ]; then
   existing_rc=$?
   if [ "$existing_rc" -eq 4 ] && \
      git -C "$WT" merge-base --is-ancestor "$eligibility_base" "$ORIG"; then
-    git -C "$WT" checkout -q --detach "$ORIG" \
-      || abandon "cannot materialize exact PR head $ORIG for just-in-time validation" 4
     jit_detail=$("$ROOT/ci-hub/bin/pr-head-ci" \
       --repo "$R" --pr "$PR" --expected-head "$ORIG" \
       --checkout "$WT" --agent "$AGENT" --execute 2>&1)
     jit_rc=$?
-    git -C "$WT" checkout -q --detach origin/main \
-      || abandon "cannot restore lander checkout after just-in-time validation" 4
     say "just-in-time exact-head CI(head=$ORIG) rc=$jit_rc: $jit_detail"
     [ "$jit_rc" -eq 0 ] \
       || abandon "just-in-time exact-head CI produced no qualifying verdict for $ORIG (rc=$jit_rc)" 4
@@ -510,6 +506,7 @@ rebase_base=$(git -C "$WT" rev-parse --verify origin/main) \
 if [ "$NO_REBASE" -eq 1 ]; then
   say "no-rebase: skipping the local rebase + force-push; merging the authorized head as it stands"
 elif [ "$UNION" -eq 1 ]; then
+  WT_MUTATED=1
   ulog="/tmp/land-$PR-union.log"
   uresult=$(mktemp)
   union_rc=0
@@ -528,6 +525,7 @@ elif [ "$UNION" -eq 1 ]; then
     || abandon "union-rebase did not converge: ${RES:-see $ulog}" 3
 else
   plain_rebase=1
+  WT_MUTATED=1
   git -C "$WT" checkout -q -B "_land_$PR" "origin/$BR" || abandon "checkout origin/$BR failed" 3
   if ! GIT_EDITOR=true git -C "$WT" rebase origin/main >/dev/null 2>&1; then
     git -C "$WT" rebase --abort >/dev/null 2>&1

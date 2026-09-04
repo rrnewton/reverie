@@ -77,7 +77,13 @@ def parent_checkout_head(tool_root: Path = ROOT) -> str | None:
     return head if SHA_RE.match(head) else None
 
 
-def source_checkout_branch(checkout: Path, target: str, *, run: Runner) -> str | None:
+def source_checkout_branch(
+    checkout: Path,
+    target: str,
+    *,
+    run: Runner,
+    require_target_at_head: bool = True,
+) -> str | None:
     """Return the branch attached to the admitted source checkout, if any.
 
     This is provenance captured before the private detached validation checkout
@@ -116,6 +122,12 @@ def source_checkout_branch(checkout: Path, target: str, *, run: Runner) -> str |
         purpose="cannot recheck source checkout HEAD after reading its branch",
     )
     if branch_head != target:
+        if not require_target_at_head:
+            # A repository used only as an immutable object source does not
+            # contribute branch provenance for the separately materialized
+            # target. Recording its unrelated current branch would falsely
+            # bind that branch to a commit it does not contain at HEAD.
+            return None
         raise ValueError(
             f"source checkout branch {branch!r} moved to {branch_head}, "
             f"not requested exact target {target}"
@@ -1615,6 +1627,7 @@ def prepare_fresh_checkout(
     # second host path so git can reach outward weakens the isolation that
     # assert-no-network and the fixed image exist to provide.
     identity: WrkslotsIdentity | None = None
+    checkout_error: Exception | None = None
     with git_mutation_lock(source, run=run):
         if independent_refs:
             fresh.mkdir(mode=0o700)
@@ -1732,17 +1745,36 @@ def prepare_fresh_checkout(
             identity = parse_wrkslots_create_result(
                 created.stdout, root=state_root, path=fresh, slot=slot, target=target
             )
-        head = checked_output(
-            ["git", "-C", str(fresh), "rev-parse", "HEAD^{commit}"],
+        try:
+            head = checked_output(
+                ["git", "-C", str(fresh), "rev-parse", "HEAD^{commit}"],
+                run=run,
+                purpose="cannot resolve fresh checkout HEAD",
+            )
+            if head != target:
+                raise RuntimeError(
+                    f"fresh checkout resolved to {head}, not requested target {target}"
+                )
+            run(
+                ["git", "-C", str(fresh), "submodule", "update", "--init", "--recursive"],
+                check=False,
+            )
+        except Exception as error:
+            checkout_error = error
+
+    def reject_created_checkout(detail: str) -> RuntimeError:
+        removed = remove_fresh_checkout(
+            source,
+            fresh,
             run=run,
-            purpose="cannot resolve fresh checkout HEAD",
+            tool_root=tool_root,
+            wrkslots=identity,
         )
-        if head != target:
-            raise RuntimeError(f"fresh checkout resolved to {head}, not requested target {target}")
-        run(
-            ["git", "-C", str(fresh), "submodule", "update", "--init", "--recursive"],
-            check=False,
-        )
+        disposition = "removed" if removed else f"RETAINED at {fresh}"
+        return RuntimeError(f"{detail}; registered checkout was {disposition}")
+
+    if checkout_error is not None:
+        raise reject_created_checkout(str(checkout_error)) from checkout_error
     # PROVE usable, do not assume. Each of these is a thing whose absence has
     # produced a misleading fast exit rather than an honest failure.
     #
@@ -1786,10 +1818,10 @@ def prepare_fresh_checkout(
         if not any((fresh / rel).exists() for rel in group)
     ]
     if missing:
-        raise RuntimeError(
+        raise reject_created_checkout(
             f"fresh checkout {fresh} is missing {', '.join(missing)}; refusing to launch a run "
             "that would exit fast for an environmental reason and read like a pass "
-            "(retained for inspection)"
+            "because validation never started and no run evidence exists"
         )
     return fresh, identity
 
@@ -3001,7 +3033,10 @@ def orphaned_receipt_locations(fresh: Path, *, run: Runner) -> list[str]:
     so this module stays a non-reader under the ledger-reader allowlist.
     """
     candidates: list[str] = []
-    for current, dirs, files in os.walk(fresh):
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
+    for current, dirs, files in os.walk(fresh, onerror=raise_walk_error):
         dirs[:] = [d for d in dirs if d not in RECEIPT_SCAN_PRUNE]
         for name in files:
             if name.endswith(".jsonl"):
@@ -3044,6 +3079,48 @@ def orphaned_receipt_locations(fresh: Path, *, run: Runner) -> list[str]:
     return sorted(orphaned)
 
 
+@dataclass(frozen=True)
+class FreshCheckoutCleanup:
+    locations: tuple[str, ...]
+    archived: tuple[str, ...]
+    removed: bool
+    error: str | None = None
+
+
+def cleanup_fresh_checkout_preserving_receipts(
+    root: Path,
+    source: Path,
+    fresh: Path,
+    *,
+    unit: str,
+    run: Runner,
+    tool_root: Path,
+    wrkslots: WrkslotsIdentity | None,
+) -> FreshCheckoutCleanup:
+    """Archive run-produced receipts before reclaiming a managed checkout."""
+
+    try:
+        locations = orphaned_receipt_locations(fresh, run=run)
+    except OSError as error:
+        return FreshCheckoutCleanup((), (), False, f"receipt scan failed: {error}")
+    try:
+        archived = archive_orphaned_receipts(root, fresh, locations, unit=unit)
+    except (OSError, RuntimeError) as error:
+        return FreshCheckoutCleanup(
+            tuple(locations), (), False, f"receipt archive failed: {error}"
+        )
+    removed = remove_fresh_checkout(
+        source,
+        fresh,
+        run=run,
+        tool_root=tool_root,
+        wrkslots=wrkslots,
+    )
+    return FreshCheckoutCleanup(
+        tuple(locations), tuple(archived), removed, None
+    )
+
+
 def owner_validate_symlink_is_exact(checkout: Path, dirty: str) -> bool:
     """The one owner-checkout exception; every property is deliberately fixed."""
     link = checkout / "validate"
@@ -3061,6 +3138,7 @@ def validate_checkout(
     repo: str,
     run: Runner,
     allow_owner_validate_symlink: bool = False,
+    materialize_target: bool = False,
 ) -> Path:
     checkout = require_guest_visible_root(checkout, role="source checkout")
     if not SHA_RE.fullmatch(target):
@@ -3084,8 +3162,18 @@ def validate_checkout(
         run=run,
         purpose="cannot resolve checkout HEAD",
     )
-    if head != target:
+    if head != target and not materialize_target:
         raise ValueError(f"checkout HEAD is {head}, not requested exact target {target}")
+    if materialize_target:
+        resolved_target = checked_output(
+            ["git", "-C", str(checkout), "rev-parse", f"{target}^{{commit}}"],
+            run=run,
+            purpose="cannot resolve requested target in source repository",
+        )
+        if resolved_target != target:
+            raise ValueError(
+                f"requested target resolved to {resolved_target}, not exact commit {target}"
+            )
 
     dirty = checked_output(
         ["git", "-C", str(checkout), "status", "--porcelain=v1"],
@@ -3963,36 +4051,50 @@ def cleanup_after_attach(
     unit: str,
     run: Runner,
     tool_root: Path = ROOT,
+    retain_materialized_checkout: bool = False,
 ) -> None:
     """Finish cleanup owned by a caller that previously stopped waiting."""
-    try:
-        cleaned, archived, reason = cleanup_recorded_checkout(
-            root,
-            record,
-            record_path=record_path,
-            unit=unit,
-            run=run,
-            tool_root=tool_root,
-            check_processes=True,
-        )
-    except (OSError, RuntimeError, ValueError) as error:
+    if (
+        retain_materialized_checkout
+        and record.get("materialized_target") is True
+        and canonical_repo(str(record.get("repo", "rrnewton/hermit")))
+        == "rrnewton/hermit"
+    ):
         print(
-            "validate-run: completed checkout RETAINED: cleanup could not "
-            f"preserve its evidence: {error}",
+            "validate-run: completed materialized target checkout RETAINED at "
+            f"{record.get('checkout')}; it is the durable location of this run's "
+            "scorecard write-back and remains registered with wrkslots.",
             file=sys.stderr,
         )
     else:
-        if cleaned:
-            bookkeep_record(
-                record_path,
-                checkout_removed_at=datetime.now(timezone.utc).isoformat(),
-                archived_orphaned_receipts=archived,
+        try:
+            cleaned, archived, reason = cleanup_recorded_checkout(
+                root,
+                record,
+                record_path=record_path,
+                unit=unit,
+                run=run,
+                tool_root=tool_root,
+                check_processes=True,
             )
-        elif reason is not None:
+        except (OSError, RuntimeError, ValueError) as error:
             print(
-                f"validate-run: completed checkout RETAINED: {reason}",
+                "validate-run: completed checkout RETAINED: cleanup could not "
+                f"preserve its evidence: {error}",
                 file=sys.stderr,
             )
+        else:
+            if cleaned:
+                bookkeep_record(
+                    record_path,
+                    checkout_removed_at=datetime.now(timezone.utc).isoformat(),
+                    archived_orphaned_receipts=archived,
+                )
+            elif reason is not None:
+                print(
+                    f"validate-run: completed checkout RETAINED: {reason}",
+                    file=sys.stderr,
+                )
     try:
         cargo_cleaned, cargo_reason = cleanup_recorded_cargo_home(
             root,
@@ -4139,8 +4241,9 @@ def attach(
                 print(f"  log:    {log}")
             print(f"  state:  {describe_outcome(canonical_exit)}")
     try:
+        materialized_target = record.get("materialized_target") is True
         scorecard_updated = repo != "rrnewton/hermit" or write_scorecard_from_results(
-            Path(record["source_checkout"]),
+            Path(record["checkout"] if materialized_target else record["source_checkout"]),
             target,
             Path(record["e2e_result_root"]),
             run=run,
@@ -4170,7 +4273,13 @@ def attach(
         json_output=json_output,
     )
     cleanup_after_attach(
-        root, record_path, record, unit=unit, run=run, tool_root=tool_root
+        root,
+        record_path,
+        record,
+        unit=unit,
+        run=run,
+        tool_root=tool_root,
+        retain_materialized_checkout=materialized_target,
     )
     return (
         canonical_exit
@@ -4209,8 +4318,9 @@ def parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="DIR",
         help=(
-            "DIRECTORY of the checkout to validate, normally \"$PWD\". "
-            "This is a path, NOT a commit -- the SHA goes in --target."
+            "DIRECTORY of the checkout to validate, normally \"$PWD\". With "
+            "--materialize-target it is instead the clean repository supplying the "
+            "target object. This is a path, NOT a commit -- the SHA goes in --target."
         ),
     )
     result.add_argument(
@@ -4232,6 +4342,15 @@ def parser() -> argparse.ArgumentParser:
             "exact target, but its ignored state (build output, caches, materialized "
             "submodules) participates in the run, so the receipt's SHA describes the "
             "commit PLUS that unrecorded local state."
+        ),
+    )
+    result.add_argument(
+        "--materialize-target",
+        action="store_true",
+        help=(
+            "use a clean --checkout repository as an object source while materializing "
+            "--target into the normal registered fresh validation checkout. The source "
+            "HEAD is never moved; --target must already resolve to that exact commit"
         ),
     )
     result.add_argument(
@@ -4257,9 +4376,9 @@ def parser() -> argparse.ArgumentParser:
         metavar="SHA",
         help=(
             "commit SHA to validate, normally \"$(git rev-parse HEAD)\". This is a "
-            "commit, NOT a path, and it must be the commit that --checkout DIR "
-            "currently has checked out, or admission refuses with "
-            "'refusing to validate a stale base'."
+            "commit, NOT a path. Ordinarily --checkout DIR must have it checked out; "
+            "--materialize-target instead requires that exact object to exist while "
+            "leaving the source HEAD untouched."
         ),
     )
     result.add_argument("--pr", type=int)
@@ -4386,6 +4505,7 @@ def main(
                 args.ci_dag_jobs,
                 args.frozen_validate,
                 args.in_place,
+                args.materialize_target,
                 args.make_validate,
                 args.allow_owner_validate_symlink,
                 args.dry_run,
@@ -4417,6 +4537,7 @@ def main(
                 args.log,
                 args.ci_dag_jobs,
                 args.frozen_validate,
+                args.materialize_target,
                 args.dry_run,
             )
         ):
@@ -4456,6 +4577,17 @@ def main(
         return refuse(
             "--frozen-validate cannot use --in-place",
             "drop --in-place so the deliberately old target runs in a fresh isolated checkout",
+        )
+    if args.materialize_target and args.in_place:
+        return refuse(
+            "--materialize-target cannot use --in-place",
+            "drop --in-place so the exact target is built in a registered fresh checkout",
+        )
+    if args.materialize_target and args.frozen_validate:
+        return refuse(
+            "--materialize-target cannot be combined with --frozen-validate",
+            "use --materialize-target for a current landing candidate or --frozen-validate "
+            "for a deliberately historical non-qualifying measurement",
         )
     if args.frozen_validate and "--label-pr" in validate_args:
         return refuse(
@@ -4554,6 +4686,36 @@ def main(
             wrkslots=fresh_wrkslots,
         )
 
+    def cleanup_current_fresh_preserving_receipts() -> FreshCheckoutCleanup:
+        if fresh_checkout is None or source_checkout is None:
+            return FreshCheckoutCleanup((), (), True)
+        return cleanup_fresh_checkout_preserving_receipts(
+            state_root,
+            source_checkout,
+            fresh_checkout,
+            unit=unit,
+            run=run,
+            tool_root=tool_root,
+            wrkslots=fresh_wrkslots,
+        )
+
+    def report_inner_refusal_cleanup(cleanup: FreshCheckoutCleanup) -> None:
+        if cleanup.error is not None:
+            print(
+                "validate-run: ORPHANED-RECEIPT CHECK REFUSED: "
+                f"{cleanup.error}. Temp checkout RETAINED at {fresh_checkout}.",
+                file=sys.stderr,
+            )
+        elif cleanup.locations:
+            disposition = (
+                "removed" if cleanup.removed else f"RETAINED at {fresh_checkout}"
+            )
+            print(
+                "validate-run: ORPHANED-RECEIPT: archived "
+                f"{', '.join(cleanup.archived)} before the checkout was {disposition}.",
+                file=sys.stderr,
+            )
+
     try:
         if FD_TOOL_ROOT_RE.fullmatch(str(tool_root)) is not None:
             tool_authority = read_immutable_tool_authority(
@@ -4570,9 +4732,13 @@ def main(
             repo=repo,
             run=run,
             allow_owner_validate_symlink=args.allow_owner_validate_symlink,
+            materialize_target=args.materialize_target,
         )
         source_branch = source_checkout_branch(
-            source_checkout, args.target, run=run
+            source_checkout,
+            args.target,
+            run=run,
+            require_target_at_head=not args.materialize_target,
         )
         unit = sanitize_unit(args.unit) if args.unit else default_unit(args.agent, args.target)
         if args.frozen_validate:
@@ -4708,6 +4874,7 @@ def main(
                     "repo": repo,
                     "checkout": str(checkout),
                     "source_checkout": str(source_checkout),
+                    "materialized_target": args.materialize_target,
                     **({"branch": source_branch} if source_branch is not None else {}),
                     "temporary_checkout": fresh_checkout is not None,
                     **(
@@ -4941,11 +5108,12 @@ def main(
             )
         except (RuntimeError, ValueError) as error:
             inner_exit = final.get("exit_code") if isinstance(final, dict) else None
-            if (
+            relayed_inner_refusal = (
                 isinstance(inner_exit, int)
                 and inner_exit != 0
                 and relay_inner_output(log)
-            ):
+            )
+            if relayed_inner_refusal:
                 print(
                     f"validate-run: the inner validate exited {inner_exit}; "
                     "that refusal above is the reason. No frozen-validation "
@@ -4953,13 +5121,12 @@ def main(
                     "to write one.",
                     file=sys.stderr,
                 )
-                remove_current_fresh_checkout()
-                remove_private_cargo_home(private_cargo_home, run=run)
-                remove_runtime_root(runtime_root, run=run)
-                return inner_exit
-            remove_current_fresh_checkout()
+            cleanup = cleanup_current_fresh_preserving_receipts()
+            report_inner_refusal_cleanup(cleanup)
             remove_private_cargo_home(private_cargo_home, run=run)
             remove_runtime_root(runtime_root, run=run)
+            if relayed_inner_refusal:
+                return inner_exit
             return could_not_determine(
                 f"FROZEN-VALIDATE-RESULT-UNAVAILABLE: {error}",
                 f"inspect {frozen_result} and {log}; the run's outcome cannot be "
@@ -5023,7 +5190,8 @@ def main(
                 "write one.",
                 file=sys.stderr,
             )
-            remove_current_fresh_checkout()
+            cleanup = cleanup_current_fresh_preserving_receipts()
+            report_inner_refusal_cleanup(cleanup)
             remove_private_cargo_home(private_cargo_home, run=run)
             remove_runtime_root(runtime_root, run=run)
             return inner_exit
@@ -5032,38 +5200,33 @@ def main(
             # Retention is for EVIDENCE, not for every failure. Retaining
             # unconditionally cost 26 MB per failed validate, and because
             # The Rust validation driver is fail-fast; that is most of them.
-            try:
-                orphans = orphaned_receipt_locations(fresh_checkout, run=run)
-            except OSError as scan_error:
-                # Could not look. A NO-RESULT must never authorize deletion.
-                orphans = [f"<scan failed: {scan_error}>"]
-            if orphans:
+            cleanup = cleanup_current_fresh_preserving_receipts()
+            if cleanup.error is not None:
+                remove_private_cargo_home(private_cargo_home, run=run)
+                remove_runtime_root(runtime_root, run=run)
+                return could_not_determine(
+                    "ORPHANED-RECEIPT: checkout-local evidence could not be "
+                    f"safely classified or archived: {cleanup.error}. Temp checkout "
+                    f"RETAINED at {fresh_checkout}.",
+                    "preserve the files manually before reclaiming the checkout",
+                )
+            if cleanup.locations:
                 # The run HAPPENED and produced evidence; preserve it in the
                 # durable validation evidence tree before reclaiming the temp
                 # checkout. Keeping a whole checkout for one receipt caused the
                 # unbounded disk growth this path now prevents.
-                try:
-                    archived = archive_orphaned_receipts(
-                        state_root, fresh_checkout, orphans, unit=unit
-                    )
-                except (OSError, RuntimeError) as archive_error:
-                    remove_private_cargo_home(private_cargo_home, run=run)
-                    remove_runtime_root(runtime_root, run=run)
-                    return could_not_determine(
-                        "ORPHANED-RECEIPT: the run wrote checkout-local evidence, "
-                        f"but it could not be archived: {archive_error}. Temp checkout "
-                        f"RETAINED at {fresh_checkout}.",
-                        "preserve the files manually before reclaiming the checkout",
-                    )
-                removed = remove_current_fresh_checkout()
-                disposition = "removed" if removed else f"RETAINED at {fresh_checkout}"
+                disposition = (
+                    "removed"
+                    if cleanup.removed
+                    else f"RETAINED at {fresh_checkout}"
+                )
                 remove_private_cargo_home(private_cargo_home, run=run)
                 remove_runtime_root(runtime_root, run=run)
                 return could_not_determine(
                     "ORPHANED-RECEIPT: this run wrote a receipt into "
-                    f"{', '.join(orphans)} inside the temp checkout, where no "
+                    f"{', '.join(cleanup.locations)} inside the temp checkout, where no "
                     "consumer reads it. The receipt was archived outside the temp "
-                    f"checkout at {', '.join(archived)}, then the checkout was {disposition}.",
+                    f"checkout at {', '.join(cleanup.archived)}, then the checkout was {disposition}.",
                     "inspect the archived receipt; the run's result exists but is not "
                     "a canonical verdict",
                 )
@@ -5073,7 +5236,7 @@ def main(
                 "reclaiming it.",
                 file=sys.stderr,
             )
-            remove_current_fresh_checkout()
+            # The helper already reclaimed the evidence-free checkout.
         remove_private_cargo_home(private_cargo_home, run=run)
         remove_runtime_root(runtime_root, run=run)
         # ⚠️ NOT "failed". No receipt means no verdict was ever recorded, so there
@@ -5099,7 +5262,7 @@ def main(
     scorecard_updated = repo != "rrnewton/hermit" or (
         source_checkout is not None
         and write_scorecard_from_results(
-            source_checkout,
+            checkout if args.materialize_target else source_checkout,
             args.target,
             e2e_result_root,
             run=run,
@@ -5117,7 +5280,19 @@ def main(
         scorecard_updated=scorecard_updated,
         run=run,
     )
-    remove_current_fresh_checkout()
+    if (
+        args.materialize_target
+        and repo == "rrnewton/hermit"
+        and fresh_checkout is not None
+    ):
+        print(
+            f"validate-run: materialized target checkout RETAINED at {fresh_checkout}; "
+            "it is the durable location of this run's scorecard write-back and remains "
+            "registered with wrkslots.",
+            file=sys.stderr,
+        )
+    else:
+        remove_current_fresh_checkout()
     # The normal completion path, and the one that matters most: without this the
     # per-run cargo home leaks on EVERY successful validate.
     remove_private_cargo_home(private_cargo_home, run=run)

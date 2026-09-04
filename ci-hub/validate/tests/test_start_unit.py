@@ -161,6 +161,7 @@ def wrkslots_action(command: list[str], action: str) -> bool:
 class FakeRun:
     def __init__(self, checkout: Path) -> None:
         self.checkout = checkout
+        self.target = SHA
         self.commands: list[list[str]] = []
         self.command_cwds: list[tuple[list[str], Path | None]] = []
         self.command_envs: list[dict[str, str] | None] = []
@@ -174,6 +175,7 @@ class FakeRun:
         self.fresh_complete = True
         self.fresh_runner_name = "safe-ci-dag-runner"
         self.fresh_runner_executable = True
+        self.fresh_head = self.target
         self.ledger_rows: list[str] | None = None
         self.canonical_verdict = "VALIDATED"
         self.canonical_status_rc = 0
@@ -195,8 +197,11 @@ class FakeRun:
         self.current_main = "b" * 40
         self.target_contains_current_main = False
         self.source_common_dir_available = True
-        self.source_head = SHA
+        self.source_head = self.target
+        self.source_target = self.target
+        self.source_target_rc = 0
         self.source_branch: str | None = "codex/fixture-branch"
+        self.real_source_git = False
         self.scorecard_update = False
         self.scorecard_rc = 0
         self.scorecard_stderr = ""
@@ -211,10 +216,14 @@ class FakeRun:
         self.validate_batch_retained: dict[str, str] = {}
         self.validate_batch_output: str | None = None
         self.validate_batch_zero_census = False
+        self.systemd_launch_rc = 0
+        self.systemd_launch_stderr = ""
+        self.systemd_checkout_head: str | None = None
+        self.inner_log_lines: list[str] = []
 
     def default_ledger_row(self) -> dict[str, object]:
         return {
-            "commit": SHA,
+            "commit": self.target,
             "cwd": str(self.fresh if self.fresh is not None else self.checkout),
             "started_at": "2099-01-01T00:00:01Z",
             "finished_at": "2099-01-01T00:00:02Z",
@@ -251,7 +260,25 @@ class FakeRun:
             slot = command[command.index("create") + 1]
             project_root = Path(command[command.index("--project-root") + 1])
             self.fresh = project_root / "worktrees" / "validate" / slot
-            self._materialize_fresh_checkout()
+            if self.real_source_git:
+                self.fresh.parent.mkdir(parents=True, exist_ok=True)
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(self.checkout),
+                        "worktree",
+                        "add",
+                        "--detach",
+                        str(self.fresh),
+                        self.target,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                self._materialize_fresh_checkout()
             if self.wrkslots_create_output is not None:
                 return completed(command, stdout=self.wrkslots_create_output)
             return completed(
@@ -261,7 +288,7 @@ class FakeRun:
                         "agent": f"validate-{slot}",
                         "checkouts": [
                             {
-                                "head": SHA,
+                                "head": self.target,
                                 "name": "checkout",
                                 "path": self.wrkslots_create_path
                                 or str(self.fresh.resolve()),
@@ -322,7 +349,23 @@ class FakeRun:
         if command[0].endswith("ci-hub/bin/wrkslots") and "remove" in command:
             if self.fresh is not None:
                 self.removed.append(str(self.fresh))
-                shutil.rmtree(self.fresh, ignore_errors=True)
+                if self.real_source_git:
+                    subprocess.run(
+                        [
+                            "git",
+                            "-C",
+                            str(self.checkout),
+                            "worktree",
+                            "remove",
+                            "--force",
+                            str(self.fresh),
+                        ],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                else:
+                    shutil.rmtree(self.fresh, ignore_errors=True)
             return completed(command, stdout="removed and archived validation slot\n")
         if (
             command[0].endswith("ci-hub/bin/wrkslots")
@@ -397,6 +440,11 @@ class FakeRun:
         (self.fresh / ".git").write_text("gitdir: shared/worktrees/fake\n")
         (self.fresh / "scripts").mkdir(parents=True, exist_ok=True)
         (self.fresh / "scripts/validate.rs").write_text("#!/usr/bin/env rust-script\n")
+        compat = self.fresh / "ci/compat-envelope"
+        compat.mkdir(parents=True, exist_ok=True)
+        (compat / "scorecard.rs").write_text("#!/usr/bin/env rust-script\n")
+        (self.fresh / "SCORECARD.md").write_text("scorecard\n")
+        (compat / "cells.json").write_text("{}\n")
         source_schema = (
             self.checkout / "ci/manifest-plan/validation-service-result-schema.json"
         )
@@ -417,7 +465,9 @@ class FakeRun:
         if self.plant_receipt is not None:
             receipt = self.fresh / self.plant_receipt
             receipt.parent.mkdir(parents=True, exist_ok=True)
-            receipt.write_text(f'{{"commit": "{SHA}", "cwd": "{self.fresh}"}}\n')
+            receipt.write_text(
+                f'{{"commit": "{self.target}", "cwd": "{self.fresh}"}}\n'
+            )
 
     def _run_after_checkout_setup(self, command: list[str]):
         if command[:2] == ["rm", "-rf"]:
@@ -429,6 +479,16 @@ class FakeRun:
             self.fresh = Path(command[-1])
             self._materialize_fresh_checkout()
             return completed(command)
+        if self.real_source_git and command[:3] in (
+            ["git", "-C", str(self.checkout)],
+            ["git", "-C", str(self.fresh)],
+        ):
+            return subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
         if command[:5] == ["git", "-C", str(self.checkout), "remote", "get-url"]:
             return completed(command, stdout="https://github.com/rrnewton/hermit.git\n")
         if (
@@ -453,7 +513,7 @@ class FakeRun:
                 common = self.checkout / ".git"
                 common.mkdir(exist_ok=True)
                 return completed(command, stdout=f"{common}\n")
-            return completed(command, stdout=f"{SHA}\n")
+            return completed(command, stdout=f"{self.fresh_head}\n")
         if command[:3] == ["git", "-C", str(self.checkout)] and command[3] in {"worktree", "submodule"}:
             if command[3:5] == ["worktree", "remove"]:
                 self.removed.append(command[-1])
@@ -510,7 +570,7 @@ class FakeRun:
             qualifying = len(rows) if verdict == "VALIDATED" else 0
             parsed_rows = [json.loads(row) for row in rows]
             report = {
-                "sha": SHA,
+                "sha": self.target,
                 "verdict": verdict,
                 "exit_code": status_rc,
                 "qualifying_count": qualifying,
@@ -559,13 +619,23 @@ class FakeRun:
                 common = self.checkout / ".git"
                 common.mkdir(exist_ok=True)
                 return completed(command, stdout=f"{common}\n")
+            if command[-1] == f"{self.target}^{{commit}}":
+                return completed(
+                    command,
+                    rc=self.source_target_rc,
+                    stdout=f"{self.source_target}\n" if self.source_target_rc == 0 else "",
+                    stderr=(
+                        "fatal: bad object\n" if self.source_target_rc != 0 else ""
+                    ),
+                )
             return completed(command, stdout=f"{self.source_head}\n")
         if command[:4] == ["git", "-C", str(self.checkout), "status"]:
             return completed(command, stdout=self.dirty)
-        if command[:1] == [str(self.checkout / "ci/compat-envelope/scorecard.rs")]:
+        if command[0].endswith("ci/compat-envelope/scorecard.rs"):
+            scorecard_checkout = Path(command[0]).parents[2]
             if self.scorecard_rc == 0 and self.scorecard_update:
                 for relative in start_unit.SCORECARD_PATHS:
-                    path = self.checkout / relative
+                    path = scorecard_checkout / relative
                     path.write_text(path.read_text() + "updated\n")
             state = "changed" if self.scorecard_update else "unchanged"
             return completed(
@@ -630,12 +700,28 @@ class FakeRun:
                 return completed(command)
             raise AssertionError(command)
         if command[0] == "systemd-run" and "validate-lock" in command:
+            if self.real_source_git:
+                working_directory = Path(
+                    command[command.index("--working-directory") + 1]
+                )
+                self.systemd_checkout_head = subprocess.run(
+                    ["git", "-C", str(working_directory), "rev-parse", "HEAD^{commit}"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+            if self.systemd_launch_rc != 0:
+                return completed(
+                    command,
+                    rc=self.systemd_launch_rc,
+                    stderr=self.systemd_launch_stderr,
+                )
             output = next(
                 value.removeprefix("StandardOutput=append:")
                 for value in command
                 if value.startswith("StandardOutput=append:")
             )
-            lines: list[str] = []
+            lines: list[str] = list(self.inner_log_lines)
             if self.executed_tests is not None:
                 lines.append(f"   {self.executed_tests} test(s) executed, 0 filtered")
             if self.executed_nodes is not None:
@@ -665,7 +751,7 @@ class FakeRun:
                     json.dumps(
                         {
                             "schema_version": 3,
-                            "commit": SHA,
+                            "commit": self.target,
                             "profile": "full",
                             "selection_mode": "full",
                             "final_validate_status": self.final_validate_status,
@@ -755,6 +841,7 @@ class StartUnitTest(unittest.TestCase):
         extra: list[str] | None = None,
         *,
         run: start_unit.Runner | None = None,
+        target: str = SHA,
     ) -> tuple[int, str, str]:
         out = io.StringIO()
         err = io.StringIO()
@@ -764,7 +851,7 @@ class StartUnitTest(unittest.TestCase):
             "--agent",
             "hermit-test",
             "--target",
-            SHA,
+            target,
             "--unit",
             "validate-test",
             "--log",
@@ -837,6 +924,90 @@ class StartUnitTest(unittest.TestCase):
             str(path.relative_to(root)): path.read_bytes()
             for path in root.rglob("*")
             if path.is_file()
+        }
+
+    @staticmethod
+    def worktree_bytes(root: Path) -> dict[str, bytes]:
+        return {
+            str(path.relative_to(root)): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file() and ".git" not in path.relative_to(root).parts
+        }
+
+    @staticmethod
+    def git_output(checkout: Path, *arguments: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(checkout), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    def initialize_real_materialize_source(self) -> str:
+        """Make HEAD differ from a still-present exact target in a clean real repo."""
+
+        subprocess.run(
+            ["git", "init", "-b", "caller-branch", str(self.checkout)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for key, value in (("user.name", "Test User"), ("user.email", "test@example.com")):
+            subprocess.run(
+                ["git", "-C", str(self.checkout), "config", key, value],
+                check=True,
+            )
+        runner_crate = self.checkout / "agent-utils/rs/dagrun/Cargo.toml"
+        runner_crate.parent.mkdir(parents=True)
+        runner_crate.write_text("[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n")
+        runner = self.checkout / "agent-utils/common/bin/dagrun"
+        runner.parent.mkdir(parents=True)
+        runner.write_text("#!/bin/sh\n")
+        runner.chmod(0o755)
+        marker = self.checkout / "materialized-version"
+        marker.write_text("exact target\n")
+        subprocess.run(
+            ["git", "-C", str(self.checkout), "add", "."],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.checkout), "commit", "-m", "exact target"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        target = self.git_output(self.checkout, "rev-parse", "HEAD^{commit}").strip()
+        marker.write_text("caller head\n")
+        subprocess.run(
+            ["git", "-C", str(self.checkout), "add", "materialized-version"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.checkout), "commit", "-m", "caller head"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.fake.target = target
+        self.fake.fresh_head = target
+        self.fake.source_target = target
+        self.fake.real_source_git = True
+        return target
+
+    def caller_git_state(self) -> dict[str, object]:
+        return {
+            "branch": self.git_output(
+                self.checkout, "symbolic-ref", "--short", "HEAD"
+            ),
+            "head": self.git_output(self.checkout, "rev-parse", "HEAD^{commit}"),
+            "status": self.git_output(
+                self.checkout, "status", "--porcelain=v1", "--untracked-files=all"
+            ),
+            "index": self.git_output(self.checkout, "ls-files", "--stage"),
+            "cached_diff": self.git_output(
+                self.checkout, "diff", "--cached", "--binary"
+            ),
+            "worktree": self.worktree_bytes(self.checkout),
         }
 
     def assert_canonical_readers_use_split_roots(self, tool_root: Path) -> None:
@@ -3906,6 +4077,7 @@ class StartUnitTest(unittest.TestCase):
         self.fake.executed_tests = None
         self.fake.collected_unit = True
         self.fake.ledger_rows = []
+        self.plant_orphan_receipt("signal/result.jsonl")
 
         rc, _output, error = self.invoke(["--", "full"])
 
@@ -3918,6 +4090,12 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual("terminated", record["result"])
         self.assertEqual(143, record["exit_code"])
         self.assertEqual(15, record["signal"])
+        archived = (
+            self.root
+            / "ignored/validate/orphaned-receipts/validate-test/signal/result.jsonl"
+        )
+        self.assertTrue(archived.is_file(), "signal cleanup must preserve run evidence")
+        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
 
     def test_exit_zero_without_status_is_unknown(self) -> None:
         self.fake.actual_exit = 0
@@ -4423,6 +4601,32 @@ class StartUnitTest(unittest.TestCase):
             )
         )
 
+    def materialized_attach_record(self) -> tuple[Path, Path]:
+        fresh = self.root / "worktrees/validate/validate-fresh-attach"
+        self.fake.fresh = fresh
+        self.fake._materialize_fresh_checkout()
+        record = self.root / "ignored/validate/runs/validate-test.json"
+        start_unit.run_registry.write_record(
+            record,
+            {
+                "schema_version": 1,
+                "state": "running",
+                "unit": "validate-test.service",
+                "target": SHA,
+                "repo": "rrnewton/hermit",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "materialized_target": True,
+                "temporary_checkout": True,
+                "wrkslots_slot": fresh.name,
+                "wrkslots_generation": self.fake.wrkslots_generation,
+                "e2e_result_root": str(self.plant_per_cell_results()),
+                "log": str(self.root / "run.log"),
+                "started_at": "2099-01-01T00:00:00Z",
+            },
+        )
+        return record, fresh
+
     def test_attach_waits_on_existing_handle_without_relaunching(self) -> None:
         self.fake.validate_status_calls = 1
         self.fake.scorecard_update = True
@@ -4470,6 +4674,58 @@ class StartUnitTest(unittest.TestCase):
             ),
         )
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+
+    def test_attach_terminal_materialized_scorecard_checkout_is_retained(self) -> None:
+        _record, fresh = self.materialized_attach_record()
+        self.fake.scorecard_update = True
+        out = io.StringIO()
+        err = io.StringIO()
+
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                ["--attach", "validate-test"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, err.getvalue())
+        self.assertTrue(fresh.is_dir())
+        self.assertEqual([], self.fake.removed)
+        self.assertTrue((fresh / "SCORECARD.md").read_text().endswith("updated\n"))
+        self.assertIn("scorecard write-back", err.getvalue())
+
+    def test_attach_error_cleans_materialized_checkout_after_archiving_receipt(self) -> None:
+        _record, fresh = self.materialized_attach_record()
+        receipt = fresh / "result.jsonl"
+        receipt_payload = '{"result":"orphaned"}\n'
+        receipt.write_text(receipt_payload)
+        old_row = self.fake.default_ledger_row()
+        old_row["started_at"] = "2000-01-01T00:00:01Z"
+        old_row["finished_at"] = "2000-01-01T00:00:02Z"
+        self.fake.ledger_rows = [json.dumps(old_row)]
+        out = io.StringIO()
+        err = io.StringIO()
+
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                ["--attach", "validate-test"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, err.getvalue())
+        self.assertFalse(fresh.exists())
+        self.assertEqual([str(fresh)], self.fake.removed)
+        archived = (
+            self.root
+            / "ignored/validate/orphaned-receipts/validate-test/result.jsonl"
+        )
+        self.assertEqual(receipt_payload, archived.read_text())
+        self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", err.getvalue())
 
     def test_attach_returns_canonical_nonpass_not_child_zero(self) -> None:
         self.fake.validate_status_calls = 1
@@ -4601,6 +4857,222 @@ class StartUnitTest(unittest.TestCase):
         )
         return systemd[systemd.index("--working-directory") + 1]
 
+    def test_materialize_target_preserves_real_caller_git_state_on_success(self) -> None:
+        target = self.initialize_real_materialize_source()
+        before = self.caller_git_state()
+        self.assertEqual("caller-branch\n", before["branch"])
+        self.assertEqual("", before["status"])
+        self.assertNotEqual("", before["index"])
+        self.assertEqual("", before["cached_diff"])
+        self.assertNotEqual(target, str(before["head"]).strip())
+
+        with mock.patch.object(
+            start_unit, "_carries_nosuid_or_nodev", return_value=False
+        ):
+            rc, _output, error = self.invoke(
+                ["--materialize-target", "--", "full"], target=target
+            )
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertEqual(before, self.caller_git_state())
+        exact_checkout = Path(self._working_directory())
+        self.assertEqual(self.root / "worktrees/validate", exact_checkout.parent)
+        self.assertEqual(target, self.fake.systemd_checkout_head)
+        self.assertEqual(
+            target,
+            self.git_output(exact_checkout, "rev-parse", "HEAD^{commit}").strip(),
+        )
+        self.assertEqual(
+            "exact target\n", (exact_checkout / "materialized-version").read_text()
+        )
+        self.assertEqual(
+            "caller head\n", (self.checkout / "materialized-version").read_text()
+        )
+
+    def test_materialize_target_preserves_real_caller_git_state_on_launcher_refusal(
+        self,
+    ) -> None:
+        target = self.initialize_real_materialize_source()
+        self.fake.systemd_launch_rc = 1
+        self.fake.systemd_launch_stderr = "systemd-run: exact launcher refusal\n"
+        before = self.caller_git_state()
+        self.assertEqual("caller-branch\n", before["branch"])
+        self.assertEqual("", before["status"])
+        self.assertNotEqual("", before["index"])
+        self.assertEqual("", before["cached_diff"])
+
+        with mock.patch.object(
+            start_unit, "_carries_nosuid_or_nodev", return_value=False
+        ):
+            rc, _output, error = self.invoke(
+                ["--materialize-target", "--", "full"], target=target
+            )
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn(self.fake.systemd_launch_stderr, error)
+        self.assertEqual(before, self.caller_git_state())
+        self.assertEqual(target, self.fake.systemd_checkout_head)
+        self.assertIsNotNone(self.fake.fresh)
+        assert self.fake.fresh is not None
+        self.assertEqual(self.root / "worktrees/validate", self.fake.fresh.parent)
+        self.assertFalse(self.fake.fresh.exists())
+
+    def test_materialize_target_uses_registered_exact_checkout_without_moving_source(self) -> None:
+        self.fake.source_head = "d" * 40
+        before = self.worktree_bytes(self.checkout)
+
+        rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        exact_checkout = Path(self._working_directory())
+        self.assertEqual(self.root / "worktrees/validate", exact_checkout.parent)
+        self.assertNotEqual(self.checkout, exact_checkout)
+        create = next(
+            command
+            for command in self.fake.commands
+            if wrkslots_action(command, "create")
+        )
+        self.assertIn(f"checkout={SHA}", create)
+        self.assertFalse(
+            any(
+                command[:3] == ["git", "-C", str(self.checkout)]
+                and "checkout" in command[3:]
+                for command in self.fake.commands
+            )
+        )
+        self.assertEqual("d" * 40, self.fake.source_head)
+        self.assertEqual(before, self.worktree_bytes(self.checkout))
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual(str(self.checkout), record["source_checkout"])
+        self.assertEqual(str(exact_checkout), record["checkout"])
+        self.assertTrue(record["materialized_target"])
+        self.assertNotIn("branch", record)
+        self.assertEqual([], self.fake.removed)
+        self.assertTrue(exact_checkout.is_dir())
+
+    def test_materialized_scorecard_writeback_is_retained_not_deleted(self) -> None:
+        self.fake.source_head = "d" * 40
+        self.fake.scorecard_update = True
+        before = self.worktree_bytes(self.checkout)
+
+        rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        exact_checkout = self.fake.fresh
+        self.assertIsNotNone(exact_checkout)
+        assert exact_checkout is not None
+        self.assertEqual(before, self.worktree_bytes(self.checkout))
+        self.assertEqual([], self.fake.removed)
+        self.assertTrue(exact_checkout.is_dir())
+        self.assertTrue(
+            (exact_checkout / "SCORECARD.md").read_text().endswith("updated\n")
+        )
+        self.assertIn("scorecard write-back", error)
+
+    def test_ordinary_mode_still_refuses_source_head_different_from_target(self) -> None:
+        self.fake.source_head = "d" * 40
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn(f"checkout HEAD is {'d' * 40}", error)
+        self.assertFalse(any(wrkslots_action(command, "create") for command in self.fake.commands))
+
+    def test_materialize_target_refuses_missing_or_mismatched_target(self) -> None:
+        self.fake.source_head = "d" * 40
+        for target_rc, resolved, expected in (
+            (1, SHA, "cannot resolve requested target"),
+            (0, "e" * 40, "requested target resolved"),
+        ):
+            with self.subTest(target_rc=target_rc):
+                self.fake.commands.clear()
+                self.fake.source_target_rc = target_rc
+                self.fake.source_target = resolved
+
+                rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
+
+                self.assertEqual(start_unit.EXIT_REFUSED, rc)
+                self.assertIn(expected, error)
+                self.assertFalse(
+                    any(wrkslots_action(command, "create") for command in self.fake.commands)
+                )
+
+    def test_materialize_target_cleans_registered_checkout_if_head_is_wrong(self) -> None:
+        self.fake.source_head = "d" * 40
+        self.fake.fresh_head = "e" * 40
+
+        rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("fresh checkout resolved", error)
+        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+
+    def test_materialize_target_still_refuses_a_dirty_source_repository(self) -> None:
+        self.fake.source_head = "d" * 40
+        self.fake.dirty = " M scripts/validate.rs\n"
+
+        rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("checkout is dirty", error)
+        self.assertFalse(any(wrkslots_action(command, "create") for command in self.fake.commands))
+
+    def test_materialize_target_launcher_refusal_cleans_exact_checkout_not_source(self) -> None:
+        self.fake.source_head = "d" * 40
+        self.fake.systemd_launch_rc = 1
+        self.fake.systemd_launch_stderr = "systemd-run: exact launcher refusal\n"
+        before = self.worktree_bytes(self.checkout)
+
+        rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn(self.fake.systemd_launch_stderr, error)
+        exact_checkout = self.fake.fresh
+        self.assertIsNotNone(exact_checkout)
+        assert exact_checkout is not None
+        self.assertEqual(self.root / "worktrees/validate", exact_checkout.parent)
+        self.assertEqual([str(exact_checkout)], self.fake.removed)
+        self.assertEqual("d" * 40, self.fake.source_head)
+        self.assertEqual(before, self.worktree_bytes(self.checkout))
+
+    def test_materialize_target_rc75_archives_receipt_before_cleanup(self) -> None:
+        self.fake.source_head = "d" * 40
+        self.fake.actual_exit = start_unit.EXIT_COULD_NOT_DETERMINE
+        self.fake.final_validate_status = "COULD_NOT_RUN"
+        self.fake.executed_nodes = 0
+        self.fake.executed_tests = None
+        self.fake.ledger_rows = []
+        self.fake.inner_log_lines = [
+            "validate-run: REFUSED: exact launcher causal stderr"
+        ]
+        self.plant_orphan_receipt()
+        before = self.worktree_bytes(self.checkout)
+
+        rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("exact launcher causal stderr", error)
+        self.assertIn("inner validate exited 75", error)
+        self.assertIn("ORPHANED-RECEIPT", error)
+        archived = (
+            self.root
+            / "ignored/validate/orphaned-receipts/validate-test/.hermit-validate-ledger.jsonl"
+        )
+        self.assertTrue(archived.is_file())
+        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        self.assertEqual("d" * 40, self.fake.source_head)
+        self.assertEqual(before, self.worktree_bytes(self.checkout))
+
+    def test_materialize_target_cannot_be_combined_with_in_place(self) -> None:
+        rc, _output, error = self.invoke(["--materialize-target", "--in-place"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("cannot use --in-place", error)
+        self.assertEqual([], self.fake.commands)
+
     def test_default_validates_a_fresh_checkout_not_the_slot_tree(self) -> None:
         """The DEFAULT must validate the commit, not the tree that claims to be at it.
 
@@ -4707,6 +5179,7 @@ class StartUnitTest(unittest.TestCase):
             ),
             "nothing may be admitted from an unusable tree",
         )
+        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
 
     def test_new_dagrun_name_is_a_usable_fresh_checkout(self) -> None:
         self.fake.fresh_runner_name = "dagrun"
