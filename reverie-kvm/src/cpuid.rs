@@ -101,18 +101,30 @@ const fn bit(index: u32) -> u32 {
 }
 
 fn deterministic_cpuid_table() -> CpuId {
-    let entries = DETERMINISTIC_STANDARD_CPUIDS
+    build_deterministic_cpuid_table(
+        DETERMINISTIC_STANDARD_CPUIDS,
+        DETERMINISTIC_XSTATE_CPUIDS,
+        DETERMINISTIC_EXTENDED_CPUIDS,
+    )
+}
+
+fn build_deterministic_cpuid_table(
+    standard: &[[u32; 4]],
+    xstate: &[(u32, [u32; 4])],
+    extended: &[[u32; 4]],
+) -> CpuId {
+    let entries = standard
         .iter()
         .enumerate()
         .filter(|(_, registers)| **registers != [0; 4])
         .map(|(function, registers)| cpuid_entry(function as u32, *registers))
         .chain(
-            DETERMINISTIC_XSTATE_CPUIDS
+            xstate
                 .iter()
                 .map(|(index, registers)| indexed_cpuid_entry(0xd, *index, *registers)),
         )
         .chain(
-            DETERMINISTIC_EXTENDED_CPUIDS
+            extended
                 .iter()
                 .enumerate()
                 .filter(|(_, registers)| **registers != [0; 4])
@@ -268,18 +280,16 @@ const DETERMINISTIC_STANDARD_CPUIDS: &[[u32; 4]] = &[
 
 // CPUID leaf 0xd uses ECX as a subleaf selector. KVM only consults `index`
 // when KVM_CPUID_FLAG_SIGNIFCANT_INDEX is set, and it returns the first
-// matching row. Keep every subleaf in one table and reject duplicate keys so a
-// later row cannot become silently unreachable. KVM ignores the supplied EBX
-// for subleaf 0 and recomputes the guest-visible value from the enabled XCR0
-// state and the host-supported component layout, so keep that dead field zero
-// instead of presenting it as part of the fixed profile.
+// matching row. Keep every populated subleaf in one table and reject duplicate
+// keys so a later row cannot become silently unreachable. If no indexed row
+// matches, KVM returns zeroed registers; the in-VM tests exercise that path for
+// subleaves 1, 17, 18, and 19. KVM ignores the supplied EBX for subleaf 0 and
+// recomputes the guest-visible value from the enabled XCR0 state and the
+// host-supported component layout, so keep that dead field zero instead of
+// presenting it as part of the fixed profile.
 const DETERMINISTIC_XSTATE_CPUIDS: &[(u32, [u32; 4])] = &[
     (0, [0x0000_0007, 0x0000_0000, 0x0000_0340, 0x0000_0000]),
-    (1, [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000]),
     (2, [0x0000_0100, 0x0000_0240, 0x0000_0000, 0x0000_0000]),
-    (17, [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000]),
-    (18, [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000]),
-    (19, [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000]),
 ];
 
 const DETERMINISTIC_EXTENDED_CPUIDS: &[[u32; 4]] = &[
@@ -399,10 +409,16 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "duplicate leaf 0xd, subleaf 0x2")]
-    fn duplicate_function_index_is_rejected() {
-        let duplicate = indexed_cpuid_entry(0xd, 2, [0; 4]);
-        assert_unique_function_indices(&[duplicate, duplicate]);
+    #[should_panic(expected = "duplicate leaf 0xd, subleaf 0x0")]
+    fn deterministic_cpuid_table_rejects_duplicate_function_index() {
+        let mut standard = DETERMINISTIC_STANDARD_CPUIDS.to_vec();
+        standard[0xd] = [0x0000_0007, 0x0000_0340, 0x0000_0340, 0x0000_0000];
+
+        build_deterministic_cpuid_table(
+            &standard,
+            DETERMINISTIC_XSTATE_CPUIDS,
+            DETERMINISTIC_EXTENDED_CPUIDS,
+        );
     }
 
     #[test]
