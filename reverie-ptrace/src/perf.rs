@@ -337,10 +337,20 @@ impl PerfCounter {
         }
     }
 
-    /// Call the `PERF_EVENT_IOC_ENABLE` ioctl. Disables increments of the
+    /// Call the `PERF_EVENT_IOC_DISABLE` ioctl. Disables increments of the
     /// counter and event generation.
     pub fn disable(&self) -> Result<(), Errno> {
-        Errno::result(unsafe { ioctls::DISABLE(self.fd, 0) }).and(Ok(()))
+        if let Some(raw_syscall) = self.raw_syscall {
+            Errno::from_ret(unsafe {
+                raw_syscall(
+                    libc::SYS_ioctl,
+                    [self.fd as u64, perf::DISABLE as u64, 0, 0, 0, 0],
+                ) as usize
+            })
+            .and(Ok(()))
+        } else {
+            Errno::result(unsafe { ioctls::DISABLE(self.fd, 0) }).and(Ok(()))
+        }
     }
 
     /// Corresponds exactly to the `PERF_EVENT_IOC_REFRESH` ioctl.
@@ -377,8 +387,27 @@ impl PerfCounter {
         // This ioctl shouldn't mutate it's argument per its API. But in case it
         // does, create a mutable copy to avoid Rust UB.
         let mut ticks = ticks;
-        Errno::result(unsafe { libc::ioctl(self.fd, perf::PERIOD as _, &mut ticks as *mut u64) })
+        if let Some(raw_syscall) = self.raw_syscall {
+            Errno::from_ret(unsafe {
+                raw_syscall(
+                    libc::SYS_ioctl,
+                    [
+                        self.fd as u64,
+                        perf::PERIOD as u64,
+                        (&raw mut ticks) as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                ) as usize
+            })
             .and(Ok(()))
+        } else {
+            Errno::result(unsafe {
+                libc::ioctl(self.fd, perf::PERIOD as _, &mut ticks as *mut u64)
+            })
+            .and(Ok(()))
+        }
     }
 
     /// Call the `PERF_EVENT_IOC_ID` ioctl. Returns a unique identifier for this
@@ -400,6 +429,21 @@ impl PerfCounter {
             type_: F_OWNER_TID,
             pid: thread.as_raw(),
         };
+        if let Some(raw_syscall) = self.raw_syscall {
+            for (command, argument) in [
+                (F_SETOWN_EX, (&raw const owner) as u64),
+                (libc::F_SETFL, libc::O_ASYNC as u64),
+                (F_SETSIG, signal as u64),
+            ] {
+                Errno::from_ret(unsafe {
+                    raw_syscall(
+                        libc::SYS_fcntl,
+                        [self.fd as u64, command as u64, argument, 0, 0, 0],
+                    ) as usize
+                })?;
+            }
+            return Ok(());
+        }
         Errno::result(unsafe { libc::fcntl(self.fd, F_SETOWN_EX, &owner as *const _) })?;
         Errno::result(unsafe { libc::fcntl(self.fd, libc::F_SETFL, libc::O_ASYNC) })?;
         Errno::result(unsafe { libc::fcntl(self.fd, F_SETSIG, signal as i32) })?;
@@ -684,6 +728,65 @@ impl PerfCounter {
     pub fn raw_fd(&self) -> libc::c_int {
         self.fd
     }
+
+    /// Attempt a same-thread sample once, without syscall fallback or panic.
+    #[inline(always)]
+    pub(crate) fn sample_rdpmc_once(&self) -> crate::InGuestRcbSample {
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.sample_rdpmc_once_using(|index| unsafe { rdpmc(index) })
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            crate::InGuestRcbSample::Unavailable
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    fn sample_rdpmc_once_using(
+        &self,
+        read_pmc: impl FnOnce(u32) -> u64,
+    ) -> crate::InGuestRcbSample {
+        use std::ptr::addr_of;
+        use std::ptr::addr_of_mut;
+        use std::ptr::read_volatile;
+
+        use crate::InGuestRcbSample;
+
+        let Some(mapping) = self.mmap else {
+            return InGuestRcbSample::Unavailable;
+        };
+        let page = mapping.as_ptr();
+        let sequence = unsafe { read_once(addr_of_mut!((*page).lock)) };
+        if sequence & 1 != 0 {
+            return InGuestRcbSample::Retry;
+        }
+        smp_rmb();
+        let (index, caps, width, offset, enabled, running) = unsafe {
+            (
+                read_volatile(addr_of!((*page).index)),
+                read_volatile(addr_of!((*page).__bindgen_anon_1.capabilities)),
+                read_volatile(addr_of!((*page).pmc_width)),
+                read_volatile(addr_of!((*page).offset)),
+                read_volatile(addr_of!((*page).time_enabled)),
+                read_volatile(addr_of!((*page).time_running)),
+            )
+        };
+        let sample = if index == 0 || enabled != running {
+            InGuestRcbSample::Descheduled
+        } else if caps & (1 << 2) == 0 || !(1..=64).contains(&width) {
+            InGuestRcbSample::Unavailable
+        } else {
+            crate::in_guest_timer::sampled_count(offset, read_pmc(index - 1), width)
+        };
+        smp_rmb();
+        if sequence != unsafe { read_once(addr_of_mut!((*page).lock)) } {
+            InGuestRcbSample::Retry
+        } else {
+            sample
+        }
+    }
 }
 
 /// Execute the `rdpmc` instruction to read hardware performance counter number
@@ -757,6 +860,99 @@ impl Drop for PerfCounter {
 // intended behavior of the perf api.
 unsafe impl std::marker::Send for PerfCounter {}
 unsafe impl std::marker::Sync for PerfCounter {}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod in_guest_sample_tests {
+    use super::*;
+    use crate::InGuestRcbSample;
+
+    unsafe fn forbidden_syscall(_: i64, _: [u64; 6]) -> i64 {
+        panic!("single-attempt sampling must never fall back to a syscall")
+    }
+
+    #[test]
+    fn reports_unavailable_without_mapping_or_syscall() {
+        let counter = std::mem::ManuallyDrop::new(PerfCounter {
+            fd: -1,
+            mmap: None,
+            raw_syscall: Some(forbidden_syscall),
+        });
+        assert_eq!(counter.sample_rdpmc_once(), InGuestRcbSample::Unavailable);
+    }
+
+    #[test]
+    fn reports_busy_descheduled_and_unavailable_metadata_without_retrying() {
+        let mut page = Box::<perf::perf_event_mmap_page>::default();
+        let counter = std::mem::ManuallyDrop::new(PerfCounter {
+            fd: -1,
+            mmap: Some(NonNull::from(page.as_mut())),
+            raw_syscall: Some(forbidden_syscall),
+        });
+        page.lock = 1;
+        assert_eq!(counter.sample_rdpmc_once(), InGuestRcbSample::Retry);
+        page.lock = 2;
+        assert_eq!(counter.sample_rdpmc_once(), InGuestRcbSample::Descheduled);
+        page.index = 1;
+        assert_eq!(counter.sample_rdpmc_once(), InGuestRcbSample::Unavailable);
+        page.time_enabled = 1;
+        assert_eq!(counter.sample_rdpmc_once(), InGuestRcbSample::Descheduled);
+        page.time_running = 1;
+        page.__bindgen_anon_1.capabilities = 1 << 2;
+        for invalid_width in [0, 65, u16::MAX] {
+            page.pmc_width = invalid_width;
+            assert_eq!(counter.sample_rdpmc_once(), InGuestRcbSample::Unavailable);
+        }
+    }
+
+    #[test]
+    fn successful_sampling_preserves_adjacent_counts_through_metadata_path() {
+        let mut page = Box::<perf::perf_event_mmap_page>::default();
+        page.lock = 2;
+        page.index = 7;
+        page.__bindgen_anon_1.capabilities = 1 << 2;
+        page.pmc_width = 48;
+        let counter = std::mem::ManuallyDrop::new(PerfCounter {
+            fd: -1,
+            mmap: Some(NonNull::from(page.as_mut())),
+            raw_syscall: Some(forbidden_syscall),
+        });
+        for offset in [1000, (1_i64 << 53), i64::MAX - 64] {
+            page.offset = offset;
+            for adjacent in 1..=33 {
+                assert_eq!(
+                    counter.sample_rdpmc_once_using(|index| {
+                        assert_eq!(index, 6);
+                        adjacent
+                    }),
+                    InGuestRcbSample::Value(offset as u64 + adjacent)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn changed_metadata_discards_a_successful_counter_read_without_retry() {
+        let mut page = Box::<perf::perf_event_mmap_page>::default();
+        page.lock = 2;
+        page.index = 1;
+        page.__bindgen_anon_1.capabilities = 1 << 2;
+        page.pmc_width = 48;
+        let pointer = NonNull::from(page.as_mut());
+        let counter = std::mem::ManuallyDrop::new(PerfCounter {
+            fd: -1,
+            mmap: Some(pointer),
+            raw_syscall: Some(forbidden_syscall),
+        });
+        assert_eq!(
+            counter.sample_rdpmc_once_using(|index| {
+                assert_eq!(index, 0);
+                unsafe { (*pointer.as_ptr()).lock = 4 };
+                1001
+            }),
+            InGuestRcbSample::Retry
+        );
+    }
+}
 
 fn get_mmap_size() -> usize {
     // Use a single page; we only want the perf metadata

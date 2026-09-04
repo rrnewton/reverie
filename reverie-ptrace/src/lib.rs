@@ -41,6 +41,7 @@ pub mod decoder;
 mod error;
 mod gdbstub;
 mod in_guest;
+mod in_guest_timer;
 mod injected_syscall;
 mod liteinst_stats;
 mod perf;
@@ -56,6 +57,10 @@ mod vdso;
 
 pub use backend::PtraceBackend;
 pub use in_guest::InGuestRcbCounter;
+pub use in_guest::InGuestRcbTimer;
+pub use in_guest_timer::InGuestRcbDeadline;
+pub use in_guest_timer::InGuestRcbDeadlineStatus;
+pub use in_guest_timer::InGuestRcbSample;
 pub use injected_syscall::InjectedSyscallFrame;
 pub use liteinst_stats::LiteinstInstrumentationStats;
 pub use liteinst_stats::LiteinstInstrumentationStatsHandle;
