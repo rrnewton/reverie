@@ -396,6 +396,13 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "duplicate leaf 0xd, subleaf 0x2")]
+    fn duplicate_function_index_is_rejected() {
+        let duplicate = indexed_cpuid_entry(0xd, 2, [0; 4]);
+        assert_unique_function_indices(&[duplicate, duplicate]);
+    }
+
+    #[test]
     fn deterministic_policy_rejects_missing_required_features() {
         let mut unsupported = CpuId::from_entries(&[
             kvm_cpuid_entry2 {
