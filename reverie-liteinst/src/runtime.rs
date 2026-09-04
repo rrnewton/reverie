@@ -2573,6 +2573,19 @@ unsafe extern "C" fn installed_rdtscp_hook(context: *mut HookContext) {
 }
 
 unsafe fn installed_syscall_hook_for(context: *mut HookContext, number: Option<i64>) {
+    if let Some(context) = unsafe { context.as_ref() }
+        && let Some(site) = find_site(context.instruction_pointer)
+    {
+        site.hook_count.fetch_add(1, Ordering::Relaxed);
+    }
+    unsafe { dispatch_syscall_context(context, number) };
+}
+
+pub(crate) unsafe fn dispatch_fallback_context(context: *mut HookContext) {
+    unsafe { dispatch_syscall_context(context, None) };
+}
+
+unsafe fn dispatch_syscall_context(context: *mut HookContext, number: Option<i64>) {
     if context.is_null() {
         unsafe {
             exit_now(122);
@@ -2584,9 +2597,6 @@ unsafe fn installed_syscall_hook_for(context: *mut HookContext, number: Option<i
     // SAFETY: generated LiteInst code passes a unique mutable saved frame.
     let context_pointer = context as usize;
     let context = unsafe { &mut *context };
-    if let Some(site) = find_site(context.instruction_pointer) {
-        site.hook_count.fetch_add(1, Ordering::Relaxed);
-    }
     let mut event = SyscallEvent {
         number: number.unwrap_or(context.rax as i64),
         args: [
@@ -2768,7 +2778,12 @@ impl SyscallDispatcher for LiteinstDispatcher {
                     )
                 });
                 let restored = unsafe { set_all_instruction_native(false) };
-                if installed.is_err() || restored.is_err() {
+                if restored.is_err() {
+                    site.state.store(SITE_FALLBACK, Ordering::Release);
+                    event.fail(libc::EOPNOTSUPP);
+                    return;
+                }
+                if installed.is_err() {
                     site.state.store(SITE_FALLBACK, Ordering::Release);
                 }
             }
@@ -2785,16 +2800,15 @@ impl SyscallDispatcher for LiteinstDispatcher {
             }
         }
 
-        // Generic Tool execution may allocate, lock, and block on coordinator
-        // I/O, so it cannot run as a fallback inside the SIGSYS handler.
-        //
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // Record the escape before failing closed so the residual fallback
-        // surface is observable by syscall number. Counting does not change the
-        // forwarding decision (still `EOPNOTSUPP`), so the dispatch path is
-        // unchanged; this is the by-number analog of e9patch's round-4 counter.
         record_fallback_dispatch(event.number());
         (self.record_fallback_stats)(self.stats, instruction_pointer);
+        if mode == TOOL_REVERIE
+            && let Some(entry) = crate::syscall_fallback::prepare(resume_address)
+        {
+            event.defer_to(entry);
+            return;
+        }
         event.fail(libc::EOPNOTSUPP);
     }
 }
