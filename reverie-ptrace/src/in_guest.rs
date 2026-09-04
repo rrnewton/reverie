@@ -23,6 +23,52 @@ pub struct InGuestRcbCounter {
 }
 
 impl InGuestRcbCounter {
+    /// Create an initially disabled clock using the ordinary shared PMU builder.
+    /// Enable it only at an accounted guest boundary; never reset it thereafter.
+    /// Existing enabled constructors and ordinary reads are unaffected.
+    ///
+    /// # Safety
+    ///
+    /// The gate must preserve raw Linux syscall semantics and remain callable
+    /// for the counter's lifetime. Boundary controls and reads must run on the
+    /// owning thread with exclusive control of the event.
+    /// Asynchronous reads additionally require a gate that does not allocate,
+    /// lock, initialize TLS, panic or retry, and is safe in that signal context.
+    pub unsafe fn current_thread_disabled_with_syscall_gate(
+        raw_syscall: unsafe fn(i64, [u64; 6]) -> i64,
+    ) -> Result<Self, Errno> {
+        Self::create_with_config(PmuConfig::try_new(), Some(raw_syscall))
+    }
+
+    /// Borrow this clock's descriptor for trusted assembly boundary controls.
+    /// This is the clock event, not the separate notification event.
+    ///
+    /// # Safety
+    ///
+    /// Use only on the owning thread. The caller must protect the descriptor
+    /// from guest access, never close, duplicate, reset or reconfigure it, and
+    /// exclusively coordinate disable/read/enable with every guest transition.
+    /// Keeping the descriptor does not make a Rust control path branch-free.
+    pub unsafe fn boundary_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        unsafe { std::os::fd::BorrowedFd::borrow_raw(self.counter.raw_fd()) }
+    }
+
+    /// Read a disabled clock once through its trusted gate, without retrying,
+    /// allocating, panicking or changing its cumulative value in this wrapper.
+    /// The supplied gate must independently satisfy these requirements.
+    ///
+    /// Returns EBUSY for a scheduled event, ENODEV for lost PMU availability,
+    /// EAGAIN for changing metadata, EIO for a short read, or the syscall error.
+    /// A missing mapping or trusted gate returns EOPNOTSUPP.
+    ///
+    /// # Safety
+    ///
+    /// The owning thread must have successfully disabled this event and must
+    /// exclude concurrent or reentrant controls until this read completes.
+    pub unsafe fn read_paused_once(&self) -> Result<u64, Errno> {
+        self.counter.ctr_value_paused_once()
+    }
+
     /// Create and enable an RCB clock for the calling thread.
     pub fn current_thread() -> Result<Self, Errno> {
         Self::current_thread_with_optional_syscall_gate(None)
@@ -53,6 +99,16 @@ impl InGuestRcbCounter {
         config: Option<PmuConfig>,
         raw_syscall: Option<unsafe fn(i64, [u64; 6]) -> i64>,
     ) -> Result<Self, Errno> {
+        let clock = Self::create_with_config(config, raw_syscall)?;
+        clock.counter.reset()?;
+        clock.counter.enable()?;
+        Ok(clock)
+    }
+
+    fn create_with_config(
+        config: Option<PmuConfig>,
+        raw_syscall: Option<unsafe fn(i64, [u64; 6]) -> i64>,
+    ) -> Result<Self, Errno> {
         let config = config.ok_or(Errno::ENODEV)?;
         let mut builder = Builder::new(0, -1);
         builder
@@ -64,8 +120,6 @@ impl InGuestRcbCounter {
         } else {
             builder.create()?
         };
-        counter.reset()?;
-        counter.enable()?;
         Ok(Self { counter })
     }
 
@@ -232,6 +286,112 @@ impl InGuestRcbTimer {
     /// An empirical correction margin, NOT a guaranteed maximum skid bound.
     pub fn skid_margin_hint(&self) -> u64 {
         self.skid_margin
+    }
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod boundary_tests {
+    use std::os::fd::AsRawFd;
+
+    use super::*;
+
+    core::arch::global_asm!(
+        r#"
+        .text
+        .global reverie_test_counted_boundary
+        .hidden reverie_test_counted_boundary
+        .type reverie_test_counted_boundary,@function
+    reverie_test_counted_boundary:
+        push r12
+        push r13
+        mov r12, rdi
+        mov r13, rsi
+        mov eax, {ioctl}
+        mov esi, {enable}
+        xor edx, edx
+        syscall
+        test rax, rax
+        lea rdx, [rip + .Lboundary_return]
+        lea rcx, [rip + .Lboundary_count]
+        cmovns rdx, rcx
+        jmp rdx
+    .Lboundary_count:
+        mov rcx, r13
+    .Lboundary_loop:
+        dec rcx
+        jnz .Lboundary_loop
+        mov eax, {ioctl}
+        mov rdi, r12
+        mov esi, {disable}
+        xor edx, edx
+        syscall
+    .Lboundary_return:
+        pop r13
+        pop r12
+        ret
+        .size reverie_test_counted_boundary, .-reverie_test_counted_boundary
+        "#,
+        ioctl = const libc::SYS_ioctl,
+        enable = const perf_event_open_sys::bindings::ENABLE,
+        disable = const perf_event_open_sys::bindings::DISABLE,
+    );
+
+    unsafe extern "C" {
+        fn reverie_test_counted_boundary(fd: i32, branches: u64) -> i64;
+    }
+
+    unsafe fn native_gate(number: i64, arguments: [u64; 6]) -> i64 {
+        let result;
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                inlateout("rax") number => result,
+                in("rdi") arguments[0],
+                in("rsi") arguments[1],
+                in("rdx") arguments[2],
+                in("r10") arguments[3],
+                in("r8") arguments[4],
+                in("r9") arguments[5],
+                lateout("rcx") _,
+                lateout("r11") _,
+                options(nostack),
+            );
+        }
+        result
+    }
+
+    #[test]
+    fn hardware_paused_clock_preserves_exact_branch_trajectory() {
+        std::thread::spawn(|| {
+            for workload in [0, 100, 10000] {
+                let clock = unsafe {
+                    InGuestRcbCounter::current_thread_disabled_with_syscall_gate(native_gate)
+                }
+                .expect("hardware PMU clock required; this test does not skip unavailable hosts");
+                let fd = unsafe { clock.boundary_fd() };
+                assert_eq!(unsafe { clock.read_paused_once() }, Ok(0));
+                let mut expected = 0;
+                let mut trajectory = vec![0];
+                for branches in [1, 2, 17, 33, 1, 9] {
+                    for branch in 0..workload {
+                        std::hint::black_box(branch);
+                    }
+                    assert_eq!(unsafe { clock.read_paused_once() }, Ok(expected));
+                    assert_eq!(
+                        unsafe { reverie_test_counted_boundary(fd.as_raw_fd(), branches) },
+                        0
+                    );
+                    expected += branches;
+                    let observed = unsafe { clock.read_paused_once() }.unwrap();
+                    assert_eq!(observed, expected);
+                    trajectory.push(observed);
+                }
+                assert_eq!(trajectory, [0, 1, 3, 20, 53, 54, 63]);
+                eprintln!("paused runtime workload={workload}: RCB trajectory={trajectory:?}");
+            }
+        })
+        .join()
+        .unwrap();
     }
 }
 
