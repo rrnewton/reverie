@@ -1,0 +1,7 @@
+Host capability cpuid-faulting: PRESENT — arch_prctl(ARCH_SET_CPUID, 0) = 0; /proc/cpuinfo advertises cpuid_fault
+Host capability kvm: PRESENT — open(/dev/kvm, O_RDWR) = ok; /proc/cpuinfo advertises vmx or svm
+FAIL backend-parity-c/cpuid-probe (verify/ptrace) [attempt 1 of at most 2; retrying this cell only] verify exited with status 125 before producing a terminal comparison
+    evidence: /home/newton/work/dev-hermit/worktrees/slots/review-cpuid/ignored/e2e/runs/local-1788548813-650168/backend-parity-c-cpuid-probe-verify-ptrace
+FAIL backend-parity-c/cpuid-probe (verify/ptrace) verify exited with status 125 before producing a terminal comparison
+    evidence: /home/newton/work/dev-hermit/worktrees/slots/review-cpuid/ignored/e2e/runs/local-1788548813-650168/backend-parity-c-cpuid-probe-verify-ptrace-attempt-2
+test-harness: completed 1 cell(s) with up to 1 concurrent worker(s)

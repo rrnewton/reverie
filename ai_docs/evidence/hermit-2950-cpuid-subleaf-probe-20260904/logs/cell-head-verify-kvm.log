@@ -1,0 +1,4 @@
+Host capability cpuid-faulting: PRESENT — arch_prctl(ARCH_SET_CPUID, 0) = 0; /proc/cpuinfo advertises cpuid_fault
+Host capability kvm: PRESENT — open(/dev/kvm, O_RDWR) = ok; /proc/cpuinfo advertises vmx or svm
+PASS backend-parity-c/cpuid-probe (verify/kvm)
+test-harness: completed 1 cell(s) with up to 1 concurrent worker(s)

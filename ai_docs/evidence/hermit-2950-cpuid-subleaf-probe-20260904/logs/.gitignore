@@ -1,0 +1,4 @@
+# The repository root ignores *.log. These are recorded evidence, not build
+# output: re-include them so `git add` here tracks them without needing -f, and
+# so anyone adding a log to this directory later does not silently lose it.
+!*.log

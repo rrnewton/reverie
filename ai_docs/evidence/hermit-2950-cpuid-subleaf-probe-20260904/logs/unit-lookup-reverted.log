@@ -1,0 +1,38 @@
+   Compiling hermit-detcore v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/review-cpuid/detcore)
+warning: function `uses_subleaf` is never used
+  --> detcore/src/cpuid.rs:39:4
+   |
+39 | fn uses_subleaf(leaf: u32) -> bool {
+   |    ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling detcore-testutils v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/review-cpuid/detcore/tests/testutils)
+warning: `hermit-detcore` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.30s
+     Running unittests src/lib.rs (target/debug/build/hermit-detcore/a6ef848650c4164f/out/detcore-a6ef848650c4164f)
+
+running 5 tests
+test cpuid::tests::cpuid_leaf_count ... ok
+test procfs::tests::cpuidle_counter_is_fixed ... ok
+test cpuid::tests::nonindexed_leaves_ignore_subleaf ... ok
+test cpuid::tests::indexed_leaves_do_not_alias_subleaf_zero ... FAILED
+test procfs::tests::recognizes_only_dynamic_cpuidle_counters ... ok
+
+failures:
+
+---- cpuid::tests::indexed_leaves_do_not_alias_subleaf_zero stdout ----
+
+thread 'cpuid::tests::indexed_leaves_do_not_alias_subleaf_zero' (491703) panicked at detcore/src/cpuid.rs:114:9:
+assertion `left == right` failed
+  left: [0, 1576889, 0, 0]
+ right: [0, 0, 0, 0]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    cpuid::tests::indexed_leaves_do_not_alias_subleaf_zero
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 639 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p hermit-detcore --lib`

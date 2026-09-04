@@ -1,0 +1,10 @@
+# hermit with detcore/src/cpuid.rs and detcore/src/lib.rs reverted to base 4d8f866102882b6eeabdf99cc7e81433cc3c95c5, ptrace backend
+# bin/safehermit <slot hermit> run --base-env=minimal --backend ptrace -- subleaf_probe
+leaf=04 sub=0 eax=00000120 ebx=01c0003f ecx=0000003f edx=00000001
+leaf=04 sub=1 eax=00000120 ebx=01c0003f ecx=0000003f edx=00000001
+leaf=07 sub=0 eax=00000000 ebx=00180fb9 ecx=00000000 edx=00000000
+leaf=07 sub=1 eax=00000000 ebx=00180fb9 ecx=00000000 edx=00000000
+leaf=0b sub=0 eax=00000000 ebx=00000001 ecx=00000100 edx=00000001
+leaf=0b sub=1 eax=00000000 ebx=00000001 ecx=00000100 edx=00000001
+leaf=0d sub=0 eax=00000000 ebx=00000000 ecx=00000000 edx=00000000
+leaf=0d sub=1 eax=00000000 ebx=00000000 ecx=00000000 edx=00000000
