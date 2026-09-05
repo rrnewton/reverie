@@ -38,8 +38,59 @@ FAIL = 1
 NO_RESULT = 2
 CANNOT_START = 3
 RESTORE_FAILED = 4
-NOTIFY_FAILED = 5
 BLOCKED_ON_LOCK = 6
+#: ⚠️ 5 WAS `NOTIFY_FAILED` AND IS RETIRED. It was returned INSTEAD of the
+#: verdict when the report could not be delivered, so a pass and a failure left
+#: the same exit code behind. Measured 2026-09-05 on two consecutive firings an
+#: hour apart: firing 1 was state FAIL and firing 2 was state
+#: PASS_ALREADY_VALIDATED, and both exited 5. The owner's checkout had passed and
+#: nothing in the exit code said so. A dead value in an exit-code table invites
+#: reuse, so it is named here rather than left as a gap.
+#:
+#: ⚠️ AND THE FIX IS NOT "RETURN THE VERDICT INSTEAD". A report nobody received
+#: has to stay visible, which is exactly what the unit's SuccessExitStatus list
+#: is for. One integer, two independent facts -- so the verdict keeps 0..6 and an
+#: undelivered run adds a fixed offset. The verdict is still recoverable and the
+#: code still falls outside SuccessExitStatus, so neither fact is silent.
+#:
+#: 16 because it must stay under 126 to avoid the shell's cannot-execute codes
+#: and under 128 to avoid the signal range, and 64..78 are the sysexits values
+#: this repository already uses elsewhere -- scripts/validate.rs spends 75 on
+#: no_result -- so an offset there would collide with codes that already mean
+#: something else. 16 leaves 7..15 free.
+UNDELIVERED_OFFSET = 16
+#: The verdicts, by the state each run records. Kept beside the offset because
+#: the two only make sense together.
+VERDICT_BY_STATE = {
+    "PASS": PASS,
+    "PASS_WITH_KNOWN_EXCEPTION": PASS,
+    "PASS_ALREADY_VALIDATED": PASS,
+    "FAIL": FAIL,
+    "NO_RESULT": NO_RESULT,
+    "CANNOT_START": CANNOT_START,
+    "RESTORE_FAILED": RESTORE_FAILED,
+    "BLOCKED_ON_LOCK": BLOCKED_ON_LOCK,
+}
+
+
+def exit_code_for(state: object, *, delivered: bool) -> int:
+    """The run's exit code: the verdict, offset when the report did not get out.
+
+    An unrecognised state is CANNOT_START, which is what the substituted mapping
+    did too -- an unknown verdict must not read as a pass.
+    """
+    verdict = VERDICT_BY_STATE.get(str(state), CANNOT_START)
+    return verdict if delivered else verdict + UNDELIVERED_OFFSET
+
+
+def verdict_from_exit_code(code: int) -> int:
+    """The validation verdict carried by an exit code, delivered or not."""
+    return code - UNDELIVERED_OFFSET if code >= UNDELIVERED_OFFSET else code
+
+
+def report_reached_its_reader(code: int) -> bool:
+    """Whether the run's report was delivered. Never inferred from the verdict."""
+    return code < UNDELIVERED_OFFSET
 ADMISSION_STATUS_UNKNOWN = 2
 KNOWN_EXCEPTION_PATH = "validate"
 KNOWN_EXCEPTION_TARGET = "scripts/validate.rs"
@@ -2031,22 +2082,21 @@ def finish(
     atomic_write(result_path, json.dumps(result, indent=2, sort_keys=True) + "\n")
     append_jsonl(ledger, {**result, "event": "attempt-finish"})
     print(render_message(result), end="")
+    # ⚠️ THIS USED TO RETURN BEFORE THE VERDICT WAS EVEN COMPUTED. `return
+    # NOTIFY_FAILED` sat here and short-circuited the mapping below, so a run
+    # whose report did not get out reported nothing about the tree it had just
+    # validated. Both facts now travel: the verdict in the code, the delivery
+    # outcome in whether it is offset.
+    code = exit_code_for(result["state"], delivered=notify_rc == 0)
     if notify_rc != 0:
         print(
-            f"owner-checkout-validate-watch: NOTIFICATION FAILED: {notify_detail}",
+            "owner-checkout-validate-watch: NOTIFICATION FAILED: "
+            f"{notify_detail}. The validation verdict is UNAFFECTED and is "
+            f"{result['state']}; this exit code is {code}, which is that verdict "
+            f"plus {UNDELIVERED_OFFSET} because the report did not reach anyone.",
             file=sys.stderr,
         )
-        return NOTIFY_FAILED
-    return {
-        "PASS": PASS,
-        "PASS_WITH_KNOWN_EXCEPTION": PASS,
-        "PASS_ALREADY_VALIDATED": PASS,
-        "FAIL": FAIL,
-        "NO_RESULT": NO_RESULT,
-        "CANNOT_START": CANNOT_START,
-        "RESTORE_FAILED": RESTORE_FAILED,
-        "BLOCKED_ON_LOCK": BLOCKED_ON_LOCK,
-    }.get(str(result["state"]), CANNOT_START)
+    return code
 
 
 if __name__ == "__main__":

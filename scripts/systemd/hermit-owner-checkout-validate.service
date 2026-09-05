@@ -15,8 +15,18 @@ ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --sta
 # owns a 30-minute child deadline and must have time to prove cleanup.
 TimeoutStartSec=2400
 # Every delivered typed outcome is an observed watch result, not a dead
-# service. Notification failure (5), internal crashes, and signals remain unit
-# failures so a missing report is itself visible in systemd.
+# service. A report that reached nobody, internal crashes, and signals remain
+# unit failures so a missing report is itself visible in systemd.
+#
+# ⚠️ THE LIST IS THE DELIVERED VERDICTS AND NOTHING ELSE, and that is what makes
+# it work. 5 used to be "notification failed" and was returned INSTEAD of the
+# verdict, so a pass and a failure left the same code behind -- measured
+# 2026-09-05, two firings an hour apart exited 5 with state FAIL and state
+# PASS_ALREADY_VALIDATED. The verdict now always occupies 0..6 and an undelivered
+# run adds UNDELIVERED_OFFSET=16, giving 16..22. Those are outside this list, so
+# an undelivered run is still a unit failure, and `exit code - 16` still names
+# what the tree did. Widening this list to include them would restore exactly the
+# laundering it exists to prevent.
 SuccessExitStatus=0 1 2 3 4 6
 
 [Install]

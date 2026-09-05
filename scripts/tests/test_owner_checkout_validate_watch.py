@@ -873,13 +873,93 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                     ]
                 )
 
-            self.assertEqual(rc, watch.NOTIFY_FAILED)
+            # The exit must stay distinct and loud -- that is what this case has
+            # always been for -- AND it must still say what the tree did. It used
+            # to assert rc == NOTIFY_FAILED, which was the verdict being thrown
+            # away: `return NOTIFY_FAILED` ran before the verdict was computed.
             result = json.loads(
                 next((state / "results").glob("*.json")).read_text()
             )
             self.assertEqual(result["state"], "CANNOT_START")
             self.assertEqual(result["notification_rc"], 1)
             self.assertEqual(result["notification_detail"], "wake refused")
+
+            self.assertEqual(rc, watch.CANNOT_START + watch.UNDELIVERED_OFFSET)
+            self.assertFalse(watch.report_reached_its_reader(rc))
+            self.assertEqual(watch.verdict_from_exit_code(rc), watch.CANNOT_START)
+            service = (
+                ROOT / "scripts/systemd/hermit-owner-checkout-validate.service"
+            ).read_text()
+            success = next(
+                line for line in service.splitlines()
+                if line.startswith("SuccessExitStatus=")
+            )
+            self.assertNotIn(str(rc), success.split("=", 1)[1].split())
+
+
+    def test_a_pass_that_could_not_be_delivered_still_reports_the_pass(self) -> None:
+        """⚠️ THE DEFECT. Measured 2026-09-05 on the second of two firings an
+        hour apart: state PASS_ALREADY_VALIDATED, exit 5. The owner's checkout
+        passed and the exit code was indistinguishable from a failure, because
+        the delivery status was returned in place of the verdict."""
+        code = watch.exit_code_for("PASS_ALREADY_VALIDATED", delivered=False)
+        self.assertEqual(watch.verdict_from_exit_code(code), watch.PASS)
+        self.assertFalse(watch.report_reached_its_reader(code))
+        self.assertNotEqual(
+            code,
+            watch.exit_code_for("FAIL", delivered=False),
+            "a pass and a failure must not share an exit code just because "
+            "neither report got out -- that is the whole defect",
+        )
+
+    def test_a_failure_that_was_delivered_still_reports_the_failure(self) -> None:
+        """The other direction, which the obvious fix breaks."""
+        code = watch.exit_code_for("FAIL", delivered=True)
+        self.assertEqual(code, watch.FAIL)
+        self.assertEqual(watch.verdict_from_exit_code(code), watch.FAIL)
+        self.assertTrue(watch.report_reached_its_reader(code))
+
+    def test_every_verdict_survives_an_undelivered_report(self) -> None:
+        for state, verdict in sorted(watch.VERDICT_BY_STATE.items()):
+            with self.subTest(state=state):
+                delivered = watch.exit_code_for(state, delivered=True)
+                undelivered = watch.exit_code_for(state, delivered=False)
+                self.assertEqual(delivered, verdict)
+                self.assertEqual(watch.verdict_from_exit_code(undelivered), verdict)
+                self.assertTrue(watch.report_reached_its_reader(delivered))
+                self.assertFalse(watch.report_reached_its_reader(undelivered))
+
+    def test_an_unknown_state_does_not_read_as_a_pass(self) -> None:
+        for delivered in (True, False):
+            with self.subTest(delivered=delivered):
+                code = watch.exit_code_for("SOMETHING_NEW", delivered=delivered)
+                self.assertEqual(watch.verdict_from_exit_code(code), watch.CANNOT_START)
+
+    def test_no_undelivered_code_is_laundered_as_success_by_systemd(self) -> None:
+        """The property that keeps a report nobody received visible."""
+        service = (
+            ROOT / "scripts/systemd/hermit-owner-checkout-validate.service"
+        ).read_text()
+        success = next(
+            line for line in service.splitlines()
+            if line.startswith("SuccessExitStatus=")
+        ).split("=", 1)[1].split()
+        for state in sorted(watch.VERDICT_BY_STATE):
+            with self.subTest(state=state):
+                undelivered = watch.exit_code_for(state, delivered=False)
+                self.assertNotIn(str(undelivered), success)
+        for state in sorted(watch.VERDICT_BY_STATE):
+            with self.subTest(state=state, delivered=True):
+                self.assertIn(str(watch.exit_code_for(state, delivered=True)), success)
+
+    def test_the_undelivered_codes_stay_out_of_the_shell_and_signal_ranges(self) -> None:
+        """126, 127 and 128+N mean something else to every reader of an exit code."""
+        for state in watch.VERDICT_BY_STATE:
+            self.assertLess(watch.exit_code_for(state, delivered=False), 126)
+
+    def test_the_retired_notification_code_is_gone(self) -> None:
+        """5 was returned instead of the verdict; leaving it invites reuse."""
+        self.assertFalse(hasattr(watch, "NOTIFY_FAILED"))
 
     def test_systemd_does_not_launder_notification_failure_as_success(self) -> None:
         service = (
