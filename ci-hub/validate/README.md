@@ -90,6 +90,30 @@ runs and records the same paths as `e2e_result_root` and
 under `ignored/validate/artifacts/<unit>/`, outside the fresh checkout that is
 removed after validation.
 
+`python3 ci-hub/series/series.py history --test <test-id> --parent <root>` is
+the cell-level history reader. Its durable series rows retain whole-cell wall
+time and guest runtime counters, but not CPU time. For a same-run comparison of
+two backends, use:
+
+```bash
+ci-hub/ci-hub ledger backend-factor \
+  --run-id <validation-run-id> \
+  --baseline ptrace --comparison kvm --mode verify --json
+```
+
+That command requires one qualified validation-ledger row, verifies the
+ledger-bound compact cell artifact, and then reads the schema-4 E2E results in
+the same retained run directory. It reports CPU and elapsed-time factors for
+the exact first-attempt PASS intersection whose compact verdict is
+`compared-and-matched`, plus every excluded cell. Modes whose compact verdict
+is `performs-no-comparison-by-design` are reported as excluded rather than used
+as evidence of a match. CPU time is the process-group CPU measured by the test
+harness; elapsed time also includes preparation and time descheduled by other
+work on the host. The raw timing files are retained local evidence, not
+digest-bound by the validation ledger; the command prints a query-time digest
+and the digest of every source file so a quoted result can be checked against
+the exact bytes it used.
+
 After a canonical Hermit receipt is readable, the waiting `validate-run`
 invocation merges that run's durable per-cell results into the source
 checkout's `SCORECARD.md` and `ci/compat-envelope/cells.json`, then prints the

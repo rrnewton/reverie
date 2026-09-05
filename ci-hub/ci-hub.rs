@@ -205,6 +205,7 @@ pure and performs no workspace discovery, filesystem writes, or network calls.
 #[derive(Parser, Debug)]
 #[command(
     name = "ci-hub",
+    bin_name = "ci-hub",
     about = "Typed front door for dev-hermit validation, GH Actions, and runner operations",
     version,
     propagate_version = true,
@@ -654,10 +655,31 @@ enum LedgerCommand {
     QualifiedRows(QualifiedRowsArgs),
     /// Attribute FAILED rows to their per-substep cause by dereferencing log_file.
     AttributeReds(AttributeRedsArgs),
+    /// Compare per-cell timing for two backends within one qualified run.
+    BackendFactor(BackendFactorArgs),
 }
 
 #[derive(Args, Clone, Debug)]
 struct QualifiedRowsArgs {}
+
+#[derive(Args, Clone, Debug)]
+struct BackendFactorArgs {
+    /// Exact validation run_id whose retained cell results are compared.
+    #[arg(long)]
+    run_id: String,
+    /// Backend used as the denominator.
+    #[arg(long)]
+    baseline: String,
+    /// Backend used as the numerator.
+    #[arg(long)]
+    comparison: String,
+    /// Restrict both sides to one cell mode, such as verify.
+    #[arg(long)]
+    mode: Option<String>,
+    /// Emit the complete machine-readable population, including every exclusion.
+    #[arg(long)]
+    json: bool,
+}
 
 #[derive(Args, Clone, Debug)]
 struct AttributeRedsArgs {
@@ -1825,6 +1847,23 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
                     forwarded.push("--refill".into());
                 }
                 run_python(root, "ci-hub/validate/attribute_reds.py", forwarded)
+            }
+            LedgerCommand::BackendFactor(factor_args) => {
+                let mut forwarded = Vec::new();
+                push_option(&mut forwarded, "--run-id", factor_args.run_id);
+                push_option(&mut forwarded, "--baseline", factor_args.baseline);
+                push_option(&mut forwarded, "--comparison", factor_args.comparison);
+                if let Some(mode) = factor_args.mode {
+                    push_option(&mut forwarded, "--mode", mode);
+                }
+                if factor_args.json {
+                    forwarded.push("--json".into());
+                }
+                run_python(
+                    root,
+                    "ci-hub/validate/backend_factor.py",
+                    operational_state_forwarded_args(root, forwarded)?,
+                )
             }
         },
         HubCommand::NewestGreen(args) => run_newest_green(root, args),
@@ -13423,6 +13462,45 @@ mod tests {
         assert_eq!(args.last, Some(0));
         assert!(args.json);
         assert!(args.persist);
+    }
+
+    #[test]
+    fn parses_backend_factor_command() {
+        let cli = Cli::try_parse_from([
+            "ci-hub",
+            "ledger",
+            "backend-factor",
+            "--run-id",
+            "validate-example",
+            "--baseline",
+            "ptrace",
+            "--comparison",
+            "kvm",
+            "--mode",
+            "verify",
+            "--json",
+        ])
+        .unwrap();
+        let HubCommand::Ledger(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        let LedgerCommand::BackendFactor(args) = args.command else {
+            panic!("wrong ledger subcommand variant")
+        };
+        assert_eq!(args.run_id, "validate-example");
+        assert_eq!(args.baseline, "ptrace");
+        assert_eq!(args.comparison, "kvm");
+        assert_eq!(args.mode.as_deref(), Some("verify"));
+        assert!(args.json);
+
+        let error =
+            Cli::try_parse_from(["ci-hub", "ledger", "backend-factor", "--help"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::DisplayHelp);
+        let help = error.to_string();
+        assert!(
+            help.contains("Usage: ci-hub ledger backend-factor"),
+            "{help}"
+        );
     }
 
     #[test]

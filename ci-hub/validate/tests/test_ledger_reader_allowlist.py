@@ -27,6 +27,7 @@ CONSUMERS = (
     "validate/aggregate.py",
     "validate/anchor_select.py",
     "validate/attribute_reds.py",
+    "validate/backend_factor.py",
     "validate/failure_evidence.py",
     "validate/finalize_receipt.py",
     "validate/green_class.py",
