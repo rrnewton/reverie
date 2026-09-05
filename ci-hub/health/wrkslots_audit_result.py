@@ -60,9 +60,14 @@ def _expected(name: str, supplied: str | None) -> str:
     return value
 
 
-#: Bounded because this runs inside a tick that has its own deadline, and a git
-#: call that hangs must read as "could not verify" rather than stall the gate.
-GIT_TIMEOUT_SECONDS = 20.0
+#: ⚠️ MUST FIT INSIDE THE GATE'S OWN BUDGET. tick-hub.yaml gives this gate
+#: timeout_secs: 10, and up to four of these reads can run in one call, so a
+#: 20-second bound was larger than the whole gate and could never have fired --
+#: the gate would be killed first and the refusal would read as a timeout rather
+#: than as "could not verify". Two seconds each keeps the worst case inside the
+#: budget. These are local object reads; if one takes longer than that, treating
+#: it as unverifiable is the right answer anyway.
+GIT_TIMEOUT_SECONDS = 2.0
 
 
 def _git(state_root: Path, *args: str) -> str | None:

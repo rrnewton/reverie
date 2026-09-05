@@ -179,9 +179,24 @@ reminders:
   # independent persistent calendar timer, outside this tick's 180-second
   # aggregate wall cap. This cheap gate consumes only its typed atomic result.
   # Missing, stale, malformed, or wrong-provenance evidence is NO_RESULT: an
-  # absent audit can never make the ordinary health tick green. A parent-main
-  # advance intentionally creates that visible NO_RESULT window until the next
-  # independent audit publishes evidence from the same exact tool revision.
+  # absent audit can never make the ordinary health tick green.
+  #
+  # ⚠️ THIS USED TO SAY A PARENT-MAIN ADVANCE "INTENTIONALLY CREATES THAT VISIBLE
+  # NO_RESULT WINDOW UNTIL THE NEXT INDEPENDENT AUDIT PUBLISHES EVIDENCE FROM THE
+  # SAME EXACT TOOL REVISION", and that was the behaviour until 2026-09-05. It
+  # assumed advances are occasional, so the window would close within the hour.
+  # Measured that day: main advanced six times in three hours and this gate
+  # returned 12 refusals against 4 successes, so the window was open for most of
+  # it and slot health had no signal at all. The producer runs hourly and the
+  # reader every thirty minutes, each materialising its own tool root, so exact
+  # revision equality is satisfiable only in the gaps between landings.
+  #
+  # The requirement is now that the receipt came from a REAL LANDED REVISION of
+  # this repository -- its parent_sha an ancestor of the reader's, and its
+  # hermit_sha and agent_utils_sha exactly the gitlinks recorded at that commit,
+  # which the old comparison could not check at all. Unresolvable provenance is
+  # still NO_RESULT and the two-hour freshness bound is unchanged, so an absent
+  # or unverifiable audit still cannot make this tick green.
   - name: wrkslots_audit
     cadence_secs: 3600
     gate:
