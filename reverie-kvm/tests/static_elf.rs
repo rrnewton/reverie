@@ -251,6 +251,39 @@ impl Tool for PostExecTool {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct CanonicalInitialExecTool;
+
+#[reverie::tool]
+impl Tool for CanonicalInitialExecTool {
+    type GlobalState = PostExecLog;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscalls([Sysno::execve]);
+        subscriptions
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        let Syscall::Execve(execve) = syscall else {
+            unreachable!("tool only subscribes to execve")
+        };
+        guest
+            .tail_inject(reverie::syscalls::Execveat::from(execve))
+            .await
+    }
+
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+        guest.send_rpc(0).await;
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct StartExecLog {
     post_exec_calls: AtomicU64,
@@ -2419,6 +2452,57 @@ fn tool_receives_post_exec_with_guest_auxv() {
     let mut random = [0; 16];
     backend.memory().read(address as u64, &mut random).unwrap();
     assert_eq!(random, POST_EXEC_RANDOM);
+}
+
+#[test]
+fn canonical_initial_execveat_does_not_reload_installed_image() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM canonical initial exec test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let code = [
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+        0x0f, 0x0b, // ud2
+    ];
+    let image = static_elf(&code);
+    let executable = TestExecutable::new(&image);
+    let executable = executable.0.to_str().unwrap();
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend.install_static_elf(&image, executable).unwrap();
+
+    // A second exec of the same file clears the loaded segment before
+    // reloading it. This address is in mapped BSS but outside the file-backed
+    // bytes, so it distinguishes forwarding the synthetic initial exec from a
+    // real reload.
+    const SENTINEL_ADDRESS: u64 = LOAD_ADDRESS + 0x1000;
+    const SENTINEL: [u8; 16] = *b"initial-exec-ok!";
+    backend
+        .memory_mut()
+        .write(SENTINEL_ADDRESS, &SENTINEL)
+        .unwrap();
+
+    let (log, exit_code, stdout, stderr) = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<CanonicalInitialExecTool>((), true),
+    )
+    .unwrap();
+
+    assert_eq!(exit_code, 0);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    assert_eq!(log.calls(), 1);
+    let mut observed = [0; SENTINEL.len()];
+    backend
+        .memory()
+        .read(SENTINEL_ADDRESS, &mut observed)
+        .unwrap();
+    assert_eq!(observed, SENTINEL);
 }
 
 #[test]

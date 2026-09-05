@@ -200,6 +200,25 @@ enum ProcessExecutionContext {
     SyscallReturn,
 }
 
+/// Returns whether an injected request is the already-installed initial exec.
+///
+/// Tools may forward the synthetic `execve` unchanged, or use Reverie's
+/// canonical `From<Execve> for Execveat` conversion. Only those two exact
+/// requests are equivalent: accepting any other `execveat` would suppress a
+/// real image replacement requested by the tool.
+fn matches_initial_exec(expected: &SyscallRequest, request: &SyscallRequest) -> bool {
+    if expected.number() != libc::SYS_execve as u64 || expected.args()[3..] != [0, 0, 0] {
+        return false;
+    }
+    if expected == request {
+        return true;
+    }
+
+    let [path, argv, envp, _, _, _] = *expected.args();
+    request.number() == libc::SYS_execveat as u64
+        && *request.args() == [libc::AT_FDCWD as u64, path, argv, envp, 0, 0]
+}
+
 struct StaticElfSyscallExecutor<'a> {
     backend: &'a mut KvmBackend,
     executor: &'a mut ElfExecutor,
@@ -221,7 +240,8 @@ where
         // TODO-HUMAN-REVIEW(PR-233): Review synthetic initial exec completion.
         if matches!(
             &self.process_context,
-            ProcessExecutionContext::InitialExec(expected) if expected == request
+            ProcessExecutionContext::InitialExec(expected)
+                if matches_initial_exec(expected, request)
         ) {
             self.last_result = Some(0);
             self.process_context = ProcessExecutionContext::InitialExecCompleted;
@@ -1737,6 +1757,56 @@ fn kvm_registers(registers: kvm_regs, syscall_number: u64) -> libc::user_regs_st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn synthetic_initial_exec() -> SyscallRequest {
+        SyscallRequest::new(libc::SYS_execve as u64, [0x100, 0x200, 0x300, 0, 0, 0])
+    }
+
+    #[test]
+    fn initial_exec_matches_original_and_canonical_execveat() {
+        let expected = synthetic_initial_exec();
+        assert!(matches_initial_exec(&expected, &expected));
+        assert!(matches_initial_exec(
+            &expected,
+            &SyscallRequest::new(
+                libc::SYS_execveat as u64,
+                [libc::AT_FDCWD as u64, 0x100, 0x200, 0x300, 0, 0],
+            )
+        ));
+    }
+
+    #[test]
+    fn initial_exec_rejects_every_other_execveat_shape() {
+        let expected = synthetic_initial_exec();
+        let canonical = [libc::AT_FDCWD as u64, 0x100, 0x200, 0x300, 0, 0];
+
+        for index in 0..canonical.len() {
+            let mut args = canonical;
+            args[index] ^= 1;
+            assert!(
+                !matches_initial_exec(
+                    &expected,
+                    &SyscallRequest::new(libc::SYS_execveat as u64, args),
+                ),
+                "accepted execveat with argument {index} changed"
+            );
+        }
+
+        assert!(!matches_initial_exec(
+            &expected,
+            &SyscallRequest::new(libc::SYS_execve as u64 + 1, *expected.args()),
+        ));
+    }
+
+    #[test]
+    fn initial_exec_match_requires_a_well_formed_execve_expectation() {
+        let non_exec = SyscallRequest::new(libc::SYS_read as u64, [0x100, 0x200, 0x300, 0, 0, 0]);
+        assert!(!matches_initial_exec(&non_exec, &non_exec));
+
+        let malformed =
+            SyscallRequest::new(libc::SYS_execve as u64, [0x100, 0x200, 0x300, 1, 0, 0]);
+        assert!(!matches_initial_exec(&malformed, &malformed));
+    }
 
     #[test]
     fn converts_linux_error_results() {
