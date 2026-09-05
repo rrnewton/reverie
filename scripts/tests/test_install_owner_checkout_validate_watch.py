@@ -46,6 +46,13 @@ class InstallOwnerCheckoutValidateWatchTests(unittest.TestCase):
             XDG_CONFIG_HOME=str(self.config),
             PATH=f"{self.bin}:{os.environ.get('PATH', '')}",
             FAKE_SYSTEMCTL_LOG=str(self.log),
+            # The installer now resolves its source from an ordered list, so a
+            # test that relied on $HOME/bin/gh being the ONLY candidate would
+            # silently pick up the host's /usr/bin/gh instead. Naming the source
+            # explicitly keeps this hermetic and still exercises the historical
+            # shape, a symlink at a real binary. Ordering and fall-through are
+            # covered by scripts/test_install_github_helper_source.py.
+            DEV_HERMIT_GH_SOURCE=str(self.home / "bin" / "gh"),
         )
 
     def tearDown(self) -> None:
@@ -122,9 +129,9 @@ class InstallOwnerCheckoutValidateWatchTests(unittest.TestCase):
 
         self.assertEqual(1, result.returncode, result.stdout + result.stderr)
         self.assertIn(
-            f"required GitHub credential helper is unavailable: {missing_helper}",
-            result.stderr,
+            "required GitHub credential helper is unavailable", result.stderr
         )
+        self.assertIn(str(missing_helper), result.stderr)
         self.assertFalse(
             (self.home / ".local/libexec/dev-hermit/operational-tool").exists()
         )
