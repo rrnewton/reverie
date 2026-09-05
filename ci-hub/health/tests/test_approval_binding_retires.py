@@ -356,6 +356,86 @@ def test_authorization_annotation_uses_current_permission() -> None:
     assert read_only[0]["_current_review_actor_authorized"] is False
 
 
+def test_an_unauthorized_refusal_cannot_block_an_authorized_approval() -> None:
+    refusal = _refusal(REFUSAL_ID, "outside-reader")
+    refusal.update(
+        user={"login": "outside-reader"},
+        _current_review_actor_authorized=False,
+        _current_review_actor_login="outside-reader",
+        _current_review_actor_permission="read",
+    )
+    comments = [_approval(), refusal]
+
+    assert _gate_state(comments) == gate.OK
+    assert _state(comments) == (ab.BOUND_CURRENT, [])
+
+
+def test_an_unauthorized_refusal_cannot_create_same_time_ambiguity() -> None:
+    when = "2026-01-12T10:00:01Z"
+    approval = _comment(
+        REFUSAL_ID,
+        "authorized-reviewer",
+        f"APPROVED-AT: claude {HEAD}",
+        created_at=when,
+        updated_at=when,
+    )
+    refusal = _comment(
+        WITHDRAWAL_ID,
+        "outside-reader",
+        f"CHANGES-REQUESTED-AT: claude {HEAD}",
+        created_at=when,
+        updated_at=when,
+    )
+    refusal.update(
+        user={"login": "outside-reader"},
+        _current_review_actor_authorized=False,
+        _current_review_actor_login="outside-reader",
+        _current_review_actor_permission="read",
+    )
+
+    assert ab.canonical_review_records([approval, refusal]) == [approval, refusal]
+    assert _state([approval, refusal]) == (ab.BOUND_CURRENT, [])
+
+
+def test_live_annotation_refuses_an_authority_record_without_an_actor() -> None:
+    refusal = _refusal(REFUSAL_ID, "missing-actor")
+    refusal.pop("user")
+    refusal.pop("_current_review_actor_authorized")
+    refusal.pop("_current_review_actor_login")
+    refusal.pop("_current_review_actor_permission")
+    try:
+        ab.annotate_current_review_authority([refusal], "rrnewton/hermit", lambda _: {})
+    except ab.ReviewRecordError as error:
+        assert "no immutable GitHub actor" in str(error)
+    else:
+        raise AssertionError("a live authority record without an actor was accepted")
+
+
+def test_authority_annotation_validation_requires_an_immutable_actor() -> None:
+    refusal = _refusal(REFUSAL_ID, "missing-actor")
+    refusal.pop("user")
+    try:
+        ab.validate_review_authority_annotations([refusal])
+    except ab.ReviewRecordError as error:
+        assert "no immutable GitHub actor" in str(error)
+    else:
+        raise AssertionError("an authority-bearing record without an actor was accepted")
+
+
+def test_authority_annotation_validation_requires_explicit_permission() -> None:
+    refusal = _refusal(REFUSAL_ID, "fixture-reviewer")
+    refusal.pop("_current_review_actor_authorized")
+    refusal.pop("_current_review_actor_permission")
+    try:
+        ab.validate_review_authority_annotations([refusal])
+    except ab.ReviewRecordError as error:
+        assert "explicit current GitHub actor permission annotation" in str(error)
+    else:
+        raise AssertionError(
+            "an authority-bearing record without a permission annotation was accepted"
+        )
+
+
 def test_authorization_annotation_refuses_missing_permission_evidence() -> None:
     withdrawal = _withdrawal("hermit-030", REFUSAL_ID)
     withdrawal.pop("_current_review_actor_authorized")
@@ -1070,28 +1150,42 @@ def test_same_head_approval_and_refusal_conflict_in_both_orders() -> None:
         assert unanswered == [(HEAD, None)]
 
 
-def test_same_version_time_opposing_decisions_fail_closed() -> None:
+def test_same_version_time_all_refusal_spellings_fail_closed_in_either_id_order() -> None:
     when = "2026-01-12T10:00:01Z"
-    approval = _comment(
-        REFUSAL_ID,
-        "hermit-011",
-        f"APPROVED-AT: claude {HEAD}",
-        created_at=when,
-        updated_at=when,
-    )
-    refusal = _comment(
-        WITHDRAWAL_ID,
-        "hermit-012",
+    refusals = (
         f"CHANGES-REQUESTED-AT: claude {HEAD}",
-        created_at=when,
-        updated_at=when,
+        f"CHANGES-REQUESTED: claude {HEAD}",
+        f"CHANGES REQUESTED: claude {HEAD}",
+        f"REJECTED: claude {HEAD}",
+        f"REQUEST CHANGES AT {HEAD}",
     )
-    try:
-        ab.canonical_review_records([approval, refusal])
-    except ab.ReviewRecordError as error:
-        assert "opposing review authority has the same version time" in str(error)
-    else:
-        raise AssertionError("opposing decisions with no chronology were ordered by id")
+    for refusal_body in refusals:
+        for approval_id, refusal_id in (
+            (REFUSAL_ID, WITHDRAWAL_ID),
+            (WITHDRAWAL_ID, REFUSAL_ID),
+        ):
+            approval = _comment(
+                approval_id,
+                "hermit-011",
+                f"APPROVED-AT: claude {HEAD}",
+                created_at=when,
+                updated_at=when,
+            )
+            refusal = _comment(
+                refusal_id,
+                "hermit-012",
+                refusal_body,
+                created_at=when,
+                updated_at=when,
+            )
+            try:
+                ab.canonical_review_records([approval, refusal])
+            except ab.ReviewRecordError as error:
+                assert "opposing review authority has the same version time" in str(error)
+            else:
+                raise AssertionError(
+                    f"tied {refusal_body!r} depended on numeric id order"
+                )
 
 
 def test_optional_identity_metadata_does_not_change_the_canonical_decision() -> None:

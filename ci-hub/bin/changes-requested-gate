@@ -1613,6 +1613,9 @@ def self_test() -> int:
                 "body": _R_REF,
                 "user": {"login": "fixture-reviewer"},
                 "_review_surface": "issue-comment",
+                "_current_review_actor_authorized": True,
+                "_current_review_actor_login": "fixture-reviewer",
+                "_current_review_actor_permission": "write",
                 "created_at": "2026-09-04T00:00:01Z",
                 "updated_at": "2026-09-04T00:00:01Z",
             },
@@ -1675,12 +1678,66 @@ def self_test() -> int:
             f"-- rc={incomplete.returncode}; stdout={incomplete.stdout[:180]!r}"
         )
 
+    missing_permission = event_records(
+        [current_refusal], [command_refusal_id]
+    )
+    missing_permission[0].pop("_current_review_actor_authorized")
+    missing_permission[0].pop("_current_review_actor_permission")
+    result = run_command(missing_permission)
+    if (
+        result.returncode != INDETERMINATE
+        or "explicit current GitHub actor permission annotation" not in result.stdout
+    ):
+        bad.append(
+            "command: object --from-json without permission annotation was not "
+            f"INDETERMINATE -- rc={result.returncode}; stdout={result.stdout[:180]!r}"
+        )
+
+    unauthorized_refusal = event_records(
+        [current_refusal], [command_refusal_id]
+    )
+    unauthorized_refusal[0].update(
+        user={"login": "outside-reader"},
+        _current_review_actor_authorized=False,
+        _current_review_actor_login="outside-reader",
+        _current_review_actor_permission="read",
+    )
+    result = run_command(unauthorized_refusal)
+    if (
+        result.returncode != OK
+        or "no unresolved review objection is recorded" not in result.stdout
+    ):
+        bad.append(
+            "command: an explicitly unauthorized refusal changed authority "
+            f"-- rc={result.returncode}; stdout={result.stdout[:180]!r}"
+        )
+
+    tied_records = event_records(
+        [f"CHANGES-REQUESTED: claude {_MOVED}", current_approval],
+        [command_refusal_id, command_withdrawal_id],
+    )
+    tied_records[1]["created_at"] = tied_records[0]["created_at"]
+    tied_records[1]["updated_at"] = tied_records[0]["updated_at"]
+    for records in (tied_records, list(reversed(tied_records))):
+        result = run_command(records)
+        if (
+            result.returncode != INDETERMINATE
+            or "opposing review authority has the same version time" not in result.stdout
+        ):
+            bad.append(
+                "command: tied malformed refusal and approval depended on id order "
+                f"-- rc={result.returncode}; stdout={result.stdout[:180]!r}"
+            )
+
     native_review = {
         "fullDatabaseId": command_refusal_id,
         "id": "PRR_kwDOExample",
         "state": "CHANGES_REQUESTED",
         "author": {"login": "fixture-reviewer"},
         "_review_surface": "pull-request-review",
+        "_current_review_actor_authorized": True,
+        "_current_review_actor_login": "fixture-reviewer",
+        "_current_review_actor_permission": "write",
         "commit": {"oid": _T_HEAD},
         "body": "Please fix the unchecked failure.",
         "submittedAt": "2026-09-04T00:00:01Z",
@@ -1797,6 +1854,7 @@ def main(argv: list[str] | None = None) -> int:
     if "--self-test" in argv:
         return self_test()
     args = p.parse_args(argv)
+    grammar = _load_grammar()
 
     if args.from_json:
         head = args.head or ""
@@ -1814,6 +1872,19 @@ def main(argv: list[str] | None = None) -> int:
                     "permission are required. Pass complete comment/review objects "
                     "to --from-json, then retry",
                 )
+            if records and isinstance(records[0], dict):
+                try:
+                    grammar.validate_review_authority_annotations(records)
+                except grammar.ReviewRecordError as exc:
+                    return emit(
+                        INDETERMINATE,
+                        args.pr,
+                        head,
+                        "review authority annotations are incomplete: "
+                        f"{exc}. Supply the immutable GitHub actor and explicit "
+                        "current permission annotation for every authority-bearing "
+                        "record, then retry",
+                    )
             native_ids = native_changes_requested_ids(records)
             event_records = records if records and isinstance(records[0], dict) else None
         except (OSError, json.JSONDecodeError, ValueError) as exc:

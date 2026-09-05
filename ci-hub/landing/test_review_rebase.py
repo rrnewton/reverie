@@ -218,24 +218,27 @@ def test_a_current_comment_approval_admits_without_a_cache_label() -> None:
     verdict = R.evaluate(fixture, Path("."), "b" * 40, head)
     assert verdict["state"] == "REVIEW_APPLIES"
     assert [a["lane"] for a in verdict["approvals"]] == ["codex"]
-    assert verdict["approvals"][0]["label"] == ""
-    assert verdict["approvals"][0]["source"] == "comment"
+    assert "label" not in verdict["approvals"][0]
+    assert "source" not in verdict["approvals"][0]
 
 
-def test_a_stale_comment_approval_cannot_use_mechanical_label_carry() -> None:
-    head = "a" * 40
-    fixture = comment_only_report(head)
-    fixture["rows"][0].update(
-        state=R.SUPERSEDED,
-        bound_to="c" * 40,
-    )
-    try:
-        R.evaluate(fixture, Path("."), "b" * 40, head)
-    except R.Refused as error:
-        assert "canonical comment evidence" in str(error)
-        assert "SUPERSEDED" in str(error)
-    else:
-        raise AssertionError("a stale comment approval inherited mechanical authority")
+def test_mechanical_carry_is_invariant_to_label_cache_metadata(tmp_path: Path) -> None:
+    repo, approved, current_base, current = mechanical_fixture(tmp_path)
+    canonical = report(current, approved)
+    canonical["rows"][0].update(label=None, source="comment")
+    cached = report(current, approved)
+    cached["rows"][0].update(label="passed-review-codex", source="label")
+    absent = report(current, approved)
+    absent["rows"][0].pop("label")
+    absent["rows"][0].pop("source", None)
+
+    canonical_verdict = R.evaluate(canonical, repo, current_base, current)
+    assert canonical_verdict == R.evaluate(cached, repo, current_base, current)
+    assert canonical_verdict == R.evaluate(absent, repo, current_base, current)
+    approval = canonical_verdict["approvals"][0]
+    assert approval["basis"] == "MECHANICAL_REBASE"
+    assert "label" not in approval
+    assert "source" not in approval
 
 
 def test_an_empty_accepted_review_set_refuses() -> None:
@@ -298,8 +301,6 @@ def test_cli_accepts_a_current_comment_approval_without_a_label(tmp_path: Path) 
     assert verdict["approvals"] == [
         {
             "basis": R.BOUND_CURRENT,
-            "label": "",
             "lane": "codex",
-            "source": "comment",
         }
     ]

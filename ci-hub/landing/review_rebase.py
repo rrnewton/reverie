@@ -165,41 +165,31 @@ def evaluate(
                 f"approval report observes head {report_head}, not current head {current_head}"
             )
         lane = str(row.get("lane") or "")
-        label = str(row.get("label") or "")
         state = row.get("state")
-        source = str(row.get("source") or "label")
         if lane not in REVIEW_LANES:
             continue
         if state == BOUND_CURRENT:
             accepted.append(
                 {
                     "lane": lane,
-                    "label": label,
-                    "source": source,
                     "basis": BOUND_CURRENT,
                 }
             )
             continue
-        # Comment authority is exact-head only. Mechanical carry remains the
-        # narrow alternative for a previously attested label row; a stale
-        # comment cannot acquire authority from a cache or from this helper.
-        if source == "comment":
-            raise Refused(
-                f"the {lane or 'review'} lane is {state or 'missing-state'} "
-                "in canonical comment evidence, not bound to the current head"
-            )
+        # approval_binding derives state and bound_to from canonical review
+        # records. The mutable label and its source field are cache presentation
+        # only, so neither participates in this mechanical carry decision or in
+        # its authoritative result.
         if state != SUPERSEDED:
             raise Refused(
-                f"{label or lane or 'approval'} is {state or 'missing-state'}, "
+                f"{lane or 'approval'} is {state or 'missing-state'}, "
                 "not bound or mechanically carried"
             )
-        approved_head = exact_sha(row.get("bound_to"), f"{label or lane} approved head")
+        approved_head = exact_sha(row.get("bound_to"), f"{lane} approved head")
         proof = prove_mechanical_rebase(repo, approved_head, current_base, current_head)
         accepted.append(
             {
                 "lane": lane,
-                "label": label,
-                "source": source,
                 "basis": "MECHANICAL_REBASE",
                 "proof": proof,
             }

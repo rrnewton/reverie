@@ -35,9 +35,11 @@ on that task from the URL returned by GitHub. Supplying it to a comment write
 records the exact publication fact. It is refused on other writes.
 
 A shared GitHub credential cannot prove who typed an agent-name argument, so the
-disclosure prefix is metadata rather than review authority. An explicit
-``--verdict`` is still checked against the ``codex`` or ``claude`` client family
-found in process ancestry before the write is attempted.
+disclosure prefix is metadata rather than review authority. When disclosure
+metadata is supplied, an explicit ``--verdict`` is also checked against the
+``codex`` or ``claude`` client family resolved from process ancestry. With no
+disclosure metadata, body and verdict grammar are still validated, but process
+identity is intentionally not resolved.
 
 Unresolved or disagreeing process ownership is rendered visibly in the
 disclosure metadata. It does not block a write whose substantive repository,

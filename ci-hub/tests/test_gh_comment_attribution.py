@@ -103,6 +103,13 @@ class FleetGhTest(unittest.TestCase):
             self.assertNotIn("class Disclosure", source)
         self.assertIn("class Disclosure", SOURCE_DISCLOSURE.read_text())
 
+    def test_module_contract_states_the_no_metadata_validation_boundary(self) -> None:
+        source = SOURCE_SHIM.read_text()
+        self.assertIn("With no\ndisclosure metadata", source)
+        self.assertIn("body and verdict grammar are still validated", source)
+        self.assertIn("process\nidentity is intentionally not resolved", source)
+        self.assertNotIn("is still checked against the ``codex``", source)
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

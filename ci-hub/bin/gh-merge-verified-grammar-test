@@ -97,6 +97,7 @@ def _install_review_responses(
     inline: list[dict] | None = None,
     labels: list[str] | None = None,
     permission: str | None = "write",
+    permissions: dict[str, str | None] | None = None,
 ) -> None:
     """Install production-shaped REST and GraphQL review responses."""
     issue = issue or []
@@ -135,10 +136,11 @@ def _install_review_responses(
             return 0, json.dumps([inline]), ""
         if "/collaborators/" in joined and "/permission" in joined:
             actor = joined.split("/collaborators/", 1)[1].split("/permission", 1)[0]
+            actor_permission = (permissions or {}).get(actor, permission)
             return (
                 0,
                 json.dumps(
-                    {"permission": permission, "user": {"login": actor}}
+                    {"permission": actor_permission, "user": {"login": actor}}
                 ),
                 "",
             )
@@ -154,7 +156,11 @@ def _install_review_responses(
 
 
 def probe_comments(
-    module, bodies: list[str | dict], *, permission: str | None = "write"
+    module,
+    bodies: list[str | dict],
+    *,
+    permission: str | None = "write",
+    permissions: dict[str, str | None] | None = None,
 ) -> bool:
     """Like `probe`, but the bodies are SEPARATE COMMENTS.
 
@@ -167,7 +173,12 @@ def probe_comments(
     means two comments, which is also the only shape the real API returns.
     """
     comments = [_comment_record(item, i) for i, item in enumerate(bodies, 1)]
-    _install_review_responses(module, issue=comments, permission=permission)
+    _install_review_responses(
+        module,
+        issue=comments,
+        permission=permission,
+        permissions=permissions,
+    )
     return len(module.blocking_changes_requests("1", "o/r", SHA)) > 0
 
 
@@ -682,27 +693,27 @@ def main() -> int:
             ),
         },
     ]
-    for name, comments, permission, want_block in (
+    for name, comments, permissions, want_block in (
         (
             "an agent using the authorized shared GitHub account can retire the exact objection",
             authority_pair,
-            "write",
+            {"hermit-007": "write", "rrnewton": "write"},
             False,
         ),
         (
             "a read-only GitHub actor cannot retire the exact objection",
             authority_pair,
-            "read",
+            {"hermit-007": "write", "rrnewton": "read"},
             True,
         ),
         (
             "missing current permission cannot retire the exact objection",
             authority_pair,
-            None,
+            {"hermit-007": "write", "rrnewton": None},
             True,
         ),
     ):
-        got = probe_comments(lander, comments, permission=permission)
+        got = probe_comments(lander, comments, permissions=permissions)
         ok = got == want_block
         print(f"  {'PASS' if ok else 'FAIL'}  {name}: blocks={got} want={want_block}")
         if not ok:

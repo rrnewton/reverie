@@ -306,12 +306,13 @@ if grep -Fq 'health/approval_binding.py"' "$lander" &&
    grep -Fq 'review_rebase.py"' "$lander" &&
    grep -Fq -- '--current-base "$current_base" --current-head "$HEAD"' "$lander" &&
    grep -Fq 'review applicability REFUSED' "$lander" &&
-   grep -Fq 'source == "comment"' "$review_applicability" &&
+   ! grep -Fq 'row.get("source")' "$review_applicability" &&
+   ! grep -Fq 'row.get("label")' "$review_applicability" &&
    grep -Fq 'state == BOUND_CURRENT' "$review_applicability" &&
    grep -Fq 'approval-binding report contains no accepted review approval' "$review_applicability"; then
-  audit "final boundary accepts canonical current-head comment approval and refuses an empty review set" ok
+  audit "final boundary uses canonical binding state, ignores label cache metadata, and refuses an empty review set" ok
 else
-  audit "final boundary lost canonical comment approval or empty-set refusal" bad
+  audit "final boundary lost canonical binding state, cache independence, or empty-set refusal" bad
 fi
 
 if grep -Fq 'bin/pr-head-ci"' "$lander" &&

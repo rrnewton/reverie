@@ -1061,6 +1061,59 @@ def review_record_is_attestation(record: dict[str, Any]) -> bool:
     )
 
 
+def validate_review_authority_annotations(
+    records: "Sequence[dict[str, Any]]",
+) -> None:
+    """Require explicit current permission for every authority-bearing record.
+
+    The immutable GitHub actor is the record's ``user.login`` or
+    ``author.login``. Cached labels and caller-supplied fleet names cannot
+    substitute for that actor or for the permission annotation produced by the
+    live reader.
+    """
+    for position, record in enumerate(records):
+        if not (
+            review_record_has_authority(record)
+            or review_record_is_attestation(record)
+        ):
+            continue
+        actor = review_record_actor(record)
+        if actor is None:
+            raise ReviewRecordError(
+                f"authority-bearing review record {position} has no immutable GitHub actor"
+            )
+        annotated_actor = record.get("_current_review_actor_login")
+        if (
+            not isinstance(annotated_actor, str)
+            or annotated_actor.strip().casefold() != actor
+        ):
+            raise ReviewRecordError(
+                f"authority-bearing review record {position} has no matching "
+                "current GitHub actor annotation"
+            )
+        authorized = record.get("_current_review_actor_authorized")
+        permission = record.get("_current_review_actor_permission")
+        if not isinstance(authorized, bool) or not isinstance(permission, str):
+            raise ReviewRecordError(
+                f"authority-bearing review record {position} has no explicit "
+                "current GitHub actor permission annotation"
+            )
+        permission_tokens = {
+            token for token in permission.strip().casefold().split("/") if token
+        }
+        if not permission_tokens:
+            raise ReviewRecordError(
+                f"authority-bearing review record {position} has no explicit "
+                "current GitHub actor permission annotation"
+            )
+        expected = bool(permission_tokens & AUTHORIZED_REVIEW_PERMISSIONS)
+        if authorized != expected:
+            raise ReviewRecordError(
+                f"authority-bearing review record {position} has an inconsistent "
+                "current GitHub actor permission annotation"
+            )
+
+
 def annotate_current_review_authority(
     records: "Sequence[dict[str, Any]]",
     repo: str,
@@ -1159,6 +1212,7 @@ def annotate_current_review_authority(
                 else None
             )
         annotated.append(preserved)
+    validate_review_authority_annotations(annotated)
     return annotated
 
 
@@ -1387,11 +1441,15 @@ def review_record_decisions(
     record: dict[str, Any],
 ) -> set[tuple[str, str | None, str | None]]:
     """Canonical authority decisions, excluding optional fleet-name metadata."""
+    if record.get("_current_review_actor_authorized") is False:
+        return set()
     decisions: set[tuple[str, str | None, str | None]] = set()
     for line in marker_lines(str(record.get("body") or "")):
         parsed = parse_marker(line)
         if parsed is not None:
             decisions.add((parsed[0], parsed[1], parsed[2]))
+    for lane, sha, _message in review_record_refusals(record):
+        decisions.add((MARKER_REFUSED, lane, sha))
     state = str(record.get("state") or "").upper()
     if state == "APPROVED":
         decisions.add((MARKER_APPROVED, None, review_record_head(record)))
@@ -1478,7 +1536,10 @@ def canonical_review_records(
     # ambiguity instead of deciding which verdict happened later.
     by_time: dict[datetime.datetime, list[dict[str, Any]]] = {}
     for version_time, _record_id, record in ordered:
-        if review_record_has_authority(record):
+        if (
+            review_record_has_authority(record)
+            and record.get("_current_review_actor_authorized") is not False
+        ):
             by_time.setdefault(version_time, []).append(record)
     for version_time, tied in by_time.items():
         if len({str(record.get("_review_surface")) for record in tied}) > 1:
@@ -1570,6 +1631,8 @@ def retirement_record_allowed(
     current version time.  Missing timestamps, equal timestamps, an edit after
     the withdrawal, and a guessed future id all remain blocking.
     """
+    if refusal_record.get("_current_review_actor_authorized") is False:
+        return False
     if refusal_record.get("_retirement_targetable") is False:
         return False
     refusal_id = comment_database_id(refusal_record)
@@ -1743,6 +1806,8 @@ def accepted_exact_retirements(
     for target, claim_records in claims.items():
         refusal = by_id.get(target)
         if refusal is None:
+            continue
+        if refusal.get("_current_review_actor_authorized") is False:
             continue
         contexts = review_record_refusals(refusal)
         if len(contexts) != 1:
@@ -2038,6 +2103,12 @@ def lane_shas(
             retire_claims.setdefault(claim[0], []).append(c)
 
     for c in comments:
+        # Current GitHub permission applies symmetrically: a record without
+        # authority can neither approve nor block nor withdraw an objection.
+        # Body-only legacy fixtures have no annotation and retain syntax-only
+        # behavior; live and object-form boundaries require an annotation.
+        if c.get("_current_review_actor_authorized") is False:
+            continue
         body = c.get("body") or ""
         author = comment_author(body)
         # Match on the block-normalised form. Stripping a leading marker cannot
@@ -2074,7 +2145,6 @@ def lane_shas(
         comment_refuses_lane = bool(refusal_bindings)
         relevant_rejection = comment_refuses_lane and not named_retirement
         precise_withdrawal = contains_retires_assertion(body)
-        record_authorized = c.get("_current_review_actor_authorized") is not False
         current_head_withdrawal = any(
             parsed is not None
             and parsed[0] == MARKER_WITHDRAWN
@@ -2182,7 +2252,7 @@ def lane_shas(
         # A canonical current-head withdrawal is a later substantive lane
         # decision. An exact RETIRES assertion uses the narrower comment-id path
         # above and must not also clear unrelated objections in the lane.
-        if current_head_withdrawal and not precise_withdrawal and record_authorized:
+        if current_head_withdrawal and not precise_withdrawal:
             outstanding.clear()
             if refusals is not None:
                 refusals.clear()
@@ -2264,12 +2334,6 @@ def lane_shas(
                 continue
             explicit_lane, sha = binding
             if explicit_lane.lower() == lane:
-                # Live GitHub records are annotated before evaluation. A record
-                # whose immutable actor lacks current review permission cannot
-                # grant a lane. Legacy in-memory fixtures have no annotation and
-                # retain their syntax-only behavior.
-                if c.get("_current_review_actor_authorized") is False:
-                    continue
                 if (
                     current_head is not None
                     and sha.casefold() == current_head.casefold()
