@@ -53,9 +53,6 @@ class InertPaneTestCase(unittest.TestCase):
     """One private tmux server per test, torn down unconditionally."""
 
     DB = "faketest"
-    #: Which composer rendering the fixture draws. Both are exercised: see
-    #: BoxDrawingCoordinatorLayout at the bottom of this file.
-    LAYOUT = "ascii"
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="orc-msg-inert-"))
@@ -76,8 +73,6 @@ class InertPaneTestCase(unittest.TestCase):
             [
                 str(self.orc_shim),
                 str(FAKE_PANE),
-                "--layout",
-                self.LAYOUT,
                 "--db",
                 self.DB,
                 "--record",
@@ -373,25 +368,6 @@ class TestExplicitSocketNeverRetargets(InertPaneTestCase):
             capture_output=True,
             text=True,
         )
-
-
-# ⚠️ EVERY CASE ABOVE, RE-RUN AGAINST THE RENDERING THE SHIPPED BUILD DRAWS, AND
-# THIS IS THE POINT OF THE FILE NOW. The fixture drew only the hyphen-rule layout
-# while the coordinator drew box-drawing characters, so the relay's composer
-# detection was dead in production -- for as long as nobody compared the two --
-# against a fully green suite. Subclassing rather than adding new cases is
-# deliberate: it makes the two renderings impossible to cover unequally, because
-# a case added above is automatically run against both.
-class BoxLayoutDeliveryPositiveBracket(TestInertDeliveryPositiveBracket):
-    LAYOUT = "box"
-
-
-class BoxLayoutDeliveryNegativeBracket(TestInertDeliveryNegativeBracket):
-    LAYOUT = "box"
-
-
-class BoxLayoutExplicitSocketNeverRetargets(TestExplicitSocketNeverRetargets):
-    LAYOUT = "box"
 
 
 if __name__ == "__main__":

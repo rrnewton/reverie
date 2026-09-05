@@ -133,44 +133,9 @@ ACTIVE_SESSION_ENTRY_RE = re.compile(r"^  (?P<name>orc-\S+)\s*$")
 # placeholder both vanished in the post-1.0 TUI (which shows a `Session:`/`DB:`
 # footer and a bare prompt instead), and the border title had already flipped
 # between builds before that. See the module docstring.
-#
-# ⚠️ AND THE GLYPHS CHANGED UNDER IT. The shape survived; the character set did
-# not. This was `^-{20,}$` -- twenty or more ASCII HYPHENS and nothing else --
-# and the current build draws the box with U+250C/U+2502/U+2514/U+2500:
-#
-#     ┌ Input (Enter, Esc, Ctrl+G pause, Ctrl+T inbox, Ctrl+C cl└─────────…
-#     │  Type / for commands
-#     └──────────────────────────────────────────────────────────…
-#
-# Captured from the live coordinator pane on 2026-09-05 and decoded byte by
-# byte, not inferred. Not one ASCII hyphen in the box, so parse_composer
-# returned None on every attempt and the relay refused with "does not render an
-# Orc composer" -- accurate about what it saw, misleading about what it meant.
-# The owner-checkout validate report has been undeliverable on that refusal.
-#
-# So match the RUN rather than the whole line: twenty or more rule characters in
-# either character set, anywhere on the line. That tolerates the corner and box
-# title the build now puts before the run, and the neighbouring column's border
-# after it, without widening what counts as a composer -- discovery has already
-# restricted us to panes running `orc`.
-COMPOSER_RULE_RE = re.compile(r"[-\u2500]{20,}")
-# Body lines are prefixed by the box's left border in the current build; older
-# builds have no border. Stripped before the prompt glyph so both parse.
-COMPOSER_BORDER_CHARS = "\u2502|"
-# U+203A is the post-1.0 empty-input prompt; '>' covers a plain-ASCII build. The
-# current build renders no glyph at all, which is why this must stay optional.
+COMPOSER_RULE_RE = re.compile(r"^-{20,}$")
+# U+203A is the post-1.0 empty-input prompt; '>' covers a plain-ASCII build.
 COMPOSER_PROMPT_CHARS = "›>"
-# ⚠️ A TEXT PROBE, AND THIS FILE ALREADY RECORDS THAT TEXT PROBES FLIP BETWEEN
-# BUILDS -- `Type / for commands` vanished in the post-1.0 TUI and has since
-# come back. It is used here anyway because this build renders NO prompt glyph,
-# so there is no structural way left to tell an empty box from a draft.
-#
-# The direction of the risk is what makes it acceptable: if this string goes
-# stale, an EMPTY box stops looking empty, and the relay REFUSES rather than
-# typing. Staleness costs a delivery, never somebody else's draft. Confirmed
-# against the shipped binary: `strings /usr/local/bin/orc` contains both this
-# placeholder and the `Input (Enter, Esc, ...)` box title.
-COMPOSER_EMPTY_PLACEHOLDERS = frozenset({"Type / for commands"})
 # `[idle]` / `[streaming]` / ... — the post-1.0 readiness marker, rendered on the
 # key-hint line just above the composer. Recorded as evidence, never used as the
 # delivery test: a state label is a proxy for acceptance, the composer
@@ -211,12 +176,7 @@ class Composer:
 
     @property
     def is_empty(self) -> bool:
-        """Empty means safe to type into, so the placeholder counts as empty.
-
-        Keeping the placeholder in ``text`` rather than normalising it away
-        preserves what was actually on screen for the delivery record.
-        """
-        return not self.text or self.text in COMPOSER_EMPTY_PLACEHOLDERS
+        return not self.text
 
 
 @dataclass(frozen=True)
@@ -764,22 +724,6 @@ def message_probe(message: str) -> str:
     return squash(message)[:PROBE_LENGTH]
 
 
-def _strip_composer_borders(line: str) -> str:
-    """One body line with the box borders and prompt glyph removed.
-
-    Exactly ONE border character is removed from each end, and only where one is
-    actually present. Stripping greedily would let a draft made only of border
-    characters reduce to the empty string, which is the one way this could turn
-    an occupied composer into an empty-looking one and license typing into it.
-    """
-    text = line.strip()
-    if text[:1] in COMPOSER_BORDER_CHARS:
-        text = text[1:]
-    if text[-1:] in COMPOSER_BORDER_CHARS:
-        text = text[:-1]
-    return text.strip().lstrip(COMPOSER_PROMPT_CHARS).strip()
-
-
 def parse_composer(screen: str) -> Composer | None:
     """Parse the input box out of a captured pane, or None if it is not there.
 
@@ -791,7 +735,7 @@ def parse_composer(screen: str) -> Composer | None:
     """
     lines = [line.rstrip() for line in screen.splitlines()]
     rules = [
-        index for index, line in enumerate(lines) if COMPOSER_RULE_RE.search(line)
+        index for index, line in enumerate(lines) if COMPOSER_RULE_RE.match(line.strip())
     ]
     if len(rules) < 2:
         return None
@@ -799,7 +743,7 @@ def parse_composer(screen: str) -> Composer | None:
 
     body: list[str] = []
     for line in lines[open_index + 1 : close_index]:
-        body.append(_strip_composer_borders(line))
+        body.append(line.lstrip().lstrip(COMPOSER_PROMPT_CHARS).strip())
 
     state: str | None = None
     for line in reversed(lines[max(0, open_index - COMPOSER_STATE_SEARCH_LINES) : open_index]):
