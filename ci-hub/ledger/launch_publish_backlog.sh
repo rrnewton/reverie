@@ -69,6 +69,48 @@ if [[ -z $GH_BIN ]]; then
 fi
 UNIT_PATH="$(dirname -- "$GH_BIN"):${PATH}"
 
+# A health tick executes this launcher from its verified private `.run.<sha>`
+# tree. That tree belongs to the foreground tick: the wrapper empties it as soon
+# as health-tick returns, while this unit deliberately continues detached. The
+# first Python process can start before cleanup and still fail later when it
+# launches publisher.py, parent-main-write, or check-series-rows.rs from a tree
+# that no longer exists. Measured 2026-09-05: five complete series batches stayed
+# spooled for 6,546.9 seconds; the logged refusal named the removed
+# check-series-rows.rs path.
+#
+# Re-enter the exact cached parent revision through the installed operational
+# tool. Its private root is then owned for the publisher's complete lifetime.
+# Direct/manual launches have no such handoff and retain the stable checkout path
+# they were invoked from. If a tick supplies only half of the handoff, refuse:
+# falling back to its short-lived root would recreate the silent stall.
+declare -a PUBLISH_COMMAND
+PUBLISH_WORKING_DIRECTORY=$TOOL_ROOT
+if [[ -n ${DEV_HERMIT_OPERATIONAL_TOOL:-} || -n ${DEV_HERMIT_TOOL_PARENT_SHA:-} ]]; then
+  if [[ -z ${DEV_HERMIT_OPERATIONAL_TOOL:-} || \
+        ! -x ${DEV_HERMIT_OPERATIONAL_TOOL:-} || \
+        ! ${DEV_HERMIT_TOOL_PARENT_SHA:-} =~ ^[0-9a-f]{40}$ ]]; then
+    echo "state=refused summary=incomplete operational-tool handoff; publish sweep not launched; spool retained." \
+      | tee -a "$LOG" 2>/dev/null || true
+    exit 0
+  fi
+  PUBLISH_COMMAND=(
+    "$DEV_HERMIT_OPERATIONAL_TOOL"
+    --run-current-tool
+    --state-root "$STATE_ROOT"
+  )
+  if [[ -n ${DEV_HERMIT_TOOL_CACHE:-} ]]; then
+    PUBLISH_COMMAND+=(--cache-root "$DEV_HERMIT_TOOL_CACHE")
+  fi
+  PUBLISH_COMMAND+=(
+    --tool-parent-sha "$DEV_HERMIT_TOOL_PARENT_SHA"
+    --tool-relative ci-hub/ledger/publish_backlog.py
+    --
+  )
+  PUBLISH_WORKING_DIRECTORY=$STATE_ROOT
+else
+  PUBLISH_COMMAND=(python3 "$TOOL_ROOT/ci-hub/ledger/publish_backlog.py")
+fi
+
 if systemctl --user is-active --quiet "$UNIT.service" 2>/dev/null; then
   echo "state=running summary=ledger publish sweep already active as $UNIT"
   exit 0
@@ -87,11 +129,11 @@ if launch_error=$(systemd-run --user --quiet --collect \
     --property=CPUQuota=100% \
     --property="StandardOutput=append:$LOG" \
     --property="StandardError=append:$LOG" \
-    --working-directory="$TOOL_ROOT" \
+    --working-directory="$PUBLISH_WORKING_DIRECTORY" \
     --setenv="PATH=$UNIT_PATH" \
     --setenv="DEV_HERMIT_PARENT=$STATE_ROOT" \
     --setenv="DEV_HERMIT_TOOL_ROOT=$TOOL_ROOT" \
-    -- python3 "$TOOL_ROOT/ci-hub/ledger/publish_backlog.py" 2>&1 >/dev/null); then
+    -- "${PUBLISH_COMMAND[@]}" 2>&1 >/dev/null); then
   echo "state=launched summary=ledger publish sweep launched detached as $UNIT; output appended to $LOG"
   exit 0
 fi

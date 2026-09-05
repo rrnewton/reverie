@@ -69,6 +69,19 @@ run_launcher() { # script  extra-PATH-dir  -> writes argv to $work/argv, stdout 
     bash "$script" > "$work/out" 2>&1
 }
 
+run_operational_launcher() { # script -> records the detached exact-revision re-entry
+  local script=$1
+  : > "$work/argv"
+  SYSTEMD_RUN_ARGV_SINK="$work/argv" \
+  DEV_HERMIT_PARENT="$state_root" \
+  DEV_HERMIT_OPERATIONAL_TOOL="$work/operational-tool" \
+  DEV_HERMIT_TOOL_PARENT_SHA=0123456789abcdef0123456789abcdef01234567 \
+  DEV_HERMIT_TOOL_CACHE="$work/tool-cache" \
+  LEDGER_PUBLISH_GH_BIN="$work/ghdir/gh" \
+    PATH="$work/bin:$work/ghdir:/usr/bin:/bin" \
+    bash "$script" > "$work/out" 2>&1
+}
+
 echo "== FIXED launcher, gh present =="
 run_launcher "$launcher" "$work/ghdir"
 check "launch reported"                 "state=launched"                       "$work/out"
@@ -81,6 +94,31 @@ check "tool cwd is immutable root"      "--working-directory=$tool_root"       "
 check "state root is explicit"          "--setenv=DEV_HERMIT_PARENT=$state_root" "$work/argv"
 check "tool root is explicit"           "--setenv=DEV_HERMIT_TOOL_ROOT=$tool_root" "$work/argv"
 check "publisher code comes from tool"  "$tool_root/ci-hub/ledger/publish_backlog.py" "$work/argv"
+
+echo "== FIXED launcher, detached health-tick handoff =="
+printf '#!/usr/bin/env bash\nexit 0\n' > "$work/operational-tool"
+chmod +x "$work/operational-tool"
+mkdir -p "$work/tool-cache"
+run_operational_launcher "$launcher"
+check "operational launch reported"       "state=launched"                       "$work/out"
+check "stable bootstrap runs"             "$work/operational-tool"               "$work/argv"
+check "exact parent revision retained"    "0123456789abcdef0123456789abcdef01234567" "$work/argv"
+check "configured cache retained"         "--cache-root"                         "$work/argv"
+check "publisher selected relatively"     "ci-hub/ledger/publish_backlog.py"      "$work/argv"
+check "stable working directory"          "--working-directory=$state_root"       "$work/argv"
+check_absent "private tool root not lent" "$tool_root/ci-hub/ledger/publish_backlog.py" "$work/argv"
+
+echo "== FIXED launcher, incomplete detached handoff: refuse and retain =="
+: > "$work/argv"
+SYSTEMD_RUN_ARGV_SINK="$work/argv" \
+DEV_HERMIT_PARENT="$state_root" \
+DEV_HERMIT_OPERATIONAL_TOOL="$work/operational-tool" \
+LEDGER_PUBLISH_GH_BIN="$work/ghdir/gh" \
+  PATH="$work/bin:$work/ghdir:/usr/bin:/bin" \
+  bash "$launcher" > "$work/out" 2>&1
+check "incomplete handoff refused"        "state=refused"                        "$work/out"
+check "refusal preserves spool"           "spool retained"                       "$work/out"
+check_absent "incomplete handoff not launched" "--unit="                           "$work/argv"
 
 echo "== FIXED launcher, gh ABSENT: must refuse rather than launch a doomed sweep =="
 run_launcher "$launcher" ""
@@ -103,7 +141,7 @@ import re, sys, pathlib
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
 for line in ('    --property="StandardOutput=append:$LOG" \\\n',
              '    --property="StandardError=append:$LOG" \\\n',
-             '    --working-directory="$TOOL_ROOT" \\\n',
+             '    --working-directory="$PUBLISH_WORKING_DIRECTORY" \\\n',
              '    --setenv="PATH=$UNIT_PATH" \\\n',
              '    --setenv="DEV_HERMIT_PARENT=$STATE_ROOT" \\\n',
              '    --setenv="DEV_HERMIT_TOOL_ROOT=$TOOL_ROOT" \\\n'):
@@ -120,7 +158,7 @@ check_absent "baseline carries NO state root" "DEV_HERMIT_PARENT" "$work/argv"
 
 echo
 if [[ $fails -eq 0 ]]; then
-  echo "test_launch_publish_backlog: PASS (fixed launcher hands the unit a gh-bearing PATH and a readable output file; refuses when gh is absent; retains systemd-run's own error; and the reconstructed pre-fix launcher fails all three, so none of these assertions is vacuous)"
+  echo "test_launch_publish_backlog: PASS (fixed launcher hands the unit a gh-bearing PATH and readable output, re-enters the exact cached tool revision for detached work, refuses incomplete handoff and missing gh without dropping the spool, retains systemd-run's own error, and the reconstructed pre-fix launcher fails the original checks)"
   exit 0
 fi
 echo "test_launch_publish_backlog: FAIL ($fails check(s))"

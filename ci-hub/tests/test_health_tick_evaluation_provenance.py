@@ -575,11 +575,22 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
 
         publisher = (ROOT / "ci-hub" / "ledger" / "launch_publish_backlog.sh").read_text()
         self.assertIn('STATE_ROOT=${DEV_HERMIT_PARENT:-$TOOL_ROOT}', publisher)
-        self.assertIn('--working-directory="$TOOL_ROOT"', publisher)
+        self.assertIn('PUBLISH_WORKING_DIRECTORY=$TOOL_ROOT', publisher)
+        self.assertIn('--working-directory="$PUBLISH_WORKING_DIRECTORY"', publisher)
         self.assertIn('--setenv="DEV_HERMIT_PARENT=$STATE_ROOT"', publisher)
         self.assertIn('--setenv="DEV_HERMIT_TOOL_ROOT=$TOOL_ROOT"', publisher)
         self.assertIn(
-            '-- python3 "$TOOL_ROOT/ci-hub/ledger/publish_backlog.py"', publisher
+            'PUBLISH_COMMAND=(python3 "$TOOL_ROOT/ci-hub/ledger/publish_backlog.py")',
+            publisher,
+        )
+        self.assertIn(
+            '"$DEV_HERMIT_OPERATIONAL_TOOL"\n    --run-current-tool', publisher
+        )
+        self.assertIn(
+            '--tool-parent-sha "$DEV_HERMIT_TOOL_PARENT_SHA"', publisher
+        )
+        self.assertIn(
+            '--tool-relative ci-hub/ledger/publish_backlog.py', publisher
         )
 
     def test_real_production_stateful_commands_leave_tool_root_unchanged(self) -> None:
