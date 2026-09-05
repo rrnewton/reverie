@@ -40,6 +40,9 @@ import tty
 from pathlib import Path
 
 RULE_WIDTH = 178
+#: What the shipped build shows in an EMPTY input box. The relay treats it as
+#: empty; see COMPOSER_EMPTY_PLACEHOLDERS in scripts/orc-hermit-msg.py.
+PLACEHOLDER = "Type / for commands"
 ENTER = "\r"
 CTRL_J = "\n"
 CTRL_U = "\x15"
@@ -51,6 +54,20 @@ def parse_args() -> argparse.Namespace:
     # Named --db because that is the flag the relay parses out of
     # `pane_start_command` to decide which coordinator it is looking at.
     parser.add_argument("--db", default="faketest")
+    parser.add_argument(
+        "--layout",
+        choices=("ascii", "box"),
+        default="ascii",
+        help=(
+            "which composer rendering to draw. `box` is what the shipped build "
+            "actually draws -- U+250C/U+2502/U+2514/U+2500 with the key hints in "
+            "the box title and a `Type / for commands` placeholder when empty. "
+            "`ascii` is the older hyphen-rule form. BOTH are rendered by the "
+            "suite: this fixture drew only `ascii` while production drew `box`, "
+            "so the relay's detection was broken in production against a green "
+            "test suite for as long as nobody compared them."
+        ),
+    )
     parser.add_argument(
         "--seed-transcript",
         type=Path,
@@ -100,25 +117,54 @@ class FakeOrcPane:
         self.pending: list[str] = []
 
     def render(self) -> str:
-        rule = "-" * RULE_WIDTH
         lines = ["\x1b[2J\x1b[H"]
         lines.extend(f"[user]\n{entry}" for entry in self.transcript[-10:])
         if self.pending:
             lines.append(f"[queued] {len(self.pending)} pending")
             lines.extend(f"> {entry}" for entry in self.pending)
-        lines.append(
-            f"[{self.args.state}] Enter: submit • Esc: cancel • "
-            "Ctrl+G: pause • Ctrl+T: inbox"
-        )
-        lines.append(rule)
-        draft_lines = self.draft.split("\n") if self.draft else [""]
-        lines.append(f"› {draft_lines[0]}".rstrip())
-        lines.extend(draft_lines[1:])
-        lines.append(rule)
+        if self.args.layout == "box":
+            lines.extend(self._box_composer())
+        else:
+            lines.extend(self._ascii_composer())
         lines.append(f"Session: {self.args.session_name} (fake-inert)  |  Ctx: 0%")
         lines.append("Agents: total=0 busy=0  |  Workflows: 0")
         lines.append(f"DB: {self.args.db}  |  Tasks: 0/0  |  Ready: 0")
         return "\r\n".join(lines) + "\r\n"
+
+    def _ascii_composer(self) -> list[str]:
+        rule = "-" * RULE_WIDTH
+        draft_lines = self.draft.split("\n") if self.draft else [""]
+        return [
+            f"[{self.args.state}] Enter: submit • Esc: cancel • "
+            "Ctrl+G: pause • Ctrl+T: inbox",
+            rule,
+            f"› {draft_lines[0]}".rstrip(),
+            *draft_lines[1:],
+            rule,
+        ]
+
+    def _box_composer(self) -> list[str]:
+        """The shipped build's rendering, copied from a live capture.
+
+        Three differences from `ascii` and all three broke the relay: the rules
+        are U+2500 rather than hyphens, every body line carries a U+2502 left
+        border, and an EMPTY box shows a placeholder rather than a bare prompt
+        glyph -- this build renders no prompt glyph at all. The key hints live in
+        the box title here, not on a line above, so the readiness marker is not
+        separately parseable; that is why the relay records state as evidence
+        and never keys delivery on it.
+        """
+        title = (
+            "\u250c Input (Enter, Esc, Ctrl+G pause, Ctrl+T inbox, "
+            "Ctrl+C clear/quit, Ctrl+X quit all)"
+        )
+        body = self.draft.split("\n") if self.draft else [PLACEHOLDER]
+        return [
+            title + "\u2500" * RULE_WIDTH,
+            *(f"\u2502  {line}".rstrip() for line in body),
+            "\u2502",
+            "\u2514" + "\u2500" * RULE_WIDTH,
+        ]
 
     def submit(self) -> None:
         if self.args.queue_submissions:
