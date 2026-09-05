@@ -112,7 +112,17 @@ reverie_preload_trusted_syscall_ip:
     .hidden reverie_preload_trusted_syscall_return_ip
 reverie_preload_trusted_syscall_return_ip:
     ret
+    .global reverie_preload_user_dispatch_end
+    .hidden reverie_preload_user_dispatch_end
+reverie_preload_user_dispatch_end:
     .size reverie_preload_trusted_syscall, .-reverie_preload_trusted_syscall
+    .global reverie_preload_trusted_sigreturn_restorer
+    .hidden reverie_preload_trusted_sigreturn_restorer
+    .type reverie_preload_trusted_sigreturn_restorer,@function
+reverie_preload_trusted_sigreturn_restorer:
+    mov rax, 15
+    jmp reverie_preload_trusted_syscall_ip
+    .size reverie_preload_trusted_sigreturn_restorer, .-reverie_preload_trusted_sigreturn_restorer
 "#
 );
 
@@ -128,6 +138,22 @@ unsafe extern "C" {
     ) -> i64;
     static reverie_preload_trusted_syscall_ip: u8;
     static reverie_preload_trusted_syscall_return_ip: u8;
+    /// Kernel SA_RESTORER entry, also usable as a tail-jump target by a wrapper.
+    /// Sets RAX to rt_sigreturn and jumps to the existing trusted SYSCALL site.
+    /// No stack adjustment, TLS lookup, allocation, or fabricated frame occurs.
+    ///
+    /// # Safety
+    /// Enter only with the kernel's signal-restorer RSP and intact live signal
+    /// frame. Never call as an ordinary Rust/C function: CALL would corrupt the
+    /// kernel-expected RSP. Wrappers must restore that RSP before tail-jumping.
+    #[link_name = "reverie_preload_trusted_sigreturn_restorer"]
+    pub fn trusted_sigreturn_restorer() -> !;
+    static reverie_preload_user_dispatch_end: u8;
+}
+
+pub(crate) fn user_dispatch_range() -> std::ops::Range<usize> {
+    ptr::addr_of!(reverie_preload_trusted_syscall_ip) as usize
+        ..ptr::addr_of!(reverie_preload_user_dispatch_end) as usize
 }
 
 /// The registered dispatcher, as a leaked thin pointer to a boxed trait object.
@@ -222,7 +248,7 @@ pub fn dispatch_direct(number: i64, args: [u64; 6], instruction_pointer: u64) ->
     }
 }
 
-unsafe fn exit_now(code: i32) -> ! {
+pub(crate) unsafe fn exit_now(code: i32) -> ! {
     let _ = unsafe { raw_syscall6(libc::SYS_exit_group, [code as u64, 0, 0, 0, 0, 0]) };
     loop {
         core::hint::spin_loop();
@@ -240,25 +266,77 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
     context: *mut libc::c_void,
 ) {
     let _runtime = RuntimeEntryGuard::enter();
+    unsafe { dispatch_signal(signal_number, info, context, SYS_SECCOMP_CODE) };
+}
+
+pub(crate) unsafe extern "C" fn user_dispatch_handler(
+    signal_number: libc::c_int,
+    info: *mut libc::siginfo_t,
+    context: *mut libc::c_void,
+) {
+    let _runtime = RuntimeEntryGuard::enter();
+    unsafe {
+        dispatch_signal(
+            signal_number,
+            info,
+            context,
+            crate::user_dispatch::SYS_USER_DISPATCH_CODE,
+        )
+    };
+}
+
+unsafe fn dispatch_signal(
+    signal_number: libc::c_int,
+    info: *mut libc::siginfo_t,
+    context: *mut libc::c_void,
+    expected_code: i32,
+) {
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-133): Review fail-closed SIGSYS provenance validation.
     if signal_number != libc::SIGSYS
         || info.is_null()
         || context.is_null()
-        || unsafe { (*info).si_code } != SYS_SECCOMP_CODE
+        || unsafe { (*info).si_code } != expected_code
     {
         unsafe { exit_now(126) };
     }
 
-    // Reentrancy guard: a trapped syscall inside the handler is a bug (the
-    // dispatcher must use the trusted gate). Fail closed rather than recurse.
-    if IN_HANDLER.get() {
+    let previous_handler = IN_HANDLER.get();
+    if previous_handler
+        && !(expected_code == crate::user_dispatch::SYS_USER_DISPATCH_CODE
+            && crate::user_dispatch::may_enter_dispatch())
+    {
         unsafe { exit_now(125) };
     }
     IN_HANDLER.set(true);
 
     let context = unsafe { &mut *context.cast::<libc::ucontext_t>() };
     let registers = &mut context.uc_mcontext.gregs;
+    if expected_code == crate::user_dispatch::SYS_USER_DISPATCH_CODE {
+        let syscall_info = unsafe { &*info.cast::<SyscallSignalInfo>() };
+        if syscall_info.arch != 0xc000003e
+            || syscall_info.call_address != registers[libc::REG_RIP as usize] as usize
+        {
+            unsafe { exit_now(126) };
+        }
+        registers[libc::REG_RAX as usize] = i64::from(syscall_info.number);
+        if syscall_info.number == libc::SYS_rt_sigreturn as i32 {
+            registers[libc::REG_RIP as usize] = trusted_sigreturn_restorer as *const () as i64;
+            IN_HANDLER.set(previous_handler);
+            return;
+        }
+    }
+    if expected_code == crate::user_dispatch::SYS_USER_DISPATCH_CODE {
+        crate::user_dispatch::with_dispatch_mask(&mut context.uc_sigmask, || {
+            dispatch_registers(registers, expected_code)
+        });
+    } else {
+        dispatch_registers(registers, expected_code);
+    }
+    IN_HANDLER.set(previous_handler);
+}
+
+fn dispatch_registers(registers: &mut [libc::greg_t], expected_code: i32) {
     let mut event = SyscallEvent::new(
         registers[libc::REG_RAX as usize],
         [
@@ -272,7 +350,13 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
         registers[libc::REG_RIP as usize] as u64,
     );
 
-    dispatch_event(&mut event);
+    if expected_code == crate::user_dispatch::SYS_USER_DISPATCH_CODE
+        && is_user_dispatch_reconfiguration(&event)
+    {
+        event.fail(libc::EPERM);
+    } else {
+        dispatch_event(&mut event);
+    }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
     if let Some(resume_address) = event.resume_address() {
@@ -282,7 +366,12 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
     } else {
         registers[libc::REG_RAX as usize] = event.resolved_result();
     }
-    IN_HANDLER.set(false);
+}
+
+fn is_user_dispatch_reconfiguration(event: &SyscallEvent) -> bool {
+    event.number() == libc::SYS_prctl
+        && event.args()[0] as libc::c_int
+            == crate::user_dispatch::PR_SET_SYSCALL_USER_DISPATCH as libc::c_int
 }
 
 /// Install the SIGSYS handler (and, optionally, an alternate signal stack).
@@ -297,9 +386,40 @@ pub unsafe fn install_handler(use_alt_stack: bool) -> io::Result<()> {
     unsafe { signal::install_sigsys_handler(sigsys_handler, use_alt_stack) }
 }
 
+/// Linux x86-64 UAPI siginfo prefix followed by the `_sigsys` union member.
+#[repr(C)]
+struct SyscallSignalInfo {
+    signal: i32,
+    errno: i32,
+    code: i32,
+    padding: i32,
+    call_address: usize,
+    number: i32,
+    arch: u32,
+}
+
+const _: () = assert!(core::mem::offset_of!(SyscallSignalInfo, call_address) == 16);
+const _: () =
+    assert!(core::mem::size_of::<SyscallSignalInfo>() <= core::mem::size_of::<libc::siginfo_t>());
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_dispatch_option_uses_linux_int_width() {
+        let option = crate::user_dispatch::PR_SET_SYSCALL_USER_DISPATCH;
+        for upper in [0, 1u64 << 32, u64::MAX << 32] {
+            let event = SyscallEvent::new(libc::SYS_prctl, [upper | option, 0, 0, 0, 0, 0], 0);
+            assert!(is_user_dispatch_reconfiguration(&event));
+            for other in [0, libc::PR_GET_DUMPABLE as u64, u32::MAX as u64] {
+                let event = SyscallEvent::new(libc::SYS_prctl, [upper | other, 0, 0, 0, 0, 0], 0);
+                assert!(!is_user_dispatch_reconfiguration(&event));
+            }
+            let event = SyscallEvent::new(libc::SYS_getpid, [upper | option, 0, 0, 0, 0, 0], 0);
+            assert!(!is_user_dispatch_reconfiguration(&event));
+        }
+    }
 
     #[test]
     fn trusted_gate_addresses_are_populated_and_ordered() {

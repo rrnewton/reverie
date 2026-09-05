@@ -14,7 +14,6 @@
 //! result, or route to a coordinator over RPC.
 
 use crate::signal;
-use crate::trap;
 
 // TODO-HUMAN-REVIEW(PR-264): Review the public dispatch-origin contract used by
 // direct binary-rewriter trampolines.
@@ -23,7 +22,7 @@ use crate::trap;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum SyscallEventSource {
-    /// The seccomp filter delivered the syscall through the `SIGSYS` handler.
+    /// Seccomp or syscall user dispatch delivered a validated `SIGSYS` event.
     SignalTrap,
     /// An instrumentation trampoline called the dispatcher in ordinary context.
     DirectInstrumentation,
@@ -137,9 +136,13 @@ impl SyscallEvent {
     /// This is the async-signal-safe way for a dispatcher to forward a syscall:
     /// the gate's instruction pointer is whitelisted in the seccomp filter, so
     /// it does not re-trap.
+    /// Under SUD, forwarding suspends dispatcher exclusion and reinstates the
+    /// interrupted guest's signal mask for the kernel call. A guest handler
+    /// delivered there may make intercepted syscalls with its own activation.
+    /// Runtime-internal gate calls do not open this guest-delivery scope.
     pub fn forward(&mut self) -> i64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        let result = unsafe { trap::raw_syscall6(self.number, self.args) };
+        let result = unsafe { crate::user_dispatch::forward_syscall(self.number, self.args) };
         self.result = Some(result);
         result
     }
@@ -157,6 +160,11 @@ impl SyscallEvent {
 /// allocate, take locks that guest threads may hold, or make syscalls except
 /// through [`SyscallEvent::forward`] / [`crate::trap::raw_syscall6`]. Any other
 /// direct syscall would re-trap and recurse.
+///
+/// SUD excludes ordinary signal delivery while dispatcher code executes. A
+/// forwarded syscall temporarily suspends that activation: a guest signal
+/// handler may invoke this dispatcher again before the outer forward returns.
+/// Do not retain a lock or exclusive shared-state borrow across forwarding.
 pub trait SyscallDispatcher: Send + Sync {
     /// Handle one trapped syscall, setting `event`'s result.
     fn dispatch(&self, event: &mut SyscallEvent);

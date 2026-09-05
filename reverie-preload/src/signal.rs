@@ -21,6 +21,92 @@
 use std::io;
 use std::ptr;
 
+use crate::trap;
+use crate::user_dispatch::syscall_result;
+
+#[repr(C)]
+#[derive(Default)]
+struct KernelSignalAction {
+    handler: usize,
+    flags: u64,
+    restorer: usize,
+    mask: u64,
+}
+
+fn current_sigsys_action() -> io::Result<KernelSignalAction> {
+    let mut action = KernelSignalAction::default();
+    syscall_result(unsafe {
+        trap::raw_syscall6(
+            libc::SYS_rt_sigaction,
+            [libc::SIGSYS as u64, 0, (&raw mut action) as u64, 8, 0, 0],
+        )
+    })?;
+    Ok(action)
+}
+
+pub(crate) unsafe fn install_user_dispatch_handler(on_alt_stack: bool) -> io::Result<()> {
+    let current = current_sigsys_action()?;
+    if current.handler != libc::SIG_DFL
+        && current.handler != trap::user_dispatch_handler as *const () as usize
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "SIGSYS already has a different handler",
+        ));
+    }
+    let action = KernelSignalAction {
+        handler: trap::user_dispatch_handler as *const () as usize,
+        flags: (libc::SA_SIGINFO | if on_alt_stack { libc::SA_ONSTACK } else { 0 }) as u64
+            | 0x04000000,
+        restorer: trap::trusted_sigreturn_restorer as *const () as usize,
+        mask: crate::user_dispatch::RUNTIME_SIGNAL_MASK,
+    };
+    syscall_result(unsafe {
+        trap::raw_syscall6(
+            libc::SYS_rt_sigaction,
+            [libc::SIGSYS as u64, (&raw const action) as u64, 0, 8, 0, 0],
+        )
+    })
+}
+
+pub(crate) unsafe fn prepare_user_dispatch_thread() -> io::Result<()> {
+    let action = current_sigsys_action()?;
+    if action.handler != trap::user_dispatch_handler as *const () as usize
+        || action.restorer != trap::trusted_sigreturn_restorer as *const () as usize
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "SUD handler and trusted restorer must be installed before re-arming",
+        ));
+    }
+    let mut mask = 0u64;
+    syscall_result(unsafe {
+        trap::raw_syscall6(
+            libc::SYS_rt_sigprocmask,
+            [0, 0, (&raw mut mask) as u64, 8, 0, 0],
+        )
+    })?;
+    if mask & (1u64 << (libc::SIGSYS - 1)) != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot enable SUD with SIGSYS blocked",
+        ));
+    }
+    if action.flags & libc::SA_ONSTACK as u64 != 0 {
+        let mut stack: libc::stack_t = unsafe { core::mem::zeroed() };
+        syscall_result(unsafe {
+            trap::raw_syscall6(
+                libc::SYS_sigaltstack,
+                [0, (&raw mut stack) as u64, 0, 0, 0, 0],
+            )
+        })?;
+        if stack.ss_flags & libc::SS_DISABLE != 0 || stack.ss_size < alt_stack_size() {
+            unsafe { install_alt_stack()? };
+        }
+    }
+    Ok(())
+}
+
 /// Signals the runtime reserves for itself. The guest may not reconfigure these.
 pub const RESERVED_SIGNALS: &[i32] = &[libc::SIGSYS];
 
@@ -66,7 +152,7 @@ pub unsafe fn install_sigsys_handler(
 /// Registers process/thread signal-stack state; call before installing the
 /// handler on a thread.
 pub unsafe fn install_alt_stack() -> io::Result<*mut libc::c_void> {
-    let size = (libc::SIGSTKSZ).max(64 * 1024);
+    let size = alt_stack_size();
     // Leak a Vec as the stack backing store; it lives for the process lifetime.
     let mut backing = vec![0_u8; size].into_boxed_slice();
     let base = backing.as_mut_ptr().cast::<libc::c_void>();
@@ -80,6 +166,10 @@ pub unsafe fn install_alt_stack() -> io::Result<*mut libc::c_void> {
         return Err(io::Error::last_os_error());
     }
     Ok(base)
+}
+
+fn alt_stack_size() -> usize {
+    (libc::SIGSTKSZ).max(64 * 1024)
 }
 
 #[cfg(test)]

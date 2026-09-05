@@ -60,6 +60,7 @@ pub mod seccomp;
 pub mod signal;
 pub mod sync;
 pub mod trap;
+pub mod user_dispatch;
 
 #[cfg(feature = "coordinator-rpc")]
 pub mod rpc;
@@ -145,13 +146,14 @@ impl SyscallDispatcher for SpoofGetpidDispatcher {
 /// Install the runtime with a caller-provided dispatcher and controller.
 ///
 /// This is the library entry point for e9patch/liteinst. Registers `dispatcher`,
-/// then installs `controller` (which puts the SIGSYS handler and seccomp filter
-/// in place).
+/// then installs `controller` (the default uses seccomp; user dispatch is opt-in).
 ///
 /// # Safety
 ///
-/// Installs process-global, irreversible state. Call exactly once, before
-/// untrusted application threads start.
+/// Installs process-global dispatcher/signal state and the selected interception
+/// mechanism. The default seccomp mechanism is irreversible. Call exactly once,
+/// before application threads start, and honor the controller's thread/lifetime
+/// contract. The dispatcher and runtime code must remain loaded while in use.
 pub unsafe fn install(
     dispatcher: Box<dyn SyscallDispatcher>,
     controller: &dyn LifecycleController,
