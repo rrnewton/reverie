@@ -112,6 +112,10 @@ class GitHubUnavailable(RuntimeError):
     """The live GitHub census did not complete; no binding verdict exists."""
 
 
+class ReviewPermissionUnavailable(GitHubUnavailable):
+    """Current GitHub actor permission could not be established."""
+
+
 def _refusal_is_stale(head: str, refused_at: str | None) -> bool:
     """Did the refusal name a SHA that the head has since moved past?
 
@@ -362,11 +366,17 @@ def github_review_records(repo: str, pr: object) -> list[dict[str, Any]]:
     )
     try:
         records.extend(native_review_records_from_graphql(pages))
+    except ReviewRecordError as error:
+        raise GitHubUnavailable(str(error)) from error
+    try:
         records = annotate_current_review_authority(
             records,
             repo,
             lambda path: gh_json(["api", path]),
         )
+    except ReviewRecordError as error:
+        raise ReviewPermissionUnavailable(str(error)) from error
+    try:
         return canonical_review_records(records)
     except ReviewRecordError as error:
         raise GitHubUnavailable(str(error)) from error
@@ -2221,6 +2231,62 @@ def lane_shas(
             for sha, issuer, comment_id, record, line, refusal_lane in outstanding
         )
     return found
+
+
+def canonical_review_lane_rows(
+    records: "Sequence[dict[str, Any]]",
+    current_head: str,
+    *,
+    pr_number: int | None = None,
+    malformed: list[tuple[str, str]] | None = None,
+    malformed_prs: dict[tuple[str, str], int] | None = None,
+) -> list[dict[str, Any]]:
+    """Return the shared per-lane authority rows for canonical review records."""
+    ordered = canonical_review_records(records)
+    findings = malformed if malformed is not None else []
+    rows: list[dict[str, Any]] = []
+    for lane in LANES:
+        refusals: list[str] = []
+        unanswered: list[tuple[str, str | None]] = []
+        issuers: list[tuple[str, str | None]] = []
+        unavailable = unavailable_approval_evidence(ordered, lane)
+        shas = lane_shas(
+            ordered,
+            lane,
+            findings,
+            pr_number,
+            malformed_prs,
+            refusals=refusals,
+            unanswered=unanswered,
+            issuers=issuers,
+            current_head=current_head,
+        )
+        if not shas and not refusals and not unavailable:
+            continue
+        rows.append(
+            {
+                "number": pr_number,
+                "label": None,
+                "source": "comment",
+                "lane": lane,
+                "review_authority_unavailable": unavailable,
+                "head": current_head,
+                "bound_to": shas[-1] if shas else None,
+                "binding_issuer": issuers[-1][1] if issuers else None,
+                "refused_at": refusals[-1] if refusals else None,
+                "state": classify_approval(
+                    current_head,
+                    shas,
+                    refused=bool(refusals),
+                    refused_at=refusals[-1] if refusals else None,
+                    unanswered=bool(unanswered),
+                ),
+                "refusal_issuers": [
+                    issuer for sha, issuer in unanswered if sha == current_head
+                ],
+            }
+        )
+    return rows
 
 
 def unresolved_review_objections(

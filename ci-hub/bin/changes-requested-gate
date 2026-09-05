@@ -36,9 +36,9 @@
 # The marker may be malformed and still fail closed: a full SHA in prose does not
 # make it a verdict, and a missing SHA on a standalone marker does not disappear.
 #
-# If a sha can be extracted and it names the head, REFUSE. If a sha can be
-# extracted and it names some other commit, that refusal was cleared by a later
-# push and does not bind. AND IF NO SHA CAN BE EXTRACTED AT ALL, REFUSE ANYWAY:
+# If a sha can be extracted and it names the head, REFUSE. If it names another
+# commit, the objection was outrun but remains unresolved until later canonical
+# current-head evidence answers it. AND IF NO SHA CAN BE EXTRACTED AT ALL, REFUSE:
 # a marker whose binding cannot be determined must not be waved through, because
 # "I could not read it" is not "it does not apply". That is the case the fourth
 # variant occupied.
@@ -338,11 +338,12 @@ def gh_json(args: list[str]) -> object:
 def comment_bodies_and_ids(records: object) -> tuple[list[str], list[object] | None]:
     """Return comment bodies with the GitHub ids that identify their records.
 
-    The legacy ``--from-json`` format is a JSON array of body strings and has no
-    ids to preserve.  GitHub's three comment endpoints return objects; those must
-    carry an id.  Silently replacing a missing id with the record's position would
-    let ``RETIRES 0`` name whichever comment happened to be first, so malformed
-    object input is refused instead of assigned a made-up identity.
+    A legacy ``--from-json`` array of body strings has no stable ids, version
+    times, review surfaces, or immutable GitHub actors. It is recognized here so
+    the command can refuse it explicitly. GitHub's three review endpoints return
+    objects; those must carry an id. Silently replacing a missing id with the
+    record's position would let ``RETIRES 0`` name whichever comment happened to
+    be first, so malformed object input is refused instead of assigned an id.
     """
     if not isinstance(records, list):
         raise ValueError("comment input is not a JSON array")
@@ -740,7 +741,7 @@ def evaluate(
                 return (
                     BLOCKED,
                     f"{len(current)} unresolved refusal(s) bind the exact head "
-                    f"{head[:12]}; a later canonical current-head lane decision "
+                    f"{head[:12]}; a later canonical current-head withdrawal "
                     "or exact authorized RETIRES evidence is required"
                     + retirement_note,
                 )
@@ -752,8 +753,8 @@ def evaluate(
             return (
                 BLOCKED,
                 f"{len(unresolved)} refusal(s) were OUTRUN, not answered; a later "
-                "canonical current-head lane decision or exact authorized RETIRES "
-                "evidence is required: "
+                "canonical current-head approval or withdrawal, or exact authorized "
+                "RETIRES evidence is required: "
                 f"{detail}"
                 + (
                     "; "
@@ -939,7 +940,9 @@ def evaluate(
         return bool(sha) and (head.startswith(sha) or sha.startswith(head))
 
     def answered_by_later_current_marker(
-        refusal_lane: str | None, refusal_id: object
+        refusal_lane: str | None,
+        refusal_sha: str | None,
+        refusal_id: object,
     ) -> bool:
         """Whether lane chronology records a substantive current-head answer."""
         if refusal_lane is None:
@@ -951,6 +954,7 @@ def evaluate(
             approval_lane == refusal_lane
             and approval_position > position
             and binds(approval_sha)
+            and not binds(refusal_sha)
             for approval_lane, approval_sha, _approval_id, approval_position
             in approvals
         ):
@@ -989,7 +993,8 @@ def evaluate(
     live = [
         (lane, sha)
         for lane, sha, cid in bound4
-        if not retired(cid) and not answered_by_later_current_marker(lane, cid)
+        if not retired(cid)
+        and not answered_by_later_current_marker(lane, sha, cid)
     ]
     cleared = len(bound) - len(live)
 
@@ -1010,9 +1015,10 @@ def evaluate(
             BLOCKED,
             f"{len(live)} refusal(s) bound to the exact head {head[:12]} from "
             f"lane(s) {lanes} that have no later canonical decision{note}. A refusal "
-            "naming the head blocks until a later approval or withdrawal in that lane "
+            "naming the head blocks until a later canonical withdrawal in that lane "
             "at the same exact head, or an exact authorized RETIRES record, says the "
-            "objection is resolved.",
+            "objection is resolved. A same-head approval is conflicting evidence, "
+            "not a withdrawal.",
         )
 
     # ⚠️ A SHA-LESS REFUSAL USED TO BE UNRETIRABLE BY ANY MEANS, WHICH MADE IT A
@@ -1100,7 +1106,7 @@ def evaluate(
     for kind, lane, sha, cid in found4:
         if kind != REFUSAL:
             continue
-        if retired(cid) or answered_by_later_current_marker(lane, cid):
+        if retired(cid) or answered_by_later_current_marker(lane, sha, cid):
             answered.append((lane, sha))
         else:
             outrun.append((lane, sha))
@@ -1109,8 +1115,8 @@ def evaluate(
         return (
             OK,
             f"{len(refusals)} refusal marker(s) present, none names {head[:12]}, and "
-            f"every one was ANSWERED by a later canonical current-head lane "
-            f"decision or exact authorized RETIRES evidence."
+            f"every one was ANSWERED by a later canonical current-head approval or "
+            f"withdrawal, or exact authorized RETIRES evidence."
             + retire_note(),
         )
 
@@ -1122,8 +1128,8 @@ def evaluate(
         BLOCKED,
         f"{len(outrun)} of {len(refusals)} refusal marker(s) were OUTRUN, not answered: "
         f"{detail}. The sha moved so they no longer name {head[:12]}, and no later "
-        f"canonical current-head decision or exact authorized RETIRES record says "
-        f"the objection was resolved." + retire_note(),
+        f"canonical current-head approval or withdrawal, or exact authorized "
+        f"RETIRES record says the objection was resolved." + retire_note(),
     )
 
 
@@ -1196,7 +1202,9 @@ def self_test() -> int:
             bad.append(f"{name}: got {got}, want {want} -- {why[:80]}")
 
     # Fleet names are optional metadata. Changing or omitting them must not alter
-    # the result or the authoritative explanation.
+    # the result or the authoritative explanation. Agent-utils PR #117 owns the
+    # corresponding metadata normalization at its publication boundary; these
+    # controls cover only this gate's authority decision.
     _tag = lambda who, line: f"[hermit2, {who}, unresolved, devbig014, role=reviewer]\n{line}"
     decidable = [
         _tag("hermit-012", _T_REF),
@@ -1566,7 +1574,7 @@ def self_test() -> int:
     command_refusal_id = 5420547902
     command_withdrawal_id = 5437102604
 
-    def run_command(records: list[dict]) -> subprocess.CompletedProcess:
+    def run_command(records: object) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory(prefix="changes-requested-gate-") as directory:
             fixture = pathlib.Path(directory) / "comments.json"
             fixture.write_text(json.dumps(records), encoding="utf-8")
@@ -1630,6 +1638,42 @@ def self_test() -> int:
             )
         if no_verdict_in(result.stdout):
             bad.append(f"command: {name} -- no verdict reached stdout")
+
+    current_refusal = f"CHANGES-REQUESTED-AT: claude {_MOVED}"
+    current_approval = f"APPROVED-AT: claude {_MOVED}"
+    current_withdrawal = f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {_MOVED}"
+    chronology_cases = [
+        (
+            "a same-head generic approval remains conflicting evidence",
+            [current_refusal, current_approval],
+            BLOCKED,
+            "canonical current-head withdrawal",
+        ),
+        (
+            "an explicit same-head withdrawal answers the objection",
+            [current_refusal, current_withdrawal],
+            OK,
+            "no unresolved review objection is recorded",
+        ),
+    ]
+    for name, bodies, want_rc, must_say in chronology_cases:
+        ids = [command_refusal_id, command_withdrawal_id]
+        result = run_command(event_records(bodies, ids))
+        if result.returncode != want_rc or must_say not in result.stdout:
+            bad.append(
+                f"command chronology: {name} -- rc={result.returncode}, "
+                f"want {want_rc}; stdout={result.stdout[:180]!r}"
+            )
+
+    incomplete = run_command([current_refusal, current_approval])
+    if (
+        incomplete.returncode != INDETERMINATE
+        or "body-string input is incomplete" not in incomplete.stdout
+    ):
+        bad.append(
+            "command: body-string --from-json did not refuse incomplete records "
+            f"-- rc={incomplete.returncode}; stdout={incomplete.stdout[:180]!r}"
+        )
 
     native_review = {
         "fullDatabaseId": command_refusal_id,
@@ -1722,7 +1766,9 @@ def self_test() -> int:
           f"absence-is-not-a-pass case(s) and the four-outcome stdout invariant "
           f"with its provenance stamp, plus {len(command_cases)} end-to-end command "
           f"case(s) that preserve comment ids through JSON ingestion and the "
-          f"missing-id fail-closed control, plus {len(native_cases)} native-review "
+          f"missing-id fail-closed control, plus {len(chronology_cases)} shared "
+          f"chronology command case(s) and the incomplete body-string control, plus "
+          f"{len(native_cases)} native-review "
           f"retirement case(s)")
     return 0
 
@@ -1735,7 +1781,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--source", help="a checkout, so a main-equal (wiped) head can be detected")
     p.add_argument(
         "--from-json",
-        help="offline: a JSON array of body strings, or comment objects carrying id and body",
+        help="offline: a JSON array of complete comment/review objects; "
+             "body-string arrays are incomplete and refused",
     )
     p.add_argument(
         "--require-answered",
@@ -1757,6 +1804,16 @@ def main(argv: list[str] | None = None) -> int:
             with open(args.from_json, encoding="utf-8") as fh:
                 records = json.load(fh)
             bodies, ids = comment_bodies_and_ids(records)
+            if ids is None:
+                return emit(
+                    INDETERMINATE,
+                    args.pr,
+                    head,
+                    "body-string input is incomplete: stable record ids, authoritative "
+                    "version times, review surfaces, and immutable GitHub actor "
+                    "permission are required. Pass complete comment/review objects "
+                    "to --from-json, then retry",
+                )
             native_ids = native_changes_requested_ids(records)
             event_records = records if records and isinstance(records[0], dict) else None
         except (OSError, json.JSONDecodeError, ValueError) as exc:

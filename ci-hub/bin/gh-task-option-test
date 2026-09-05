@@ -58,12 +58,12 @@ def main() -> int:
             out,
         )
 
-        # An unattributed comment write must still be refused for the ORIGINAL
-        # reason -- missing disclosure -- and not crash on the new option.
+        # The disclosure block is optional metadata. Omitting it must preserve
+        # and forward the exact GitHub subject and body through the real entry point.
         code, out = run(["pr", "comment", "2303", "--body", "x"], env)
         check(
-            "an undisclosed comment write still REFUSES on disclosure",
-            code != 0 and "NameError" not in out and "Traceback" not in out,
+            "a comment write without metadata preserves its subject and body",
+            code == 0 and "STUB_RAN pr comment 2303 --body x" in out,
             f"exit {code}\n{out}",
         )
 

@@ -3,9 +3,11 @@
 
 Two engines:
 
-* ``gh`` (DEFAULT) — one proxied ready-non-draft ``gh pr list --json`` call per repo, plus one
-  dereference of the registered exact-head hosted authority per ready head, plus
-  a bounded exact-job lookup only for a selected failing Actions check.
+* ``gh`` (DEFAULT) — one proxied ready-non-draft ``gh pr list --json`` call per
+  repo, canonical review-surface and actor-permission reads for each labeled
+  post-facto review, one dereference of the registered exact-head hosted
+  authority per ready head, and a bounded exact-job lookup only for a selected
+  failing Actions check.
   ``gh`` returns ``mergeable`` and ``statusCheckRollup`` inline, so there is NO
   per-PR local ``git fetch``. The job lookup is the narrow authority that can
   distinguish a setup-only runner failure from a product failure.
@@ -250,6 +252,7 @@ class ReviewProtocolStatus:
     complete: bool
     missing: tuple[str, ...]
     invalid_labels: tuple[str, ...]
+    review_permission_unavailable: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -687,49 +690,70 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
             invalid_labels.append(label)
 
     has_round = {reviewer: bool(values) for reviewer, values in rounds.items()}
-    raw_comments = entry.get("comments")
-    comments = (
-        [
-            {**comment, "_review_surface": "issue-comment"}
-            for comment in raw_comments
-            if isinstance(comment, dict)
-        ]
-        if isinstance(raw_comments, list)
-        else []
+    live_records = entry.get("_canonical_review_records")
+    live_read_attempted = any(
+        key in entry
+        for key in (
+            "_canonical_review_records",
+            "_review_permission_unavailable",
+            "_review_authority_unavailable",
+        )
     )
+    if isinstance(live_records, list):
+        comments = [record for record in live_records if isinstance(record, dict)]
+    elif live_read_attempted:
+        # Never fall back to the unannotated `gh pr list` comments after a live
+        # authority read failed. That would turn an unavailable permission check
+        # into syntax-only approval.
+        comments = []
+    else:
+        # Pure/offline callers retain the historical fixture interface. The live
+        # command always attaches the permission-annotated shared records above.
+        raw_comments = entry.get("comments")
+        comments = (
+            [
+                {**comment, "_review_surface": "issue-comment"}
+                for comment in raw_comments
+                if isinstance(comment, dict)
+            ]
+            if isinstance(raw_comments, list)
+            else []
+        )
     head = str(entry.get("headRefOid") or "").lower()
     malformed: list[tuple[str, str]] = []
     review_order_error: str | None = None
-    if comments:
-        try:
-            comments = approval_authority.canonical_review_records(comments)
-        except approval_authority.ReviewRecordError as error:
-            # Missing event/version metadata cannot be repaired by trusting the
-            # endpoint's incidental array order. Empty evidence makes every
-            # claimed cache label fail closed below, while this diagnostic says
-            # why the authority was unavailable.
-            comments = []
-            review_order_error = str(error)
+    try:
+        authority_rows = approval_authority.canonical_review_lane_rows(
+            comments,
+            head,
+            pr_number=(
+                entry.get("number")
+                if isinstance(entry.get("number"), int)
+                and not isinstance(entry.get("number"), bool)
+                else None
+            ),
+            malformed=malformed,
+        )
+    except approval_authority.ReviewRecordError as error:
+        # Missing event/version metadata cannot be repaired by trusting an
+        # endpoint's incidental array order. Empty evidence makes every cache
+        # label fail closed while this diagnostic says why authority is absent.
+        authority_rows = []
+        review_order_error = str(error)
+    rows_by_lane = {str(row.get("lane")): row for row in authority_rows}
     has_approval: dict[str, bool] = {}
     unlabeled_bindings: list[str] = []
+    permission_unavailable: list[str] = []
     for reviewer, expected in review_contract.PASSED_REVIEW_LABELS.items():
-        refusals: list[str] = []
-        unanswered: list[tuple[str, str | None]] = []
-        shas = approval_authority.lane_shas(
-            comments,
-            reviewer,
-            malformed,
-            refusals=refusals,
-            unanswered=unanswered,
-            current_head=head,
-        )
-        binding = approval_authority.classify_approval(
-            head,
-            shas,
-            refused=bool(refusals),
-            refused_at=refusals[-1] if refusals else None,
-            unanswered=bool(unanswered),
-        )
+        row = rows_by_lane.get(reviewer, {})
+        binding = str(row.get("state") or approval_authority.UNDETERMINED)
+        refused_at = str(row.get("refused_at") or "")
+        for detail in row.get("review_authority_unavailable") or []:
+            if not isinstance(detail, dict):
+                continue
+            actor = str(detail.get("github_actor") or "unknown")
+            permission = str(detail.get("permission") or "unavailable")
+            permission_unavailable.append(f"{reviewer}:{actor}@{permission}")
         has_approval[reviewer] = binding == approval_authority.BOUND_CURRENT
         if expected not in labels:
             # Comment evidence decides authority. The missing label remains
@@ -741,7 +765,7 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
                 approval_authority.REFUSED,
                 approval_authority.REFUSED_STALE,
             ):
-                refused_at = refusals[-1][:12] if refusals else "unknown"
+                refused_at = refused_at[:12] if refused_at else "unknown"
                 unlabeled_bindings.append(
                     f"unlabeled-refusal:{reviewer}@{refused_at}"
                 )
@@ -753,6 +777,12 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
     invalid_labels.extend(f"malformed-binding:{line}" for _, line in malformed)
     if review_order_error is not None:
         invalid_labels.append(f"review-event-order:{review_order_error}")
+    permission_error = entry.get("_review_permission_unavailable")
+    if isinstance(permission_error, str) and permission_error:
+        permission_unavailable.append(f"all:{permission_error}")
+    authority_error = entry.get("_review_authority_unavailable")
+    if isinstance(authority_error, str) and authority_error:
+        invalid_labels.append(f"review-authority-unavailable:{authority_error}")
     # Reported alongside the label diagnostics, and deliberately not folded into
     # them: an unlabeled binding is a MISSING CACHE over a real review, which is a
     # different condition from a cache that no longer holds.
@@ -787,7 +817,35 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
         complete=not missing,
         missing=tuple(missing),
         invalid_labels=tuple(sorted(invalid_labels)),
+        review_permission_unavailable=tuple(sorted(permission_unavailable)),
     )
+
+
+def _attach_canonical_review_authority(
+    repo: str, entries: Sequence[object]
+) -> None:
+    """Attach shared, permission-annotated review records to labeled PRs.
+
+    A failure is kept on that PR for reporting. It does not erase the rest of the
+    repository health result, and it never falls back to unannotated comment text.
+    """
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if review_contract.POST_FACTO_LABEL not in _label_names(entry):
+            continue
+        number = entry.get("number")
+        if not isinstance(number, int) or isinstance(number, bool):
+            entry["_review_authority_unavailable"] = "pull request number unavailable"
+            continue
+        try:
+            entry["_canonical_review_records"] = (
+                approval_authority.github_review_records(repo, number)
+            )
+        except approval_authority.ReviewPermissionUnavailable as error:
+            entry["_review_permission_unavailable"] = str(error)
+        except approval_authority.GitHubUnavailable as error:
+            entry["_review_authority_unavailable"] = str(error)
 
 
 def _mechanism_overlaps(raw: Sequence[object]) -> tuple[MechanismOverlap, ...]:
@@ -1606,6 +1664,7 @@ def fetch_repo_status_gh(
         return population_only(
             f"{repo}: time budget exhausted during local failure ledger"
         )
+    _attach_canonical_review_authority(repo, raw)
     return _classify_gh_prs(
         repo,
         raw,
@@ -2322,17 +2381,21 @@ def render_report(statuses: Sequence[RepoStatus], warn_threshold: int, engine: s
                 audit.current_approvals == "complete" for audit in audits
             )
             invalid = sum(bool(audit.invalid_labels) for audit in audits)
+            permission_unavailable = sum(
+                bool(audit.review_permission_unavailable) for audit in audits
+            )
             lines.append(
-                "    Review protocol source: issue comments returned by `gh pr list`; "
-                "reporting only, not merge admission. Native reviews and inline review "
-                "comments are evaluated by the landing authority, not by this summary."
+                "    Review protocol source: canonical issue comments, inline review "
+                "comments, native reviews, and current GitHub actor permission from "
+                "the shared review authority; reporting only, not merge admission."
             )
             lines.append(
                 "    Review protocol: "
                 f"labeled={len(audits)} complete={complete} "
                 f"dual_review={dual_review} partial_review={partial_review} "
                 f"no_review_evidence={no_review} "
-                f"current_dual_approval={dual_approval} invalid_label_prs={invalid}"
+                f"current_dual_approval={dual_approval} invalid_label_prs={invalid} "
+                f"review_permission_unavailable={permission_unavailable}"
             )
             for audit in audits:
                 invalid_detail = (
@@ -2341,12 +2404,18 @@ def render_report(statuses: Sequence[RepoStatus], warn_threshold: int, engine: s
                     else ""
                 )
                 draft = " draft=yes" if audit.draft else ""
+                permission_detail = (
+                    " review_permission_unavailable="
+                    + ",".join(audit.review_permission_unavailable)
+                    if audit.review_permission_unavailable
+                    else ""
+                )
                 lines.append(
                     f"      #{audit.pr if audit.pr is not None else '?':<5} "
                     f"review={audit.review_rounds:<8} "
                     f"approval={audit.current_approvals:<8} "
                     f"missing={','.join(audit.missing) or '-'}"
-                    f"{invalid_detail}{draft} {audit.title}"
+                    f"{invalid_detail}{permission_detail}{draft} {audit.title}"
                 )
     if unavailable:
         # DO NOT NAME A CAUSE THIS LINE DOES NOT KNOW. It previously asserted
@@ -2385,9 +2454,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=("gh", "planner"),
         default=os.environ.get("CI_HUB_PR_STATUS_ENGINE", "gh"),
         help=(
-            "status backend: 'gh' (default; one proxied rollup call plus bounded "
-            "failed-job lookups, no per-PR git fetch) or 'planner' (agent-utils, "
-            "real merge-tree "
+            "status backend: 'gh' (default; one proxied rollup call, canonical "
+            "review reads for labeled post-facto PRs, and bounded failed-job "
+            "lookups; no per-PR git fetch) or 'planner' (agent-utils, real merge-tree "
             "conflict detection over the open set; use on planning runs)"
         ),
     )

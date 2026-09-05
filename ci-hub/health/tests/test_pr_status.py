@@ -570,13 +570,45 @@ class SetupOnlyRollupClassificationTests(unittest.TestCase):
 class ReviewProtocolClassificationTests(unittest.TestCase):
     HEAD = "a" * 40
 
-    def classify(self, *labels: str, draft: bool = False, comments=()):
+    def classify(
+        self,
+        *labels: str,
+        draft: bool = False,
+        comments=(),
+        live_records=None,
+        permission_error: str | None = None,
+    ):
+        entry = _pr(12, [], draft=draft, labels=labels, comments=comments)
+        if live_records is not None:
+            entry["_canonical_review_records"] = live_records
+        if permission_error is not None:
+            entry["_review_permission_unavailable"] = permission_error
         status = pr_status._classify_gh_prs(
             "rrnewton/hermit",
-            [_pr(12, [], draft=draft, labels=labels, comments=comments)],
+            [entry],
         )
         self.assertEqual(len(status.review_protocol), 1)
         return status.review_protocol[0]
+
+    def live_approval(
+        self,
+        *,
+        actor: str = "maintainer",
+        authorized: bool = True,
+        permission: str = "write",
+    ) -> dict:
+        return {
+            "id": 12001,
+            "html_url": "https://github.com/rrnewton/hermit/pull/12#issuecomment-12001",
+            "user": {"login": actor},
+            "body": f"APPROVED-AT: claude {self.HEAD}",
+            "_review_surface": "issue-comment",
+            "_current_review_actor_authorized": authorized,
+            "_current_review_actor_login": actor,
+            "_current_review_actor_permission": permission,
+            "created_at": "2026-09-05T01:00:00Z",
+            "updated_at": "2026-09-05T01:00:00Z",
+        }
 
     def test_round_one_and_current_approvals_are_complete(self) -> None:
         audit = self.classify(
@@ -678,6 +710,151 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
         self.assertIn("unlabeled-binding:claude", audit.invalid_labels)
         self.assertEqual(audit.current_approvals, "partial")
         self.assertNotIn("current-approval-claude", audit.missing)
+
+    def test_live_shared_authority_requires_current_github_permission(self) -> None:
+        authorized = self.classify(
+            "post-facto-human-review",
+            "adversarial-review-claude1",
+            live_records=[self.live_approval()],
+        )
+        outsider = self.classify(
+            "post-facto-human-review",
+            "adversarial-review-claude1",
+            "passed-review-claude",
+            live_records=[
+                self.live_approval(
+                    actor="outside-contributor",
+                    authorized=False,
+                    permission="read",
+                )
+            ],
+        )
+
+        self.assertEqual(authorized.current_approvals, "partial")
+        self.assertNotIn("current-approval-claude", authorized.missing)
+        self.assertEqual(outsider.current_approvals, "missing")
+        self.assertIn("current-approval-claude", outsider.missing)
+        self.assertIn(
+            "passed-review-claude:UNDETERMINED", outsider.invalid_labels
+        )
+        self.assertEqual(
+            outsider.review_permission_unavailable,
+            ("claude:outside-contributor@read",),
+        )
+
+    def test_permission_lookup_failure_does_not_fall_back_to_comment_text(self) -> None:
+        entry = _pr(
+            12,
+            [],
+            labels=("post-facto-human-review", "adversarial-review-claude1"),
+            comments=(f"APPROVED-AT: claude {self.HEAD}",),
+        )
+        failure = pr_status.approval_authority.ReviewPermissionUnavailable(
+            (
+                "cannot determine current review authorization for GitHub actor "
+                "maintainer: API unavailable"
+        )
+        )
+        with mock.patch.object(
+            pr_status.approval_authority,
+            "github_review_records",
+            side_effect=failure,
+        ):
+            pr_status._attach_canonical_review_authority(
+                "rrnewton/hermit", [entry]
+            )
+        audit = pr_status._review_protocol_status(entry)
+        self.assertIsNotNone(audit)
+        assert audit is not None
+
+        self.assertEqual(audit.current_approvals, "missing")
+        self.assertIn("current-approval-claude", audit.missing)
+        self.assertEqual(len(audit.review_permission_unavailable), 1)
+        self.assertIn("API unavailable", audit.review_permission_unavailable[0])
+
+    def test_no_review_is_distinct_from_permission_unavailable(self) -> None:
+        empty_entry = _pr(
+            12,
+            [],
+            labels=("post-facto-human-review", "adversarial-review-claude1"),
+        )
+        empty_entry["_canonical_review_records"] = []
+        outsider_entry = _pr(
+            13,
+            [],
+            labels=("post-facto-human-review", "adversarial-review-claude1"),
+        )
+        outsider_entry["_canonical_review_records"] = [
+            self.live_approval(
+                actor="outside-contributor",
+                authorized=False,
+                permission="read",
+            )
+        ]
+
+        empty_status = pr_status._classify_gh_prs(
+            "rrnewton/hermit", [empty_entry]
+        )
+        unavailable_status = pr_status._classify_gh_prs(
+            "rrnewton/hermit", [outsider_entry]
+        )
+        empty_report = pr_status.render_report(
+            [empty_status], warn_threshold=10, engine="gh"
+        )
+        unavailable_report = pr_status.render_report(
+            [unavailable_status], warn_threshold=10, engine="gh"
+        )
+
+        self.assertEqual(
+            empty_status.review_protocol[0].review_permission_unavailable, ()
+        )
+        self.assertIn("review_permission_unavailable=0", empty_report)
+        self.assertIn("review_permission_unavailable=1", unavailable_report)
+        self.assertIn(
+            "claude:outside-contributor@read", unavailable_report
+        )
+
+    def test_live_fetch_uses_shared_permission_annotated_records(self) -> None:
+        entry = _pr(
+            12,
+            [],
+            labels=("post-facto-human-review", "adversarial-review-claude1"),
+            comments=(f"APPROVED-AT: claude {self.HEAD}",),
+        )
+        live = [
+            self.live_approval(
+                actor="outside-contributor",
+                authorized=False,
+                permission="read",
+            )
+        ]
+        with mock.patch.object(
+            pr_status.approval_authority,
+            "github_review_records",
+            return_value=live,
+        ) as shared_reader, mock.patch(
+            "pr_status._fetch_open_prs_gh", return_value=[entry]
+        ), mock.patch(
+            "pr_status._cached_open_pr_census", return_value=([entry], 0.0)
+        ), mock.patch(
+            "pr_status.banked_green_commits", return_value=frozenset()
+        ), mock.patch(
+            "pr_status.banked_failure_tier_commits", return_value={}
+        ), mock.patch(
+            "pr_status.hosted_authority_states", return_value={}
+        ):
+            status = pr_status.fetch_repo_status_gh(
+                "rrnewton/hermit", net_wrapper=[]
+            )
+
+        shared_reader.assert_called_once_with("rrnewton/hermit", 12)
+        self.assertEqual(len(status.review_protocol), 1)
+        audit = status.review_protocol[0]
+        self.assertEqual(audit.current_approvals, "missing")
+        self.assertEqual(
+            audit.review_permission_unavailable,
+            ("claude:outside-contributor@read",),
+        )
 
     def test_cache_label_variation_does_not_change_comment_authority(self) -> None:
         comments = (
@@ -1457,9 +1634,11 @@ class RenderTests(unittest.TestCase):
         self.assertIn("dual_review=1", report)
         self.assertIn("current_dual_approval=0", report)
         self.assertIn("approval=partial", report)
-        self.assertIn("issue comments returned by `gh pr list`", report)
+        self.assertIn("canonical issue comments, inline review comments", report)
         self.assertIn("reporting only, not merge admission", report)
-        self.assertIn("Native reviews and inline review comments", report)
+        self.assertIn("native reviews, and current GitHub actor permission", report)
+        self.assertIn("the shared review authority", report)
+        self.assertIn("review_permission_unavailable=0", report)
         self.assertIn("missing=current-approval-codex", report)
 
 

@@ -500,7 +500,42 @@ grep -q "^state=unbound" <<<"$out" \
   || bad "a malformed approval bound; loosening went the wrong way too: $out"
 
 # ---- the other lander. A fix on one is the seventh workaround. ----
-gate() { printf '%s' "$1" >"$tmp/g.json"; python3 "$crg" --repo r/r --pr 1 --head "$CUR" --from-json "$tmp/g.json" >/dev/null 2>&1; }
+# Convert the compact body arrays below into complete GitHub-shaped records.
+# The gate deliberately refuses body strings now: they carry no stable id,
+# authoritative version time, review surface, or GitHub actor permission.
+gate_fixture() {
+  python3 -c '
+import json, sys
+bodies = json.loads(sys.argv[2])
+records = [
+    {
+        "id": 990000 + position,
+        "body": body,
+        "user": {"login": "fixture-reviewer"},
+        "_review_surface": "issue-comment",
+        "_current_review_actor_authorized": True,
+        "_current_review_actor_login": "fixture-reviewer",
+        "_current_review_actor_permission": "write",
+        "created_at": f"2026-09-05T00:00:{position:02d}Z",
+        "updated_at": f"2026-09-05T00:00:{position:02d}Z",
+    }
+    for position, body in enumerate(bodies, 1)
+]
+with open(sys.argv[1], "w", encoding="utf-8") as output:
+    json.dump(records, output)
+' "$tmp/g.json" "$1"
+}
+gate() {
+  gate_fixture "$1"
+  python3 "$crg" --repo r/r --pr 1 --head "$CUR" \
+    --from-json "$tmp/g.json" >/dev/null 2>&1
+}
+printf '%s' "[\"APPROVED-AT: claude $CUR\"]" >"$tmp/g-strings.json"
+out="$(python3 "$crg" --repo r/r --pr 1 --head "$CUR" \
+  --from-json "$tmp/g-strings.json" 2>&1)"; rc=$?
+[[ $rc -eq 2 ]] && grep -q "body-string input is incomplete" <<<"$out" \
+  && ok "changes-requested-gate: body-string input is explicitly INDETERMINATE" \
+  || bad "body-string input did not fail closed with its missing evidence: $out"
 gate "[\"CHANGES-REQUESTED: claude $CUR\"]" \
   && bad "changes-requested-gate: suffix-less refusal still CLEARS (fails open)" \
   || ok "changes-requested-gate: a suffix-less refusal BLOCKS"
@@ -636,7 +671,7 @@ grep -q '"authoritative": 1' <<<"$out" \
 # bound at the exact head and still could not land.
 #
 # ⚠️ THE THREE OUTCOMES MUST STAY DISTINCT, so all three are asserted here.
-gatep() { printf '%s' "$1" >"$tmp/gp.json"; python3 "$crg" --repo r/r --pr 1 --head "$CUR" --from-json "$tmp/gp.json" >/dev/null 2>&1; }
+gatep() { gate "$1"; }
 
 gatep "[\"Changes requested, on the deleted value pin alone. Everything else here is right.\"]" \
   && ok "prose opening a review counts as NOTHING (rc=0)" \
@@ -654,8 +689,7 @@ gatep "[\"CHANGES-REQUESTED: claude $CUR\"]" \
 # ATTEMPTING a verdict and getting it wrong, which must stay INDETERMINATE rather
 # than being swept into "prose". If this ever returns 0 the fix has become a way
 # to ignore real refusals.
-printf '%s' "[\"CHANGES-REQUESTED: claude please fix the thing\"]" >"$tmp/gp2.json"
-python3 "$crg" --repo r/r --pr 1 --head "$CUR" --from-json "$tmp/gp2.json" >/dev/null 2>&1
+gatep "[\"CHANGES-REQUESTED: claude please fix the thing\"]"
 [[ $? -eq 2 ]] \
   && ok "a near-miss with a lane but no sha is still INDETERMINATE, not ignored" \
   || bad "a lane-bearing refusal attempt was swallowed as prose"

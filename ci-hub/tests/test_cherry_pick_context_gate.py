@@ -23,5 +23,5 @@ def test_cherry_pick_context_bracket_is_counted() -> None:
     )
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
-    assert "Ran 13 tests" in output
+    assert "Ran 14 tests" in output
     assert "OK" in output

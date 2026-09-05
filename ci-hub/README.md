@@ -255,6 +255,9 @@ Absent, stale, mismatched, or same-process fleet names therefore do not prevent
 recording an otherwise valid review. A moved head still requires a fresh review,
 and an unauthorized GitHub actor, malformed marker, or unresolved substantive
 objection still blocks.
+Agent-utils PR #117 owns normalization of that optional metadata in its callers;
+this repository's authority depends only on the canonical review artifact and
+the immutable GitHub actor's current repository permission.
 
 The canonical exact-head comment is the authority. Review labels are a cache
 that `review-attest` reconciles after verifying the comment; a label without the
