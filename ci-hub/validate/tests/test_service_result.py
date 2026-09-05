@@ -12,11 +12,99 @@ import service_result  # noqa: E402
 
 
 class ServiceResultTest(unittest.TestCase):
+    @staticmethod
+    def schema_projection(version: int) -> dict[str, object]:
+        fields = {
+            service_result.HISTORICAL_SCHEMA_VERSION: service_result.HISTORICAL_FIELD_NAMES,
+            service_result.WRITEBACK_SCHEMA_VERSION: service_result.WRITEBACK_FIELD_NAMES,
+            service_result.SELECTION_SCHEMA_VERSION: service_result.SELECTION_FIELD_NAMES,
+            service_result.SCHEMA_VERSION: service_result.FIELD_NAMES,
+        }[version]
+        value: dict[str, object] = {
+            "schema_version": version,
+            "fields": list(fields),
+            "outcomes": (
+                service_result.HISTORICAL_EXPECTED_OUTCOMES
+                if version == service_result.HISTORICAL_SCHEMA_VERSION
+                else service_result.EXPECTED_OUTCOMES
+            ),
+        }
+        if version != service_result.HISTORICAL_SCHEMA_VERSION:
+            value["scorecard_writeback"] = service_result.EXPECTED_SCORECARD_WRITEBACK
+        return value
+
+    def write_schema(self, root: Path, version: int) -> Path:
+        path = root / service_result.SCHEMA_RELATIVE_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.schema_projection(version)))
+        return path
+
     def classify(self, text: str) -> dict[str, object]:
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / "validate.log"
             log.write_text(text)
             return service_result.from_log(log)
+
+    def test_schema_for_checkout_accepts_current_ahead_of_historical_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "target"
+            reference = root / "reference"
+            self.write_schema(target, service_result.SCHEMA_VERSION)
+            self.write_schema(reference, service_result.SELECTION_SCHEMA_VERSION)
+
+            self.assertEqual(
+                service_result.SCHEMA_VERSION,
+                service_result.schema_for_checkout(
+                    target, reference_checkout=reference
+                ),
+            )
+
+    def test_schema_for_checkout_accepts_exact_historical_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reference = root / "reference"
+            self.write_schema(reference, service_result.SELECTION_SCHEMA_VERSION)
+            for version in (
+                service_result.HISTORICAL_SCHEMA_VERSION,
+                service_result.WRITEBACK_SCHEMA_VERSION,
+                service_result.SELECTION_SCHEMA_VERSION,
+            ):
+                with self.subTest(version=version):
+                    target = root / f"target-{version}"
+                    self.write_schema(target, version)
+                    self.assertEqual(
+                        version,
+                        service_result.schema_for_checkout(
+                            target, reference_checkout=reference
+                        ),
+                    )
+
+    def test_current_schema_refuses_an_unexpected_top_level_field(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self.write_schema(Path(temporary), service_result.SCHEMA_VERSION)
+            value = json.loads(path.read_text())
+            value["future"] = True
+            path.write_text(json.dumps(value))
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"validation-service-result-schema-fields: .*future",
+            ):
+                service_result.read_schema(path)
+
+    def test_schema_reader_refuses_an_unsupported_version_by_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self.write_schema(Path(temporary), service_result.SCHEMA_VERSION)
+            value = json.loads(path.read_text())
+            value["schema_version"] = service_result.SCHEMA_VERSION + 1
+            path.write_text(json.dumps(value))
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"validation-service-result-schema_version: expected 1, 2, 3, or 4, got 5",
+            ):
+                service_result.read_schema(path)
 
     def test_genuine_pass_requires_status_and_exit_agreement(self) -> None:
         result = self.classify(
@@ -192,7 +280,7 @@ class ServiceResultTest(unittest.TestCase):
             result_path.write_text(
                 json.dumps(
                     {
-                        "schema_version": 3,
+                        "schema_version": service_result.SCHEMA_VERSION,
                         "commit": "a" * 40,
                         "profile": "full",
                         "selection_mode": "full",
@@ -200,6 +288,7 @@ class ServiceResultTest(unittest.TestCase):
                         "exit_code": 0,
                         "executed_nodes": 76,
                         "executed_tests": 2129,
+                        "passed_tests": 2129,
                         "scorecard_writeback": {"status": "completed"},
                     }
                 )
@@ -207,7 +296,10 @@ class ServiceResultTest(unittest.TestCase):
 
             result = service_result.from_run_record(
                 record,
-                {"target": "a" * 40, "service_result_schema": 3},
+                {
+                    "target": "a" * 40,
+                    "service_result_schema": service_result.SCHEMA_VERSION,
+                },
                 log,
             )
 
@@ -215,6 +307,7 @@ class ServiceResultTest(unittest.TestCase):
             self.assertEqual("success", result["result"])
             self.assertEqual(76, result["executed_nodes"])
             self.assertEqual(2129, result["executed_tests"])
+            self.assertEqual(2129, result["passed_tests"])
             self.assertEqual("full", result["selection_mode"])
             self.assertEqual("validation-service-result", result["result_source"])
 
@@ -231,7 +324,10 @@ class ServiceResultTest(unittest.TestCase):
 
             result = service_result.from_run_record(
                 record,
-                {"target": "a" * 40, "service_result_schema": 3},
+                {
+                    "target": "a" * 40,
+                    "service_result_schema": service_result.SCHEMA_VERSION,
+                },
                 log,
             )
 
@@ -246,7 +342,7 @@ class ServiceResultTest(unittest.TestCase):
             service_result.result_path(record).write_text(
                 json.dumps(
                     {
-                        "schema_version": 3,
+                        "schema_version": service_result.SCHEMA_VERSION,
                         "commit": "a" * 40,
                         "profile": "full",
                         "selection_mode": "full",
@@ -254,6 +350,7 @@ class ServiceResultTest(unittest.TestCase):
                         "exit_code": 75,
                         "executed_nodes": 76,
                         "executed_tests": 2129,
+                        "passed_tests": 2129,
                         "scorecard_writeback": {
                             "status": "failed",
                             "error": "fixture refusal",
@@ -264,7 +361,10 @@ class ServiceResultTest(unittest.TestCase):
 
             result = service_result.from_run_record(
                 record,
-                {"target": "a" * 40, "service_result_schema": 3},
+                {
+                    "target": "a" * 40,
+                    "service_result_schema": service_result.SCHEMA_VERSION,
+                },
                 root / "unused.log",
             )
             self.assertEqual("completed", result["state"])
@@ -279,7 +379,10 @@ class ServiceResultTest(unittest.TestCase):
             service_result.result_path(record).write_text(json.dumps(value))
             mutated = service_result.from_run_record(
                 record,
-                {"target": "a" * 40, "service_result_schema": 3},
+                {
+                    "target": "a" * 40,
+                    "service_result_schema": service_result.SCHEMA_VERSION,
+                },
                 root / "unused.log",
             )
             self.assertEqual("unknown", mutated["state"])
@@ -292,7 +395,7 @@ class ServiceResultTest(unittest.TestCase):
             service_result.result_path(record).write_text(
                 json.dumps(
                     {
-                        "schema_version": 3,
+                        "schema_version": service_result.SCHEMA_VERSION,
                         "commit": "a" * 40,
                         "profile": "full",
                         "selection_mode": "full",
@@ -300,6 +403,7 @@ class ServiceResultTest(unittest.TestCase):
                         "exit_code": 75,
                         "executed_nodes": 0,
                         "executed_tests": None,
+                        "passed_tests": None,
                         "scorecard_writeback": None,
                     }
                 )
@@ -307,12 +411,16 @@ class ServiceResultTest(unittest.TestCase):
 
             result = service_result.from_run_record(
                 record,
-                {"target": "a" * 40, "service_result_schema": 3},
+                {
+                    "target": "a" * 40,
+                    "service_result_schema": service_result.SCHEMA_VERSION,
+                },
                 root / "unused.log",
             )
             self.assertEqual("completed", result["state"])
             self.assertEqual("no-result", result["result"])
             self.assertEqual("COULD_NOT_RUN", result["final_validate_status"])
+            self.assertIsNone(result["passed_tests"])
             self.assertIsNone(result["scorecard_writeback"])
 
     def test_current_run_killed_before_result_uses_loaded_systemd_signal(self) -> None:
@@ -328,7 +436,10 @@ class ServiceResultTest(unittest.TestCase):
 
             result = service_result.from_run_record(
                 record,
-                {"target": "a" * 40, "service_result_schema": 3},
+                {
+                    "target": "a" * 40,
+                    "service_result_schema": service_result.SCHEMA_VERSION,
+                },
                 root / "unused.log",
                 properties=properties,
             )
@@ -346,7 +457,7 @@ class ServiceResultTest(unittest.TestCase):
             result_path.write_text(
                 json.dumps(
                     {
-                        "schema_version": 3,
+                        "schema_version": service_result.SCHEMA_VERSION,
                         "commit": "a" * 40,
                         "profile": "full",
                         "selection_mode": "full",
@@ -354,6 +465,7 @@ class ServiceResultTest(unittest.TestCase):
                         "exit_code": 0,
                         "executed_nodes": 76,
                         "executed_tests": 2129,
+                        "passed_tests": 2129,
                         "scorecard_writeback": None,
                         "future": True,
                     }
@@ -362,7 +474,10 @@ class ServiceResultTest(unittest.TestCase):
 
             result = service_result.from_run_record(
                 record,
-                {"target": "a" * 40, "service_result_schema": 3},
+                {
+                    "target": "a" * 40,
+                    "service_result_schema": service_result.SCHEMA_VERSION,
+                },
                 root / "unused.log",
             )
 
@@ -373,7 +488,7 @@ class ServiceResultTest(unittest.TestCase):
     def test_verified_bytes_are_parsed_without_a_second_artifact_read(self) -> None:
         payload = json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": service_result.SCHEMA_VERSION,
                 "commit": "a" * 40,
                 "profile": "full",
                 "selection_mode": "full",
@@ -381,16 +496,24 @@ class ServiceResultTest(unittest.TestCase):
                 "exit_code": 0,
                 "executed_nodes": 76,
                 "executed_tests": 2129,
+                "passed_tests": 2129,
                 "scorecard_writeback": {"status": "completed"},
             }
         ).encode()
 
-        evidence = service_result.read_framework_result_bytes(
-            payload, expected_commit="a" * 40
-        )
+        with tempfile.TemporaryDirectory() as temporary:
+            historical_schema = self.write_schema(
+                Path(temporary), service_result.SELECTION_SCHEMA_VERSION
+            )
+            evidence = service_result.read_framework_result_bytes(
+                payload,
+                expected_commit="a" * 40,
+                schema_path=historical_schema,
+            )
 
         self.assertEqual("PASSED", evidence.final_validate_status)
         self.assertEqual(2129, evidence.executed_tests)
+        self.assertEqual(2129, evidence.passed_tests)
 
     def test_historical_run_without_marker_keeps_log_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -432,6 +555,11 @@ class ServiceResultTest(unittest.TestCase):
                 service_result.result_path(record), expected_commit="a" * 40
             )
             self.assertEqual(1, evidence.service_result_schema)
+            self.assertIsNone(evidence.passed_tests)
+            evidence = service_result.read_framework_result(
+                service_result.result_path(record), expected_commit="a" * 40
+            )
+            self.assertIsNone(evidence.passed_tests)
             result = service_result.from_run_record(
                 record,
                 {"target": "a" * 40, "service_result_schema": 1},
@@ -469,13 +597,14 @@ class ServiceResultTest(unittest.TestCase):
             self.assertIn("historical schema 2", result["detail"])
             self.assertFalse(service_result.is_evidenced_terminal(result))
 
-    def test_current_result_missing_writeback_field_fails_by_name(self) -> None:
+    def test_schema_three_missing_passed_count_remains_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "result.json"
-            path.write_text(
+            root = Path(temporary)
+            record = root / "validate-test.json"
+            service_result.result_path(record).write_text(
                 json.dumps(
                     {
-                        "schema_version": 3,
+                        "schema_version": service_result.SELECTION_SCHEMA_VERSION,
                         "commit": "a" * 40,
                         "profile": "full",
                         "selection_mode": "full",
@@ -483,12 +612,49 @@ class ServiceResultTest(unittest.TestCase):
                         "exit_code": 0,
                         "executed_nodes": 76,
                         "executed_tests": 2129,
+                        "scorecard_writeback": {"status": "completed"},
+                    }
+                )
+            )
+
+            evidence = service_result.read_framework_result(
+                service_result.result_path(record), expected_commit="a" * 40
+            )
+            self.assertEqual(service_result.SELECTION_SCHEMA_VERSION, evidence.service_result_schema)
+            self.assertIsNone(evidence.passed_tests)
+            result = service_result.from_run_record(
+                record,
+                {
+                    "target": "a" * 40,
+                    "service_result_schema": service_result.SELECTION_SCHEMA_VERSION,
+                },
+                root / "unused.log",
+            )
+            self.assertEqual("unknown", result["state"])
+            self.assertIsNone(result["passed_tests"])
+            self.assertIn("historical schema 3", result["detail"])
+
+    def test_current_result_missing_writeback_field_fails_by_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "result.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": service_result.SCHEMA_VERSION,
+                        "commit": "a" * 40,
+                        "profile": "full",
+                        "selection_mode": "full",
+                        "final_validate_status": "PASSED",
+                        "exit_code": 0,
+                        "executed_nodes": 76,
+                        "executed_tests": 2129,
+                        "passed_tests": 2129,
                     }
                 )
             )
             with self.assertRaisesRegex(
                 RuntimeError,
-                "validation-service-result-fields: schema 3 expected",
+                "validation-service-result-fields: schema 4 expected",
             ):
                 service_result.read_framework_result(path, expected_commit="a" * 40)
 
@@ -498,9 +664,34 @@ class ServiceResultTest(unittest.TestCase):
             path.write_text(
                 json.dumps(
                     {
-                        "schema_version": 3,
+                        "schema_version": service_result.SCHEMA_VERSION,
                         "commit": "a" * 40,
                         "profile": "full",
+                        "final_validate_status": "PASSED",
+                        "exit_code": 0,
+                        "executed_nodes": 76,
+                        "executed_tests": 2129,
+                        "passed_tests": 2129,
+                        "scorecard_writeback": {"status": "completed"},
+                    }
+                )
+            )
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "validation-service-result-fields: schema 4 expected",
+            ):
+                service_result.read_framework_result(path, expected_commit="a" * 40)
+
+    def test_current_result_missing_passed_count_fails_by_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "result.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": service_result.SCHEMA_VERSION,
+                        "commit": "a" * 40,
+                        "profile": "full",
+                        "selection_mode": "full",
                         "final_validate_status": "PASSED",
                         "exit_code": 0,
                         "executed_nodes": 76,
@@ -511,9 +702,52 @@ class ServiceResultTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 RuntimeError,
-                "validation-service-result-fields: schema 3 expected",
+                "validation-service-result-fields: schema 4 expected",
             ):
                 service_result.read_framework_result(path, expected_commit="a" * 40)
+
+    def test_current_results_require_exact_consistent_passed_counts(self) -> None:
+        base = {
+            "schema_version": service_result.SCHEMA_VERSION,
+            "commit": "a" * 40,
+            "profile": "full",
+            "selection_mode": "full",
+            "final_validate_status": "FAILED",
+            "exit_code": 1,
+            "executed_nodes": 2,
+            "executed_tests": 3,
+            "passed_tests": 2,
+            "scorecard_writeback": None,
+        }
+        evidence = service_result.read_framework_result_bytes(
+            json.dumps(base).encode(), expected_commit="a" * 40
+        )
+        self.assertEqual(3, evidence.executed_tests)
+        self.assertEqual(2, evidence.passed_tests)
+
+        for label, update, message in (
+            (
+                "missing",
+                {"passed_tests": None},
+                "current result with executed_tests requires an exact count",
+            ),
+            ("greater", {"passed_tests": 4}, "exceeds executed_tests 3"),
+            (
+                "successful mismatch",
+                {
+                    "final_validate_status": "PASSED",
+                    "exit_code": 0,
+                    "passed_tests": 2,
+                },
+                "requires passed_tests == executed_tests",
+            ),
+        ):
+            with self.subTest(label=label):
+                value = {**base, **update}
+                with self.assertRaisesRegex(RuntimeError, message):
+                    service_result.read_framework_result_bytes(
+                        json.dumps(value).encode(), expected_commit="a" * 40
+                    )
 
 
 if __name__ == "__main__":

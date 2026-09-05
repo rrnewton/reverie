@@ -173,6 +173,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "signal",
                     "executed_nodes",
                     "executed_tests",
+                    "passed_tests",
                     "final_validate_status",
                     "scorecard_writeback",
                     "result_source",

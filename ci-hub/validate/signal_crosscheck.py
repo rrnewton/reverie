@@ -997,6 +997,7 @@ def _is_unknown_pre_admission_artifact(
         "signal",
         "executed_nodes",
         "executed_tests",
+        "passed_tests",
         "final_validate_status",
         "selection_mode",
         "scorecard_writeback",
@@ -1060,6 +1061,7 @@ def _validation_service_result_evidence(
         in {
             service_result.HISTORICAL_SCHEMA_VERSION,
             service_result.WRITEBACK_SCHEMA_VERSION,
+            service_result.SELECTION_SCHEMA_VERSION,
             service_result.SCHEMA_VERSION,
         }
     ):
@@ -1152,6 +1154,8 @@ def _is_admitted_pre_plan_no_result(
         and raw.get("executed_nodes") == 0
         and "executed_tests" in raw
         and raw.get("executed_tests") is None
+        and "passed_tests" in raw
+        and raw.get("passed_tests") is None
         and raw.get("final_validate_status") == "COULD_NOT_RUN"
         and "selection_mode" in raw
         and raw.get("selection_mode") is None
@@ -1182,6 +1186,7 @@ def _is_admitted_pre_plan_no_result(
         and evidence.inner_exit == 75
         and evidence.executed_nodes == 0
         and evidence.executed_tests is None
+        and evidence.passed_tests is None
         and evidence.final_validate_status == "COULD_NOT_RUN"
         and evidence.selection_mode is None
         and evidence.scorecard_writeback is None

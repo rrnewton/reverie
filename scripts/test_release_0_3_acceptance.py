@@ -162,7 +162,7 @@ class ReleaseAcceptanceTests(unittest.TestCase):
                 "result_artifact": self.write_json(
                     f"{criterion_id}.service-result.json",
                     {
-                        "schema_version": 3,
+                        "schema_version": acceptance.service_result.SCHEMA_VERSION,
                         "commit": HERMIT,
                         "profile": "full",
                         "selection_mode": "full",
@@ -170,6 +170,7 @@ class ReleaseAcceptanceTests(unittest.TestCase):
                         "exit_code": 0,
                         "executed_nodes": 76,
                         "executed_tests": 2129,
+                        "passed_tests": 2129,
                         "scorecard_writeback": {"status": "completed"},
                     },
                 ),
@@ -238,11 +239,60 @@ class ReleaseAcceptanceTests(unittest.TestCase):
         log_path = self.artifacts / log_reference["path"]
         rendered_before = log_path.read_bytes()
         self.assertEqual(self.row(self.evaluate(), "AC-STRICT-03").verdict, "PASS")
-        self.mutate_manual_result(lambda result: result.update(executed_tests=0))
+        self.mutate_manual_result(
+            lambda result: result.update(executed_tests=0, passed_tests=0)
+        )
         report = self.evaluate()
         self.assertEqual(log_path.read_bytes(), rendered_before)
         self.assertEqual(self.row(report, "AC-STRICT-03").verdict, "NO_RESULT")
         self.assertIn("zero", self.row(report, "AC-STRICT-03").reason)
+
+    def test_current_manual_result_requires_an_exact_passing_count(self) -> None:
+        reference = self.evidence["criteria"]["AC-STRICT-03"]["result_artifact"]
+        original = json.loads((self.artifacts / reference["path"]).read_text())
+        for label, mutation, expected in (
+            (
+                "missing",
+                lambda result: result.pop("passed_tests"),
+                "schema 4 expected",
+            ),
+            (
+                "mismatch",
+                lambda result: result.update(passed_tests=2128),
+                "requires passed_tests == executed_tests",
+            ),
+        ):
+            with self.subTest(label=label):
+                def reset_and_mutate(result):
+                    result.clear()
+                    result.update(copy.deepcopy(original))
+                    mutation(result)
+
+                self.mutate_manual_result(reset_and_mutate)
+                row = self.row(self.evaluate(), "AC-STRICT-03")
+                self.assertEqual("NO_RESULT", row.verdict)
+                self.assertIn(expected, row.reason)
+
+    def test_historical_manual_results_remain_readable_but_not_authoritative(self) -> None:
+        reference = self.evidence["criteria"]["AC-STRICT-03"]["result_artifact"]
+        original = json.loads((self.artifacts / reference["path"]).read_text())
+        for version in (1, 2, 3):
+            with self.subTest(version=version):
+                def make_historical(result):
+                    result.clear()
+                    result.update(copy.deepcopy(original))
+                    result["schema_version"] = version
+                    result.pop("passed_tests")
+                    if version < 3:
+                        result.pop("selection_mode")
+                    if version < 2:
+                        result.pop("scorecard_writeback")
+
+                self.mutate_manual_result(make_historical)
+                row = self.row(self.evaluate(), "AC-STRICT-03")
+                self.assertEqual("NO_RESULT", row.verdict)
+                self.assertIn("historical validation service result", row.reason)
+                self.assertIsNone(row.observed["passed_tests"])
 
     def test_partial_three_of_four_is_no_result(self) -> None:
         def mutation(raw):

@@ -192,6 +192,9 @@ class FakeRun:
         self.final_validate_status: str | None = "PASSED"
         self.executed_nodes: int | None = 55
         self.executed_tests: int | None = 862
+        self.passed_tests: int | None = 862
+        self.service_result_schema = start_unit.service_result.SCHEMA_VERSION
+        self.include_passed_tests = True
         self.write_service_result = True
         self.collected_unit = False
         self.current_main = "b" * 40
@@ -765,22 +768,22 @@ class FakeRun:
                 and self.final_validate_status is not None
                 and (path := environment.get("VALIDATE_SERVICE_RESULT_PATH"))
             ):
-                Path(path).write_text(
-                    json.dumps(
-                        {
-                            "schema_version": 3,
-                            "commit": self.target,
-                            "profile": "full",
-                            "selection_mode": "full",
-                            "final_validate_status": self.final_validate_status,
-                            "exit_code": self.actual_exit,
-                            "executed_nodes": self.executed_nodes or 0,
-                            "executed_tests": self.executed_tests,
-                            "scorecard_writeback": {"status": "completed"},
-                        }
-                    )
-                    + "\n"
-                )
+                result = {
+                    "schema_version": self.service_result_schema,
+                    "commit": self.target,
+                    "profile": "full",
+                    "final_validate_status": self.final_validate_status,
+                    "exit_code": self.actual_exit,
+                    "executed_nodes": self.executed_nodes or 0,
+                    "executed_tests": self.executed_tests,
+                }
+                if self.service_result_schema in (3, 4):
+                    result["selection_mode"] = "full"
+                if self.service_result_schema in (2, 3, 4):
+                    result["scorecard_writeback"] = {"status": "completed"}
+                if self.service_result_schema == 4 and self.include_passed_tests:
+                    result["passed_tests"] = self.passed_tests
+                Path(path).write_text(json.dumps(result) + "\n")
             if frozen := environment.get("HERMIT_VALIDATE_LEDGER"):
                 row = self.default_ledger_row()
                 row["result"] = "pass" if self.actual_exit == 0 else "fail"
@@ -886,6 +889,31 @@ class StartUnitTest(unittest.TestCase):
                 sleep=lambda _seconds: None,
             )
         return rc, out.getvalue(), err.getvalue()
+
+    def write_validation_service_schema(self, version: int) -> None:
+        schema_path = self.checkout / start_unit.service_result.SCHEMA_RELATIVE_PATH
+        schema_path.parent.mkdir(parents=True, exist_ok=True)
+        schema = {
+            "schema_version": version,
+            "fields": list(
+                {
+                    1: start_unit.service_result.HISTORICAL_FIELD_NAMES,
+                    2: start_unit.service_result.WRITEBACK_FIELD_NAMES,
+                    3: start_unit.service_result.SELECTION_FIELD_NAMES,
+                    4: start_unit.service_result.FIELD_NAMES,
+                }[version]
+            ),
+            "outcomes": (
+                start_unit.service_result.HISTORICAL_EXPECTED_OUTCOMES
+                if version == 1
+                else start_unit.service_result.EXPECTED_OUTCOMES
+            ),
+        }
+        if version in (2, 3, 4):
+            schema["scorecard_writeback"] = (
+                start_unit.service_result.EXPECTED_SCORECARD_WRITEBACK
+            )
+        schema_path.write_text(json.dumps(schema))
 
     def authority_fixture(
         self,
@@ -1411,9 +1439,7 @@ class StartUnitTest(unittest.TestCase):
         )
 
     def test_current_target_records_and_consumes_framework_result(self) -> None:
-        schema = self.checkout / start_unit.service_result.SCHEMA_RELATIVE_PATH
-        schema.parent.mkdir(parents=True)
-        schema.write_text(start_unit.service_result.pinned_schema_path().read_text())
+        self.write_validation_service_schema(start_unit.service_result.SCHEMA_VERSION)
 
         rc, _output, error = self.invoke(["--", "full"])
 
@@ -1434,17 +1460,80 @@ class StartUnitTest(unittest.TestCase):
             service_result_env.removeprefix("VALIDATE_SERVICE_RESULT_PATH="),
         )
         record = start_unit.run_registry.read_record(record_path)
-        self.assertEqual(3, record["service_result_schema"])
+        self.assertEqual(
+            start_unit.service_result.SCHEMA_VERSION,
+            record["service_result_schema"],
+        )
         self.assertEqual("full", record["selection_mode"])
         self.assertEqual("validation-service-result", record["result_source"])
         self.assertEqual(55, record["executed_nodes"])
         self.assertEqual(862, record["executed_tests"])
+        self.assertEqual(862, record["passed_tests"])
         self.assertEqual({"status": "completed"}, record["scorecard_writeback"])
 
+    def test_current_target_refuses_result_missing_passed_count(self) -> None:
+        self.write_validation_service_schema(
+            start_unit.service_result.SCHEMA_VERSION
+        )
+        self.fake.include_passed_tests = False
+        self.fake.ledger_rows = []
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(75, rc, error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual("unknown", record["state"])
+        self.assertIsNone(record["passed_tests"])
+        self.assertIn("schema 4 expected", record["detail"])
+
+    def test_current_target_refuses_mismatched_passed_count(self) -> None:
+        self.write_validation_service_schema(
+            start_unit.service_result.SCHEMA_VERSION
+        )
+        self.fake.passed_tests = 861
+        self.fake.ledger_rows = []
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(75, rc, error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual("unknown", record["state"])
+        self.assertIsNone(record["passed_tests"])
+        self.assertIn("requires passed_tests == executed_tests", record["detail"])
+
+    def assert_historical_service_result_keeps_passed_unknown(
+        self, version: int
+    ) -> None:
+        self.write_validation_service_schema(version)
+        self.fake.service_result_schema = version
+        self.fake.ledger_rows = []
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(75, rc, error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual("unknown", record["state"])
+        self.assertEqual(version, record["service_result_schema"])
+        self.assertIsNone(record["passed_tests"])
+        self.assertIn(f"historical schema {version}", record["detail"])
+
+    def test_schema_one_result_keeps_passed_count_unknown(self) -> None:
+        self.assert_historical_service_result_keeps_passed_unknown(1)
+
+    def test_schema_two_result_keeps_passed_count_unknown(self) -> None:
+        self.assert_historical_service_result_keeps_passed_unknown(2)
+
+    def test_schema_three_result_keeps_passed_count_unknown(self) -> None:
+        self.assert_historical_service_result_keeps_passed_unknown(3)
+
     def test_current_target_missing_framework_result_does_not_fall_back_to_log(self) -> None:
-        schema = self.checkout / start_unit.service_result.SCHEMA_RELATIVE_PATH
-        schema.parent.mkdir(parents=True)
-        schema.write_text(start_unit.service_result.pinned_schema_path().read_text())
+        self.write_validation_service_schema(start_unit.service_result.SCHEMA_VERSION)
         self.fake.write_service_result = False
         self.fake.ledger_rows = []
 
@@ -1466,9 +1555,30 @@ class StartUnitTest(unittest.TestCase):
 
     def test_current_target_schema_mutation_refuses_before_launch(self) -> None:
         schema_path = self.checkout / start_unit.service_result.SCHEMA_RELATIVE_PATH
-        schema_path.parent.mkdir(parents=True)
-        schema = json.loads(start_unit.service_result.pinned_schema_path().read_text())
+        self.write_validation_service_schema(start_unit.service_result.SCHEMA_VERSION)
+        schema = json.loads(schema_path.read_text())
         schema["fields"].append("future")
+        schema_path.write_text(json.dumps(schema))
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(2, rc)
+        self.assertIn("validation-service-result-schema-fields", error)
+        self.assertIn("future", error)
+        self.assertFalse(
+            any(
+                command[0] == "systemd-run" and "validate-lock" in command
+                for command in self.fake.commands
+            )
+        )
+
+    def test_current_target_schema_extra_top_level_field_refuses_before_launch(
+        self,
+    ) -> None:
+        schema_path = self.checkout / start_unit.service_result.SCHEMA_RELATIVE_PATH
+        self.write_validation_service_schema(start_unit.service_result.SCHEMA_VERSION)
+        schema = json.loads(schema_path.read_text())
+        schema["future"] = True
         schema_path.write_text(json.dumps(schema))
 
         rc, _output, error = self.invoke(["--", "full"])
@@ -4942,6 +5052,7 @@ class StartUnitTest(unittest.TestCase):
                     "exit_code": 0,
                     "executed_nodes": 55,
                     "executed_tests": 862,
+                    "passed_tests": 862,
                     "scorecard_writeback": {"status": "completed"},
                 }
             )
@@ -5624,6 +5735,7 @@ class StartUnitTest(unittest.TestCase):
         self.fake.final_validate_status = "COULD_NOT_RUN"
         self.fake.executed_nodes = 0
         self.fake.executed_tests = None
+        self.fake.passed_tests = None
         self.fake.ledger_rows = []
         self.fake.inner_log_lines = [
             "validate-run: REFUSED: exact launcher causal stderr"

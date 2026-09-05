@@ -367,19 +367,23 @@ class RunRegistryContractTests(unittest.TestCase):
         writeback = run_registry.parse_current_record(
             validation_handle(service_result_schema=2)
         )
-        current = run_registry.parse_current_record(
+        selection = run_registry.parse_current_record(
             validation_handle(service_result_schema=3)
+        )
+        current = run_registry.parse_current_record(
+            validation_handle(service_result_schema=4)
         )
         self.assertEqual(1, historical.raw["service_result_schema"])
         self.assertEqual(2, writeback.raw["service_result_schema"])
-        self.assertEqual(3, current.raw["service_result_schema"])
+        self.assertEqual(3, selection.raw["service_result_schema"])
+        self.assertEqual(4, current.raw["service_result_schema"])
 
         with self.assertRaisesRegex(
             RuntimeError,
-            "validation-run-handle-service_result_schema: expected 1, 2, or 3, got 4",
+            "validation-run-handle-service_result_schema: expected 1, 2, 3, or 4, got 5",
         ):
             run_registry.parse_current_record(
-                validation_handle(service_result_schema=4)
+                validation_handle(service_result_schema=5)
             )
 
     def test_bench_failed_state_is_distinct_and_complete(self) -> None:
@@ -441,8 +445,10 @@ class RunRegistryContractTests(unittest.TestCase):
                 exit_code=75,
                 finished_at="2026-08-28T07:01:00Z",
                 final_validate_status="PASSED",
-                service_result_schema=3,
+                service_result_schema=run_registry.service_result.SCHEMA_VERSION,
                 selection_mode="full",
+                executed_tests=2,
+                passed_tests=2,
                 scorecard_writeback={
                     "status": "failed",
                     "error": "fixture refusal",
@@ -460,8 +466,10 @@ class RunRegistryContractTests(unittest.TestCase):
             exit_code=0,
             finished_at="2026-08-28T07:01:00Z",
             final_validate_status="PASSED",
-            service_result_schema=3,
+            service_result_schema=run_registry.service_result.SCHEMA_VERSION,
             selection_mode="full",
+            executed_tests=2,
+            passed_tests=2,
         )
         with self.assertRaisesRegex(
             RuntimeError,
@@ -478,6 +486,86 @@ class RunRegistryContractTests(unittest.TestCase):
                     scorecard_writeback={"status": "invented"},
                 )
             )
+
+    def test_current_completed_result_requires_consistent_passed_count(self) -> None:
+        base = dict(
+            state="completed",
+            result="failure",
+            exit_code=1,
+            finished_at="2026-08-28T07:01:00Z",
+            final_validate_status="FAILED",
+            service_result_schema=run_registry.service_result.SCHEMA_VERSION,
+            selection_mode="full",
+            executed_tests=3,
+            passed_tests=2,
+            scorecard_writeback=None,
+        )
+        handle = run_registry.parse_current_record(validation_handle(**base))
+        self.assertEqual(2, handle.raw["passed_tests"])
+
+        missing = validation_handle(**base)
+        del missing["passed_tests"]
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "passed_tests: is required for a completed current validation result",
+        ):
+            run_registry.parse_current_record(missing)
+
+        for label, updates, message in (
+            (
+                "missing",
+                {"passed_tests": None},
+                "current result with executed_tests requires an exact count",
+            ),
+            ("greater", {"passed_tests": 4}, "exceeds executed_tests 3"),
+            (
+                "successful mismatch",
+                {
+                    "result": "success",
+                    "exit_code": 0,
+                    "final_validate_status": "PASSED",
+                    "passed_tests": 2,
+                },
+                "requires passed_tests == executed_tests",
+            ),
+        ):
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    run_registry.parse_current_record(
+                        validation_handle(**{**base, **updates})
+                    )
+
+    def test_historical_completed_results_keep_passed_count_unknown(self) -> None:
+        base = {
+            "state": "completed",
+            "result": "success",
+            "exit_code": 0,
+            "finished_at": "2026-08-28T07:01:00Z",
+            "final_validate_status": "PASSED",
+            "executed_tests": 3,
+        }
+        for version in (1, 2, 3):
+            with self.subTest(version=version):
+                historical = validation_handle(
+                    **base,
+                    service_result_schema=version,
+                    **(
+                        {"scorecard_writeback": {"status": "completed"}}
+                        if version in (2, 3)
+                        else {}
+                    ),
+                    **({"selection_mode": "full"} if version == 3 else {}),
+                )
+                parsed = run_registry.parse_current_record(historical)
+                self.assertNotIn("passed_tests", parsed.raw)
+
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "passed_tests: must be null for a historical",
+                ):
+                    run_registry.parse_current_record(
+                        {**historical, "passed_tests": 3}
+                    )
 
     def test_required_validation_path_fails_by_name_when_empty(self) -> None:
         with self.assertRaisesRegex(

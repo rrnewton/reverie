@@ -349,6 +349,7 @@ def manual_validate(
         "pipeline_exit": pipeline_exit,
         "executed_nodes": framework.executed_nodes,
         "executed_tests": framework.executed_tests,
+        "passed_tests": framework.passed_tests,
         "service_result_schema": framework.service_result_schema,
         "scorecard_writeback": framework.scorecard_writeback,
         "result_source": framework.result_source,
@@ -387,9 +388,11 @@ def manual_validate(
         return "NO_RESULT", "validation service result records zero executed nodes", observed
     if framework.executed_tests is None or framework.executed_tests <= 0:
         return "NO_RESULT", "validation service result records zero executed tests", observed
+    if framework.passed_tests != framework.executed_tests:
+        return "NO_RESULT", "validation service result lacks an exact passing count", observed
     return (
         "PASS",
-        f"exact-RC manual validation executed {framework.executed_tests} tests across {framework.executed_nodes} nodes",
+        f"exact-RC manual validation executed {framework.executed_tests} tests, all {framework.passed_tests} passed, across {framework.executed_nodes} nodes",
         observed,
     )
 

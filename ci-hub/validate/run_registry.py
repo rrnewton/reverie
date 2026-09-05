@@ -143,6 +143,7 @@ class RunRecord(TypedDict, total=False):
     signal: int
     executed_nodes: int | None
     executed_tests: int | None
+    passed_tests: int | None
     final_validate_status: str | None
     service_result_schema: int
     selection_mode: str | None
@@ -300,6 +301,7 @@ VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
         "signal",
         "executed_nodes",
         "executed_tests",
+        "passed_tests",
         "final_validate_status",
         "service_result_schema",
         "selection_mode",
@@ -367,6 +369,7 @@ _OPTIONAL_INTEGER_FIELDS = frozenset(
         "signal",
         "executed_nodes",
         "executed_tests",
+        "passed_tests",
         "service_result_schema",
         "wrapper_exit_code",
     }
@@ -799,18 +802,21 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
             if marker not in {
                 service_result.HISTORICAL_SCHEMA_VERSION,
                 service_result.WRITEBACK_SCHEMA_VERSION,
+                service_result.SELECTION_SCHEMA_VERSION,
                 service_result.SCHEMA_VERSION,
             }:
                 raise _error(
                     "service_result_schema",
                     "expected "
                     f"{service_result.HISTORICAL_SCHEMA_VERSION}, "
-                    f"{service_result.WRITEBACK_SCHEMA_VERSION}, or "
+                    f"{service_result.WRITEBACK_SCHEMA_VERSION}, "
+                    f"{service_result.SELECTION_SCHEMA_VERSION}, or "
                     f"{service_result.SCHEMA_VERSION}, got {marker!r}",
                 )
         if "scorecard_writeback" in value:
             if marker not in {
                 service_result.WRITEBACK_SCHEMA_VERSION,
+                service_result.SELECTION_SCHEMA_VERSION,
                 service_result.SCHEMA_VERSION,
             }:
                 raise _error(
@@ -818,6 +824,18 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
                     "is valid only with the current validation service result schema",
                 )
             _scorecard_writeback(value.get("scorecard_writeback"))
+        if (
+            marker in {
+                service_result.HISTORICAL_SCHEMA_VERSION,
+                service_result.WRITEBACK_SCHEMA_VERSION,
+                service_result.SELECTION_SCHEMA_VERSION,
+            }
+            and value.get("passed_tests") is not None
+        ):
+            raise _error(
+                "passed_tests",
+                "must be null for a historical validation service result",
+            )
         if kind is RunKind.FROZEN_VALIDATE:
             for field in (
                 "validation_kind",
@@ -844,7 +862,7 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
             if value.get("qualifying_receipt") is not False:
                 raise _error("qualifying_receipt", "must be false")
 
-    for field in ("executed_nodes", "executed_tests"):
+    for field in ("executed_nodes", "executed_tests", "passed_tests"):
         if value.get(field) is not None:
             _nonnegative_integer(value, field)
 
@@ -900,7 +918,17 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
                         "scorecard_writeback",
                         "is required for a completed current validation result",
                     )
+                if "passed_tests" not in value:
+                    raise _error(
+                        "passed_tests",
+                        "is required for a completed current validation result",
+                    )
                 writeback = _scorecard_writeback(value.get("scorecard_writeback"))
+                service_result.read_test_counts(
+                    value,
+                    version=marker,
+                    status=status,
+                )
                 expected_exit = service_result.current_command_exit(status, writeback)
             if value.get("exit_code") != expected_exit:
                 raise _error(

@@ -137,12 +137,73 @@ class PaneWatchTest(unittest.TestCase):
             )
             run_registry.write_record(
                 record,
-                current_validation_handle(log) | {"service_result_schema": 3},
+                current_validation_handle(log)
+                | {"service_result_schema": service_result.SCHEMA_VERSION},
             )
             service_result.result_path(record).write_text(
                 json.dumps(
                     {
-                        "schema_version": 3,
+                        "schema_version": service_result.SCHEMA_VERSION,
+                        "commit": "a" * 40,
+                        "profile": "full",
+                        "selection_mode": "full",
+                        "final_validate_status": "PASSED",
+                        "exit_code": 0,
+                        "executed_nodes": 76,
+                        "executed_tests": 2129,
+                        "passed_tests": 2129,
+                        "scorecard_writeback": {"status": "completed"},
+                    }
+                )
+            )
+
+            with mock.patch.object(pane_watch, "service_properties", return_value=None):
+                rc = pane_watch.main(
+                    [
+                        "--unit",
+                        "validate-test.service",
+                        "--target",
+                        "a" * 40,
+                        "--checkout",
+                        str(root),
+                        "--log",
+                        str(log),
+                        "--record",
+                        str(record),
+                        "--appearance-seconds",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(0, rc)
+            durable = run_registry.read_record(record)
+            self.assertEqual("completed", durable["state"])
+            self.assertEqual("success", durable["result"])
+            self.assertEqual("validation-service-result", durable["result_source"])
+            self.assertEqual(76, durable["executed_nodes"])
+            self.assertEqual(2129, durable["executed_tests"])
+            self.assertEqual(2129, durable["passed_tests"])
+            self.assertEqual({"status": "completed"}, durable["scorecard_writeback"])
+
+    def test_current_handle_refuses_result_missing_passed_count(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log = root / "validate.log"
+            record = root / "runs/validate-test.json"
+            log.write_text(
+                "FINAL_VALIDATE_STATUS: PASSED\n"
+                "# ci-hub/validate-lock tool COST ACTUAL wall=1s cpu=1s "
+                "cpu_user=1s cpu_system=0s exit=0\n"
+            )
+            run_registry.write_record(
+                record,
+                current_validation_handle(log)
+                | {"service_result_schema": service_result.SCHEMA_VERSION},
+            )
+            service_result.result_path(record).write_text(
+                json.dumps(
+                    {
+                        "schema_version": service_result.SCHEMA_VERSION,
                         "commit": "a" * 40,
                         "profile": "full",
                         "selection_mode": "full",
@@ -173,13 +234,67 @@ class PaneWatchTest(unittest.TestCase):
                     ]
                 )
 
-            self.assertEqual(0, rc)
+            self.assertEqual(1, rc)
             durable = run_registry.read_record(record)
-            self.assertEqual("completed", durable["state"])
-            self.assertEqual("success", durable["result"])
-            self.assertEqual("validation-service-result", durable["result_source"])
-            self.assertEqual(76, durable["executed_nodes"])
-            self.assertEqual({"status": "completed"}, durable["scorecard_writeback"])
+            self.assertEqual("unknown", durable["state"])
+            self.assertIsNone(durable["passed_tests"])
+            self.assertIn("schema 4 expected", durable["detail"])
+
+    def test_historical_results_keep_passed_count_unknown(self) -> None:
+        for version in (1, 2, 3):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                log = root / "validate.log"
+                record = root / "runs/validate-test.json"
+                log.write_text(
+                    "FINAL_VALIDATE_STATUS: PASSED\n"
+                    "# ci-hub/validate-lock tool COST ACTUAL wall=1s cpu=1s "
+                    "cpu_user=1s cpu_system=0s exit=0\n"
+                )
+                run_registry.write_record(
+                    record,
+                    current_validation_handle(log) | {"service_result_schema": version},
+                )
+                result = {
+                    "schema_version": version,
+                    "commit": "a" * 40,
+                    "profile": "full",
+                    "final_validate_status": "PASSED",
+                    "exit_code": 0,
+                    "executed_nodes": 76,
+                    "executed_tests": 2129,
+                }
+                if version in (2, 3):
+                    result["scorecard_writeback"] = {"status": "completed"}
+                if version == 3:
+                    result["selection_mode"] = "full"
+                service_result.result_path(record).write_text(json.dumps(result))
+
+                with mock.patch.object(
+                    pane_watch, "service_properties", return_value=None
+                ):
+                    rc = pane_watch.main(
+                        [
+                            "--unit",
+                            "validate-test.service",
+                            "--target",
+                            "a" * 40,
+                            "--checkout",
+                            str(root),
+                            "--log",
+                            str(log),
+                            "--record",
+                            str(record),
+                            "--appearance-seconds",
+                            "0",
+                        ]
+                    )
+
+                self.assertEqual(0, rc)
+                durable = run_registry.read_record(record)
+                self.assertEqual("unknown", durable["state"])
+                self.assertIsNone(durable["passed_tests"])
+                self.assertIn(f"historical schema {version}", durable["detail"])
 
     def test_boxing_proof_is_bound_to_descendant_process_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

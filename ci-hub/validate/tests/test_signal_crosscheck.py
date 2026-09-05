@@ -105,6 +105,7 @@ def current_service_result(**updates: object) -> dict[str, object]:
         "exit_code": 75,
         "executed_nodes": 0,
         "executed_tests": None,
+        "passed_tests": None,
         "scorecard_writeback": None,
     }
     value.update(updates)
@@ -1740,14 +1741,31 @@ class SignalCrosscheckTests(unittest.TestCase):
             )
             for name, schema in (
                 ("validate-historical", 1),
+                ("validate-historical-2", 2),
+                ("validate-historical-3", 3),
                 ("validate-historical-hybrid", 1),
-                ("validate-current", 3),
-                ("validate-broken-result", 3),
-                ("validate-wrong-commit", 3),
-                ("validate-injected-other-target", 3),
-                ("validate-injected-other-repo", 3),
-                ("validate-path-mismatch", 3),
-                ("validate-a", 3),
+                ("validate-current", signal_crosscheck.service_result.SCHEMA_VERSION),
+                (
+                    "validate-broken-result",
+                    signal_crosscheck.service_result.SCHEMA_VERSION,
+                ),
+                (
+                    "validate-wrong-commit",
+                    signal_crosscheck.service_result.SCHEMA_VERSION,
+                ),
+                (
+                    "validate-injected-other-target",
+                    signal_crosscheck.service_result.SCHEMA_VERSION,
+                ),
+                (
+                    "validate-injected-other-repo",
+                    signal_crosscheck.service_result.SCHEMA_VERSION,
+                ),
+                (
+                    "validate-path-mismatch",
+                    signal_crosscheck.service_result.SCHEMA_VERSION,
+                ),
+                ("validate-a", signal_crosscheck.service_result.SCHEMA_VERSION),
             ):
                 (run_root / f"{name}.json").write_text(
                     json.dumps(
@@ -1766,8 +1784,37 @@ class SignalCrosscheckTests(unittest.TestCase):
                 "executed_nodes": 1,
                 "executed_tests": 1,
             }))
+            (run_root / "validate-historical-2.service-result.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "commit": "a" * 40,
+                        "profile": "full",
+                        "final_validate_status": "FAILED",
+                        "exit_code": 1,
+                        "executed_nodes": 1,
+                        "executed_tests": 1,
+                        "scorecard_writeback": None,
+                    }
+                )
+            )
+            (run_root / "validate-historical-3.service-result.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 3,
+                        "commit": "a" * 40,
+                        "profile": "full",
+                        "selection_mode": "full",
+                        "final_validate_status": "FAILED",
+                        "exit_code": 1,
+                        "executed_nodes": 1,
+                        "executed_tests": 1,
+                        "scorecard_writeback": None,
+                    }
+                )
+            )
             (run_root / "validate-current.service-result.json").write_text(json.dumps({
-                "schema_version": 3,
+                "schema_version": signal_crosscheck.service_result.SCHEMA_VERSION,
                 "commit": "a" * 40,
                 "profile": "full",
                 "selection_mode": None,
@@ -1775,23 +1822,25 @@ class SignalCrosscheckTests(unittest.TestCase):
                 "exit_code": 1,
                 "executed_nodes": 1,
                 "executed_tests": 1,
+                "passed_tests": 0,
                 "scorecard_writeback": None,
             }))
             (run_root / "validate-broken-result.service-result.json").write_text(
                 json.dumps({
-                    "schema_version": 3,
+                    "schema_version": signal_crosscheck.service_result.SCHEMA_VERSION,
                     "commit": "a" * 40,
                     "profile": "full",
                     "selection_mode": None,
                     "final_validate_status": "FAILED",
                     "exit_code": 1,
                     "executed_nodes": 1,
+                    "executed_tests": 1,
                     "scorecard_writeback": None,
                 })
             )
             (run_root / "validate-wrong-commit.service-result.json").write_text(
                 json.dumps({
-                    "schema_version": 3,
+                    "schema_version": signal_crosscheck.service_result.SCHEMA_VERSION,
                     "commit": "b" * 40,
                     "profile": "full",
                     "selection_mode": None,
@@ -1799,6 +1848,7 @@ class SignalCrosscheckTests(unittest.TestCase):
                     "exit_code": 1,
                     "executed_nodes": 1,
                     "executed_tests": 1,
+                    "passed_tests": 0,
                     "scorecard_writeback": None,
                 })
             )
@@ -1875,6 +1925,8 @@ class SignalCrosscheckTests(unittest.TestCase):
                 "validate-broken-result.service",
                 "validate-current.service",
                 "validate-historical.service",
+                "validate-historical-2.service",
+                "validate-historical-3.service",
                 "validate-historical-hybrid.service",
                 "validate-injected-other-repo.service",
                 "validate-injected-other-target.service",
@@ -1904,6 +1956,10 @@ class SignalCrosscheckTests(unittest.TestCase):
         self.assertEqual(
             unreadable["validate-broken-result.service-result.json"]["source"],
             "validation-service-result",
+        )
+        self.assertIn(
+            "schema 4 expected",
+            unreadable["validate-broken-result.service-result.json"]["error"],
         )
         self.assertEqual(
             unreadable["validate-wrong-commit.service-result.json"]["source"],
@@ -1946,11 +2002,12 @@ class SignalCrosscheckTests(unittest.TestCase):
                 "result": "no-result",
                 "exit_code": 75,
                 "finished_at": "2026-08-30T07:00:02+00:00",
-                "service_result_schema": 3,
+                "service_result_schema": signal_crosscheck.service_result.SCHEMA_VERSION,
                 "selection_mode": None,
                 "scorecard_writeback": None,
                 "executed_nodes": 0,
                 "executed_tests": None,
+                "passed_tests": None,
                 "final_validate_status": "COULD_NOT_RUN",
                 "result_source": "validation-service-result",
             }
@@ -1962,12 +2019,14 @@ class SignalCrosscheckTests(unittest.TestCase):
                         "exit_code": 0,
                         "executed_nodes": 1,
                         "executed_tests": 1,
+                        "passed_tests": 1,
                         "final_validate_status": "PASSED",
                     },
                     {
                         "exit_code": 0,
                         "executed_nodes": 1,
                         "executed_tests": 1,
+                        "passed_tests": 1,
                         "final_validate_status": "PASSED",
                     },
                     True,
@@ -1978,12 +2037,14 @@ class SignalCrosscheckTests(unittest.TestCase):
                         "exit_code": 1,
                         "executed_nodes": 1,
                         "executed_tests": 1,
+                        "passed_tests": 0,
                         "final_validate_status": "FAILED",
                     },
                     {
                         "exit_code": 1,
                         "executed_nodes": 1,
                         "executed_tests": 1,
+                        "passed_tests": 0,
                         "final_validate_status": "FAILED",
                     },
                     True,
