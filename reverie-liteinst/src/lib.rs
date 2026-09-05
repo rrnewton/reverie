@@ -25,6 +25,7 @@ pub use backend::TOOL_PRELOAD_ENV;
 pub use backend::take_preload_bootstrap;
 pub use guest_log::CapturedGuestLog;
 pub use guest_log::GuestLog;
+pub use guest_log::GuestLogRecord;
 pub use guest_log::GuestLogWriter;
 pub use reverie_ptrace::LiteinstInstrumentationStats;
 pub use stats::LiteinstBackendStatsSnapshot;

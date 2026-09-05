@@ -238,11 +238,39 @@ impl LiteinstBackend {
     /// completion frame, transport failure, or truncation is returned in `log.error`,
     /// even when the application exits successfully. Such logs cannot qualify parity.
     pub async fn run_with_output_and_preload_data_and_log<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        preload: impl Into<PathBuf>,
+        tool_data: impl Into<Vec<u8>>,
+        log_limit: usize,
+    ) -> Result<(Output, T::GlobalState, crate::CapturedGuestLog), Error>
+    where
+        T: Tool + 'static,
+    {
+        Self::run_with_output_and_preload_data_and_log_consumer::<T>(
+            command,
+            config,
+            preload,
+            tool_data,
+            log_limit,
+            |_| Ok(()),
+        )
+        .await
+    }
+
+    /// Delivers complete guest records on the dedicated log reader before retaining them.
+    ///
+    /// Records are provisional until the returned log has no error. Consumer errors,
+    /// incomplete producers and truncation invalidate the whole capture. The consumer
+    /// must not wait on guest/RPC progress: socket backpressure waits for this reader.
+    /// Delivery order is record completion order, not a guest/coordinator total order.
+    pub async fn run_with_output_and_preload_data_and_log_consumer<T>(
         mut command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
         preload: impl Into<PathBuf>,
         tool_data: impl Into<Vec<u8>>,
         log_limit: usize,
+        consumer: impl FnMut(&crate::GuestLogRecord<'_>) -> io::Result<()> + Send + 'static,
     ) -> Result<(Output, T::GlobalState, crate::CapturedGuestLog), Error>
     where
         T: Tool + 'static,
@@ -256,7 +284,7 @@ impl LiteinstBackend {
             true,
             Some(tool_data.into()),
             BackendStatsRequest::DISABLED,
-            Some(log_limit),
+            Some((log_limit, Box::new(consumer))),
         )
         .await?;
         match wait {
@@ -904,7 +932,7 @@ async fn launch_logged<T>(
     capture_output: bool,
     tool_data: Option<Vec<u8>>,
     stats_request: BackendStatsRequest,
-    log_limit: Option<usize>,
+    mut logging: Option<(usize, crate::guest_log::RecordConsumer)>,
 ) -> Result<
     (
         ChildWait,
@@ -970,7 +998,8 @@ where
                 child_command.env(STATS_COORDINATOR_ENV, stats_socket);
             }
 
-            let log_pair = log_limit
+            let log_pair = logging
+                .as_ref()
                 .map(|_| crate::guest_log::channel_pair())
                 .transpose()?;
             let log_fd = log_pair.as_ref().map(|(_, guest)| guest.as_raw_fd());
@@ -994,12 +1023,12 @@ where
                 });
             }
             let log_guest = if let Some((host, guest)) = log_pair {
-                let limit = log_limit.expect("log requested");
+                let (limit, consumer) = logging.take().expect("log requested");
                 let exited = log_exited.clone();
                 let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(0);
                 log_task = Some(tokio::task::spawn_blocking(move || {
                     let _ = ready_tx.send(());
-                    crate::guest_log::collect(host, limit, &exited)
+                    crate::guest_log::collect(host, limit, &exited, consumer)
                 }));
                 ready_rx
                     .recv()
