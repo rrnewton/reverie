@@ -27,6 +27,7 @@ pub mod vdso;
 
 pub use nostd_print::*;
 pub use paths::*;
+pub use protected_files::protect_inherited_fd;
 pub use reverie_adapter::*;
 pub use reverie_sabre_macros::tool;
 pub use tool::*;
