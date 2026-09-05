@@ -219,6 +219,8 @@ class FakeRun:
         self.validate_batch_retained: dict[str, str] = {}
         self.validate_batch_output: str | None = None
         self.validate_batch_zero_census = False
+        self.ownerless_batch_retained: dict[str, str] = {}
+        self.ownerless_batch_output: str | None = None
         self.systemd_launch_rc = 0
         self.systemd_launch_stderr = ""
         self.systemd_checkout_head: str | None = None
@@ -309,6 +311,60 @@ class FakeRun:
                         "retained_storage_inconsistencies": [],
                         "slot": slot,
                         "slot_type": "validate",
+                    }
+                ),
+            )
+        if (
+            command[0].endswith("ci-hub/bin/wrkslots")
+            and "recover-ownerless-validate-batch" in command
+        ):
+            if self.ownerless_batch_output is not None:
+                return completed(command, stdout=self.ownerless_batch_output)
+            if "--coordinator-authorized" not in command:
+                raise AssertionError(
+                    "ownerless validation batch cleanup must carry explicit authority"
+                )
+            project_root = Path(command[command.index("--project-root") + 1])
+            relative_checkouts = [
+                command[index + 1]
+                for index, value in enumerate(command[:-1])
+                if value == "--checkout"
+            ]
+            records = [
+                command[index + 1]
+                for index, value in enumerate(command[:-1])
+                if value == "--completed-record"
+            ]
+            repositories = [
+                command[index + 1]
+                for index, value in enumerate(command[:-1])
+                if value == "--repository"
+            ]
+            if not len(relative_checkouts) == len(records) == len(repositories):
+                raise AssertionError("ownerless validation batch arguments are not aligned")
+            removed_rows: list[dict[str, object]] = []
+            retained_rows: list[dict[str, object]] = []
+            for relative in relative_checkouts:
+                reason = self.ownerless_batch_retained.get(relative)
+                if reason is not None:
+                    retained_rows.append({"checkout": relative, "reason": reason})
+                    continue
+                fresh = project_root / relative
+                self.removed.append(str(fresh))
+                shutil.rmtree(fresh, ignore_errors=True)
+                removed_rows.append({"checkout": relative})
+            return completed(
+                command,
+                stdout=json.dumps(
+                    {
+                        "schema": 1,
+                        "batch_limit": start_unit.VALIDATE_CLEANUP_BATCH_LIMIT,
+                        "process_censuses": 1,
+                        "shared_process_censuses": 1,
+                        "same_uid_process_censuses": len(removed_rows),
+                        "requested": len(relative_checkouts),
+                        "removed": removed_rows,
+                        "retained": retained_rows,
                     }
                 ),
             )
@@ -1186,6 +1242,25 @@ class StartUnitTest(unittest.TestCase):
                 wrkslots_generation=generation,
             )
         start_unit.run_registry.write_record(record_path, record)
+        return fresh, record_path
+
+    def ownerless_cleanup_record(self, suffix: str) -> tuple[Path, Path]:
+        fresh = self.root / "ignored" / f"validate-fresh-{suffix}"
+        fresh.mkdir(parents=True)
+        record_path = self.root / "ignored/validate/runs" / f"validate-{suffix}.json"
+        start_unit.run_registry.write_record(
+            record_path,
+            {
+                "schema_version": 1,
+                "unit": f"validate-{suffix}.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "exit_code": 0,
+                "final_validate_status": "PASSED",
+            },
+        )
         return fresh, record_path
 
     def current_unknown_cleanup_record(
@@ -3765,6 +3840,128 @@ class StartUnitTest(unittest.TestCase):
             / "ignored/validate/orphaned-receipts/validate-legacy/reports/result.jsonl"
         )
         self.assertEqual(f'{{"commit": "{SHA}"}}\n', archived.read_text())
+
+    def test_sweep_batches_ownerless_checkouts_in_one_census_command(self) -> None:
+        first, first_record = self.ownerless_cleanup_record("ownerless-first")
+        second, second_record = self.ownerless_cleanup_record("ownerless-second")
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([str(first), str(second)], report["removed"])
+        self.assertEqual([], report["retained"])
+        batches = [
+            command
+            for command in self.fake.commands
+            if wrkslots_action(command, "recover-ownerless-validate-batch")
+        ]
+        self.assertEqual(1, len(batches))
+        self.assertEqual(2, batches[0].count("--checkout"))
+        self.assertEqual(2, batches[0].count("--completed-record"))
+        self.assertEqual(2, batches[0].count("--repository"))
+        self.assertNotIn("--legacy-validate-checkout", batches[0])
+        self.assertFalse(first.exists())
+        self.assertFalse(second.exists())
+        for record in (first_record, second_record):
+            self.assertIn(
+                "checkout_removed_at", start_unit.run_registry.read_record(record)
+            )
+
+    def test_ownerless_batch_retains_held_checkout_and_removes_unheld_peer(self) -> None:
+        held, held_record = self.ownerless_cleanup_record("ownerless-held")
+        unused, unused_record = self.ownerless_cleanup_record("ownerless-unused")
+        held_relative = held.relative_to(self.root).as_posix()
+        self.fake.ownerless_batch_retained[held_relative] = (
+            "live process 4242 uses checkout"
+        )
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([str(unused)], report["removed"])
+        self.assertEqual(str(held), report["retained"][0]["checkout"])
+        self.assertIn("live process 4242", report["retained"][0]["reason"])
+        self.assertTrue(held.exists())
+        self.assertFalse(unused.exists())
+        self.assertNotIn(
+            "checkout_removed_at", start_unit.run_registry.read_record(held_record)
+        )
+        self.assertIn(
+            "checkout_removed_at", start_unit.run_registry.read_record(unused_record)
+        )
+
+    def test_invalid_ownerless_batch_report_retains_every_checkout(self) -> None:
+        first, _first_record = self.ownerless_cleanup_record("ownerless-malformed-a")
+        second, _second_record = self.ownerless_cleanup_record("ownerless-malformed-b")
+        self.fake.ownerless_batch_output = json.dumps(
+            {
+                "schema": 1,
+                "batch_limit": 8,
+                "process_censuses": 1,
+                "shared_process_censuses": 1,
+                "same_uid_process_censuses": 3,
+                "requested": 2,
+                "removed": [
+                    {"checkout": first.relative_to(self.root).as_posix()}
+                ],
+                "retained": [],
+            }
+        )
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertEqual(2, len(report["retained"]))
+        self.assertTrue(
+            all(
+                "invalid ownerless batch report" in row["reason"]
+                for row in report["retained"]
+            )
+        )
+        self.assertTrue(first.exists())
+        self.assertTrue(second.exists())
+
+    def test_ownerless_batch_does_not_confirm_a_dangling_symlink_as_removed(
+        self,
+    ) -> None:
+        checkout, record = self.ownerless_cleanup_record("ownerless-dangling")
+        relative = checkout.relative_to(self.root).as_posix()
+
+        def leave_dangling(command: list[str], **_kwargs: object):
+            shutil.rmtree(checkout)
+            checkout.symlink_to(checkout.parent / "missing-ownerless-target")
+            return completed(
+                command,
+                stdout=json.dumps(
+                    {
+                        "schema": 1,
+                        "batch_limit": start_unit.VALIDATE_CLEANUP_BATCH_LIMIT,
+                        "process_censuses": 1,
+                        "shared_process_censuses": 1,
+                        "same_uid_process_censuses": 1,
+                        "requested": 1,
+                        "removed": [{"checkout": relative}],
+                        "retained": [],
+                    }
+                ),
+            )
+
+        outcomes = start_unit.remove_ownerless_checkouts_batch(
+            self.root,
+            [(checkout, record, self.checkout)],
+            run=leave_dangling,
+            tool_root=self.root,
+        )
+
+        self.assertEqual(
+            "wrkslots reported success but the checkout still exists",
+            outcomes[str(checkout)],
+        )
+        self.assertTrue(checkout.is_symlink())
 
     def test_sweep_completed_does_not_query_irrelevant_retained_records(self) -> None:
         start_unit.run_registry.write_record(

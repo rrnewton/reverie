@@ -2046,6 +2046,125 @@ def remove_fresh_checkouts_batch(
     }
 
 
+def remove_ownerless_checkouts_batch(
+    root: Path,
+    checkouts: Sequence[tuple[Path, Path, Path]],
+    *,
+    run: Runner,
+    tool_root: Path = ROOT,
+) -> dict[str, str | None]:
+    """Remove a bounded legacy batch through one shared process census."""
+    if not checkouts or len(checkouts) > VALIDATE_CLEANUP_BATCH_LIMIT:
+        raise ValueError("ownerless validation cleanup batch size must be between one and eight")
+    state_root = root.resolve()
+    ignored = state_root / "ignored"
+    runs = ignored / "validate" / "runs"
+    requested: dict[str, Path] = {}
+    records: list[str] = []
+    repositories: list[str] = []
+    for raw_checkout, raw_record, raw_source in checkouts:
+        checkout = raw_checkout.resolve()
+        record = raw_record.resolve()
+        repository = state_root / raw_source.name
+        try:
+            checkout_relative = checkout.relative_to(state_root).as_posix()
+            record_relative = record.relative_to(state_root).as_posix()
+            repository_relative = repository.relative_to(state_root).as_posix()
+        except ValueError as error:
+            raise ValueError("ownerless cleanup path is outside the project root") from error
+        if (
+            checkout.parent != ignored
+            or not checkout.name.startswith("validate-fresh-")
+            or record.parent != runs
+            or record.suffix != ".json"
+            or checkout_relative in requested
+        ):
+            raise ValueError(f"invalid ownerless validation cleanup input for {checkout}")
+        requested[checkout_relative] = checkout
+        records.append(record_relative)
+        repositories.append(repository_relative)
+    command = [
+        str(tool_root / "ci-hub/bin/wrkslots"),
+        "--project-root", str(state_root),
+        "--allow-existing-unregistered-worktrees",
+        "recover-ownerless-validate-batch", "--coordinator-authorized",
+        "--coordinator-pid", str(os.getpid()),
+    ]
+    for checkout in requested:
+        command.extend(("--checkout", checkout))
+    for record in records:
+        command.extend(("--completed-record", record))
+    for repository in repositories:
+        command.extend(("--repository", repository))
+    result = run([*command, "--format", "json"], check=False)
+    error = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+    if result.returncode != 0:
+        return {str(path): error for path in requested.values()}
+    try:
+        value = json.loads(result.stdout)
+        fields = {
+            "batch_limit", "process_censuses", "removed", "requested",
+            "retained", "same_uid_process_censuses", "schema",
+            "shared_process_censuses",
+        }
+        if not isinstance(value, dict) or set(value) != fields:
+            raise ValueError("unexpected fields")
+        counts = [
+            value.get(name)
+            for name in (
+                "process_censuses", "shared_process_censuses",
+                "same_uid_process_censuses",
+            )
+        ]
+        metadata = [value.get(name) for name in ("schema", "batch_limit", "requested")]
+        if (
+            any(type(item) is not int for item in metadata)
+            or metadata != [1, VALIDATE_CLEANUP_BATCH_LIMIT, len(requested)]
+            or any(not isinstance(item, int) or isinstance(item, bool) or item < 0 for item in counts)
+            or counts[0] != counts[1]
+            or counts[1] not in (0, 1)
+            or counts[2] > len(requested)
+        ):
+            raise ValueError("invalid batch metadata")
+        outcomes: dict[str, str | None] = {}
+        for removed, rows in ((True, value.get("removed")), (False, value.get("retained"))):
+            if not isinstance(rows, list):
+                raise ValueError("outcomes are not lists")
+            for row in rows:
+                expected = {"checkout"} if removed else {"checkout", "reason"}
+                if not isinstance(row, dict) or set(row) != expected:
+                    raise ValueError("malformed outcome row")
+                checkout = row.get("checkout")
+                reason = None if removed else row.get("reason")
+                if (
+                    not isinstance(checkout, str)
+                    or checkout not in requested
+                    or checkout in outcomes
+                    or (not removed and (not isinstance(reason, str) or not reason.strip()))
+                ):
+                    raise ValueError("unexpected or duplicate outcome identity")
+                outcomes[checkout] = reason
+        removed_count = sum(reason is None for reason in outcomes.values())
+        if (
+            set(outcomes) != set(requested)
+            or (counts[1] == 0 and removed_count)
+            or counts[2] < removed_count
+            or (counts[2] > 0 and counts[1] != 1)
+        ):
+            raise ValueError("batch census and outcomes disagree")
+    except (json.JSONDecodeError, ValueError) as parse_error:
+        error = f"wrkslots returned an invalid ownerless batch report: {parse_error}"
+        return {str(path): error for path in requested.values()}
+    return {
+        str(path): (
+            "wrkslots reported success but the checkout still exists"
+            if outcomes[checkout] is None and (path.exists() or path.is_symlink())
+            else outcomes[checkout]
+        )
+        for checkout, path in requested.items()
+    }
+
+
 def archive_orphaned_receipts(
     root: Path,
     fresh: Path,
@@ -2639,7 +2758,25 @@ def sweep_completed_checkouts(
         {"checkout": str(group.checkout), "reason": "deferred by the bounded validation cleanup batch"}
         for group in later
     )
-    selected.extend(group for group in groups.values() if not group.managed)
+    ownerless_selected = [
+        group
+        for group in groups.values()
+        if not group.managed and group.checkout.parent == root.resolve() / "ignored"
+    ]
+    frozen_selected = [
+        group
+        for group in groups.values()
+        if not group.managed and group.checkout.parent != root.resolve() / "ignored"
+    ]
+    selected.extend(ownerless_selected[:VALIDATE_CLEANUP_BATCH_LIMIT])
+    selected.extend(frozen_selected)
+    deferred.extend(
+        {
+            "checkout": str(group.checkout),
+            "reason": "deferred by the bounded ownerless validation cleanup batch",
+        }
+        for group in ownerless_selected[VALIDATE_CLEANUP_BATCH_LIMIT:]
+    )
 
     prepared: list[CleanupGroup] = []
     for group in selected:
@@ -2669,13 +2806,69 @@ def sweep_completed_checkouts(
         if not group.reasons:
             prepared.append(group)
 
-    for group in [item for item in prepared if not item.managed]:
+    ownerless_groups = [
+        item
+        for item in prepared
+        if not item.managed and item.checkout.parent == root.resolve() / "ignored"
+    ]
+    if ownerless_groups:
+        ownerless_inputs: list[tuple[Path, Path, Path]] = []
+        for group in ownerless_groups:
+            row = group.rows[0]
+            source = Path(
+                str(
+                    row.record.get(
+                        "source_checkout",
+                        root
+                        / canonical_repo(
+                            str(row.record.get("repo", "rrnewton/hermit"))
+                        ).rsplit("/", 1)[-1],
+                    )
+                )
+            )
+            ownerless_inputs.append((group.checkout, row.path, source))
+        outcomes = remove_ownerless_checkouts_batch(
+            root, ownerless_inputs, run=run, tool_root=tool_root
+        )
+        for group in ownerless_groups:
+            reason = outcomes.get(str(group.checkout))
+            if reason is not None:
+                retained.append({"checkout": str(group.checkout), "reason": reason})
+            else:
+                removed.append(str(group.checkout))
+
+    for group in [
+        item
+        for item in prepared
+        if not item.managed and item.checkout.parent != root.resolve() / "ignored"
+    ]:
         row = group.rows[0]
-        source = Path(str(row.record.get("source_checkout", root / canonical_repo(str(row.record.get("repo", "rrnewton/hermit"))).rsplit("/", 1)[-1])))
-        if remove_fresh_checkout(source, group.checkout, run=run, tool_root=tool_root, completed_record=row.path):
+        source = Path(
+            str(
+                row.record.get(
+                    "source_checkout",
+                    root
+                    / canonical_repo(
+                        str(row.record.get("repo", "rrnewton/hermit"))
+                    ).rsplit("/", 1)[-1],
+                )
+            )
+        )
+        if remove_fresh_checkout(
+            source,
+            group.checkout,
+            run=run,
+            tool_root=tool_root,
+            completed_record=row.path,
+        ):
             removed.append(str(group.checkout))
         else:
-            retained.append({"checkout": str(group.checkout), "reason": "checkout still exists after the removal attempt"})
+            retained.append(
+                {
+                    "checkout": str(group.checkout),
+                    "reason": "checkout still exists after the removal attempt",
+                }
+            )
 
     batch_groups = [group for group in prepared if group.managed and group.identity is not None]
     if batch_groups:
