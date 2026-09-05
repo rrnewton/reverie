@@ -16,6 +16,7 @@ mod protected_fd;
 mod stats;
 mod straddler;
 mod syscall_fallback;
+mod syscall_mode;
 
 pub use backend::COORDINATOR_ENV;
 pub use backend::LiteinstBackend;
@@ -31,6 +32,9 @@ pub use stats::LiteinstBackendStatsSnapshot;
 pub use stats::LiteinstBackendStatsSource;
 pub use stats::LiteinstDispatchPath;
 pub use stats::LiteinstPatchDecision;
+pub use syscall_mode::SyscallMode;
+pub use syscall_mode::SyscallModeStats;
+pub use syscall_mode::syscall_mode_stats;
 mod clock_control;
 pub mod rpc;
 mod runtime;
@@ -67,6 +71,7 @@ pub use straddler::straddler_staleness_from_env_value;
 pub use tool_host::install_tool;
 pub use tool_host::install_tool_from_bootstrap;
 pub use tool_host::install_tool_quiescent;
+pub use tool_host::install_tool_with_mode;
 
 #[global_allocator]
 static PATCH_ALLOCATOR: patch_alloc::PatchAllocator = patch_alloc::PatchAllocator;

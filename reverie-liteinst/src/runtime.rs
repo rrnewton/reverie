@@ -22,6 +22,7 @@ use liteinst2::trampoline::TrampolineError;
 use reverie_preload::BuiltinTool;
 use reverie_preload::dispatch::SyscallDispatcher;
 use reverie_preload::dispatch::SyscallEvent as PreloadSyscallEvent;
+use reverie_preload::dispatch::SyscallEventSource;
 use reverie_preload::dispatch::is_fork_like;
 use reverie_preload::fork::ForkHook;
 use reverie_preload::lifecycle::InProcessSeccomp;
@@ -990,7 +991,10 @@ pub(crate) fn initialize_reverie_tool(
             ));
         }
     };
-    PROCESS_FORKS_ALLOWED.store(process_forks_allowed, Ordering::Release);
+    PROCESS_FORKS_ALLOWED.store(
+        process_forks_allowed && !crate::syscall_mode::sud_only(),
+        Ordering::Release,
+    );
     TOOL_MODE.store(TOOL_REVERIE, Ordering::Release);
     install_runtime(stats, publication, instructions, vdso_sites)
 }
@@ -1006,16 +1010,24 @@ fn install_runtime(
         reverie_preload::trap::register_runtime_entry_hooks(&crate::runtime_domain::PRELOAD_HOOKS)?
     };
     PATCH_PUBLICATION.store(publication as u8, Ordering::Release);
-    prepare_instrumentation()?;
-    install_vdso_sites(vdso_sites)?;
+    if !crate::syscall_mode::sud_only() {
+        prepare_instrumentation()?;
+        install_vdso_sites(vdso_sites)?;
+    }
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-254): Review launcher-selected RuntimeConfig at the install seam.
     let config = runtime_config_from_env()?;
     install_instruction_signal_handler(instructions, config.use_alt_stack)?;
     unsafe {
+        let controller: &dyn reverie_preload::lifecycle::LifecycleController =
+            if crate::syscall_mode::sud_only() {
+                &reverie_preload::user_dispatch::InProcessUserDispatch
+            } else {
+                &InProcessSeccomp
+            };
         reverie_preload::install(
             Box::new(LiteinstDispatcher::new(stats, publication)),
-            &InProcessSeccomp,
+            controller,
             &config,
         )
     }?;
@@ -1188,6 +1200,7 @@ fn discover_arena_aliases(
 }
 
 fn prepare_instrumentation() -> io::Result<()> {
+    crate::syscall_mode::planning()?;
     crate::straddler::initialize_from_environment()?;
     prepare_live_patching().map_err(|error| io::Error::other(error.to_string()))?;
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
@@ -1651,6 +1664,7 @@ unsafe fn install_site_hook(
     expected_instruction: &[u8],
     manage_protection: bool,
 ) -> io::Result<HostInstallResult> {
+    crate::syscall_mode::patching()?;
     let _install_guard = lock_installation()?;
     let _allocation_scope = crate::patch_alloc::enter();
     let arena = arena_for(address)
@@ -1798,6 +1812,7 @@ unsafe fn install_site_hook(
         }
     }
 
+    crate::syscall_mode::installed();
     let relocated_tail = installed.trampoline().relocated_tail_address();
     let trampoline_start = installed.trampoline().address();
     let trampoline_len = installed.trampoline().allocation_len() as u64;
@@ -2033,8 +2048,18 @@ pub(crate) fn prepare_guest_signal_state(
         return Err(io::Error::from_raw_os_error((-result) as i32));
     }
     let guard = SignalInstallGuard {
-        restore_mask: previous_mask & !(sigsys | sigsegv),
+        restore_mask: if crate::syscall_mode::sud_only() {
+            previous_mask
+        } else {
+            previous_mask & !(sigsys | sigsegv)
+        },
     };
+    if crate::syscall_mode::sud_only() && previous_mask & sigsys != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "SUD-only requires unblocked SIGSYS",
+        ));
+    }
 
     for signal in 1..=64 {
         if matches!(signal, libc::SIGKILL | libc::SIGSTOP) {
@@ -2058,6 +2083,12 @@ pub(crate) fn prepare_guest_signal_state(
             return Err(io::Error::from_raw_os_error((-result) as i32));
         }
         if action.handler != libc::SIG_DFL as u64 && action.handler != libc::SIG_IGN as u64 {
+            if crate::syscall_mode::sud_only() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("SUD-only does not admit existing handler for signal {signal}"),
+                ));
+            }
             let default_action = KernelSigaction::default();
             let result = unsafe {
                 raw_syscall6(
@@ -2075,6 +2106,25 @@ pub(crate) fn prepare_guest_signal_state(
             if result < 0 {
                 return Err(io::Error::from_raw_os_error((-result) as i32));
             }
+        }
+    }
+    if crate::syscall_mode::sud_only() {
+        let arm_mask = install_mask & !sigsys;
+        let result = unsafe {
+            raw_syscall6(
+                libc::SYS_rt_sigprocmask,
+                [
+                    libc::SIG_SETMASK as u64,
+                    (&raw const arm_mask) as u64,
+                    0,
+                    8,
+                    0,
+                    0,
+                ],
+            )
+        };
+        if result < 0 {
+            return Err(io::Error::from_raw_os_error((-result) as i32));
         }
     }
     Ok(guard)
@@ -2841,6 +2891,9 @@ fn record_enabled_fallback_stats(stats: crate::stats::GuestStatsHooks, address: 
 impl SyscallDispatcher for LiteinstDispatcher {
     fn dispatch(&self, event: &mut PreloadSyscallEvent) {
         let _runtime = crate::runtime_domain::Entry::enter();
+        if event.source() == SyscallEventSource::UserDispatch {
+            crate::syscall_mode::record_sud();
+        }
         if tool_callback_active() {
             self.stats.record_path(crate::stats::IN_GUEST_NESTED_SIGSYS);
             let mut nested = SyscallEvent {
@@ -2855,6 +2908,17 @@ impl SyscallDispatcher for LiteinstDispatcher {
             return;
         }
         self.stats.record_path(crate::stats::IN_GUEST_SIGSYS);
+        if crate::syscall_mode::sud_only() {
+            if event.source() != SyscallEventSource::UserDispatch {
+                unsafe { exit_now(126) };
+            }
+            let Some(entry) = crate::syscall_fallback::prepare(event.instruction_pointer()) else {
+                unsafe { exit_now(125) };
+            };
+            crate::syscall_mode::record_deferred();
+            event.defer_to_clocked(entry, entry);
+            return;
+        }
         let mode = TOOL_MODE.load(Ordering::Relaxed);
         let args = event.args();
         let compatibility_trap_fallback =

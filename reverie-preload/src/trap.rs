@@ -271,11 +271,11 @@ unsafe extern "C" fn sigsys_body(
 
 crate::clocked_signal!(sigsys_handler, sigsys_body);
 
-pub(crate) unsafe extern "C" fn user_dispatch_handler(
+unsafe extern "C" fn user_dispatch_body(
     signal_number: libc::c_int,
     info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
-) {
+) -> crate::clock_boundary::Continuation {
     let _runtime = RuntimeEntryGuard::enter();
     unsafe {
         dispatch_signal(
@@ -284,8 +284,10 @@ pub(crate) unsafe extern "C" fn user_dispatch_handler(
             context,
             crate::user_dispatch::SYS_USER_DISPATCH_CODE,
         )
-    };
+    }
 }
+
+crate::clocked_signal!(user_dispatch_handler, user_dispatch_body);
 
 unsafe fn dispatch_signal(
     signal_number: libc::c_int,
@@ -317,6 +319,7 @@ unsafe fn dispatch_signal(
     if expected_code == crate::user_dispatch::SYS_USER_DISPATCH_CODE {
         let syscall_info = unsafe { &*info.cast::<SyscallSignalInfo>() };
         if syscall_info.arch != 0xc000003e
+            || (syscall_info.number >= 0 && syscall_info.number as u32 & 0x4000_0000 != 0)
             || syscall_info.call_address != registers[libc::REG_RIP as usize] as usize
         {
             unsafe { exit_now(126) };
@@ -343,7 +346,12 @@ fn dispatch_registers(
     registers: &mut [libc::greg_t],
     expected_code: i32,
 ) -> crate::clock_boundary::Continuation {
-    let mut event = SyscallEvent::new(
+    let constructor = if expected_code == crate::user_dispatch::SYS_USER_DISPATCH_CODE {
+        SyscallEvent::user_dispatch
+    } else {
+        SyscallEvent::new
+    };
+    let mut event = constructor(
         registers[libc::REG_RAX as usize],
         [
             registers[libc::REG_RDI as usize] as u64,

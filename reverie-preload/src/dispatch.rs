@@ -22,8 +22,10 @@ use crate::signal;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum SyscallEventSource {
-    /// Seccomp or syscall user dispatch delivered a validated `SIGSYS` event.
+    /// Seccomp delivered a validated `SIGSYS` event.
     SignalTrap,
+    /// Syscall user dispatch delivered a validated native x86-64 `SIGSYS` event.
+    UserDispatch,
     /// An instrumentation trampoline called the dispatcher in ordinary context.
     DirectInstrumentation,
 }
@@ -45,6 +47,15 @@ pub struct SyscallEvent {
 }
 
 impl SyscallEvent {
+    pub(crate) fn user_dispatch(number: i64, args: [u64; 6], instruction_pointer: u64) -> Self {
+        Self::with_source(
+            number,
+            args,
+            instruction_pointer,
+            SyscallEventSource::UserDispatch,
+        )
+    }
+
     pub(crate) fn new(number: i64, args: [u64; 6], instruction_pointer: u64) -> Self {
         Self::with_source(
             number,

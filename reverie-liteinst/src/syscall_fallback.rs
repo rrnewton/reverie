@@ -4,7 +4,6 @@ use core::sync::atomic::AtomicU32;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 use std::io;
-use std::ptr;
 use std::sync::OnceLock;
 
 use liteinst2::trampoline::HookContext;
@@ -14,22 +13,15 @@ static SAVE_BYTES: AtomicU32 = AtomicU32::new(512);
 static SAVE_MASK: AtomicU64 = AtomicU64::new(0);
 static SAVE_CONFIG: OnceLock<Result<(), &'static str>> = OnceLock::new();
 
-#[repr(C)]
-struct Pending {
-    continuation: u64,
-    instruction: u64,
-    return_stub: usize,
-}
-
 const _: () = {
     assert!(core::mem::size_of::<HookContext>() == 144);
     assert!(core::mem::offset_of!(HookContext, r11) == 48);
     assert!(core::mem::offset_of!(HookContext, rflags) == 136);
-    assert!(core::mem::offset_of!(Pending, continuation) == 0);
 };
 
 thread_local! {
-    static PENDING: Cell<*mut Pending> = const { Cell::new(ptr::null_mut()) };
+    static READY: Cell<bool> = const { Cell::new(false) };
+    static PENDING: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
 fn configure_save() -> Result<(), &'static str> {
@@ -52,96 +44,47 @@ pub(crate) fn initialize() -> io::Result<()> {
         .get_or_init(configure_save)
         .as_ref()
         .map_err(|error| io::Error::other(*error))?;
-    PENDING.with(|pending| {
-        if !pending.get().is_null() {
-            return Ok(());
-        }
-        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-        let page = usize::try_from(page).map_err(io::Error::other)?;
-        let length = page
-            .checked_mul(2)
-            .ok_or_else(|| io::Error::other("page size overflow"))?;
-        let start = fallback_return_template as *const u8;
-        let end = ptr::addr_of!(fallback_return_template_end);
-        let code_len = end as usize - start as usize;
-        let displacement = page
-            .checked_sub(code_len)
-            .and_then(|value| i32::try_from(value).ok())
-            .ok_or_else(|| io::Error::other("fallback return code does not fit a page"))?;
-        let mapping = unsafe {
-            libc::mmap(
-                ptr::null_mut(),
-                length,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        };
-        if mapping == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
-        }
-        let destination = mapping.cast::<u8>();
-        let state = unsafe { destination.add(page).cast::<Pending>() };
-        unsafe {
-            ptr::copy_nonoverlapping(start, destination, code_len);
-            destination
-                .add(code_len - 4)
-                .cast::<i32>()
-                .write_unaligned(displacement);
-            state.write(Pending {
-                continuation: 0,
-                instruction: 0,
-                return_stub: mapping as usize,
-            });
-        }
-        if unsafe { libc::mprotect(mapping, page, libc::PROT_READ | libc::PROT_EXEC) } != 0 {
-            let error = io::Error::last_os_error();
-            unsafe { libc::munmap(mapping, length) };
-            return Err(error);
-        }
-        pending.set(state);
-        Ok(())
-    })
+    if PENDING.get().is_some() {
+        return Err(io::Error::other("a syscall continuation is still active"));
+    }
+    READY.set(true);
+    Ok(())
 }
 
+/// Retain only the original instruction address until ordinary dispatch ends.
+/// Reentry before then refuses without overwriting the active continuation.
+/// Afterwards the saved RCX owns the resume address; return reads no TLS state.
 pub(crate) fn prepare(continuation: u64) -> Option<u64> {
     let instruction = continuation.checked_sub(2)?;
     PENDING.with(|pending| {
-        let state = pending.get();
-        if state.is_null() {
+        if !READY.get() || pending.get().is_some() {
             return None;
         }
-        unsafe {
-            (*state).continuation = continuation;
-            (*state).instruction = instruction;
-        }
+        pending.set(Some(instruction));
         Some(fallback_entry as *const () as u64)
     })
 }
 
-unsafe extern "C" fn dispatch(context: *mut HookContext) -> usize {
+unsafe extern "C" fn dispatch(context: *mut HookContext) {
     PENDING.with(|pending| {
-        let state = pending.get();
-        if state.is_null() || context.is_null() {
+        let instruction = pending.get();
+        if instruction.is_none() || context.is_null() {
             unsafe { raw_syscall6(libc::SYS_exit_group, [123, 0, 0, 0, 0, 0]) };
             std::process::abort();
         }
         let errno = unsafe { libc::__errno_location() };
         let saved_errno = unsafe { *errno };
         unsafe {
-            (*context).instruction_pointer = (*state).instruction;
+            (*context).instruction_pointer = instruction.unwrap();
             crate::runtime::dispatch_fallback_context(context);
             *errno = saved_errno;
-            (*state).return_stub
         }
+        pending.set(None);
     })
 }
 
 unsafe extern "C" {
     fn fallback_entry();
-    fn fallback_return_template();
-    static fallback_return_template_end: u8;
 }
 
 global_asm!(
@@ -194,7 +137,6 @@ fallback_entry:
     cld
     mov rdi, r12
     call {dispatch}
-    mov r14, rax
     mov rax, qword ptr [rip + {save_mask}]
     test rax, rax
     jz 4f
@@ -209,7 +151,6 @@ fallback_entry:
     xor esi, esi
     xor edx, edx
     call {clock_leave}
-    mov r11, r14
     mov rsp, r12
     add rsp, 16
     pop r15
@@ -227,25 +168,14 @@ fallback_entry:
     pop rdx
     pop rcx
     pop rax
-    notrack jmp r11
+    mov r11, [rsp - 88]
+    popfq
+    lea rsp, [rsp + 128]
+    notrack jmp rcx
     .global fallback_entry_end
     .hidden fallback_entry_end
 fallback_entry_end:
     .size fallback_entry, .-fallback_entry
-
-    .global fallback_return_template
-    .hidden fallback_return_template
-    .global fallback_return_template_end
-    .hidden fallback_return_template_end
-    .type fallback_return_template,@function
-fallback_return_template:
-    mov r11, [rsp - 88]
-    popfq
-    lea rsp, [rsp + 128]
-    .byte 0x3e, 0xff, 0x25
-    .long 0
-fallback_return_template_end:
-    .size fallback_return_template, .-fallback_return_template
     "#,
     save_bytes = sym SAVE_BYTES,
     save_mask = sym SAVE_MASK,
@@ -253,3 +183,19 @@ fallback_return_template_end:
     clock_enter = sym crate::clock_control::reverie_liteinst_clock_enter,
     clock_leave = sym crate::clock_control::reverie_liteinst_clock_leave,
 );
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn pending_continuation_refuses_reentry_without_overwriting() {
+        super::READY.set(true);
+        assert!(super::prepare(0x1002).is_some());
+        assert!(super::prepare(0x2002).is_none());
+        assert_eq!(super::PENDING.get(), Some(0x1000));
+        assert!(super::initialize().is_err());
+        super::PENDING.set(None);
+        assert!(super::prepare(0x3002).is_some());
+        assert_eq!(super::PENDING.get(), Some(0x3000));
+        super::PENDING.set(None);
+    }
+}

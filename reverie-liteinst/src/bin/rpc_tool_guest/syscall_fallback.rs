@@ -133,7 +133,7 @@ pub(super) fn run(path: &Path) {
 }
 
 unsafe extern "C" {
-    fn fallback_test_call(site: usize, number: i64) -> i64;
+    pub(super) fn fallback_test_call(site: usize, number: i64) -> i64;
 }
 
 global_asm!(
