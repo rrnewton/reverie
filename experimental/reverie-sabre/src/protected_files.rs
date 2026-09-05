@@ -8,6 +8,7 @@
 
 //! Protects a set of file descriptors from getting closed.
 
+use std::io;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::io::RawFd;
 use std::ptr;
@@ -145,6 +146,27 @@ where
 /// Returns true if a file descriptor is protected and shouldn't be closed.
 pub fn is_protected<Fd: AsRawFd>(fd: &Fd) -> bool {
     protected_files().lock().contains(fd)
+}
+
+/// Registers an already-open inherited descriptor as private to this plugin
+/// process.
+///
+/// This function does not take ownership of, duplicate, close, or change the
+/// descriptor. The caller must keep the same descriptor open for the lifetime
+/// of the current plugin process. A fork child receives a fresh protected-file
+/// registry, so process-local plugin initialization must call this function
+/// again before the child handles guest syscalls.
+///
+/// Registration is idempotent. A negative or closed descriptor is rejected
+/// without adding it to the protected-file registry.
+#[doc(hidden)]
+pub fn protect_inherited_fd(fd: RawFd) -> io::Result<()> {
+    let mut protected = protected_files().lock();
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    protected.insert(&fd);
+    Ok(())
 }
 
 pub(crate) fn protect_raw_fd(fd: RawFd) {
@@ -339,12 +361,221 @@ pub fn uses_protected_fd(sysno: Sysno, arg0: usize, arg1: usize) -> bool {
 }
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+    use std::os::unix::net::UnixStream;
+    use std::process::Command;
     use std::sync::Arc;
     use std::sync::Barrier;
     use std::sync::mpsc;
     use std::time::Duration;
 
+    use reverie_syscalls::Syscall;
+    use syscalls::SyscallArgs;
+
     use super::*;
+    use crate::tool::SyscallExt;
+
+    const EXEC_TEST_FD_ENV: &str = "REVERIE_SABRE_TEST_INHERITED_FD";
+
+    fn guest_syscall(sysno: Sysno, arg0: usize, arg1: usize) -> Result<usize, syscalls::Errno> {
+        let syscall = Syscall::from_raw(sysno, SyscallArgs::new(arg0, arg1, 0, 0, 0, 0));
+        unsafe { syscall.call() }
+    }
+
+    fn raw_write(fd: RawFd, bytes: &[u8]) -> Result<usize, syscalls::Errno> {
+        unsafe {
+            syscalls::syscall3(
+                Sysno::write,
+                fd as usize,
+                bytes.as_ptr() as usize,
+                bytes.len(),
+            )
+        }
+    }
+
+    fn assert_guest_access_is_refused(fd: RawFd) {
+        for sysno in [Sysno::close, Sysno::read, Sysno::write, Sysno::dup] {
+            assert_eq!(
+                guest_syscall(sysno, fd as usize, 0),
+                Err(syscalls::Errno::EBADF)
+            );
+        }
+        for sysno in [Sysno::dup2, Sysno::dup3] {
+            let target = unsafe { syscalls::syscall1(Sysno::dup, fd as usize) }.unwrap() as RawFd;
+            assert_eq!(
+                guest_syscall(sysno, fd as usize, target as usize),
+                Err(syscalls::Errno::EBADF)
+            );
+            assert_eq!(
+                unsafe { syscalls::syscall1(Sysno::close, target as usize) },
+                Ok(0)
+            );
+
+            let source = unsafe { syscalls::syscall1(Sysno::dup, fd as usize) }.unwrap() as RawFd;
+            assert_eq!(
+                guest_syscall(sysno, source as usize, fd as usize),
+                Err(syscalls::Errno::EBADF)
+            );
+            assert_eq!(
+                unsafe { syscalls::syscall1(Sysno::close, source as usize) },
+                Ok(0)
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_descriptor_guest_syscalls_remain_allowed() {
+        let (_reader, writer) = UnixStream::pair().unwrap();
+        let fd = writer.as_raw_fd();
+
+        assert_eq!(guest_syscall(Sysno::read, fd as usize, 0), Ok(0));
+        assert_eq!(guest_syscall(Sysno::write, fd as usize, 0), Ok(0));
+
+        let duplicate = guest_syscall(Sysno::dup, fd as usize, 0).unwrap() as RawFd;
+        assert!(duplicate >= 0);
+        assert_eq!(
+            unsafe { syscalls::syscall1(Sysno::close, duplicate as usize) },
+            Ok(0)
+        );
+
+        for sysno in [Sysno::dup2, Sysno::dup3] {
+            let target = unsafe { syscalls::syscall1(Sysno::dup, fd as usize) }.unwrap() as RawFd;
+            assert_eq!(
+                guest_syscall(sysno, fd as usize, target as usize),
+                Ok(target as usize)
+            );
+            assert_eq!(
+                unsafe { syscalls::syscall1(Sysno::close, target as usize) },
+                Ok(0)
+            );
+        }
+
+        let close_target = unsafe { syscalls::syscall1(Sysno::dup, fd as usize) }.unwrap() as RawFd;
+        assert_eq!(guest_syscall(Sysno::close, close_target as usize, 0), Ok(0));
+
+        let range_target = unsafe { syscalls::syscall1(Sysno::dup, fd as usize) }.unwrap() as RawFd;
+        assert_eq!(
+            guest_syscall(
+                Sysno::close_range,
+                range_target as usize,
+                range_target as usize,
+            ),
+            Ok(0)
+        );
+        assert_eq!(unsafe { libc::fcntl(range_target, libc::F_GETFD) }, -1);
+    }
+
+    #[test]
+    fn inherited_sink_is_plugin_writable_but_hidden_from_guest_syscalls() {
+        let (mut reader, writer) = UnixStream::pair().unwrap();
+        let fd = writer.as_raw_fd();
+
+        crate::protect_inherited_fd(fd).unwrap();
+        crate::protect_inherited_fd(fd).unwrap();
+        assert!(is_protected(&fd));
+        assert_guest_access_is_refused(fd);
+
+        assert_eq!(
+            guest_syscall(Sysno::close_range, fd as usize, fd as usize),
+            Ok(0)
+        );
+        assert!(unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0);
+
+        let message = b"authoritative packet";
+        assert_eq!(raw_write(fd, message), Ok(message.len()));
+        let mut received = vec![0; message.len()];
+        reader.read_exact(&mut received).unwrap();
+        assert_eq!(received, message);
+
+        unprotect_raw_fd(fd);
+    }
+
+    #[test]
+    fn inherited_sink_registration_rejects_invalid_descriptors() {
+        let error = crate::protect_inherited_fd(-1).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+        assert!(!is_protected(&-1));
+    }
+
+    #[test]
+    fn fork_child_requires_explicit_inherited_sink_registration() {
+        let (mut reader, writer) = UnixStream::pair().unwrap();
+        let fd = writer.as_raw_fd();
+        crate::protect_inherited_fd(fd).unwrap();
+
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            let exit_code = if is_protected(&fd) {
+                10
+            } else if crate::protect_inherited_fd(fd).is_err() {
+                11
+            } else if !is_protected(&fd) {
+                12
+            } else if raw_write(fd, b"f") != Ok(1) {
+                13
+            } else {
+                assert_guest_access_is_refused(fd);
+                0
+            };
+            unsafe { libc::_exit(exit_code) };
+        }
+
+        let mut received = [0];
+        reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        reader.read_exact(&mut received).unwrap();
+        assert_eq!(&received, b"f");
+
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 0);
+        assert!(is_protected(&fd));
+        unprotect_raw_fd(fd);
+    }
+
+    #[test]
+    fn exec_child_registers_inherited_sink() {
+        let Some(fd) = std::env::var_os(EXEC_TEST_FD_ENV) else {
+            return;
+        };
+        let fd = fd.to_str().unwrap().parse::<RawFd>().unwrap();
+
+        assert!(!is_protected(&fd));
+        crate::protect_inherited_fd(fd).unwrap();
+        assert!(is_protected(&fd));
+        assert_eq!(raw_write(fd, b"e"), Ok(1));
+        assert_guest_access_is_refused(fd);
+    }
+
+    #[test]
+    fn inherited_sink_can_be_registered_after_exec() {
+        let (mut reader, writer) = UnixStream::pair().unwrap();
+        let fd = writer.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert!(flags >= 0);
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) },
+            0
+        );
+
+        let status = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("protected_files::tests::exec_child_registers_inherited_sink")
+            .env(EXEC_TEST_FD_ENV, fd.to_string())
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let mut received = [0];
+        reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        reader.read_exact(&mut received).unwrap();
+        assert_eq!(&received, b"e");
+    }
 
     #[test]
     fn fork_child_does_not_reuse_locked_registry() {
