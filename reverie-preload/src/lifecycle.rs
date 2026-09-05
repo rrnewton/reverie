@@ -31,6 +31,7 @@ use std::io;
 
 use crate::seccomp::SeccompFilter;
 use crate::trap;
+pub use crate::user_dispatch::InProcessUserDispatch;
 
 /// How the runtime installs its guest-half syscall trap.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,8 +59,9 @@ pub trait LifecycleController {
     ///
     /// # Safety
     ///
-    /// Installs process-global, largely irreversible state (signal handler,
-    /// seccomp filter). Call exactly once, after the dispatcher is registered.
+    /// Installs process-global signal state and controller-specific interception.
+    /// Call exactly once, after the dispatcher is registered. Seccomp is
+    /// irreversible; user dispatch requires explicit per-thread re-arming.
     unsafe fn install(&self, config: &RuntimeConfig) -> io::Result<()>;
 }
 

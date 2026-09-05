@@ -27,6 +27,11 @@ use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_rpc_transport::RpcServer;
 
+#[path = "rpc_tool_guest/sud_only.rs"]
+mod sud_only_guest;
+
+#[path = "rpc_tool_guest/sud_masks.rs"]
+mod sud_masks;
 #[path = "rpc_tool_guest/syscall_fallback.rs"]
 mod syscall_fallback_guest;
 
@@ -1312,6 +1317,7 @@ fn main() {
         Some("coordinator") => coordinator(Path::new(&path)),
         Some("guest") => guest(Path::new(&path)),
         Some("syscall-fallback") => syscall_fallback_guest::run(Path::new(&path)),
+        Some(mode) if mode.starts_with("sud-") => sud_only_guest::run(Path::new(&path), mode),
         Some("preinstalled-handler") => preinstalled_handler_guest(Path::new(&path)),
         Some("pending-sigsys") => pending_sigsys_guest(Path::new(&path)),
         Some("preblocked-sigsys") => preblocked_sigsys_guest(Path::new(&path)),

@@ -25,10 +25,71 @@ static WINDOW_FD: AtomicU64 = AtomicU64::new(u64::MAX);
 static WINDOW_HITS: AtomicU64 = AtomicU64::new(0);
 static WINDOW_KIND: AtomicU64 = AtomicU64::new(0);
 static WINDOW_GATE: AtomicU64 = AtomicU64::new(0);
+static SUD: AtomicU64 = AtomicU64::new(0);
+static UID: AtomicU64 = AtomicU64::new(0);
+static EXPECTED_NOTIFICATION: AtomicU64 = AtomicU64::new(0);
+static PENDING_UNMASK: AtomicU64 = AtomicU64::new(0);
+static UNMASK_EXPECTED: AtomicU64 = AtomicU64::new(0);
+static GUEST_MASK: AtomicU64 = AtomicU64::new(0);
+static FORCE_INSTRUCTION: AtomicU64 = AtomicU64::new(0);
 
 unsafe extern "C" {
     fn clock_fixture_open_breakpoint(address: u64) -> i32;
     fn clock_fixture_owned_breakpoint(info: *const libc::siginfo_t, address: u64) -> i32;
+    fn clock_fixture_notification(info: *mut libc::siginfo_t, pid: i32, uid: u32, token: u64);
+    fn clock_fixture_owned_notification(
+        info: *const libc::siginfo_t,
+        pid: i32,
+        uid: u32,
+        token: u64,
+    ) -> i32;
+    fn reverie_liteinst_fallback_mask_restored();
+}
+
+fn queue_notification(pending: bool) {
+    let token = NOTIFICATIONS.load(Ordering::Relaxed) + 1;
+    assert_eq!(EXPECTED_NOTIFICATION.swap(token, Ordering::Relaxed), 0);
+    if pending {
+        UNMASK_EXPECTED.store(1, Ordering::Relaxed);
+        let mask = 1u64 << (libc::SIGUSR2 - 1);
+        assert_eq!(
+            unsafe {
+                raw_syscall6(
+                    libc::SYS_rt_sigprocmask,
+                    [libc::SIG_BLOCK as u64, (&raw const mask) as u64, 0, 8, 0, 0],
+                )
+            },
+            0
+        );
+    }
+    let mut info: libc::siginfo_t = unsafe { core::mem::zeroed() };
+    unsafe {
+        clock_fixture_notification(
+            &raw mut info,
+            PID.load(Ordering::Relaxed) as i32,
+            UID.load(Ordering::Relaxed) as u32,
+            token,
+        )
+    };
+    assert_eq!(
+        unsafe {
+            raw_syscall6(
+                libc::SYS_rt_tgsigqueueinfo,
+                [
+                    PID.load(Ordering::Relaxed),
+                    TID.load(Ordering::Relaxed),
+                    libc::SIGUSR2 as u64,
+                    (&raw const info) as u64,
+                    0,
+                    0,
+                ],
+            )
+        },
+        0
+    );
+    if pending {
+        assert_eq!(NOTIFICATIONS.load(Ordering::Relaxed) + 1, token);
+    }
 }
 
 fn work() {
@@ -63,9 +124,24 @@ struct ClockTool;
 
 async fn sample<G: Guest<ClockTool>>(guest: &mut G) -> u64 {
     let _cleanup = Cleanup;
+    if PENDING_UNMASK.load(Ordering::Relaxed) != 0 {
+        assert_eq!(
+            NOTIFICATIONS.load(Ordering::Relaxed),
+            CALLBACKS.load(Ordering::Relaxed) * 2
+        );
+    }
     let before = guest
         .read_clock()
         .expect("real paused hardware clock required");
+    if SUD.load(Ordering::Relaxed) != 0 {
+        let mut mask = 0u64;
+        let query = Syscall::from_raw(
+            Sysno::rt_sigprocmask,
+            reverie::syscalls::SyscallArgs::new(123, 0, (&raw mut mask) as usize, 8, 0, 0),
+        );
+        assert_eq!(guest.inject(query).await, Ok(0));
+        assert_eq!(mask, GUEST_MASK.load(Ordering::Relaxed));
+    }
     assert!(guest.set_timer(reverie::TimerSchedule::Rcbs(100)).is_err());
     assert!(
         guest
@@ -83,21 +159,25 @@ async fn sample<G: Guest<ClockTool>>(guest: &mut G) -> u64 {
     assert_eq!(guest.send_rpc(before).await, before + 1);
     let notifications = NOTIFICATIONS.load(Ordering::Relaxed);
     let callbacks = CALLBACKS.load(Ordering::Relaxed);
-    unsafe {
-        assert_eq!(
-            raw_syscall6(
-                libc::SYS_tgkill,
-                [
-                    PID.load(Ordering::Relaxed),
-                    TID.load(Ordering::Relaxed),
-                    libc::SIGUSR2 as u64,
-                    0,
-                    0,
-                    0
-                ]
-            ),
-            0
-        );
+    if SUD.load(Ordering::Relaxed) != 0 {
+        queue_notification(false);
+    } else {
+        unsafe {
+            assert_eq!(
+                raw_syscall6(
+                    libc::SYS_tgkill,
+                    [
+                        PID.load(Ordering::Relaxed),
+                        TID.load(Ordering::Relaxed),
+                        libc::SIGUSR2 as u64,
+                        0,
+                        0,
+                        0
+                    ]
+                ),
+                0
+            );
+        }
     }
     assert_eq!(NOTIFICATIONS.load(Ordering::Relaxed), notifications + 1);
     assert_eq!(
@@ -120,6 +200,22 @@ async fn sample<G: Guest<ClockTool>>(guest: &mut G) -> u64 {
             "actual boundary interrupt missing"
         );
     }
+    if PENDING_UNMASK.load(Ordering::Relaxed) != 0 {
+        queue_notification(true);
+    }
+    if SUD.load(Ordering::Relaxed) != 0 {
+        let stats = reverie_liteinst::syscall_mode_stats();
+        assert_eq!(
+            (
+                stats.planning_attempts,
+                stats.patch_attempts,
+                stats.installed_patches,
+                stats.vdso_rewrite_attempts
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(stats.deferred_sud > 0);
+    }
     before
 }
 
@@ -135,7 +231,9 @@ impl Tool for ClockTool {
 
     fn subscriptions(_config: &()) -> Subscription {
         let mut subscriptions: Subscription = [Sysno::getpid, Sysno::getuid].into_iter().collect();
-        subscriptions.rdtsc();
+        if SUD.load(Ordering::Relaxed) == 0 || FORCE_INSTRUCTION.load(Ordering::Relaxed) != 0 {
+            subscriptions.rdtsc();
+        }
         subscriptions
     }
 
@@ -190,6 +288,54 @@ unsafe extern "C" fn notification_body(
 }
 
 reverie_preload::clocked_signal!(notification, notification_body);
+
+unsafe extern "C" fn validate_notification(
+    signal: i32,
+    info: *mut libc::siginfo_t,
+    frame: *mut libc::c_void,
+) -> bool {
+    let token = EXPECTED_NOTIFICATION.load(Ordering::Relaxed);
+    if signal != libc::SIGUSR2
+        || token == 0
+        || unsafe {
+            clock_fixture_owned_notification(
+                info,
+                PID.load(Ordering::Relaxed) as i32,
+                UID.load(Ordering::Relaxed) as u32,
+                token,
+            )
+        } != 1
+    {
+        return false;
+    }
+    if UNMASK_EXPECTED.swap(0, Ordering::Relaxed) != 0 {
+        let frame = unsafe { &*frame.cast::<libc::ucontext_t>() };
+        assert_eq!(
+            frame.uc_mcontext.gregs[libc::REG_RIP as usize] as u64,
+            reverie_preload::trap::trusted_gate().return_ip
+        );
+        assert_eq!(
+            unsafe { *(frame.uc_mcontext.gregs[libc::REG_RSP as usize] as *const u64) },
+            reverie_liteinst_fallback_mask_restored as *const () as u64
+        );
+        assert_eq!(reverie_preload::user_dispatch::dispatch_mask(), None);
+    }
+    EXPECTED_NOTIFICATION
+        .compare_exchange(token, 0, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+}
+
+unsafe extern "C" fn validate_window(
+    signal: i32,
+    info: *mut libc::siginfo_t,
+    frame: *mut libc::c_void,
+) -> bool {
+    signal == libc::SIGTRAP
+        && unsafe { clock_fixture_owned_breakpoint(info, WINDOW_PC.load(Ordering::Relaxed)) } == 1
+        && unsafe {
+            (*frame.cast::<libc::ucontext_t>()).uc_mcontext.gregs[libc::REG_RIP as usize] as u64
+        } == WINDOW_PC.load(Ordering::Relaxed)
+}
 
 unsafe extern "C" fn window_body(
     signal: i32,
@@ -309,6 +455,18 @@ unsafe extern "C" fn initialize() -> i32 {
     if std::env::var_os("CLOCK_FIXTURE_FAIL").is_some() {
         return 42;
     }
+    SUD.store(
+        u64::from(std::env::var_os("CLOCK_FIXTURE_SUD").is_some()),
+        Ordering::Relaxed,
+    );
+    FORCE_INSTRUCTION.store(
+        u64::from(std::env::var_os("CLOCK_FIXTURE_INSTRUCTIONS").is_some()),
+        Ordering::Relaxed,
+    );
+    PENDING_UNMASK.store(
+        u64::from(std::env::var_os("CLOCK_FIXTURE_PENDING").is_some()),
+        Ordering::Relaxed,
+    );
     let Some(iterations) = std::env::var("CLOCK_FIXTURE_WORK")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -354,14 +512,70 @@ unsafe extern "C" fn initialize() -> i32 {
         unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) } as u64,
         Ordering::Relaxed,
     );
+    UID.store(
+        unsafe { raw_syscall6(libc::SYS_getuid, [0; 6]) } as u64,
+        Ordering::Relaxed,
+    );
+    let mut guest_mask = 0u64;
     if unsafe {
-        reverie_liteinst::install_tool_quiescent::<ClockTool>(std::path::Path::new(&socket))
-    }
-    .is_err()
+        raw_syscall6(
+            libc::SYS_rt_sigprocmask,
+            [0, 0, (&raw mut guest_mask) as u64, 8, 0, 0],
+        )
+    } != 0
     {
         return 42;
     }
-    if !unsafe { install_notification() } {
+    GUEST_MASK.store(guest_mask, Ordering::Relaxed);
+    let installed = if SUD.load(Ordering::Relaxed) != 0 {
+        let mut signals = vec![reverie_preload::signal::RuntimeSignal {
+            signal: libc::SIGUSR2,
+            disable_descriptor: None,
+            validate: validate_notification,
+            body: notification_body,
+        }];
+        if WINDOW_PC.load(Ordering::Relaxed) != 0 {
+            signals.push(reverie_preload::signal::RuntimeSignal {
+                signal: libc::SIGTRAP,
+                disable_descriptor: Some(WINDOW_FD.load(Ordering::Relaxed) as i32),
+                validate: validate_window,
+                body: window_body,
+            });
+        }
+        if unsafe {
+            reverie_preload::signal::configure_runtime_signals(Box::leak(
+                signals.into_boxed_slice(),
+            ))
+        }
+        .is_err()
+        {
+            return 42;
+        }
+        unsafe {
+            reverie_liteinst::install_tool_with_mode::<ClockTool>(
+                std::path::Path::new(&socket),
+                reverie_liteinst::SyscallMode::UserDispatchWithoutPatching,
+            )
+        }
+    } else {
+        unsafe {
+            reverie_liteinst::install_tool_quiescent::<ClockTool>(std::path::Path::new(&socket))
+        }
+    };
+    if FORCE_INSTRUCTION.load(Ordering::Relaxed) != 0 {
+        let error = installed.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert!(
+            error
+                .to_string()
+                .contains("instruction or vDSO subscriptions")
+        );
+        return 42;
+    }
+    if installed.is_err() {
+        return 42;
+    }
+    if SUD.load(Ordering::Relaxed) == 0 && !unsafe { install_notification() } {
         return 42;
     }
     work();

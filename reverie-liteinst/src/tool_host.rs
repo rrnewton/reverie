@@ -94,6 +94,7 @@ where
             coordinator.as_ref(),
             true,
             runtime::PatchPublication::Concurrent,
+            crate::SyscallMode::SeccompWithPatching,
         )
     }
 }
@@ -118,6 +119,7 @@ where
             coordinator.as_ref(),
             true,
             runtime::PatchPublication::Quiescent,
+            crate::SyscallMode::SeccompWithPatching,
         )
     }
 }
@@ -140,6 +142,47 @@ where
             coordinator.as_ref(),
             false,
             runtime::PatchPublication::Concurrent,
+            crate::SyscallMode::SeccompWithPatching,
+        )
+    }
+}
+
+/// Install a typed Tool with an explicit syscall interception mode.
+///
+/// SUD-only handles native x86-64 syscalls after installation, not loader
+/// startup, vDSO fast paths, instruction events, exec or additional threads.
+/// Instruction/vDSO subscriptions are rejected, not silently made native.
+/// Selected shared-clock execution requires explicitly registered runtime
+/// signals through [`reverie_preload::signal::configure_runtime_signals`],
+/// including its unsafe source-validation and process-lifetime requirements.
+/// Runtime Rust allocation isolation is retained; asynchronous libc/TLS/Tool
+/// reentry is not qualified.
+/// Both timer setters return EOPNOTSUPP in SUD-only mode; no timer is armed.
+///
+/// # Safety
+/// The caller owns the installing thread and process signal dispositions for
+/// the remaining process lifetime. No other application thread may run, and no
+/// application signal handler, nonlocal signal exit or asynchronous callback
+/// may enter during Tool execution or a deferred continuation. All preinstalled
+/// handlers must be default/ignored; installation rejects custom handlers.
+/// The caller must not replace runtime handlers, change masks/altstacks, invoke
+/// the trusted gate as a guest bypass, or register unrelated clock hooks.
+/// Quiescence during installation alone does not meet these lifetime duties.
+/// On failure runtime/RPC resources may remain; do not resume as an instrumented
+/// guest. There is no general signal, lifecycle or deterministic-clock guarantee.
+pub unsafe fn install_tool_with_mode<T>(
+    coordinator: impl AsRef<Path>,
+    mode: crate::SyscallMode,
+) -> io::Result<()>
+where
+    T: Tool + 'static,
+{
+    unsafe {
+        install_tool_inner::<T>(
+            coordinator.as_ref(),
+            true,
+            runtime::PatchPublication::Concurrent,
+            mode,
         )
     }
 }
@@ -148,11 +191,21 @@ unsafe fn install_tool_inner<T>(
     coordinator: &Path,
     remove_legacy_environment: bool,
     publication: runtime::PatchPublication,
+    mode: crate::SyscallMode,
 ) -> io::Result<()>
 where
     T: Tool + 'static,
 {
     let _runtime = crate::runtime_domain::Entry::enter();
+    if mode == crate::SyscallMode::UserDispatchWithoutPatching
+        && (crate::clock_control::requested() || crate::clock_control::active())
+        && !reverie_preload::signal::runtime_signals_configured()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "SUD-only shared-clock execution needs an owned signal-mask policy",
+        ));
+    }
     crate::syscall_fallback::initialize()?;
     let rpc = CoordinatorRpc::<T::GlobalState>::connect(coordinator)?;
     runtime::reserve_coordinator_fd(rpc.raw_fd())?;
@@ -165,39 +218,84 @@ where
         } else {
             crate::stats::GuestStatsHooks::DISABLED
         };
-    runtime::initialize_rcb_clock()?;
-    crate::timer::initialize()?;
-    COMMITTED_STACKS.lock().clear();
     let pid = Pid::from_raw(unsafe { libc::getpid() });
     let subscriptions = T::subscriptions(rpc.config());
+    if mode == crate::SyscallMode::UserDispatchWithoutPatching
+        && (subscriptions.has_cpuid()
+            || subscriptions.has_rdtsc()
+            || subscriptions.iter_syscalls().any(|number| {
+                matches!(
+                    number,
+                    Sysno::time
+                        | Sysno::gettimeofday
+                        | Sysno::clock_gettime
+                        | Sysno::clock_getres
+                        | Sysno::getcpu
+                )
+            }))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "SUD-only does not cover instruction or vDSO subscriptions",
+        ));
+    }
+    crate::syscall_mode::select(mode);
     let instruction_subscriptions = runtime::InstructionSubscriptions {
         cpuid: subscriptions.has_cpuid(),
         rdtsc: subscriptions.has_rdtsc(),
     };
-    runtime::preflight_instruction_faulting(instruction_subscriptions)?;
-    let vdso_sites = reverie_ptrace::patch_current_vdso(&subscriptions)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    let _signal_state = runtime::prepare_guest_signal_state(instruction_subscriptions)?;
-    let syscall_subscriptions = subscriptions.iter_syscalls().collect();
-    if remove_legacy_environment {
-        // SAFETY: legacy tool installation runs before application-created threads.
-        unsafe { std::env::remove_var(crate::backend::COORDINATOR_ENV) };
-    }
-    let tool = T::new(pid, rpc.config());
-    HANDLER
-        .set(Box::new(ToolHost::<T> {
-            tool: SpinMutex::new(Some(tool)),
-            rpc,
-            root_pid: pid,
-            subscriptions: syscall_subscriptions,
+    let early_signal_state = if crate::syscall_mode::sud_only() {
+        Some(runtime::prepare_guest_signal_state(
             instruction_subscriptions,
-            states: SpinMutex::new(HashMap::new()),
-            stats,
-        }))
-        .map_err(|_| {
-            io::Error::new(io::ErrorKind::AlreadyExists, "Reverie tool installed twice")
-        })?;
-    runtime::initialize_reverie_tool(stats, publication, instruction_subscriptions, &vdso_sites)
+        )?)
+    } else {
+        None
+    };
+    let installation = (|| {
+        runtime::initialize_rcb_clock()?;
+        crate::timer::initialize()?;
+        COMMITTED_STACKS.lock().clear();
+        runtime::preflight_instruction_faulting(instruction_subscriptions)?;
+        let vdso_sites = if crate::syscall_mode::sud_only() {
+            Vec::new()
+        } else {
+            crate::syscall_mode::vdso_rewrite()?;
+            reverie_ptrace::patch_current_vdso(&subscriptions)
+                .map_err(|error| io::Error::other(error.to_string()))?
+        };
+        let _signal_state = if early_signal_state.is_none() {
+            Some(runtime::prepare_guest_signal_state(
+                instruction_subscriptions,
+            )?)
+        } else {
+            None
+        };
+        let syscall_subscriptions = subscriptions.iter_syscalls().collect();
+        if remove_legacy_environment {
+            // SAFETY: legacy tool installation runs before application-created threads.
+            unsafe { std::env::remove_var(crate::backend::COORDINATOR_ENV) };
+        }
+        let tool = T::new(pid, rpc.config());
+        HANDLER
+            .set(Box::new(ToolHost::<T> {
+                tool: SpinMutex::new(Some(tool)),
+                rpc,
+                root_pid: pid,
+                subscriptions: syscall_subscriptions,
+                instruction_subscriptions,
+                states: SpinMutex::new(HashMap::new()),
+                stats,
+            }))
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::AlreadyExists, "Reverie tool installed twice")
+            })?;
+        runtime::initialize_reverie_tool(stats, publication, instruction_subscriptions, &vdso_sites)
+    })();
+    if installation.is_err() && crate::syscall_mode::sud_only() && crate::clock_control::requested()
+    {
+        unsafe { runtime::exit_now(127) };
+    }
+    installation
 }
 
 pub(crate) fn dispatch(event: &mut SyscallEvent) {
@@ -680,6 +778,9 @@ impl<T: Tool> GlobalRPC<T::GlobalState> for LiteinstGuest<'_, T> {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-326): Review the plain-fork injection boundary.
 fn is_plain_fork(number: i64, args: [u64; 6]) -> bool {
+    if crate::syscall_mode::sud_only() {
+        return false;
+    }
     if number == libc::SYS_fork {
         return true;
     }
@@ -792,7 +893,8 @@ fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<i64> {
     }
     let unsupported_process =
         // AUTONOMOUS-BOT-IMPLEMENTED
-        (matches!(number, libc::SYS_clone | libc::SYS_clone3 | libc::SYS_vfork)
+        (crate::syscall_mode::sud_only() && reverie_preload::dispatch::is_fork_like(number))
+        || (matches!(number, libc::SYS_clone | libc::SYS_clone3 | libc::SYS_vfork)
             && !is_plain_fork(number, args))
         // AUTONOMOUS-BOT-IMPLEMENTED
         || matches!(number, libc::SYS_execve | libc::SYS_execveat);
@@ -816,7 +918,7 @@ fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<i64> {
 
 fn guarded_raw_injection(number: i64, args: [u64; 6]) -> i64 {
     injected_syscall_guard(number, args)
-        .unwrap_or_else(|| runtime::guarded_raw_syscall(number, args))
+        .unwrap_or_else(|| runtime::guarded_scoped_syscall(number, args))
 }
 
 #[reverie::tool]
@@ -1025,10 +1127,16 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
 
     // TODO-HUMAN-REVIEW(PR-326): Review delivery before enabling timer success.
     fn set_timer(&mut self, sched: TimerSchedule) -> Result<(), Error> {
+        if crate::syscall_mode::sud_only() {
+            return Err(Errno::EOPNOTSUPP.into());
+        }
         crate::timer::request(sched, false)
     }
 
     fn set_timer_precise(&mut self, sched: TimerSchedule) -> Result<(), Error> {
+        if crate::syscall_mode::sud_only() {
+            return Err(Errno::EOPNOTSUPP.into());
+        }
         crate::timer::request(sched, true)
     }
 

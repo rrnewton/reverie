@@ -41,3 +41,18 @@ int clock_fixture_owned_breakpoint(const siginfo_t *info, uint64_t address) {
         event.type == PERF_TYPE_BREAKPOINT && event.flags == 0 &&
         event.data == 0x636c6f636b && event.address == (void *)address;
 }
+
+void clock_fixture_notification(siginfo_t *info, int pid, unsigned uid, uint64_t token) {
+    memset(info, 0, sizeof(*info));
+    info->si_signo = SIGUSR2;
+    info->si_code = SI_QUEUE;
+    info->si_pid = pid;
+    info->si_uid = uid;
+    info->si_value.sival_ptr = (void *)token;
+}
+
+int clock_fixture_owned_notification(const siginfo_t *info, int pid, unsigned uid, uint64_t token) {
+    return info->si_signo == SIGUSR2 && info->si_code == SI_QUEUE &&
+        info->si_pid == pid && info->si_uid == uid &&
+        info->si_value.sival_ptr == (void *)token;
+}

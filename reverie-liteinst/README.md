@@ -209,6 +209,69 @@ counters (round 7); LiteInst hosts its own dispatcher rather than the shared
 `PassthroughDispatcher`, so it calls the hook directly, but reuses the shared
 `ForkHook`/`is_fork_like` API rather than a private fork-detection path.
 
+## Explicit SUD-only Tool fixture
+
+The unsafe `install_tool_with_mode` API can select
+`SyscallMode::UserDispatchWithoutPatching`. Existing installation APIs still use
+seccomp and retain optional site patching. There is no Hermit CLI activation.
+This bounded mode handles native x86-64 syscall instructions after installation:
+validated SUD enters the existing deferred fallback, returns through the trusted
+kernel signal restorer, then runs the shared Tool driver and coordinator RPC in
+ordinary context. It does not prepare sites, install hooks or rewrite the vDSO.
+Always-enabled attempt and installation counters make these exclusions observable.
+
+The original kernel frame is borrowed only during signal handling, not retained
+after `rt_sigreturn`. One per-thread pending instruction address is exclusive
+until ordinary Tool dispatch completes; a second pending continuation refuses
+rather than overwriting it. The saved RCX then supplies the real return address,
+not HookContext IP/SP metadata. The existing assembly saves and restores actual
+guest registers, stack/redzone, flags and the supported FP state. RCX and R11
+follow syscall clobber semantics, not asynchronous preserve-all semantics.
+XSAVE uses the existing restricted enabled-state mask `0x2e7` (FXSAVE fallback);
+this is not general xstate, arbitrary-PC or TLS-base switching support. Errno is
+saved across Tool dispatch. Existing PatchAllocator/TOOL_HEAP isolation remains.
+
+The unsafe caller must maintain one application thread and prevent application
+handlers/asynchronous callbacks or nonlocal exits from entering the runtime for
+the remaining process lifetime. Initial quiescence alone is insufficient. The
+API rejects preinstalled custom handlers and blocked SIGSYS, preserves the prior
+guest mask, and does not grant general signal or lifecycle support. Fork/clone
+and exec remain refused, including Tool injection. The loader before installation
+is not trapped; exec/thread rearming is not implemented.
+
+Instruction subscriptions and vDSO-dependent syscall subscriptions are rejected,
+not silently made native. This excludes a full shared Detcore configuration.
+Selected shared-clock execution remains rejected without an explicitly configured
+runtime-owned signal policy. The bounded clock fixture configures immutable,
+source-validated runtime actions through `signal::configure_runtime_signals`;
+ordinary custom guest handlers, blocked required signals and signal-mask mutations
+remain refused. The original frame transfers only scalar clock/mask ownership
+to ordinary fallback. Typed injections run with the recorded guest mask; after
+Rust cleanup the trusted assembly tail restores that exact mask before enabling
+the cumulative clock. No frame reference survives `rt_sigreturn`.
+
+The additional `clocked_tool/guest_raw.s` fixture retains the original six-sample
+trajectory and tests runtime-work variation, actual boundary interruption,
+nonzero guest-mask queries and pending private-signal delivery inside the final
+mask-restoration syscall. The original instruction fixture is unchanged.
+This is a bounded clock prerequisite, not arbitrary asynchronous Tool reentry,
+precise timer execution, general signal/lifecycle support or Detcore qualification.
+Both timer setters return EOPNOTSUPP for every schedule in SUD-only
+mode. The composed shared timer-control component retains disabled preparation
+and boundary reconciliation; default-mode setters cancel any owned request
+and explicitly refuse delivery as well. No production timer is armed or
+dispatched in either mode.
+
+`rpc_tool::sud_only_shared_tool_without_guest_patching` checks repeated ordinary
+text, libc, page-end and post-install anonymous sites, live code/vDSO byte
+identity, zero planning/patch/vDSO attempts, non-native Tool results, actual shared
+RPC receipts, six arguments, errno, tail injection, restart, registers/redzone
+and nested internal syscalls. Companion cases check unsupported ABI (x32 and
+compat), subscription/signal/clock refusal and inherited ptrace denial. These are
+typed raw-syscall Tool tests, not Hermit Detcore, L2, deterministic time or corpus
+coverage evidence. vDSO fast paths, nondeterministic instructions and legacy
+vsyscall fault emulation are not established by the syscall fixture.
+
 ## Corpus sweep scorecard
 
 A 20-program C corpus was run through `hermit --backend liteinst run --strict

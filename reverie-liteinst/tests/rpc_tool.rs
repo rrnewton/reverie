@@ -11,6 +11,97 @@ const INSTRUCTION_CONTROL_UNAVAILABLE_STATUS: i32 = 77;
 const TEST_STRADDLER_STALENESS_TICKS: &str = "20000";
 
 #[test]
+fn sud_only_typed_mask_queries_errors_and_tail_restoration() {
+    let output = sud_guest("sud-masks");
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        output.stdout,
+        b"sud-masks: inject/tail/query/error/restore callbacks=7 patches=0\n"
+    );
+}
+
+#[test]
+fn sud_runtime_source_admission_preserves_masks_and_refuses_unknown_sources() {
+    for mode in [
+        "sud-policy-blocked",
+        "sud-policy-ignored",
+        "sud-policy-ordinary",
+    ] {
+        let output = sud_guest(mode);
+        assert!(output.status.success(), "{mode}: {output:?}");
+        assert!(output.stderr.is_empty(), "{mode}: {output:?}");
+        assert_eq!(
+            output.stdout,
+            format!("{mode}: refused, original mask/disposition preserved\n").as_bytes()
+        );
+    }
+    let output = sud_guest("sud-policy-unknown");
+    assert_eq!(output.status.code(), Some(126), "{output:?}");
+    assert!(
+        output.stderr.is_empty() && output.stdout.is_empty(),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn sud_only_shared_tool_without_guest_patching() {
+    let output = sud_guest("sud-only");
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let text = std::str::from_utf8(&output.stdout).unwrap();
+    assert!(
+        text.starts_with("sud-only: guest_probes=15 rpc=16 bytes=unchanged abi=preserved "),
+        "{text}"
+    );
+    println!("{text}");
+}
+
+#[test]
+fn sud_only_abi_signal_and_subscription_refusals() {
+    use std::os::unix::process::ExitStatusExt;
+    for mode in ["sud-x32", "sud-compat"] {
+        let output = sud_guest(mode);
+        assert_eq!(output.status.code(), Some(126), "{mode}: {output:?}");
+    }
+    for mode in ["sud-handler", "sud-instructions", "sud-vdso", "sud-clock"] {
+        let output = sud_guest(mode);
+        assert!(output.status.success(), "{mode}: {output:?}");
+        assert_eq!(output.stdout, format!("{mode}: refused\n").as_bytes());
+        assert!(output.stderr.is_empty(), "{mode}: {output:?}");
+    }
+    let output = sud_guest("sud-ptrace-control");
+    assert_eq!(output.status.signal(), Some(libc::SIGSYS), "{output:?}");
+}
+
+fn sud_guest(mode: &str) -> Output {
+    let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("coordinator.sock");
+    let mut coordinator = Command::new(binary)
+        .arg("coordinator")
+        .arg(&socket)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let mut command = Command::new(binary);
+    command.arg(mode).arg(&socket);
+    let output = socket
+        .exists()
+        .then(|| output_with_timeout(command, Duration::from_secs(20)));
+    let _ = coordinator.kill();
+    let _ = coordinator.wait();
+    let output = output.expect("coordinator socket was not created");
+    println!("{mode}: {output:?}");
+    output
+}
+
+#[test]
 fn unpatchable_syscall_dispatches_tool_after_signal_return() {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
     let directory = tempfile::tempdir().unwrap();

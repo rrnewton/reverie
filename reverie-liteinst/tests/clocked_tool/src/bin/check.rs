@@ -1,3 +1,4 @@
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Child;
 use std::process::Command;
@@ -77,6 +78,30 @@ fn main() {
         std::thread::sleep(Duration::from_millis(10));
     }
     let mut reference = None;
+    if std::env::var_os("CLOCK_FIXTURE_SUD").is_some() {
+        let refused = finish(
+            Command::new(guest)
+                .env("LD_PRELOAD", library)
+                .env("CLOCK_FIXTURE_SOCKET", &socket)
+                .env("CLOCK_FIXTURE_WORK", "0")
+                .env("CLOCK_FIXTURE_INSTRUCTIONS", "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        std::fs::write(
+            evidence.join("instruction-refusal.status"),
+            refused.status.to_string(),
+        )
+        .unwrap();
+        std::fs::write(evidence.join("instruction-refusal.stderr"), &refused.stderr).unwrap();
+        assert_eq!(refused.status.code(), Some(127), "{refused:?}");
+        assert!(
+            refused.stdout.is_empty() && refused.stderr.is_empty(),
+            "{refused:?}"
+        );
+    }
     let symbols = Command::new("nm").arg(library).output().unwrap();
     assert!(symbols.status.success());
     let symbols = String::from_utf8(symbols.stdout).unwrap();
@@ -99,6 +124,25 @@ fn main() {
         for (kind, window) in &windows {
             for work in [0, 100, 10000] {
                 let mut command = Command::new(guest);
+                if std::env::var_os("CLOCK_FIXTURE_SUD").is_some() {
+                    unsafe {
+                        command.pre_exec(|| {
+                            let mask =
+                                (1u64 << (libc::SIGUSR1 - 1)) | (1u64 << (libc::SIGALRM - 1));
+                            if libc::syscall(
+                                libc::SYS_rt_sigprocmask,
+                                libc::SIG_BLOCK,
+                                &raw const mask,
+                                0u64,
+                                8u64,
+                            ) != 0
+                            {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                            Ok(())
+                        });
+                    }
+                }
                 command
                     .env("LD_PRELOAD", library)
                     .env("CLOCK_FIXTURE_SOCKET", &socket)
@@ -137,6 +181,13 @@ fn main() {
                     .windows(2)
                     .map(|pair| pair[1].checked_sub(pair[0]).unwrap())
                     .collect();
+                if std::env::var_os("CLOCK_FIXTURE_SUD").is_some() {
+                    assert_eq!(
+                        trajectory,
+                        [7, 8, 9, 10, 17, 18],
+                        "unchanged complete guest trajectory: {name}"
+                    );
+                }
                 assert_eq!(
                     deltas,
                     [1, 1, 1, 7, 1],
