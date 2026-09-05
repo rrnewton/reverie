@@ -63,6 +63,14 @@ reverie_liteinst_domain_leave:
 
 domain_read reverie_liteinst_domain_phase, 0
 domain_read reverie_liteinst_domain_depth, 8
+.global reverie_liteinst_domain_restore_phase
+.hidden reverie_liteinst_domain_restore_phase
+.type reverie_liteinst_domain_restore_phase,@function
+reverie_liteinst_domain_restore_phase:
+    domain_address
+    mov [rax], rdi
+    ret
+.size reverie_liteinst_domain_restore_phase, .-reverie_liteinst_domain_restore_phase
 domain_read reverie_liteinst_installation_depth, 16
 domain_read reverie_liteinst_allocation_depth, 24
 domain_adjust reverie_liteinst_installation_enter, 16, 1

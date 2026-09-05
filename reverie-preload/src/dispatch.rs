@@ -42,6 +42,7 @@ pub struct SyscallEvent {
     source: SyscallEventSource,
     result: Option<i64>,
     resume_address: Option<u64>,
+    clock_witness: u64,
 }
 
 impl SyscallEvent {
@@ -76,6 +77,7 @@ impl SyscallEvent {
             source,
             result: None,
             resume_address: None,
+            clock_witness: 0,
         }
     }
 
@@ -130,6 +132,16 @@ impl SyscallEvent {
     /// Returns the deferred resume address selected by the dispatcher.
     pub fn resume_address(&self) -> Option<u64> {
         self.resume_address
+    }
+
+    /// Defer while transferring clock ownership to a validated callback entry.
+    pub fn defer_to_clocked(&mut self, address: u64, witness: u64) {
+        self.defer_to(address);
+        self.clock_witness = witness;
+    }
+
+    pub(crate) fn clock_witness(&self) -> u64 {
+        self.clock_witness
     }
 
     /// Execute the real syscall through the trusted gate and record its result.

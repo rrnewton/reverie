@@ -31,9 +31,14 @@ pub use stats::LiteinstBackendStatsSnapshot;
 pub use stats::LiteinstBackendStatsSource;
 pub use stats::LiteinstDispatchPath;
 pub use stats::LiteinstPatchDecision;
+mod clock_control;
 pub mod rpc;
 mod runtime;
 mod runtime_domain;
+#[doc(hidden)]
+pub use clock_control::reverie_liteinst_clock_constructor_begin as __clock_constructor_begin;
+#[doc(hidden)]
+pub use clock_control::reverie_liteinst_clock_constructor_finish as __clock_constructor_finish;
 mod tool_host;
 
 // AUTONOMOUS-BOT-IMPLEMENTED

@@ -175,6 +175,9 @@ fallback_entry:
     and rsp, -64
     mov r10d, dword ptr [rip + {save_bytes}]
     sub rsp, r10
+    lea rdi, [rip + fallback_entry]
+    call {clock_enter}
+    mov r13, rax
     mov rax, qword ptr [rip + {save_mask}]
     test rax, rax
     jz 2f
@@ -191,7 +194,7 @@ fallback_entry:
     cld
     mov rdi, r12
     call {dispatch}
-    mov r11, rax
+    mov r14, rax
     mov rax, qword ptr [rip + {save_mask}]
     test rax, rax
     jz 4f
@@ -202,6 +205,11 @@ fallback_entry:
 4:
     fxrstor64 [rsp]
 5:
+    mov rdi, r13
+    xor esi, esi
+    xor edx, edx
+    call {clock_leave}
+    mov r11, r14
     mov rsp, r12
     add rsp, 16
     pop r15
@@ -242,4 +250,6 @@ fallback_return_template_end:
     save_bytes = sym SAVE_BYTES,
     save_mask = sym SAVE_MASK,
     dispatch = sym dispatch,
+    clock_enter = sym crate::clock_control::reverie_liteinst_clock_enter,
+    clock_leave = sym crate::clock_control::reverie_liteinst_clock_leave,
 );

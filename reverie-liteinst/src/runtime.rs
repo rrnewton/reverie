@@ -345,8 +345,19 @@ thread_local! {
 
 /// Install the current thread's in-guest RCB clock before seccomp is active.
 pub(crate) fn initialize_rcb_clock() -> io::Result<()> {
+    if crate::clock_control::active() {
+        return Err(io::Error::other(
+            "clock boundary cannot rebind an active counter",
+        ));
+    }
     initialize_rcb_clock_with(|| unsafe {
-        reverie_ptrace::InGuestRcbCounter::current_thread_with_syscall_gate(raw_syscall6)
+        if crate::clock_control::requested() {
+            reverie_ptrace::InGuestRcbCounter::current_thread_disabled_with_syscall_gate(
+                raw_syscall6,
+            )
+        } else {
+            reverie_ptrace::InGuestRcbCounter::current_thread_with_syscall_gate(raw_syscall6)
+        }
     })
 }
 
@@ -378,6 +389,7 @@ fn initialize_rcb_clock_with(
         // The in-guest clock is optional. CPU discovery, perf-event setup,
         // mmap, reset, and enable failures all mean unavailable, not a failed
         // Tool installation.
+        Err(error) if crate::clock_control::requested() => return Err(io::Error::other(error)),
         Err(_) => return Ok(()),
     };
     let active_entry = if active_depth == 0 {
@@ -387,7 +399,11 @@ fn initialize_rcb_clock_with(
             .read()
             .map_err(|error| io::Error::from_raw_os_error(error.into_raw()))?
     };
-    RCB_CLOCK.set(Box::into_raw(Box::new(clock)));
+    let pointer = Box::into_raw(Box::new(clock));
+    RCB_CLOCK.set(pointer);
+    if crate::clock_control::requested() {
+        crate::clock_control::publish(unsafe { &*pointer })?;
+    }
     RCB_CLOCK_OWNER.set(owner);
     RCB_CLOCK_UNAVAILABLE.set(false);
     RCB_HANDLER_ENTRY.set(active_entry);
@@ -415,6 +431,15 @@ fn rcb_clock() -> io::Result<Option<&'static reverie_ptrace::InGuestRcbCounter>>
 
 /// Mark entry into an ordinary-context tool callback.
 pub(crate) fn enter_rcb_handler() -> io::Result<()> {
+    if crate::clock_control::active() {
+        return if crate::clock_control::paused() {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "Rust callback reached before clock exclusion",
+            ))
+        };
+    }
     let Some(clock) = rcb_clock()? else {
         RCB_HANDLER_DEPTH.set(RCB_HANDLER_DEPTH.get().saturating_add(1));
         return Ok(());
@@ -431,6 +456,15 @@ pub(crate) fn enter_rcb_handler() -> io::Result<()> {
 
 /// Deduct all RCBs retired while the outermost tool callback was active.
 pub(crate) fn leave_rcb_handler() -> io::Result<()> {
+    if crate::clock_control::active() {
+        return if crate::clock_control::paused() {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "clock restarted before Rust callback teardown",
+            ))
+        };
+    }
     let depth = RCB_HANDLER_DEPTH.get();
     if depth == 0 {
         return Err(io::Error::other("LiteInst RCB handler depth underflow"));
@@ -457,6 +491,13 @@ pub(crate) fn leave_rcb_handler() -> io::Result<()> {
 /// Return guest-only RCB time, excluding all completed and currently-active
 /// LiteInst handler branches.
 pub(crate) fn read_guest_rcb_clock() -> io::Result<u64> {
+    if crate::clock_control::active() {
+        if !crate::clock_control::paused() {
+            return Err(io::Error::other("clock read outside excluded runtime"));
+        }
+        let clock = rcb_clock()?.ok_or_else(|| io::Error::other("clock unavailable"))?;
+        return unsafe { clock.read_paused_once() }.map_err(io::Error::other);
+    }
     let Some(clock) = rcb_clock()? else {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -2324,11 +2365,11 @@ unsafe fn deliver_default_sigsegv() -> ! {
     unsafe { exit_now(128 + libc::SIGSEGV) }
 }
 
-unsafe extern "C" fn instruction_sigsegv_handler(
+unsafe extern "C" fn instruction_sigsegv_body(
     signal: libc::c_int,
     info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
-) {
+) -> reverie_preload::clock_boundary::Continuation {
     let _runtime = crate::runtime_domain::Entry::enter();
     if signal != libc::SIGSEGV || context.is_null() {
         emit_in_guest_stage(b"instruction-sigsegv-invalid-context");
@@ -2387,7 +2428,7 @@ unsafe extern "C" fn instruction_sigsegv_handler(
             emit_in_guest_stage(b"instruction-sigsegv-disable-native-failed");
             unsafe { deliver_default_sigsegv() };
         }
-        return;
+        return reverie_preload::clock_boundary::Continuation::RUNTIME;
     }
 
     let Some((site, claimed)) = claim_site(address) else {
@@ -2432,7 +2473,12 @@ unsafe extern "C" fn instruction_sigsegv_handler(
     }
     context.uc_mcontext.gregs[libc::REG_RIP as usize] =
         unsafe { (*hook).trampoline().address() } as i64;
+    let witness = crate::clock_control::callback_return_pc(unsafe { (*hook).trampoline() })
+        .unwrap_or_else(|_| unsafe { exit_now(127) });
+    reverie_preload::clock_boundary::Continuation::hook(witness)
 }
+
+reverie_preload::clocked_signal!(instruction_sigsegv_handler, instruction_sigsegv_body);
 
 unsafe fn execute_native_fault_instruction(
     kind: InstructionEventKind,
@@ -2569,15 +2615,15 @@ unsafe fn execute_native_instruction(kind: InstructionEventKind, context: &mut H
     }
 }
 
-unsafe extern "C" fn installed_cpuid_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_cpuid_body(context: *mut HookContext) {
     unsafe { installed_instruction_hook(context, InstructionEventKind::Cpuid) }
 }
 
-unsafe extern "C" fn installed_rdtsc_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_rdtsc_body(context: *mut HookContext) {
     unsafe { installed_instruction_hook(context, InstructionEventKind::Rdtsc) }
 }
 
-unsafe extern "C" fn installed_rdtscp_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_rdtscp_body(context: *mut HookContext) {
     unsafe { installed_instruction_hook(context, InstructionEventKind::Rdtscp) }
 }
 
@@ -2650,7 +2696,7 @@ unsafe fn dispatch_syscall_context(context: *mut HookContext, number: Option<i64
     }
 }
 
-unsafe extern "C" fn installed_syscall_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_syscall_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, None) }
 }
 
@@ -2696,25 +2742,44 @@ pub(crate) fn domain_test_instruction() -> u64 {
     context.rax | context.rdx << 32
 }
 
-unsafe extern "C" fn installed_vdso_time_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_vdso_time_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_time)) }
 }
 
-unsafe extern "C" fn installed_vdso_clock_gettime_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_vdso_clock_gettime_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_clock_gettime)) }
 }
 
-unsafe extern "C" fn installed_vdso_getcpu_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_vdso_getcpu_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_getcpu)) }
 }
 
-unsafe extern "C" fn installed_vdso_gettimeofday_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_vdso_gettimeofday_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_gettimeofday)) }
 }
 
-unsafe extern "C" fn installed_vdso_clock_getres_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_vdso_clock_getres_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_clock_getres)) }
 }
+
+crate::clock_control::installed_hook!(installed_syscall_hook, installed_syscall_body);
+crate::clock_control::installed_hook!(installed_cpuid_hook, installed_cpuid_body);
+crate::clock_control::installed_hook!(installed_rdtsc_hook, installed_rdtsc_body);
+crate::clock_control::installed_hook!(installed_rdtscp_hook, installed_rdtscp_body);
+crate::clock_control::installed_hook!(installed_vdso_time_hook, installed_vdso_time_body);
+crate::clock_control::installed_hook!(
+    installed_vdso_clock_gettime_hook,
+    installed_vdso_clock_gettime_body
+);
+crate::clock_control::installed_hook!(installed_vdso_getcpu_hook, installed_vdso_getcpu_body);
+crate::clock_control::installed_hook!(
+    installed_vdso_gettimeofday_hook,
+    installed_vdso_gettimeofday_body
+);
+crate::clock_control::installed_hook!(
+    installed_vdso_clock_getres_hook,
+    installed_vdso_clock_getres_body
+);
 
 unsafe fn locate_syscall_site(resume_address: u64) -> Option<u64> {
     let candidates = [resume_address.checked_sub(2), Some(resume_address)];
@@ -2848,7 +2913,10 @@ impl SyscallDispatcher for LiteinstDispatcher {
                 let hook = site.hook.load(Ordering::Acquire);
                 if !hook.is_null() {
                     // SAFETY: active sites retain their InstalledHook for process lifetime.
-                    event.defer_to(unsafe { (*hook).trampoline().address() });
+                    let trampoline = unsafe { (*hook).trampoline() };
+                    let witness = crate::clock_control::callback_return_pc(trampoline)
+                        .unwrap_or_else(|_| unsafe { exit_now(127) });
+                    event.defer_to_clocked(trampoline.address(), witness);
                     return;
                 }
             }
@@ -2860,7 +2928,7 @@ impl SyscallDispatcher for LiteinstDispatcher {
         if mode == TOOL_REVERIE
             && let Some(entry) = crate::syscall_fallback::prepare(resume_address)
         {
-            event.defer_to(entry);
+            event.defer_to_clocked(entry, entry);
             return;
         }
         event.fail(libc::EOPNOTSUPP);
@@ -3010,6 +3078,7 @@ unsafe fn protect_coordinator_channel(event: &mut SyscallEvent) -> bool {
         &[
             COORDINATOR_FD.load(Ordering::Acquire),
             crate::guest_log::LOG_FD.load(Ordering::Acquire),
+            crate::clock_control::descriptor(),
         ],
     ) {
         event.result = result;
@@ -3020,6 +3089,7 @@ unsafe fn protect_coordinator_channel(event: &mut SyscallEvent) -> bool {
     for fd in [
         COORDINATOR_FD.load(Ordering::Acquire),
         crate::guest_log::LOG_FD.load(Ordering::Acquire),
+        crate::clock_control::descriptor(),
     ] {
         if fd < 0 {
             continue;
@@ -3064,6 +3134,7 @@ pub(crate) fn guarded_raw_syscall(number: i64, args: [u64; 6]) -> i64 {
         &[
             COORDINATOR_FD.load(Ordering::Acquire),
             crate::guest_log::LOG_FD.load(Ordering::Acquire),
+            crate::clock_control::descriptor(),
         ],
     ) {
         Ok(args) => unsafe { raw_syscall6(number, args) },
@@ -3118,6 +3189,7 @@ unsafe fn close_range_preserving_event_fd(event: &SyscallEvent, event_fd: u64) -
         event_fd,
         COORDINATOR_FD.load(Ordering::Acquire) as u64,
         crate::guest_log::LOG_FD.load(Ordering::Acquire) as u64,
+        crate::clock_control::descriptor() as u64,
     ];
     reserved.sort_unstable();
     for fd in reserved {

@@ -234,11 +234,11 @@ unsafe fn exit_now(code: i32) -> ! {
 /// # Safety
 ///
 /// Only the kernel calls this, on a real `SIGSYS`.
-pub(crate) unsafe extern "C" fn sigsys_handler(
+unsafe extern "C" fn sigsys_body(
     signal_number: libc::c_int,
     info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
-) {
+) -> crate::clock_boundary::Continuation {
     let _runtime = RuntimeEntryGuard::enter();
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-133): Review fail-closed SIGSYS provenance validation.
@@ -283,7 +283,14 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
         registers[libc::REG_RAX as usize] = event.resolved_result();
     }
     IN_HANDLER.set(false);
+    if event.resume_address().is_some() {
+        crate::clock_boundary::Continuation::hook(event.clock_witness())
+    } else {
+        crate::clock_boundary::Continuation::GUEST
+    }
 }
+
+crate::clocked_signal!(sigsys_handler, sigsys_body);
 
 /// Install the SIGSYS handler (and, optionally, an alternate signal stack).
 ///
