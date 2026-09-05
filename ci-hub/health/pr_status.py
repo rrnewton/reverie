@@ -822,7 +822,12 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
 
 
 def _attach_canonical_review_authority(
-    repo: str, entries: Sequence[object]
+    repo: str,
+    entries: Sequence[object],
+    *,
+    net_wrapper: Sequence[str] = ("with-proxy",),
+    gh_cmd: str = "gh",
+    deadline: float | None = None,
 ) -> None:
     """Attach shared, permission-annotated review records to labeled PRs.
 
@@ -835,13 +840,33 @@ def _attach_canonical_review_authority(
         if review_contract.POST_FACTO_LABEL not in _label_names(entry):
             continue
         number = entry.get("number")
+        if deadline is not None and deadline - time.monotonic() <= 0:
+            raise approval_authority.GitHubDeadlineExceeded(
+                f"{repo}: time budget exhausted before canonical review "
+                f"authority for PR #{number if number is not None else '?'}"
+            )
         if not isinstance(number, int) or isinstance(number, bool):
             entry["_review_authority_unavailable"] = "pull request number unavailable"
             continue
         try:
-            entry["_canonical_review_records"] = (
-                approval_authority.github_review_records(repo, number)
+            records = approval_authority.github_review_records(
+                repo,
+                number,
+                net_wrapper=net_wrapper,
+                gh_cmd=gh_cmd,
+                deadline=deadline,
             )
+            if deadline is not None and deadline - time.monotonic() <= 0:
+                raise approval_authority.GitHubDeadlineExceeded(
+                    f"{repo}: time budget exhausted while reading canonical "
+                    f"review authority for PR #{number}"
+                )
+            entry["_canonical_review_records"] = records
+        except approval_authority.GitHubDeadlineExceeded as error:
+            raise approval_authority.GitHubDeadlineExceeded(
+                f"{repo}: time budget exhausted while reading canonical "
+                f"review authority for PR #{number}: {error}"
+            ) from error
         except approval_authority.ReviewPermissionUnavailable as error:
             entry["_review_permission_unavailable"] = str(error)
         except approval_authority.GitHubUnavailable as error:
@@ -1664,7 +1689,20 @@ def fetch_repo_status_gh(
         return population_only(
             f"{repo}: time budget exhausted during local failure ledger"
         )
-    _attach_canonical_review_authority(repo, raw)
+    try:
+        _attach_canonical_review_authority(
+            repo,
+            raw,
+            net_wrapper=net_wrapper,
+            gh_cmd=gh_cmd,
+            deadline=repo_deadline,
+        )
+    except approval_authority.GitHubDeadlineExceeded as error:
+        return population_only(str(error))
+    if repo_deadline is not None and remaining() <= 0:
+        return population_only(
+            f"{repo}: time budget exhausted during canonical review authority"
+        )
     return _classify_gh_prs(
         repo,
         raw,
@@ -2052,6 +2090,7 @@ def collect_statuses(
     net_wrapper: Sequence[str],
     per_repo_timeout: float,
     overall_deadline: float,
+    gh_cmd: str = "gh",
 ) -> list[RepoStatus]:
     """Query every repo, always returning one status each (partial on failure)."""
     deadline = time.monotonic() + overall_deadline
@@ -2076,7 +2115,10 @@ def collect_statuses(
             else:
                 statuses.append(
                     fetch_repo_status_gh(
-                        repo, net_wrapper=net_wrapper, timeout=budget
+                        repo,
+                        net_wrapper=net_wrapper,
+                        gh_cmd=gh_cmd,
+                        timeout=budget,
                     )
                 )
         except RepoUnavailable as unavailable:
@@ -2089,6 +2131,7 @@ def collect_statuses(
                         mechanism_overlaps = fetch_mechanism_overlaps_gh(
                             repo,
                             net_wrapper=net_wrapper,
+                            gh_cmd=gh_cmd,
                             timeout=min(60.0, remaining),
                         )
                     except RepoUnavailable as fallback_error:
@@ -2469,6 +2512,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "(idempotent). Pass '' to disable."
         ),
     )
+    parser.add_argument(
+        "--gh-cmd",
+        default="gh",
+        help="GitHub CLI executable used by the gh engine (default: gh)",
+    )
     parser.add_argument("--warn-threshold", type=int, default=DEFAULT_WARN_THRESHOLD)
     parser.add_argument(
         "--per-repo-timeout",
@@ -2498,6 +2546,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--per-repo-timeout must be positive")
     if args.overall_deadline <= 0:
         parser.error("--overall-deadline must be positive")
+    if not args.gh_cmd.strip():
+        parser.error("--gh-cmd must not be empty")
     return args
 
 
@@ -2515,6 +2565,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.warn_threshold,
         engine=args.engine,
         net_wrapper=net_wrapper,
+        gh_cmd=args.gh_cmd,
         per_repo_timeout=args.per_repo_timeout,
         overall_deadline=args.overall_deadline,
     )

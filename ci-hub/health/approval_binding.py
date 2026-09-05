@@ -80,6 +80,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from typing import Callable, Sequence
@@ -114,6 +115,10 @@ class GitHubUnavailable(RuntimeError):
 
 class ReviewPermissionUnavailable(GitHubUnavailable):
     """Current GitHub actor permission could not be established."""
+
+
+class GitHubDeadlineExceeded(GitHubUnavailable):
+    """The caller's shared GitHub read deadline expired."""
 
 
 def _refusal_is_stale(head: str, refused_at: str | None) -> bool:
@@ -282,13 +287,48 @@ def landing_observability(landings: "Sequence[dict[str, Any]]") -> dict[str, Any
     }
 
 
-def gh_json(args: list[str]) -> Any:
+def _github_read_timeout(deadline: float | None) -> tuple[float, bool]:
+    """Return this read's allowance and whether the caller deadline binds it."""
+    if deadline is None:
+        return 300.0, False
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise GitHubDeadlineExceeded(
+            "time budget exhausted before the next GitHub API read"
+        )
+    return min(300.0, remaining), remaining <= 300.0
+
+
+def _require_github_time(deadline: float | None) -> None:
+    """Refuse evidence returned after the caller's deadline."""
+    if deadline is not None and deadline - time.monotonic() <= 0:
+        raise GitHubDeadlineExceeded(
+            "time budget exhausted during a GitHub API read"
+        )
+
+
+def gh_json(
+    args: list[str],
+    *,
+    net_wrapper: Sequence[str] = ("with-proxy",),
+    gh_cmd: str = "gh",
+    deadline: float | None = None,
+) -> Any:
+    timeout, deadline_limited = _github_read_timeout(deadline)
     try:
         out = subprocess.run(
-            ["with-proxy", "gh", *args], capture_output=True, text=True, timeout=300
+            [*net_wrapper, gh_cmd, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired as error:
+        if deadline_limited:
+            raise GitHubDeadlineExceeded(
+                "time budget exhausted during a GitHub API read"
+            ) from error
         raise GitHubUnavailable(f"gh {' '.join(args)} timed out") from error
+    _require_github_time(deadline)
     if out.returncode != 0:
         raise GitHubUnavailable(
             f"gh {' '.join(args)} failed: {out.stderr.strip()[:300]}"
@@ -323,8 +363,20 @@ def gh_mutate(args: list[str]) -> None:
         )
 
 
-def _gh_pages(path: str, surface: str) -> list[dict[str, Any]]:
-    pages = gh_json(["api", path, "--paginate", "--slurp"])
+def _gh_pages(
+    path: str,
+    surface: str,
+    *,
+    net_wrapper: Sequence[str] = ("with-proxy",),
+    gh_cmd: str = "gh",
+    deadline: float | None = None,
+) -> list[dict[str, Any]]:
+    pages = gh_json(
+        ["api", path, "--paginate", "--slurp"],
+        net_wrapper=net_wrapper,
+        gh_cmd=gh_cmd,
+        deadline=deadline,
+    )
     try:
         return review_records_from_rest_pages(pages, surface)
     except ReviewRecordError as error:
@@ -333,19 +385,33 @@ def _gh_pages(path: str, surface: str) -> list[dict[str, Any]]:
         ) from error
 
 
-def github_review_records(repo: str, pr: object) -> list[dict[str, Any]]:
+def github_review_records(
+    repo: str,
+    pr: object,
+    *,
+    net_wrapper: Sequence[str] = ("with-proxy",),
+    gh_cmd: str = "gh",
+    deadline: float | None = None,
+) -> list[dict[str, Any]]:
     """Read and canonically order every review-bearing GitHub surface."""
     parts = repo.split("/")
     if len(parts) != 2 or not all(parts):
         raise GitHubUnavailable(f"repository name {repo!r} is not owner/name")
     owner, name = parts
     records = _gh_pages(
-        f"repos/{repo}/issues/{pr}/comments?per_page=100", "issue-comment"
+        f"repos/{repo}/issues/{pr}/comments?per_page=100",
+        "issue-comment",
+        net_wrapper=net_wrapper,
+        gh_cmd=gh_cmd,
+        deadline=deadline,
     )
     records.extend(
         _gh_pages(
             f"repos/{repo}/pulls/{pr}/comments?per_page=100",
             "pull-review-comment",
+            net_wrapper=net_wrapper,
+            gh_cmd=gh_cmd,
+            deadline=deadline,
         )
     )
     pages = gh_json(
@@ -362,7 +428,10 @@ def github_review_records(repo: str, pr: object) -> list[dict[str, Any]]:
             f"number={pr}",
             "-f",
             f"query={NATIVE_REVIEWS_QUERY}",
-        ]
+        ],
+        net_wrapper=net_wrapper,
+        gh_cmd=gh_cmd,
+        deadline=deadline,
     )
     try:
         records.extend(native_review_records_from_graphql(pages))
@@ -372,14 +441,24 @@ def github_review_records(repo: str, pr: object) -> list[dict[str, Any]]:
         records = annotate_current_review_authority(
             records,
             repo,
-            lambda path: gh_json(["api", path]),
+            lambda path: gh_json(
+                ["api", path],
+                net_wrapper=net_wrapper,
+                gh_cmd=gh_cmd,
+                deadline=deadline,
+            ),
         )
+    except GitHubDeadlineExceeded:
+        raise
     except ReviewRecordError as error:
         raise ReviewPermissionUnavailable(str(error)) from error
     try:
-        return canonical_review_records(records)
+        ordered = canonical_review_records(records)
     except ReviewRecordError as error:
         raise GitHubUnavailable(str(error)) from error
+
+    _require_github_time(deadline)
+    return ordered
 
 
 def github_actions_enabled(repo: str) -> bool:
@@ -1016,6 +1095,8 @@ def annotate_current_review_authority(
     for actor in sorted(actors):
         try:
             payload = read_json(f"repos/{repo}/collaborators/{actor}/permission")
+        except GitHubDeadlineExceeded:
+            raise
         except Exception as error:
             raise ReviewRecordError(
                 f"cannot determine current review authorization for GitHub actor {actor}: {error}"

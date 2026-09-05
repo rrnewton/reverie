@@ -814,6 +814,189 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
             "claude:outside-contributor@read", unavailable_report
         )
 
+    def test_shared_reader_honors_wrapper_command_deadline_and_permission(self) -> None:
+        approval = {
+            "id": 12001,
+            "html_url": (
+                "https://github.com/rrnewton/hermit/pull/12"
+                "#issuecomment-12001"
+            ),
+            "user": {"login": "maintainer"},
+            "body": f"APPROVED-AT: claude {self.HEAD}",
+            "created_at": "2026-09-05T01:00:00Z",
+            "updated_at": "2026-09-05T01:00:00Z",
+        }
+        native_pages = [
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviews": {
+                                "nodes": [],
+                                "pageInfo": {
+                                    "hasNextPage": False,
+                                    "endCursor": None,
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        ]
+        commands: list[list[str]] = []
+        timeouts: list[float] = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            timeouts.append(kwargs["timeout"])
+            joined = " ".join(command)
+            if "/issues/12/comments" in joined:
+                payload = [[approval]]
+            elif "/pulls/12/comments" in joined:
+                payload = [[]]
+            elif " api graphql " in f" {joined} ":
+                payload = native_pages
+            elif "/collaborators/maintainer/permission" in joined:
+                payload = {
+                    "user": {"login": "maintainer"},
+                    "role_name": "write",
+                    "permission": "write",
+                }
+            else:
+                raise AssertionError(f"unexpected command: {command!r}")
+            return subprocess.CompletedProcess(
+                command, returncode=0, stdout=json.dumps(payload), stderr=""
+            )
+
+        with mock.patch.object(
+            pr_status.approval_authority.subprocess,
+            "run",
+            side_effect=fake_run,
+        ):
+            records = pr_status.approval_authority.github_review_records(
+                "rrnewton/hermit",
+                12,
+                net_wrapper=["custom-wrapper", "--network"],
+                gh_cmd="custom-gh",
+                deadline=time.monotonic() + 10.0,
+            )
+
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["_current_review_actor_authorized"])
+        self.assertEqual(len(commands), 4)
+        self.assertTrue(
+            all(
+                command[:3] == ["custom-wrapper", "--network", "custom-gh"]
+                for command in commands
+            )
+        )
+        self.assertTrue(all(0 < timeout <= 10.0 for timeout in timeouts))
+
+    def test_ten_millisecond_deadline_refuses_eighty_millisecond_read(self) -> None:
+        completed = subprocess.CompletedProcess(
+            ["custom-gh"], returncode=0, stdout="[[]]", stderr=""
+        )
+        with mock.patch.object(
+            pr_status.approval_authority.time,
+            "monotonic",
+            side_effect=[0.0, 0.080],
+        ), mock.patch.object(
+            pr_status.approval_authority.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            with self.assertRaisesRegex(
+                pr_status.approval_authority.GitHubDeadlineExceeded,
+                "time budget exhausted",
+            ):
+                pr_status.approval_authority.github_review_records(
+                    "rrnewton/hermit",
+                    12,
+                    net_wrapper=[],
+                    gh_cmd="custom-gh",
+                    deadline=0.010,
+                )
+
+        run.assert_called_once()
+        self.assertAlmostEqual(run.call_args.kwargs["timeout"], 0.010)
+
+    def test_actor_permission_read_uses_the_same_deadline(self) -> None:
+        approval = {
+            "id": 12001,
+            "html_url": (
+                "https://github.com/rrnewton/hermit/pull/12"
+                "#issuecomment-12001"
+            ),
+            "user": {"login": "maintainer"},
+            "body": f"APPROVED-AT: claude {self.HEAD}",
+            "created_at": "2026-09-05T01:00:00Z",
+            "updated_at": "2026-09-05T01:00:00Z",
+        }
+        native_pages = [
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviews": {
+                                "nodes": [],
+                                "pageInfo": {
+                                    "hasNextPage": False,
+                                    "endCursor": None,
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        ]
+
+        def fake_run(command, **_kwargs):
+            joined = " ".join(command)
+            if "/issues/12/comments" in joined:
+                payload = [[approval]]
+            elif "/pulls/12/comments" in joined:
+                payload = [[]]
+            elif " api graphql " in f" {joined} ":
+                payload = native_pages
+            elif "/collaborators/maintainer/permission" in joined:
+                payload = {
+                    "user": {"login": "maintainer"},
+                    "role_name": "write",
+                    "permission": "write",
+                }
+            else:
+                raise AssertionError(f"unexpected command: {command!r}")
+            return subprocess.CompletedProcess(
+                command, returncode=0, stdout=json.dumps(payload), stderr=""
+            )
+
+        with mock.patch.object(
+            pr_status.approval_authority.time,
+            "monotonic",
+            side_effect=[0.0, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.080],
+        ), mock.patch.object(
+            pr_status.approval_authority.subprocess,
+            "run",
+            side_effect=fake_run,
+        ) as run:
+            with self.assertRaisesRegex(
+                pr_status.approval_authority.GitHubDeadlineExceeded,
+                "time budget exhausted",
+            ):
+                pr_status.approval_authority.github_review_records(
+                    "rrnewton/hermit",
+                    12,
+                    net_wrapper=[],
+                    gh_cmd="custom-gh",
+                    deadline=0.010,
+                )
+
+        self.assertEqual(run.call_count, 4)
+        self.assertIn(
+            "/collaborators/maintainer/permission",
+            " ".join(run.call_args.args[0]),
+        )
+
     def test_live_fetch_uses_shared_permission_annotated_records(self) -> None:
         entry = _pr(
             12,
@@ -843,11 +1026,22 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
         ), mock.patch(
             "pr_status.hosted_authority_states", return_value={}
         ):
+            before = time.monotonic()
             status = pr_status.fetch_repo_status_gh(
-                "rrnewton/hermit", net_wrapper=[]
+                "rrnewton/hermit",
+                net_wrapper=["custom-wrapper"],
+                gh_cmd="custom-gh",
+                timeout=30.0,
             )
 
-        shared_reader.assert_called_once_with("rrnewton/hermit", 12)
+        shared_reader.assert_called_once()
+        args = shared_reader.call_args.args
+        kwargs = shared_reader.call_args.kwargs
+        self.assertEqual(args, ("rrnewton/hermit", 12))
+        self.assertEqual(kwargs["net_wrapper"], ["custom-wrapper"])
+        self.assertEqual(kwargs["gh_cmd"], "custom-gh")
+        self.assertGreater(kwargs["deadline"], before)
+        self.assertTrue(status.available)
         self.assertEqual(len(status.review_protocol), 1)
         audit = status.review_protocol[0]
         self.assertEqual(audit.current_approvals, "missing")
@@ -855,6 +1049,82 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
             audit.review_permission_unavailable,
             ("claude:outside-contributor@read",),
         )
+
+    def test_deadline_exhaustion_between_prs_stops_before_second_read(self) -> None:
+        entries = [
+            _pr(
+                number,
+                [],
+                labels=("post-facto-human-review",),
+            )
+            for number in (12, 13)
+        ]
+        with mock.patch.object(
+            pr_status.time,
+            "monotonic",
+            side_effect=[0.0, 0.005, 0.020],
+        ), mock.patch.object(
+            pr_status.approval_authority,
+            "github_review_records",
+            return_value=[],
+        ) as reader:
+            with self.assertRaisesRegex(
+                pr_status.approval_authority.GitHubDeadlineExceeded,
+                "time budget exhausted",
+            ):
+                pr_status._attach_canonical_review_authority(
+                    "rrnewton/hermit",
+                    entries,
+                    net_wrapper=["custom-wrapper"],
+                    gh_cmd="custom-gh",
+                    deadline=0.010,
+                )
+
+        reader.assert_called_once_with(
+            "rrnewton/hermit",
+            12,
+            net_wrapper=["custom-wrapper"],
+            gh_cmd="custom-gh",
+            deadline=0.010,
+        )
+        self.assertEqual(entries[0]["_canonical_review_records"], [])
+        self.assertNotIn("_canonical_review_records", entries[1])
+
+    def test_review_deadline_exhaustion_is_never_available(self) -> None:
+        entry = _pr(
+            12,
+            [],
+            labels=("post-facto-human-review",),
+        )
+        exhausted = pr_status.approval_authority.GitHubDeadlineExceeded(
+            "rrnewton/hermit: time budget exhausted during canonical review authority"
+        )
+        with mock.patch(
+            "pr_status._fetch_open_prs_gh", return_value=[entry]
+        ), mock.patch(
+            "pr_status._cached_open_pr_census", return_value=([entry], 0.0)
+        ), mock.patch(
+            "pr_status.banked_green_commits", return_value=frozenset()
+        ), mock.patch(
+            "pr_status.banked_failure_tier_commits", return_value={}
+        ), mock.patch(
+            "pr_status._attach_canonical_review_authority",
+            side_effect=exhausted,
+        ), mock.patch(
+            "pr_status.hosted_authority_states"
+        ) as hosted:
+            status = pr_status.fetch_repo_status_gh(
+                "rrnewton/hermit", net_wrapper=[], timeout=30.0
+            )
+
+        self.assertFalse(status.available)
+        self.assertIn("time budget exhausted", status.reason)
+        hosted.assert_not_called()
+        report = pr_status.render_report([status], warn_threshold=10, engine="gh")
+        self.assertIn("UNAVAILABLE", report)
+        self.assertIn("PARTIAL RESULT", report)
+        self.assertIn("time budget exhausted", report)
+
 
     def test_cache_label_variation_does_not_change_comment_authority(self) -> None:
         comments = (
@@ -1513,6 +1783,31 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(len(statuses), 2)
         self.assertTrue(all(not status.available for status in statuses))
         self.assertIn("deadline", statuses[0].reason)
+
+    def test_custom_gh_command_reaches_repo_query(self) -> None:
+        status = pr_status._unavailable("rrnewton/hermit", "fixture")
+        with mock.patch.object(
+            pr_status, "fetch_repo_status_gh", return_value=status
+        ) as fetch:
+            statuses = pr_status.collect_statuses(
+                ["rrnewton/hermit"],
+                warn_threshold=10,
+                engine="gh",
+                net_wrapper=["custom-wrapper"],
+                gh_cmd="custom-gh",
+                per_repo_timeout=30.0,
+                overall_deadline=60.0,
+            )
+
+        self.assertEqual(statuses, [status])
+        fetch.assert_called_once()
+        self.assertEqual(fetch.call_args.kwargs["net_wrapper"], ["custom-wrapper"])
+        self.assertEqual(fetch.call_args.kwargs["gh_cmd"], "custom-gh")
+        self.assertGreater(fetch.call_args.kwargs["timeout"], 0)
+
+    def test_cli_accepts_custom_gh_command(self) -> None:
+        args = pr_status.parse_args(["--gh-cmd", "/tmp/fake-gh"])
+        self.assertEqual(args.gh_cmd, "/tmp/fake-gh")
 
 
 class RenderTests(unittest.TestCase):

@@ -1130,7 +1130,7 @@ def test_all_open_collection_does_not_use_cache_labels_as_its_index(
     )
     review_reads: list[int] = []
 
-    def fake_gh_json(args: list[str]):
+    def fake_gh_json(args: list[str], **_kwargs):
         if args[:2] == ["pr", "list"]:
             return [approved_pr, unreviewed_pr]
         if args and args[0] == "api" and "/actions/runs?head_sha=" in args[1]:
