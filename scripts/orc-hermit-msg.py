@@ -35,6 +35,7 @@ import socket as pysocket
 import http.client
 import secrets
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -47,7 +48,40 @@ from zoneinfo import ZoneInfo
 UID = os.getuid()
 DEFAULT_RUNTIME_DIR = Path(f"/run/user/{UID}")
 DEFAULT_SOCKET = Path(f"/run/user/{UID}/orc-tmux/tmux-{UID}/default")
-DEFAULT_ORC_COMMAND = Path.home() / "orc-bin/orc"
+def _default_orc_command() -> Path:
+    """Locate the orc executable used for session discovery.
+
+    ⚠️ ONE HARDCODED PATH UNDER $HOME WAS WRONG FOR AT LEAST SIX DAYS. This was
+    `Path.home() / "orc-bin/orc"`. Measured 2026-09-05 on devbig014:
+    /home/newton/orc-bin/ exists and holds only `tg`; there is no orc in it. The
+    running coordinator (pid 3180882) executes /usr/local/bin/orc, confirmed
+    through /proc/<pid>/exe. So every invocation printed "orc executable does
+    not exist ...; falling back to direct tmux scan" and ran degraded, and
+    nothing reported that because a warning is not a failure.
+
+    The local pin is still preferred when it is really there -- that is how this
+    fleet pins an orc version, and $HOME/orc-bin is otherwise maintained. It is
+    just no longer the only answer: when it is absent we take orc from PATH
+    rather than degrading. DEV_HERMIT_ORC_COMMAND overrides both and is honoured
+    verbatim, so an explicit choice that is wrong fails where it is named
+    instead of silently resolving to something else.
+    """
+    override = os.environ.get("DEV_HERMIT_ORC_COMMAND")
+    if override:
+        return Path(override)
+    pinned = Path.home() / "orc-bin/orc"
+    if os.access(pinned, os.X_OK):
+        return pinned
+    found = shutil.which("orc")
+    if found:
+        return Path(found)
+    # Nothing resolved. Return the pinned path anyway so the existing
+    # "orc executable does not exist: <path>" message names a concrete path a
+    # reader can act on, rather than an empty string.
+    return pinned
+
+
+DEFAULT_ORC_COMMAND = _default_orc_command()
 # Compatibility fallback only. Live successors are derived from TG_DB_PATH or
 # the selected/live Orc session instead of remaining pinned to this name.
 DEFAULT_ORC_DB = "hermit"

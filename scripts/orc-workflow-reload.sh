@@ -42,7 +42,18 @@
 # Default is reload-config because it is the one that actually changes identity.
 set -uo pipefail
 
-ORC="${ORC_BIN:-$HOME/orc-bin/orc}"
+# ⚠️ SAME DEFECT AS scripts/orc-hermit-msg.py CARRIED HERE. $HOME/orc-bin/orc
+# does not exist on devbig014 (measured 2026-09-05: that directory holds only
+# `tg`); the real orc is on PATH at /usr/local/bin/orc. Prefer the local pin
+# when it is genuinely there, otherwise take orc from PATH, and keep ORC_BIN as
+# the explicit override.
+if [ -n "${ORC_BIN:-}" ]; then
+    ORC="$ORC_BIN"
+elif [ -x "$HOME/orc-bin/orc" ]; then
+    ORC="$HOME/orc-bin/orc"
+else
+    ORC="$(command -v orc || printf '%s' "$HOME/orc-bin/orc")"
+fi
 SESSION=""; WORKFLOW=""; SETTLE=30; DRY=0; METHOD=reload-config
 declare -a PREFLIGHT=() MARKERS=()
 
