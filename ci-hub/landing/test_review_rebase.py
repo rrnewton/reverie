@@ -40,6 +40,7 @@ def report(head: str, bound_to: str, state: str = R.SUPERSEDED) -> dict:
         "approval_set_missing": False,
         "approval_sets_missing": 0,
         "critical_label_missing": False,
+        "critical_required": False,
         "critical_lanes_missing": [],
         "rows": [
             {
@@ -103,7 +104,7 @@ def test_current_head_approval_still_passes_directly(tmp_path: Path) -> None:
 
 def test_undetermined_approval_refuses(tmp_path: Path) -> None:
     repo, approved, current_base, current = mechanical_fixture(tmp_path)
-    fixture = report(current, approved, "UNDETERMINED")
+    fixture = report(current, approved, R.UNDETERMINED)
     fixture["rows"][0]["bound_to"] = None
     try:
         R.evaluate(fixture, repo, current_base, current)
@@ -161,6 +162,7 @@ def comment_only_report(head: str, lane: str = "codex") -> dict:
         "approval_set_missing": False,
         "approval_sets_missing": 0,
         "critical_label_missing": False,
+        "critical_required": False,
         "critical_lanes_missing": [],
         "rows": [comment_row(lane, head, R.BOUND_CURRENT)],
     }
@@ -183,7 +185,8 @@ def test_a_comment_refusal_blocks_even_with_no_label_to_carry_it() -> None:
     """
     head = "a" * 40
     fixture = labelled_current(head)
-    fixture["rows"].append(comment_row("codex", head, "REFUSED"))
+    fixture["rows"].append(comment_row("codex", head, R.REFUSED))
+    fixture["rows"].append(comment_row("codex", head, R.UNDETERMINED))
     try:
         R.evaluate(fixture, Path("."), "b" * 40, head)
     except R.Refused as error:
@@ -203,7 +206,7 @@ def test_a_stale_comment_refusal_blocks_because_a_self_withdrawal_is_not_a_disch
     """
     head = "a" * 40
     fixture = labelled_current(head)
-    fixture["rows"].append(comment_row("codex", head, "REFUSED_STALE"))
+    fixture["rows"].append(comment_row("codex", head, R.REFUSED_STALE))
     try:
         R.evaluate(fixture, Path("."), "b" * 40, head)
     except R.Refused as error:
@@ -266,6 +269,7 @@ def test_an_empty_accepted_review_set_refuses() -> None:
 def test_configured_two_lane_review_refuses_when_one_lane_is_missing() -> None:
     head = "a" * 40
     fixture = comment_only_report(head)
+    fixture["critical_required"] = True
     fixture["critical_lanes_missing"] = ["claude"]
     try:
         R.evaluate(fixture, Path("."), "b" * 40, head)
@@ -273,6 +277,80 @@ def test_configured_two_lane_review_refuses_when_one_lane_is_missing() -> None:
         assert "critical review families missing: claude" in str(error)
     else:
         raise AssertionError("one lane satisfied a configured two-lane review")
+
+
+def test_ordinary_review_ignores_an_undetermined_optional_lane() -> None:
+    head = "a" * 40
+    fixture = comment_only_report(head)
+    fixture["rows"].append(comment_row("claude", head, R.UNDETERMINED))
+    verdict = R.evaluate(fixture, Path("/unused"), "b" * 40, head)
+    assert verdict["approvals"] == [
+        {"lane": "codex", "basis": R.BOUND_CURRENT}
+    ]
+
+
+def test_critical_review_requires_an_undetermined_second_lane() -> None:
+    head = "a" * 40
+    fixture = comment_only_report(head)
+    fixture["critical_required"] = True
+    fixture["critical_lanes_missing"] = ["claude"]
+    fixture["rows"].append(comment_row("claude", head, R.UNDETERMINED))
+    try:
+        R.evaluate(fixture, Path("/unused"), "b" * 40, head)
+    except R.Refused as error:
+        assert "critical review families missing: claude" in str(error)
+    else:
+        raise AssertionError("a critical review accepted an undetermined second lane")
+
+
+def test_ordinary_review_ignores_a_superseded_optional_lane() -> None:
+    head = "a" * 40
+    fixture = comment_only_report(head)
+    stale = comment_row("claude", head, R.SUPERSEDED)
+    stale["bound_to"] = "f" * 40
+    fixture["rows"].append(stale)
+    verdict = R.evaluate(fixture, Path("/unused"), "b" * 40, head)
+    assert verdict["approvals"] == [
+        {"lane": "codex", "basis": R.BOUND_CURRENT}
+    ]
+
+
+def test_critical_review_carries_a_superseded_second_lane(tmp_path: Path) -> None:
+    repo, approved, current_base, current = mechanical_fixture(tmp_path)
+    fixture = comment_only_report(current)
+    fixture["critical_required"] = True
+    fixture["critical_lanes_missing"] = ["claude"]
+    stale = comment_row("claude", current, R.SUPERSEDED)
+    stale["bound_to"] = approved
+    fixture["rows"].append(stale)
+    verdict = R.evaluate(fixture, repo, current_base, current)
+    assert [approval["lane"] for approval in verdict["approvals"]] == [
+        "claude",
+        "codex",
+    ]
+    assert verdict["approvals"][0]["basis"] == "MECHANICAL_REBASE"
+    assert verdict["approvals"][1]["basis"] == R.BOUND_CURRENT
+
+
+def test_critical_review_refuses_an_uncarried_superseded_second_lane(
+    tmp_path: Path,
+) -> None:
+    repo, approved, current_base, current = mechanical_fixture(tmp_path)
+    current = commit(repo, "feature", "reviewed\nchanged\n", "semantic change")
+    fixture = comment_only_report(current)
+    fixture["critical_required"] = True
+    fixture["critical_lanes_missing"] = ["claude"]
+    stale = comment_row("claude", current, R.SUPERSEDED)
+    stale["bound_to"] = approved
+    fixture["rows"].append(stale)
+    try:
+        R.evaluate(fixture, repo, current_base, current)
+    except R.Refused as error:
+        detail = str(error)
+        assert "critical review families missing: claude" in detail
+        assert "mechanical carry refused" in detail
+    else:
+        raise AssertionError("a critical review accepted an uncarried second lane")
 
 
 def test_cli_accepts_a_current_comment_approval_without_a_label(tmp_path: Path) -> None:

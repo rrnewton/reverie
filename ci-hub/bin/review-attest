@@ -6,6 +6,8 @@ one canonical review comment's URL, repository, pull request, exact head, marker
 and immutable GitHub actor permission. The family and outcome are closed CLI
 enums; optional fleet names are unverified audit metadata, and unknown values
 fail during argument parsing before any GitHub command runs.
+Reviewer and task metadata use the existing one-line canonical token grammar,
+so neither can add a field or review marker to the attestation.
 
 The reviewer's exact-head comment is authority.  Labels are routing/activity
 caches. The exact comment is verified first, an attestation is posted, the live
@@ -28,7 +30,9 @@ ROOT = Path(__file__).resolve().parents[2]
 GH = ROOT / "ci-hub/bin/gh"
 sys.path.insert(0, str(ROOT / "ci-hub"))
 sys.path.insert(0, str(ROOT / "ci-hub/health"))
+sys.path.insert(0, str(ROOT / "ci-hub/lib"))
 import approval_binding as approval_authority  # noqa: E402
+import disclosure_tag  # noqa: E402
 import review_contract  # noqa: E402
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -75,6 +79,24 @@ def _repo(raw: str) -> str:
     return raw
 
 
+def _metadata_token(option: str, raw: str) -> str:
+    """One safe line token for non-authoritative review metadata."""
+    if disclosure_tag.TOKEN_RE.fullmatch(raw) is None:
+        raise argparse.ArgumentTypeError(
+            f"{option} must be one canonical token using only letters, digits, "
+            "dot, underscore, or hyphen"
+        )
+    return raw
+
+
+def _reviewer(raw: str) -> str:
+    return _metadata_token("--reviewer", raw)
+
+
+def _task(raw: str) -> str:
+    return _metadata_token("--task", raw)
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description=(
@@ -90,9 +112,15 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--comment-url", required=True)
     result.add_argument(
         "--reviewer",
-        help="optional fleet reviewer name recorded as audit metadata",
+        type=_reviewer,
+        help="optional unverified reviewer metadata as one canonical token",
     )
-    result.add_argument("--task", required=True)
+    result.add_argument(
+        "--task",
+        type=_task,
+        required=True,
+        help="task id as one canonical token",
+    )
     result.add_argument("--round", type=_positive_round, default=1)
     result.add_argument("--critical", choices=CRITICAL_CLASSES)
     result.add_argument(
@@ -226,6 +254,10 @@ def _verify_reviewer_comment(args: argparse.Namespace, runner: Runner) -> str:
     actor = approval_authority.review_record_actor(comment)
     if actor is None:
         raise RuntimeError("reviewer comment has no immutable GitHub actor")
+    if disclosure_tag.TOKEN_RE.fullmatch(actor) is None:
+        raise RuntimeError(
+            "reviewer comment immutable GitHub actor is not a canonical token"
+        )
     permission = _run(
         runner,
         [
@@ -281,12 +313,17 @@ def _verify_reviewer_comment(args: argparse.Namespace, runner: Runner) -> str:
 
 
 def _comment_body(args: argparse.Namespace, actor: str) -> str:
+    task = _metadata_token("--task", args.task)
+    reviewer = (
+        _metadata_token("--reviewer", args.reviewer) if args.reviewer else None
+    )
+    actor = _metadata_token("GitHub actor", actor)
     critical = args.critical or "none"
     fields = [
         "REVIEW-DISPATCH-ATTESTATION",
         f"family: {args.family}",
         f"github-actor: {actor}",
-        f"task: {args.task}",
+        f"task: {task}",
         f"review-round: {args.round}",
         f"review-outcome: {args.outcome}",
         f"review-comment: {args.comment_url}",
@@ -301,9 +338,25 @@ def _comment_body(args: argparse.Namespace, actor: str) -> str:
             "audit metadata"
         ),
     ]
-    if args.reviewer:
-        fields.insert(3, f"unverified-reviewer-metadata: {args.reviewer}")
-    return "\n".join(fields)
+    if reviewer:
+        fields.insert(3, f"unverified-reviewer-metadata: {reviewer}")
+    body = "\n".join(fields)
+    attestation_lines = [
+        line
+        for line in approval_authority.marker_lines(body)
+        if line.strip() == "REVIEW-DISPATCH-ATTESTATION"
+    ]
+    verdict_lines = [
+        line
+        for line in approval_authority.marker_lines(body)
+        if approval_authority.marker_assertion(line)
+    ]
+    if len(attestation_lines) != 1 or verdict_lines:
+        raise RuntimeError(
+            "generated review attestation does not contain exactly its one "
+            "intended authority marker"
+        )
+    return body
 
 
 def execute(args: argparse.Namespace, runner: Runner = subprocess.run) -> int:

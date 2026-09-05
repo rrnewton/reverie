@@ -32,6 +32,9 @@ UNCHANGED_RANGE_ROW = re.compile(
 )
 BOUND_CURRENT = "BOUND_CURRENT"
 SUPERSEDED = "SUPERSEDED"
+UNDETERMINED = "UNDETERMINED"
+REFUSED = "REFUSED"
+REFUSED_STALE = "REFUSED_STALE"
 REVIEW_LANES = frozenset({"claude", "codex"})
 
 
@@ -147,15 +150,17 @@ def evaluate(
         raise Refused("the PR has no required approval set")
     if report.get("critical_label_missing"):
         raise Refused("the critical-change routing label is missing")
-    missing_lanes = report.get("critical_lanes_missing") or []
-    if missing_lanes:
-        raise Refused("critical review families missing: " + ",".join(missing_lanes))
+    critical_required = bool(
+        report.get("critical_required") or report.get("critical_lanes_missing")
+    )
 
     rows = report.get("rows")
     if not isinstance(rows, list) or not rows:
         raise Refused("approval-binding report contains no approval rows")
 
-    accepted: list[dict[str, Any]] = []
+    accepted: dict[str, dict[str, Any]] = {}
+    superseded: list[tuple[str, dict[str, Any]]] = []
+    unaccepted_states: dict[str, set[str]] = {}
     for row in rows:
         if not isinstance(row, dict):
             raise Refused("approval-binding report contains a malformed row")
@@ -169,33 +174,83 @@ def evaluate(
         if lane not in REVIEW_LANES:
             continue
         if state == BOUND_CURRENT:
-            accepted.append(
-                {
-                    "lane": lane,
-                    "basis": BOUND_CURRENT,
-                }
-            )
+            accepted[lane] = {"lane": lane, "basis": BOUND_CURRENT}
             continue
         # approval_binding derives state and bound_to from canonical review
         # records. The mutable label and its source field are cache presentation
         # only, so neither participates in this mechanical carry decision or in
         # its authoritative result.
-        if state != SUPERSEDED:
-            raise Refused(
-                f"{lane or 'approval'} is {state or 'missing-state'}, "
-                "not bound or mechanically carried"
+        if state == SUPERSEDED:
+            superseded.append((lane, row))
+        else:
+            unaccepted_states.setdefault(lane, set()).add(
+                str(state or "missing-state")
             )
-        approved_head = exact_sha(row.get("bound_to"), f"{lane} approved head")
-        proof = prove_mechanical_rebase(repo, approved_head, current_base, current_head)
-        accepted.append(
-            {
-                "lane": lane,
-                "basis": "MECHANICAL_REBASE",
-                "proof": proof,
-            }
-        )
 
-    if not accepted:
+    required_lanes = set(REVIEW_LANES) if critical_required else set()
+    blocking_states = {REFUSED, REFUSED_STALE}
+    blocked = sorted(
+        (lane, state)
+        for lane, states in unaccepted_states.items()
+        for state in states
+        if state in blocking_states
+    )
+    if blocked:
+        detail = ", ".join(f"{lane}={state}" for lane, state in blocked)
+        raise Refused(f"unresolved review objection: {detail}")
+    carry_errors: dict[str, Exception] = {}
+    for lane, row in superseded:
+        if lane in accepted:
+            continue
+        if not critical_required and accepted:
+            break
+        try:
+            approved_head = exact_sha(row.get("bound_to"), f"{lane} approved head")
+            proof = prove_mechanical_rebase(
+                repo, approved_head, current_base, current_head
+            )
+        except (Refused, ReviewCheckError) as error:
+            carry_errors[lane] = error
+            continue
+        accepted[lane] = {
+            "lane": lane,
+            "basis": "MECHANICAL_REBASE",
+            "proof": proof,
+        }
+
+    if critical_required:
+        missing_lanes = sorted(required_lanes - accepted.keys())
+        if missing_lanes:
+            operational_error = next(
+                (
+                    carry_errors[lane]
+                    for lane in missing_lanes
+                    if isinstance(carry_errors.get(lane), ReviewCheckError)
+                ),
+                None,
+            )
+            if operational_error is not None:
+                raise operational_error
+            detail = "; ".join(
+                str(carry_errors[lane])
+                for lane in missing_lanes
+                if lane in carry_errors
+            )
+            suffix = f"; mechanical carry refused: {detail}" if detail else ""
+            raise Refused(
+                "critical review families missing: "
+                + ",".join(missing_lanes)
+                + suffix
+            )
+    elif not accepted:
+        if carry_errors:
+            raise next(iter(carry_errors.values()))
+        if unaccepted_states:
+            lane = sorted(unaccepted_states)[0]
+            states = "/".join(sorted(unaccepted_states[lane]))
+            raise Refused(
+                f"{lane} is {states}, not bound or mechanically carried"
+            )
         raise Refused("approval-binding report contains no accepted review approval")
 
     return {
@@ -203,7 +258,7 @@ def evaluate(
         "state": "REVIEW_APPLIES",
         "head": current_head,
         "current_base": current_base,
-        "approvals": accepted,
+        "approvals": [accepted[lane] for lane in sorted(accepted)],
     }
 
 
