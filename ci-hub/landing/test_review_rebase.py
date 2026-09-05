@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import argparse
+import copy
+import importlib.machinery
+import importlib.util
 import json
 import subprocess
 import sys
@@ -9,6 +13,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import review_rebase as R  # noqa: E402
 
+
+REVIEW_ATTEST_PATH = Path(__file__).resolve().parents[1] / "bin" / "review-attest"
+REVIEW_ATTEST_LOADER = importlib.machinery.SourceFileLoader(
+    "review_attest_for_rebase_test", str(REVIEW_ATTEST_PATH)
+)
+REVIEW_ATTEST_SPEC = importlib.util.spec_from_loader(
+    REVIEW_ATTEST_LOADER.name, REVIEW_ATTEST_LOADER
+)
+assert REVIEW_ATTEST_SPEC is not None
+REVIEW_ATTEST = importlib.util.module_from_spec(REVIEW_ATTEST_SPEC)
+REVIEW_ATTEST_LOADER.exec_module(REVIEW_ATTEST)
 
 def git(repo: Path, *args: str) -> str:
     result = subprocess.run(
@@ -42,6 +57,7 @@ def report(head: str, bound_to: str, state: str = R.SUPERSEDED) -> dict:
         "critical_label_missing": False,
         "critical_required": False,
         "critical_lanes_missing": [],
+        "critical_attestations": [],
         "rows": [
             {
                 "number": 2261,
@@ -164,6 +180,7 @@ def comment_only_report(head: str, lane: str = "codex") -> dict:
         "critical_label_missing": False,
         "critical_required": False,
         "critical_lanes_missing": [],
+        "critical_attestations": [],
         "rows": [comment_row(lane, head, R.BOUND_CURRENT)],
     }
 
@@ -266,11 +283,24 @@ def test_an_empty_accepted_review_set_refuses() -> None:
         raise AssertionError("a report with no accepted review lane was authorized")
 
 
-def test_configured_two_lane_review_refuses_when_one_lane_is_missing() -> None:
+def current_critical_attestation(head: str) -> dict:
+    return {
+        "comment_id": "900001",
+        "url": "https://github.com/rrnewton/hermit/pull/2261#issuecomment-900001",
+        "github_actor": "rrnewton",
+        "permission": "write",
+        "authorized": True,
+        "version_time": "2026-09-05T12:00:00+00:00",
+        "head": head,
+        "critical_class": "hermit-syscall",
+        "error": None,
+    }
+
+
+def test_current_critical_attestation_requires_two_lanes() -> None:
     head = "a" * 40
     fixture = comment_only_report(head)
-    fixture["critical_required"] = True
-    fixture["critical_lanes_missing"] = ["claude"]
+    fixture["critical_attestations"] = [current_critical_attestation(head)]
     try:
         R.evaluate(fixture, Path("."), "b" * 40, head)
     except R.Refused as error:
@@ -292,8 +322,7 @@ def test_ordinary_review_ignores_an_undetermined_optional_lane() -> None:
 def test_critical_review_requires_an_undetermined_second_lane() -> None:
     head = "a" * 40
     fixture = comment_only_report(head)
-    fixture["critical_required"] = True
-    fixture["critical_lanes_missing"] = ["claude"]
+    fixture["critical_attestations"] = [current_critical_attestation(head)]
     fixture["rows"].append(comment_row("claude", head, R.UNDETERMINED))
     try:
         R.evaluate(fixture, Path("/unused"), "b" * 40, head)
@@ -318,8 +347,7 @@ def test_ordinary_review_ignores_a_superseded_optional_lane() -> None:
 def test_critical_review_carries_a_superseded_second_lane(tmp_path: Path) -> None:
     repo, approved, current_base, current = mechanical_fixture(tmp_path)
     fixture = comment_only_report(current)
-    fixture["critical_required"] = True
-    fixture["critical_lanes_missing"] = ["claude"]
+    fixture["critical_attestations"] = [current_critical_attestation(current)]
     stale = comment_row("claude", current, R.SUPERSEDED)
     stale["bound_to"] = approved
     fixture["rows"].append(stale)
@@ -338,8 +366,7 @@ def test_critical_review_refuses_an_uncarried_superseded_second_lane(
     repo, approved, current_base, current = mechanical_fixture(tmp_path)
     current = commit(repo, "feature", "reviewed\nchanged\n", "semantic change")
     fixture = comment_only_report(current)
-    fixture["critical_required"] = True
-    fixture["critical_lanes_missing"] = ["claude"]
+    fixture["critical_attestations"] = [current_critical_attestation(current)]
     stale = comment_row("claude", current, R.SUPERSEDED)
     stale["bound_to"] = approved
     fixture["rows"].append(stale)
@@ -382,3 +409,172 @@ def test_cli_accepts_a_current_comment_approval_without_a_label(tmp_path: Path) 
             "lane": "codex",
         }
     ]
+
+
+def test_report_without_critical_attestation_evidence_refuses() -> None:
+    head = "a" * 40
+    fixture = comment_only_report(head)
+    del fixture["critical_attestations"]
+    try:
+        R.evaluate(fixture, Path("/unused"), "b" * 40, head)
+    except R.Refused as error:
+        assert "no canonical critical attestation evidence" in str(error)
+    else:
+        raise AssertionError("a report without critical attestation evidence passed")
+
+
+def test_critical_summary_without_attestation_evidence_refuses() -> None:
+    head = "a" * 40
+    fixture = comment_only_report(head)
+    fixture["critical_required"] = True
+    fixture["critical_lanes_missing"] = ["claude"]
+    try:
+        R.evaluate(fixture, Path("/unused"), "b" * 40, head)
+    except R.Refused as error:
+        assert "summary has no canonical attestation evidence" in str(error)
+    else:
+        raise AssertionError("a critical summary without its evidence passed")
+
+
+def authority_record(body: str, record_id: int, timestamp: str) -> dict:
+    return {
+        "body": body,
+        "id": record_id,
+        "html_url": (
+            "https://github.com/rrnewton/hermit/pull/2261"
+            f"#issuecomment-{record_id}"
+        ),
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "user": {"login": "rrnewton"},
+        "_review_surface": "issue-comment",
+        "_current_review_actor_login": "rrnewton",
+        "_current_review_actor_permission": "write",
+        "_current_review_actor_authorized": True,
+    }
+
+
+def approval_binding_report(
+    tmp_path: Path,
+    current: str,
+    approved: str,
+    lanes: tuple[str, ...],
+) -> dict:
+    args = argparse.Namespace(
+        critical="hermit-syscall",
+        family="codex",
+        head=approved,
+        outcome="approval",
+        comment_url=(
+            "https://github.com/rrnewton/hermit/pull/2261"
+            "#issuecomment-900001"
+        ),
+        reviewer=None,
+        round=1,
+        task="critical-rebase-test",
+    )
+    comments = [
+        authority_record(
+            REVIEW_ATTEST._comment_body(args, "rrnewton"),
+            900002,
+            "2026-09-05T12:00:00Z",
+        )
+    ]
+    for offset, lane in enumerate(lanes, start=3):
+        comments.append(
+            authority_record(
+                f"APPROVED-AT: {lane} {approved}",
+                900000 + offset,
+                f"2026-09-05T12:00:0{offset}Z",
+            )
+        )
+    fixture = tmp_path / ("approval-" + "-".join(lanes) + ".json")
+    fixture.write_text(
+        json.dumps(
+            {
+                "actions_enabled": True,
+                "prs": [
+                    {
+                        "number": 2261,
+                        "head": current,
+                        "labels": ["post-facto-human-review"],
+                        "comments": comments,
+                        "runs_at_head": 1,
+                        "mergeable": "MERGEABLE",
+                    }
+                ],
+            }
+        )
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(R.approval_authority.__file__)),
+            "--from-json",
+            str(fixture),
+            "--pr",
+            "2261",
+            "--json",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_mechanical_rebase_carries_critical_attestation_and_requires_both_lanes(
+    tmp_path: Path,
+) -> None:
+    repo, approved, current_base, current = mechanical_fixture(tmp_path)
+
+    one_lane = approval_binding_report(tmp_path, current, approved, ("codex",))
+    assert one_lane["critical_required"] is True
+    assert one_lane["current_critical_classes"] == []
+    assert one_lane["critical_attestations"][0]["head"] == approved
+    try:
+        R.evaluate(one_lane, repo, current_base, current)
+    except R.Refused as error:
+        assert "critical review families missing: claude" in str(error)
+    else:
+        raise AssertionError("carried critical classification accepted only one lane")
+
+    both_lanes = approval_binding_report(
+        tmp_path, current, approved, ("codex", "claude")
+    )
+    verdict = R.evaluate(both_lanes, repo, current_base, current)
+    assert {approval["lane"] for approval in verdict["approvals"]} == {
+        "claude",
+        "codex",
+    }
+    assert verdict["critical_attestations"][0]["basis"] == "MECHANICAL_REBASE"
+    assert any(
+        verdict["critical_attestations"][0]["proof"] == approval["proof"]
+        for approval in verdict["approvals"]
+    )
+
+    cache_mutation = copy.deepcopy(both_lanes)
+    cache_mutation["critical_required"] = False
+    cache_mutation["critical_classes"] = []
+    for evidence in cache_mutation["critical_attestations"]:
+        evidence["label"] = "post-facto-human-review"
+        evidence["source"] = "label"
+    for row in cache_mutation["rows"]:
+        row["label"] = "passed-review-" + row["lane"]
+        row["source"] = "label"
+    assert R.evaluate(cache_mutation, repo, current_base, current) == verdict
+
+
+def test_changed_patch_cannot_carry_critical_classification(tmp_path: Path) -> None:
+    repo, approved, current_base, current = mechanical_fixture(tmp_path)
+    report = approval_binding_report(tmp_path, current, approved, ("codex", "claude"))
+    current = commit(repo, "feature", "reviewed\nchanged\n", "semantic change")
+    for row in report["rows"]:
+        row["head"] = current
+    try:
+        R.evaluate(report, repo, current_base, current)
+    except R.Refused as error:
+        assert "critical classification is not bound" in str(error)
+    else:
+        raise AssertionError("changed patch inherited an old critical attestation")

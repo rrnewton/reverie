@@ -1011,6 +1011,24 @@ def evaluate(
             f" ({cleared} other refusal(s) answered by later exact-head evidence)"
             if cleared else ""
         ) + retire_note()
+        withdrawal_lanes = {
+            lane
+            for kind, lane, sha, _comment_id in found4
+            if kind == WITHDRAWN and lane is not None and binds(sha)
+        }
+        cross_lane_note = (
+            " A withdrawal in a different lane does not answer this objection."
+            if withdrawal_lanes - {lane for lane, _sha in live if lane is not None}
+            else ""
+        )
+        missing_records_note = (
+            " A RETIRES claim is present but no review records were supplied, so "
+            "the exact retirement cannot be checked. Supply complete review records "
+            "and evaluate again; this is missing evidence, not a rejected claim."
+            if records is None
+            and any(grammar.contains_retires_assertion(body) for body in bodies)
+            else ""
+        )
         return (
             BLOCKED,
             f"{len(live)} refusal(s) bound to the exact head {head[:12]} from "
@@ -1018,7 +1036,7 @@ def evaluate(
             "naming the head blocks until a later canonical withdrawal in that lane "
             "at the same exact head, or an exact authorized RETIRES record, says the "
             "objection is resolved. A same-head approval is conflicting evidence, "
-            "not a withdrawal.",
+            f"not a withdrawal.{cross_lane_note}{missing_records_note}",
         )
 
     # ⚠️ A SHA-LESS REFUSAL USED TO BE UNRETIRABLE BY ANY MEANS, WHICH MADE IT A

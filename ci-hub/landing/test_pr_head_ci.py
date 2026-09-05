@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -161,6 +162,71 @@ class PrHeadCiTest(unittest.TestCase):
         run = FakeRun(approval_rc=1)
         self.assertEqual(self.main(self.args("--execute"), run=run), 4)
         self.assertFalse(any("validate-run" in command for command in run.commands))
+
+    def approval_fixture(self, *, critical: bool) -> Path:
+        temporary = Path(tempfile.mkdtemp(prefix="pr-head-ci-approval-"))
+        self.addCleanup(shutil.rmtree, temporary)
+        old = "4" * 40
+        comments = [
+            f"APPROVED-AT: codex {OLD}",
+            f"APPROVED-AT: claude {old}",
+        ]
+        if critical:
+            comments.insert(
+                0,
+                "REVIEW-DISPATCH-ATTESTATION\n"
+                "critical-class: hermit-syscall\n"
+                f"head: {OLD}",
+            )
+        fixture = temporary / "approval.json"
+        fixture.write_text(
+            json.dumps(
+                {
+                    "actions_enabled": True,
+                    "prs": [
+                        {
+                            "number": 7,
+                            "head": OLD,
+                            "labels": [
+                                "post-facto-human-review",
+                                "passed-review-codex",
+                                "passed-review-claude",
+                            ],
+                            "comments": comments,
+                            "runs_at_head": 1,
+                            "mergeable": "MERGEABLE",
+                        }
+                    ],
+                }
+            )
+        )
+        return fixture
+
+    def approval_runner(self, fixture: Path):
+        def run(command, **kwargs):
+            return subprocess.run(
+                [*command, "--from-json", str(fixture)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        return run
+
+    def test_pr_head_gate_accepts_one_current_lane_for_an_ordinary_pr(self):
+        fixture = self.approval_fixture(critical=False)
+        P.require_current_approval(
+            "rrnewton/hermit", 7, run=self.approval_runner(fixture)
+        )
+
+    def test_pr_head_gate_requires_both_lanes_for_a_critical_pr(self):
+        fixture = self.approval_fixture(critical=True)
+        with self.assertRaisesRegex(
+            PermissionError, "CRITICAL-REVIEW-MISSING.*claude"
+        ):
+            P.require_current_approval(
+                "rrnewton/hermit", 7, run=self.approval_runner(fixture)
+            )
 
     def test_validation_uses_separate_immutable_tool_root(self):
         launch = P.ImmutableToolLaunch(

@@ -523,6 +523,17 @@ REVIEW_SET_CASES = [
         False,
     ),
     (
+        "old-head critical attestation cannot become ordinary on a new head",
+        [],
+        [
+            f"APPROVED-AT: codex {STALE_HEAD}",
+            "REVIEW-DISPATCH-ATTESTATION\n"
+            "critical-class: hermit-syscall\n"
+            f"head: {STALE_OLD}",
+        ],
+        True,
+    ),
+    (
         "current-head exact retirement preserves the repaired head's approval",
         ["passed-review-claude"],
         [

@@ -662,8 +662,9 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
             "adversarial-review-claude1",
         )
         self.assertEqual(audit.codex_rounds, ())
-        self.assertEqual(audit.review_rounds, "partial")
-        self.assertIn(
+        self.assertEqual(audit.claude_rounds, (1,))
+        self.assertEqual(audit.review_rounds, "complete")
+        self.assertNotIn(
             "one of adversarial-review-codex1, adversarial-review-codex2, "
             "adversarial-review-codex3, adversarial-review-codex4",
             audit.missing,
@@ -678,14 +679,10 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
                 f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED-AT: claude {self.HEAD}",
             ),
         )
-        self.assertEqual(audit.review_rounds, "partial")
-        self.assertEqual(audit.current_approvals, "partial")
-        self.assertIn(
-            "one of adversarial-review-codex1, adversarial-review-codex2, "
-            "adversarial-review-codex3, adversarial-review-codex4",
-            audit.missing,
-        )
-        self.assertIn("current-approval-codex", audit.missing)
+        self.assertEqual(audit.review_rounds, "complete")
+        self.assertEqual(audit.current_approvals, "complete")
+        self.assertTrue(audit.complete)
+        self.assertNotIn("current-approval-codex", audit.missing)
 
     def test_unbound_cache_label_is_absent_current_authority(self) -> None:
         audit = self.classify(
@@ -694,7 +691,7 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
             "passed-review-codex",
         )
         self.assertEqual(audit.current_approvals, "missing")
-        self.assertIn("current-approval-codex", audit.missing)
+        self.assertIn("one current approval from codex or claude", audit.missing)
         self.assertIn("passed-review-codex:UNDETERMINED", audit.invalid_labels)
 
     def test_a_valid_binding_without_a_label_is_current_authority(self) -> None:
@@ -708,7 +705,7 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
             ),
         )
         self.assertIn("unlabeled-binding:claude", audit.invalid_labels)
-        self.assertEqual(audit.current_approvals, "partial")
+        self.assertEqual(audit.current_approvals, "complete")
         self.assertNotIn("current-approval-claude", audit.missing)
 
     def test_live_shared_authority_requires_current_github_permission(self) -> None:
@@ -730,10 +727,10 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
             ],
         )
 
-        self.assertEqual(authorized.current_approvals, "partial")
+        self.assertEqual(authorized.current_approvals, "complete")
         self.assertNotIn("current-approval-claude", authorized.missing)
         self.assertEqual(outsider.current_approvals, "missing")
-        self.assertIn("current-approval-claude", outsider.missing)
+        self.assertIn("one current approval from codex or claude", outsider.missing)
         self.assertIn(
             "passed-review-claude:UNDETERMINED", outsider.invalid_labels
         )
@@ -768,7 +765,7 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
         assert audit is not None
 
         self.assertEqual(audit.current_approvals, "missing")
-        self.assertIn("current-approval-claude", audit.missing)
+        self.assertIn("one current approval from codex or claude", audit.missing)
         self.assertEqual(len(audit.review_permission_unavailable), 1)
         self.assertIn("API unavailable", audit.review_permission_unavailable[0])
 
@@ -1141,11 +1138,86 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
             "passed-review-codex",
             comments=comments,
         )
-        self.assertEqual(without_cache.current_approvals, "partial")
+        self.assertEqual(without_cache.current_approvals, "complete")
         self.assertEqual(
             without_cache.current_approvals, with_unrelated_cache.current_approvals
         )
         self.assertNotIn("current-approval-claude", with_unrelated_cache.missing)
+
+    def test_ordinary_current_lane_ignores_stale_optional_lane(self) -> None:
+        stale = "b" * 40
+        audit = self.classify(
+            "post-facto-human-review",
+            "adversarial-review-codex1",
+            "passed-review-codex",
+            "passed-review-claude",
+            comments=(
+                f"APPROVED-AT: codex {self.HEAD}",
+                f"APPROVED-AT: claude {stale}",
+            ),
+        )
+        self.assertFalse(audit.critical_required)
+        self.assertTrue(audit.complete)
+        self.assertEqual(audit.current_approvals, "complete")
+        self.assertNotIn("current-approval-claude", audit.missing)
+        self.assertNotIn(
+            "passed-review-claude:SUPERSEDED", audit.invalid_labels
+        )
+
+    def test_ordinary_current_lane_ignores_undetermined_optional_lane(self) -> None:
+        audit = self.classify(
+            "post-facto-human-review",
+            "adversarial-review-codex1",
+            "passed-review-codex",
+            "passed-review-claude",
+            comments=(f"APPROVED-AT: codex {self.HEAD}",),
+        )
+        self.assertFalse(audit.critical_required)
+        self.assertTrue(audit.complete)
+        self.assertEqual(audit.current_approvals, "complete")
+        self.assertNotIn(
+            "passed-review-claude:UNDETERMINED", audit.invalid_labels
+        )
+
+    def test_critical_current_lane_still_requires_the_second_lane(self) -> None:
+        stale = "b" * 40
+        attestation = (
+            "REVIEW-DISPATCH-ATTESTATION\n"
+            "critical-class: hermit-syscall\n"
+            f"head: {self.HEAD}"
+        )
+        audit = self.classify(
+            "post-facto-human-review",
+            "adversarial-review-codex1",
+            "passed-review-codex",
+            "passed-review-claude",
+            comments=(
+                attestation,
+                f"APPROVED-AT: codex {self.HEAD}",
+                f"APPROVED-AT: claude {stale}",
+            ),
+        )
+        self.assertTrue(audit.critical_required)
+        self.assertFalse(audit.complete)
+        self.assertEqual(audit.current_approvals, "partial")
+        self.assertIn("current-approval-claude", audit.missing)
+        self.assertIn(
+            "passed-review-claude:SUPERSEDED", audit.invalid_labels
+        )
+
+    def test_optional_lane_objection_still_blocks_ordinary_review(self) -> None:
+        audit = self.classify(
+            "post-facto-human-review",
+            "adversarial-review-codex1",
+            "passed-review-codex",
+            comments=(
+                f"APPROVED-AT: codex {self.HEAD}",
+                f"CHANGES-REQUESTED-AT: claude {self.HEAD}",
+            ),
+        )
+        self.assertFalse(audit.complete)
+        self.assertEqual(audit.current_approvals, "partial")
+        self.assertIn("unresolved review objection in claude", audit.missing)
 
     def test_an_unrecorded_refusal_remains_visibly_incomplete(self) -> None:
         audit = self.classify(
@@ -1157,13 +1229,11 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
             ),
         )
         self.assertFalse(audit.complete)
-        self.assertEqual(audit.review_rounds, "partial")
+        self.assertEqual(audit.review_rounds, "complete")
+        self.assertIn("unresolved review objection in codex", audit.missing)
         self.assertIn("unlabeled-refusal:codex@aaaaaaaaaaaa", audit.invalid_labels)
-        self.assertIn(
-            "one of adversarial-review-codex1, adversarial-review-codex2, "
-            "adversarial-review-codex3, adversarial-review-codex4",
-            audit.missing,
-        )
+        self.assertIn("one current approval from codex or claude", audit.missing)
+        self.assertNotIn(pr_status.review_contract.missing_round_requirement("codex"), audit.missing)
 
     def test_no_binding_and_no_label_does_not_claim_one(self) -> None:
         """Negative control: without it the assertion above would pass on a build
@@ -1921,13 +1991,17 @@ class RenderTests(unittest.TestCase):
                 comments=(
                     "[adversarial-reviewer agent, CLAUDE]\n"
                     f"APPROVED-AT: claude {'a' * 40}",
+                    "REVIEW-DISPATCH-ATTESTATION\n"
+                    "critical-class: hermit-syscall\n"
+                    f"head: {'a' * 40}",
                 ),
             )
             ],
         )
         report = pr_status.render_report([status], warn_threshold=10, engine="gh")
-        self.assertIn("dual_review=1", report)
-        self.assertIn("current_dual_approval=0", report)
+        self.assertIn("review_complete=1", report)
+        self.assertIn("current_approval_complete=0", report)
+        self.assertIn("critical=yes", report)
         self.assertIn("approval=partial", report)
         self.assertIn("canonical issue comments, inline review comments", report)
         self.assertIn("reporting only, not merge admission", report)

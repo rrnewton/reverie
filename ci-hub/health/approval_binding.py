@@ -109,6 +109,69 @@ REFUSED = "REFUSED"
 REFUSED_STALE = "REFUSED_STALE"
 
 
+def review_lane_policy(
+    rows: "Sequence[dict[str, Any]]", critical_required: bool
+) -> dict[str, Any]:
+    """Apply the repository's one-lane/two-lane review requirement.
+
+    Ordinary changes need any one canonical current approval. Critical changes
+    need both existing lanes. An unresolved objection always blocks, including
+    one in the otherwise optional lane of an ordinary change.
+    """
+    current_lanes = {
+        str(row.get("lane"))
+        for row in rows
+        if row.get("lane") in LANES and row.get("state") == BOUND_CURRENT
+    }
+    objection_rows = [
+        row
+        for row in rows
+        if row.get("lane") in LANES
+        and row.get("state") in (REFUSED, REFUSED_STALE)
+    ]
+    missing_lanes = (
+        sorted(set(LANES) - current_lanes) if critical_required else []
+    )
+    required_count = len(LANES) if critical_required else 1
+    satisfied = not objection_rows and len(current_lanes) >= required_count
+    relevant_lanes = (
+        set(LANES)
+        if critical_required or not current_lanes
+        else current_lanes
+        | {str(row.get("lane")) for row in objection_rows}
+    )
+    return {
+        "critical_required": critical_required,
+        "current_lanes": sorted(current_lanes),
+        "missing_lanes": missing_lanes,
+        "required_count": required_count,
+        "objection_rows": objection_rows,
+        "relevant_lanes": sorted(relevant_lanes),
+        "satisfied": satisfied,
+    }
+
+
+def review_lane_gate_rows(
+    rows: "Sequence[dict[str, Any]]", critical_required: bool
+) -> list[dict[str, Any]]:
+    """Return only review rows that prevent the configured requirement."""
+    policy = review_lane_policy(rows, critical_required)
+    missing = set(policy["missing_lanes"])
+    current = set(policy["current_lanes"])
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        state = row.get("state")
+        lane = row.get("lane")
+        if state in (REFUSED, REFUSED_STALE):
+            result.append(row)
+        elif state == BOUND_CURRENT:
+            continue
+        elif critical_required and lane in missing:
+            result.append(row)
+        elif not critical_required and not current:
+            result.append(row)
+    return result
+
 class GitHubUnavailable(RuntimeError):
     """The live GitHub census did not complete; no binding verdict exists."""
 
@@ -2504,16 +2567,16 @@ def local_receipt_heads(comments: list[dict[str, Any]], repo: str) -> list[str]:
     return found
 
 
-def critical_classes_at_head(
-    comments: list[dict[str, Any]], head: str
-) -> set[str]:
-    """Return canonical critical classes bound to ``head``.
+def critical_attestation_evidence(
+    comments: "Sequence[dict[str, Any]]",
+) -> list[dict[str, Any]]:
+    """Return critical review attestations without mutable cache metadata.
 
-    ``review-attest --critical`` is the existing closed-enum classification
-    source.  Its durable comment carries the class and exact head together.
-    This parser deliberately does not infer criticality from paths or prose.
+    Current-head consumers may use legacy fixture records that lack live
+    permission annotations. Mechanical carry requires the complete immutable
+    record identity and explicit current permission recorded here.
     """
-    classes: set[str] = set()
+    evidence: list[dict[str, Any]] = []
     for comment in comments:
         if comment.get("_current_review_actor_authorized") is False:
             continue
@@ -2521,15 +2584,56 @@ def critical_classes_at_head(
         if "REVIEW-DISPATCH-ATTESTATION" not in lines:
             continue
         fields: dict[str, str] = {}
+        duplicate_fields: set[str] = set()
         for line in lines:
             if ":" not in line:
                 continue
             key, value = line.split(":", 1)
-            fields[key.strip().lower()] = value.strip().lower()
+            key = key.strip().lower()
+            if key in fields:
+                duplicate_fields.add(key)
+            fields[key] = value.strip().lower()
         critical_class = fields.get("critical-class")
-        if fields.get("head") == head and critical_class in CRITICAL_CLASSES:
-            classes.add(critical_class)
-    return classes
+        head = fields.get("head")
+        problems: list[str] = []
+        if lines.count("REVIEW-DISPATCH-ATTESTATION") != 1:
+            problems.append("attestation marker must occur exactly once")
+        if duplicate_fields:
+            problems.append("duplicate fields: " + ",".join(sorted(duplicate_fields)))
+        if critical_class not in CRITICAL_CLASSES and critical_class != "none":
+            problems.append("critical-class is missing or unsupported")
+        if head is None or SHA40.fullmatch(head) is None:
+            problems.append("head is not an exact 40-hex commit")
+        if critical_class == "none" and not problems:
+            continue
+        version_time = review_record_version_time(comment)
+        evidence.append(
+            {
+                "comment_id": comment_database_id(comment),
+                "url": comment.get("html_url") or comment.get("url"),
+                "github_actor": review_record_actor(comment),
+                "permission": comment.get("_current_review_actor_permission"),
+                "authorized": comment.get("_current_review_actor_authorized") is True,
+                "version_time": (
+                    version_time.isoformat() if version_time is not None else None
+                ),
+                "head": head,
+                "critical_class": critical_class,
+                "error": "; ".join(problems) if problems else None,
+            }
+        )
+    return evidence
+
+
+def critical_classes_at_head(
+    comments: list[dict[str, Any]], head: str
+) -> set[str]:
+    """Return valid canonical critical classes bound to ``head``."""
+    return {
+        str(item["critical_class"])
+        for item in critical_attestation_evidence(comments)
+        if item["error"] is None and item["head"] == head
+    }
 
 
 def collect_live(
@@ -2715,6 +2819,7 @@ def collect_live(
             "draft": item["pr"].get("isDraft") is True,
             "change_author": comment_author(item["pr"].get("body") or ""),
             "comments": item["comments"],
+            "critical_attestations": critical_attestation_evidence(item["comments"]),
             "critical_classes": sorted(
                 critical_classes_at_head(item["comments"], item["head"])
             ),
@@ -2783,6 +2888,7 @@ def collect_fixture(
                 "draft": pr.get("draft", False) is True,
                 "change_author": comment_author(pr.get("body") or ""),
                 "comments": comments,
+                "critical_attestations": critical_attestation_evidence(comments),
                 "critical_classes": sorted(
                     critical_classes_at_head(comments, pr["head"])
                 ),
@@ -3428,27 +3534,43 @@ def main() -> int:
     ]
     approval_set_missing = a.pr is not None and not approval_rows
     selected_labels = set(selected["labels"]) if selected is not None else set()
+    selected_critical_attestations = (
+        list(selected["critical_attestations"]) if selected is not None else []
+    )
     selected_critical_classes = (
+        {
+            str(item["critical_class"])
+            for item in selected_critical_attestations
+            if item.get("error") is None
+            and item.get("critical_class") in CRITICAL_CLASSES
+        }
+        if selected is not None
+        else set()
+    )
+    current_critical_classes = (
         set(selected["critical_classes"]) if selected is not None else set()
     )
     # The post-facto label is not itself a critical classifier: a new
     # determinization strategy may carry it while remaining single-review.
     # Criticality comes from the existing closed-enum review-attest record.
-    critical_required = bool(selected_critical_classes)
+    critical_required = bool(selected_critical_attestations)
     critical_label_missing = critical_required and POST_FACTO_LABEL not in selected_labels
-    # Critical review still requires both lanes, but not their cache labels.
-    authoritative_lanes = {
-        str(row["lane"])
-        for row in rows
-        if row["state"] == BOUND_CURRENT
-        and row["lane"] in LANES
-    }
-    critical_lanes_missing = (
-        sorted(set(LANES) - authoritative_lanes) if critical_required else []
-    )
+    review_policy = review_lane_policy(approval_rows, critical_required)
+    authoritative_lanes = set(review_policy["current_lanes"])
+    critical_lanes_missing = list(review_policy["missing_lanes"])
     label_rows = [r for r in rows if r.get("source") != "comment"]
     comment_rows = [r for r in rows if r.get("source") == "comment"]
     bad = [r for r in rows if r["state"] != BOUND_CURRENT]
+    default_gating = [r for r in bad if r.get("lane") not in LANES]
+    default_gating.extend(review_lane_gate_rows(approval_rows, critical_required))
+    required_bad = (
+        default_gating if a.pr is not None and a.gate_on == "all" else bad
+    )
+    required_bad_ids = {id(row) for row in required_bad}
+    optional_noncurrent = [
+        row for row in bad
+        if row.get("lane") in LANES and id(row) not in required_bad_ids
+    ]
     authoritative = len(rows) - len(bad)
     malformed_prs = set(malformed_pr_by_source.values())
     malformed_affected_labels = {
@@ -3464,7 +3586,13 @@ def main() -> int:
     ]
     permission_unavailable_details: list[dict[str, Any]] = []
     seen_permission_details: set[tuple[object, ...]] = set()
+    relevant_review_lanes = set(review_policy["relevant_lanes"])
     for row in rows:
+        if (
+            a.pr is not None and row.get("lane") in LANES
+            and row.get("lane") not in relevant_review_lanes
+        ):
+            continue
         for detail in row.get("review_authority_unavailable") or []:
             key = (
                 row.get("number"),
@@ -3492,15 +3620,21 @@ def main() -> int:
                           "approval_set_missing": approval_set_missing,
                           "critical_required": critical_required,
                           "critical_classes": sorted(selected_critical_classes),
+                          "current_critical_classes": sorted(current_critical_classes),
+                          "critical_attestations": selected_critical_attestations,
                           "critical_label_missing": critical_label_missing,
                           "critical_lanes_missing": critical_lanes_missing,
+                          "review_requirement_satisfied": review_policy["satisfied"],
                           "required_approval_sets": 1 if a.pr is not None else 0,
                           "approval_sets_missing": int(approval_set_missing),
                           "review_permission_unavailable": len(
                               permission_unavailable_details
                           ),
                           "review_permission_unavailable_details": permission_unavailable_details,
-                          "authority_absent": len(bad), "not_holding": len(bad),
+                          "authority_absent": len(required_bad),
+                          "not_holding": len(required_bad),
+                          "noncurrent_artifacts": len(bad),
+                          "noncurrent_optional_review_artifacts": len(optional_noncurrent),
                           "approved_and_unevaluated": len(approved_and_unevaluated),
                           "binding_labels_and_unevaluated": len(combined),
                           "malformed_source_lines": len(malformed),
@@ -3556,10 +3690,18 @@ def main() -> int:
                 "zero workflow runs are not classified as unevaluated"
             )
         print(f"inspected {len(rows)} review/local-validation artifact(s); bound to current head: "
-              f"{authoritative}; authority absent: {len(bad)}; "
+              f"{authoritative}; authority absent: {len(required_bad)}; "
               f"cached review/local-validation artifact(s) AND unevaluated: {len(combined)}")
+        if optional_noncurrent:
+            print(
+                "optional_noncurrent_review_artifacts="
+                f"{len(optional_noncurrent)}; these do not change the ordinary "
+                "one-lane requirement"
+            )
         for r in label_rows:
             if r["state"] == BOUND_CURRENT:
+                continue
+            if r in optional_noncurrent:
                 continue
             if r["bound_to"]:
                 bound = r["bound_to"][:12]
@@ -3584,6 +3726,8 @@ def main() -> int:
             print(f"  {r['state']:<13} PR {r['number']}  {r['label']}  "
                   f"bound-to {bound}  head {r['head'][:12]}  runs={r['runs_at_head']}{flag}")
         for r in comment_rows:
+            if r in optional_noncurrent:
+                continue
             # A refused lane binds nothing, so `bound_to` is None here and the
             # refused SHA is what the reader needs instead: WHICH head was
             # blocked. Report that rather than an empty column, and never index
@@ -3635,8 +3779,13 @@ def main() -> int:
                 f"  CRITICAL-REVIEW-MISSING  PR {a.pr} lacks exact-head "
                 f"{','.join(critical_lanes_missing)} approval"
             )
-        elif not bad:
-            print("  every review/local-validation artifact is bound to the current head")
+        elif not required_bad:
+            if optional_noncurrent:
+                print("  the required review approval is bound to the current head")
+            else:
+                print(
+                    "  every review/local-validation artifact is bound to the current head"
+                )
         for where, line in malformed:
             # LOUD, never ignored: something tried to be a binding and is not one.
             pr = malformed_pr_by_source.get((where, line))
@@ -3668,7 +3817,7 @@ def main() -> int:
             if r["state"] in (UNDETERMINED, REFUSED, REFUSED_STALE)
         ]
     else:
-        gating = bad
+        gating = default_gating
 
     if a.gate and not a.as_json:
         affected = ",".join(f"#{r['number']}" for r in gating[:8]) or "none"
@@ -3760,7 +3909,13 @@ def main() -> int:
             elif reconciliation_text:
                 summary = reconciliation_text
             else:
-                summary = "every review/local-validation artifact binds to the current head"
+                optional = len(bad) - len(default_gating)
+                summary = "the required review approval binds to the current head"
+                if optional:
+                    summary += (
+                        f"; {optional} non-current optional review lane artifact(s) "
+                        "do not change the ordinary one-lane requirement"
+                    )
         print(f"state={state}")
         print(f"summary={summary}")
         if malformed:
@@ -3906,12 +4061,12 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    if a.gate and malformed_approvals and bad:
+    if a.gate and malformed_approvals and gating:
         for _where, line in malformed_approvals:
             print(f"  unparseable approval-shaped line: {line}", file=sys.stderr)
         print(
             f"GATE FAIL: {len(malformed_approvals)} approval-shaped line(s) could not be parsed "
-            f"while {len(bad)} label(s) lack authority at the current head. The unparsed line "
+            f"while {len(gating)} required artifact(s) lack authority at the current head. The unparsed line "
             "may be the missing approval -- a lane lost to formatting rather than to "
             "disagreement. Repost in the exact grammar "
             "'APPROVED-AT: <claude|codex> <40-hex>', then re-run.",

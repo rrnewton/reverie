@@ -129,25 +129,15 @@ def main() -> int:
          [refuse("claude"), refuse("codex"), drop("claude")], False),
         ("both lanes refuse, only codex withdraws",
          [refuse("claude"), refuse("codex"), drop("codex")], False),
-        # ⚠️ THESE TWO EXPECTED A CLEAR UNTIL 2026-09-05 AND THE EXPECTATION WAS
-        # STALE, NOT THE GATE. They use BARE markers with no disclosure tag, and
-        # an UNQUOTED withdrawal now retires only the refusals of the issuer who
-        # posted it -- so a refusal with no readable issuer is not matched by one,
-        # which is deliberate: hermit#2625 has two same-lane refusals of which the
-        # unsigned one must keep binding, and clearing it from an unsigned
-        # withdrawal would be a guess about who spoke.
-        #
-        # A bare refusal is NOT unretirable. Measured on the real hermit#2625
-        # pair: a withdrawal quoting its comment id clears it, reported as
-        # "issued by <unsigned> and retired by hermit-012". The precise mechanism
-        # is the route, and the case below pins it so this file asserts both
-        # directions rather than only the refusal.
+        # Fleet names are optional metadata. A later canonical current-head
+        # withdrawal answers earlier objections in its lane; the cross-lane
+        # controls still prove that one lane cannot clear the other.
         ("both lanes refuse, both withdraw, all unsigned",
-         [refuse("claude"), refuse("codex"), drop("claude"), drop("codex")], False),
+         [refuse("claude"), refuse("codex"), drop("claude"), drop("codex")], True),
         ("one lane refuses, the OTHER lane withdraws",
          [refuse("claude"), drop("codex")], False),
         ("one lane refuses, its OWN lane withdraws, both unsigned",
-         [refuse("claude"), drop("claude")], False),
+         [refuse("claude"), drop("claude")], True),
         ("signed refusal, its own issuer withdraws in the same lane",
          [SIGNED + refuse("claude"), SIGNED + drop("claude")], True),
         # Both laneless shapes fail closed, or the unilateral clear returns

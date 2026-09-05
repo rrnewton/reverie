@@ -5,16 +5,19 @@ The approval-binding consumer remains the authority for which review families
 approved which commits.  This helper adds one narrow alternative to an exact
 current-head binding: every superseded approved commit must have an empty
 ``git range-diff`` against the current head after both series are expressed
-relative to their respective bases.
+relative to their respective bases. A critical-class attestation moves across
+a head change only through that same proof and its canonical GitHub record.
 
 Anything else refuses.  In particular, an absent binding, a merge commit, a
 different commit count, a changed patch, or a semantic conflict resolution can
-never turn a stale approval into landing authority.
+never turn a stale approval into landing authority or remove a critical review
+requirement.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import re
 import subprocess
@@ -23,7 +26,9 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "health"))
 import bounded_capture  # noqa: E402
+import approval_binding as approval_authority  # noqa: E402
 
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -141,6 +146,110 @@ def prove_mechanical_rebase(
     }
 
 
+def critical_requirement(
+    report: dict[str, Any],
+    repo: Path,
+    current_base: str,
+    current_head: str,
+    proof_cache: dict[str, dict[str, Any]],
+) -> tuple[bool, list[dict[str, Any]]]:
+    """Determine criticality from canonical evidence.
+
+    An old-head attestation is accepted only when the rebase is mechanical.
+    """
+    evidence = report.get("critical_attestations")
+    if evidence is None:
+        raise Refused(
+            "approval-binding report has no canonical critical attestation evidence"
+        )
+    if not isinstance(evidence, list):
+        raise Refused("critical attestation evidence is not a list")
+    if not evidence:
+        if (
+            report.get("critical_required")
+            or report.get("critical_lanes_missing")
+            or report.get("critical_classes")
+        ):
+            raise Refused("critical review summary has no canonical attestation evidence")
+        return False, []
+
+    accepted: list[dict[str, Any]] = []
+    refused: list[str] = []
+    for position, item in enumerate(evidence):
+        if not isinstance(item, dict):
+            refused.append(f"record {position} is not an object")
+            continue
+        if item.get("error") is not None:
+            refused.append(f"record {position}: {item['error']}")
+            continue
+        comment_id = str(item.get("comment_id") or "")
+        actor = str(item.get("github_actor") or "")
+        permission = str(item.get("permission") or "").lower()
+        version_time = str(item.get("version_time") or "")
+        critical_class = str(item.get("critical_class") or "")
+        url = str(item.get("url") or "")
+        try:
+            parsed_version_time = datetime.datetime.fromisoformat(
+                version_time.replace("Z", "+00:00")
+            )
+        except ValueError:
+            parsed_version_time = None
+        if (
+            not comment_id.isdigit()
+            or not actor
+            or item.get("authorized") is not True
+            or permission not in approval_authority.AUTHORIZED_REVIEW_PERMISSIONS
+            or parsed_version_time is None
+            or parsed_version_time.tzinfo is None
+            or approval_authority.comment_database_id({"url": url}) != comment_id
+            or critical_class not in approval_authority.CRITICAL_CLASSES
+        ):
+            refused.append(
+                f"record {position} lacks immutable comment identity, current "
+                "GitHub actor permission, version time, or a supported critical class"
+            )
+            continue
+        try:
+            attested_head = exact_sha(item.get("head"), "critical attestation head")
+        except Refused as error:
+            refused.append(f"record {position}: {error}")
+            continue
+        if attested_head == current_head:
+            accepted.append(
+                {
+                    "critical_class": critical_class,
+                    "basis": BOUND_CURRENT,
+                    "comment_id": comment_id,
+                }
+            )
+            continue
+        try:
+            proof = proof_cache.get(attested_head)
+            if proof is None:
+                proof = prove_mechanical_rebase(
+                    repo, attested_head, current_base, current_head
+                )
+                proof_cache[attested_head] = proof
+        except (Refused, ReviewCheckError) as error:
+            refused.append(f"record {position}: {error}")
+            continue
+        accepted.append(
+            {
+                "critical_class": critical_class,
+                "basis": "MECHANICAL_REBASE",
+                "comment_id": comment_id,
+                "proof": proof,
+            }
+        )
+    if not accepted:
+        detail = "; ".join(refused) or "no usable critical attestation"
+        raise Refused(
+            "critical classification is not bound to the current patch series; "
+            f"publish a current-head attestation ({detail})"
+        )
+    return True, accepted
+
+
 def evaluate(
     report: dict[str, Any], repo: Path, current_base: str, current_head: str
 ) -> dict[str, Any]:
@@ -150,8 +259,9 @@ def evaluate(
         raise Refused("the PR has no required approval set")
     if report.get("critical_label_missing"):
         raise Refused("the critical-change routing label is missing")
-    critical_required = bool(
-        report.get("critical_required") or report.get("critical_lanes_missing")
+    proof_cache: dict[str, dict[str, Any]] = {}
+    critical_required, critical_evidence = critical_requirement(
+        report, repo, current_base, current_head, proof_cache
     )
 
     rows = report.get("rows")
@@ -187,7 +297,6 @@ def evaluate(
                 str(state or "missing-state")
             )
 
-    required_lanes = set(REVIEW_LANES) if critical_required else set()
     blocking_states = {REFUSED, REFUSED_STALE}
     blocked = sorted(
         (lane, state)
@@ -206,9 +315,12 @@ def evaluate(
             break
         try:
             approved_head = exact_sha(row.get("bound_to"), f"{lane} approved head")
-            proof = prove_mechanical_rebase(
-                repo, approved_head, current_base, current_head
-            )
+            proof = proof_cache.get(approved_head)
+            if proof is None:
+                proof = prove_mechanical_rebase(
+                    repo, approved_head, current_base, current_head
+                )
+                proof_cache[approved_head] = proof
         except (Refused, ReviewCheckError) as error:
             carry_errors[lane] = error
             continue
@@ -218,8 +330,12 @@ def evaluate(
             "proof": proof,
         }
 
+    accepted_policy = approval_authority.review_lane_policy(
+        [{"lane": lane, "state": BOUND_CURRENT} for lane in accepted],
+        critical_required,
+    )
     if critical_required:
-        missing_lanes = sorted(required_lanes - accepted.keys())
+        missing_lanes = list(accepted_policy["missing_lanes"])
         if missing_lanes:
             operational_error = next(
                 (
@@ -259,6 +375,7 @@ def evaluate(
         "head": current_head,
         "current_base": current_base,
         "approvals": [accepted[lane] for lane in sorted(accepted)],
+        "critical_attestations": critical_evidence,
     }
 
 

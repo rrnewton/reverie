@@ -245,6 +245,7 @@ class ReviewProtocolStatus:
     pr: int | None
     title: str
     draft: bool
+    critical_required: bool
     codex_rounds: tuple[int, ...]
     claude_rounds: tuple[int, ...]
     review_rounds: str
@@ -783,6 +784,33 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
     authority_error = entry.get("_review_authority_unavailable")
     if isinstance(authority_error, str) and authority_error:
         invalid_labels.append(f"review-authority-unavailable:{authority_error}")
+    critical_required = bool(
+        approval_authority.critical_attestation_evidence(comments)
+    )
+    review_policy = approval_authority.review_lane_policy(
+        authority_rows, critical_required
+    )
+    current_lanes = set(review_policy["current_lanes"])
+    objection_lanes = {
+        str(row.get("lane")) for row in review_policy["objection_rows"]
+    }
+    if not critical_required and current_lanes:
+        optional_lanes = set(review_contract.REVIEW_FAMILIES) - current_lanes
+        invalid_labels = [
+            detail
+            for detail in invalid_labels
+            if not any(
+                detail.startswith(
+                    review_contract.PASSED_REVIEW_LABELS[lane] + ":"
+                )
+                for lane in optional_lanes
+            )
+        ]
+        permission_unavailable = [
+            detail
+            for detail in permission_unavailable
+            if not any(detail.startswith(lane + ":") for lane in optional_lanes)
+        ]
     # Reported alongside the label diagnostics, and deliberately not folded into
     # them: an unlabeled binding is a MISSING CACHE over a real review, which is a
     # different condition from a cache that no longer holds.
@@ -795,11 +823,34 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
         return "partial" if present == 1 else "missing"
 
     missing: list[str] = []
-    for reviewer in review_contract.REVIEW_FAMILIES:
-        if not has_round[reviewer]:
-            missing.append(review_contract.missing_round_requirement(reviewer))
-        if not has_approval[reviewer]:
-            missing.append(f"current-approval-{reviewer}")
+    if critical_required:
+        for reviewer in review_contract.REVIEW_FAMILIES:
+            if not has_round[reviewer]:
+                missing.append(review_contract.missing_round_requirement(reviewer))
+            if not has_approval[reviewer]:
+                missing.append(f"current-approval-{reviewer}")
+        review_rounds = paired_state(has_round)
+        current_approvals = paired_state(has_approval)
+    else:
+        required_lanes = current_lanes or set(review_contract.REVIEW_FAMILIES)
+        if not current_lanes:
+            missing.append("one current approval from codex or claude")
+        if not any(has_round[lane] for lane in required_lanes):
+            missing.append("one numbered review activity label from codex or claude")
+        missing.extend(
+            f"unresolved review objection in {lane}"
+            for lane in sorted(objection_lanes)
+        )
+        review_rounds = (
+            "complete"
+            if any(has_round[lane] for lane in required_lanes)
+            else "missing"
+        )
+        current_approvals = (
+            "complete"
+            if review_policy["satisfied"]
+            else ("partial" if current_lanes else "missing")
+        )
 
     number = entry.get("number")
     return ReviewProtocolStatus(
@@ -810,10 +861,11 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
         ),
         title=str(entry.get("title") or ""),
         draft=entry.get("isDraft") is True,
+        critical_required=critical_required,
         codex_rounds=tuple(sorted(rounds["codex"])),
         claude_rounds=tuple(sorted(rounds["claude"])),
-        review_rounds=paired_state(has_round),
-        current_approvals=paired_state(has_approval),
+        review_rounds=review_rounds,
+        current_approvals=current_approvals,
         complete=not missing,
         missing=tuple(missing),
         invalid_labels=tuple(sorted(invalid_labels)),
@@ -2417,10 +2469,12 @@ def render_report(statuses: Sequence[RepoStatus], warn_threshold: int, engine: s
         if status.review_protocol:
             audits = status.review_protocol
             complete = sum(audit.complete for audit in audits)
-            dual_review = sum(audit.review_rounds == "complete" for audit in audits)
+            review_complete = sum(
+                audit.review_rounds == "complete" for audit in audits
+            )
             partial_review = sum(audit.review_rounds == "partial" for audit in audits)
             no_review = sum(audit.review_rounds == "missing" for audit in audits)
-            dual_approval = sum(
+            approval_complete = sum(
                 audit.current_approvals == "complete" for audit in audits
             )
             invalid = sum(bool(audit.invalid_labels) for audit in audits)
@@ -2435,9 +2489,9 @@ def render_report(statuses: Sequence[RepoStatus], warn_threshold: int, engine: s
             lines.append(
                 "    Review protocol: "
                 f"labeled={len(audits)} complete={complete} "
-                f"dual_review={dual_review} partial_review={partial_review} "
+                f"review_complete={review_complete} partial_review={partial_review} "
                 f"no_review_evidence={no_review} "
-                f"current_dual_approval={dual_approval} invalid_label_prs={invalid} "
+                f"current_approval_complete={approval_complete} invalid_label_prs={invalid} "
                 f"review_permission_unavailable={permission_unavailable}"
             )
             for audit in audits:
@@ -2455,6 +2509,7 @@ def render_report(statuses: Sequence[RepoStatus], warn_threshold: int, engine: s
                 )
                 lines.append(
                     f"      #{audit.pr if audit.pr is not None else '?':<5} "
+                    f"critical={'yes' if audit.critical_required else 'no'} "
                     f"review={audit.review_rounds:<8} "
                     f"approval={audit.current_approvals:<8} "
                     f"missing={','.join(audit.missing) or '-'}"

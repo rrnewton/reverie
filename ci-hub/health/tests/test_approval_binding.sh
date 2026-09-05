@@ -177,6 +177,50 @@ out="$(run "$tmp/critical-complete.json" --pr 2203 --gate)"; rc=$?
 [[ $rc -eq 0 ]] && ok "critical PR with label plus codex+claude exact-head approvals PASSES" \
   || bad "complete critical protocol refused (rc=$rc): $out"
 
+cat >"$tmp/ordinary-current-stale.json" <<JSON
+[{"number":2205,"head":"$CUR","labels":["post-facto-human-review","passed-review-codex","passed-review-claude"],
+  "comments":["APPROVED-AT: codex $CUR","APPROVED-AT: claude $OLD"],
+  "runs_at_head":4,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/ordinary-current-stale.json" --pr 2205 --gate)"; rc=$?
+[[ $rc -eq 0 ]] && grep -q "required review approval binds to the current head" <<<"$out" \
+  && ! grep -q "SUPERSEDED.*lane claude" <<<"$out" \
+  && ok "ordinary PR accepts one current lane and does not require a stale optional lane" \
+  || bad "ordinary PR required its stale optional lane (rc=$rc): $out"
+
+cat >"$tmp/ordinary-current-undetermined.json" <<JSON
+[{"number":2206,"head":"$CUR","labels":["post-facto-human-review","passed-review-codex","passed-review-claude"],
+  "comments":["APPROVED-AT: codex $CUR"],
+  "runs_at_head":4,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/ordinary-current-undetermined.json" --pr 2206 --gate --json)"; rc=$?
+[[ $rc -eq 0 ]] && grep -q '"review_requirement_satisfied": true' <<<"$out" \
+  && grep -q '"authority_absent": 0' <<<"$out" \
+  && grep -q '"noncurrent_optional_review_artifacts": 1' <<<"$out" \
+  && ok "ordinary PR accepts one current lane with an undetermined optional lane" \
+  || bad "ordinary PR required its undetermined optional lane (rc=$rc): $out"
+
+cat >"$tmp/critical-current-stale.json" <<JSON
+[{"number":2207,"head":"$CUR","labels":["post-facto-human-review","passed-review-codex","passed-review-claude"],
+  "comments":["REVIEW-DISPATCH-ATTESTATION\ncritical-class: hermit-syscall\nhead: $CUR",
+              "APPROVED-AT: codex $CUR","APPROVED-AT: claude $OLD"],
+  "runs_at_head":4,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/critical-current-stale.json" --pr 2207 --gate)"; rc=$?
+[[ $rc -eq 1 ]] && grep -q "CRITICAL-REVIEW-MISSING.*claude" <<<"$out" \
+  && ok "critical PR still requires the stale second lane to be renewed" \
+  || bad "critical PR accepted one current lane (rc=$rc): $out"
+
+cat >"$tmp/ordinary-current-refused.json" <<JSON
+[{"number":2208,"head":"$CUR","labels":["post-facto-human-review","passed-review-codex"],
+  "comments":["APPROVED-AT: codex $CUR","CHANGES-REQUESTED-AT: claude $CUR"],
+  "runs_at_head":4,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/ordinary-current-refused.json" --pr 2208 --gate)"; rc=$?
+[[ $rc -eq 1 ]] && grep -q "REFUSED" <<<"$out" \
+  && ok "an objection in an optional lane still blocks an ordinary PR" \
+  || bad "ordinary PR ignored an unresolved optional-lane objection (rc=$rc): $out"
+
 cat >"$tmp/post-facto-noncritical.json" <<JSON
 [{"number":2204,"head":"$CUR","labels":["post-facto-human-review","passed-review-codex"],
   "comments":["APPROVED-AT: codex $CUR"],
@@ -819,7 +863,7 @@ fi
 # post-facto label and second-family approval as the lost refusals.
 if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
   mutant="$tmp/approval_binding-without-critical-policy.py"
-  sed 's/critical_required = bool(selected_critical_classes)/critical_required = False  # MUTANT: critical policy disabled/' \
+  sed 's/critical_required = bool(selected_critical_attestations)/critical_required = False  # MUTANT: critical policy disabled/' \
     "$tool" >"$mutant"
   if ! grep -q 'MUTANT: critical policy disabled' "$mutant"; then
     bad "critical mutation control could not locate the classifier"

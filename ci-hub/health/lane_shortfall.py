@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Which open heads are ONE CODEX LANE SHORT -- computed from MARKERS, not labels.
+"""Report open heads needing a review lane, from markers rather than labels.
+
+An ordinary change is complete with either valid lane. A critical attestation
+requires both lanes; only those one-lane heads are reported as one lane short.
 
 WHY THIS EXISTS. The obvious implementation reads `approval_binding`'s rows[].
 That row builder starts from `passed-review-*` LABELS, so a lane carrying no label
@@ -147,6 +150,7 @@ def scan(repo, pr, pace=2.0):
     )
     time.sleep(pace)
     return {"pr": pr, "head": head, "state": state, "draft": draft,
+            "critical_required": bool(ab.critical_attestation_evidence(comments)),
             "gate_rc": gate_rc, "gate": gate_msg.split("--")[0].strip(),
             "mergeable": d.get("mergeable"), "change_author": change_author,
             "lanes": lanes}
@@ -162,8 +166,22 @@ def classify(r):
     if r["gate_rc"] == 2:                    return "INDETERMINATE"
     if r["gate_rc"] != 0:                    return "live-refusal"
     c, x = r["lanes"]["claude"], r["lanes"]["codex"]
-    have = [n for n, v in (("claude", c), ("codex", x)) if v["at_head"]]
-    if len(have) == 2:                       return "BOTH-LANES-BOUND"
+    policy = ab.review_lane_policy(
+        [
+            {
+                "lane": name,
+                "state": ab.BOUND_CURRENT if value["at_head"] else ab.UNDETERMINED,
+            }
+            for name, value in (("claude", c), ("codex", x))
+        ],
+        bool(r.get("critical_required", False)),
+    )
+    have = list(policy["current_lanes"])
+    if policy["satisfied"]:
+        if len(have) == 2:                   return "BOTH-LANES-BOUND"
+        return "ordinary review complete"
+    if not r.get("critical_required", False):
+        return "ZERO-LANES (needs one)"
     if not have:                             return "ZERO-LANES (needs both)"
     missing = "codex" if have == ["claude"] else "claude"
     if r["mergeable"] is False:              return f"{missing.upper()}-SHORT-DIRTY"
@@ -185,8 +203,9 @@ def self_test() -> int:
         }
 
     def R(gate=0, claude=False, codex=False, cref=0, xref=0, merge=True,
-          state="open", draft=False):
+          state="open", draft=False, critical=False):
         return {"state": state, "draft": draft, "gate_rc": gate, "mergeable": merge,
+                "critical_required": critical,
                 "lanes": {"claude": {"at_head": claude, "refusals_seen": cref},
                           "codex":  {"at_head": codex,  "refusals_seen": xref}}}
     bad = []
@@ -227,17 +246,28 @@ def self_test() -> int:
     # codex before claude and had NO claude-short bucket, so a head with codex
     # already bound and no claude lane came back "codex-already-bound" -- the one
     # dispatchable head in the queue, filed as needing nothing.
-    want("codex bound, claude missing", R(codex=True), "CLAUDE-SHORT-DISPATCHABLE")
-    want("claude bound, codex missing", R(claude=True), "CODEX-SHORT-DISPATCHABLE")
+    want("ordinary codex bound", R(codex=True), "ordinary review complete")
+    want("ordinary claude bound", R(claude=True), "ordinary review complete")
+    want("ordinary neither bound", R(), "ZERO-LANES (needs one)")
+    want(
+        "critical codex bound, claude missing",
+        R(codex=True, critical=True),
+        "CLAUDE-SHORT-DISPATCHABLE",
+    )
+    want(
+        "critical claude bound, codex missing",
+        R(claude=True, critical=True),
+        "CODEX-SHORT-DISPATCHABLE",
+    )
     want("both bound", R(claude=True, codex=True), "BOTH-LANES-BOUND")
-    want("neither bound", R(), "ZERO-LANES (needs both)")
+    want("critical neither bound", R(critical=True), "ZERO-LANES (needs both)")
     # A missing lane that already carries a refusal needs a WITHDRAWAL, not a review.
     want("codex missing but refused before",
-         R(claude=True, xref=2), "CODEX-SHORT-WITHDRAWAL-FIRST")
+         R(claude=True, xref=2, critical=True), "CODEX-SHORT-WITHDRAWAL-FIRST")
     want("claude missing but refused before",
-         R(codex=True, cref=1), "CLAUDE-SHORT-WITHDRAWAL-FIRST")
+         R(codex=True, cref=1, critical=True), "CLAUDE-SHORT-WITHDRAWAL-FIRST")
     # A conflicting head cannot absorb a lane yet.
-    want("codex missing, tree dirty", R(claude=True, merge=False), "CODEX-SHORT-DIRTY")
+    want("codex missing, tree dirty", R(claude=True, merge=False, critical=True), "CODEX-SHORT-DIRTY")
     # ⚠️ THE THIRD STATE MUST SURVIVE. rc=2 is not CLEAR and not a refusal.
     want("gate indeterminate", R(gate=2, claude=True), "INDETERMINATE")
     want("gate blocked", R(gate=1, claude=True), "live-refusal")
@@ -248,8 +278,8 @@ def self_test() -> int:
         for b in bad:
             print(f"lane_shortfall self-test: FAIL -- {b}")
         return 1
-    print("PASS: lane_shortfall binds exact-head markers regardless of optional issuer "
-          "metadata, names the MISSING lane in both directions, "
+    print("PASS: lane_shortfall applies the ordinary one-lane and critical two-lane "
+          "requirements from exact-head markers, "
           "keeps "
           "INDETERMINATE distinct from CLEAR, and routes a previously-refused lane "
           "to a withdrawal rather than a review")

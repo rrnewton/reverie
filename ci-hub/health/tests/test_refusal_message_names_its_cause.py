@@ -1,36 +1,20 @@
 #!/usr/bin/env python3
-"""The BLOCKED message must name the cause that applies, not every cause there is.
+"""The refusal message must name the review evidence that is actually missing.
 
-TWO DEFECTS, PINNED SEPARATELY so a regression in either fails on its own rather
-than one carrying the other.
+A later canonical current-head withdrawal answers earlier objections in its
+lane. Fleet names are optional metadata, so same-lane resolution does not depend
+on who supplied or omitted one. A withdrawal in another lane still cannot answer
+the objection, and the message must say which lane lacks a later decision.
 
-FIRST. The message asserted unconditionally that "a withdrawal from a DIFFERENT
-lane does not discharge it", including when every withdrawal present sat in the
-SAME lane as the refusal it failed to clear. Measured 2026-09-05 on a bare
-same-lane pair: it sends the reader hunting a cross-lane problem that is not
-there. This repository has lost time twice to a refusal that misidentified its own
-cause -- a hook whose message pointed at a lint that was not the problem, and a
-KVM guest error that was really a worktree-location constraint.
-
-SECOND, AND IT IS THE ONE THAT COST THIS INVESTIGATION. `records` is an optional
+Separately, `records` is an optional
 argument, and without it `retired()` can credit nothing: `_retire_claims` and
 `records_by_id` are both built from it. So a body carrying a valid
 `RETIRES <comment-id>` is silently ignored and the call returns BLOCKED where the
 same input WITH records returns OK. An optional argument that changes the verdict
-has to announce itself. Both production callers do pass it --
-ci-hub/health/lane_shortfall.py:149 and the gate's own main() -- so only a caller
-that forgets reaches this, and a caller that forgets is exactly who needs telling.
+has to announce itself.
 
-⚠️ WHAT IS NOT WRONG HERE, recorded because it was reported as a defect and is
-not one. A bare refusal is NOT unretirable. On the real hermit#2625 pair a
-withdrawal quoting its comment id clears it -- "issued by <unsigned> and retired
-by hermit-012". And an UNQUOTED withdrawal correctly fails to clear it, because
-an unsigned refusal has no issuer to match and clearing it would be a guess about
-who spoke. The bare/tagged difference is that rule working, not an inversion.
-
-These cases assert MESSAGES ONLY. The verdicts are unchanged by the commit that
-added this file, and test_gate_variant_space.py plus the gate's own --self-test
-cover the verdict space.
+These cases cover both decisions and messages. `test_gate_variant_space.py` and
+the gate's own `--self-test` cover the broader verdict space.
 """
 
 from __future__ import annotations
@@ -43,8 +27,8 @@ import unittest
 GATE = pathlib.Path(__file__).resolve().parents[2] / "bin" / "changes-requested-gate"
 HEAD = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
 TAG = "[hermit2, hermit-006, unresolved, devbig014, role=reviewer]\n"
-CROSS_LANE_SENTENCE = "a withdrawal from a DIFFERENT lane does not discharge it"
-MISSING_RECORDS = "NO REVIEW RECORDS WERE SUPPLIED"
+CROSS_LANE_SENTENCE = "A withdrawal in a different lane does not answer"
+MISSING_RECORDS = "no review records were supplied"
 
 
 def _gate():
@@ -71,20 +55,20 @@ class TheCrossLaneSentenceOnlyAppearsWhenACrossLaneWithdrawalDoes(unittest.TestC
     def test_a_same_lane_withdrawal_is_not_blamed_on_the_lane(self) -> None:
         """THE REGRESSION. The only withdrawal here is in the refusal's own lane."""
         rc, msg = self.gate.evaluate([refuse("claude"), drop("claude")], HEAD)
-        self.assertEqual(rc, self.gate.BLOCKED, msg)
+        self.assertEqual(rc, self.gate.OK, msg)
         self.assertNotIn(CROSS_LANE_SENTENCE, msg)
 
-    def test_a_same_lane_refusal_is_told_what_is_actually_missing(self) -> None:
-        """Not naming the wrong cause is half of it; naming the right one is the rest."""
-        _rc, msg = self.gate.evaluate([refuse("claude"), drop("claude")], HEAD)
-        self.assertIn("Every withdrawal present is in the refusal's own lane", msg)
-        self.assertIn("no readable issuer", msg)
+    def test_a_same_lane_withdrawal_names_the_later_decision(self) -> None:
+        rc, msg = self.gate.evaluate([refuse("claude"), drop("claude")], HEAD)
+        self.assertEqual(rc, self.gate.OK, msg)
+        self.assertIn("later canonical current-head lane decision", msg)
 
     def test_a_genuine_cross_lane_withdrawal_is_still_named_as_one(self) -> None:
         """⚠️ THE CONTROL. Removing the sentence entirely would also pass the
         first case, and would lose a true explanation for the case it describes."""
         _rc, msg = self.gate.evaluate([refuse("claude"), drop("codex")], HEAD)
         self.assertIn(CROSS_LANE_SENTENCE, msg)
+        self.assertIn("lane(s) claude that have no later canonical decision", msg)
 
     def test_no_withdrawal_at_all_is_not_blamed_on_a_lane(self) -> None:
         _rc, msg = self.gate.evaluate([refuse("claude")], HEAD)
@@ -140,30 +124,31 @@ class AMissingRecordsArgumentSaysSoRatherThanRejectingSilently(unittest.TestCase
 
 
 class TheVerdictsThemselvesAreUnchanged(unittest.TestCase):
-    """A message change must not move a single verdict on a landing gate."""
+    """Lane chronology, not optional fleet names, determines each verdict."""
 
     def setUp(self) -> None:
         self.gate = _gate()
 
     def test_the_shapes_that_must_block_still_block(self) -> None:
         for name, bodies in [
-            ("unsigned same-lane pair", [refuse("claude"), drop("claude")]),
             ("cross-lane withdrawal", [refuse("claude"), drop("codex")]),
             ("refusal alone", [refuse("claude")]),
-            ("unsigned refusal, signed withdrawal",
-             [refuse("claude"), drop("claude", signed=True)]),
         ]:
             with self.subTest(name=name):
                 rc, msg = self.gate.evaluate(bodies, HEAD)
                 self.assertEqual(rc, self.gate.BLOCKED, msg)
 
-    def test_the_shape_that_must_clear_still_clears(self) -> None:
+    def test_same_lane_withdrawal_clears_regardless_of_fleet_name_metadata(self) -> None:
         """Without this the block assertions above would pass against a gate
         that blocks everything."""
-        rc, msg = self.gate.evaluate(
-            [refuse("claude", signed=True), drop("claude", signed=True)], HEAD
-        )
-        self.assertEqual(rc, self.gate.OK, msg)
+        for name, bodies in [
+            ("both unsigned", [refuse("claude"), drop("claude")]),
+            ("refusal unsigned", [refuse("claude"), drop("claude", signed=True)]),
+            ("both signed", [refuse("claude", signed=True), drop("claude", signed=True)]),
+        ]:
+            with self.subTest(name=name):
+                rc, msg = self.gate.evaluate(bodies, HEAD)
+                self.assertEqual(rc, self.gate.OK, msg)
 
 
 if __name__ == "__main__":

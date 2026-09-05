@@ -327,23 +327,28 @@ That third form is not an error you will see; it is an absence.
 carries an `APPROVED-AT` line. A verdict-ish keyword beside a 40-hex matching
 neither grammar is reported as malformed, never silently skipped.
 
-**Both lanes are required.** `core-review-protocol-lint.sh` needs at least one
-`adversarial-review-codex<N>` **and** one `adversarial-review-claude<N>` (N in
-1..4), plus **both** `passed-review-codex` and `passed-review-claude`. Emit the
-line *and* apply the label: a label with no line binds nothing, and a line with
-no label leaves the merge gate failing on a missing label. One bound lane
-unblocks half a head.
+**The required review set depends on the canonical attestation.** An ordinary
+change needs one valid exact-head Codex or Claude approval. A change carrying a
+critical-class review attestation needs both. Canonical comment records and the
+current GitHub actor permission establish authority. `passed-review-*` and
+`adversarial-review-*` labels are routing and reconciliation caches: a label
+with no canonical comment grants no authority, and a valid comment does not
+lose authority because its cache label is absent. An unresolved substantive
+objection in either lane still blocks an ordinary or critical change.
 
-**Under a rebase the binding dies — including a byte-identical one.** Any push
-that changes the head sha makes every existing binding `SUPERSEDED`. Measured on
+**A rebase supersedes the direct binding.** Any push that changes the head sha
+makes an existing binding `SUPERSEDED`. Measured on
 hermit#2478: 28 `APPROVED-AT: codex` lines in seven hours, none naming the
-current head, the last killed by a pure rebase. ⚠️ But **`main` advancing
+current head, the last moved by a pure rebase. `review_rebase.py` may carry both
+an approval and its critical classification only when the canonical comment
+identity and current GitHub actor permission are present and `git range-diff`
+proves the patch series unchanged. Direct consumers that cannot perform that
+proof require current-head evidence instead. ⚠️ But **`main` advancing
 invalidates nothing** — only a push to the *branch* does, and a head two commits
 behind `main` can still be `mergeable_state: clean`. Conflating those two makes
-this look unsolvable. The ordering that works, with no policy change: rebase
-first while unapproved → do not chase a validate receipt → collect both lanes at
-that one sha with no push between → `gh pr merge --rebase`, which rebases
-server-side without pushing the branch, so the bindings survive the merge.
+this look unsolvable. Rebase before review when practical; otherwise the landing
+path must produce the mechanical proof or collect the required review set again
+at the current head.
 
 ### ⚠️ Self-approval is possible here and it is not legitimate
 

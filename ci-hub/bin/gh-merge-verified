@@ -146,7 +146,9 @@ EXIT
        head can answer an objection to the earlier code.
     6  REFUSED TO MERGE: the required canonical review set is absent at this
        exact head. An ordinary change requires one exact-head review lane; a
-       critical change requires both lanes. Labels are reconciliation caches and
+       critical attestation requires both lanes and remains critical after the
+       head moves. This direct merge path cannot prove a mechanical rebase, so
+       both lanes must bind the current head. Labels are reconciliation caches and
        cannot add, remove, or satisfy a required lane. Nothing was attempted.
     7  REFUSED TO MERGE: this tool cannot prove it is the version on dev-hermit main,
        so its own admission checks may be ABSENT from the copy being run. A stale
@@ -832,7 +834,7 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
 def review_admission_problems(pr: str, repo: str, head: str) -> list[str]:
     """Missing canonical exact-head review evidence for the configured set.
 
-    An ordinary change requires one review lane. A current-head critical-class
+    An ordinary change requires one review lane. Any canonical critical-class
     attestation requires both existing lanes. Canonical comment artifacts and
     current GitHub actor permission are authority; passed-review labels are
     cache state and are deliberately absent from this decision.
@@ -845,7 +847,7 @@ def review_admission_problems(pr: str, repo: str, head: str) -> list[str]:
         comments = grammar.canonical_review_records(fetched)
     except grammar.ReviewRecordError:
         return ["__UNREADABLE__"]
-    bound_lanes: set[str] = set()
+    lane_rows: list[dict[str, object]] = []
     for lane in grammar.LANES:
         malformed: list[tuple[str, str]] = []
         refusals: list[str] = []
@@ -867,14 +869,22 @@ def review_admission_problems(pr: str, repo: str, head: str) -> list[str]:
             refused_at=refusals[-1] if refusals else None,
             unanswered=bool(unanswered),
         )
-        if state == grammar.BOUND_CURRENT:
-            bound_lanes.add(lane)
+        lane_rows.append({"lane": lane, "state": state})
 
-    critical = grammar.critical_classes_at_head(comments, head)
+    # This direct merge path cannot prove a mechanical rebase. Any canonical
+    # critical attestation in the patch history therefore keeps the two-lane
+    # requirement until both lanes approve the current head.
+    critical = bool(grammar.critical_attestation_evidence(comments))
+    policy = grammar.review_lane_policy(lane_rows, critical)
+    if policy["objection_rows"]:
+        return [
+            f"unresolved review objection in {row['lane']}"
+            for row in policy["objection_rows"]
+        ]
     if critical:
-        missing = sorted(set(grammar.LANES) - bound_lanes)
+        missing = list(policy["missing_lanes"])
         return [f"missing exact-head {lane} approval" for lane in missing]
-    if not bound_lanes:
+    if not policy["satisfied"]:
         return ["required approval set missing: no canonical exact-head review approval"]
     return []
 
