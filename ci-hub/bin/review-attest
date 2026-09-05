@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Record an exact-head review-outcome attestation.
 
-This command does not identify the process that performed a review.  It records
-the coordinator's knowledge that a reviewer from the selected dispatch family
-returned an approval or refusal for one exact PR head.  The family and outcome
-are closed CLI enums; unknown values fail during argument parsing before any
-GitHub command runs.
+This command does not identify the process that performed a review. It verifies
+one canonical review comment's URL, repository, pull request, exact head, marker,
+and immutable GitHub actor permission. The family and outcome are closed CLI
+enums; optional fleet names are unverified audit metadata, and unknown values
+fail during argument parsing before any GitHub command runs.
 
 The reviewer's exact-head comment is authority.  Labels are routing/activity
-caches.  The exact comment is verified first, the coordinator's attestation is
-posted, the live head is checked again, and labels are applied only while that
-head remains current.  No label is created by this command.
+caches. The exact comment is verified first, an attestation is posted, the live
+head is checked again, and labels are applied only while that head remains
+current. No label is created by this command.
 """
 
 from __future__ import annotations
@@ -283,17 +283,23 @@ def _verify_reviewer_comment(args: argparse.Namespace, runner: Runner) -> str:
 def _comment_body(args: argparse.Namespace, actor: str) -> str:
     critical = args.critical or "none"
     fields = [
-            "REVIEW-DISPATCH-ATTESTATION",
-            f"family: {args.family}",
-            f"github-actor: {actor}",
-            f"task: {args.task}",
-            f"review-round: {args.round}",
-            f"review-outcome: {args.outcome}",
-            f"review-comment: {args.comment_url}",
-            f"critical-class: {critical}",
-            f"head: {args.head}",
-            "basis: coordinator verified the reviewer's exact comment for this exact head",
-            "limitation: dispatch attestation does not prove the executing process family",
+        "REVIEW-DISPATCH-ATTESTATION",
+        f"family: {args.family}",
+        f"github-actor: {actor}",
+        f"task: {args.task}",
+        f"review-round: {args.round}",
+        f"review-outcome: {args.outcome}",
+        f"review-comment: {args.comment_url}",
+        f"critical-class: {critical}",
+        f"head: {args.head}",
+        (
+            "basis: exact comment URL, current head, canonical marker, and "
+            "current GitHub actor permission verified"
+        ),
+        (
+            "limitation: fleet reviewer and coordinator names are unverified "
+            "audit metadata"
+        ),
     ]
     if args.reviewer:
         fields.insert(3, f"unverified-reviewer-metadata: {args.reviewer}")
@@ -381,7 +387,8 @@ def execute(args: argparse.Namespace, runner: Runner = subprocess.run) -> int:
         f"github_actor={actor} outcome={args.outcome} "
         f"comment={args.comment_url} labels={','.join(labels)} "
         f"removed={','.join(removals) or '-'} "
-        "basis=coordinator-dispatch limitation=process-family-not-proven"
+        "basis=comment-url+head+marker+github-permission "
+        "limitation=fleet-names-unverified"
     )
     return 0
 

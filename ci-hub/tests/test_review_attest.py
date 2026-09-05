@@ -162,7 +162,13 @@ def assert_approval_records_activity_plus_approval() -> None:
     assert "unverified-reviewer-metadata: codex-2" in body
     assert "github-actor: rrnewton" in body
     assert "APPROVED-AT" not in body
-    assert "dispatch attestation does not prove the executing process family" in body
+    assert (
+        "basis: exact comment URL, current head, canonical marker, and current "
+        "GitHub actor permission verified"
+    ) in body
+    assert (
+        "limitation: fleet reviewer and coordinator names are unverified audit metadata"
+    ) in body
     assert comment[1:7] == ["--who", "hermit-coord", "--team", "hermit2", "--role", "coordinator"]
     edit = next(call for call in fake.calls if call[1:3] == ["pr", "edit"])
     assert "adversarial-review-codex1" in edit and "passed-review-codex" in edit

@@ -22,8 +22,9 @@ half.
 THE FIX SHAPE IS DERIVATION, NOT DELETION. Validity is computed HERE, at the
 moment of use, from evidence that is already required to exist:
 
-    an approval holds only if a role-tagged review comment names the EXACT
-    current head SHA for that lane.
+    an approval holds only if a canonical review artifact names the EXACT
+    current head SHA for that lane and its immutable GitHub actor has current
+    repository review permission.
 
 That cannot fail open. There is no event to miss and no runner to be offline; if
 the head moved, the comparison simply fails. It is also what policy already says
@@ -135,10 +136,11 @@ def classify_approval(
     comments, oldest first. The NEWEST is what the lane last bound itself to.
 
     `unanswered` says this lane holds a refusal that was never discharged by a
-    later canonical same-lane decision at the exact current head or by an exact
-    authorized ``RETIRES <comment-id>`` record. It outranks every approval and is
-    therefore a strictly stronger condition than `refused`, which only describes
-    the lane's last chronological marker.
+    canonical withdrawal in the same lane, by a later-head approval, or by an
+    exact authorized ``RETIRES <comment-id>`` record. It outranks every approval
+    and is therefore a strictly stronger condition than `refused`, which only
+    describes the lane's last chronological marker. An approval at the same head
+    is conflicting evidence, not a withdrawal, and leaves the refusal unanswered.
 
     `refused` says this lane emitted a CHANGES-REQUESTED-AT that was never
     followed by a fresh approval. IT IS NOT DERIVABLE FROM `comment_shas`: a
@@ -164,9 +166,10 @@ def classify_approval(
     but indistinguishable from a refusal nobody had addressed, so the head read
     as freshly blocked and was re-dispatched as such.
 
-    WHAT CLEARS IT: a later canonical approval or withdrawal in the same lane at
-    the exact current head, or a precise retirement of the named refusal by a
-    currently authorized GitHub actor. A moved head alone is not a discharge.
+    WHAT CLEARS IT: a canonical withdrawal in the same lane at the exact current
+    head, a canonical current-head approval when the refusal names a different
+    head, or a precise retirement of the named refusal by a currently authorized
+    GitHub actor. A moved head alone and a same-head approval are not discharges.
 
     ⚠️ THIS RENAMES A STATE, IT DOES NOT MOVE AN ADMISSION BOUNDARY. Every
     caller that grants authority tests `== BOUND_CURRENT`, and neither REFUSED
@@ -176,8 +179,8 @@ def classify_approval(
     for REPORTING only.
     """
     # ⚠️ CHECKED BEFORE THE SHAs, AND THAT ORDER IS THE WHOLE POINT OF
-    # `unanswered`. A refusal with no later canonical same-lane decision and no
-    # authorized exact retirement outranks earlier approvals. `refused` cannot
+    # `unanswered`. A refusal with no canonical withdrawal, later-head approval,
+    # or authorized exact retirement outranks earlier approvals. `refused` cannot
     # carry this distinction by itself because a refusal contributes no SHA.
     #
     # Measured 2026-08-26 on hermit#2678, claude lane, one unmoved head:
@@ -472,22 +475,19 @@ def _undecorate_block(line: str) -> str:
        A plain binding refusal was live 3m42s before the merge. Grammar cannot
        account for a merge over a marker that parses.
 
-    ⚠️ THE ACTUAL MECHANISM: THIS MODULE HAS NO ENFORCING CONSUMER ON THE MERGE
-    PATH. ``grep -rn CHANGES-REQUESTED-AT`` across every .py/.sh/.rs in the
-    repository returns hits in this file and in its OWN TESTS, and nowhere else.
-    No lander, no merge gate and no workflow reads a refusal marker. This module
-    is reached only by ``ci-hub/health/pr_status.py``, which reports. The merge
-    itself is ``gh pr merge`` run by an agent, so the only thing standing between
-    a live refusal and a landing is whether that agent read the comments.
+    ⚠️ THE ACTUAL MECHANISM AT THE TIME: THIS MODULE HAD NO ENFORCING CONSUMER
+    ON THE MERGE PATH. No lander or merge gate read a refusal marker; this module
+    was reached only by ``ci-hub/health/pr_status.py``, which reported. The merge
+    command therefore depended on its operator having read the comments.
 
     2591 confirms it from the other side: at merge time it carried NO
     ``passed-review-claude`` label either -- that label was applied at
     18:12:00Z, three minutes AFTER the merge. Neither the marker path nor the
     label path was consulted.
 
-    So the grammar fix removes a real fail-open from the REPORT, and changes
-    nothing about what can be merged. Until a pre-merge caller exists, this
-    module can only observe.
+    The current lander and merge wrapper consume this shared parser before
+    mutation. Keeping the historical gap here explains why that wiring is
+    required; it is not a claim about the current path.
     """
     prev = None
     while prev != line:
@@ -964,6 +964,14 @@ def review_record_actor(record: dict[str, Any]) -> "str | None":
     return None
 
 
+def review_record_is_attestation(record: dict[str, Any]) -> bool:
+    """Whether a record configures critical review requirements at one head."""
+    return any(
+        line.strip() == "REVIEW-DISPATCH-ATTESTATION"
+        for line in marker_lines(str(record.get("body") or ""))
+    )
+
+
 def annotate_current_review_authority(
     records: "Sequence[dict[str, Any]]",
     repo: str,
@@ -971,8 +979,9 @@ def annotate_current_review_authority(
 ) -> list[dict[str, Any]]:
     """Bind review authority to the immutable GitHub actor's current permission.
 
-    For every record that can approve, refuse, or retire, independently read the
-    actor's current repository permission and retain the result beside the
+    For every record that can approve, refuse, retire, or configure critical
+    review requirements, independently read the actor's current repository
+    permission and retain the result beside the
     immutable ``user.login``/``author.login`` field. A disclosure and marker
     ``BY`` value are optional metadata only. Missing actors, malformed permission
     replies and API failures refuse the whole review read; none may degrade to
@@ -981,7 +990,10 @@ def annotate_current_review_authority(
     candidates: dict[int, str] = {}
     actors: set[str] = set()
     for position, record in enumerate(records):
-        if not review_record_has_authority(record):
+        if not (
+            review_record_has_authority(record)
+            or review_record_is_attestation(record)
+        ):
             continue
         actor = review_record_actor(record)
         if actor is None:
@@ -990,6 +1002,7 @@ def annotate_current_review_authority(
         actors.add(actor)
 
     authorized: dict[str, str] = {}
+    observed_permissions: dict[str, str] = {}
     for actor in sorted(actors):
         try:
             payload = read_json(f"repos/{repo}/collaborators/{actor}/permission")
@@ -1021,6 +1034,7 @@ def annotate_current_review_authority(
             for value in (role_name, permission)
             if isinstance(value, str) and value
         ]
+        observed_permissions[actor] = "/".join(permission_candidates)
         if not permission_candidates:
             raise ReviewRecordError(
                 f"current review authorization for GitHub actor {actor} is malformed"
@@ -1039,14 +1053,19 @@ def annotate_current_review_authority(
     annotated: list[dict[str, Any]] = []
     for position, record in enumerate(records):
         preserved = dict(record)
-        if review_record_has_authority(record):
+        if (
+            review_record_has_authority(record)
+            or review_record_is_attestation(record)
+        ):
             actor = candidates.get(position)
             preserved["_current_review_actor_authorized"] = (
                 actor is not None and actor in authorized
             )
             preserved["_current_review_actor_login"] = review_record_actor(record)
             preserved["_current_review_actor_permission"] = (
-                authorized.get(actor) if actor is not None else None
+                (authorized.get(actor) or observed_permissions.get(actor))
+                if actor is not None
+                else None
             )
         annotated.append(preserved)
     return annotated
@@ -1273,18 +1292,53 @@ def review_record_has_authority(record: dict[str, Any]) -> bool:
     return any(marker_assertion(line) for line in marker_lines(body))
 
 
+def review_record_decisions(
+    record: dict[str, Any],
+) -> set[tuple[str, str | None, str | None]]:
+    """Canonical authority decisions, excluding optional fleet-name metadata."""
+    decisions: set[tuple[str, str | None, str | None]] = set()
+    for line in marker_lines(str(record.get("body") or "")):
+        parsed = parse_marker(line)
+        if parsed is not None:
+            decisions.add((parsed[0], parsed[1], parsed[2]))
+    state = str(record.get("state") or "").upper()
+    if state == "APPROVED":
+        decisions.add((MARKER_APPROVED, None, review_record_head(record)))
+    elif state == "CHANGES_REQUESTED":
+        decisions.add((MARKER_REFUSED, None, review_record_head(record)))
+    elif state == "DISMISSED":
+        decisions.add((MARKER_WITHDRAWN, None, review_record_head(record)))
+    return decisions
+
+
+def _decisions_conflict(
+    left: set[tuple[str, str | None, str | None]],
+    right: set[tuple[str, str | None, str | None]],
+) -> bool:
+    """Whether ordering two simultaneous records could change review authority."""
+    for left_kind, left_lane, left_head in left:
+        for right_kind, right_lane, right_head in right:
+            same_lane = (
+                left_lane is None
+                or right_lane is None
+                or left_lane == right_lane
+            )
+            if same_lane and (left_kind, left_head) != (right_kind, right_head):
+                return True
+    return False
+
+
 def canonical_review_records(
     records: "Sequence[dict[str, Any]]",
 ) -> list[dict[str, Any]]:
     """Validate and order records from all GitHub review surfaces.
 
-    The three REST/GraphQL containers are independently ordered.  Concatenating
-    them makes endpoint choice decide whether an approval, refusal or withdrawal
-    appears later. Use the real creation/submission event time as the common
-    ordering key and the stable numeric GitHub id only as a deterministic
-    tie-breaker. Keep that event order distinct from body freshness: exact
-    retirement compares the latest versions and still requires a *strictly
-    later* version time, so the tie-break can never manufacture that evidence.
+    The three REST/GraphQL containers are independently ordered. Concatenating
+    them makes endpoint choice decide whether an approval, refusal, withdrawal,
+    or edited objection appears later. Mutable comments are interpreted from
+    their current bodies, so order those bodies by the version/update time that
+    made the currently-read text authoritative. A stable numeric GitHub id is a
+    deterministic tie-breaker only when tied records cannot change the decision.
     """
     ordered: list[tuple[datetime.datetime, int, dict[str, Any]]] = []
     seen: set[str] = set()
@@ -1325,21 +1379,31 @@ def canonical_review_records(
             raise ReviewRecordError(
                 f"review record {record_id} has no recognized review surface"
             )
-        ordered.append((event_time, int(record_id), record))
+        ordered.append((version_time, int(record_id), record))
 
     # Numeric database ids are stable only within their GitHub object type.  If
     # two authority-bearing records from different surfaces have the same
     # timestamp, sorting by those unrelated ids invents chronology.  Refuse the
     # ambiguity instead of deciding which verdict happened later.
     by_time: dict[datetime.datetime, list[dict[str, Any]]] = {}
-    for event_time, _record_id, record in ordered:
+    for version_time, _record_id, record in ordered:
         if review_record_has_authority(record):
-            by_time.setdefault(event_time, []).append(record)
-    for event_time, tied in by_time.items():
+            by_time.setdefault(version_time, []).append(record)
+    for version_time, tied in by_time.items():
         if len({str(record.get("_review_surface")) for record in tied}) > 1:
             raise ReviewRecordError(
                 "review authority chronology is ambiguous across GitHub surfaces at "
-                + event_time.isoformat()
+                + version_time.isoformat()
+            )
+        decisions = [review_record_decisions(record) for record in tied]
+        if any(
+            _decisions_conflict(left, right)
+            for index, left in enumerate(decisions)
+            for right in decisions[index + 1 :]
+        ):
+            raise ReviewRecordError(
+                "opposing review authority has the same version time at "
+                + version_time.isoformat()
             )
     ordered.sort(key=lambda item: (item[0], item[1]))
     return [record for _time, _id, record in ordered]
@@ -1619,6 +1683,33 @@ def accepted_exact_retirements(
     return accepted
 
 
+def unavailable_approval_evidence(
+    records: "Sequence[dict[str, Any]]", lane: str
+) -> list[dict[str, Any]]:
+    """Canonical approval artifacts that lack current GitHub actor authority."""
+    unavailable: list[dict[str, Any]] = []
+    for record in records:
+        if record.get("_current_review_actor_authorized") is not False:
+            continue
+        for line in marker_lines(str(record.get("body") or "")):
+            parsed = parse_marker(line)
+            if (
+                parsed is not None
+                and parsed[0] == MARKER_APPROVED
+                and parsed[1] == lane
+            ):
+                unavailable.append(
+                    {
+                        "id": comment_database_id(record),
+                        "url": record.get("html_url") or record.get("url"),
+                        "head": parsed[2],
+                        "github_actor": record.get("_current_review_actor_login"),
+                        "permission": record.get("_current_review_actor_permission"),
+                    }
+                )
+    return unavailable
+
+
 #: Inline code with prose around it is a citation. This is retained for the
 #: citation count only; whether the line is malformed is decided by the shared
 #: assertion boundary.
@@ -1654,7 +1745,9 @@ def lane_shas(
     `unanswered` is an OUT-PARAMETER carrying refusals that have not been
     discharged, as (sha, issuer-metadata) pairs, oldest first. A later canonical
     approval or withdrawal in the same lane at the exact current head discharges
-    earlier lane objections. ``RETIRES <comment-id>`` remains the stronger path
+    earlier lane objections only when the approval binds a different, later head.
+    A same-head approval conflicts with the objection and does not discharge it.
+    ``RETIRES <comment-id>`` remains the stronger path
     for resolving one named objection. A departed, missing, conflicting, or
     host-valued fleet name neither blocks nor authorizes either path; live records
     use the immutable GitHub actor and its current repository permission.
@@ -2090,12 +2183,21 @@ def lane_shas(
                     current_head is not None
                     and sha.casefold() == current_head.casefold()
                 ):
-                    # Chronology is the authority here: a later canonical
-                    # exact-head approval is the lane's substantive answer to
-                    # earlier objections, regardless of optional fleet metadata.
-                    outstanding.clear()
+                    # A later-head approval answers objections to older code. At
+                    # one head, approval plus refusal is conflicting evidence;
+                    # only a canonical withdrawal or exact RETIRES can clear it.
+                    outstanding[:] = [
+                        held
+                        for held in outstanding
+                        if sha_names_same_head(held[0], current_head)
+                    ]
                     if refusals is not None:
-                        refusals.clear()
+                        refusals[:] = [held[0] for held in outstanding]
+                    if outstanding:
+                        # Preserve the refusal in every caller, including older
+                        # consumers that ask only for `refusals` and do not pass
+                        # the richer `unanswered` out-parameter.
+                        continue
                 found.append(sha)
                 # Optional issuer metadata stays index-aligned with the binding.
                 # No admission or retirement decision compares this value.
@@ -2194,7 +2296,7 @@ def local_receipt_heads(comments: list[dict[str, Any]], repo: str) -> list[str]:
 def critical_classes_at_head(
     comments: list[dict[str, Any]], head: str
 ) -> set[str]:
-    """Return coordinator-attested critical classes bound to ``head``.
+    """Return canonical critical classes bound to ``head``.
 
     ``review-attest --critical`` is the existing closed-enum classification
     source.  Its durable comment carries the class and exact head together.
@@ -2202,6 +2304,8 @@ def critical_classes_at_head(
     """
     classes: set[str] = set()
     for comment in comments:
+        if comment.get("_current_review_actor_authorized") is False:
+            continue
         lines = [line.strip() for line in marker_lines(comment.get("body") or "")]
         if "REVIEW-DISPATCH-ATTESTATION" not in lines:
             continue
@@ -2245,8 +2349,15 @@ def collect_live(
         tracked = approvals + (
             [LOCALLY_VALIDATED_LABEL] if LOCALLY_VALIDATED_LABEL in labels else []
         )
-        if not tracked and pr_number is None:
-            return None
+        # All-open mode deliberately pays the three review-surface reads, plus
+        # permission reads for actors carrying authority, for every PR. A label
+        # may describe cache state after this read; it cannot be the precondition
+        # for discovering an unlabeled approval or objection. Measured 2026-09-05:
+        # Hermit 46 PRs -> 198 HTTP requests / 11.3s; Reverie 7 PRs -> 30 / 2.52s,
+        # with every paginated response fitting one page. The configured hourly
+        # runs plus the daily Hermit run peak at 426 requests in one hour (324
+        # REST, 102 GraphQL) before retries or reconciliation, against each
+        # API's observed 5,000/hour limit. Re-measure if population or cadence grows.
         head = pr["headRefOid"]
         comments = github_review_records(repo, pr["number"])
         runs = (gh_json(["api", f"repos/{repo}/actions/runs?head_sha={head}"]) or {}).get(
@@ -2266,11 +2377,13 @@ def collect_live(
             refusals: list[str] = []
             unanswered: list[tuple[str, "str | None"]] = []
             issuers: list[tuple[str, "str | None"]] = []
+            unavailable: list[dict[str, Any]] = []
             if label == LOCALLY_VALIDATED_LABEL:
                 lane = "local-validation"
                 shas = local_receipt_heads(comments, repo)
             else:
                 lane = label.rsplit("-", 1)[-1]
+                unavailable = unavailable_approval_evidence(comments, lane)
                 shas = lane_shas(
                     comments, lane, malformed, pr["number"], malformed_prs,
                     refusals=refusals,
@@ -2284,6 +2397,7 @@ def collect_live(
                     "label": label,
                     "source": "label",
                     "lane": lane,
+                    "review_authority_unavailable": unavailable,
                     "head": head,
                     "bound_to": shas[-1] if shas else None,
                     "binding_issuer": issuers[-1][1] if issuers else None,
@@ -2334,6 +2448,7 @@ def collect_live(
             refusals = []
             unanswered: list[tuple[str, "str | None"]] = []
             issuers: list[tuple[str, "str | None"]] = []
+            unavailable = unavailable_approval_evidence(comments, lane)
             shas = lane_shas(
                 comments, lane, malformed, pr["number"], malformed_prs,
                 refusals=refusals,
@@ -2348,7 +2463,7 @@ def collect_live(
             # layer down. Measured 2026-08-26 on hermit#2655: zero labels, two
             # lanes refused with blocking findings, zero rows, and the head kept
             # being re-dispatched as needing a reviewer.
-            if not shas and not refusals:
+            if not shas and not refusals and not unavailable:
                 continue
             rows.append(
                 {
@@ -2356,6 +2471,7 @@ def collect_live(
                     "label": None,
                     "source": "comment",
                     "lane": lane,
+                    "review_authority_unavailable": unavailable,
                     "head": head,
                     "bound_to": shas[-1] if shas else None,
                     "binding_issuer": issuers[-1][1] if issuers else None,
@@ -2473,9 +2589,11 @@ def collect_fixture(
             refusals = []
             unanswered: list[tuple[str, "str | None"]] = []
             issuers: list[tuple[str, "str | None"]] = []
+            unavailable: list[dict[str, Any]] = []
             if label == LOCALLY_VALIDATED_LABEL and "comments" in pr:
                 shas = local_receipt_heads(comments, pr.get("repo", "rrnewton/hermit"))
             elif "comments" in pr:
+                unavailable = unavailable_approval_evidence(comments, lane)
                 shas = lane_shas(
                     comments,
                     lane,
@@ -2500,6 +2618,7 @@ def collect_fixture(
                     "label": label,
                     "source": "label",
                     "lane": lane,
+                    "review_authority_unavailable": unavailable,
                     "head": pr["head"],
                     "bound_to": shas[-1] if shas else None,
                     "binding_issuer": issuers[-1][1] if issuers else None,
@@ -2536,6 +2655,7 @@ def collect_fixture(
             refusals = []
             unanswered: list[tuple[str, "str | None"]] = []
             issuers: list[tuple[str, "str | None"]] = []
+            unavailable = unavailable_approval_evidence(comments, lane)
             if "comments" in pr:
                 shas = lane_shas(
                     comments, lane, malformed, pr["number"], malformed_prs,
@@ -2547,7 +2667,7 @@ def collect_fixture(
             else:
                 shas = pr.get("lane_shas", {}).get(lane, [])
                 refusals = list(pr.get("lane_refused", {}).get(lane, []))
-            if not shas and not refusals:
+            if not shas and not refusals and not unavailable:
                 continue
             rows.append(
                 {
@@ -2555,6 +2675,7 @@ def collect_fixture(
                     "label": None,
                     "source": "comment",
                     "lane": lane,
+                    "review_authority_unavailable": unavailable,
                     "head": pr["head"],
                     "bound_to": shas[-1] if shas else None,
                     "binding_issuer": issuers[-1][1] if issuers else None,
@@ -3130,6 +3251,22 @@ def main() -> int:
     approved_and_unevaluated = [
         r for r in combined if (r["label"] or "").startswith("passed-review-")
     ]
+    permission_unavailable_details: list[dict[str, Any]] = []
+    seen_permission_details: set[tuple[object, ...]] = set()
+    for row in rows:
+        for detail in row.get("review_authority_unavailable") or []:
+            key = (
+                row.get("number"),
+                row.get("lane"),
+                detail.get("id"),
+                detail.get("head"),
+            )
+            if key in seen_permission_details:
+                continue
+            seen_permission_details.add(key)
+            permission_unavailable_details.append(
+                {"pr": row.get("number"), "lane": row.get("lane"), **detail}
+            )
 
     if a.as_json:
         print(json.dumps({"approvals": len(approval_rows),
@@ -3148,6 +3285,10 @@ def main() -> int:
                           "critical_lanes_missing": critical_lanes_missing,
                           "required_approval_sets": 1 if a.pr is not None else 0,
                           "approval_sets_missing": int(approval_set_missing),
+                          "review_permission_unavailable": len(
+                              permission_unavailable_details
+                          ),
+                          "review_permission_unavailable_details": permission_unavailable_details,
                           "authority_absent": len(bad), "not_holding": len(bad),
                           "approved_and_unevaluated": len(approved_and_unevaluated),
                           "binding_labels_and_unevaluated": len(combined),
@@ -3247,6 +3388,14 @@ def main() -> int:
                 f"  {r['state']:<13} PR {r['number']}  (no label, lane {r['lane']}, "
                 f"from comment)  {where}  head {r['head'][:12]}"
             )
+        for detail in permission_unavailable_details:
+            print(
+                "  REVIEW-PERMISSION-UNAVAILABLE  "
+                f"PR {detail['pr']} lane {detail['lane']} comment "
+                f"{detail.get('id') or 'unknown'} actor "
+                f"{detail.get('github_actor') or 'unknown'} permission "
+                f"{detail.get('permission') or 'unavailable'}"
+            )
         if approval_set_missing:
             print(f"  REQUIRED-APPROVAL-SET-MISSING  PR {a.pr} has zero review artifacts")
             # The distinction this tool could not previously draw. Both states
@@ -3328,6 +3477,14 @@ def main() -> int:
             summary = (
                 f"PR #{a.pr} has zero review artifacts; absence of review "
                 "evidence cannot satisfy the final landing boundary"
+            )
+        elif permission_unavailable_details:
+            state = "unbound"
+            summary = (
+                f"{len(permission_unavailable_details)} canonical review artifact(s) "
+                "cannot establish authority because current GitHub actor permission "
+                "is unavailable or insufficient; remedy: obtain a canonical exact-head "
+                "review from a GitHub actor with current repository review permission"
             )
         else:
             state = "unbound" if gating else ("reconciled" if reconciled else "ok")
@@ -3427,8 +3584,8 @@ def main() -> int:
             )
             print(
                 "refusal_issuer_remedy=after verifying the objection is resolved, a "
-                "currently authorized GitHub actor may post a later canonical approval "
-                "or withdrawal in the refusal's lane at the current head, or one exact "
+                "currently authorized GitHub actor may post a canonical withdrawal "
+                "in the refusal's lane at the current head, or one exact "
                 "withdrawal with RETIRES #<the exact refusing comment id>"
             )
         else:

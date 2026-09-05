@@ -185,6 +185,24 @@ def merge_stub_dir(root: Path, target_origin: Path, landed_commit: str) -> tuple
     log = bindir / "calls.log"
     log.write_text("")
     gh = bindir / "gh"
+    review_head = git_output(target_origin, "rev-parse", "refs/pull/1/head")
+    issue_comments = json.dumps(
+        [
+            [
+                {
+                    "id": 900001,
+                    "url": "https://github.com/fixture/repo/pull/1#issuecomment-900001",
+                    "user": {"login": "fixture-reviewer"},
+                    "body": f"APPROVED-AT: codex {review_head}",
+                    "created_at": "2026-09-05T00:00:01Z",
+                    "updated_at": "2026-09-05T00:00:01Z",
+                }
+            ]
+        ]
+    )
+    permission = json.dumps(
+        {"permission": "write", "user": {"login": "fixture-reviewer"}}
+    )
     gh.write_text(
         "#!/bin/bash\n"
         f'echo "gh $*" >> "{log}"\n'
@@ -194,6 +212,14 @@ def merge_stub_dir(root: Path, target_origin: Path, landed_commit: str) -> tuple
         "fi\n"
         "if [ \"$1\" = api ] && [ \"$2\" = graphql ]; then\n"
         "  echo '[{\"data\":{\"repository\":{\"pullRequest\":{\"reviews\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}}}]'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"$1\" = api ] && [[ \"$*\" == *\"/collaborators/\"* ]]; then\n"
+        f"  echo '{permission}'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"$1\" = api ] && [[ \"$*\" == *\"/issues/\"* ]]; then\n"
+        f"  echo '{issue_comments}'\n"
         "  exit 0\n"
         "fi\n"
         "if [ \"$1\" = api ]; then\n"
@@ -450,13 +476,17 @@ def self_change_cases() -> None:
         call_lines = [line for line in calls.splitlines() if line.startswith("gh ")]
         check(
             "the current-main copy performed admission before merging",
-            len(call_lines) == 5
+            len(call_lines) == 9
             and "/issues/1/comments" in call_lines[0]
             and "/pulls/1/comments" in call_lines[1]
             and "gh api graphql" in call_lines[2]
-            and "gh pr view" in call_lines[3]
-            and "gh pr merge" in call_lines[4],
-            f"expected four admission reads and one merge call; got:\n{calls}",
+            and "/collaborators/fixture-reviewer/permission" in call_lines[3]
+            and "/issues/1/comments" in call_lines[4]
+            and "/pulls/1/comments" in call_lines[5]
+            and "gh api graphql" in call_lines[6]
+            and "/collaborators/fixture-reviewer/permission" in call_lines[7]
+            and "gh pr merge" in call_lines[8],
+            f"expected two complete review reads and one merge call; got:\n{calls}",
         )
 
         # Transition direction: the version immediately before this fix wrote
@@ -517,13 +547,17 @@ def self_change_cases() -> None:
         ]
         check(
             "the legacy handoff performed admission before merging",
-            len(legacy_calls) == 5
+            len(legacy_calls) == 9
             and "/issues/1/comments" in legacy_calls[0]
             and "/pulls/1/comments" in legacy_calls[1]
             and "gh api graphql" in legacy_calls[2]
-            and "gh pr view" in legacy_calls[3]
-            and "gh pr merge" in legacy_calls[4],
-            f"expected four admission reads and one merge call; got:\n{legacy_log.read_text()}",
+            and "/collaborators/fixture-reviewer/permission" in legacy_calls[3]
+            and "/issues/1/comments" in legacy_calls[4]
+            and "/pulls/1/comments" in legacy_calls[5]
+            and "gh api graphql" in legacy_calls[6]
+            and "/collaborators/fixture-reviewer/permission" in legacy_calls[7]
+            and "gh pr merge" in legacy_calls[8],
+            f"expected two complete review reads and one merge call; got:\n{legacy_log.read_text()}",
         )
         leftovers = list(candidate.parent.glob(".gh-merge-verified-current-main-*"))
         check(
@@ -573,8 +607,26 @@ def race_cases() -> None:
         bindir = root / "trap"
         bindir.mkdir()
         gh = bindir / "gh"
+        review_head = git_output(origin, "rev-parse", "refs/pull/1/head")
+        issue_comments = json.dumps(
+            [
+                [
+                    {
+                        "id": 900001,
+                        "url": "https://github.com/fixture/repo/pull/1#issuecomment-900001",
+                        "user": {"login": "fixture-reviewer"},
+                        "body": f"APPROVED-AT: codex {review_head}",
+                        "created_at": "2026-09-05T00:00:01Z",
+                        "updated_at": "2026-09-05T00:00:01Z",
+                    }
+                ]
+            ]
+        )
+        permission = json.dumps(
+            {"permission": "write", "user": {"login": "fixture-reviewer"}}
+        )
         # The stub must answer the ADMISSION queries with valid JSON, or the
-        # changes-request and label guards exit 4 (unreadable) before the merge and
+        # objection and required-review checks refuse before the merge and
         # the race path below is never reached. Measured 2026-08-25: without this the
         # race assertions passed on an exit 4 that came from the wrong branch entirely.
         gh.write_text(
@@ -585,6 +637,14 @@ def race_cases() -> None:
             "fi\n"
             "if [ \"$1\" = api ] && [ \"$2\" = graphql ]; then\n"
             "  echo '[{\"data\":{\"repository\":{\"pullRequest\":{\"reviews\":{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null}}}}}}]'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$1\" = api ] && [[ \"$*\" == *\"/collaborators/\"* ]]; then\n"
+            f"  echo '{permission}'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"$1\" = api ] && [[ \"$*\" == *\"/issues/\"* ]]; then\n"
+            f"  echo '{issue_comments}'\n"
             "  exit 0\n"
             "fi\n"
             "if [ \"$1\" = api ]; then\n"

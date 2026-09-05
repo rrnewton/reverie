@@ -151,8 +151,18 @@ def comment_row(lane: str, head: str, state: str) -> dict:
         "source": "comment",
         "lane": lane,
         "head": head,
-        "bound_to": None,
+        "bound_to": head if state == R.BOUND_CURRENT else None,
         "state": state,
+    }
+
+
+def comment_only_report(head: str, lane: str = "codex") -> dict:
+    return {
+        "approval_set_missing": False,
+        "approval_sets_missing": 0,
+        "critical_label_missing": False,
+        "critical_lanes_missing": [],
+        "rows": [comment_row(lane, head, R.BOUND_CURRENT)],
     }
 
 
@@ -202,19 +212,94 @@ def test_a_stale_comment_refusal_blocks_because_a_self_withdrawal_is_not_a_disch
         raise AssertionError("an undischarged stale refusal must block")
 
 
-def test_a_comment_approval_still_does_not_admit() -> None:
-    """The original property this skip existed for, unchanged.
-
-    A comment-sourced APPROVAL must still not be admission evidence: it is
-    reported so an unlabeled-but-approved PR stops reading as unreviewed, and
-    that is all. Only the labelled row appears in the verdict.
-    """
+def test_a_current_comment_approval_admits_without_a_cache_label() -> None:
     head = "a" * 40
-    fixture = labelled_current(head)
-    fixture["rows"].append(comment_row("codex", head, R.BOUND_CURRENT))
+    fixture = comment_only_report(head)
     verdict = R.evaluate(fixture, Path("."), "b" * 40, head)
     assert verdict["state"] == "REVIEW_APPLIES"
     assert [a["lane"] for a in verdict["approvals"]] == ["codex"]
-    assert all(a["label"] for a in verdict["approvals"]), (
-        "an unlabelled comment row must never appear as admission evidence"
+    assert verdict["approvals"][0]["label"] == ""
+    assert verdict["approvals"][0]["source"] == "comment"
+
+
+def test_a_stale_comment_approval_cannot_use_mechanical_label_carry() -> None:
+    head = "a" * 40
+    fixture = comment_only_report(head)
+    fixture["rows"][0].update(
+        state=R.SUPERSEDED,
+        bound_to="c" * 40,
     )
+    try:
+        R.evaluate(fixture, Path("."), "b" * 40, head)
+    except R.Refused as error:
+        assert "canonical comment evidence" in str(error)
+        assert "SUPERSEDED" in str(error)
+    else:
+        raise AssertionError("a stale comment approval inherited mechanical authority")
+
+
+def test_an_empty_accepted_review_set_refuses() -> None:
+    head = "a" * 40
+    fixture = comment_only_report(head)
+    fixture["rows"] = [
+        {
+            "number": 2261,
+            "label": "locally-validated",
+            "source": "label",
+            "lane": "local-validation",
+            "head": head,
+            "bound_to": head,
+            "state": R.BOUND_CURRENT,
+        }
+    ]
+    try:
+        R.evaluate(fixture, Path("."), "b" * 40, head)
+    except R.Refused as error:
+        assert "no accepted review approval" in str(error)
+    else:
+        raise AssertionError("a report with no accepted review lane was authorized")
+
+
+def test_configured_two_lane_review_refuses_when_one_lane_is_missing() -> None:
+    head = "a" * 40
+    fixture = comment_only_report(head)
+    fixture["critical_lanes_missing"] = ["claude"]
+    try:
+        R.evaluate(fixture, Path("."), "b" * 40, head)
+    except R.Refused as error:
+        assert "critical review families missing: claude" in str(error)
+    else:
+        raise AssertionError("one lane satisfied a configured two-lane review")
+
+
+def test_cli_accepts_a_current_comment_approval_without_a_label(tmp_path: Path) -> None:
+    repo, _approved, current_base, current = mechanical_fixture(tmp_path)
+    fixture = tmp_path / "comment-approval.json"
+    fixture.write_text(json.dumps(comment_only_report(current)))
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(R.__file__)),
+            "--approval-json",
+            str(fixture),
+            "--repo-checkout",
+            str(repo),
+            "--current-base",
+            current_base,
+            "--current-head",
+            current,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    verdict = json.loads(result.stdout)
+    assert verdict["approvals"] == [
+        {
+            "basis": R.BOUND_CURRENT,
+            "label": "",
+            "lane": "codex",
+            "source": "comment",
+        }
+    ]

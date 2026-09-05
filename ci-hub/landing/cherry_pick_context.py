@@ -72,9 +72,6 @@ CONTEXT_REVIEW_RE = re.compile(
     rf"(?P<context>[0-9a-f]{{64}})\s+(?P<head>{SHA40})\s*$",
     re.IGNORECASE,
 )
-REVIEW_LABEL_RE = re.compile(r"^passed-review-(claude|codex)$")
-
-
 class Unverifiable(RuntimeError):
     """The observation could not establish a trustworthy verdict."""
 
@@ -204,23 +201,43 @@ def classify(payload: dict[str, Any], *, expected_head: str | None = None) -> Ve
         )
     digest = context_digest(sources, disclosures) if sources else None
 
-    labels = payload.get("labels") or []
-    label_names = [
-        str(label.get("name") if isinstance(label, dict) else label)
-        for label in labels
-    ]
-    approval_lanes = tuple(
-        sorted(
-            match.group(1)
-            for name in label_names
-            if (match := REVIEW_LABEL_RE.fullmatch(name))
-        )
-    )
-
     comments = payload.get("comments") or []
-    reviewed_context: dict[str, bool] = {}
+    if not isinstance(comments, list) or any(
+        not isinstance(comment, dict) for comment in comments
+    ):
+        raise Unverifiable("review comments are malformed")
     current_approval_lanes: set[str] = set()
+    malformed: list[tuple[str, str]] = []
+    for lane in approval_binding.LANES:
+        refusals: list[str] = []
+        unanswered: list[tuple[str, str | None]] = []
+        shas = approval_binding.lane_shas(
+            comments,
+            lane,
+            malformed,
+            refusals=refusals,
+            unanswered=unanswered,
+            current_head=head,
+        )
+        state = approval_binding.classify_approval(
+            head,
+            shas,
+            refused=bool(refusals),
+            refused_at=refusals[-1] if refusals else None,
+            unanswered=bool(unanswered),
+        )
+        if state == approval_binding.BOUND_CURRENT:
+            current_approval_lanes.add(lane)
+    if malformed:
+        raise Unverifiable(
+            "review evidence contains malformed marker(s): "
+            + "; ".join(sorted({line for _where, line in malformed}))
+        )
+
+    reviewed_context: dict[str, bool] = {}
     for comment in comments:
+        if comment.get("_current_review_actor_authorized") is False:
+            continue
         body = str(comment.get("body") if isinstance(comment, dict) else comment)
         lines = approval_binding.prose_lines(body)
         approvals = {
@@ -230,7 +247,6 @@ def classify(payload: dict[str, Any], *, expected_head: str | None = None) -> Ve
             and parsed[0] == approval_binding.MARKER_APPROVED
             and parsed[2].lower() == head
         }
-        current_approval_lanes.update(approvals)
         for line in lines:
             marker = CONTEXT_REVIEW_RE.fullmatch(_undecorate(line))
             if not marker:
@@ -241,12 +257,10 @@ def classify(payload: dict[str, Any], *, expected_head: str | None = None) -> Ve
             if lane in approvals and marker_head == head and marker_context == digest:
                 reviewed_context[lane] = True
 
-    # The final lander separately verifies the passed-review label cache against
-    # APPROVED-AT authority. Here, those labels define WHICH approval lanes the
-    # PR relies on. Offline/diagnostic use without labels still requires every
-    # current exact-head approval lane, and absence of both remains a refusal for
-    # a cherry-picked unit rather than an accidental pass.
-    required_lanes = approval_lanes or tuple(sorted(current_approval_lanes))
+    # Exact-head canonical comment artifacts define which review lanes this PR
+    # relies on. passed-review-* labels are reconciliation caches and cannot add,
+    # remove, or override a lane here.
+    required_lanes = tuple(sorted(current_approval_lanes))
     if sources and not required_lanes:
         required_lanes = ("<no-current-review-lane>",)
 
@@ -306,12 +320,10 @@ def collect_live(repo: str, pr: int) -> dict[str, Any]:
     )
     if not isinstance(payload, dict):
         raise Unverifiable("GitHub returned no PR object")
-    comments = _gh_json(
-        ["api", f"repos/{repo}/issues/{pr}/comments?per_page=100", "--paginate"]
-    )
-    if not isinstance(comments, list):
-        raise Unverifiable("GitHub returned a non-list comment response")
-    payload["comments"] = comments
+    try:
+        payload["comments"] = approval_binding.github_review_records(repo, pr)
+    except approval_binding.GitHubUnavailable as error:
+        raise Unverifiable(str(error)) from error
     return payload
 
 

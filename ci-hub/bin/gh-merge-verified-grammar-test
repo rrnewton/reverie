@@ -438,9 +438,9 @@ CASES = [
       {"id": 900003,
        "created_at": _time(3), "updated_at": _time(3),
        "body": by("hermit-008", f"CHANGES-REQUESTED-AT: claude {SHA}")}], True),
-    ("a later same-lane approval clears regardless of fleet-name metadata",
+    ("a same-head approval does not withdraw an objection",
      [by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}"),
-      by("hermit-005", f"APPROVED-AT: claude {SHA}")], False),
+      by("hermit-005", f"APPROVED-AT: claude {SHA}")], True),
     # Missing fleet-name metadata cannot make an exact-head lane decision inert.
     ("unsigned withdrawal clears by lane and chronology",
      [by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}"),
@@ -462,29 +462,55 @@ STALE_HEAD = "1f4982f7ab40" + "0" * 28
 STALE_OLD = "94d9a86545d7" + "0" * 28
 
 
-def probe_labels(module, labels, comments) -> bool:
-    """True when the lander REFUSES on a stale passed-review label."""
+def probe_review_set(module, labels, comments) -> bool:
+    """True when canonical comments do not satisfy the required review set."""
     issue = [_comment_record(item, i) for i, item in enumerate(comments, 1)]
     _install_review_responses(module, issue=issue, labels=labels)
-    return len(module.stale_review_labels("1", "o/r", STALE_HEAD)) > 0
+    return len(module.review_admission_problems("1", "o/r", STALE_HEAD)) > 0
 
 
-# A label outlives the sha it was earned at. https://github.com/rrnewton/hermit/pull/2601
-# merged with authoritative=0 because the pre-rebase passed-review-codex label
-# admitted it. The last case is the scope guard: no label, no new requirement.
-LABEL_CASES = [
-    ("stale label refuses (the #2601 shape)",
+# Canonical comments are authority; passed-review labels are cache state and
+# cannot alter the required set in either direction.
+REVIEW_SET_CASES = [
+    ("stale cached approval has no current authority (the #2601 shape)",
      ["passed-review-codex"], [f"APPROVED-AT: codex {STALE_OLD}"], True),
-    ("re-bound label admits",
+    ("current canonical approval satisfies the one-lane set",
+     [], [f"APPROVED-AT: codex {STALE_HEAD}"], False),
+    ("stale unrelated cache label cannot block current canonical approval",
+     ["passed-review-claude"], [f"APPROVED-AT: codex {STALE_HEAD}"], False),
+    ("current canonical approval admits despite an older cached binding",
      ["passed-review-codex"],
      [f"APPROVED-AT: codex {STALE_OLD}", f"APPROVED-AT: codex {STALE_HEAD}"], False),
-    ("label with no binding at all refuses",
+    ("cache label with no binding at all refuses",
      ["passed-review-codex"], ["looks good"], True),
-    ("missing lane token does not rescue a stale label",
+    ("missing lane token does not satisfy the review set",
      ["passed-review-codex"],
      [f"APPROVED-AT: codex {STALE_OLD}", f"APPROVED-AT {STALE_HEAD}"], True),
-    ("no passed-review label imposes no requirement",
-     [], [f"APPROVED-AT: codex {STALE_OLD}"], False),
+    ("no cache label cannot make stale review evidence current",
+     [], [f"APPROVED-AT: codex {STALE_OLD}"], True),
+    (
+        "critical review set refuses when the claude lane is missing",
+        [],
+        [
+            f"APPROVED-AT: codex {STALE_HEAD}",
+            "REVIEW-DISPATCH-ATTESTATION\n"
+            "critical-class: hermit-syscall\n"
+            f"head: {STALE_HEAD}",
+        ],
+        True,
+    ),
+    (
+        "critical review set passes with both canonical lanes",
+        [],
+        [
+            f"APPROVED-AT: codex {STALE_HEAD}",
+            f"APPROVED-AT: claude {STALE_HEAD}",
+            "REVIEW-DISPATCH-ATTESTATION\n"
+            "critical-class: hermit-syscall\n"
+            f"head: {STALE_HEAD}",
+        ],
+        False,
+    ),
     (
         "current-head exact retirement preserves the repaired head's approval",
         ["passed-review-claude"],
@@ -719,8 +745,8 @@ def main() -> int:
     else:
         print("  PASS  mixed body identifies only the later assertion")
 
-    for name, labels, comments, want_refuse in LABEL_CASES:
-        got = probe_labels(lander, labels, comments)
+    for name, labels, comments, want_refuse in REVIEW_SET_CASES:
+        got = probe_review_set(lander, labels, comments)
         ok = got == want_refuse
         print(f"  {'PASS' if ok else 'FAIL'}  {name}: refuses={got} want={want_refuse}")
         if not ok:
@@ -753,7 +779,7 @@ def main() -> int:
 
     total = (
         len(CASES)
-        + len(LABEL_CASES)
+        + len(REVIEW_SET_CASES)
         + len(NATIVE_RETIREMENT_CASES)
         + len(NATIVE_VERSION_CASES)
         + len(INLINE_COMMENT_CASES)

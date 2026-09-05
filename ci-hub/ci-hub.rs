@@ -154,7 +154,7 @@ LANDING AND COORDINATION ACTIONS
   land-lock               Acquire, renew, inspect, or release the fleet landing mutex
   apply-local-label       Reconcile the derived label with exact-head validation truth
   publish-commit-status   Publish a qualifying local receipt on its exact commit
-  review-attest           Record a coordinator's typed exact-head review outcome
+  review-attest           Verify an exact-head review comment and reconcile cache labels
   ci-mode                 Inspect or change constrained GH Actions admission mode
   batch                   Inspect or edit the named current GH Actions batch
   ci-timeout              Cancel hosted runs starved waiting to start; reroute to local
@@ -271,7 +271,7 @@ enum HubCommand {
     ApplyLocalLabel(ApplyLocalLabelArgs),
     /// Publish a qualifying local validation receipt as a GitHub commit status.
     PublishCommitStatus(PublishCommitStatusArgs),
-    /// Record an exact-head review outcome and reconcile cache labels.
+    /// Verify an exact-head review comment and reconcile cache labels.
     ReviewAttest(ReviewAttestArgs),
     /// Operate the shared-file landing mutex.
     LandLock(landing_lock::LandLockArgs),
@@ -836,7 +836,7 @@ struct ReviewAttestArgs {
     /// Exact lowercase 40-hex head reviewed by the dispatched reviewer.
     #[arg(long)]
     head: String,
-    /// Coordinator-selected reviewer family; unknown values fail before mutation.
+    /// Review family named by the canonical comment; unknown values fail before mutation.
     #[arg(long, value_enum)]
     family: ReviewFamily,
     /// Review outcome; unknown values fail before mutation.

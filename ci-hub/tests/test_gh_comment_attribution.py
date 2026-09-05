@@ -636,6 +636,22 @@ class FleetGhTest(unittest.TestCase):
         gate = load_changes_requested_gate()
         self.assertEqual(gate.evaluate([body], HEAD)[0], gate.OK)
 
+    def test_no_metadata_malformed_approval_is_refused_before_write(self) -> None:
+        self.install_failing_identity_stub()
+        result = self.run_shim(
+            "pr", "comment", "42", "--body", "APPROVED-AT: codex short",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("verdict-shaped line(s) that will NOT bind", result.stderr)
+        self.assertFalse(self.capture.exists())
+
+    def test_no_metadata_bodyless_pr_create_is_refused_before_write(self) -> None:
+        self.install_failing_identity_stub()
+        result = self.run_shim("pr", "create", "--title", "body required")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no supported --body/--body-file", result.stderr)
+        self.assertFalse(self.capture.exists())
+
     def test_create_without_any_body_is_refused_rather_than_passed_through(self) -> None:
         """Fail closed: a body-less create would otherwise be the hole this
         boundary exists to close."""

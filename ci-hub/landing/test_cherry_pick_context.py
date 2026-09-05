@@ -35,7 +35,7 @@ def payload(*, disclosed: bool, reviewed: bool) -> dict:
         "headRefOid": HEAD,
         "body": f"Historical source mentioned outside the section: {SOURCE}\n\n"
         f"## Summary\n\n{summary}\n\n## Validation\n\nfocused tests",
-        "labels": [{"name": "passed-review-codex"}],
+        "labels": [],
         "commits": [
             {
                 "oid": CARRIED,
@@ -95,13 +95,10 @@ class CherryPickContextTests(unittest.TestCase):
         original = gate.approval_binding.parse_marker
         try:
             gate.approval_binding.parse_marker = lambda _line: None
-            verdict = gate.classify(fixture)
+            with self.assertRaises(gate.Unverifiable):
+                gate.classify(fixture)
         finally:
             gate.approval_binding.parse_marker = original
-
-        self.assertFalse(verdict.passes)
-        self.assertEqual(verdict.approval_lanes, ("codex",))
-        self.assertEqual(verdict.units[0].missing_review_lanes, ("codex",))
 
     def test_shared_approval_decoration_and_code_block_rules_apply(self) -> None:
         fixture = payload(disclosed=True, reviewed=True)
@@ -133,7 +130,10 @@ class CherryPickContextTests(unittest.TestCase):
         ]
         verdict = gate.classify(fixture)
         self.assertFalse(verdict.passes)
-        self.assertEqual(verdict.units[0].missing_review_lanes, ("codex",))
+        self.assertEqual(
+            verdict.units[0].missing_review_lanes,
+            ("<no-current-review-lane>",),
+        )
 
     def test_disclosure_without_new_context_review_still_refuses(self) -> None:
         verdict = gate.classify(payload(disclosed=True, reviewed=False))
@@ -226,6 +226,37 @@ class CherryPickContextTests(unittest.TestCase):
         self.assertFalse(verdict.passes)
         self.assertEqual(verdict.units[0].reviewed_lanes, ("codex",))
         self.assertEqual(verdict.units[0].missing_review_lanes, ("claude",))
+
+    def test_comment_lanes_are_authority_and_labels_cannot_change_them(self) -> None:
+        codex_only = payload(disclosed=True, reviewed=True)
+        codex_only["labels"] = []
+        without_labels = gate.classify(codex_only)
+        self.assertTrue(without_labels.passes)
+        self.assertEqual(without_labels.approval_lanes, ("codex",))
+
+        codex_only["labels"] = [{"name": "passed-review-claude"}]
+        stale_unrelated_label = gate.classify(codex_only)
+        self.assertTrue(stale_unrelated_label.passes)
+        self.assertEqual(stale_unrelated_label.approval_lanes, ("codex",))
+
+        both_comments = payload(disclosed=True, reviewed=True)
+        both_comments["comments"].append(
+            {"body": f"APPROVED-AT: claude {HEAD}"}
+        )
+        both_comments["labels"] = [{"name": "passed-review-codex"}]
+        missing_claude_context = gate.classify(both_comments)
+        self.assertFalse(missing_claude_context.passes)
+        self.assertEqual(missing_claude_context.approval_lanes, ("claude", "codex"))
+        self.assertEqual(
+            missing_claude_context.units[0].missing_review_lanes,
+            ("claude",),
+        )
+
+        both_comments["labels"] = []
+        no_labels = gate.classify(both_comments)
+        self.assertFalse(no_labels.passes)
+        self.assertEqual(no_labels.approval_lanes, ("claude", "codex"))
+        self.assertEqual(no_labels.units[0].missing_review_lanes, ("claude",))
 
     def test_malformed_provenance_is_unverifiable_not_absent(self) -> None:
         fixture = payload(disclosed=True, reviewed=True)

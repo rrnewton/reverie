@@ -590,8 +590,6 @@ def rewrite(
     disclosure: disclosure_tag.Disclosure | None,
     verdict: str | None = None,
 ) -> list[str]:
-    if disclosure is None and verdict is None:
-        return args
     if len(args) >= 2 and args[:2] in (["pr", "comment"], ["issue", "comment"]):
         return rewrite_body_option(args, disclosure, required=False, verdict=verdict)
     if len(args) >= 2 and args[:2] in CREATED_BODY_COMMANDS + EDITED_BODY_COMMANDS:

@@ -21,6 +21,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import bounded_capture  # noqa: E402
 
@@ -31,11 +32,7 @@ UNCHANGED_RANGE_ROW = re.compile(
 )
 BOUND_CURRENT = "BOUND_CURRENT"
 SUPERSEDED = "SUPERSEDED"
-# ⚠️ A COMMENT-SOURCED ROW IS NOT ADMISSION EVIDENCE, BUT IT IS STILL A REFUSAL.
-# `approval_binding.py` reports these states; the loop below must not let one
-# through merely because no `passed-review-*` label carries it. See the blocking
-# branch in `evaluate` for the two heads this was measured on.
-BLOCKING_STATES = ("REFUSED", "REFUSED_STALE", "UNDETERMINED")
+REVIEW_LANES = frozenset({"claude", "codex"})
 
 
 class Refused(RuntimeError):
@@ -160,41 +157,6 @@ def evaluate(
 
     accepted: list[dict[str, Any]] = []
     for row in rows:
-        # Comment-discovered rows (label None) are REPORTED by approval_binding.py
-        # so an unlabeled-but-approved PR stops reading as unreviewed. They are not
-        # admission evidence here: treating one as authority would let a PR land
-        # without a passed-review-* label, which is a policy change and not this
-        # one. Skipping them keeps the landing boundary exactly where it was.
-        #
-        # ⚠️ BUT SKIPPING THEM WHOLESALE FAILED OPEN ON REFUSALS, AND THAT IS THE
-        # OPPOSITE OF WHAT THE SKIP WAS FOR. Not admitting a comment APPROVAL is
-        # conservative; not honouring a comment REFUSAL is permissive, and the
-        # same `continue` did both. A codex lane that files
-        # `CHANGES-REQUESTED-AT` and never gets a `passed-review-codex` label --
-        # which is the normal state of a refusal, since nobody attests one --
-        # was invisible to this gate while `approval_binding.py` reported it
-        # plainly.
-        #
-        # MEASURED 2026-08-26 against main 9d4c998cfa5a, the only two open PRs
-        # this gate authorized:
-        #   hermit#2680  latest codex marker is CHANGES-REQUESTED-AT at the
-        #                CURRENT head 642a2990, never withdrawn -> authorized
-        #   hermit#2668  codex refusal withdrawn by hermit-001, who is the PR
-        #                AUTHOR. `approval_binding` correctly refuses a
-        #                self-withdrawal and still reports REFUSED_STALE; this
-        #                gate authorized anyway, defeating that rule entirely
-        # Both would have landed over a standing refusal. Neither is a label
-        # problem, so no label change could have caught it.
-        if row.get("source") == "comment":
-            state = row.get("state")
-            if state in BLOCKING_STATES:
-                lane = str(row.get("lane") or "unknown")
-                raise Refused(
-                    f"the {lane} lane is {state} in a comment with no "
-                    "passed-review label to carry it; a refusal blocks whether "
-                    "or not anyone attested it"
-                )
-            continue
         if not isinstance(row, dict):
             raise Refused("approval-binding report contains a malformed row")
         report_head = exact_sha(row.get("head"), "approval report head")
@@ -205,9 +167,27 @@ def evaluate(
         lane = str(row.get("lane") or "")
         label = str(row.get("label") or "")
         state = row.get("state")
-        if state == BOUND_CURRENT:
-            accepted.append({"lane": lane, "label": label, "basis": BOUND_CURRENT})
+        source = str(row.get("source") or "label")
+        if lane not in REVIEW_LANES:
             continue
+        if state == BOUND_CURRENT:
+            accepted.append(
+                {
+                    "lane": lane,
+                    "label": label,
+                    "source": source,
+                    "basis": BOUND_CURRENT,
+                }
+            )
+            continue
+        # Comment authority is exact-head only. Mechanical carry remains the
+        # narrow alternative for a previously attested label row; a stale
+        # comment cannot acquire authority from a cache or from this helper.
+        if source == "comment":
+            raise Refused(
+                f"the {lane or 'review'} lane is {state or 'missing-state'} "
+                "in canonical comment evidence, not bound to the current head"
+            )
         if state != SUPERSEDED:
             raise Refused(
                 f"{label or lane or 'approval'} is {state or 'missing-state'}, "
@@ -219,10 +199,14 @@ def evaluate(
             {
                 "lane": lane,
                 "label": label,
+                "source": source,
                 "basis": "MECHANICAL_REBASE",
                 "proof": proof,
             }
         )
+
+    if not accepted:
+        raise Refused("approval-binding report contains no accepted review approval")
 
     return {
         "authorized": True,

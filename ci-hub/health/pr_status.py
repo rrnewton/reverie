@@ -713,58 +713,39 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
     has_approval: dict[str, bool] = {}
     unlabeled_bindings: list[str] = []
     for reviewer, expected in review_contract.PASSED_REVIEW_LABELS.items():
-        if expected not in labels:
-            has_approval[reviewer] = False
-            # ⚠️ SAME LABEL-AS-INDEX DEFECT AS approval_binding.collect(): without
-            # this the comments are never consulted, so a correctly-formed
-            # `APPROVED-AT: <lane> <head>` on a PR nobody labelled reported
-            # exactly like a PR nobody reviewed. Measured 2026-08-25: 25 of 28
-            # open hermit PRs carried no passed-review-* label and five of those
-            # carried a binding no scanner read.
-            #
-            # has_approval STAYS FALSE. The label is still what confers authority
-            # here, and agent(hermit-030) routes off these lane counts, so
-            # flipping it would silently reroute the fleet. This only surfaces
-            # the binding as a diagnostic so the difference is visible.
-            unlabeled_refusals: list[str] = []
-            unlabeled = approval_authority.classify_approval(
-                head,
-                approval_authority.lane_shas(
-                    comments,
-                    reviewer,
-                    malformed,
-                    refusals=unlabeled_refusals,
-                    current_head=head,
-                ),
-                refused=bool(unlabeled_refusals),
-            )
-            if unlabeled == approval_authority.BOUND_CURRENT:
-                unlabeled_bindings.append(f"unlabeled-binding:{reviewer}")
-            elif unlabeled == approval_authority.REFUSED:
-                # ⚠️ A BLOCKED LANE IS NOT A MISSING ONE, and this column is what
-                # the fleet routes reviewers from. Unlabelled + refused reported
-                # as nothing at all, so a head a reviewer had BLOCKED was
-                # indistinguishable from a head nobody had opened -- and it was
-                # re-dispatched for review instead of routed back to its author.
-                # has_approval stays False either way; this only surfaces the
-                # difference, exactly as the unlabeled-binding case above does.
-                unlabeled_bindings.append(
-                    f"unlabeled-refusal:{reviewer}@{unlabeled_refusals[-1][:12]}"
-                )
-            continue
         refusals: list[str] = []
+        unanswered: list[tuple[str, str | None]] = []
         shas = approval_authority.lane_shas(
             comments,
             reviewer,
             malformed,
             refusals=refusals,
+            unanswered=unanswered,
             current_head=head,
         )
         binding = approval_authority.classify_approval(
-            head, shas, refused=bool(refusals)
+            head,
+            shas,
+            refused=bool(refusals),
+            refused_at=refusals[-1] if refusals else None,
+            unanswered=bool(unanswered),
         )
         has_approval[reviewer] = binding == approval_authority.BOUND_CURRENT
-        if not has_approval[reviewer]:
+        if expected not in labels:
+            # Comment evidence decides authority. The missing label remains
+            # visible as a cache-reconciliation diagnostic, but cannot remove
+            # a canonical exact-head approval or turn a refusal into absence.
+            if has_approval[reviewer]:
+                unlabeled_bindings.append(f"unlabeled-binding:{reviewer}")
+            elif binding in (
+                approval_authority.REFUSED,
+                approval_authority.REFUSED_STALE,
+            ):
+                refused_at = refusals[-1][:12] if refusals else "unknown"
+                unlabeled_bindings.append(
+                    f"unlabeled-refusal:{reviewer}@{refused_at}"
+                )
+        elif not has_approval[reviewer]:
             # Keep the cache visible as a diagnostic, but give it zero current
             # authority. Missing APPROVED-AT is ABSENT approval, never a softer
             # present-but-unverified state.

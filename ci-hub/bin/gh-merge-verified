@@ -101,9 +101,11 @@ hypothetical. On 2026-08-25 `git ls-remote` succeeded against github.com while
 condition forced two handoffs. A verifier that cannot run where the landings
 happen verifies nothing.
 
-Verification here is PURE GIT: the only `gh` invocation in this file is the
-merge itself, and `--verify-only` never reaches it. `gh-merge-verified-test`
-asserts that with a tripwire `gh` so the property cannot decay silently.
+Post-merge verification here is PURE GIT. A normal merge first uses the GitHub
+API to verify canonical review comments and current actor permission, then runs
+the merge; `--verify-only` skips both admission and merge and reaches no `gh`
+invocation. `gh-merge-verified-test` asserts that with a tripwire `gh` so the
+property cannot decay silently.
 
 The stronger ancestry check is worth having back IF it is added as an optional
 extra on top of the git-only path, never as the only way to verify.
@@ -139,13 +141,13 @@ EXIT
     4  COULD NOT DETERMINE: the check did not complete. Distinct from 3 on
        purpose, so a broken verifier is never read as a clean landing.
     5  REFUSED TO MERGE: an unresolved CHANGES-REQUESTED-AT applies to this head.
-       Nothing was attempted. Only a later canonical same-lane decision or an
-       authorized exact RETIRES record discharges it.
-    6  REFUSED TO MERGE: a `passed-review-<lane>` label asserts an approval that is
-       NOT bound to this head -- the label outlived the sha it was earned at.
-       Nothing was attempted. Scoped narrowly: a pull request carrying no
-       passed-review label is untouched, so this imposes no new review
-       requirement; it only stops a stale cache from admitting.
+       Nothing was attempted. A same-head objection requires a canonical
+       withdrawal or an authorized exact RETIRES record; an approval at a later
+       head can answer an objection to the earlier code.
+    6  REFUSED TO MERGE: the required canonical review set is absent at this
+       exact head. An ordinary change requires one exact-head review lane; a
+       critical change requires both lanes. Labels are reconciliation caches and
+       cannot add, remove, or satisfy a required lane. Nothing was attempted.
     7  REFUSED TO MERGE: this tool cannot prove it is the version on dev-hermit main,
        so its own admission checks may be ABSENT from the copy being run. A stale
        lander does not fail -- it SKIPS the checks and reports a clean landing, which
@@ -154,7 +156,7 @@ EXIT
        this file, pass `--run-current-main-copy`; the modified copy fetches and starts
        the exact main copy, and only that main copy performs admission and the merge.
     8  ADMISSION COULD NOT RUN: a pre-merge check could not resolve what it needed
-       (comments, reviews or labels), so it can neither admit nor refuse. NOTHING WAS
+       (comments, reviews, or actor permission), so it can neither admit nor refuse. NOTHING WAS
        ATTEMPTED.
        ⚠️ SPLIT FROM 4 BECAUSE THEY SHARED A BOUNDARY AND NOT A MEANING. An exit code
        passed on from an INNER call carries the inner meaning, not the outer one: the
@@ -171,9 +173,10 @@ WHAT A CALLER SHOULD DO WITH EACH, BECAUSE A CODE IS ONLY USEFUL IF IT IMPLIES A
 ------------------------------------------------------------------------------------
 An exit code shared by two conditions is a COLLAPSED VALUE: the caller cannot tell
 whether ITS ENVIRONMENT is wrong or THE HEAD is, and those want opposite responses.
-That was briefly true here -- a stale-TOOL refusal and a stale-LABEL refusal both
-exited 6 -- and it is the same shape as a failed F_GETFL mapped to the same zero as
-success. The codes are split now; the actions are written down so they stay split.
+That was briefly true here -- a stale-tool refusal and a pull-request admission
+refusal both exited 6 -- and it is the same shape as a failed F_GETFL mapped to
+the same zero as success. The codes are split now; the actions are written down
+so they stay split.
 
   RETRY IS REASONABLE -- the condition is about THIS RUN, not the pull request:
     3  re-run once. Usually the stale refs/pull/N/head race; if the verdict changes,
@@ -188,11 +191,10 @@ success. The codes are split now; the actions are written down so they stay spli
        pull request is being questioned.
 
   DO NOT RETRY -- the condition is about the PULL REQUEST; re-running changes nothing:
-    5  a reviewer refused and no later canonical same-lane decision or authorized
-       exact RETIRES record establishes that the objection was resolved.
-    6  the label is a stale cache of an approval earned at another sha. Re-request the
-       lane at the CURRENT head. Removing the label to get past this is defeating the
-       check, not satisfying it.
+    5  a reviewer refused and no canonical withdrawal, later-head approval, or
+       authorized exact RETIRES record establishes that the objection was resolved.
+    6  the required exact-head review set is incomplete. Obtain the missing canonical
+       approval comment(s); adding or removing a cache label changes no authority.
 
   NEITHER -- a human reads these before anything else happens:
     2  GitHub refused the merge: conflicts, protection, or a lost race.
@@ -748,6 +750,7 @@ def _github_review_records(pr: str, repo: str, grammar) -> "list[dict] | None":
     )
     if rc != 0:
         return None
+
     def read_permission(path: str) -> object:
         permission_rc, permission_output, _ = run(
             gh_argv(["gh", "api", path])
@@ -790,11 +793,12 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     was actually answered.
 
     THE RULE IS EXACT-HEAD AND FAILS CLOSED:
-      * a refusal naming this head blocks until a later canonical decision in the
-        same lane at this exact head records that the objection was resolved.
-      * a refusal on an earlier sha remains visible until a later canonical lane
-        decision at the current head or an authorized exact retirement records
-        that the objection was resolved. A push alone proves neither.
+      * a refusal naming this head blocks until a canonical withdrawal or an
+        authorized exact retirement records that the objection was resolved;
+        a generic approval at the same head is conflicting evidence.
+      * a refusal on an earlier sha remains visible until a canonical approval
+        or withdrawal at the current head, or an authorized exact retirement,
+        records that the objection was resolved. A push alone proves neither.
       * a currently authorized GitHub actor may record that one exact objection is resolved
         with CHANGES-REQUESTED-WITHDRAWN-AT in the refusal's lane at the current
         repaired head plus
@@ -825,56 +829,15 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
         return ["__UNREADABLE__"]
     return [str(item.get("message") or "unresolved review objection") for item in unresolved]
 
-def stale_review_labels(pr: str, repo: str, head: str) -> list[str]:
-    """`passed-review-<lane>` labels whose lane is NOT bound to THIS head.
+def review_admission_problems(pr: str, repo: str, head: str) -> list[str]:
+    """Missing canonical exact-head review evidence for the configured set.
 
-    ⚠️ A LABEL OUTLIVES THE SHA IT WAS EARNED AT. That is the whole defect. The
-    approval was genuine; the head then moved and the label kept saying yes.
-    Measured on https://github.com/rrnewton/hermit/pull/2601, merged
-    2026-08-25T18:57:53Z with authoritative=0: the codex lane bound at 94d9a865,
-    hermit-012 pushed a rebase to 1f4982f7 which voids the lane, and the claude
-    reviewer posted `APPROVED-AT 1f4982f7...` with NO LANE TOKEN so it parsed as
-    malformed rather than as a lane. Comment evidence was therefore empty -- and
-    the pre-rebase `passed-review-codex` label admitted the merge anyway.
-
-    THIS IS THE DANGEROUS INVERSION of the stranded-approval failure. When a
-    rebase strands approvals the binding is LOST: work stalls, visibly, and
-    somebody re-reviews. Here the binding is STALE: the merge goes through and
-    nothing says so. Same mechanism, opposite direction, and only one of them is
-    safe to get wrong.
-
-    SCOPE, deliberately narrow. This does NOT impose a review requirement on
-    pull requests that never claimed one -- a pull request with no
-    `passed-review-*` label is untouched. It refuses only when a label ASSERTS an
-    approval that the evidence no longer supports at this head. The label is a
-    cache; this makes the cache unable to outlive what it caches.
-
-    Returns the human-readable rows to print, or ``["__UNREADABLE__"]`` if the
-    state could not be established -- which is refused as an absence of an
-    answer, never treated as permission.
-
-    A marker's optional issuer is audit metadata. It is deliberately not used to
-    accept or refuse the lane: transient fleet names cannot establish reviewer
-    independence, while the exact head and lane remain mandatory.
+    An ordinary change requires one review lane. A current-head critical-class
+    attestation requires both existing lanes. Canonical comment artifacts and
+    current GitHub actor permission are authority; passed-review labels are
+    cache state and are deliberately absent from this decision.
     """
     grammar = _load_grammar()
-    rc, out, _ = run(gh_argv(["gh", "pr", "view", pr, "--repo", repo,
-                              "--json", "labels"]))
-    if rc != 0:
-        return ["__UNREADABLE__"]
-    try:
-        doc = json.loads(out)
-    except json.JSONDecodeError:
-        return ["__UNREADABLE__"]
-
-    labelled = {
-        (l.get("name") or "").rsplit("-", 1)[-1].lower()
-        for l in doc.get("labels", [])
-        if (l.get("name") or "").startswith("passed-review-")
-    }
-    if not labelled:
-        return []
-
     fetched = _github_review_records(pr, repo, grammar)
     if fetched is None:
         return ["__UNREADABLE__"]
@@ -882,20 +845,38 @@ def stale_review_labels(pr: str, repo: str, head: str) -> list[str]:
         comments = grammar.canonical_review_records(fetched)
     except grammar.ReviewRecordError:
         return ["__UNREADABLE__"]
-    stale = []
-    for lane in sorted(labelled):
-        if lane not in grammar.LANES:
-            continue
-        shas = grammar.lane_shas(comments, lane, [], current_head=head)
-        state = grammar.classify_approval(head, shas)
-        if state != grammar.BOUND_CURRENT:
-            bound = shas[-1][:12] if shas else "nothing"
-            stale.append(
-                f"passed-review-{lane}: {state} -- newest {lane} binding is {bound}, "
-                f"head is {head[:12]}"
-            )
-            continue
-    return stale
+    bound_lanes: set[str] = set()
+    for lane in grammar.LANES:
+        malformed: list[tuple[str, str]] = []
+        refusals: list[str] = []
+        unanswered: list[tuple[str, str | None]] = []
+        shas = grammar.lane_shas(
+            comments,
+            lane,
+            malformed,
+            refusals=refusals,
+            unanswered=unanswered,
+            current_head=head,
+        )
+        if malformed:
+            return ["__UNREADABLE__"]
+        state = grammar.classify_approval(
+            head,
+            shas,
+            refused=bool(refusals),
+            refused_at=refusals[-1] if refusals else None,
+            unanswered=bool(unanswered),
+        )
+        if state == grammar.BOUND_CURRENT:
+            bound_lanes.add(lane)
+
+    critical = grammar.critical_classes_at_head(comments, head)
+    if critical:
+        missing = sorted(set(grammar.LANES) - bound_lanes)
+        return [f"missing exact-head {lane} approval" for lane in missing]
+    if not bound_lanes:
+        return ["required approval set missing: no canonical exact-head review approval"]
+    return []
 
 
 def parse_options(argv: list[str]):
@@ -1106,29 +1087,26 @@ def main() -> None:
                    f"exact head {head[:12]}.",
                 *[f"    {b}" for b in blocking],
                 "",
-                "  TO PROCEED: after resolving the objection, obtain a later canonical approval",
-                "  or withdrawal in that lane at this exact head, or have a currently authorized",
+                "  TO PROCEED: after resolving the objection, post a canonical withdrawal",
+                "  in that lane at this exact head, or have a currently authorized",
                 f"  GitHub actor post CHANGES-REQUESTED-WITHDRAWN-AT: <family> {head}",
                 "  plus RETIRES <comment-id>.",
                 "  There is deliberately no override flag.",
                 "  FALSE POSITIVE? The match is anchored to column 0, so an unindented quotation",
                 "  of a marker re-asserts it. Indent quoted markers by one space.")
-        stale = stale_review_labels(pr, repo, head)
-        if stale == ["__UNREADABLE__"]:
-            die(8, "gh-merge-verified: ADMISSION COULD NOT RUN -- could not read labels/comments "
-                   f"for #{pr}, so a stale review label cannot be ruled out.",
+        review_problems = review_admission_problems(pr, repo, head)
+        if review_problems == ["__UNREADABLE__"]:
+            die(8, "gh-merge-verified: ADMISSION COULD NOT RUN -- could not read canonical "
+                   f"review evidence for #{pr}.",
                 "  Nothing was merged. This is not permission; it is the absence of an answer.")
-        if stale:
-            die(6, f"gh-merge-verified: REFUSING TO MERGE #{pr} -- a passed-review label asserts "
-                   f"an approval that is not bound to this head {head[:12]}.",
-                *[f"    {s}" for s in stale],
+        if review_problems:
+            die(6, f"gh-merge-verified: REFUSING TO MERGE #{pr} -- the required review set "
+                   f"is not complete at this head {head[:12]}.",
+                *[f"    {problem}" for problem in review_problems],
                 "",
-                "  The label is a CACHE of a review comment; a push voids the review but not the",
-                "  label, so the cache outlives what it caches. This refuses on the evidence",
-                "  rather than on the cache.",
-                "  TO PROCEED: have the lane re-post APPROVED-AT: <lane> "
-                f"{head} at this head,",
-                "  or remove the stale label if the approval is genuinely no longer claimed.",
+                "  Labels are caches and cannot satisfy this requirement.",
+                "  TO PROCEED: obtain the missing canonical exact-head approval comment(s):",
+                f"  APPROVED-AT: <lane> {head}",
                 "  ⚠️ A MISSING LANE TOKEN READS AS MALFORMED, NOT AS AN APPROVAL: write",
                 "  'APPROVED-AT: claude <sha>', not 'APPROVED-AT <sha>'. That one-token typo is",
                 "  what left #2601 with zero authoritative lanes while looking reviewed.")

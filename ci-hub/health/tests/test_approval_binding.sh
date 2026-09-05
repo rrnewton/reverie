@@ -555,8 +555,9 @@ fi
 # so nobody overrode anything deliberately. That is exactly why the grammar has
 # to hold this and reviewer attention cannot.
 #
-# A later canonical current-head approval is the lane's substantive decision.
-# Fleet-name metadata cannot change that decision; lane, head, and chronology can.
+# A same-head approval does not withdraw a standing objection. Fleet-name
+# metadata cannot change that conflict; a canonical withdrawal or exact RETIRES
+# record is required.
 cat >"$tmp/self-reversal.json" <<JSON
 [{"number":9210,"head":"$CUR","labels":["passed-review-claude"],
   "comments":["[hermit2, hermit-007, unresolved, devbig014, role=reviewer]\nCHANGES-REQUESTED-AT: claude $CUR",
@@ -564,10 +565,10 @@ cat >"$tmp/self-reversal.json" <<JSON
   "runs_at_head":3,"mergeable":"MERGEABLE"}]
 JSON
 out="$(run "$tmp/self-reversal.json" --pr 9210 --gate --json)"
-if grep -q '"authoritative": 1' <<<"$out"; then
-  ok "a later current-head approval discharges an earlier refusal"
+if grep -q '"authoritative": 0' <<<"$out"; then
+  ok "a same-head approval does not discharge an earlier refusal"
 else
-  bad "a later current-head approval did not discharge an earlier refusal"
+  bad "a same-head approval incorrectly discharged an earlier refusal"
 fi
 
 cat >"$tmp/other-issuer.json" <<JSON
@@ -577,10 +578,10 @@ cat >"$tmp/other-issuer.json" <<JSON
   "runs_at_head":3,"mergeable":"MERGEABLE"}]
 JSON
 out="$(run "$tmp/other-issuer.json" --pr 9211 --gate --json)"
-if grep -q '"authoritative": 1' <<<"$out"; then
-  ok "different fleet-name metadata does not prevent a later approval"
+if grep -q '"authoritative": 0' <<<"$out"; then
+  ok "different fleet-name metadata does not change the same-head conflict"
 else
-  bad "fleet-name metadata changed a later approval's authority"
+  bad "fleet-name metadata changed the same-head conflict"
 fi
 
 cat >"$tmp/unsigned-approval.json" <<JSON
@@ -590,10 +591,10 @@ cat >"$tmp/unsigned-approval.json" <<JSON
   "runs_at_head":3,"mergeable":"MERGEABLE"}]
 JSON
 out="$(run "$tmp/unsigned-approval.json" --pr 9212 --gate --json)"
-if grep -q '"authoritative": 1' <<<"$out"; then
-  ok "missing fleet-name metadata does not prevent a later approval"
+if grep -q '"authoritative": 0' <<<"$out"; then
+  ok "missing fleet-name metadata does not change the same-head conflict"
 else
-  bad "missing fleet-name metadata changed a later approval's authority"
+  bad "missing fleet-name metadata changed the same-head conflict"
 fi
 
 # The grammar's own escape hatch must still work, or a refusal becomes a
@@ -980,7 +981,7 @@ if grep -q '^refusal_issuer_summary=1 unanswered refusal(s) at head across 1 PR(
 else
   bad "a signed refusal was miscounted; the split cannot separate the two remedies: $out"
 fi
-if grep -q 'currently authorized GitHub actor may post a later canonical approval' <<<"$out"; then
+if grep -q 'currently authorized GitHub actor may post a canonical withdrawal' <<<"$out"; then
   ok "the signed-refusal remedy no longer depends on a departed issuer"
 else
   bad "the signed-refusal remedy still leaves a departed issuer as a permanent gate: $out"

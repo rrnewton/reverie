@@ -267,4 +267,38 @@ def test_unauthorized_actor_cannot_grant_exact_head_approval(
 
     assert rc == 1
     assert report["authoritative"] == 0
-    assert report["approval_set_missing"] is True
+    assert report["approval_set_missing"] is False
+    assert report["review_permission_unavailable"] == 1
+    assert report["review_permission_unavailable_details"] == [
+        {
+            "pr": 2963,
+            "lane": "codex",
+            "id": "5590000002",
+            "url": "fixture://pr/2963/comment/0",
+            "head": head,
+            "github_actor": "read-only-user",
+            "permission": "read",
+        }
+    ]
+
+    fixture = tmp_path / "pr-2963-human.json"
+    fixture.write_text(json.dumps([pr]), encoding="utf-8")
+    human = subprocess.run(
+        [
+            sys.executable,
+            str(TOOL),
+            "--from-json",
+            str(fixture),
+            "--pr",
+            "2963",
+            "--gate",
+        ],
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert human.returncode == 1
+    assert "state=unbound" in human.stdout
+    assert "REVIEW-PERMISSION-UNAVAILABLE" in human.stdout
+    assert "REQUIRED-APPROVAL-SET-MISSING" not in human.stdout
+    assert "current repository review permission" in human.stdout

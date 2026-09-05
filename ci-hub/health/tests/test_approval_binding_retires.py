@@ -1005,11 +1005,11 @@ def test_pull_request_body_is_not_a_review_authority_surface() -> None:
         raise AssertionError("pull-request body was accepted as review authority")
 
 
-def test_lane_authority_uses_event_time_not_container_order() -> None:
+def test_later_head_approval_answers_an_older_head_refusal() -> None:
     refusal = _comment(
         REFUSAL_ID,
         "hermit-011",
-        f"CHANGES-REQUESTED-AT: claude {HEAD}",
+        f"CHANGES-REQUESTED-AT: claude {MOVED_HEAD}",
         created_at="2026-01-12T10:00:01Z",
     )
     approval = _comment(
@@ -1019,34 +1019,139 @@ def test_lane_authority_uses_event_time_not_container_order() -> None:
         created_at="2026-01-12T10:00:02Z",
     )
     # Endpoint concatenation put the later approval first. The shared reader
-    # must restore real event order before applying the latest-verdict rule.
+    # restores version order, and the current-head approval answers the older-
+    # head objection without consulting optional fleet-name metadata.
     assert ab.lane_shas([approval, refusal], "claude", [], current_head=HEAD) == [HEAD]
 
 
-def test_editing_an_old_approval_does_not_move_it_after_a_later_refusal() -> None:
+def test_an_objection_appended_after_approval_remains_unresolved() -> None:
+    refusal = _comment(
+        REFUSAL_ID,
+        "hermit-011",
+        f"CHANGES-REQUESTED-AT: claude {MOVED_HEAD}",
+        created_at="2026-01-12T10:00:01Z",
+        updated_at="2026-01-12T10:00:03Z",
+    )
     approval = _comment(
         WITHDRAWAL_ID,
         "hermit-011",
         f"APPROVED-AT: claude {HEAD}",
-        created_at="2026-01-12T10:00:01Z",
-        updated_at="2026-01-12T10:00:03Z",
-    )
-    refusal = _comment(
-        REFUSAL_ID,
-        "hermit-011",
-        f"CHANGES-REQUESTED-AT: claude {HEAD}",
         created_at="2026-01-12T10:00:02Z",
         updated_at="2026-01-12T10:00:02Z",
     )
     refusals: list[str] = []
-    assert ab.lane_shas(
+    unanswered: list[tuple[str, str | None]] = []
+    shas = ab.lane_shas(
         [refusal, approval],
         "claude",
         [],
         refusals=refusals,
+        unanswered=unanswered,
         current_head=HEAD,
-    ) == []
-    assert refusals == [HEAD]
+    )
+    assert shas == []
+    assert refusals == [MOVED_HEAD]
+    assert unanswered == [(MOVED_HEAD, "hermit-011")]
+    assert ab.classify_approval(
+        HEAD,
+        shas,
+        refused=True,
+        refused_at=MOVED_HEAD,
+        unanswered=True,
+    ) == ab.REFUSED_STALE
+
+
+def test_same_head_approval_and_refusal_conflict_in_both_orders() -> None:
+    approval = {"body": f"APPROVED-AT: claude {HEAD}"}
+    refusal = {"body": f"CHANGES-REQUESTED-AT: claude {HEAD}"}
+    for comments in ([approval, refusal], [refusal, approval]):
+        state, unanswered = _state(comments)
+        assert state == ab.REFUSED
+        assert unanswered == [(HEAD, None)]
+
+
+def test_same_version_time_opposing_decisions_fail_closed() -> None:
+    when = "2026-01-12T10:00:01Z"
+    approval = _comment(
+        REFUSAL_ID,
+        "hermit-011",
+        f"APPROVED-AT: claude {HEAD}",
+        created_at=when,
+        updated_at=when,
+    )
+    refusal = _comment(
+        WITHDRAWAL_ID,
+        "hermit-012",
+        f"CHANGES-REQUESTED-AT: claude {HEAD}",
+        created_at=when,
+        updated_at=when,
+    )
+    try:
+        ab.canonical_review_records([approval, refusal])
+    except ab.ReviewRecordError as error:
+        assert "opposing review authority has the same version time" in str(error)
+    else:
+        raise AssertionError("opposing decisions with no chronology were ordered by id")
+
+
+def test_optional_identity_metadata_does_not_change_the_canonical_decision() -> None:
+    original = _comment(
+        REFUSAL_ID,
+        "reviewer-one",
+        f"APPROVED-AT: claude {HEAD} BY reviewer-one",
+    )
+    edited = dict(original)
+    edited["body"] = (
+        "[hermit2, hostname-as-agent, unresolved, devbig030, role=reviewer]\n"
+        f"APPROVED-AT: claude {HEAD} BY false-caller-name"
+    )
+    assert ab.review_record_decisions(original) == ab.review_record_decisions(edited)
+
+
+def test_all_open_collection_does_not_use_cache_labels_as_its_index(
+    monkeypatch,
+) -> None:
+    approved_pr = {
+        "number": 2956,
+        "headRefOid": HEAD,
+        "labels": [],
+        "mergeable": "MERGEABLE",
+    }
+    unreviewed_pr = {
+        "number": 2957,
+        "headRefOid": MOVED_HEAD,
+        "labels": [],
+        "mergeable": "MERGEABLE",
+    }
+    approval = _comment(
+        REFUSAL_ID,
+        "hostname-as-agent",
+        f"APPROVED-AT: claude {HEAD}",
+    )
+    review_reads: list[int] = []
+
+    def fake_gh_json(args: list[str]):
+        if args[:2] == ["pr", "list"]:
+            return [approved_pr, unreviewed_pr]
+        if args and args[0] == "api" and "/actions/runs?head_sha=" in args[1]:
+            return {"workflow_runs": []}
+        raise AssertionError(f"unexpected gh call: {args}")
+
+    def fake_review_records(_repo: str, pr: int) -> list[dict]:
+        review_reads.append(pr)
+        return [approval] if pr == 2956 else []
+
+    monkeypatch.setattr(ab, "gh_json", fake_gh_json)
+    monkeypatch.setattr(ab, "github_review_records", fake_review_records)
+
+    rows, selected = ab.collect_live("rrnewton/hermit", [], {})
+
+    assert selected is None
+    assert sorted(review_reads) == [2956, 2957]
+    assert [
+        (row["number"], row["source"], row["lane"], row["state"])
+        for row in rows
+    ] == [(2956, "comment", "claude", ab.BOUND_CURRENT)]
 
 
 def test_a_target_comment_with_two_refusals_is_ambiguous() -> None:

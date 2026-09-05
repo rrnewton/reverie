@@ -665,7 +665,7 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
         self.assertIn("current-approval-codex", audit.missing)
         self.assertIn("passed-review-codex:UNDETERMINED", audit.invalid_labels)
 
-    def test_a_valid_binding_with_no_label_is_surfaced_not_silently_dropped(self) -> None:
+    def test_a_valid_binding_without_a_label_is_current_authority(self) -> None:
         """The label used to be the index, so no label meant the comments were
         never read and a real review reported exactly like no review at all."""
         audit = self.classify(
@@ -676,10 +676,29 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
             ),
         )
         self.assertIn("unlabeled-binding:claude", audit.invalid_labels)
-        # AUTHORITY IS UNCHANGED. The label still confers it, and hermit-030
-        # routes off these counts, so surfacing must not silently reroute.
-        self.assertEqual(audit.current_approvals, "missing")
-        self.assertIn("current-approval-claude", audit.missing)
+        self.assertEqual(audit.current_approvals, "partial")
+        self.assertNotIn("current-approval-claude", audit.missing)
+
+    def test_cache_label_variation_does_not_change_comment_authority(self) -> None:
+        comments = (
+            f"APPROVED-AT: claude {self.HEAD}",
+        )
+        without_cache = self.classify(
+            "post-facto-human-review",
+            "adversarial-review-claude1",
+            comments=comments,
+        )
+        with_unrelated_cache = self.classify(
+            "post-facto-human-review",
+            "adversarial-review-claude1",
+            "passed-review-codex",
+            comments=comments,
+        )
+        self.assertEqual(without_cache.current_approvals, "partial")
+        self.assertEqual(
+            without_cache.current_approvals, with_unrelated_cache.current_approvals
+        )
+        self.assertNotIn("current-approval-claude", with_unrelated_cache.missing)
 
     def test_an_unrecorded_refusal_remains_visibly_incomplete(self) -> None:
         audit = self.classify(

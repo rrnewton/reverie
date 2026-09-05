@@ -26,6 +26,7 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd -- "$script_dir/../.." && pwd)
 helper=$script_dir/local-validation-eligibility.sh
 lander=$script_dir/land-pr.sh
+review_applicability=$script_dir/review_rebase.py
 publisher=$script_dir/publish_comment.py
 authority=$script_dir/exact-head-validation-authority.sh
 tmp=$(mktemp -d)
@@ -304,10 +305,13 @@ if grep -Fq 'health/approval_binding.py"' "$lander" &&
    grep -Fq -- '--repo "$R" --pr "$PR" --json' "$lander" &&
    grep -Fq 'review_rebase.py"' "$lander" &&
    grep -Fq -- '--current-base "$current_base" --current-head "$HEAD"' "$lander" &&
-   grep -Fq 'review applicability REFUSED' "$lander"; then
-  audit "final boundary requires current approval or an empty mechanical range-diff" ok
+   grep -Fq 'review applicability REFUSED' "$lander" &&
+   grep -Fq 'source == "comment"' "$review_applicability" &&
+   grep -Fq 'state == BOUND_CURRENT' "$review_applicability" &&
+   grep -Fq 'approval-binding report contains no accepted review approval' "$review_applicability"; then
+  audit "final boundary accepts canonical current-head comment approval and refuses an empty review set" ok
 else
-  audit "final boundary can consume review evidence without proving patch equivalence" bad
+  audit "final boundary lost canonical comment approval or empty-set refusal" bad
 fi
 
 if grep -Fq 'bin/pr-head-ci"' "$lander" &&
