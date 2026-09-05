@@ -301,6 +301,7 @@ lint: ## Lint parent-repository scripts, tests, paths, and submodule policy
 	counted shellcheck   files 'scripts/list-shell-scripts.sh | wc -l' 'shellcheck --severity=warning $(SHELLCHECK_TARGETS)'; \
 	counted py-compile   files 'scripts/list-python-files.sh | wc -l' 'python3 -m py_compile $(PYTHON_TARGETS)'; \
 	counted py-unittest  tests 'python3 -m unittest discover -s scripts -p "test_*.py" 2>&1 | sed -n "s/^Ran \([0-9]*\) test.*/\1/p"' 'python3 -m unittest discover -s scripts -p "test_*.py"'; \
+	gate directory-tests 'scripts/run-directory-tests.sh'; \
 	gate error-proxies   '$(MAKE) --no-print-directory check-rust-error-string-proxies'; \
 	gate gitmodules      'scripts/check-parent-gitmodules.sh'; \
 	gate agent-utils-pin 'scripts/check-agent-utils-pin.rs'; \
