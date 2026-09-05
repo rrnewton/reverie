@@ -3079,6 +3079,7 @@ unsafe fn protect_coordinator_channel(event: &mut SyscallEvent) -> bool {
             COORDINATOR_FD.load(Ordering::Acquire),
             crate::guest_log::LOG_FD.load(Ordering::Acquire),
             crate::clock_control::descriptor(),
+            crate::clock_control::notification_descriptor(),
         ],
     ) {
         event.result = result;
@@ -3090,6 +3091,7 @@ unsafe fn protect_coordinator_channel(event: &mut SyscallEvent) -> bool {
         COORDINATOR_FD.load(Ordering::Acquire),
         crate::guest_log::LOG_FD.load(Ordering::Acquire),
         crate::clock_control::descriptor(),
+        crate::clock_control::notification_descriptor(),
     ] {
         if fd < 0 {
             continue;
@@ -3135,6 +3137,7 @@ pub(crate) fn guarded_raw_syscall(number: i64, args: [u64; 6]) -> i64 {
             COORDINATOR_FD.load(Ordering::Acquire),
             crate::guest_log::LOG_FD.load(Ordering::Acquire),
             crate::clock_control::descriptor(),
+            crate::clock_control::notification_descriptor(),
         ],
     ) {
         Ok(args) => unsafe { raw_syscall6(number, args) },
@@ -3190,6 +3193,7 @@ unsafe fn close_range_preserving_event_fd(event: &SyscallEvent, event_fd: u64) -
         COORDINATOR_FD.load(Ordering::Acquire) as u64,
         crate::guest_log::LOG_FD.load(Ordering::Acquire) as u64,
         crate::clock_control::descriptor() as u64,
+        crate::clock_control::notification_descriptor() as u64,
     ];
     reserved.sort_unstable();
     for fd in reserved {

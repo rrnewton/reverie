@@ -2,9 +2,9 @@
 .p2align 3
 .hidden reverie_liteinst_clock_state
 .type reverie_liteinst_clock_state,@tls_object
-.size reverie_liteinst_clock_state,64
+.size reverie_liteinst_clock_state,96
 reverie_liteinst_clock_state:
-    .zero 64
+    .zero 96
 .text
 
 .macro clock_address target
@@ -63,8 +63,30 @@ reverie_liteinst_clock_disable_published:
     mov esi, 0x2401
     xor edx, edx
     call qword ptr [rbx + 24]
+    lea rdx, [rip + .Lnotification_stop_select]
+    lea rcx, [rip + .Lclock_fail]
     test rax, rax
-    jnz .Lclock_fail
+    cmovne rdx, rcx
+    jmp rdx
+.Lnotification_stop_select:
+    mov rdi, [rbx + 64]
+    lea rdx, [rip + .Lclock_stopped]
+    lea rcx, [rip + .Lnotification_stop]
+    test rdi, rdi
+    cmovne rdx, rcx
+    jmp rdx
+.Lnotification_stop:
+    sub rdi, 1
+    mov eax, 16
+    mov esi, 0x2401
+    xor edx, edx
+    call qword ptr [rbx + 24]
+    lea rdx, [rip + .Lclock_stopped]
+    lea rcx, [rip + .Lclock_fail]
+    test rax, rax
+    cmovne rdx, rcx
+    jmp rdx
+.Lclock_stopped:
     mov qword ptr [rbx + 32], 0
 .Lclock_enter_legacy:
     call reverie_liteinst_domain_enter
@@ -96,6 +118,8 @@ reverie_liteinst_clock_leave:
     push rbx
     push r12
     push r13
+    push r14
+    sub rsp, 8
     mov r12, rdi
     mov r13, rdx
     clock_address rbx
@@ -130,6 +154,31 @@ reverie_liteinst_clock_handoff_published:
 .hidden reverie_liteinst_clock_enable_begin
 reverie_liteinst_clock_enable_begin:
     mov qword ptr [rbx + 32], 1
+.Lnotification_reconcile:
+    mov r14, [rbx + 88]
+    mov rdi, [rbx + 64]
+    lea rdx, [rip + reverie_liteinst_clock_enable_published]
+    lea rcx, [rip + .Lnotification_control]
+    test rdi, rdi
+    cmovne rdx, rcx
+    jmp rdx
+.Lnotification_control:
+    sub rdi, 1
+    mov eax, 16
+    mov esi, 0x2401
+    mov ecx, 0x2400
+    cmp qword ptr [rbx + 72], 0
+    cmovne esi, ecx
+    xor edx, edx
+    call qword ptr [rbx + 24]
+    lea rdx, [rip + reverie_liteinst_clock_enable_published]
+    lea rcx, [rip + .Lnotification_reconcile]
+    cmp r14, [rbx + 88]
+    cmovne rdx, rcx
+    lea rcx, [rip + .Lclock_fail]
+    test rax, rax
+    cmovne rdx, rcx
+    jmp rdx
 .global reverie_liteinst_clock_enable_published
 .hidden reverie_liteinst_clock_enable_published
 reverie_liteinst_clock_enable_published:
@@ -144,6 +193,8 @@ reverie_liteinst_clock_enable_published:
     cmovne rdx, rcx
     jmp rdx
 .Lclock_leave_done:
+    add rsp, 8
+    pop r14
     pop r13
     pop r12
     pop rbx

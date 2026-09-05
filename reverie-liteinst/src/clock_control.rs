@@ -17,9 +17,13 @@ struct Control {
     owner: AtomicU64,
     pending_witness: AtomicU64,
     pending_token: AtomicU64,
+    notification_fd_plus_one: AtomicU64,
+    notification_armed: AtomicU64,
+    notification_owner: AtomicU64,
+    notification_revision: AtomicU64,
 }
 
-const _: () = assert!(std::mem::size_of::<Control>() == 64);
+const _: () = assert!(std::mem::size_of::<Control>() == 96);
 
 unsafe extern "C" {
     fn reverie_liteinst_clock_control() -> *const Control;
@@ -52,6 +56,46 @@ pub(crate) fn descriptor() -> i32 {
 
 pub(crate) fn paused() -> bool {
     control().running.load(Ordering::Relaxed) == 0
+}
+
+pub(crate) fn notification_descriptor() -> i32 {
+    control()
+        .notification_fd_plus_one
+        .load(Ordering::Relaxed)
+        .wrapping_sub(1) as i32
+}
+
+pub(crate) fn notification_owner() -> *mut crate::timer::TimerOwner {
+    control().notification_owner.load(Ordering::Acquire) as *mut crate::timer::TimerOwner
+}
+
+pub(crate) fn cancel_notification_resume() {
+    control().notification_armed.store(0, Ordering::Release);
+}
+
+pub(crate) fn notification_revision() -> u64 {
+    control().notification_revision.load(Ordering::Acquire)
+}
+
+pub(crate) fn finish_notification_update(revision: u64) {
+    control()
+        .notification_revision
+        .store(revision, Ordering::Release);
+}
+
+pub(crate) fn publish_notification(owner: Box<crate::timer::TimerOwner>) -> io::Result<()> {
+    if !active() || !paused() || !notification_owner().is_null() {
+        return Err(io::Error::other("notification owner cannot be rebound"));
+    }
+    let descriptor = owner.descriptor();
+    let pointer = Box::into_raw(owner);
+    control()
+        .notification_fd_plus_one
+        .store(descriptor as u64 + 1, Ordering::Relaxed);
+    control()
+        .notification_owner
+        .store(pointer as u64, Ordering::Release);
+    Ok(())
 }
 
 pub(crate) fn callback_return_pc(
@@ -163,3 +207,9 @@ pub(crate) use installed_hook;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod notification_tests;
+
+#[cfg(test)]
+mod interrupted_notification_tests;

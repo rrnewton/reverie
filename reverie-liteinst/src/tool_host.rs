@@ -166,6 +166,7 @@ where
             crate::stats::GuestStatsHooks::DISABLED
         };
     runtime::initialize_rcb_clock()?;
+    crate::timer::initialize()?;
     COMMITTED_STACKS.lock().clear();
     let pid = Pid::from_raw(unsafe { libc::getpid() });
     let subscriptions = T::subscriptions(rpc.config());
@@ -1022,17 +1023,13 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         std::future::pending().await
     }
 
-    // TODO-HUMAN-REVIEW(PR-326): Review the coarse
-    // syscall-boundary clock until the minimal ptrace supervisor wires PMU delivery.
-    fn set_timer(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        // Every intercepted syscall remains a deterministic scheduling boundary,
-        // but a CPU-bound thread cannot yet be preempted between syscalls.
-        Ok(())
+    // TODO-HUMAN-REVIEW(PR-326): Review delivery before enabling timer success.
+    fn set_timer(&mut self, sched: TimerSchedule) -> Result<(), Error> {
+        crate::timer::request(sched, false)
     }
 
-    fn set_timer_precise(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        // Same coarse boundary as set_timer; never synthesize host time.
-        Ok(())
+    fn set_timer_precise(&mut self, sched: TimerSchedule) -> Result<(), Error> {
+        crate::timer::request(sched, true)
     }
 
     fn read_clock(&mut self) -> Result<u64, Error> {

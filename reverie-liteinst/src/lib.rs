@@ -16,6 +16,7 @@ mod protected_fd;
 mod stats;
 mod straddler;
 mod syscall_fallback;
+mod timer;
 
 pub use backend::COORDINATOR_ENV;
 pub use backend::LiteinstBackend;

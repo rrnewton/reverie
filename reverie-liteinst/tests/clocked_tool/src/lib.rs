@@ -66,6 +66,17 @@ async fn sample<G: Guest<ClockTool>>(guest: &mut G) -> u64 {
     let before = guest
         .read_clock()
         .expect("real paused hardware clock required");
+    assert!(guest.set_timer(reverie::TimerSchedule::Rcbs(100)).is_err());
+    assert!(
+        guest
+            .set_timer_precise(reverie::TimerSchedule::Rcbs(100))
+            .is_err()
+    );
+    assert!(
+        guest
+            .set_timer_precise(reverie::TimerSchedule::RcbsAndInstructions(0, 1))
+            .is_err()
+    );
     work();
     let uid = unsafe { nested_uid() };
     assert!(uid >= 0);

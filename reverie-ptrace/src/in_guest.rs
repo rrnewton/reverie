@@ -209,6 +209,19 @@ impl InGuestRcbTimer {
     /// the logical request; the caller must fail closed, even if DISABLE failed.
     /// Programming touches only the notification counter, never the guest clock.
     pub fn arm_after(&mut self, clock: u64, rcbs: u64) -> Result<u64, Errno> {
+        let generation = self.prepare_after(clock, rcbs)?;
+        if let Err(error) = self.counter.enable() {
+            self.deadline = None;
+            return Err(error);
+        }
+        Ok(generation)
+    }
+
+    /// Prepare a replacement notification deadline, leaving its event disabled.
+    /// The caller must enable only at an accounted guest boundary. Invalid input
+    /// leaves the previous arm unchanged; programming errors cancel it. This
+    /// operation never touches the separate cumulative guest clock.
+    pub fn prepare_after(&mut self, clock: u64, rcbs: u64) -> Result<u64, Errno> {
         if rcbs == 0 {
             return Err(Errno::EINVAL);
         }
@@ -216,16 +229,32 @@ impl InGuestRcbTimer {
         let generation = self.generation.checked_add(1).ok_or(Errno::EOVERFLOW)?;
         self.disarm()?;
         self.generation = generation;
-        self.program_notification(rcbs)?;
+        self.prepare_notification(rcbs)?;
         self.deadline = Some(deadline);
         Ok(generation)
     }
 
     fn program_notification(&self, remaining: u64) -> Result<(), Errno> {
+        self.prepare_notification(remaining)?;
+        self.counter.enable()
+    }
+
+    fn prepare_notification(&self, remaining: u64) -> Result<(), Errno> {
         self.counter.reset()?;
         self.counter
-            .set_period(remaining.saturating_sub(self.skid_margin).max(1))?;
-        self.counter.enable()
+            .set_period(remaining.saturating_sub(self.skid_margin).max(1))
+    }
+
+    /// Borrow the notification descriptor for paired assembly boundary controls.
+    ///
+    /// # Safety
+    /// Only the owning thread may enable or disable this event, with exclusive
+    /// access coordinated with prepare/observe/disarm. Do not reset, reconfigure,
+    /// close, duplicate or replace the borrowed descriptor. Enable only a live
+    /// prepared arm; a failed control requires cancellation and fail-closed exit.
+    /// A disabled event may still have queued signals; disabling is not draining.
+    pub unsafe fn boundary_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        unsafe { std::os::fd::BorrowedFd::borrow_raw(self.counter.raw_fd()) }
     }
 
     /// Cancel the logical deadline and disable notifications. Idempotent on
@@ -614,6 +643,60 @@ mod tests {
             );
             FAIL_COMMAND.set(None);
             assert!(timer.arm_after(1200, 300).is_ok());
+            timer.disarm().unwrap();
+        }
+    }
+
+    #[test]
+    fn prepared_notifications_never_enable_and_keep_old_input_contract() {
+        use std::os::fd::AsRawFd;
+
+        use perf_event_open_sys::bindings as perf;
+        let mut timer = notification_timer();
+        CALLS.with_borrow_mut(Vec::clear);
+        assert_eq!(timer.prepare_after(1000, 300), Ok(1));
+        assert_eq!(unsafe { timer.boundary_fd() }.as_raw_fd(), timer.raw_fd());
+        CALLS.with_borrow(|calls| {
+            assert_eq!(
+                calls.as_slice(),
+                &[
+                    (libc::SYS_ioctl, perf::DISABLE as u64, 0),
+                    (libc::SYS_ioctl, perf::RESET as u64, 0),
+                    (libc::SYS_ioctl, perf::PERIOD as u64, 200),
+                ]
+            );
+        });
+        let before = CALLS.with_borrow(Vec::len);
+        assert_eq!(timer.prepare_after(1000, 0), Err(Errno::EINVAL));
+        assert_eq!(timer.prepare_after(u64::MAX, 1), Err(Errno::EOVERFLOW));
+        assert_eq!(timer.arm_id(), Some(1));
+        assert_eq!(CALLS.with_borrow(Vec::len), before);
+        timer.disarm().unwrap();
+        assert_eq!(timer.prepare_after(1100, 400), Ok(2));
+        let before = CALLS.with_borrow(Vec::len);
+        assert_eq!(
+            timer.observe_notification(1, 1500),
+            Ok(crate::InGuestRcbDeadlineStatus::Cancelled)
+        );
+        assert_eq!(CALLS.with_borrow(Vec::len), before);
+        assert_eq!(timer.arm_id(), Some(2));
+    }
+
+    #[test]
+    fn every_prepare_control_failure_cancels_without_enabling() {
+        use perf_event_open_sys::bindings as perf;
+        for request in [perf::DISABLE, perf::RESET, perf::PERIOD] {
+            let mut timer = notification_timer();
+            timer.prepare_after(0, 300).unwrap();
+            CALLS.with_borrow_mut(Vec::clear);
+            FAIL_COMMAND.set(Some(request as u64));
+            assert_eq!(timer.prepare_after(100, 400), Err(Errno::EIO));
+            assert_eq!(timer.arm_id(), None);
+            CALLS.with_borrow(|calls| {
+                assert!(calls.iter().all(|call| call.1 != perf::ENABLE as u64))
+            });
+            FAIL_COMMAND.set(None);
+            assert!(timer.prepare_after(200, 500).is_ok());
             timer.disarm().unwrap();
         }
     }
