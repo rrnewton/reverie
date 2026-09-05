@@ -77,6 +77,7 @@
 
 use crate::records::HistoryRow;
 use hermit_manifest_plan::runner::FailureClass;
+use serde::Serialize;
 use std::collections::BTreeSet;
 
 /// Logical canonical ledger root relative to the workspace. Consumers never
@@ -236,12 +237,164 @@ pub fn is_clean_full_pass(row: &HistoryRow, sha: &str) -> bool {
     crate::qualifying_receipt::row_qualifies(row, sha, crate::qualifying_receipt::active())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One observed condition that makes a row a no-result.
+///
+/// These values are produced by the same branches that choose
+/// [`FailureDisposition::NoResult`]. Renderers consume them; they must not
+/// reconstruct the classification from a row's fields.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "condition")]
+pub enum NoResultReason {
+    #[serde(rename = "result=no_result")]
+    ResultNoResult,
+    #[serde(rename = "zero-test pass")]
+    ZeroTestPass,
+    #[serde(rename = "understood_infrastructure_failure")]
+    UnderstoodInfrastructureFailure {
+        gate: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failure_detail: Option<String>,
+    },
+    #[serde(rename = "understood_prerequisite_failure")]
+    UnderstoodPrerequisiteFailure {
+        gate: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failure_detail: Option<String>,
+    },
+    #[serde(rename = "no_result")]
+    GateNoResult {
+        gate: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failure_detail: Option<String>,
+    },
+    #[serde(rename = "command-not-found storm")]
+    CommandNotFoundStorm { gates: Vec<String> },
+    #[serde(rename = "sub-second collapse")]
+    SubsecondCollapse { gates: Vec<String> },
+    #[serde(rename = "no named failing gate and no failure count")]
+    NoNamedFailingGateOrFailureCount,
+}
+
+impl NoResultReason {
+    fn from_gate(
+        gate: &crate::records::GateHistoryRow,
+        failure_class: FailureClass,
+    ) -> Option<Self> {
+        let failure_detail = gate
+            .extra
+            .get("failure_detail")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let gate = gate.name.clone();
+        match failure_class {
+            FailureClass::ProductFailure => None,
+            FailureClass::UnderstoodInfrastructureFailure => {
+                Some(Self::UnderstoodInfrastructureFailure {
+                    gate,
+                    failure_detail,
+                })
+            }
+            FailureClass::UnderstoodPrerequisiteFailure => {
+                Some(Self::UnderstoodPrerequisiteFailure {
+                    gate,
+                    failure_detail,
+                })
+            }
+            FailureClass::NoResult => Some(Self::GateNoResult {
+                gate,
+                failure_detail,
+            }),
+        }
+    }
+
+    /// Stable human rendering of evidence already selected by the classifier.
+    pub fn summary(&self) -> String {
+        let gate_reason = |gate: &str, class: &str, detail: Option<&str>| match detail {
+            Some(detail) => format!("gate {gate}: {class}: {detail}"),
+            None => format!("gate {gate}: {class}"),
+        };
+        match self {
+            Self::ResultNoResult => "result=no_result".into(),
+            Self::ZeroTestPass => "zero-test pass (executed_tests=0)".into(),
+            Self::UnderstoodInfrastructureFailure {
+                gate,
+                failure_detail,
+            } => gate_reason(
+                gate,
+                "understood_infrastructure_failure",
+                failure_detail.as_deref(),
+            ),
+            Self::UnderstoodPrerequisiteFailure {
+                gate,
+                failure_detail,
+            } => gate_reason(
+                gate,
+                "understood_prerequisite_failure",
+                failure_detail.as_deref(),
+            ),
+            Self::GateNoResult {
+                gate,
+                failure_detail,
+            } => gate_reason(gate, "no_result", failure_detail.as_deref()),
+            Self::CommandNotFoundStorm { gates } => {
+                format!("command-not-found storm (gates: {})", gates.join(", "))
+            }
+            Self::SubsecondCollapse { gates } => {
+                format!("sub-second collapse (gates: {})", gates.join(", "))
+            }
+            Self::NoNamedFailingGateOrFailureCount => {
+                "no named failing gate and no failure count".into()
+            }
+        }
+    }
+}
+
+/// No-result evidence bound to the ledger row that supplied it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RowNoResultReasons {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
+    pub reasons: Vec<NoResultReason>,
+}
+
+impl RowNoResultReasons {
+    pub fn from_row(row: &HistoryRow, reasons: Vec<NoResultReason>) -> Self {
+        debug_assert!(!reasons.is_empty());
+        Self {
+            record_id: row
+                .extra
+                .get("record_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            run_id: row.run_id.clone(),
+            commit: row.commit.clone(),
+            started_at: row.started_at.clone(),
+            finished_at: row.finished_at.clone(),
+            host: row.host.clone(),
+            slot: row.slot.clone(),
+            reasons,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FailureDisposition {
     NotFailure,
     Truncated,
     NeedsRerun,
-    NoResult,
+    NoResult(Vec<NoResultReason>),
     Failed,
 }
 
@@ -279,9 +432,12 @@ const EXIT_COMMAND_NOT_FOUND: i32 = 127;
 ///   (B) SUB-SECOND COLLAPSE: the whole run's wall is <= 1s AND every gate that
 ///       produced a result failed (no gate passed) — the run died before doing
 ///       any real work. A genuine build+test red cannot complete this fast.
-fn is_env_fault_red(row: &HistoryRow, failed_gates: &[&crate::records::GateHistoryRow]) -> bool {
+fn env_fault_reasons(
+    row: &HistoryRow,
+    failed_gates: &[&crate::records::GateHistoryRow],
+) -> Vec<NoResultReason> {
     if failed_gates.is_empty() {
-        return false;
+        return Vec::new();
     }
     // (A) A gate that genuinely exercised the product and failed disqualifies the
     // env-fault reading: it ran for real time at a non-command-not-found exit.
@@ -299,7 +455,22 @@ fn is_env_fault_red(row: &HistoryRow, failed_gates: &[&crate::records::GateHisto
         && !row.gates.is_empty()
         && row.gates.iter().all(gate_is_red);
 
-    command_not_found_storm || subsecond_collapse
+    let mut reasons = Vec::new();
+    if command_not_found_storm {
+        reasons.push(NoResultReason::CommandNotFoundStorm {
+            gates: failed_gates
+                .iter()
+                .filter(|gate| gate.exit_code == Some(EXIT_COMMAND_NOT_FOUND))
+                .map(|gate| gate.name.clone())
+                .collect(),
+        });
+    }
+    if subsecond_collapse {
+        reasons.push(NoResultReason::SubsecondCollapse {
+            gates: failed_gates.iter().map(|gate| gate.name.clone()).collect(),
+        });
+    }
+    reasons
 }
 
 /// Interpret one non-qualifying ledger row using the conditions carried with it.
@@ -316,7 +487,9 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
     match row.result.as_deref() {
         Some("truncated") => return FailureDisposition::Truncated,
         Some("needs-rerun" | "needs_rerun") => return FailureDisposition::NeedsRerun,
-        Some("no-result" | "no_result") => return FailureDisposition::NoResult,
+        Some("no-result" | "no_result") => {
+            return FailureDisposition::NoResult(vec![NoResultReason::ResultNoResult])
+        }
         _ => {}
     }
     // A clean full run whose writer says PASS while also proving that zero tests
@@ -328,7 +501,7 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
         && row.executed_tests == Some(0)
         && row.result.as_deref() == Some("pass")
     {
-        return FailureDisposition::NoResult;
+        return FailureDisposition::NoResult(vec![NoResultReason::ZeroTestPass]);
     }
     if !is_clean_full_coverage(row, sha)
         || !matches!(row.result.as_deref(), Some("fail" | "failed" | "timeout"))
@@ -370,6 +543,7 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
     // deserializable in the extension map but earn no authority here.
     let mut typed_classes_present = 0usize;
     let mut typed_product_failure = false;
+    let mut typed_no_result_reasons = Vec::new();
     for gate in &failed_gates {
         match gate.failure_class() {
             Err(_) => return FailureDisposition::NeedsRerun,
@@ -380,7 +554,10 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
                     FailureClass::ProductFailure => typed_product_failure = true,
                     FailureClass::UnderstoodInfrastructureFailure
                     | FailureClass::UnderstoodPrerequisiteFailure
-                    | FailureClass::NoResult => {}
+                    | FailureClass::NoResult => typed_no_result_reasons.push(
+                        NoResultReason::from_gate(gate, failure_class)
+                            .expect("non-product failure class has a no-result reason"),
+                    ),
                 }
             }
         }
@@ -390,7 +567,7 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
             return FailureDisposition::NeedsRerun;
         }
         if !typed_product_failure {
-            return FailureDisposition::NoResult;
+            return FailureDisposition::NoResult(typed_no_result_reasons);
         }
     }
 
@@ -399,8 +576,11 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
     // nothing about the product and is re-runnable, never FAILED. Current rows
     // never reach this text/exit/timing proxy because their typed class above is
     // authoritative.
-    if typed_classes_present == 0 && is_env_fault_red(row, &failed_gates) {
-        return FailureDisposition::NoResult;
+    if typed_classes_present == 0 {
+        let reasons = env_fault_reasons(row, &failed_gates);
+        if !reasons.is_empty() {
+            return FailureDisposition::NoResult(reasons);
+        }
     }
 
     // Completeness is structural. Even when a fail-fast row carries a real red
@@ -437,7 +617,9 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
     // permanent FAILED that condemns a PR nobody re-runs. `executed_tests` remains
     // in the record for diagnostics only; it is no longer a classification key.
     if !has_real_failure {
-        return FailureDisposition::NoResult;
+        return FailureDisposition::NoResult(vec![
+            NoResultReason::NoNamedFailingGateOrFailureCount,
+        ]);
     }
 
     // Missing completeness or execution conditions cannot prove a defect. Old
@@ -499,8 +681,9 @@ pub struct Assessment {
     pub disqualified: Vec<HistoryRow>,
     /// How many records for this commit are GENUINE clean full-coverage
     /// FAILURES — i.e. [`FailureDisposition::Failed`], which already excludes
-    /// subset/dirty runs, truncated and needs-rerun records, and environment
-    /// faults (command-not-found storms, sub-second collapses).
+    /// subset/dirty runs, truncated and needs-rerun records, and every
+    /// no-result condition (including command-not-found storms and sub-second
+    /// collapses).
     ///
     /// The ledger latches these failures for the exact commit: a later PASS does
     /// not turn the commit green. Counted here so callers can explain the
@@ -509,7 +692,7 @@ pub struct Assessment {
     /// Clean full-coverage NON-PASS records that the classifier deliberately
     /// WITHHELD from [`Self::failed_records`] — contended reds, reds whose
     /// producer predates the solo-execution condition fields, truncated runs,
-    /// and environment faults. Each carries no product verdict on its own, so
+    /// and no-result rows. Each carries no product verdict on its own, so
     /// withholding them from the failure count is correct.
     ///
     /// They are counted separately because withholding them from the COUNT is
@@ -520,6 +703,9 @@ pub struct Assessment {
     /// any of them. "1 non-pass record (withheld: contended)" and silence are
     /// very different claims.
     pub withheld_nonpass_records: usize,
+    /// Every no-result reason, kept with the identity of the row that supplied
+    /// it even when another row wins the aggregate verdict by precedence.
+    pub no_result_records: Vec<RowNoResultReasons>,
 }
 
 /// Assess a single commit against all ledger rows. `sha` must be a full 40-hex
@@ -533,6 +719,7 @@ pub fn assess(rows: &[HistoryRow], sha: &str) -> Assessment {
     let mut saw_needs_rerun = false;
     let mut saw_truncated = false;
     let mut saw_no_result = false;
+    let mut no_result_records = Vec::new();
     for row in rows {
         if row.commit.as_deref() != Some(sha) {
             continue;
@@ -557,11 +744,12 @@ pub fn assess(rows: &[HistoryRow], sha: &str) -> Assessment {
                         withheld_nonpass_records += 1;
                     }
                 }
-                FailureDisposition::NoResult => {
+                FailureDisposition::NoResult(reasons) => {
                     saw_no_result = true;
                     if is_clean_full_coverage(row, sha) {
                         withheld_nonpass_records += 1;
                     }
+                    no_result_records.push(RowNoResultReasons::from_row(row, reasons));
                 }
                 FailureDisposition::NotFailure => {}
             }
@@ -588,6 +776,7 @@ pub fn assess(rows: &[HistoryRow], sha: &str) -> Assessment {
         disqualified,
         failed_records,
         withheld_nonpass_records,
+        no_result_records,
     }
 }
 
@@ -615,6 +804,7 @@ pub fn assess_tree_equivalent(rows: &[HistoryRow], branch_sha: &str) -> Assessme
     let mut saw_needs_rerun = false;
     let mut saw_truncated = false;
     let mut saw_no_result = false;
+    let mut no_result_records = Vec::new();
     for (commit, commit_rows) in by_commit {
         let assessment = assess(&commit_rows, &commit);
         match assessment.verdict {
@@ -628,6 +818,7 @@ pub fn assess_tree_equivalent(rows: &[HistoryRow], branch_sha: &str) -> Assessme
         disqualified.extend(assessment.disqualified);
         failed_records += assessment.failed_records;
         withheld_nonpass_records += assessment.withheld_nonpass_records;
+        no_result_records.extend(assessment.no_result_records);
     }
     let verdict = if saw_failed {
         Verdict::FailedOnRecord
@@ -649,6 +840,7 @@ pub fn assess_tree_equivalent(rows: &[HistoryRow], branch_sha: &str) -> Assessme
         disqualified,
         failed_records,
         withheld_nonpass_records,
+        no_result_records,
     }
 }
 
@@ -887,23 +1079,68 @@ mod tests {
         let assessment = assess(&rows, PASS_SHA);
         assert_eq!(assessment.verdict, Verdict::Validated);
         assert_eq!(assessment.failed_records, 0);
+        assert_eq!(assessment.no_result_records.len(), 1);
+        assert_eq!(
+            assessment.no_result_records[0].reasons,
+            vec![NoResultReason::CommandNotFoundStorm {
+                gates: vec![
+                    "Build workspace".into(),
+                    "Test regular workspace cases".into(),
+                    "Documentation tests".into(),
+                    "Clippy".into(),
+                    "Rustfmt".into(),
+                ],
+            }]
+        );
+    }
+
+    #[test]
+    fn explicit_no_result_reports_only_the_observed_result() {
+        let r = row(r#"{"result":"no_result"}"#);
+        assert_eq!(
+            failure_disposition(&r, PASS_SHA),
+            FailureDisposition::NoResult(vec![NoResultReason::ResultNoResult])
+        );
     }
 
     #[test]
     fn typed_gate_failure_class_decides_without_exit_or_timing_proxies() {
-        for failure_class in [
-            FailureClass::UnderstoodInfrastructureFailure,
-            FailureClass::UnderstoodPrerequisiteFailure,
-            FailureClass::NoResult,
-        ] {
+        let cases = [
+            (
+                FailureClass::UnderstoodInfrastructureFailure,
+                NoResultReason::UnderstoodInfrastructureFailure {
+                    gate: "portable CI DAG lane".into(),
+                    failure_detail: Some("producer detail".into()),
+                },
+            ),
+            (
+                FailureClass::UnderstoodPrerequisiteFailure,
+                NoResultReason::UnderstoodPrerequisiteFailure {
+                    gate: "portable CI DAG lane".into(),
+                    failure_detail: Some("producer detail".into()),
+                },
+            ),
+            (
+                FailureClass::NoResult,
+                NoResultReason::GateNoResult {
+                    gate: "portable CI DAG lane".into(),
+                    failure_detail: Some("producer detail".into()),
+                },
+            ),
+        ];
+        for (failure_class, expected) in cases {
             let mut non_product = complete_failure(PASS_SHA);
             non_product.gates[0].extra.insert(
                 "failure_class".into(),
                 serde_json::json!(failure_class.as_str()),
             );
+            non_product.gates[0].extra.insert(
+                "failure_detail".into(),
+                serde_json::json!("producer detail"),
+            );
             assert_eq!(
                 failure_disposition(&non_product, PASS_SHA),
-                FailureDisposition::NoResult
+                FailureDisposition::NoResult(vec![expected])
             );
         }
 
@@ -915,6 +1152,48 @@ mod tests {
         assert_eq!(
             failure_disposition(&product, PASS_SHA),
             FailureDisposition::Failed
+        );
+    }
+
+    #[test]
+    fn typed_no_result_keeps_every_gate_reason_in_gate_order() {
+        let mut r = complete_failure(PASS_SHA);
+        let classes = [
+            FailureClass::UnderstoodInfrastructureFailure,
+            FailureClass::UnderstoodPrerequisiteFailure,
+            FailureClass::NoResult,
+        ];
+        r.gates = classes
+            .into_iter()
+            .enumerate()
+            .map(|(index, class)| {
+                let mut gate = r.gates[0].clone();
+                gate.name = format!("gate.{index}");
+                gate.extra
+                    .insert("failure_class".into(), serde_json::json!(class.as_str()));
+                gate.extra.insert(
+                    "failure_detail".into(),
+                    serde_json::json!(format!("detail.{index}")),
+                );
+                gate
+            })
+            .collect();
+        assert_eq!(
+            failure_disposition(&r, PASS_SHA),
+            FailureDisposition::NoResult(vec![
+                NoResultReason::UnderstoodInfrastructureFailure {
+                    gate: "gate.0".into(),
+                    failure_detail: Some("detail.0".into()),
+                },
+                NoResultReason::UnderstoodPrerequisiteFailure {
+                    gate: "gate.1".into(),
+                    failure_detail: Some("detail.1".into()),
+                },
+                NoResultReason::GateNoResult {
+                    gate: "gate.2".into(),
+                    failure_detail: Some("detail.2".into()),
+                },
+            ])
         );
     }
 
@@ -1354,6 +1633,10 @@ mod tests {
         let a = assess(&[r], PASS_SHA);
         assert_eq!(a.verdict, Verdict::NoResult);
         assert_eq!(a.verdict.exit_code(), 4);
+        assert_eq!(
+            a.no_result_records[0].reasons,
+            vec![NoResultReason::NoNamedFailingGateOrFailureCount]
+        );
     }
 
     #[test]
@@ -1420,6 +1703,18 @@ mod tests {
         let a = assess(&[command_not_found_row(PASS_SHA)], PASS_SHA);
         assert_eq!(a.verdict, Verdict::NoResult);
         assert_eq!(a.verdict.exit_code(), 4);
+        assert_eq!(
+            a.no_result_records[0].reasons,
+            vec![NoResultReason::CommandNotFoundStorm {
+                gates: vec![
+                    "Build workspace".into(),
+                    "Test regular workspace cases".into(),
+                    "Documentation tests".into(),
+                    "Clippy".into(),
+                    "Rustfmt".into(),
+                ],
+            }]
+        );
     }
 
     #[test]
@@ -1456,7 +1751,46 @@ mod tests {
                     {{"name":"Clippy","result":"fail","exit_code":1,"real_seconds":0}}
                 ]}}"#
         ));
-        assert_eq!(assess(&[r], PASS_SHA).verdict, Verdict::NoResult);
+        let assessment = assess(&[r], PASS_SHA);
+        assert_eq!(assessment.verdict, Verdict::NoResult);
+        assert_eq!(
+            assessment.no_result_records[0].reasons,
+            vec![NoResultReason::SubsecondCollapse {
+                gates: vec![
+                    "Build workspace".into(),
+                    "Test regular workspace cases".into(),
+                    "Clippy".into(),
+                ],
+            }]
+        );
+    }
+
+    #[test]
+    fn legacy_row_keeps_both_applicable_environment_reasons() {
+        let mut r = command_not_found_row(PASS_SHA);
+        r.gates.retain(gate_is_red);
+        r.checks = Some(5);
+        r.failures = Some(5);
+        let reasons = match failure_disposition(&r, PASS_SHA) {
+            FailureDisposition::NoResult(reasons) => reasons,
+            other => panic!("expected no-result, got {other:?}"),
+        };
+        let gates = vec![
+            "Build workspace".into(),
+            "Test regular workspace cases".into(),
+            "Documentation tests".into(),
+            "Clippy".into(),
+            "Rustfmt".into(),
+        ];
+        assert_eq!(
+            reasons,
+            vec![
+                NoResultReason::CommandNotFoundStorm {
+                    gates: gates.clone(),
+                },
+                NoResultReason::SubsecondCollapse { gates },
+            ]
+        );
     }
 
     #[test]
@@ -1518,8 +1852,26 @@ mod tests {
         let mut genuine = complete_failure(PASS_SHA);
         genuine.real_seconds = Some(58.0);
         genuine.gates[0].real_seconds = Some(45.0);
-        let rows = vec![command_not_found_row(PASS_SHA), genuine];
-        assert_eq!(assess(&rows, PASS_SHA).verdict, Verdict::FailedOnRecord);
+        let mut no_result = command_not_found_row(PASS_SHA);
+        no_result
+            .extra
+            .insert("record_id".into(), serde_json::json!("record-no-result"));
+        no_result.run_id = Some("run-no-result".into());
+        no_result.slot = Some("slot-7".into());
+        let rows = vec![no_result, genuine];
+        let assessment = assess(&rows, PASS_SHA);
+        assert_eq!(assessment.verdict, Verdict::FailedOnRecord);
+        assert_eq!(assessment.no_result_records.len(), 1);
+        let record = &assessment.no_result_records[0];
+        assert_eq!(record.record_id.as_deref(), Some("record-no-result"));
+        assert_eq!(record.run_id.as_deref(), Some("run-no-result"));
+        assert_eq!(record.commit.as_deref(), Some(PASS_SHA));
+        assert_eq!(record.host.as_deref(), None);
+        assert_eq!(record.slot.as_deref(), Some("slot-7"));
+        assert!(matches!(
+            record.reasons.as_slice(),
+            [NoResultReason::CommandNotFoundStorm { .. }]
+        ));
     }
 
     #[test]
@@ -1547,6 +1899,10 @@ mod tests {
         assert_eq!(a.verdict, Verdict::NoResult);
         assert_eq!(a.verdict.exit_code(), 4);
         assert_eq!(a.qualifying.len(), 0);
+        assert_eq!(
+            a.no_result_records[0].reasons,
+            vec![NoResultReason::ZeroTestPass]
+        );
     }
 
     #[test]

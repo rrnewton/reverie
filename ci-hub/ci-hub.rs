@@ -3909,6 +3909,7 @@ struct CanonicalReceiptAssessment {
     disqualified: Vec<HistoryRow>,
     failed_records: usize,
     withheld_nonpass_records: usize,
+    no_result_records: Vec<validate_status::RowNoResultReasons>,
     unresolved_failure_obligations: Vec<failure_obligations::UnresolvedFailureObligation>,
 }
 
@@ -4556,6 +4557,7 @@ fn assess_canonical_receipts(
     let mut saw_needs_rerun = false;
     let mut saw_truncated = false;
     let mut saw_no_result = false;
+    let mut no_result_records = Vec::new();
     for row in rows {
         if !row_matches_validation_repo(row, repo) || row.commit.as_deref() != Some(sha) {
             continue;
@@ -4577,7 +4579,11 @@ fn assess_canonical_receipts(
                 validate_status::FailureDisposition::Failed => saw_failed = true,
                 validate_status::FailureDisposition::NeedsRerun => saw_needs_rerun = true,
                 validate_status::FailureDisposition::Truncated => saw_truncated = true,
-                validate_status::FailureDisposition::NoResult => saw_no_result = true,
+                validate_status::FailureDisposition::NoResult(reasons) => {
+                    saw_no_result = true;
+                    no_result_records
+                        .push(validate_status::RowNoResultReasons::from_row(row, reasons));
+                }
                 validate_status::FailureDisposition::NotFailure => {}
             }
             disqualified.push(row.clone());
@@ -4661,6 +4667,7 @@ fn assess_canonical_receipts(
         disqualified,
         failed_records: status_assessment.failed_records,
         withheld_nonpass_records: status_assessment.withheld_nonpass_records,
+        no_result_records,
         unresolved_failure_obligations,
     })
 }
@@ -5877,9 +5884,17 @@ fn probe_ledger_freshness(root: &Path, sha: &str, repo: &str) -> LedgerFreshness
     }
 }
 
-fn recent_row_verdict(row: &HistoryRow, repo: &str) -> &'static str {
+struct RecentRowOutcome {
+    verdict: &'static str,
+    no_result_reasons: Vec<validate_status::NoResultReason>,
+}
+
+fn recent_row_outcome(row: &HistoryRow, repo: &str) -> RecentRowOutcome {
     let Some(sha) = row.commit.as_deref() else {
-        return "NO-COMMIT";
+        return RecentRowOutcome {
+            verdict: "NO-COMMIT",
+            no_result_reasons: Vec::new(),
+        };
     };
     let qualifying = if repo == CANONICAL_VALIDATE_REPO {
         qualify_canonical_receipt(row, sha).is_some()
@@ -5887,14 +5902,21 @@ fn recent_row_verdict(row: &HistoryRow, repo: &str) -> &'static str {
         qualify_reverie_receipt(row, sha).is_some()
     };
     if qualifying {
-        return "VALIDATED";
+        return RecentRowOutcome {
+            verdict: "VALIDATED",
+            no_result_reasons: Vec::new(),
+        };
     }
-    match validate_status::failure_disposition(row, sha) {
-        validate_status::FailureDisposition::Failed => "FAILED",
-        validate_status::FailureDisposition::NeedsRerun => "NEEDS-RERUN",
-        validate_status::FailureDisposition::Truncated => "TRUNCATED",
-        validate_status::FailureDisposition::NoResult => "NO-RESULT",
-        validate_status::FailureDisposition::NotFailure => "NOT-VALIDATED",
+    let (verdict, no_result_reasons) = match validate_status::failure_disposition(row, sha) {
+        validate_status::FailureDisposition::Failed => ("FAILED", Vec::new()),
+        validate_status::FailureDisposition::NeedsRerun => ("NEEDS-RERUN", Vec::new()),
+        validate_status::FailureDisposition::Truncated => ("TRUNCATED", Vec::new()),
+        validate_status::FailureDisposition::NoResult(reasons) => ("NO-RESULT", reasons),
+        validate_status::FailureDisposition::NotFailure => ("NOT-VALIDATED", Vec::new()),
+    };
+    RecentRowOutcome {
+        verdict,
+        no_result_reasons,
     }
 }
 
@@ -5924,7 +5946,73 @@ fn recent_row_nonqualification_reason(row: &HistoryRow, repo: &str) -> String {
     }
 }
 
-fn recent_row_summary(row: &HistoryRow, verdict: &str) -> String {
+fn no_result_reason_summary(reasons: &[validate_status::NoResultReason]) -> String {
+    reasons
+        .iter()
+        .map(validate_status::NoResultReason::summary)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn exact_no_result_verdict_summary(sha: &str) -> String {
+    format!(
+        "# validate NO-RESULT {sha} -- no product verdict; row-bound reasons follow; re-dispatch required"
+    )
+}
+
+fn exact_no_result_record_summary(record: &validate_status::RowNoResultReasons) -> String {
+    let mut primary_identity = Vec::new();
+    if let Some(record_id) = record.record_id.as_deref() {
+        primary_identity.push(format!("record_id={record_id}"));
+    }
+    if let Some(run_id) = record.run_id.as_deref() {
+        primary_identity.push(format!("run_id={run_id}"));
+    }
+    if let Some(commit) = record.commit.as_deref() {
+        primary_identity.push(format!("commit={commit}"));
+    }
+    let primary_identity = primary_identity.join(" ");
+    let primary_separator = if primary_identity.is_empty() {
+        String::new()
+    } else {
+        format!(" {primary_identity}")
+    };
+    let mut lines = vec![format!("# validate NO-RESULT-RECORD{primary_separator}")];
+
+    let mut observation_identity = Vec::new();
+    if let Some(started_at) = record.started_at.as_deref() {
+        observation_identity.push(format!("started_at={started_at}"));
+    }
+    if let Some(finished_at) = record.finished_at.as_deref() {
+        observation_identity.push(format!("finished_at={finished_at}"));
+    }
+    if let Some(host) = record.host.as_deref() {
+        observation_identity.push(format!("host={host}"));
+    }
+    if let Some(slot) = record.slot.as_deref() {
+        observation_identity.push(format!("slot={slot}"));
+    }
+    if !observation_identity.is_empty() {
+        lines.push(format!("#   row {}", observation_identity.join(" ")));
+    }
+    lines.extend(
+        record
+            .reasons
+            .iter()
+            .map(|reason| format!("#   reason: {}", reason.summary())),
+    );
+    lines.join("\n")
+}
+
+fn recent_row_summary(
+    row: &HistoryRow,
+    verdict: &str,
+    no_result_reasons: &[validate_status::NoResultReason],
+) -> String {
+    if verdict == "NO-RESULT" {
+        debug_assert!(!no_result_reasons.is_empty());
+        return no_result_reason_summary(no_result_reasons);
+    }
     // ⚠️ AN ABORTED NODE IS A CONSEQUENCE, A FAILED NODE IS A CAUSE, AND THIS
     // SUMMARY USED TO MERGE THEM. Both carry `result: "fail"`, so filtering on
     // `result` alone put ten eager-exit victims and the one real failure into
@@ -5991,15 +6079,13 @@ fn recent_row_summary(row: &HistoryRow, verdict: &str) -> String {
             aborted.len()
         );
     }
-    // `summary` is serialized by validate-status schemas 6/7/8. Keep this
-    // legacy wording byte-stable; the human-only COMMIT-VERDICT annotation is
-    // derived separately from canonical qualification.
+    // Keep the remaining legacy wording byte-stable. NO-RESULT is handled
+    // above from the classifier's structured reasons.
     match verdict {
         "VALIDATED" => "passed".into(),
         "FAILED" => "full run failed".into(),
         "NEEDS-RERUN" => "failure needs an uncontended confirmation".into(),
         "TRUNCATED" => "run did not produce a complete validation verdict".into(),
-        "NO-RESULT" => "validation did not exercise the product".into(),
         "NO-COMMIT" => "receipt has no commit".into(),
         _ if row.extra.get("admission").and_then(|value| value.as_str())
             != Some("ci-hub-validate-lock") =>
@@ -6519,6 +6605,8 @@ struct ValidateStatusEntry {
     terminated_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     termination_reason: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    no_result_reasons: Vec<validate_status::NoResultReason>,
     summary: String,
     #[serde(skip)]
     tree: Option<String>,
@@ -6908,6 +6996,7 @@ fn live_validate_runs_from(
                     log_file,
                     terminated_by: Some(termination.agent.clone()),
                     termination_reason: Some(termination.reason.clone()),
+                    no_result_reasons: Vec::new(),
                     summary: format!(
                         "terminated-by={} reason={} unit={}",
                         termination.agent, termination.reason, unit
@@ -6977,6 +7066,7 @@ fn live_validate_runs_from(
                 log_file,
                 terminated_by: None,
                 termination_reason: None,
+                no_result_reasons: Vec::new(),
                 summary,
                 tree: None,
                 allow_tree_match: false,
@@ -7082,6 +7172,7 @@ fn live_validate_runs_from(
             log_file,
             terminated_by: None,
             termination_reason: None,
+            no_result_reasons: Vec::new(),
             summary,
             tree: None,
             allow_tree_match: false,
@@ -7716,9 +7807,11 @@ fn finished_validate_status_entry(
     row: &HistoryRow,
     include_log_paths: bool,
 ) -> ValidateStatusEntry {
-    let verdict = recent_row_verdict(row, repo);
+    let outcome = recent_row_outcome(row, repo);
+    let verdict = outcome.verdict;
     let nonqualification_reason =
         (verdict == "NOT-VALIDATED").then(|| recent_row_nonqualification_reason(row, repo));
+    let summary = recent_row_summary(row, verdict, &outcome.no_result_reasons);
     let tree = row.tree().ok().flatten().map(str::to_string);
     ValidateStatusEntry {
         depth: None,
@@ -7756,7 +7849,8 @@ fn finished_validate_status_entry(
         },
         terminated_by: None,
         termination_reason: None,
-        summary: recent_row_summary(row, verdict),
+        no_result_reasons: outcome.no_result_reasons,
+        summary,
         tree,
         allow_tree_match: row.commit_anchored == Some(true) && row.tree_dirty == Some(false),
     }
@@ -7957,6 +8051,7 @@ fn no_run_commit_timeline_entry(sha: &str, depth: usize) -> ValidateStatusEntry 
         log_file: None,
         terminated_by: None,
         termination_reason: None,
+        no_result_reasons: Vec::new(),
         summary: String::new(),
         tree: None,
         allow_tree_match: false,
@@ -7989,6 +8084,7 @@ fn unreadable_validate_status_entry(
         log_file: None,
         terminated_by: None,
         termination_reason: None,
+        no_result_reasons: Vec::new(),
         summary: format!("ledger line {} could not be read", failure.line_number),
         tree: None,
         allow_tree_match: false,
@@ -8122,7 +8218,7 @@ fn validate_status_history_json(
     if !args.commit_timeline {
         if let Some(run_number) = args.run_no {
             return serde_json::json!({
-                "schema_version": 8,
+                "schema_version": 9,
                 "repo": repo,
                 "run_number": run_number,
                 "machine": local_machine(),
@@ -8136,7 +8232,7 @@ fn validate_status_history_json(
             });
         }
         return serde_json::json!({
-            "schema_version": 9,
+            "schema_version": 10,
             "repo": repo,
             "count": entries.len(),
             "in_progress_count": in_progress_count,
@@ -8164,7 +8260,7 @@ fn validate_status_history_json(
         .filter(|entry| !entry.in_progress && entry.verdict.as_deref() != Some("NO-RUN"))
         .count();
     serde_json::json!({
-        "schema_version": 7,
+        "schema_version": 8,
         "repo": repo,
         "count": entries.len(),
         "in_progress_count": in_progress_count,
@@ -8581,7 +8677,7 @@ fn run_validate_status(
         let qualifying_receipts: Vec<_> =
             assessment.qualifying.iter().map(describe_receipt).collect();
         let report = serde_json::json!({
-            "schema_version": 2,
+            "schema_version": 3,
             "repo": repo,
             "sha": assessment.sha,
             "main_match": main_match,
@@ -8602,6 +8698,7 @@ fn run_validate_status(
             "unresolved_failure_obligations": assessment.unresolved_failure_obligations,
             "newest_qualifying": newest.map(describe_receipt),
             "qualifying_receipts": qualifying_receipts,
+            "no_result_records": assessment.no_result_records,
             "terminations": terminations,
             "ledger": path.display().to_string(),
         });
@@ -8654,7 +8751,7 @@ fn run_validate_status(
                 // attributable".
                 if assessment.withheld_nonpass_records > 0 {
                     println!(
-                        "# validate NOTE {} -- {} same-commit clean full-coverage NON-PASS record(s) exist but are WITHHELD from the failure count (contended, incomplete solo conditions, truncated, or environment fault); they carry no product verdict, but this green is not the only record of this commit.",
+                        "# validate NOTE {} -- {} same-commit clean full-coverage NON-PASS record(s) exist but are WITHHELD from the failure count (contended, incomplete solo conditions, truncated, or no-result); they carry no product verdict, but this green is not the only record of this commit.",
                         assessment.sha, assessment.withheld_nonpass_records,
                     );
                 }
@@ -8664,7 +8761,7 @@ fn run_validate_status(
                     "# validate FAILED {} -- a clean full-coverage run exists but did NOT pass ({} record(s)); this commit is known-failing",
                     assessment.sha,
                     // Was `disqualified.len()`, which counts EVERY non-qualifying
-                    // row -- subset, dirty, truncated, env-fault -- so the number
+                    // row -- subset, dirty, truncated, no-result -- so the number
                     // overstated how many genuine clean full failures existed.
                     assessment.failed_records,
                 );
@@ -8705,10 +8802,7 @@ fn run_validate_status(
                 }
             }
             validate_status::Verdict::NoResult => {
-                println!(
-                    "# validate NO-RESULT {} -- red gates could not run (command-not-found storm or sub-second collapse); an environment fault, not a product defect; re-dispatch required",
-                    assessment.sha,
-                );
+                println!("{}", exact_no_result_verdict_summary(&assessment.sha));
             }
             validate_status::Verdict::NotValidated if !terminations.is_empty() => {
                 println!(
@@ -8760,6 +8854,9 @@ fn run_validate_status(
                     );
                 }
             },
+        }
+        for record in &assessment.no_result_records {
+            println!("{}", exact_no_result_record_summary(record));
         }
     }
     Ok(assessment.verdict.exit_code())
@@ -10875,7 +10972,7 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>();
-        assert_eq!(report["schema_version"], 9);
+        assert_eq!(report["schema_version"], 10);
         assert_eq!(
             keys,
             BTreeSet::from([
@@ -11003,7 +11100,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(report["schema_version"], 8);
+        assert_eq!(report["schema_version"], 9);
         assert_eq!(report["run_number"], 701);
         assert_eq!(report["count"], 1);
         assert!(report.get("machine").is_some());
@@ -11372,7 +11469,77 @@ mod tests {
         assert_eq!(entry.verdict.as_deref(), Some("NO-RESULT"));
         assert_eq!(entry.result.as_deref(), Some("pass"));
         assert_eq!(entry.tests_executed, Some(0));
-        assert_eq!(entry.summary, "validation did not exercise the product");
+        assert_eq!(entry.summary, "zero-test pass (executed_tests=0)");
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(
+            json["no_result_reasons"],
+            serde_json::json!([{"condition": "zero-test pass"}])
+        );
+    }
+
+    #[test]
+    fn recent_history_text_and_json_keep_all_typed_no_result_reasons() {
+        let mut value = schema4_receipt_value();
+        value["result"] = serde_json::json!("fail");
+        value["raw_result"] = serde_json::json!("fail");
+        value["exit_code"] = serde_json::json!(1);
+        value["checks"] = serde_json::json!(3);
+        value["gates_run"] = serde_json::json!(3);
+        value["gates_expected"] = serde_json::json!(3);
+        value["failures"] = serde_json::json!(3);
+        value["gates"] = serde_json::json!([
+            {
+                "name": "build.workspace",
+                "result": "fail",
+                "exit_code": 1,
+                "failure_class": "understood_infrastructure_failure",
+                "failure_detail": "compiler unavailable"
+            },
+            {
+                "name": "test.regular",
+                "result": "fail",
+                "exit_code": 1,
+                "failure_class": "understood_prerequisite_failure",
+                "failure_detail": "build gate unavailable"
+            },
+            {
+                "name": "verify.strict",
+                "result": "fail",
+                "exit_code": 1,
+                "failure_class": "no_result",
+                "failure_detail": "verifier produced no comparison"
+            }
+        ]);
+        let entry =
+            finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &history_row(value), false);
+
+        assert_eq!(entry.verdict.as_deref(), Some("NO-RESULT"));
+        assert_eq!(
+            entry.summary,
+            "gate build.workspace: understood_infrastructure_failure: compiler unavailable; gate test.regular: understood_prerequisite_failure: build gate unavailable; gate verify.strict: no_result: verifier produced no comparison"
+        );
+        assert!(!entry.summary.contains("environment fault"));
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(
+            json["no_result_reasons"],
+            serde_json::json!([
+                {
+                    "condition": "understood_infrastructure_failure",
+                    "gate": "build.workspace",
+                    "failure_detail": "compiler unavailable"
+                },
+                {
+                    "condition": "understood_prerequisite_failure",
+                    "gate": "test.regular",
+                    "failure_detail": "build gate unavailable"
+                },
+                {
+                    "condition": "no_result",
+                    "gate": "verify.strict",
+                    "failure_detail": "verifier produced no comparison"
+                }
+            ])
+        );
     }
 
     #[test]
@@ -12107,7 +12274,7 @@ mod tests {
         )
         .expect("fixture row parses");
 
-        let summary = recent_row_summary(&row, "NEEDS-RERUN");
+        let summary = recent_row_summary(&row, "NEEDS-RERUN", &[]);
         assert_eq!(summary, "failed: e2e.manifest_applications; 3 aborted");
         assert!(
             !summary.contains("lint.clippy"),
@@ -12127,7 +12294,7 @@ mod tests {
         )
         .expect("fixture row parses");
 
-        let summary = recent_row_summary(&row, "NEEDS-RERUN");
+        let summary = recent_row_summary(&row, "NEEDS-RERUN", &[]);
         assert!(
             summary.starts_with("no failing node recorded; 2 aborted:"),
             "an all-aborted run must not claim a failure: {summary}"
@@ -12143,7 +12310,7 @@ mod tests {
         )
         .expect("fixture row parses");
         assert_eq!(
-            recent_row_summary(&row, "NEEDS-RERUN"),
+            recent_row_summary(&row, "NEEDS-RERUN", &[]),
             "failed: e2e.manifest_backend_parity_c"
         );
     }
@@ -12186,10 +12353,10 @@ mod tests {
         }))
         .expect("fully accounted interrupted fixture parses");
 
-        let verdict = recent_row_verdict(&row, CANONICAL_VALIDATE_REPO);
-        assert_eq!(verdict, "TRUNCATED");
+        let outcome = recent_row_outcome(&row, CANONICAL_VALIDATE_REPO);
+        assert_eq!(outcome.verdict, "TRUNCATED");
         assert_eq!(
-            recent_row_summary(&row, verdict),
+            recent_row_summary(&row, outcome.verdict, &outcome.no_result_reasons),
             "run did not produce a complete validation verdict"
         );
     }
@@ -12609,6 +12776,55 @@ mod tests {
         .unwrap();
         assert_eq!(assessment.verdict, validate_status::Verdict::FailedOnRecord);
         assert_eq!(assessment.failed_records, 1);
+    }
+
+    #[test]
+    fn exact_status_text_and_json_keep_row_bound_no_result_reasons() {
+        let mut explicit = schema4_receipt_value();
+        explicit["record_id"] = serde_json::json!("record-explicit");
+        explicit["run_id"] = serde_json::json!("run-explicit");
+        explicit["result"] = serde_json::json!("no_result");
+        explicit["raw_result"] = serde_json::json!("no_result");
+        let assessment = assess_canonical_receipts(
+            Path::new("."),
+            &[history_row(explicit), history_row(schema4_receipt_value())],
+            RECEIPT_SHA,
+            CANONICAL_VALIDATE_REPO,
+        )
+        .unwrap();
+
+        assert_eq!(assessment.verdict, validate_status::Verdict::Validated);
+        assert_eq!(assessment.no_result_records.len(), 1);
+        let header = exact_no_result_verdict_summary(RECEIPT_SHA);
+        assert_eq!(
+            header,
+            format!(
+                "# validate NO-RESULT {RECEIPT_SHA} -- no product verdict; row-bound reasons follow; re-dispatch required"
+            )
+        );
+        assert!(!header.contains("environment"));
+        let line = exact_no_result_record_summary(&assessment.no_result_records[0]);
+        assert_eq!(
+            line,
+            format!(
+                "# validate NO-RESULT-RECORD record_id=record-explicit run_id=run-explicit commit={RECEIPT_SHA}\n#   row started_at=2026-08-01T12:00:00Z finished_at=2026-08-01T12:01:00Z host=validation-host slot=lander\n#   reason: result=no_result"
+            )
+        );
+        assert!(!line.contains("environment"));
+        let json = serde_json::to_value(&assessment.no_result_records).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!([{
+                "record_id": "record-explicit",
+                "run_id": "run-explicit",
+                "commit": RECEIPT_SHA,
+                "started_at": "2026-08-01T12:00:00Z",
+                "finished_at": "2026-08-01T12:01:00Z",
+                "host": "validation-host",
+                "slot": "lander",
+                "reasons": [{"condition": "result=no_result"}]
+            }])
+        );
     }
 
     #[test]
