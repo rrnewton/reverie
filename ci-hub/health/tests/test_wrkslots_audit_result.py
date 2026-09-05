@@ -111,6 +111,13 @@ class WrkslotsAuditResultTests(unittest.TestCase):
     def evaluate(self, **overrides: object) -> tuple[str, str, dict[str, object]]:
         arguments: dict[str, object] = {
             "max_age_seconds": 7200,
+            # These fixture shas are not commits anywhere, so a producer that
+            # does not match exactly cannot be reconciled against a repository
+            # and must be refused. That is deliberate: the cases below assert
+            # refusals, and this keeps them refusals for the right reason. The
+            # ancestry and gitlink paths need a real repository and are covered
+            # by scripts/test_wrkslots_audit_provenance.py.
+            "state_root": self.path.parent,
             "expected_parent_sha": SHA_A,
             "expected_hermit_sha": SHA_B,
             "expected_agent_utils_sha": SHA_C,
