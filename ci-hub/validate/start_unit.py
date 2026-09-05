@@ -3480,6 +3480,8 @@ def build_systemd_command(
     runtime_root: Path | None = None,
     ci_dag_jobs: int | None = None,
     max_validates: int | None = None,
+    no_wait: bool = False,
+    skip_if_recorded: bool = False,
     repo: str = "rrnewton/hermit",
     frozen_validate: bool = False,
     frozen_result: Path | None = None,
@@ -3726,6 +3728,8 @@ def build_systemd_command(
         target,
         "--run-record",
         str(record),
+        *(["--no-wait"] if no_wait else []),
+        *(["--skip-if-recorded"] if skip_if_recorded else []),
         "--wait",
         str(wait),
         "--hold",
@@ -5125,6 +5129,22 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--unit", help="validate-* unit name; .service suffix is optional")
     result.add_argument("--log", type=Path, help="durable log (default: ignored/validate/<unit>.log)")
     result.add_argument("--wait", type=int, default=7200, help="validate-lock queue wait bound")
+    result.add_argument(
+        "--no-wait",
+        action="store_true",
+        help=(
+            "refuse inside the detached service unless validation admission is "
+            "immediately available; never remain in either validation queue"
+        ),
+    )
+    result.add_argument(
+        "--skip-if-recorded",
+        action="store_true",
+        help=(
+            "after admission acquires a validation slot, refuse before starting "
+            "the child if the exact target now has any canonical ledger record"
+        ),
+    )
     result.add_argument("--hold", type=int, default=1200, help="validate-lock lease seconds")
     result.add_argument(
         "--child-deadline",
@@ -5577,6 +5597,8 @@ def main(
             runtime_root=runtime_root,
             ci_dag_jobs=args.ci_dag_jobs,
             max_validates=args.max_validates,
+            no_wait=args.no_wait,
+            skip_if_recorded=args.skip_if_recorded,
             repo=repo,
             frozen_validate=args.frozen_validate,
             frozen_result=frozen_result,

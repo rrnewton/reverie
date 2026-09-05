@@ -425,6 +425,49 @@ def test_valid_correction_replaces_legacy_row_without_hiding_original_event(
     assert compatibility_rows[0]["gates"][0]["failed_substeps"] == []
     assert original["legacy_row"]["gates"][0]["failed_substeps"] is None
 
+    status = validate_rows.status_input(root=tmp_path)
+    assert status["schema_version"] == 1
+    assert status["rows"] == compatibility_rows
+    assert [record["event_id"] for record in status["records"]] == [
+        original["event_id"],
+        correction["event_id"],
+    ]
+    assert [record["event_type"] for record in status["records"]] == [
+        "run.result",
+        "run.correct",
+    ]
+    assert [record["commit"] for record in status["records"]] == [
+        original["commit"],
+        original["commit"],
+    ]
+
+
+def test_status_input_cli_reads_the_production_event_adapter_once(tmp_path: Path):
+    original = event_with_null_failed_substeps(tmp_path)
+    correction = correction_for(original)
+    write_events(tmp_path, original, correction)
+    environment = os.environ.copy()
+    environment.update(
+        HERMIT_VALIDATE_STOP_TEST_MODE="1",
+        CI_HUB_VALIDATE_LEDGER_TEST_ROOT=str(tmp_path),
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(HERE.parent / "validate_rows.py"), "status-input"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    status = json.loads(result.stdout)
+    assert len(status["rows"]) == 1
+    assert len(status["records"]) == 2
+    assert {record["event_type"] for record in status["records"]} == {
+        "run.result",
+        "run.correct",
+    }
+
 
 @pytest.mark.parametrize(
     "case",

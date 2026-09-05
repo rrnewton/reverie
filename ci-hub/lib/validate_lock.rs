@@ -250,6 +250,9 @@ pub enum ValidateLockCommand {
     Status,
     /// Emit one guarded, machine-readable canonical lock-authority snapshot.
     AuthorityStatus(AuthorityStatusArgs),
+    /// Report whether one validation could be admitted immediately, without
+    /// joining either queue or reserving a validation slot.
+    AdmissionStatus(AdmissionStatusArgs),
     /// Report whether a background acquirer must yield to the owner's watch.
     /// Exit 0=ALLOW, 1=YIELD, 2=UNKNOWN (fail closed).
     YieldStatus(YieldStatusArgs),
@@ -357,6 +360,26 @@ pub struct RetirePriorityArgs {
 #[derive(Args, Clone, Debug)]
 pub struct AuthorityStatusArgs {
     /// Emit the stable versioned JSON authority contract.
+    #[arg(long, required = true)]
+    pub json: bool,
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct AdmissionStatusArgs {
+    #[arg(long)]
+    pub agent: String,
+    #[arg(long, value_enum)]
+    pub kind: Kind,
+    #[arg(long)]
+    pub target: String,
+    #[arg(long, default_value_t = VALIDATE_CONCURRENT_CAP)]
+    pub max: u64,
+    /// The caller just fetched this target from the repository's origin/main.
+    /// This affects only the read-only preview: `run` still performs both
+    /// moving-main checks before it can start a validation child.
+    #[arg(long, default_value_t = false)]
+    pub target_was_fetched_main: bool,
+    /// Emit the stable versioned JSON admission contract.
     #[arg(long, required = true)]
     pub json: bool,
 }
@@ -540,6 +563,11 @@ pub struct RunArgs {
     /// reason to stderr and exit 3 instead of queueing indefinitely.
     #[arg(long, default_value_t = false)]
     pub no_wait: bool,
+    /// After acquiring a validation slot, re-read the canonical local ledger
+    /// and refuse before starting the child if this exact target now has any
+    /// record. This closes the status-to-admission race for periodic launches.
+    #[arg(long, default_value_t = false)]
+    pub skip_if_recorded: bool,
     #[arg(long, default_value_t = DEFAULT_WAIT_SECONDS)]
     pub wait: u64,
     #[arg(long, default_value_t = DEFAULT_HOLD_SECONDS)]
@@ -565,7 +593,10 @@ pub struct RunArgs {
 
 impl ValidateLockCommand {
     pub fn consumes_meaningful_time(&self) -> bool {
-        matches!(self, Self::Acquire(_) | Self::Run(_))
+        matches!(
+            self,
+            Self::Acquire(_) | Self::AdmissionStatus(_) | Self::Run(_)
+        )
     }
 }
 
@@ -1044,6 +1075,103 @@ struct AuthorityStatus {
     owner: Option<AuthorityOwner>,
     canonical_anchor_held: bool,
     cleanup_state: AuthorityCleanupState,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ImmediateAdmissionState {
+    Admissible,
+    Busy,
+    Unknown,
+    Refused,
+    Quarantined,
+    Stale,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct ImmediateAdmissionStatus {
+    schema_version: u32,
+    admissible: bool,
+    state: ImmediateAdmissionState,
+    reason_code: String,
+    detail: String,
+    agent: String,
+    kind: String,
+    target: String,
+    queue_position: Option<usize>,
+    live_validate_jobs: Option<usize>,
+    mem_available_bytes: Option<u64>,
+    slot: Option<usize>,
+}
+
+impl ImmediateAdmissionStatus {
+    fn ready(
+        args: &AdmissionStatusArgs,
+        live_validate_jobs: usize,
+        mem_available_bytes: u64,
+        slot: usize,
+    ) -> Self {
+        Self {
+            schema_version: 1,
+            admissible: true,
+            state: ImmediateAdmissionState::Admissible,
+            reason_code: "immediate-admission-available".into(),
+            detail: format!(
+                "global priority queue, owner-watch yield, memory admission, and validation slot {slot} allow an immediate attempt"
+            ),
+            agent: args.agent.clone(),
+            kind: args.kind.as_str().into(),
+            target: args.target.clone(),
+            queue_position: Some(1),
+            live_validate_jobs: Some(live_validate_jobs),
+            mem_available_bytes: Some(mem_available_bytes),
+            slot: Some(slot),
+        }
+    }
+
+    fn not_admissible(
+        args: &AdmissionStatusArgs,
+        state: ImmediateAdmissionState,
+        reason_code: &str,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            schema_version: 1,
+            admissible: false,
+            state,
+            reason_code: reason_code.into(),
+            detail: detail.into(),
+            agent: args.agent.clone(),
+            kind: args.kind.as_str().into(),
+            target: args.target.clone(),
+            queue_position: None,
+            live_validate_jobs: None,
+            mem_available_bytes: None,
+            slot: None,
+        }
+    }
+
+    fn with_queue_position(mut self, position: usize) -> Self {
+        self.queue_position = Some(position);
+        self
+    }
+
+    fn with_capacity(mut self, live_validate_jobs: usize, available: Option<u64>) -> Self {
+        self.live_validate_jobs = Some(live_validate_jobs);
+        self.mem_available_bytes = available;
+        self
+    }
+
+    fn exit_code(&self) -> i32 {
+        match self.state {
+            ImmediateAdmissionState::Admissible => 0,
+            ImmediateAdmissionState::Busy => 1,
+            ImmediateAdmissionState::Unknown => 2,
+            ImmediateAdmissionState::Refused
+            | ImmediateAdmissionState::Quarantined
+            | ImmediateAdmissionState::Stale => REFUSED_EXIT_CODE,
+        }
+    }
 }
 
 impl AuthorityStatus {
@@ -1942,6 +2070,24 @@ thread_local! {
         const { RefCell::new(VecDeque::new()) };
 }
 
+#[cfg(test)]
+thread_local! {
+    static EXACT_RECORD_RECHECK_RESULT: RefCell<Option<Result<usize, String>>> =
+        const { RefCell::new(None) };
+}
+
+fn exact_record_count_after_admission(
+    tool_root: &Path,
+    state_root: &Path,
+    target: &str,
+) -> Result<usize, String> {
+    #[cfg(test)]
+    if let Some(result) = EXACT_RECORD_RECHECK_RESULT.with(|slot| slot.borrow_mut().take()) {
+        return result;
+    }
+    crate::exact_validate_record_count_for_admission(tool_root, state_root, target)
+}
+
 fn original_process_group_state(
     pgid: u32,
     original_leader: &ProcessIdentity,
@@ -2063,6 +2209,7 @@ enum GlobalTurn {
         own_priority: QueuePriority,
         position: usize,
     },
+    ExactTargetHeld(String),
     Held(String),
     WaitMemory(String),
     MemoryUnknown(String),
@@ -2227,6 +2374,61 @@ pub fn execute(
             }
             .print_authority_status()?;
             Ok(0)
+        }
+        ValidateLockCommand::AdmissionStatus(args) => {
+            debug_assert!(args.json, "clap requires --json");
+            reject_bad_run_max(args.max, args.kind)?;
+            let status = if !args.kind.is_validation() {
+                ImmediateAdmissionStatus::not_admissible(
+                    &args,
+                    ImmediateAdmissionState::Refused,
+                    "kind-is-not-validation",
+                    "admission-status reports validation admission only",
+                )
+            } else if let Err(error) =
+                base_admission_check(tool_root, &args.target, args.kind, false)
+            {
+                ImmediateAdmissionStatus::not_admissible(
+                    &args,
+                    if error.to_string().contains("UNRESOLVED")
+                        || error.to_string().contains("did not resolve")
+                    {
+                        ImmediateAdmissionState::Unknown
+                    } else {
+                        ImmediateAdmissionState::Stale
+                    },
+                    "validation-preflight-refused",
+                    error.to_string(),
+                )
+            } else {
+                match if args.target_was_fetched_main {
+                    Ok(())
+                } else {
+                    current_main_freshness_check(state_root, &args.target, args.kind)
+                } {
+                    Ok(()) => lock.immediate_admission_status(&args)?,
+                    Err(error) => ImmediateAdmissionStatus::not_admissible(
+                        &args,
+                        if stale_base_is_definite(&error) {
+                            ImmediateAdmissionState::Stale
+                        } else {
+                            ImmediateAdmissionState::Unknown
+                        },
+                        "current-main-freshness-refused",
+                        error.to_string(),
+                    ),
+                }
+            };
+            let exit = status.exit_code();
+            println!(
+                "{}",
+                serde_json::to_string(&status).map_err(|error| {
+                    ValidateLockError::InvalidState(format!(
+                        "cannot serialize immediate validation admission status: {error}"
+                    ))
+                })?
+            );
+            Ok(exit)
         }
         ValidateLockCommand::YieldStatus(args) => {
             debug_assert!(args.json, "clap requires --json");
@@ -3103,7 +3305,27 @@ impl ValidateLock {
                 for candidate in 0..VALIDATE_SLOT_COUNT {
                     match BoxExclusionAnchor::observe(&self.paths.slot_anchor(candidate)) {
                         BoxAnchorObservation::Free => {}
-                        BoxAnchorObservation::Held(_) => live_validate_jobs += 1,
+                        BoxAnchorObservation::Held(body) => {
+                            if args.skip_if_recorded {
+                                let held_target = match unique_anchor_field(&body, "target") {
+                                    Ok(target) => target,
+                                    Err(reason) => {
+                                        self.write_global_queue(&queue)?;
+                                        return Ok(GlobalTurn::MemoryUnknown(format!(
+                                            "cannot establish target of live validation in slot {candidate}: {reason}"
+                                        )));
+                                    }
+                                };
+                                if held_target == args.target {
+                                    self.write_global_queue(&queue)?;
+                                    return Ok(GlobalTurn::ExactTargetHeld(format!(
+                                        "slot {candidate} already runs exact target {}",
+                                        args.target
+                                    )));
+                                }
+                            }
+                            live_validate_jobs += 1;
+                        }
                         BoxAnchorObservation::Unknown(reason) => {
                             self.write_global_queue(&queue)?;
                             return Ok(GlobalTurn::MemoryUnknown(format!(
@@ -3229,6 +3451,15 @@ impl ValidateLock {
                             "validate-lock: YIELD priority={} position={position}; earlier-or-higher-priority queue head agent={head_agent} priority={}",
                             own_priority.as_str(),
                             head_priority.as_str()
+                        );
+                        last = token;
+                    }
+                }
+                GlobalTurn::ExactTargetHeld(holder) => {
+                    let token = format!("exact-target-held:{holder}");
+                    if token != last {
+                        eprintln!(
+                            "validate-lock: waiting for the existing exact-target validation: {holder}"
                         );
                         last = token;
                     }
@@ -3977,6 +4208,288 @@ impl ValidateLock {
         })?;
         println!("{json}");
         Ok(())
+    }
+
+    /// Read the same queue, memory, owner-watch, anchor, and durable slot
+    /// evidence used by `run`, but do not join a queue or reserve a slot. The
+    /// caller still uses `run --no-wait` as the final race check.
+    fn immediate_admission_status(
+        &self,
+        args: &AdmissionStatusArgs,
+    ) -> Result<ImmediateAdmissionStatus, ValidateLockError> {
+        for (name, value) in [
+            ("agent", args.agent.as_str()),
+            ("kind", args.kind.as_str()),
+            ("target", args.target.as_str()),
+        ] {
+            anchor_token(name, value)?;
+        }
+        let now = epoch_seconds()?;
+        let yield_status = self.with_guard(|| Ok(self.yield_status_for_agent(&args.agent, now)))?;
+        if yield_status.state != YieldState::Allow {
+            return Ok(ImmediateAdmissionStatus::not_admissible(
+                args,
+                if yield_status.state == YieldState::Unknown {
+                    ImmediateAdmissionState::Unknown
+                } else {
+                    ImmediateAdmissionState::Busy
+                },
+                match yield_status.state {
+                    YieldState::Yield => "owner-watch-yield",
+                    YieldState::Unknown => "owner-watch-yield-unknown",
+                    YieldState::Allow => unreachable!(),
+                },
+                yield_status.detail,
+            ));
+        }
+
+        self.with_global_queue_guard(|| {
+            let mut queue = self.read_global_queue()?;
+            self.prune_and_sort_global_queue(&mut queue, now)?;
+
+            if let Some(entry) = queue.iter().find(|entry| {
+                entry.owner.is_some() && entry.kind == args.kind && entry.target == args.target
+            }) {
+                return Ok(ImmediateAdmissionStatus::not_admissible(
+                    args,
+                    ImmediateAdmissionState::Busy,
+                    "exact-target-already-queued",
+                    format!(
+                        "the global priority queue already has a live waiter for {} {} (agent={})",
+                        args.kind.as_str(),
+                        args.target,
+                        entry.agent
+                    ),
+                ));
+            }
+
+            let owner = current_process_owner()?;
+            let mut candidate = queue
+                .iter()
+                .position(|entry| {
+                    entry.matches(&args.agent, args.kind, &args.target) && entry.owner.is_none()
+                })
+                .map(|index| queue.remove(index))
+                .unwrap_or_else(|| GlobalQueueEntry {
+                    enqueued_at: now,
+                    priority: QueuePriority::Routine,
+                    agent: args.agent.clone(),
+                    kind: args.kind,
+                    target: args.target.clone(),
+                    owner: None,
+                });
+            candidate.owner = Some(owner.clone());
+            queue.push(candidate);
+            self.prune_and_sort_global_queue(&mut queue, now)?;
+            let my_index = queue
+                .iter()
+                .position(|entry| {
+                    entry.matches(&args.agent, args.kind, &args.target)
+                        && entry.owner.as_ref() == Some(&owner)
+                })
+                .ok_or_else(|| {
+                    ValidateLockError::InvalidState(
+                        "immediate admission candidate disappeared from the global priority queue snapshot"
+                            .into(),
+                    )
+                })?;
+            if my_index != 0 {
+                let head = &queue[0];
+                return Ok(ImmediateAdmissionStatus::not_admissible(
+                    args,
+                    ImmediateAdmissionState::Busy,
+                    "global-priority-queue-not-ready",
+                    format!(
+                        "global priority queue position {} is behind agent={} kind={} target={}",
+                        my_index + 1,
+                        head.agent,
+                        head.kind.as_str(),
+                        head.target
+                    ),
+                )
+                .with_queue_position(my_index + 1));
+            }
+
+            let mut live_validate_jobs = 0usize;
+            let mut free_slots = Vec::new();
+            for slot in 0..VALIDATE_SLOT_COUNT {
+                match BoxExclusionAnchor::observe(&self.paths.slot_anchor(slot)) {
+                    BoxAnchorObservation::Free => free_slots.push(slot),
+                    BoxAnchorObservation::Held(body) => {
+                        let held_target = match unique_anchor_field(&body, "target") {
+                            Ok(target) => target,
+                            Err(reason) => {
+                                return Ok(ImmediateAdmissionStatus::not_admissible(
+                                    args,
+                                    ImmediateAdmissionState::Unknown,
+                                    "validation-slot-authority-unknown",
+                                    format!(
+                                        "cannot establish target of live validation in slot {slot}: {reason}"
+                                    ),
+                                )
+                                .with_capacity(live_validate_jobs, None));
+                            }
+                        };
+                        if held_target == args.target {
+                            return Ok(ImmediateAdmissionStatus::not_admissible(
+                                args,
+                                ImmediateAdmissionState::Busy,
+                                "exact-target-already-running",
+                                format!(
+                                    "validation slot {slot} already runs exact target {}",
+                                    args.target
+                                ),
+                            )
+                            .with_capacity(live_validate_jobs + 1, None));
+                        }
+                        live_validate_jobs += 1;
+                    }
+                    BoxAnchorObservation::Unknown(reason) => {
+                        return Ok(ImmediateAdmissionStatus::not_admissible(
+                            args,
+                            ImmediateAdmissionState::Unknown,
+                            "validation-slot-authority-unknown",
+                            format!("validation slot {slot} is unreadable: {reason}"),
+                        )
+                        .with_capacity(live_validate_jobs, None));
+                    }
+                }
+            }
+            if live_validate_jobs >= args.max as usize || free_slots.is_empty() {
+                return Ok(ImmediateAdmissionStatus::not_admissible(
+                    args,
+                    ImmediateAdmissionState::Busy,
+                    "validation-slots-full",
+                    format!(
+                        "{live_validate_jobs} live validates leave no slot under the --max {} admission limit",
+                        args.max
+                    ),
+                )
+                .with_capacity(live_validate_jobs, None));
+            }
+
+            let content = match fs::read_to_string(&self.paths.meminfo) {
+                Ok(content) => content,
+                Err(error) => {
+                    return Ok(ImmediateAdmissionStatus::not_admissible(
+                        args,
+                        ImmediateAdmissionState::Unknown,
+                        "memory-admission-unknown",
+                        format!("cannot read {}: {error}", self.paths.meminfo.display()),
+                    )
+                    .with_capacity(live_validate_jobs, None));
+                }
+            };
+            let available = match parse_mem_available_bytes(&content) {
+                Ok(available) => available,
+                Err(reason) => {
+                    return Ok(ImmediateAdmissionStatus::not_admissible(
+                        args,
+                        ImmediateAdmissionState::Unknown,
+                        "memory-admission-unknown",
+                        reason,
+                    )
+                    .with_capacity(live_validate_jobs, None));
+                }
+            };
+            if let Err(reason) =
+                validate_memory_admission(live_validate_jobs, available, args.max)
+            {
+                return Ok(ImmediateAdmissionStatus::not_admissible(
+                    args,
+                    ImmediateAdmissionState::Busy,
+                    "memory-admission-refused",
+                    reason,
+                )
+                .with_capacity(live_validate_jobs, Some(available)));
+            }
+
+            // `try_global_turn` takes the lowest free anchor. Inspect that same
+            // slot instead of skipping a local refusal and claiming a later
+            // slot is usable when the real run cannot reach it.
+            let slot = free_slots[0];
+            let active = ValidateLock {
+                paths: self.paths.for_slot(slot),
+            };
+            if let Some(reason) =
+                foreign_box_quarantine(&active.paths.global_anchor(), &active.paths.cleanup)
+            {
+                return Ok(ImmediateAdmissionStatus::not_admissible(
+                    args,
+                    ImmediateAdmissionState::Quarantined,
+                    "validation-slot-not-ready",
+                    format!("slot {slot}: {reason}"),
+                )
+                .with_capacity(live_validate_jobs, Some(available)));
+            }
+            let refusal = active.with_guard(|| {
+                let holder = active.read_holder()?;
+                match active.cleanup_verification(holder.as_ref()) {
+                    CleanupVerification::None => {}
+                    CleanupVerification::Unknown { reason, .. } => {
+                        return Ok(Some((ImmediateAdmissionState::Unknown, reason)));
+                    }
+                    CleanupVerification::Armed { reason, .. }
+                    | CleanupVerification::Active { reason, .. }
+                    | CleanupVerification::Uncensused { reason, .. }
+                    | CleanupVerification::Recoverable { reason, .. } => {
+                        return Ok(Some((ImmediateAdmissionState::Quarantined, reason)));
+                    }
+                }
+                let Some(holder) = holder else {
+                    return Ok(None);
+                };
+                let cleanup = CleanupVerification::None;
+                match active.holder_stale_clear_decision(&holder, now, cleanup)? {
+                    LeaseDecision::Clear { .. } => Ok(None),
+                    LeaseDecision::Quarantine { reason } => {
+                        Ok(Some((ImmediateAdmissionState::Quarantined, reason)))
+                    }
+                    LeaseDecision::Refuse { reason } => {
+                        Ok(Some((ImmediateAdmissionState::Busy, reason)))
+                    }
+                    LeaseDecision::AlreadyCleared => Ok(Some((
+                        ImmediateAdmissionState::Unknown,
+                        "stale-clear state is inconsistent".into(),
+                    ))),
+                }
+            })?;
+            if let Some((state, reason)) = refusal {
+                return Ok(ImmediateAdmissionStatus::not_admissible(
+                    args,
+                    state,
+                    "validation-slot-not-ready",
+                    format!("slot {slot}: {reason}"),
+                )
+                .with_capacity(live_validate_jobs, Some(available)));
+            }
+            match BoxExclusionAnchor::observe(&self.paths.slot_anchor(slot)) {
+                BoxAnchorObservation::Free => Ok(ImmediateAdmissionStatus::ready(
+                    args,
+                    live_validate_jobs,
+                    available,
+                    slot,
+                )),
+                BoxAnchorObservation::Held(holder) => Ok(
+                    ImmediateAdmissionStatus::not_admissible(
+                        args,
+                        ImmediateAdmissionState::Busy,
+                        "validation-slot-not-ready",
+                        format!("slot {slot}: now held by {holder}"),
+                    )
+                    .with_capacity(live_validate_jobs + 1, Some(available)),
+                ),
+                BoxAnchorObservation::Unknown(reason) => Ok(
+                    ImmediateAdmissionStatus::not_admissible(
+                        args,
+                        ImmediateAdmissionState::Unknown,
+                        "validation-slot-not-ready",
+                        format!("slot {slot}: unreadable after check: {reason}"),
+                    )
+                    .with_capacity(live_validate_jobs, Some(available)),
+                ),
+            }
+        })
     }
 
     fn print_yield_status(&self) -> Result<i32, ValidateLockError> {
@@ -5168,6 +5681,27 @@ impl ValidateLock {
                 }
             }
         }
+        if args.skip_if_recorded {
+            match exact_record_count_after_admission(tool_root, state_root, &args.target) {
+                Ok(0) => {}
+                Ok(count) => {
+                    drop(box_anchors);
+                    eprintln!(
+                        "REFUSED: exact target {} gained {count} validation ledger record(s) before admission; no validation child started",
+                        args.target
+                    );
+                    return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
+                }
+                Err(reason) => {
+                    drop(box_anchors);
+                    eprintln!(
+                        "REFUSED: exact-target validation ledger recheck is UNKNOWN for {}: {reason}; no validation child started",
+                        args.target
+                    );
+                    return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
+                }
+            }
+        }
         let active = ValidateLock {
             paths: self.paths.for_slot(slot),
         };
@@ -6115,6 +6649,7 @@ mod tests {
             target: HEX_SHA.into(),
             run_record: record,
             no_wait: true,
+            skip_if_recorded: false,
             wait: 0,
             hold: 30,
             child_deadline: 30,
@@ -7420,6 +7955,7 @@ mod tests {
                     target: HEX_SHA.into(),
                     run_record: None,
                     no_wait: false,
+                    skip_if_recorded: false,
                     wait: 0,
                     hold: 30,
                     child_deadline: 30,
@@ -7515,6 +8051,7 @@ mod tests {
                         target: format!("sha-{i}"),
                         run_record: None,
                         no_wait: false,
+                        skip_if_recorded: false,
                         wait: 0,
                         hold: 30,
                         child_deadline: 30,
@@ -7557,6 +8094,7 @@ mod tests {
                     target: "proof-sha".into(),
                     run_record: None,
                     no_wait: false,
+                    skip_if_recorded: false,
                     wait: 0,
                     hold: 30,
                     child_deadline: 30,
@@ -7611,6 +8149,7 @@ mod tests {
                     target: "sha2".into(),
                     run_record: None,
                     no_wait: true,
+                    skip_if_recorded: false,
                     wait: 0,
                     hold: 60,
                     child_deadline: 30,
@@ -7724,6 +8263,7 @@ mod tests {
                     target: "sha-stuck".into(),
                     run_record: None,
                     no_wait: false,
+                    skip_if_recorded: false,
                     wait: 0,
                     hold: 30,
                     child_deadline: 1,
@@ -7775,6 +8315,7 @@ wait
                     target: "sha-stubborn".into(),
                     run_record: None,
                     no_wait: false,
+                    skip_if_recorded: false,
                     wait: 0,
                     hold: 30,
                     child_deadline: 1,
@@ -8146,6 +8687,7 @@ while :; do sleep 60; done
                 target: HEX_SHA.into(),
                 run_record: None,
                 no_wait: false,
+                skip_if_recorded: false,
                 wait: 0,
                 hold: 30,
                 // Deliberately far away: if this run ends, it must be because of
@@ -8226,6 +8768,7 @@ while :; do sleep 60; done
                 target: HEX_SHA.into(),
                 run_record: None,
                 no_wait: false,
+                skip_if_recorded: false,
                 wait: 0,
                 hold: 30,
                 child_deadline: 600,
@@ -8309,6 +8852,7 @@ while :; do sleep 60; done
             target: HEX_SHA.into(),
             run_record: None,
             no_wait: false,
+            skip_if_recorded: false,
             wait: 0,
             hold: 30,
             child_deadline: 30,
@@ -8491,6 +9035,7 @@ os._exit(0)
             target: HEX_SHA.into(),
             run_record: None,
             no_wait: false,
+            skip_if_recorded: false,
             wait: 0,
             hold: 30,
             child_deadline: 30,
@@ -8567,6 +9112,7 @@ wait
                     target: "sha-escaped".into(),
                     run_record: None,
                     no_wait: false,
+                    skip_if_recorded: false,
                     wait: 0,
                     hold: 30,
                     child_deadline: 1,
@@ -8701,6 +9247,7 @@ wait
                 target: target.into(),
                 run_record: None,
                 no_wait: false,
+                skip_if_recorded: false,
                 wait: 0,
                 hold: 30,
                 child_deadline: 30,
@@ -8826,6 +9373,7 @@ wait
                         target: target.clone(),
                         run_record: None,
                         no_wait: false,
+                        skip_if_recorded: false,
                         wait: 0,
                         hold: 30,
                         child_deadline: 30,
@@ -8973,6 +9521,7 @@ exit 0
                     target: "normal-exit".into(),
                     run_record: None,
                     no_wait: false,
+                    skip_if_recorded: false,
                     wait: 0,
                     hold: 30,
                     child_deadline: 30,
@@ -9043,6 +9592,7 @@ exit 0
                     target: "sha-greedy".into(),
                     run_record: None,
                     no_wait: false,
+                    skip_if_recorded: false,
                     wait: 0,
                     hold: 30,
                     child_deadline: 30,
@@ -9439,6 +9989,112 @@ exit 0
         );
     }
 
+    fn admission_status_args() -> AdmissionStatusArgs {
+        AdmissionStatusArgs {
+            agent: "ops-tick-integration-tip".into(),
+            kind: Kind::Validate,
+            target: HEX_SHA.into(),
+            max: VALIDATE_CONCURRENT_CAP,
+            target_was_fetched_main: false,
+            json: true,
+        }
+    }
+
+    #[test]
+    fn immediate_admission_status_distinguishes_ready_busy_and_unknown() {
+        let paths = temp_paths("immediate-admission-status");
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let args = admission_status_args();
+        let ready = lock.immediate_admission_status(&args).unwrap();
+        assert!(ready.admissible);
+        assert_eq!(ready.state, ImmediateAdmissionState::Admissible);
+        assert_eq!(serde_json::to_value(&ready).unwrap()["state"], "admissible");
+
+        let now = epoch_seconds().unwrap();
+        lock.write_global_queue(&[GlobalQueueEntry {
+            enqueued_at: now.saturating_sub(1),
+            priority: QueuePriority::OwnerDirective,
+            agent: "earlier-owner-directive".into(),
+            kind: Kind::Validate,
+            target: "1111111111111111111111111111111111111111".into(),
+            owner: Some(current_process_owner().unwrap()),
+        }])
+        .unwrap();
+        let busy = lock.immediate_admission_status(&args).unwrap();
+        assert!(!busy.admissible);
+        assert_eq!(busy.state, ImmediateAdmissionState::Busy);
+        assert_eq!(busy.reason_code, "global-priority-queue-not-ready");
+
+        lock.write_global_queue(&[]).unwrap();
+        let exact = BoxExclusionAnchor::take_attributed(
+            &paths.slot_anchor(0),
+            0,
+            &format!("agent=other kind=validate target={HEX_SHA}"),
+        )
+        .unwrap()
+        .expect("fixture must hold slot zero");
+        let duplicate = lock.immediate_admission_status(&args).unwrap();
+        assert!(!duplicate.admissible);
+        assert_eq!(duplicate.state, ImmediateAdmissionState::Busy);
+        assert_eq!(duplicate.reason_code, "exact-target-already-running");
+        drop(exact);
+
+        let unregistered_cleanup = CleanupRecord::new(
+            "interrupted-slot-zero",
+            format!("validate:{HEX_SHA}"),
+            CleanupPhase::Armed,
+        )
+        .unwrap();
+        write_cleanup_record(&paths.cleanup, &unregistered_cleanup).unwrap();
+        let unregistered = lock.immediate_admission_status(&args).unwrap();
+        assert!(!unregistered.admissible);
+        assert_eq!(unregistered.state, ImmediateAdmissionState::Unknown);
+        assert_eq!(unregistered.reason_code, "validation-slot-not-ready");
+        assert_eq!(
+            unregistered.slot, None,
+            "preview must not skip blocked slot zero and advertise slot one"
+        );
+        fs::remove_file(&paths.cleanup).unwrap();
+
+        fs::write(&paths.meminfo, "MemTotal: 1024 kB\n").unwrap();
+        let unknown = lock.immediate_admission_status(&args).unwrap();
+        assert!(!unknown.admissible);
+        assert_eq!(unknown.state, ImmediateAdmissionState::Unknown);
+        assert_eq!(unknown.exit_code(), 2);
+        assert_eq!(unknown.reason_code, "memory-admission-unknown");
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    #[test]
+    fn final_admission_refuses_an_exact_target_that_started_after_status() {
+        let paths = temp_paths("exact-target-race");
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let owner = current_process_owner().unwrap();
+        let exact = BoxExclusionAnchor::take_attributed(
+            &paths.slot_anchor(0),
+            0,
+            &format!("agent=other kind=validate target={HEX_SHA}"),
+        )
+        .unwrap()
+        .expect("fixture must hold slot zero");
+        let mut args = global_queue_run_args("periodic", HEX_SHA);
+        args.max = VALIDATE_CONCURRENT_CAP;
+        args.no_wait = true;
+        args.skip_if_recorded = true;
+
+        assert!(matches!(
+            lock.try_global_turn(&args, &owner, "fixture=periodic", true)
+                .unwrap(),
+            GlobalTurn::ExactTargetHeld(reason) if reason.contains(HEX_SHA)
+        ));
+        drop(exact);
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
     #[test]
     fn global_turn_rechecks_memory_under_the_queue_guard() {
         let paths = temp_paths("memory-admission");
@@ -9769,6 +10425,7 @@ exit 0
             target: target.into(),
             run_record: None,
             no_wait: false,
+            skip_if_recorded: false,
             wait: 30,
             hold: 30,
             child_deadline: 30,
@@ -10585,6 +11242,7 @@ exit 0
                 target,
                 run_record: None,
                 no_wait: false,
+                skip_if_recorded: false,
                 wait: 0,
                 hold: 30,
                 child_deadline: 30,
@@ -10606,6 +11264,66 @@ exit 0
         assert_eq!(code, 0);
         assert_eq!(fs::read_to_string(marker).unwrap(), "ran");
         assert!(ValidateLock { paths }.read_holder().unwrap().is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn acquired_slot_rechecks_exact_record_before_starting_child() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let stub = write_stub("record-race-admit", "#!/bin/sh\necho OK\nexit 0\n");
+        env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
+        let (paths, root, _seed, target) = current_main_fixture("record-race", "hermit");
+        let marker = root.join("child-must-not-run");
+        EXACT_RECORD_RECHECK_RESULT.with(|slot| *slot.borrow_mut() = Some(Ok(1)));
+
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let code = lock
+            .run(
+                RunArgs {
+                    agent: "record-race".into(),
+                    kind: Kind::Validate,
+                    target,
+                    run_record: None,
+                    no_wait: true,
+                    skip_if_recorded: true,
+                    wait: 0,
+                    hold: 30,
+                    child_deadline: 30,
+                    max: 1,
+                    skip_base_check: false,
+                    child: vec![
+                        OsString::from("/bin/sh"),
+                        OsString::from("-c"),
+                        OsString::from("printf forbidden > \"$1\""),
+                        OsString::from("record-race-child"),
+                        marker.clone().into_os_string(),
+                    ],
+                },
+                &root,
+            )
+            .unwrap();
+        env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
+        EXACT_RECORD_RECHECK_RESULT.with(|slot| *slot.borrow_mut() = None);
+        let _ = fs::remove_file(&stub);
+
+        assert_eq!(code, REFUSED_EXIT_CODE);
+        assert!(
+            !marker.exists(),
+            "a newly recorded target must not start its child"
+        );
+        assert!(lock.read_holder().unwrap().is_none());
+        for slot in 0..VALIDATE_SLOT_COUNT {
+            assert_eq!(
+                BoxExclusionAnchor::observe(&paths.slot_anchor(slot)),
+                BoxAnchorObservation::Free,
+                "the record-race refusal must release validation slot {slot}"
+            );
+        }
         let _ = fs::remove_dir_all(root);
     }
 
@@ -10636,6 +11354,7 @@ exit 0
                     target,
                     run_record: None,
                     no_wait: false,
+                    skip_if_recorded: false,
                     wait: 0,
                     hold: 30,
                     child_deadline: 30,
@@ -10788,6 +11507,7 @@ exit 0
                     target: HEX_SHA.into(),
                     run_record: None,
                     no_wait: false,
+                    skip_if_recorded: false,
                     wait: 0,
                     hold: 30,
                     child_deadline: 30,

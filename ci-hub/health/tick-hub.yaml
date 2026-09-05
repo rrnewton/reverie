@@ -254,6 +254,35 @@ reminders:
         component: wrkslots-doctor-findings
       title: "wrkslots registry and storage newly disagree: {summary}"
 
+  # PERIODIC MEASUREMENT OF THE EXACT HERMIT MAIN TIP. This asks whether any
+  # validate record identifies that commit; it does not ask whether the commit
+  # is green. Any readable exact-tip row stops the launch, as does a
+  # process-verified exact-tip run already in progress. Ledger absence is used
+  # only when validate-status has confirmed it against the published ledger.
+  #
+  # Admission is checked before launch against the global priority queue,
+  # owner-watch yield, memory reservation, and all validation slots. The
+  # read-only admission check reuses the tip fetched by this driver; canonical
+  # validate-run then performs its own current-main checks, uses --no-wait, and
+  # rechecks the exact-tip ledger while holding a slot. Its caller runs in a
+  # separately tracked transient user unit, while this gate returns after
+  # recording that unit's name. The 75-second internal decision deadline and 90-second
+  # gate bound leave half of the health tick's 180-second ORC bound for the
+  # other serial gates; the systemd service has a 300-second aggregate bound.
+  - name: integration_tip_validate
+    cadence_secs: 3600
+    gate:
+      timeout_secs: 90
+      cmd: python3 ci-hub/health/integration_tip_validate.py --state-root "$DEV_HERMIT_PARENT"
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: integration-tip-validate
+      title: "periodic exact-tip validate could not decide or start: {summary}"
+
   # VALIDATE CHECKOUT CLEANUP MUST OUTLIVE THE PROCESS THAT STARTED THE RUN.
   # The launcher's waiter removes its checkout on the normal completion path,
   # but agents end, panes disappear, and waiters are killed while their detached

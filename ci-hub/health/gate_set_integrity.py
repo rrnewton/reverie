@@ -84,6 +84,7 @@ REQUIRED: dict[str, str] = {
     "slot_agent_parity": "active slots outnumbering the agents actually alive",
     # The other genuinely-live one.
     "gate_runner_presence": "whether the gate runner is present at all",
+    "integration_tip_validate": "whether the exact Hermit main tip receives a periodic validate attempt",
     # Went silent for a full day and was found by hand.
     "reverie_pin_lag_note": "the reverie pin falling behind and blocking snapshots",
     # A checker that can be removed without complaint is the defect it detects.

@@ -787,9 +787,8 @@ def current_validation_run_rows(items: Iterable[dict]) -> list[dict]:
     return [row for index, row in enumerate(rows) if index not in superseded]
 
 
-def rows(*, root: Path | None = None) -> list[dict]:
-    """HistoryRow compatibility view of the one canonical event union."""
-    root = (root or repository_root()).resolve()
+def _validated_events(*, root: Path) -> list[dict]:
+    """Read the event union once and refuse every malformed member."""
     items = events(root=root)
     for index, codes in enumerate(validate_events(items), 1):
         if codes:
@@ -800,6 +799,11 @@ def rows(*, root: Path | None = None) -> list[dict]:
                     f"event violates {codes}"
                 )
             raise ValueError(f"validation event {index} violates {codes}")
+    return items
+
+
+def _rows_from_events(items: list[dict], *, root: Path) -> list[dict]:
+    """Project the already-read event union to the HistoryRow compatibility view."""
     replacements, correction_ids = _legacy_row_corrections(items)
     out: list[dict] = []
     seen: set[str] = set()
@@ -824,6 +828,81 @@ def rows(*, root: Path | None = None) -> list[dict]:
                 seen.add(identity)
                 out.append(restored)
     return out
+
+
+def _record_identities(items: list[dict]) -> list[dict]:
+    """Identify raw result/correction records before compatibility projection.
+
+    The compact identity keeps the one-read status response bounded even when a
+    receipt embeds large per-cell evidence.  Event validation and correction
+    validation have already succeeded before this function is called.
+    """
+    records: list[dict] = []
+    for event in items:
+        event_type = event.get("event_type")
+        if event_type not in {"run.result", "run.correct"}:
+            continue
+        row = event.get("legacy_row")
+        if event_type == "run.correct" and not isinstance(row, dict):
+            continue
+
+        row_commit = row.get("commit") if isinstance(row, dict) else None
+        if event_type == "run.result":
+            commit = event.get("commit")
+            if row_commit is not None and row_commit != commit:
+                raise ValueError(
+                    f"validation record {event.get('event_id')!r} has conflicting "
+                    "event and legacy_row commits"
+                )
+        else:
+            commit = row_commit
+
+        if not (
+            isinstance(commit, str)
+            and len(commit) == 40
+            and commit == commit.lower()
+            and all(character in "0123456789abcdef" for character in commit)
+        ):
+            raise ValueError(
+                f"validation record {event.get('event_id')!r} has no exact lowercase commit"
+            )
+        repo = row.get("repo") if isinstance(row, dict) else None
+        if repo is None:
+            repo = {"hermit": "hermit", "reverie": "reverie"}.get(
+                str(event.get("team") or "")
+            )
+        if not isinstance(repo, str) or not repo:
+            raise ValueError(
+                f"validation record {event.get('event_id')!r} has no readable repo"
+            )
+        records.append(
+            {
+                "event_id": event["event_id"],
+                "event_type": event_type,
+                "run_id": event["run_id"],
+                "repo": repo,
+                "commit": commit,
+            }
+        )
+    return records
+
+
+def status_input(*, root: Path | None = None) -> dict:
+    """One-read input for status: projected rows plus every raw record identity."""
+    root = (root or repository_root()).resolve()
+    items = _validated_events(root=root)
+    projected = _rows_from_events(items, root=root)
+    return {
+        "schema_version": 1,
+        "rows": projected,
+        "records": _record_identities(items),
+    }
+
+
+def rows(*, root: Path | None = None) -> list[dict]:
+    """HistoryRow compatibility view of the one canonical event union."""
+    root = (root or repository_root()).resolve()
+    return _rows_from_events(_validated_events(root=root), root=root)
 
 
 def emit_jsonl(items: Iterable[dict]) -> None:
@@ -939,6 +1018,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("rows", description="emit the canonical HistoryRow compatibility view", help="emit the canonical HistoryRow compatibility view")
+    commands.add_parser(
+        "status-input",
+        description="emit projected rows and raw record identities from one event-union read",
+        help="emit one-read input for validation status",
+    )
     commands.add_parser("events", description="emit the canonical event union", help="emit the canonical event union")
     commands.add_parser("record", description="read one HistoryRow JSON object from stdin and journal it", help="read one HistoryRow JSON object from stdin and journal it")
     summary = commands.add_parser(
@@ -980,6 +1064,9 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError, json.JSONDecodeError) as error:
             print(f"validate-ledger: REFUSED: {error}", file=sys.stderr)
             return 2
+    if args.command == "status-input":
+        print(json.dumps(status_input(), sort_keys=True, separators=(",", ":")))
+        return 0
     emit_jsonl(events() if args.command == "events" else rows())
     return 0
 

@@ -3627,18 +3627,79 @@ fn load_ledger_rows_reporting(
     load_ledger_rows_reporting_with_tool(path, tool_root)
 }
 
-fn load_ledger_rows_reporting_with_tool(
+#[derive(Clone, Debug, Deserialize)]
+struct ValidationRecordIdentity {
+    #[serde(default)]
+    repo: Option<String>,
+    commit: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CanonicalLedgerStatusInput {
+    schema_version: u32,
+    rows: Vec<serde_json::Value>,
+    records: Vec<ValidationRecordIdentity>,
+}
+
+struct LoadedValidationLedger {
+    rows: Vec<HistoryRow>,
+    failures: Vec<validate_status::LedgerParseFailure>,
+    records: Vec<ValidationRecordIdentity>,
+}
+
+fn parse_history_values(
+    values: &[serde_json::Value],
+) -> (Vec<HistoryRow>, Vec<validate_status::LedgerParseFailure>) {
+    let mut jsonl = String::new();
+    for value in values {
+        jsonl.push_str(
+            &serde_json::to_string(value).expect("a serde_json::Value is always serializable"),
+        );
+        jsonl.push('\n');
+    }
+    validate_status::parse_ledger(&jsonl)
+}
+
+fn report_unreadable_ledger_rows(
+    path: &Path,
+    readable: usize,
+    failures: &[validate_status::LedgerParseFailure],
+) {
+    if failures.is_empty() {
+        return;
+    }
+    // BE LOUD, AND SAY WHAT. The previous version printed only a count.
+    // Unreadable receipts in the authority ledger scrolled past behind that
+    // count, and nobody could act on them because the reason had already been
+    // discarded inside `parse_ledger`.
+    eprintln!(
+        "ci-hub: LEDGER RECORDS UNREADABLE: {} of {} line(s) in {} could not be parsed as a validate receipt.",
+        failures.len(),
+        failures.len() + readable,
+        path.display()
+    );
+    for failure in failures {
+        eprintln!("ci-hub:   {failure}");
+    }
+    eprintln!(
+        "ci-hub: these records are INVISIBLE as verdict evidence. Each is named above so the \
+         writer can be fixed and validation rerun. Do not widen the reader or rewrite the ledger: \
+         a receipt that cannot be read does not exist as far as any verdict is concerned."
+    );
+}
+
+fn load_validation_ledger_reporting_with_tool(
     path: &Path,
     tool_root: &Path,
-) -> Result<(Vec<HistoryRow>, Vec<validate_status::LedgerParseFailure>), CiHubError> {
+) -> Result<LoadedValidationLedger, CiHubError> {
     let canonical = path.file_name().is_some_and(|name| name == "ledger");
-    let buf = if canonical {
-        // Code comes from the immutable tool root; ledger discovery comes from
-        // the mutable state root that owns `path`. Passing both explicitly is
-        // required when tool_root is a retained /proc/<pid>/fd directory.
+    if canonical {
+        // One adapter read supplies both the compatibility rows used for
+        // verdicts and the raw result/correction identities used to answer
+        // whether an exact commit has any record at all.
         let output = Command::new("python3")
             .arg(tool_root.join("ci-hub/ledger/validate_rows.py"))
-            .arg("rows")
+            .arg("status-input")
             .current_dir(path.parent().unwrap_or_else(|| Path::new(".")))
             .env(
                 "DEV_HERMIT_PARENT",
@@ -3657,47 +3718,69 @@ fn load_ledger_rows_reporting_with_tool(
                     .trim()
             )));
         }
-        String::from_utf8(output.stdout).map_err(|error| {
-            CiHubError::ValidateStatus(format!("canonical ledger emitted non-UTF-8 data: {error}"))
-        })?
-    } else {
-        match std::fs::read_to_string(path) {
-            Ok(buf) => buf,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
-            Err(source) => {
-                return Err(CiHubError::LedgerRead {
-                    path: path.to_path_buf(),
-                    source,
-                })
-            }
+        let status_input: CanonicalLedgerStatusInput = serde_json::from_slice(&output.stdout)
+            .map_err(|error| {
+                CiHubError::ValidateStatus(format!(
+                    "canonical validate-ledger status input is malformed: {error}"
+                ))
+            })?;
+        if status_input.schema_version != 1 {
+            return Err(CiHubError::ValidateStatus(format!(
+                "canonical validate-ledger status input has unsupported schema {}",
+                status_input.schema_version
+            )));
+        }
+        if let Some(record) = status_input.records.iter().find(|record| {
+            !is_oid(&record.commit) || record.commit.bytes().any(|byte| byte.is_ascii_uppercase())
+        }) {
+            return Err(CiHubError::ValidateStatus(format!(
+                "canonical validate-ledger record identity has invalid commit {:?}",
+                record.commit
+            )));
+        }
+        let (rows, failures) = parse_history_values(&status_input.rows);
+        report_unreadable_ledger_rows(path, rows.len(), &failures);
+        return Ok(LoadedValidationLedger {
+            rows,
+            failures,
+            records: status_input.records,
+        });
+    }
+
+    let buf = match std::fs::read_to_string(path) {
+        Ok(buf) => buf,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(source) => {
+            return Err(CiHubError::LedgerRead {
+                path: path.to_path_buf(),
+                source,
+            })
         }
     };
     let (rows, failures) = validate_status::parse_ledger(&buf);
-    if !failures.is_empty() {
-        // BE LOUD, AND SAY WHAT. The previous version printed only a count.
-        // Unreadable receipts in the authority ledger scrolled past behind that
-        // count, and nobody could act on them because the
-        // reason had already been discarded inside `parse_ledger`. A reader of
-        // the file that decides landing authority owes the operator the reason.
-        eprintln!(
-            "ci-hub: LEDGER RECORDS UNREADABLE: {} of {} line(s) in {} could not be parsed as a validate receipt.",
-            failures.len(),
-            failures.len() + rows.len(),
-            path.display()
-        );
-        // Name EVERY rejected record. Reporting only a prefix recreates the
-        // original defect for every row past the cap: it is still invisible
-        // and still has no identity an operator can act on.
-        for failure in &failures {
-            eprintln!("ci-hub:   {failure}");
-        }
-        eprintln!(
-            "ci-hub: these records are INVISIBLE as verdict evidence. Each is named above so the \
-             writer can be fixed and validation rerun. Do not widen the reader or rewrite the ledger: \
-             a receipt that cannot be read does not exist as far as any verdict is concerned."
-        );
-    }
-    Ok((rows, failures))
+    let records = rows
+        .iter()
+        .filter_map(|row| {
+            row.commit.as_ref().map(|commit| ValidationRecordIdentity {
+                repo: row.repo.clone(),
+                commit: commit.clone(),
+            })
+        })
+        .collect();
+    report_unreadable_ledger_rows(path, rows.len(), &failures);
+    Ok(LoadedValidationLedger {
+        rows,
+        failures,
+        records,
+    })
+}
+
+fn load_ledger_rows_reporting_with_tool(
+    path: &Path,
+    tool_root: &Path,
+) -> Result<(Vec<HistoryRow>, Vec<validate_status::LedgerParseFailure>), CiHubError> {
+    let loaded = load_validation_ledger_reporting_with_tool(path, tool_root)?;
+    Ok((loaded.rows, loaded.failures))
 }
 
 /// Rows only, for call sites that do not need to reason about what was
@@ -4034,6 +4117,60 @@ fn row_matches_validation_repo(row: &HistoryRow, repo: &str) -> bool {
         ),
         _ => false,
     }
+}
+
+fn exact_validation_record_count(
+    records: &[ValidationRecordIdentity],
+    repo: &str,
+    sha: &str,
+) -> usize {
+    records
+        .iter()
+        .filter(|record| match canonical_validation_repo(repo) {
+            Some(CANONICAL_VALIDATE_REPO) => matches!(
+                record.repo.as_deref(),
+                None | Some("hermit") | Some(CANONICAL_VALIDATE_REPO)
+            ),
+            Some(CANONICAL_REVERIE_REPO) => matches!(
+                record.repo.as_deref(),
+                Some("reverie") | Some(CANONICAL_REVERIE_REPO)
+            ),
+            _ => false,
+        })
+        .filter(|record| record.commit == sha)
+        .count()
+}
+
+/// Re-read record presence after validate-lock has acquired a slot for a
+/// periodic launch. This is deliberately local: the caller already established
+/// published-ledger freshness before starting the service, while this second
+/// read closes the race with a run that wrote its row on this box in between.
+pub(crate) fn exact_validate_record_count_for_admission(
+    tool_root: &Path,
+    state_root: &Path,
+    sha: &str,
+) -> Result<usize, String> {
+    let path = ledger_path(state_root);
+    let ledger = load_validation_ledger_reporting_with_tool(&path, tool_root)
+        .map_err(|error| error.to_string())?;
+    let unreadable = ledger
+        .failures
+        .iter()
+        .filter(|failure| {
+            parse_failure_matches_validation_repo(failure, CANONICAL_VALIDATE_REPO)
+                && failure.commit.as_deref() == Some(sha)
+        })
+        .count();
+    if unreadable > 0 {
+        return Err(format!(
+            "{unreadable} unreadable validation ledger record(s) identify exact target {sha}"
+        ));
+    }
+    Ok(exact_validation_record_count(
+        &ledger.records,
+        CANONICAL_VALIDATE_REPO,
+        sha,
+    ))
 }
 
 fn parse_failure_matches_validation_repo(
@@ -6162,6 +6299,82 @@ fn recent_row_summary(
     }
 }
 
+/// Render the most specific human-readable cause retained by one exact-commit
+/// validation row. The periodic-tip driver must not turn a readable red row
+/// back into the generic statement that a record merely exists.
+fn exact_record_detail(row: &HistoryRow, verdict: &str) -> String {
+    let failing = row
+        .gates
+        .iter()
+        .filter(|gate| validate_status::gate_is_red(gate))
+        .map(|gate| {
+            let detail = ["failure_detail", "reason", "first_attempt_reason"]
+                .into_iter()
+                .find_map(|key| {
+                    gate.extra
+                        .get(key)
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                });
+            let class = gate
+                .extra
+                .get("failure_class")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty());
+            let mut facts = Vec::new();
+            if let Some(class) = class {
+                facts.push(format!("class={class}"));
+            }
+            if let Some(exit_code) = gate.exit_code {
+                facts.push(format!("exit={exit_code}"));
+            }
+            if let Some(detail) = detail {
+                facts.push(format!("detail={detail}"));
+            }
+            if facts.is_empty() {
+                gate.name.clone()
+            } else {
+                format!("{} ({})", gate.name, facts.join(", "))
+            }
+        })
+        .collect::<Vec<_>>();
+    if !failing.is_empty() {
+        return failing.join("; ");
+    }
+
+    for key in ["failure_detail", "detail", "reason"] {
+        if let Some(detail) = row
+            .extra
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            return detail.to_string();
+        }
+    }
+
+    let mut detail = recent_row_summary(row, verdict);
+    if let Some(result) = row.result.as_deref() {
+        detail.push_str(&format!("; result={result}"));
+    }
+    if let Some(exit_code) = row.exit_code {
+        detail.push_str(&format!("; exit={exit_code}"));
+    }
+    detail
+}
+
+fn describe_exact_validation_record(row: &HistoryRow, repo: &str) -> serde_json::Value {
+    let verdict = recent_row_verdict(row, repo);
+    serde_json::json!({
+        "verdict": verdict,
+        "result": row.result,
+        "exit_code": row.exit_code,
+        "started_at": row.started_at,
+        "finished_at": row.finished_at,
+        "detail": exact_record_detail(row, verdict),
+    })
+}
+
 fn short_wall(seconds: Option<f64>) -> String {
     let Some(seconds) = seconds else {
         return "-".into();
@@ -6605,6 +6818,7 @@ struct ValidateRunAdmissionResult {
 #[derive(Clone, Debug, Deserialize)]
 struct ValidateRunRecord {
     schema_version: u32,
+    state: String,
     unit: String,
     target: String,
     repo: String,
@@ -6623,6 +6837,16 @@ struct ValidateRunRecord {
     log: Option<String>,
     #[serde(default)]
     admission_result: Option<ValidateRunAdmissionResult>,
+    #[serde(default)]
+    process_identity: Option<ValidateRunProcessIdentity>,
+    #[serde(default)]
+    result: Option<String>,
+    #[serde(default)]
+    detail: Option<String>,
+    #[serde(default)]
+    exit_code: Option<i32>,
+    #[serde(default)]
+    finished_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -6837,7 +7061,20 @@ fn current_validate_run_text(
 #[derive(Default)]
 struct LiveValidateRunScan {
     entries: Vec<ValidateStatusEntry>,
+    attempts: Vec<ValidateRunAttempt>,
     unreadable_handles: Vec<validate_run_handle::UnreadableRecord>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ValidateRunAttempt {
+    unit: String,
+    state: String,
+    sha: String,
+    started_at: String,
+    finished_at: Option<String>,
+    result: Option<String>,
+    detail: Option<String>,
+    exit_code: Option<i32>,
 }
 
 fn unreadable_run_handle_line(unreadable: &validate_run_handle::UnreadableRecord) -> String {
@@ -6941,6 +7178,7 @@ fn live_validate_runs_from(
     };
 
     let mut live = Vec::new();
+    let mut attempts = Vec::new();
     for (path, value) in records {
         if validate_run_handle::is_current(&value) {
             if unreadable_current_paths.contains(&path) {
@@ -6956,40 +7194,54 @@ fn live_validate_runs_from(
                 continue;
             }
             let Some(unit) = record.unit.as_deref() else {
-                return Err(CiHubError::ValidateStatus(format!(
-                    "live validation run handle {} has no unit after shared validation",
-                    path.display()
-                )));
+                unreadable_handles.push(validate_run_handle::UnreadableRecord {
+                    path,
+                    error: "validation run handle has no unit after shared validation".into(),
+                });
+                continue;
             };
             let Some(record_repo) = record.repo.as_deref() else {
-                return Err(CiHubError::ValidateStatus(format!(
-                    "live validation run handle {} has no repo after shared validation",
-                    path.display()
-                )));
+                unreadable_handles.push(validate_run_handle::UnreadableRecord {
+                    path,
+                    error: "validation run handle has no repo after shared validation".into(),
+                });
+                continue;
             };
             if canonical_validation_repo(record_repo) != Some(repo) {
                 continue;
             }
             let expected_name = format!("{}.json", unit.trim_end_matches(".service"));
             if path.file_name().and_then(OsStr::to_str) != Some(expected_name.as_str()) {
-                return Err(CiHubError::ValidateStatus(format!(
-                    "live validation run handle {} does not bind its unit {}",
-                    path.display(),
-                    unit
-                )));
+                unreadable_handles.push(validate_run_handle::UnreadableRecord {
+                    path,
+                    error: format!("validation run handle does not bind its unit {unit}"),
+                });
+                continue;
             }
-            let target = record.target.clone().ok_or_else(|| {
-                CiHubError::ValidateStatus(format!(
-                    "live validation run handle {} has no target after shared validation",
-                    path.display()
-                ))
-            })?;
-            let started_at = record.started_at.clone().ok_or_else(|| {
-                CiHubError::ValidateStatus(format!(
-                    "live validation run handle {} has no started_at after shared validation",
-                    path.display()
-                ))
-            })?;
+            let Some(target) = record.target.clone() else {
+                unreadable_handles.push(validate_run_handle::UnreadableRecord {
+                    path,
+                    error: "validation run handle has no target after shared validation".into(),
+                });
+                continue;
+            };
+            let Some(started_at) = record.started_at.clone() else {
+                unreadable_handles.push(validate_run_handle::UnreadableRecord {
+                    path,
+                    error: "validation run handle has no started_at after shared validation".into(),
+                });
+                continue;
+            };
+            attempts.push(ValidateRunAttempt {
+                unit: unit.to_string(),
+                state: record.state.clone(),
+                sha: target.clone(),
+                started_at: started_at.clone(),
+                finished_at: record.finished_at.clone(),
+                result: record.result.clone(),
+                detail: record.detail.clone(),
+                exit_code: record.exit_code,
+            });
             let process_is_live = match record.process_identity.as_ref() {
                 Some(identity) => {
                     validate_run_process_is_live(proc_root, boot_id_path, unit, identity)
@@ -7124,61 +7376,112 @@ fn live_validate_runs_from(
             });
             continue;
         }
-        if !matches!(
-            value.get("state").and_then(serde_json::Value::as_str),
-            Some("launching" | "running")
-        ) {
-            continue;
-        }
-        let Some(unit) = value.get("unit").and_then(serde_json::Value::as_str) else {
-            continue;
+        // Historical schema-1 handles predate the producer discriminator. They
+        // remain readable only when the file fully attributes itself. Every
+        // other JSON object in this authority directory is unavailable
+        // evidence, not something a target-specific query may silently skip.
+        let record: ValidateRunRecord = match serde_json::from_value(value) {
+            Ok(record) => record,
+            Err(error) => {
+                unreadable_handles.push(validate_run_handle::UnreadableRecord {
+                    path,
+                    error: format!("legacy validation run handle is malformed: {error}"),
+                });
+                continue;
+            }
         };
-        if !unit.starts_with("validate-") || !unit.ends_with(".service") {
-            continue;
-        }
-        let Some(identity_value) = value.get("process_identity") else {
-            // `launching` exists briefly before validate-lock publishes the
-            // process identity. It is not yet enough evidence to call a run
-            // executing, and old interrupted launch records prove why the state
-            // string alone must not be trusted.
-            continue;
-        };
-        let identity: ValidateRunProcessIdentity =
-            match serde_json::from_value(identity_value.clone()) {
-                Ok(identity) => identity,
-                Err(_) => continue,
-            };
-        if !validate_run_process_is_live(proc_root, boot_id_path, unit, &identity)
-            .map_err(CiHubError::ValidateStatus)?
-        {
-            continue;
-        }
-        // Only a process-bound live record can affect the answer. Historical
-        // stale handles predate fields that are required now; rejecting those
-        // before checking liveness would make an old file hide a current run.
-        let record: ValidateRunRecord = serde_json::from_value(value).map_err(|error| {
-            CiHubError::ValidateStatus(format!(
-                "live validation run handle {} is malformed: {error}",
-                path.display()
-            ))
-        })?;
         if record.schema_version != 1 {
-            return Err(CiHubError::ValidateStatus(format!(
-                "live validation run handle {} has unsupported schema {}",
-                path.display(),
-                record.schema_version
-            )));
+            unreadable_handles.push(validate_run_handle::UnreadableRecord {
+                path,
+                error: format!(
+                    "legacy validation run handle has unsupported schema {}",
+                    record.schema_version
+                ),
+            });
+            continue;
         }
-        if canonical_validation_repo(&record.repo) != Some(repo) {
+        if !is_oid(&record.target) || record.target.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            unreadable_handles.push(validate_run_handle::UnreadableRecord {
+                path,
+                error: "legacy validation run handle target is not an exact lowercase SHA".into(),
+            });
+            continue;
+        }
+        if canonical_validation_repo(&record.repo).is_none() {
+            unreadable_handles.push(validate_run_handle::UnreadableRecord {
+                path,
+                error: format!(
+                    "legacy validation run handle has unknown repository {}",
+                    record.repo
+                ),
+            });
+            continue;
+        }
+        if chrono::DateTime::parse_from_rfc3339(&record.started_at).is_err() {
+            unreadable_handles.push(validate_run_handle::UnreadableRecord {
+                path,
+                error: "legacy validation run handle started_at is not RFC3339".into(),
+            });
+            continue;
+        }
+        let is_validation_unit =
+            record.unit.starts_with("validate-") && record.unit.ends_with(".service");
+        if !is_validation_unit && record.unit != "hermit-pressure-test.service" {
+            unreadable_handles.push(validate_run_handle::UnreadableRecord {
+                path,
+                error: format!(
+                    "legacy validation run handle has an unattributable unit {}",
+                    record.unit
+                ),
+            });
             continue;
         }
         let expected_name = format!("{}.json", record.unit.trim_end_matches(".service"));
         if path.file_name().and_then(OsStr::to_str) != Some(expected_name.as_str()) {
-            return Err(CiHubError::ValidateStatus(format!(
-                "live validation run handle {} does not bind its unit {}",
-                path.display(),
-                record.unit
-            )));
+            unreadable_handles.push(validate_run_handle::UnreadableRecord {
+                path,
+                error: format!(
+                    "legacy validation run handle does not bind its unit {}",
+                    record.unit
+                ),
+            });
+            continue;
+        }
+        if canonical_validation_repo(&record.repo) != Some(repo) {
+            continue;
+        }
+        if !is_validation_unit {
+            continue;
+        }
+        let attempt = ValidateRunAttempt {
+            unit: record.unit.clone(),
+            state: record.state.clone(),
+            sha: record.target.clone(),
+            started_at: record.started_at.clone(),
+            finished_at: record.finished_at.clone(),
+            result: record.result.clone(),
+            detail: record.detail.clone(),
+            exit_code: record.exit_code,
+        };
+        if !matches!(record.state.as_str(), "launching" | "running") {
+            attempts.push(attempt);
+            continue;
+        }
+        let Some(identity) = record.process_identity.as_ref() else {
+            unreadable_handles.push(validate_run_handle::UnreadableRecord {
+                path,
+                error: format!(
+                    "legacy validation run handle in state {} has no process identity",
+                    record.state
+                ),
+            });
+            continue;
+        };
+        attempts.push(attempt);
+        if !validate_run_process_is_live(proc_root, boot_id_path, &record.unit, identity)
+            .map_err(CiHubError::ValidateStatus)?
+        {
+            continue;
         }
         let summary = format!(
             "agent={} unit={}",
@@ -7230,8 +7533,10 @@ fn live_validate_runs_from(
         });
     }
     live.sort_by(|left, right| right.started_at.cmp(&left.started_at));
+    attempts.sort_by(|left, right| right.started_at.cmp(&left.started_at));
     Ok(LiveValidateRunScan {
         entries: live,
+        attempts,
         unreadable_handles,
     })
 }
@@ -8574,7 +8879,9 @@ fn run_validate_status(
     // ASKED ABOUT that we could not read is the one case where answering
     // NOT-VALIDATED would be a confident wrong answer. See the
     // `LocalRecordUnreadable` arm below.
-    let (rows, parse_failures) = load_ledger_rows_reporting_with_tool(&path, tool_root)?;
+    let ledger = load_validation_ledger_reporting_with_tool(&path, tool_root)?;
+    let parse_failures = ledger.failures;
+    let record_identities = ledger.records;
     let repo = canonical_validation_repo(&args.repo).ok_or_else(|| {
         CiHubError::ValidateStatus(format!(
             "--repo must be {CANONICAL_VALIDATE_REPO} or {CANONICAL_REVERIE_REPO}, got {}",
@@ -8584,11 +8891,12 @@ fn run_validate_status(
     // Repository identity is part of the key. Filter BEFORE prefix resolution:
     // a same-SHA row from the other product must neither disambiguate nor bless
     // this query.
-    let repo_rows = current_validation_run_rows(
-        rows.into_iter()
-            .filter(|row| row_matches_validation_repo(row, repo))
-            .collect::<Vec<_>>(),
-    );
+    let all_repo_rows = ledger
+        .rows
+        .into_iter()
+        .filter(|row| row_matches_validation_repo(row, repo))
+        .collect::<Vec<_>>();
+    let repo_rows = current_validation_run_rows(all_repo_rows.clone());
     // A SHA may arrive as `--sha` or positionally; clap already forbids giving
     // both, or either together with `--pr`.
     let sha_input = args.sha.as_ref().or(args.sha_positional.as_ref());
@@ -8610,6 +8918,12 @@ fn run_validate_status(
         (None, Some(pr)) => gh_pr_head(state_root, &args.repo, pr)?,
         _ => unreachable!("clap rejects conflicting validate-status targets"),
     };
+    let exact_records = repo_rows
+        .iter()
+        .filter(|row| row.commit.as_deref() == Some(sha.as_str()))
+        .map(|row| describe_exact_validation_record(row, repo))
+        .collect::<Vec<_>>();
+    let record_count = exact_validation_record_count(&record_identities, repo, &sha);
     let termination_scan = live_validate_runs(
         tool_root,
         state_root,
@@ -8617,11 +8931,29 @@ fn run_validate_status(
         chrono::Utc::now(),
         args.log_paths,
     )?;
-    let terminations = termination_scan
+    let exact_run_entries = termination_scan
         .entries
         .into_iter()
-        .filter(|entry| entry.sha.as_deref() == Some(sha.as_str()) && entry.terminated_by.is_some())
+        .filter(|entry| entry.sha.as_deref() == Some(sha.as_str()))
         .collect::<Vec<_>>();
+    let terminations = exact_run_entries
+        .iter()
+        .filter(|entry| entry.terminated_by.is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    let in_progress = exact_run_entries
+        .iter()
+        .filter(|entry| entry.in_progress)
+        .cloned()
+        .collect::<Vec<_>>();
+    let run_handles = termination_scan
+        .attempts
+        .into_iter()
+        .filter(|attempt| attempt.sha == sha)
+        .collect::<Vec<_>>();
+    // Keep every unreadable handle, including one whose broken bytes do not
+    // expose a target. Such a handle cannot be proved unrelated to this SHA.
+    let unreadable_handles = termination_scan.unreadable_handles;
     let assessment = assess_canonical_receipts(state_root, &repo_rows, &sha, repo)
         .map_err(CiHubError::ValidateStatus)?;
     let newest = newest_canonical_receipt(&assessment.qualifying);
@@ -8648,11 +8980,12 @@ fn run_validate_status(
     let (main_match, main_sha, main_match_detail) =
         exact_validation_main_relationship(&main_history, &assessment.sha, &qualifying_trees);
 
-    // Only the PURE-ABSENCE case is confusable. If any record for this commit is
+    // Only the RECORD-ABSENCE case is confusable. A terminated run is evidence
+    // of an attempt, not a ledger record, so it still needs this freshness
+    // check. If any record for this commit is
     // readable here -- qualifying or not -- the reader has evidence about the
     // commit and staleness cannot be masquerading as absence, so no probe runs
     // and no network cost is paid.
-    let local_records = assessment.qualifying.len() + assessment.disqualified.len();
     // A record for this commit that is PRESENT BUT UNREADABLE is a strictly
     // better explanation than staleness, and it is cheaper: no fetch is needed
     // to know it. Check it FIRST, so the staleness probe never gets the chance
@@ -8668,8 +9001,7 @@ fn run_validate_status(
         })
         .count();
     let freshness = if matches!(assessment.verdict, validate_status::Verdict::NotValidated)
-        && local_records == 0
-        && terminations.is_empty()
+        && record_count == 0
     {
         if unreadable_here > 0 {
             Some(LedgerFreshness::LocalRecordUnreadable {
@@ -8716,7 +9048,7 @@ fn run_validate_status(
     let reported_verdict = match &freshness {
         Some(LedgerFreshness::UpstreamHasRecord { .. }) => "LEDGER-LAGGING",
         Some(LedgerFreshness::LocalRecordUnreadable { .. }) => "LEDGER-UNREADABLE",
-        None if matches!(assessment.verdict, validate_status::Verdict::NotValidated)
+        _ if matches!(assessment.verdict, validate_status::Verdict::NotValidated)
             && !terminations.is_empty() =>
         {
             "TERMINATED"
@@ -8725,7 +9057,7 @@ fn run_validate_status(
     };
 
     if args.json {
-        let report = exact_validate_status_json_report(
+        let mut report = exact_validate_status_json_report(
             repo,
             &assessment,
             &main_match,
@@ -8736,6 +9068,16 @@ fn run_validate_status(
             &terminations,
             &path,
         );
+        // Launch suppression owns the raw event union and live-run views.
+        // Keep them alongside the stricter schema-3 cause fields produced by
+        // `exact_validate_status_json_report`; neither contract substitutes
+        // for the other.
+        report["record_count"] = serde_json::json!(record_count);
+        report["exact_records"] = serde_json::json!(exact_records);
+        report["run_handles"] = serde_json::json!(run_handles);
+        report["in_progress_count"] = serde_json::json!(in_progress.len());
+        report["in_progress"] = serde_json::json!(in_progress);
+        report["unreadable_handles"] = serde_json::json!(unreadable_handles);
         println!(
             "{}",
             serde_json::to_string_pretty(&report).expect("serialize report")
@@ -12152,6 +12494,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(live.entries.len(), 3);
+        assert_eq!(live.attempts.len(), 4);
+        let historical_attempt = live
+            .attempts
+            .iter()
+            .find(|attempt| attempt.sha == "677df8ff06dc72941c2eaa5826c7ba32f4ca36aa")
+            .expect("completed handle remains visible as a prior attempt");
+        assert_eq!(historical_attempt.state, "completed");
+        assert_eq!(historical_attempt.result.as_deref(), Some("success"));
+        assert_eq!(historical_attempt.exit_code, Some(0));
         assert_eq!(live.unreadable_handles.len(), 1);
         assert_eq!(
             live.unreadable_handles[0].path,
@@ -12241,7 +12592,7 @@ mod tests {
         let runs = root.join("ignored/validate/runs");
         std::fs::create_dir_all(&runs).unwrap();
         std::fs::write(
-            runs.join("stale.json"),
+            runs.join("validate-stale.json"),
             serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "state": "running",
@@ -12253,7 +12604,23 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert!(live_validate_runs_from(
+        std::fs::write(
+            runs.join("validate-legacy-completed.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "state": "completed",
+                "unit": "validate-legacy-completed.service",
+                "target": "c".repeat(40),
+                "repo": CANONICAL_VALIDATE_REPO,
+                "started_at": "2026-08-01T00:00:00Z",
+                "finished_at": "2026-08-01T00:05:00Z",
+                "result": "failure",
+                "exit_code": 1
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let scan = live_validate_runs_from(
             &root,
             &root,
             CANONICAL_VALIDATE_REPO,
@@ -12262,9 +12629,40 @@ mod tests {
             chrono::Utc::now(),
             false,
         )
-        .unwrap()
-        .entries
-        .is_empty());
+        .unwrap();
+        assert!(scan.entries.is_empty());
+        assert_eq!(scan.attempts.len(), 1);
+        assert_eq!(scan.attempts[0].unit, "validate-legacy-completed.service");
+        assert_eq!(scan.attempts[0].state, "completed");
+        assert_eq!(scan.attempts[0].sha, "c".repeat(40));
+        assert_eq!(scan.attempts[0].result.as_deref(), Some("failure"));
+        assert_eq!(scan.attempts[0].exit_code, Some(1));
+        assert_eq!(scan.unreadable_handles.len(), 1);
+        assert!(
+            scan.unreadable_handles[0]
+                .error
+                .contains("has no process identity"),
+            "{}",
+            scan.unreadable_handles[0].error
+        );
+        std::fs::write(runs.join("unattributable.json"), b"{}\n").unwrap();
+        let scan = live_validate_runs_from(
+            &root,
+            &root,
+            CANONICAL_VALIDATE_REPO,
+            &root.join("proc"),
+            &root.join("boot_id"),
+            chrono::Utc::now(),
+            false,
+        )
+        .unwrap();
+        assert!(scan.entries.is_empty());
+        assert_eq!(scan.attempts.len(), 1);
+        assert_eq!(scan.unreadable_handles.len(), 2);
+        assert!(scan.unreadable_handles.iter().any(|record| {
+            record.path == runs.join("unattributable.json")
+                && record.error.contains("missing field `schema_version`")
+        }));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -12733,6 +13131,53 @@ mod tests {
 
     fn history_row(value: serde_json::Value) -> HistoryRow {
         serde_json::from_value(value).expect("valid history fixture")
+    }
+
+    #[test]
+    fn exact_validation_record_preserves_the_failed_gate_cause() {
+        let mut value = schema4_receipt_value();
+        value["result"] = serde_json::json!("fail");
+        value["raw_result"] = serde_json::json!("fail");
+        value["exit_code"] = serde_json::json!(1);
+        value["failures"] = serde_json::json!(1);
+        value["dag_jobs"] = serde_json::json!(4);
+        value["concurrent_validates"] = serde_json::json!(0);
+        value["known_flaky_failure"] = serde_json::json!(false);
+        value["solo_rerun_confirmation"] = serde_json::json!(false);
+        value["gates"][1] = serde_json::json!({
+            "name": "test",
+            "result": "fail",
+            "exit_code": 1,
+            "failure_class": "product_failure",
+            "reason": "compiler failed",
+            "failure_origin": "outer_gate",
+            "failed_substeps": []
+        });
+
+        let report = describe_exact_validation_record(&history_row(value), CANONICAL_VALIDATE_REPO);
+        assert_eq!(report["verdict"], "FAILED");
+        assert_eq!(report["result"], "fail");
+        assert_eq!(report["exit_code"], 1);
+        assert_eq!(
+            report["detail"],
+            "test (class=product_failure, exit=1, detail=compiler failed)"
+        );
+    }
+
+    #[test]
+    fn exact_validation_record_explains_a_pass_with_no_executed_tests() {
+        let mut value = schema4_receipt_value();
+        value["executed_tests"] = serde_json::json!(0);
+        value["passed_tests"] = serde_json::json!(0);
+
+        let report = describe_exact_validation_record(&history_row(value), CANONICAL_VALIDATE_REPO);
+        assert_eq!(report["verdict"], "NO-RESULT");
+        assert_eq!(report["result"], "pass");
+        assert_eq!(report["exit_code"], 0);
+        assert_eq!(
+            report["detail"],
+            "validation did not exercise the product; result=pass; exit=0"
+        );
     }
 
     #[test]
@@ -14317,6 +14762,7 @@ from pathlib import Path
 
 assert Path.cwd() == Path(os.environ["DEV_HERMIT_PARENT"])
 assert Path(__file__).parents[2] == Path(os.environ["DEV_HERMIT_TOOL_ROOT"])
+print('{"schema_version":1,"rows":[],"records":[]}')
 "#,
         )
         .unwrap();
@@ -14326,6 +14772,100 @@ assert Path(__file__).parents[2] == Path(os.environ["DEV_HERMIT_TOOL_ROOT"])
         assert!(rows.is_empty());
         assert!(failures.is_empty());
 
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn exact_record_recheck_counts_raw_result_and_commit_correction() {
+        let directory = env::temp_dir().join(format!(
+            "ci-hub-exact-record-recheck-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let source = PathBuf::from(file!());
+        let source = if source.is_absolute() {
+            source
+        } else {
+            env::current_dir().unwrap().join(source)
+        };
+        let tool_root = source
+            .parent()
+            .and_then(Path::parent)
+            .expect("ci-hub.rs lives beneath the tool root")
+            .to_path_buf();
+        let state_root = directory.join("state");
+        let mut first = schema4_receipt_value();
+        first["run_id"] = serde_json::json!("same-run");
+        first["record_id"] = serde_json::json!("first-record");
+        let mut correction = first.clone();
+        correction["passed_tests"] = serde_json::json!(785);
+        let original_event = serde_json::json!({
+            "schema": "validate-ledger/v1",
+            "event_id": "first-record",
+            "event_type": "run.result",
+            "run_id": "same-run",
+            "emitted_at": "2026-08-01T12:01:00Z",
+            "team": "hermit",
+            "host": "validation-host",
+            "producer": {
+                "source": "observed",
+                "tool": "ci-hub-test",
+                "tool_version": "1"
+            },
+            "outcome": "pass",
+            "commit": RECEIPT_SHA,
+            "legacy_row": first
+        });
+        let correction_event = serde_json::json!({
+            "schema": "validate-ledger/v1",
+            "event_id": "correction-record",
+            "event_type": "run.correct",
+            "run_id": "same-run",
+            "emitted_at": "2026-08-01T12:02:00Z",
+            "team": "hermit",
+            "host": "validation-host",
+            "producer": {
+                "source": "reconstructed",
+                "tool": "ci-hub-test",
+                "tool_version": "1"
+            },
+            "supersedes": "first-record",
+            "reason": "correct fixture count",
+            "legacy_row": correction
+        });
+        let shard = state_root.join("ledger/hermit/validation-host/2026-08.jsonl");
+        std::fs::create_dir_all(shard.parent().unwrap()).unwrap();
+        std::fs::write(&shard, format!("{original_event}\n{correction_event}\n")).unwrap();
+        assert_eq!(
+            exact_validate_record_count_for_admission(&tool_root, &state_root, RECEIPT_SHA)
+                .unwrap(),
+            2,
+            "both the original row and its correction identify the exact tip"
+        );
+        assert_eq!(
+            exact_validate_record_count_for_admission(
+                &tool_root,
+                &state_root,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .unwrap(),
+            0
+        );
+
+        let corrected_sha = "a".repeat(40);
+        let mut commit_correction = correction_event;
+        commit_correction["legacy_row"]["commit"] = serde_json::json!(corrected_sha);
+        std::fs::write(&shard, format!("{original_event}\n{commit_correction}\n")).unwrap();
+        assert_eq!(
+            exact_validate_record_count_for_admission(&tool_root, &state_root, RECEIPT_SHA)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            exact_validate_record_count_for_admission(&tool_root, &state_root, &corrected_sha)
+                .unwrap(),
+            1
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -14350,7 +14890,10 @@ tool_root = Path(os.environ["DEV_HERMIT_TOOL_ROOT"])
 state_root = Path(os.environ["DEV_HERMIT_PARENT"])
 assert Path(__file__).parents[2] == tool_root
 assert Path.cwd() == state_root
-print((state_root / "receipt.jsonl").read_text(), end="")
+import json
+rows = [json.loads(line) for line in (state_root / "receipt.jsonl").read_text().splitlines()]
+records = [{"repo": row.get("repo"), "commit": row["commit"]} for row in rows]
+print(json.dumps({"schema_version": 1, "rows": rows, "records": records}))
 "#,
         )
         .unwrap();

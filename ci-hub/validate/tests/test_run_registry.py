@@ -282,6 +282,7 @@ class RunRegistryContractTests(unittest.TestCase):
             state="completed",
             result="success",
             exit_code=0,
+            detail="terminal detail retained for status readers",
             finished_at="2026-08-31T12:05:00+00:00",
             final_validate_status="PASSED",
         )
@@ -289,7 +290,15 @@ class RunRegistryContractTests(unittest.TestCase):
         handle = run_registry.parse_current_record(completed)
 
         self.assertEqual((), handle.termination_requests)
-        self.assertEqual([], run_registry.projection(completed)["termination_requests"])
+        projected = run_registry.projection(completed)
+        self.assertEqual([], projected["termination_requests"])
+        self.assertEqual("completed", projected["state"])
+        self.assertEqual("success", projected["result"])
+        self.assertEqual(
+            "terminal detail retained for status readers", projected["detail"]
+        )
+        self.assertEqual(0, projected["exit_code"])
+        self.assertEqual("2026-08-31T12:05:00+00:00", projected["finished_at"])
 
     def test_termination_refuses_before_process_identity_is_recorded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

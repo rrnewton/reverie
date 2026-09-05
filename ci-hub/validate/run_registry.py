@@ -1358,6 +1358,10 @@ def _legacy_projection(value: Mapping[str, Any]) -> dict[str, Any]:
         "host": value.get("host"),
         "process_identity": value.get("process_identity"),
         "admission_result": None,
+        "result": value.get("result"),
+        "detail": value.get("detail"),
+        "exit_code": value.get("exit_code"),
+        "finished_at": value.get("finished_at"),
         "termination_requests": value.get("termination_requests", []),
         "lock_admissible": state in {"launching", "running"},
         "counts_as_validation": kind != RunKind.BENCH.value,
@@ -1419,6 +1423,10 @@ def projection(value: Mapping[str, Any]) -> dict[str, Any]:
             if admission_result is not None
             else None
         ),
+        "result": handle.raw.get("result"),
+        "detail": handle.raw.get("detail"),
+        "exit_code": handle.raw.get("exit_code"),
+        "finished_at": handle.raw.get("finished_at"),
         "termination_requests": [
             {
                 "requested_at": request.requested_at,

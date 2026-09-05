@@ -82,6 +82,7 @@ pub struct TerminationRequest {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct Projection {
+    pub state: String,
     pub unit: Option<String>,
     pub target: Option<String>,
     pub repo: Option<String>,
@@ -91,6 +92,10 @@ pub struct Projection {
     pub host: Option<String>,
     pub process_identity: Option<ProcessIdentity>,
     pub admission_result: Option<AdmissionResult>,
+    pub result: Option<String>,
+    pub detail: Option<String>,
+    pub exit_code: Option<i32>,
+    pub finished_at: Option<String>,
     #[serde(default)]
     pub termination_requests: Vec<TerminationRequest>,
     pub lock_admissible: bool,

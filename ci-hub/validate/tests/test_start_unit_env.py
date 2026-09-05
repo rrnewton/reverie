@@ -116,6 +116,31 @@ class StartUnitEnvTest(unittest.TestCase):
         maximum = command.index("--max", lock, child)
         self.assertEqual(command[maximum + 1], "1")
 
+    def test_no_wait_reaches_validate_lock_without_zeroing_the_wait_bound(self) -> None:
+        command = su.build_systemd_command(
+            root=self.root,
+            checkout=self.root / "hermit",
+            target=TARGET,
+            agent="test-agent",
+            unit="validate-test.service",
+            record=self.root / "ignored/validate/runs/validate-test.json",
+            log=self.root / "out.log",
+            pr=None,
+            validate_args=["full"],
+            wait=7200,
+            hold=1,
+            child_deadline=3600,
+            environment=self.base_env,
+            no_wait=True,
+            skip_if_recorded=True,
+        )
+        lock = command.index("validate-lock")
+        child = command.index("--", lock)
+        self.assertIn("--no-wait", command[lock:child])
+        self.assertIn("--skip-if-recorded", command[lock:child])
+        wait = command.index("--wait", lock, child)
+        self.assertEqual(command[wait + 1], "7200")
+
     def test_large_child_deadline_does_not_widen_hermit_run(self) -> None:
         command = su.build_systemd_command(
             root=self.root,
