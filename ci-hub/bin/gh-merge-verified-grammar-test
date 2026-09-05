@@ -42,9 +42,10 @@ def by(agent: str, *lines: str) -> str:
 
     Generic clearing is scoped to a refusal's issuer as well as its lane, so a
     cell that says "a withdrawal clears" has to say whose. The exact RETIRES path
-    instead requires a valid disclosure matching a currently authorized GitHub
-    actor, binds one comment id and lane, and names the current head. The role
-    field is audit metadata only. Both behaviors are pinned below.
+    instead requires a valid disclosure, a currently authorized GitHub actor,
+    one comment id and lane, and the current head. The disclosure identifies the
+    fleet agent while the immutable actor identifies the shared GitHub account;
+    the role field is audit metadata only. Both behaviors are pinned below.
     """
     tag = f"[hermit2, {agent}, unresolved, devbig014, role=reviewer]"
     return tag + "\n\n" + "\n".join(lines)
@@ -664,9 +665,9 @@ def main() -> int:
         },
         {
             "id": 920002,
-            "user": {"login": "hermit-005"},
+            "user": {"login": "rrnewton"},
             "body": by(
-                "hermit-005",
+                "review-521-codex",
                 f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
                 "RETIRES 920001",
             ),
@@ -674,7 +675,7 @@ def main() -> int:
     ]
     for name, comments, permission, want_block in (
         (
-            "a currently authorized GitHub actor can retire the exact objection",
+            "an agent using the authorized shared GitHub account can retire the exact objection",
             authority_pair,
             "write",
             False,
@@ -689,12 +690,6 @@ def main() -> int:
             "missing current permission cannot retire the exact objection",
             authority_pair,
             None,
-            True,
-        ),
-        (
-            "a GitHub actor that differs from the disclosure cannot retire",
-            [authority_pair[0], {**authority_pair[1], "user": {"login": "outsider"}}],
-            "write",
             True,
         ),
     ):

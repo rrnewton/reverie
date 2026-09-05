@@ -1111,7 +1111,7 @@ def annotate_current_review_authority(
             continue
         claim = retirement_claim(str(record.get("body") or ""))
         actor = review_record_actor(record)
-        if claim is None or actor is None or actor != claim[3].casefold():
+        if claim is None or actor is None:
             continue
         candidates[position] = actor
         actors.add(actor)
@@ -1480,10 +1480,12 @@ def retirement_claim(
     The comment carrying the claim supplies repository and pull-request context.
     Authority additionally requires exactly one canonical withdrawal, exactly
     one ``RETIRES`` target, an exact head binding, and a valid disclosure. A
-    marker ``BY`` clause, when present, must agree with the disclosure and the
-    immutable GitHub actor. Current repository permission supplies authority;
-    the disclosure's role text does not. Multiple targets or withdrawal markers
-    are ambiguous and carry no authority.
+    marker ``BY`` clause, when present, must agree with the disclosure. Current
+    repository permission for the immutable GitHub actor supplies authority;
+    the disclosure's role text does not. The agent identity and GitHub login are
+    deliberately separate because fleet agents publish through one shared
+    GitHub account. Multiple targets or withdrawal markers are ambiguous and
+    carry no authority.
     """
     author = retirement_author(body)
     targets = retirement_targets(body)
@@ -1558,7 +1560,7 @@ def retirement_record_allowed(
         if claim is None or claim[0] != refusal_id:
             continue
         actor = review_record_actor(claim_record)
-        if actor is None or actor != claim[3].casefold():
+        if actor is None:
             continue
         if claim_record.get("_current_review_actor_login") != actor:
             continue
@@ -1844,11 +1846,11 @@ def lane_shas(
       * the refusal's OWN issuer, by approving the same lane afterwards. That
         is a reviewer changing their mind, which is what the chronological rule
         was written for and is still honoured exactly.
-      * a currently authorized GitHub actor with a matching valid disclosure may post one canonical
-        withdrawal carrying exactly one `RETIRES <comment-id>`. The target must
-        be that exact refusal, its lane must agree, and the withdrawal must bind
-        the current repaired head. The original issuer's identity is not part of
-        this decision.
+      * an agent using a currently authorized GitHub actor may post one canonical
+        withdrawal carrying exactly one `RETIRES <comment-id>` and a valid agent
+        disclosure. The target must be that exact refusal, its lane must agree,
+        and the withdrawal must bind the current repaired head. The original
+        issuer's identity is not part of this decision.
       * NOBODY ELSE. Another agent's generic approval is recorded, binds normally in
         `found`, and leaves the refusal standing -- so the lane reports REFUSED
         while showing an approval, which is the honest description of a lane
@@ -3726,8 +3728,9 @@ def main() -> int:
             )
             print(
                 "refusal_issuer_remedy=after verifying the objection is resolved, a "
-                "currently authorized GitHub actor with a matching valid disclosure may post one canonical "
-                "withdrawal carrying RETIRES #<the exact refusing comment id>. The "
+                "agent using a currently authorized GitHub actor may post one canonical "
+                "withdrawal with a valid agent disclosure and RETIRES #<the exact "
+                "refusing comment id>. The "
                 "withdrawal lane must match the refusal and its head must match the "
                 "current pull-request head; a generic approval or "
                 "unquoted withdrawal from another reviewer does not retire it"

@@ -36,6 +36,7 @@ def _comment(
     agent: str | None,
     *lines: str,
     role: str = "review",
+    github_actor: str | None = None,
     created_at: str | None = None,
     updated_at: str | None = None,
 ) -> dict:
@@ -49,10 +50,10 @@ def _comment(
         "id": comment_id,
         "body": "\n".join([*head, *lines]),
         "html_url": f"fixture://comment/{comment_id}",
-        "user": {"login": agent or "fixture-reviewer"},
+        "user": {"login": github_actor or agent or "fixture-reviewer"},
         "_review_surface": "issue-comment",
         "_current_review_actor_authorized": True,
-        "_current_review_actor_login": agent or "fixture-reviewer",
+        "_current_review_actor_login": github_actor or agent or "fixture-reviewer",
         "_current_review_actor_permission": "write",
         "created_at": created_at,
         "updated_at": updated_at or created_at,
@@ -123,6 +124,7 @@ def _withdrawal(
     head: str = HEAD,
     role: str = "review",
     marker_agent: str | None = None,
+    github_actor: str | None = None,
     extra_target: int | None = None,
 ) -> dict:
     marker_agent = agent if marker_agent is None else marker_agent
@@ -131,7 +133,13 @@ def _withdrawal(
         lines.append(f"RETIRES {target}")
     if extra_target is not None:
         lines.append(f"RETIRES {extra_target}")
-    return _comment(WITHDRAWAL_ID, agent, *lines, role=role)
+    return _comment(
+        WITHDRAWAL_ID,
+        agent,
+        *lines,
+        role=role,
+        github_actor=github_actor,
+    )
 
 
 def test_a_retired_unsigned_refusal_stops_blocking() -> None:
@@ -236,10 +244,79 @@ def test_missing_current_permission_evidence_is_not_authority() -> None:
     assert _state(comments)[0] == ab.REFUSED
 
 
-def test_immutable_actor_must_match_disclosure_and_by_identity() -> None:
+def test_immutable_actor_must_match_permission_annotation() -> None:
     withdrawal = _withdrawal("hermit-030", REFUSAL_ID)
     withdrawal["user"] = {"login": "unrelated-outsider"}
     comments = [_approval(), _refusal(REFUSAL_ID, "hermit-011"), withdrawal]
+    assert _gate_state(comments) == gate.BLOCKED
+    assert _state(comments)[0] == ab.REFUSED
+
+
+def test_shared_github_account_can_publish_an_answered_retirement() -> None:
+    withdrawal = _withdrawal(
+        "review-521-codex",
+        REFUSAL_ID,
+        github_actor="rrnewton",
+    )
+    withdrawal.pop("_current_review_actor_authorized")
+    requested_paths: list[str] = []
+
+    def permission(path: str) -> object:
+        requested_paths.append(path)
+        return {
+            "role_name": "admin",
+            "permission": "admin",
+            "user": {"login": "rrnewton"},
+        }
+
+    annotated = ab.annotate_current_review_authority(
+        [withdrawal], "rrnewton/hermit", permission
+    )[0]
+    comments = [_approval(), _refusal(REFUSAL_ID, "hermit-011"), annotated]
+
+    assert requested_paths == [
+        "repos/rrnewton/hermit/collaborators/rrnewton/permission"
+    ]
+    assert annotated["_current_review_actor_authorized"] is True
+    assert annotated["_current_review_actor_login"] == "rrnewton"
+    assert _gate_state(comments) == gate.OK
+    assert _state(comments) == (ab.BOUND_CURRENT, [])
+
+
+def test_shared_github_account_without_answering_evidence_does_not_clear() -> None:
+    comments = [
+        _approval(),
+        _refusal(REFUSAL_ID, "hermit-011"),
+        _withdrawal(
+            "review-521-codex",
+            None,
+            github_actor="rrnewton",
+        ),
+    ]
+
+    assert _gate_state(comments) == gate.BLOCKED
+    assert _state(comments)[0] == ab.REFUSED
+
+
+def test_shared_github_account_without_repository_permission_cannot_retire() -> None:
+    withdrawal = _withdrawal(
+        "review-521-codex",
+        REFUSAL_ID,
+        github_actor="shared-read-only",
+    )
+    withdrawal.pop("_current_review_actor_authorized")
+    annotated = ab.annotate_current_review_authority(
+        [withdrawal],
+        "rrnewton/hermit",
+        lambda _path: {
+            "role_name": "read",
+            "permission": "read",
+            "user": {"login": "shared-read-only"},
+        },
+    )[0]
+    comments = [_approval(), _refusal(REFUSAL_ID, "hermit-011"), annotated]
+
+    assert annotated["_current_review_actor_authorized"] is False
     assert _gate_state(comments) == gate.BLOCKED
     assert _state(comments)[0] == ab.REFUSED
 

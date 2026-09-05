@@ -928,8 +928,8 @@ fi
 
 
 # Keep the issuer split as provenance, not as a permission boundary. A current
-# currently authorized GitHub actor with a matching valid disclosure may retire
-# either form with one canonical withdrawal
+# agent using a currently authorized GitHub actor may retire either form with a
+# valid agent disclosure and one canonical withdrawal
 # carrying the exact refusing comment id; a generic approval or unquoted
 # withdrawal from another member still clears nothing.
 #
@@ -965,7 +965,7 @@ if grep -q '^refusal_issuer_summary=1 unanswered refusal(s) at head across 1 PR(
 else
   bad "a signed refusal was miscounted; the split cannot separate the two remedies: $out"
 fi
-if grep -q 'currently authorized GitHub actor with a matching valid disclosure' <<<"$out"; then
+if grep -q 'agent using a currently authorized GitHub actor' <<<"$out"; then
   ok "the signed-refusal remedy no longer depends on a departed issuer"
 else
   bad "the signed-refusal remedy still leaves a departed issuer as a permanent gate: $out"

@@ -990,8 +990,8 @@ def evaluate(
                 )
                 + ". A precise retirement requires one canonical withdrawal, one exact "
                 "target, the refusal's lane, the current head, a valid disclosure whose "
-                "identity agrees with the immutable GitHub actor and any BY clause, and "
-                "current repository permission for that actor."
+                "identity agrees with any BY clause, and current repository permission "
+                "for the immutable GitHub actor."
             )
         if _retire_by_other:
             parts.append(
