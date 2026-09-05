@@ -24,6 +24,7 @@ use std::ptr;
 use crate::trap;
 use crate::user_dispatch::syscall_result;
 
+pub mod native_frame;
 mod runtime_owned;
 pub use runtime_owned::RuntimeSignal;
 pub use runtime_owned::configure_runtime_signals;
