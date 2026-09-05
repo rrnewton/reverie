@@ -25,7 +25,10 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import shlex
+import shutil
 import sys
+import tempfile
 import unittest
 
 
@@ -172,6 +175,68 @@ class TheRefusalNamesTheConditionNotTheSymptom(unittest.TestCase):
         self.assertIn("Orc did not accept the submission", source)
         self.assertIn("{NOT_THE_COMPOSER}", source, "the guidance must be used")
         self.assertNotIn("Clear the composer before the next relay", source)
+
+
+class AskingWhetherTheCoordinatorIsAnsweringBeforeTyping(unittest.TestCase):
+    """⚠️ Three states, and "could not ask" is not "asked and it was fine".
+
+    Measured 2026-09-05: the coordinator was saturated -- rendering fine, not
+    servicing its control socket, not consuming Enter -- and typing into it
+    stranded the report in the owner's input box. The relay now asks first.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="orc-readiness-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def stub_orc(self, *, exit_code: int, stdout: str = "", stderr: str = "") -> Path:
+        path = self.tmp / "orc"
+        path.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s' {shlex.quote(stdout)}\n"
+            f"printf '%s' {shlex.quote(stderr)} >&2\n"
+            f"exit {exit_code}\n"
+        )
+        path.chmod(0o755)
+        return path
+
+    def test_a_live_socket_reads_as_answering(self) -> None:
+        orc = self.stub_orc(exit_code=0, stdout="/run/user/1/orc/suborc-abc.sock")
+        state, detail = ohm.coordinator_answer_state(orc, "d0f81544")
+        self.assertEqual(ohm.COORDINATOR_ANSWERING, state)
+        self.assertIn("suborc-abc.sock", detail)
+
+    def test_orcs_own_not_live_error_reads_as_not_answering(self) -> None:
+        """The exact shape `orc session socket` returned on the saturated one."""
+        orc = self.stub_orc(
+            exit_code=1,
+            stderr="Error: session is indexed but its Unix socket is not live",
+        )
+        state, detail = ohm.coordinator_answer_state(orc, "d0f81544")
+        self.assertEqual(ohm.COORDINATOR_NOT_ANSWERING, state)
+        self.assertIn("not live", detail)
+
+    def test_a_missing_orc_executable_reads_as_not_probed_not_as_answering(self) -> None:
+        state, _ = ohm.coordinator_answer_state(self.tmp / "no-such-orc", "d0f81544")
+        self.assertEqual(ohm.COORDINATOR_NOT_PROBED, state)
+
+    def test_an_unknown_session_reads_as_not_probed_not_as_answering(self) -> None:
+        orc = self.stub_orc(exit_code=0, stdout="/run/user/1/orc/x.sock")
+        for missing in (None, ""):
+            with self.subTest(session=missing):
+                state, _ = ohm.coordinator_answer_state(orc, missing)
+                self.assertEqual(ohm.COORDINATOR_NOT_PROBED, state)
+
+    def test_the_three_states_are_distinct_values(self) -> None:
+        """Collapsing not-probed into answering is the failure this guards."""
+        self.assertEqual(
+            3,
+            len({
+                ohm.COORDINATOR_ANSWERING,
+                ohm.COORDINATOR_NOT_ANSWERING,
+                ohm.COORDINATOR_NOT_PROBED,
+            }),
+        )
 
 
 if __name__ == "__main__":

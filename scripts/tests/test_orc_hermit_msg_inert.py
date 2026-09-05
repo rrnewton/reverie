@@ -293,10 +293,21 @@ class TestInertDeliveryNegativeBracket(InertPaneTestCase):
         self.assertEqual(self.delivered(), [])
 
     def test_a_dry_run_checks_readiness_and_delivers_nothing(self):
+        """A ready composer is not a deliverable coordinator, so report both.
+
+        This asserted only "dry-run OK". Measured 2026-09-05 against the live
+        coordinator: the composer was ready and Orc was not answering its own
+        control socket, so a real send would have refused while the dry-run said
+        OK. These runs pass --orc-command at a path that does not exist, so the
+        readiness state here is `not-probed` -- which must appear, because a
+        check that could not run must not read as a pass.
+        """
         self.start_pane()
         result = self.relay("--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("dry-run OK", result.stdout)
+        self.assertIn("composer ready", result.stdout)
+        self.assertIn("coordinator not-probed", result.stdout)
+        self.assertIn("nothing was typed or sent", result.stdout)
         self.assertEqual(self.delivered(), [])
         self.assertEqual(
             [record["status"] for record in self.log_records()], ["dry-run"]

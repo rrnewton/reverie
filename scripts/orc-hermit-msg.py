@@ -1266,8 +1266,86 @@ def resolve_api_socket(
     return None
 
 
-def send_message(socket: Path, pane_id: str, message: str) -> DeliveryAck:
+#: Outcomes of asking whether the coordinator is answering at all, before any
+#: keystroke is sent. Three states, not two: "could not ask" is its own answer
+#: and must never be recorded as "asked and it was fine".
+COORDINATOR_ANSWERING = "answering"
+COORDINATOR_NOT_ANSWERING = "not-answering"
+COORDINATOR_NOT_PROBED = "not-probed"
+#: `orc session socket` performs Orc's own identity probe and fails when the
+#: session is indexed but not live, so its exit status IS the readiness check.
+#: Short, because a saturated coordinator answers slowly or not at all and this
+#: runs before every delivery.
+READINESS_TIMEOUT_SECONDS = 8.0
+
+
+def coordinator_answer_state(
+    orc_command: Path | None, orc_session_id: str | None
+) -> tuple[str, str]:
+    """Is the coordinator answering its own control socket?
+
+    ⚠️ WHY THIS RUNS BEFORE TYPING. Measured 2026-09-05: the composer was found,
+    took the keystrokes and echoed them back, Enter was sent, and Orc never
+    consumed it -- the draft was still in the box sixteen minutes later. The same
+    coordinator was failing an identity probe on its own socket while running at
+    441% CPU for three days: saturated rather than hung, so it kept rendering and
+    every visible surface looked healthy. Both delivery channels were refused by
+    that one condition.
+
+    Typing into a coordinator in that state cannot succeed and strands the text
+    in somebody's input box, which is exactly what happened. So ask first, and
+    refuse before touching the pane.
+
+    ⚠️ AND "COULD NOT ASK" IS NOT "ASKED AND IT WAS FINE". Where the probe cannot
+    run -- no orc executable, no session id, the probe itself timing out -- this
+    returns COORDINATOR_NOT_PROBED and the caller announces it rather than
+    proceeding silently. It still proceeds: refusing everywhere orc is not
+    installed at a known path would disable the relay far more widely than the
+    condition it guards, and the take-back in _clear_our_own_draft already bounds
+    the damage. What it must never do is read as a pass.
+    """
+    if orc_command is None or not os.access(orc_command, os.X_OK):
+        return COORDINATOR_NOT_PROBED, f"no usable orc executable at {orc_command}"
+    if not orc_session_id:
+        return COORDINATOR_NOT_PROBED, "the coordinator's Orc session id is unknown"
+    try:
+        result = subprocess.run(
+            [str(orc_command), "session", "socket", orc_session_id],
+            capture_output=True, text=True,
+            timeout=READINESS_TIMEOUT_SECONDS, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return COORDINATOR_NOT_PROBED, f"the readiness check could not run: {error}"
+    if result.returncode == 0 and result.stdout.strip():
+        return COORDINATOR_ANSWERING, result.stdout.strip()
+    detail = (result.stderr.strip() or result.stdout.strip() or "no output")
+    return COORDINATOR_NOT_ANSWERING, detail.replace("\n", " ")[:400]
+
+
+def send_message(
+    socket: Path,
+    pane_id: str,
+    message: str,
+    *,
+    orc_command: Path | None = None,
+    orc_session_id: str | None = None,
+) -> DeliveryAck:
     """Deliver the message and return what was observed about its acceptance."""
+    readiness, readiness_detail = coordinator_answer_state(orc_command, orc_session_id)
+    if readiness == COORDINATOR_NOT_ANSWERING:
+        raise OrcMessageError(
+            f"the coordinator behind {pane_id} is not answering its own control "
+            f"socket, so nothing was typed: {readiness_detail}. A message typed "
+            "into a coordinator in this state is not delivered and is left "
+            f"sitting in the input box. {NOT_THE_COMPOSER}"
+        )
+    if readiness == COORDINATOR_NOT_PROBED:
+        print(
+            "orc-hermit-msg: warning: could not check whether the coordinator is "
+            f"answering ({readiness_detail}); proceeding, and this is NOT evidence "
+            "that it is healthy.",
+            file=sys.stderr,
+        )
     composer = wait_for_ready_composer(socket, pane_id)
     probe = message_probe(message)
     inject_message(socket, pane_id, message)
@@ -1754,16 +1832,31 @@ def main() -> int:
                     database=args.orc_db,
                     database_source=database_source,
                 )
+                # ⚠️ A READY COMPOSER IS NOT A DELIVERABLE COORDINATOR, and a
+                # dry-run that says only "ready" reads as a pass for something
+                # it never checked. Measured 2026-09-05: the composer was ready
+                # and Orc was not answering its own control socket, so a real
+                # send would refuse. Both facts are reported.
+                readiness, readiness_detail = coordinator_answer_state(
+                    args.orc_command, coordinator.orc_session_id
+                )
                 print(
-                    f"orc-hermit-msg: dry-run OK: {session}:{window} ({pane_id}) "
-                    f"composer ready [state={composer.state or 'unknown'}]; "
+                    f"orc-hermit-msg: dry-run: {session}:{window} ({pane_id}) "
+                    f"composer ready [state={composer.state or 'unknown'}], "
+                    f"coordinator {readiness} ({readiness_detail[:200]}); "
                     "nothing was typed or sent"
                 )
-                return 0
+                return 0 if readiness != COORDINATOR_NOT_ANSWERING else 1
             # send_message returns only if the composer was observed to take the
             # message and then drain. Anything else raises, so there is no path
             # that logs "sent" or exits 0 on a message that was not accepted.
-            ack = send_message(socket, pane_id, message)
+            ack = send_message(
+                socket,
+                pane_id,
+                message,
+                orc_command=args.orc_command,
+                orc_session_id=coordinator.orc_session_id,
+            )
             submitted = True
             log_delivery(
                 args.log_file,
