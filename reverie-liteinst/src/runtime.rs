@@ -312,12 +312,7 @@ static INSTRUCTION_SUBSCRIPTIONS: AtomicU8 = AtomicU8::new(0);
 static PATCH_PUBLICATION: AtomicU8 = AtomicU8::new(PatchPublication::Concurrent as u8);
 static PROCESS_FORKS_ALLOWED: AtomicBool = AtomicBool::new(true);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum InstructionEventKind {
-    Cpuid,
-    Rdtsc,
-    Rdtscp,
-}
+pub(crate) use crate::instruction_event::Kind as InstructionEventKind;
 
 #[derive(Default)]
 #[repr(C)]
@@ -2382,12 +2377,8 @@ fn instruction_at(address: u64) -> Option<(InstructionEventKind, &'static [u8])>
         return None;
     }
     let bytes = unsafe { core::slice::from_raw_parts(address as usize as *const u8, available) };
-    match bytes {
-        [0x0f, 0xa2, ..] => Some((InstructionEventKind::Cpuid, &[0x0f, 0xa2])),
-        [0x0f, 0x31, ..] => Some((InstructionEventKind::Rdtsc, &[0x0f, 0x31])),
-        [0x0f, 0x01, 0xf9] => Some((InstructionEventKind::Rdtscp, &[0x0f, 0x01, 0xf9])),
-        _ => None,
-    }
+    let event = crate::instruction_event::InstructionEvent::decode(address, bytes)?;
+    Some((event.kind, event.kind.bytes()))
 }
 
 fn instruction_is_subscribed(kind: InstructionEventKind) -> bool {
@@ -2406,14 +2397,180 @@ fn instruction_callback(kind: InstructionEventKind) -> liteinst2::trampoline::Ho
     }
 }
 
-unsafe fn set_all_instruction_native(enabled: bool) -> io::Result<()> {
-    if cpuid_interception_enabled() {
-        unsafe { set_instruction_native(InstructionEventKind::Cpuid, enabled) }?;
+struct NativeInstructionScope(u64);
+
+unsafe extern "C" {
+    fn reverie_liteinst_instruction_scope_enter(selected: u64) -> u64;
+    fn reverie_liteinst_instruction_scope_leave(token: u64);
+}
+
+global_asm!(
+    r#"
+    .text
+    .global reverie_liteinst_instruction_scope_enter
+    .hidden reverie_liteinst_instruction_scope_enter
+    .type reverie_liteinst_instruction_scope_enter,@function
+reverie_liteinst_instruction_scope_enter:
+    push r12
+    push r13
+    sub rsp, 24
+    mov r12, rdi
+    mov r13, rdi
+    cmp rdi, 3
+    ja .Linstruction_scope_fail
+    test r12, 1
+    jz .Linstruction_query_tsc
+    mov eax, 158
+    mov edi, 0x1011
+    .global reverie_liteinst_instruction_get_cpuid
+    .hidden reverie_liteinst_instruction_get_cpuid
+reverie_liteinst_instruction_get_cpuid:
+    call reverie_preload_trusted_syscall_ip
+    .global reverie_liteinst_instruction_get_cpuid_returned
+    .hidden reverie_liteinst_instruction_get_cpuid_returned
+reverie_liteinst_instruction_get_cpuid_returned:
+    cmp rax, 1
+    ja .Linstruction_scope_fail
+    shl rax, 2
+    or r13, rax
+.Linstruction_query_tsc:
+    test r12, 2
+    jz .Linstruction_enable_cpuid
+    mov dword ptr [rsp], 0
+    mov eax, 157
+    mov edi, 25
+    mov rsi, rsp
+    .global reverie_liteinst_instruction_get_tsc
+    .hidden reverie_liteinst_instruction_get_tsc
+reverie_liteinst_instruction_get_tsc:
+    call reverie_preload_trusted_syscall_ip
+    .global reverie_liteinst_instruction_get_tsc_returned
+    .hidden reverie_liteinst_instruction_get_tsc_returned
+reverie_liteinst_instruction_get_tsc_returned:
+    test rax, rax
+    jnz .Linstruction_scope_fail
+    mov eax, dword ptr [rsp]
+    lea ecx, [eax - 1]
+    cmp ecx, 1
+    ja .Linstruction_scope_fail
+    shl rax, 3
+    or r13, rax
+.Linstruction_enable_cpuid:
+    test r12, 1
+    jz .Linstruction_enable_tsc
+    mov eax, 158
+    mov edi, 0x1012
+    mov esi, 1
+    .global reverie_liteinst_instruction_set_cpuid
+    .hidden reverie_liteinst_instruction_set_cpuid
+reverie_liteinst_instruction_set_cpuid:
+    call reverie_preload_trusted_syscall_ip
+    .global reverie_liteinst_instruction_set_cpuid_returned
+    .hidden reverie_liteinst_instruction_set_cpuid_returned
+reverie_liteinst_instruction_set_cpuid_returned:
+    test rax, rax
+    jnz .Linstruction_scope_fail
+.Linstruction_enable_tsc:
+    test r12, 2
+    jz .Linstruction_enter_done
+    mov eax, 157
+    mov edi, 26
+    mov esi, 1
+    .global reverie_liteinst_instruction_set_tsc
+    .hidden reverie_liteinst_instruction_set_tsc
+reverie_liteinst_instruction_set_tsc:
+    call reverie_preload_trusted_syscall_ip
+    .global reverie_liteinst_instruction_set_tsc_returned
+    .hidden reverie_liteinst_instruction_set_tsc_returned
+reverie_liteinst_instruction_set_tsc_returned:
+    test rax, rax
+    jnz .Linstruction_scope_fail
+.Linstruction_enter_done:
+    mov rax, r13
+    add rsp, 24
+    pop r13
+    pop r12
+    ret
+    .size reverie_liteinst_instruction_scope_enter, .-reverie_liteinst_instruction_scope_enter
+
+    .global reverie_liteinst_instruction_scope_leave
+    .hidden reverie_liteinst_instruction_scope_leave
+    .type reverie_liteinst_instruction_scope_leave,@function
+reverie_liteinst_instruction_scope_leave:
+    push r12
+    mov r12, rdi
+    cmp r12, 31
+    ja .Linstruction_scope_fail
+    test r12, 2
+    jz .Linstruction_restore_cpuid
+    mov rsi, r12
+    shr rsi, 3
+    lea ecx, [esi - 1]
+    cmp ecx, 1
+    ja .Linstruction_scope_fail
+    mov eax, 157
+    mov edi, 26
+    .global reverie_liteinst_instruction_restore_tsc
+    .hidden reverie_liteinst_instruction_restore_tsc
+reverie_liteinst_instruction_restore_tsc:
+    call reverie_preload_trusted_syscall_ip
+    .global reverie_liteinst_instruction_restore_tsc_returned
+    .hidden reverie_liteinst_instruction_restore_tsc_returned
+reverie_liteinst_instruction_restore_tsc_returned:
+    test rax, rax
+    jnz .Linstruction_scope_fail
+.Linstruction_restore_cpuid:
+    test r12, 1
+    jz .Linstruction_leave_done
+    mov rsi, r12
+    shr rsi, 2
+    and esi, 1
+    mov eax, 158
+    mov edi, 0x1012
+    .global reverie_liteinst_instruction_restore_cpuid
+    .hidden reverie_liteinst_instruction_restore_cpuid
+reverie_liteinst_instruction_restore_cpuid:
+    call reverie_preload_trusted_syscall_ip
+    .global reverie_liteinst_instruction_restore_cpuid_returned
+    .hidden reverie_liteinst_instruction_restore_cpuid_returned
+reverie_liteinst_instruction_restore_cpuid_returned:
+    test rax, rax
+    jnz .Linstruction_scope_fail
+.Linstruction_leave_done:
+    pop r12
+    ret
+    .size reverie_liteinst_instruction_scope_leave, .-reverie_liteinst_instruction_scope_leave
+.Linstruction_scope_fail:
+    mov eax, 231
+    mov edi, 125
+    call reverie_preload_trusted_syscall_ip
+    ud2
+"#
+);
+
+impl NativeInstructionScope {
+    unsafe fn enter(selected: u64) -> Self {
+        Self(unsafe { reverie_liteinst_instruction_scope_enter(selected) })
     }
-    if rdtsc_interception_enabled() {
-        unsafe { set_instruction_native(InstructionEventKind::Rdtsc, enabled) }?;
+
+    unsafe fn all() -> Self {
+        unsafe { Self::enter(u64::from(INSTRUCTION_SUBSCRIPTIONS.load(Ordering::Acquire))) }
     }
-    Ok(())
+
+    unsafe fn instruction(kind: InstructionEventKind) -> Self {
+        unsafe {
+            Self::enter(match kind {
+                InstructionEventKind::Cpuid => 1,
+                InstructionEventKind::Rdtsc | InstructionEventKind::Rdtscp => 2,
+            })
+        }
+    }
+}
+
+impl Drop for NativeInstructionScope {
+    fn drop(&mut self) {
+        unsafe { reverie_liteinst_instruction_scope_leave(self.0) };
+    }
 }
 
 unsafe fn deliver_default_sigsegv() -> ! {
@@ -2496,15 +2653,9 @@ unsafe extern "C" fn instruction_sigsegv_body(
             InstructionEventKind::Rdtsc => b"nested-instruction-fault-native-rdtsc",
             InstructionEventKind::Rdtscp => b"nested-instruction-fault-native-rdtscp",
         });
-        if unsafe { set_instruction_native(kind, true) }.is_err() {
-            emit_in_guest_stage(b"instruction-sigsegv-enable-native-failed");
-            unsafe { deliver_default_sigsegv() };
-        }
+        let native = unsafe { NativeInstructionScope::instruction(kind) };
         unsafe { execute_native_fault_instruction(kind, context, expected.len()) };
-        if unsafe { set_instruction_native(kind, false) }.is_err() {
-            emit_in_guest_stage(b"instruction-sigsegv-disable-native-failed");
-            unsafe { deliver_default_sigsegv() };
-        }
+        drop(native);
         return reverie_preload::clock_boundary::Continuation::RUNTIME;
     }
 
@@ -2513,10 +2664,7 @@ unsafe extern "C" fn instruction_sigsegv_body(
         unsafe { deliver_default_sigsegv() };
     };
     site.trap_count.fetch_add(1, Ordering::Relaxed);
-    if unsafe { set_all_instruction_native(true) }.is_err() {
-        emit_in_guest_stage(b"instruction-sigsegv-enable-native-failed");
-        unsafe { deliver_default_sigsegv() };
-    }
+    let native = unsafe { NativeInstructionScope::all() };
     if claimed
         && unsafe {
             install_site_hook(
@@ -2532,10 +2680,7 @@ unsafe extern "C" fn instruction_sigsegv_body(
     {
         site.state.store(SITE_FALLBACK, Ordering::Release);
     }
-    if unsafe { set_all_instruction_native(false) }.is_err() {
-        emit_in_guest_stage(b"instruction-sigsegv-disable-native-failed");
-        unsafe { deliver_default_sigsegv() };
-    }
+    drop(native);
     while matches!(site.state.load(Ordering::Acquire), 0 | SITE_INSTALLING) {
         core::hint::spin_loop();
     }
@@ -2595,40 +2740,6 @@ unsafe fn execute_native_fault_instruction(
         registers[libc::REG_RIP as usize].saturating_add(instruction_len as i64);
 }
 
-unsafe fn set_instruction_native(kind: InstructionEventKind, enabled: bool) -> io::Result<()> {
-    let result = match kind {
-        InstructionEventKind::Cpuid => unsafe {
-            const ARCH_SET_CPUID: u64 = 0x1012;
-            raw_syscall6(
-                libc::SYS_arch_prctl,
-                [ARCH_SET_CPUID, u64::from(enabled), 0, 0, 0, 0],
-            )
-        },
-        InstructionEventKind::Rdtsc | InstructionEventKind::Rdtscp => unsafe {
-            raw_syscall6(
-                libc::SYS_prctl,
-                [
-                    libc::PR_SET_TSC as u64,
-                    if enabled {
-                        libc::PR_TSC_ENABLE as u64
-                    } else {
-                        libc::PR_TSC_SIGSEGV as u64
-                    },
-                    0,
-                    0,
-                    0,
-                    0,
-                ],
-            )
-        },
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::from_raw_os_error((-result) as i32))
-    }
-}
-
 unsafe fn installed_instruction_hook(context: *mut HookContext, kind: InstructionEventKind) {
     let _runtime = crate::runtime_domain::Entry::enter();
     if context.is_null() || enter_rcb_handler().is_err() {
@@ -2638,9 +2749,7 @@ unsafe fn installed_instruction_hook(context: *mut HookContext, kind: Instructio
     if let Some(site) = find_site(context.instruction_pointer) {
         site.hook_count.fetch_add(1, Ordering::Relaxed);
     }
-    if unsafe { set_instruction_native(kind, true) }.is_err() {
-        unsafe { exit_now(122) };
-    }
+    let native = unsafe { NativeInstructionScope::instruction(kind) };
     // A previously patched instruction still jumps here while native faulting
     // is enabled. Re-entering the Tool would deadlock on its already-held lock,
     // so execute the instruction at a private, never-patched site instead.
@@ -2651,7 +2760,8 @@ unsafe fn installed_instruction_hook(context: *mut HookContext, kind: Instructio
             InstructionEventKind::Rdtscp => b"nested-instruction-native-rdtscp",
         });
         unsafe { execute_native_instruction(kind, context) };
-        if unsafe { set_instruction_native(kind, false) }.is_err() || leave_rcb_handler().is_err() {
+        drop(native);
+        if leave_rcb_handler().is_err() {
             unsafe { exit_now(122) };
         }
         return;
@@ -2660,7 +2770,8 @@ unsafe fn installed_instruction_hook(context: *mut HookContext, kind: Instructio
         let _tool_callback = ToolCallbackGuard::enter();
         crate::tool_host::dispatch_instruction(kind, context);
     }
-    if unsafe { set_instruction_native(kind, false) }.is_err() || leave_rcb_handler().is_err() {
+    drop(native);
+    if leave_rcb_handler().is_err() {
         unsafe { exit_now(122) };
     }
 }
@@ -2981,8 +3092,8 @@ impl SyscallDispatcher for LiteinstDispatcher {
         if let Some((site, claimed)) = claim_site(instruction_pointer) {
             site.trap_count.fetch_add(1, Ordering::Relaxed);
             if claimed {
-                let native = unsafe { set_all_instruction_native(true) };
-                let installed = native.and_then(|()| unsafe {
+                let native = unsafe { NativeInstructionScope::all() };
+                let installed = unsafe {
                     install_site_hook(
                         instruction_pointer,
                         site,
@@ -2991,13 +3102,8 @@ impl SyscallDispatcher for LiteinstDispatcher {
                         &[0x0f, 0x05],
                         true,
                     )
-                });
-                let restored = unsafe { set_all_instruction_native(false) };
-                if restored.is_err() {
-                    site.state.store(SITE_FALLBACK, Ordering::Release);
-                    event.fail(libc::EOPNOTSUPP);
-                    return;
-                }
+                };
+                drop(native);
                 if installed.is_err() {
                     site.state.store(SITE_FALLBACK, Ordering::Release);
                 }
@@ -3670,6 +3776,212 @@ impl StackLine {
 
 #[cfg(test)]
 mod tests {
+    mod native_scopes {
+        use super::super::*;
+
+        static HITS: AtomicU64 = AtomicU64::new(0);
+        static EXPECTED: AtomicU64 = AtomicU64::new(0);
+        static FAILURES: AtomicU64 = AtomicU64::new(0);
+        static CONTINUATION: AtomicU64 = AtomicU64::new(0);
+
+        unsafe fn pair() -> (u64, u64) {
+            let cpuid = unsafe { raw_syscall6(libc::SYS_arch_prctl, [0x1011, 0, 0, 0, 0, 0]) };
+            let mut tsc = 0u64;
+            let result =
+                unsafe { raw_syscall6(libc::SYS_prctl, [25, (&raw mut tsc) as u64, 0, 0, 0, 0]) };
+            if cpuid < 0 || result != 0 {
+                unsafe { exit_now(121) };
+            }
+            (cpuid as u64, tsc)
+        }
+
+        unsafe fn set_pair(cpuid: u64, tsc: u64) {
+            if unsafe { raw_syscall6(libc::SYS_arch_prctl, [0x1012, cpuid, 0, 0, 0, 0]) } != 0
+                || unsafe { raw_syscall6(libc::SYS_prctl, [26, tsc, 0, 0, 0, 0]) } != 0
+            {
+                unsafe { exit_now(121) };
+            }
+        }
+
+        unsafe fn mask() -> u64 {
+            let mut value = 0;
+            if unsafe {
+                raw_syscall6(
+                    libc::SYS_rt_sigprocmask,
+                    [0, 0, (&raw mut value) as u64, 8, 0, 0],
+                )
+            } != 0
+            {
+                unsafe { exit_now(121) };
+            }
+            value
+        }
+
+        #[unsafe(naked)]
+        unsafe extern "C" fn enter() -> u64 {
+            core::arch::naked_asm!("mov edi, 3", "jmp {enter}", enter = sym reverie_liteinst_instruction_scope_enter);
+        }
+
+        #[unsafe(naked)]
+        unsafe extern "C" fn leave(token: u64) {
+            core::arch::naked_asm!(
+                "sub rsp, 8", "call {leave}", "add rsp, 8",
+                "mov eax, 0xdead", "mov edx, 0xbeef", "ret",
+                leave = sym reverie_liteinst_instruction_scope_leave,
+            );
+        }
+
+        static SCOPE: reverie_preload::clock_boundary::SignalScope =
+            reverie_preload::clock_boundary::SignalScope { enter, leave };
+
+        unsafe extern "C" fn clock_enter(_witness: u64) -> u64 {
+            0x1234
+        }
+
+        unsafe extern "C" fn clock_leave(token: u64, kind: u64, witness: u64) {
+            if token != 0x1234 || kind != 0x4567 || witness != 0x89ab {
+                FAILURES.fetch_add(1, Ordering::Relaxed);
+            }
+            CONTINUATION.fetch_add(1, Ordering::Relaxed);
+        }
+
+        static CLOCK: reverie_preload::clock_boundary::BoundaryHooks =
+            reverie_preload::clock_boundary::BoundaryHooks {
+                enter: clock_enter,
+                leave: clock_leave,
+            };
+
+        unsafe extern "C" fn body(
+            signal: i32,
+            info: *mut libc::siginfo_t,
+            frame: *mut libc::c_void,
+            token: u64,
+        ) -> reverie_preload::clock_boundary::Continuation {
+            if info.is_null() || frame.is_null() || unsafe { (*info).si_code } != libc::SI_TKILL {
+                unsafe { exit_now(120) };
+            }
+            let expected = if signal == libc::SIGUSR2 {
+                EXPECTED.load(Ordering::Relaxed)
+            } else {
+                15
+            };
+            if token != expected || unsafe { pair() } != (1, 1) {
+                FAILURES.fetch_add(1, Ordering::Relaxed);
+            }
+            let before = unsafe { mask() };
+            if before & (1 << (libc::SIGSEGV - 1)) == 0 {
+                FAILURES.fetch_add(1, Ordering::Relaxed);
+            }
+            let _cpuid = core::arch::x86_64::__cpuid(0);
+            let _tsc = unsafe { core::arch::x86_64::_rdtsc() };
+            let mut aux = 0;
+            let _tscp = unsafe { core::arch::x86_64::__rdtscp(&mut aux) };
+            HITS.fetch_add(1, Ordering::Relaxed);
+            if signal == libc::SIGUSR2 {
+                let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
+                let tid = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) };
+                if unsafe {
+                    raw_syscall6(
+                        libc::SYS_tgkill,
+                        [pid as u64, tid as u64, libc::SIGTRAP as u64, 0, 0, 0],
+                    )
+                } != 0
+                {
+                    unsafe { exit_now(120) };
+                }
+            }
+            if unsafe { pair() } != (1, 1) || unsafe { mask() } != before {
+                FAILURES.fetch_add(1, Ordering::Relaxed);
+            }
+            reverie_preload::clock_boundary::Continuation {
+                kind: 0x4567,
+                witness: 0x89ab,
+            }
+        }
+
+        reverie_preload::clocked_signal!(handler, body, scope_token);
+
+        #[test]
+        fn actual_controls_and_nested_signal_tokens() {
+            let Ok(case) = std::env::var("LITEINST_NATIVE_SCOPE_CASE") else {
+                for case in 0..18 {
+                    let status = std::process::Command::new(std::env::current_exe().unwrap())
+                        .args(["--exact", "runtime::tests::native_scopes::actual_controls_and_nested_signal_tokens", "--nocapture"])
+                        .env("LITEINST_NATIVE_SCOPE_CASE", case.to_string())
+                        .status().unwrap();
+                    assert_eq!(
+                        status.code(),
+                        Some(if case < 16 { 0 } else { 125 }),
+                        "case {case}: {status}"
+                    );
+                }
+                return;
+            };
+            let case: u64 = case.parse().unwrap();
+            if case == 16 {
+                unsafe { reverie_liteinst_instruction_scope_enter(4) };
+                panic!("invalid selection returned");
+            }
+            if case == 17 {
+                unsafe { reverie_liteinst_instruction_scope_leave(31) };
+                panic!("invalid restore returned");
+            }
+            unsafe {
+                reverie_preload::clock_boundary::register(&CLOCK).unwrap();
+                reverie_preload::clock_boundary::register_signal_scope(&SCOPE).unwrap();
+            }
+            let action = KernelSigaction {
+                handler: handler as *const () as u64,
+                flags: (libc::SA_SIGINFO as u64) | 0x04000000,
+                restorer: reverie_preload::trap::trusted_sigreturn_restorer as *const () as u64,
+                mask: 1 << (libc::SIGSEGV - 1),
+            };
+            for signal in [libc::SIGUSR2, libc::SIGTRAP] {
+                assert_eq!(
+                    unsafe {
+                        raw_syscall6(
+                            libc::SYS_rt_sigaction,
+                            [signal as u64, (&raw const action) as u64, 0, 8, 0, 0],
+                        )
+                    },
+                    0
+                );
+            }
+            let selected = case & 3;
+            let original = ((case >> 2) & 1, 1 + ((case >> 3) & 1));
+            let original_mask = unsafe { mask() };
+            unsafe { set_pair(original.0, original.1) };
+            let outer = unsafe { reverie_liteinst_instruction_scope_enter(selected) };
+            let expected = (
+                if selected & 1 != 0 { 1 } else { original.0 },
+                if selected & 2 != 0 { 1 } else { original.1 },
+            );
+            let actual = unsafe { pair() };
+            EXPECTED.store(3 | (actual.0 << 2) | (actual.1 << 3), Ordering::Relaxed);
+            let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
+            let tid = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) };
+            let sent = unsafe {
+                raw_syscall6(
+                    libc::SYS_tgkill,
+                    [pid as u64, tid as u64, libc::SIGUSR2 as u64, 0, 0, 0],
+                )
+            };
+            let restored_parent = unsafe { pair() };
+            unsafe { reverie_liteinst_instruction_scope_leave(outer) };
+            let restored = unsafe { pair() };
+            let restored_mask = unsafe { mask() };
+            unsafe { set_pair(1, 1) };
+            assert_eq!(sent, 0);
+            assert_eq!(actual, expected);
+            assert_eq!(restored_parent, expected);
+            assert_eq!(restored, original);
+            assert_eq!(restored_mask, original_mask);
+            assert_eq!(FAILURES.load(Ordering::Relaxed), 0);
+            assert_eq!(HITS.load(Ordering::Relaxed), 2);
+            assert_eq!(CONTINUATION.load(Ordering::Relaxed), 2);
+        }
+    }
+
     #[test]
     fn protected_guest_log_descriptors() {
         use std::os::fd::AsRawFd;

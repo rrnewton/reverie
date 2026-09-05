@@ -32,6 +32,7 @@ static PENDING_UNMASK: AtomicU64 = AtomicU64::new(0);
 static UNMASK_EXPECTED: AtomicU64 = AtomicU64::new(0);
 static GUEST_MASK: AtomicU64 = AtomicU64::new(0);
 static FORCE_INSTRUCTION: AtomicU64 = AtomicU64::new(0);
+static MASK_NATIVE_SCOPE_NEGATIVE: AtomicU64 = AtomicU64::new(0);
 
 unsafe extern "C" {
     fn clock_fixture_open_breakpoint(address: u64) -> i32;
@@ -44,7 +45,50 @@ unsafe extern "C" {
         token: u64,
     ) -> i32;
     fn reverie_liteinst_fallback_mask_restored();
+    fn reverie_liteinst_instruction_scope_enter(selected: u64) -> u64;
+    fn reverie_liteinst_instruction_scope_leave(token: u64);
 }
+
+#[unsafe(naked)]
+unsafe extern "C" fn native_scope_enter() -> u64 {
+    core::arch::naked_asm!(
+        "push rbx", "push r12", "sub rsp, 24",
+        "cmp qword ptr [rip + {negative}], 0", "je 2f",
+        "mov qword ptr [rsp], 16", "mov eax, 14", "xor edi, edi",
+        "mov rsi, rsp", "lea rdx, [rsp + 8]", "mov r10d, 8",
+        "call reverie_preload_trusted_syscall_ip", "test rax, rax", "jnz 9f",
+        "2:",
+        "mov edi, 3", "call {enter}", "mov r12, rax",
+        "cmp qword ptr [rip + {negative}], 0", "je 3f",
+        "mov eax, 14", "mov edi, 2", "lea rsi, [rsp + 8]", "xor edx, edx",
+        "mov r10d, 8", "call reverie_preload_trusted_syscall_ip",
+        "test rax, rax", "jnz 9f", "3:",
+        "xor eax, eax", "cpuid", "rdtsc", "rdtscp",
+        "mov rax, r12", "add rsp, 24", "pop r12", "pop rbx", "ret",
+        "9:", "mov eax, 231", "mov edi, 125",
+        "call reverie_preload_trusted_syscall_ip", "ud2",
+        enter = sym reverie_liteinst_instruction_scope_enter,
+        negative = sym MASK_NATIVE_SCOPE_NEGATIVE,
+    );
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn native_scope_leave(token: u64) {
+    core::arch::naked_asm!(
+        "push rbx", "push r12", "sub rsp, 8", "mov r12, rdi",
+        "xor eax, eax", "cpuid", "rdtsc", "rdtscp",
+        "mov rdi, r12", "call {leave}",
+        "mov eax, 0xdead", "mov edx, 0xbeef",
+        "add rsp, 8", "pop r12", "pop rbx", "ret",
+        leave = sym reverie_liteinst_instruction_scope_leave,
+    );
+}
+
+static NATIVE_SCOPE: reverie_preload::clock_boundary::SignalScope =
+    reverie_preload::clock_boundary::SignalScope {
+        enter: native_scope_enter,
+        leave: native_scope_leave,
+    };
 
 fn queue_notification(pending: bool) {
     let token = NOTIFICATIONS.load(Ordering::Relaxed) + 1;
@@ -453,6 +497,15 @@ unsafe extern "C" fn initialize() -> i32 {
         return 0;
     };
     if std::env::var_os("CLOCK_FIXTURE_FAIL").is_some() {
+        return 42;
+    }
+    MASK_NATIVE_SCOPE_NEGATIVE.store(
+        u64::from(std::env::var_os("CLOCK_FIXTURE_MASK_NATIVE_NEGATIVE").is_some()),
+        Ordering::Relaxed,
+    );
+    if std::env::var_os("CLOCK_FIXTURE_NATIVE_SCOPE").is_some()
+        && unsafe { reverie_preload::clock_boundary::register_signal_scope(&NATIVE_SCOPE) }.is_err()
+    {
         return 42;
     }
     SUD.store(

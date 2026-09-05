@@ -11,6 +11,7 @@ compile_error!("reverie-liteinst requires Linux x86-64");
 
 mod backend;
 mod guest_log;
+mod instruction_event;
 mod patch_alloc;
 mod protected_fd;
 mod stats;

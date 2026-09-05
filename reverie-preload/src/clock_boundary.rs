@@ -44,6 +44,47 @@ static DEFAULT: BoundaryHooks = BoundaryHooks {
 };
 static HOOKS: AtomicPtr<BoundaryHooks> = AtomicPtr::new((&raw const DEFAULT).cast_mut());
 
+/// Balanced controls around one original signal-frame activation.
+#[repr(C)]
+pub struct SignalScope {
+    pub enter: unsafe extern "C" fn() -> u64,
+    pub leave: unsafe extern "C" fn(token: u64),
+}
+
+unsafe extern "C" fn no_signal_enter() -> u64 {
+    0
+}
+unsafe extern "C" fn no_signal_leave(_token: u64) {}
+
+static DEFAULT_SIGNAL_SCOPE: SignalScope = SignalScope {
+    enter: no_signal_enter,
+    leave: no_signal_leave,
+};
+static SIGNAL_SCOPE: AtomicPtr<SignalScope> =
+    AtomicPtr::new((&raw const DEFAULT_SIGNAL_SCOPE).cast_mut());
+
+/// Install a process-lifetime scope before enabling interception or sources.
+///
+/// # Safety
+/// Both functions are signal-safe, integer-only, balanced, and use no masks,
+/// allocation, locks, lazy TLS or unwinding. Each nested scope must restore its
+/// exact inherited controls. No scope may run guest code or persist a control
+/// change. The returned token belongs solely to this activation's stack frame.
+/// Registration does not establish source, stack or instruction admission.
+pub unsafe fn register_signal_scope(scope: &'static SignalScope) -> io::Result<()> {
+    let pointer = (scope as *const SignalScope).cast_mut();
+    match SIGNAL_SCOPE.compare_exchange(
+        (&raw const DEFAULT_SIGNAL_SCOPE).cast_mut(),
+        pointer,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => Ok(()),
+        Err(current) if current == pointer => Ok(()),
+        Err(_) => Err(io::Error::other("signal scope already registered")),
+    }
+}
+
 /// Register immutable process-lifetime hooks before interception.
 ///
 /// # Safety
@@ -72,15 +113,20 @@ pub unsafe fn register(hooks: &'static BoundaryHooks) -> io::Result<()> {
 #[unsafe(naked)]
 pub unsafe extern "C" fn invoke_signal() {
     core::arch::naked_asm!(
-        "push r12", "push r13", "sub rsp, 40",
+        "push r12", "push r13", "push r14", "sub rsp, 64",
         "mov [rsp], rdi", "mov [rsp + 8], rsi", "mov [rsp + 16], rdx",
         "mov [rsp + 24], rax", "mov r13, [rip + {hooks}]",
         "xor edi, edi", "call qword ptr [r13]", "mov r12, rax",
+        "mov r14, [rip + {scope}]", "call qword ptr [r14]", "mov [rsp + 32], rax",
         "mov rdi, [rsp]", "mov rsi, [rsp + 8]", "mov rdx, [rsp + 16]",
-        "call qword ptr [rsp + 24]", "mov rdi, r12", "mov rsi, rax",
+        "mov rcx, [rsp + 32]", "call qword ptr [rsp + 24]",
+        "mov [rsp + 40], rax", "mov [rsp + 48], rdx",
+        "mov rdi, [rsp + 32]", "call qword ptr [r14 + 8]",
+        "mov rdi, r12", "mov rsi, [rsp + 40]", "mov rdx, [rsp + 48]",
         "call qword ptr [r13 + 8]",
-        "add rsp, 40", "pop r13", "pop r12", "ret",
+        "add rsp, 64", "pop r14", "pop r13", "pop r12", "ret",
         hooks = sym HOOKS,
+        scope = sym SIGNAL_SCOPE,
     );
 }
 
@@ -89,6 +135,19 @@ pub unsafe extern "C" fn invoke_signal() {
 /// original restorer stack position; no new signal frame is manufactured.
 #[macro_export]
 macro_rules! clocked_signal {
+    ($name:ident, $body:path, scope_token) => {
+        const _: unsafe extern "C" fn(i32, *mut libc::siginfo_t, *mut libc::c_void, u64)
+            -> $crate::clock_boundary::Continuation = $body;
+        #[unsafe(naked)]
+        pub(crate) unsafe extern "C" fn $name(
+            signal: i32, info: *mut libc::siginfo_t, context: *mut libc::c_void,
+        ) {
+            core::arch::naked_asm!(
+                "lea rax, [rip + {body}]", "jmp {invoke}",
+                body = sym $body, invoke = sym $crate::clock_boundary::invoke_signal,
+            );
+        }
+    };
     ($name:ident, $body:path) => {
         const _: unsafe extern "C" fn(i32, *mut libc::siginfo_t, *mut libc::c_void)
             -> $crate::clock_boundary::Continuation = $body;

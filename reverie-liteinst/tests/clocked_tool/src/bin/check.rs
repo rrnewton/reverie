@@ -106,11 +106,28 @@ fn main() {
     assert!(symbols.status.success());
     let symbols = String::from_utf8(symbols.stdout).unwrap();
     let mut windows = vec![(0, String::new())];
-    for (kind, name) in [
+    let mut targets = vec![
         (1, "reverie_liteinst_clock_disable_published"),
         (2, "reverie_liteinst_clock_enable_published"),
         (3, "reverie_liteinst_clock_handoff_published"),
-    ] {
+    ];
+    if std::env::var_os("CLOCK_FIXTURE_NATIVE_SCOPE").is_some() {
+        targets.extend([
+            (4, "reverie_liteinst_instruction_get_cpuid"),
+            (5, "reverie_liteinst_instruction_get_tsc"),
+            (6, "reverie_liteinst_instruction_set_cpuid"),
+            (7, "reverie_liteinst_instruction_set_tsc"),
+            (8, "reverie_liteinst_instruction_restore_tsc"),
+            (9, "reverie_liteinst_instruction_restore_cpuid"),
+            (10, "reverie_liteinst_instruction_get_cpuid_returned"),
+            (11, "reverie_liteinst_instruction_get_tsc_returned"),
+            (12, "reverie_liteinst_instruction_set_cpuid_returned"),
+            (13, "reverie_liteinst_instruction_set_tsc_returned"),
+            (14, "reverie_liteinst_instruction_restore_tsc_returned"),
+            (15, "reverie_liteinst_instruction_restore_cpuid_returned"),
+        ]);
+    }
+    for (kind, name) in targets {
         let address = symbols
             .lines()
             .find_map(|line| {

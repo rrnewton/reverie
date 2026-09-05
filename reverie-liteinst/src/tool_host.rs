@@ -583,11 +583,7 @@ where
                 };
                 let result = drive_ready(tool.handle_rdtsc_event(&mut guest, request))
                     .unwrap_or_else(|error| tool_fatal(125, &Error::from(error)));
-                context.rax = result.tsc as u32 as u64;
-                context.rdx = result.tsc.checked_shr(32).unwrap_or(0);
-                if let Some(aux) = result.aux {
-                    context.rcx = u64::from(aux);
-                }
+                crate::instruction_event::apply_rdtsc(context, request, result);
             }
         }
     }
