@@ -189,7 +189,10 @@ def classify(
 
     for run in runs:
         if (run.get("conclusion") or "").strip() in FAILING:
-            return EVALUATED_FAIL, False, {}
+            # The EVENT is carried because existence alone cannot say whether a
+            # run contradicts a "no automatic runs" directive. See
+            # DELIBERATE_RUN_EVENTS.
+            return EVALUATED_FAIL, False, {"event": (run.get("event") or "").strip()}
 
     pending = [r for r in runs if not (r.get("conclusion") or "").strip()]
     if pending:
@@ -204,7 +207,9 @@ def classify(
         # started, under a cancel-in-progress:false workflow.
         jobs = _resolve(jobs_of, run)
         if jobs is not None and jobs > 0:
-            return EVALUATED_FAIL, False, {"jobs": jobs}
+            return EVALUATED_FAIL, False, {
+                "jobs": jobs, "event": (run.get("event") or "").strip()
+            }
 
         # *** SUPERSESSION IS ASSERTED ONLY ON VISIBLE SUCCESSOR EVIDENCE. ***
         # The previous version returned SUPERSEDED whenever jobs==0 OR the jobs
@@ -223,6 +228,36 @@ def classify(
         }
 
     return EVALUATED_PASS, False, {}
+
+
+#: Events that mean somebody deliberately asked for this run rather than a
+#: trigger firing on its own.
+#:
+#: ⚠️ WHY THIS EXISTS. The gate used to conclude, from the mere EXISTENCE of a run
+#: while .ops-state.yaml says github_actions_enabled=false, that "the run proves
+#: the local flag is wrong". Measured 2026-09-05 on the one EVALUATED_FAIL among
+#: 40 inspected heads -- rrnewton/hermit PR 2904 at 226a6506daf9, run
+#: 33758411902 of .github/workflows/merge-gate.yml:
+#:
+#:     event: workflow_dispatch, actor rrnewton, conclusion failure
+#:
+#: A human pressed the button, and merge-gate.yml's trigger block is
+#: `workflow_dispatch` alone so it has no other way to start. That contradicts
+#: nothing: hermit/scripts/check-github-actions-triggers.rs states the policy the
+#: flag is shorthand for, and it says "every workflow may remain manually
+#: dispatchable". GitHub-level Actions are in fact enabled=true; what is
+#: deactivated is AUTOMATIC evaluation of pull-request heads.
+#:
+#: This gate fetches the whole run object, which carries `event`, and never read
+#: it -- so a run a human asked for was indistinguishable from one a trigger
+#: created, and only the second contradicts the directive.
+#:
+#: ⚠️ NARROW ON PURPOSE, AND IT FAILS TOWARDS STILL REPORTING. Only these two are
+#: treated as deliberate. `workflow_run` is excluded because a chained run may
+#: descend from an automatic push, and an unknown or absent event keeps the
+#: original wording. Being wrong here costs a contradiction reported that is not
+#: there; the opposite would cost a real one going unsaid.
+DELIBERATE_RUN_EVENTS = frozenset({"workflow_dispatch", "repository_dispatch"})
 
 
 def likely_reason(pr: dict[str, Any], state: str, stale: bool,
@@ -276,10 +311,21 @@ def likely_reason(pr: dict[str, Any], state: str, stale: bool,
             "is permitted"
         )
     if not actions_enabled and state == EVALUATED_FAIL:
+        event = str(ev.get("event") or "")
+        if event in DELIBERATE_RUN_EVENTS:
+            return (
+                f"a GitHub Actions run failed. It was started by {event}, so somebody "
+                "asked for it: that is permitted while .ops-state.yaml says "
+                "github_actions_enabled=false, which deactivates AUTOMATIC evaluation "
+                "and not manual dispatch. The failure is real and stands; the flag is "
+                "NOT contradicted by this run"
+            )
+        described = event or "an event this gate could not read"
         return (
             "a GitHub Actions run exists and failed while .ops-state.yaml says "
-            "github_actions_enabled=false. The observed failure is still real, and "
-            "the run proves the local flag is wrong"
+            f"github_actions_enabled=false, started by {described} rather than a "
+            "deliberate dispatch. The observed failure is still real, and the run "
+            "proves the local flag is wrong"
         )
 
     if state == NEVER_RAN:
@@ -906,10 +952,26 @@ def main() -> int:
     no_verdict = [r for r in rows
                   if r["state"] in (NEVER_RAN, SUPERSEDED, CANCELLED_UNVERIFIED)
                   or (r["state"] == PENDING and r.get("stale"))]
-    disabled_failures = [
+    # ⚠️ SPLIT, BECAUSE A DISPATCHED RUN IS NOT A CONFIGURATION MISMATCH. Every
+    # failing run under a false flag used to land in one bucket and be reported
+    # as proof the flag was wrong. Measured 2026-09-05: the only such row in 40
+    # inspected heads was PR 2904's run 33758411902, event workflow_dispatch --
+    # a human pressing a button on a workflow whose trigger block is
+    # `workflow_dispatch` alone. That is expressly permitted by the policy the
+    # flag stands for, so it proved nothing. Both remain real failures and both
+    # stay reported; only the contradiction claim is confined to the runs that
+    # actually contradict something.
+    _failing_while_disabled = [
         r for r in rows
         if r["state"] == EVALUATED_FAIL
         and r.get("actions_enabled") is False
+    ]
+    dispatched_failures = [
+        r for r in _failing_while_disabled
+        if str((r.get("evidence") or {}).get("event") or "") in DELIBERATE_RUN_EVENTS
+    ]
+    disabled_failures = [
+        r for r in _failing_while_disabled if r not in dispatched_failures
     ]
     expected_no_verdict = [
         r for r in no_verdict
@@ -924,7 +986,7 @@ def main() -> int:
     # tick-hub capture consumes key=value fields. Keep the human table below,
     # but also give the scheduled emitter a fully rendered one-line summary so
     # a finding can never degrade into a literal ``{summary}`` placeholder.
-    affected = holes + disabled_failures
+    affected = holes + disabled_failures + dispatched_failures
     affected_prs = ",".join(f"#{r['number']}" for r in affected[:8]) or "none"
     if disabled_failures:
         additional_holes = (
@@ -937,6 +999,14 @@ def main() -> int:
             "github_actions_enabled=false; affected="
             f"{affected_prs}; the observed run proves the flag is wrong, and the "
             f"failure remains a real failure{additional_holes}"
+        )
+    elif dispatched_failures:
+        tick_summary = (
+            f"{len(dispatched_failures)}/{len(rows)} inspected open PR heads have a "
+            "failing GitHub Actions run that somebody dispatched by hand; affected="
+            f"{affected_prs}; .ops-state.yaml says github_actions_enabled=false, which "
+            "deactivates AUTOMATIC evaluation and not manual dispatch, so the flag is "
+            "NOT contradicted; the failure remains a real failure"
         )
     elif holes:
         remedies = []
@@ -1003,6 +1073,7 @@ def main() -> int:
                           "actionable_not_evaluated": len(holes),
                           "expected_not_evaluated": len(expected_no_verdict),
                           "disabled_but_failed": len(disabled_failures),
+                          "dispatched_but_failed": len(dispatched_failures),
                           "rows": rows}, indent=2))
     else:
         # Both terms, always: a bare count of unevaluated heads is not a
@@ -1012,7 +1083,14 @@ def main() -> int:
         print(f"inspected {len(rows)} open PR head(s); NO VERDICT: {len(no_verdict)}  "
               + "  ".join(f"{k}={v}" for k, v in sorted(tally.items())))
         for r in rows:
-            if r in disabled_failures:
+            if r in dispatched_failures:
+                print(
+                    f"  EVALUATED_FAIL(dispatched) PR {r['number']}  "
+                    f"head {r['head'][:12]}  runs={r['run_count']}  "
+                    f"checks={r.get('check_run_count', 0)}  mergeable={r['mergeable']}  "
+                    f"-- {r['reason']}"
+                )
+            elif r in disabled_failures:
                 print(
                     f"  EVALUATED_FAIL(config-mismatch) PR {r['number']}  "
                     f"head {r['head'][:12]}  runs={r['run_count']}  "
@@ -1030,7 +1108,7 @@ def main() -> int:
                     f"runs={r['run_count']}  checks={r.get('check_run_count', 0)}  "
                     f"mergeable={r['mergeable']}  -- {r['reason']}"
                 )
-        if not no_verdict and not disabled_failures:
+        if not no_verdict and not disabled_failures and not dispatched_failures:
             print("  every inspected head carries a verdict")
 
         if a.gate:
@@ -1047,6 +1125,7 @@ def main() -> int:
             print(f"actionable_not_evaluated={len(holes)}")
             print(f"expected_not_evaluated={len(expected_no_verdict)}")
             print(f"disabled_but_failed={len(disabled_failures)}")
+            print(f"dispatched_but_failed={len(dispatched_failures)}")
             print(f"mergeability_unavailable={mergeability_unavailable}")
             print(f"summary={tick_summary}")
 
