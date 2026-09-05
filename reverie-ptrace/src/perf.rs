@@ -689,6 +689,12 @@ impl PerfCounter {
 /// Execute the `rdpmc` instruction to read hardware performance counter number
 /// `counter`. Returns the raw counter value (the low `pmc_width` bits are
 /// meaningful; higher bits are unspecified and must be masked by the caller).
+/// On CPU/kernel configurations with execution-serializing LFENCE semantics,
+/// these fences bracket the RDPMC observation. LFENCE availability alone does
+/// not establish that precondition. Metadata compiler fences do not order RDPMC.
+/// This does not establish an exact guest-instruction boundary. Consumers that
+/// require exact instruction-relative sampling must qualify the platform, use
+/// a separately proven sequence, or refuse that exact mode when unqualified.
 ///
 /// SAFETY: the caller must ensure `counter` is the currently-scheduled PMC
 /// index for the calling core (i.e. `index - 1` from the perf mmap page) and
@@ -704,7 +710,9 @@ unsafe fn rdpmc(counter: u32) -> u64 {
     // no memory or other registers.
     unsafe {
         core::arch::asm!(
+            "lfence",
             "rdpmc",
+            "lfence",
             in("ecx") counter,
             out("eax") lo,
             out("edx") hi,
@@ -970,6 +978,55 @@ mod test {
             assert!(
                 before <= via_rdpmc && via_rdpmc <= after,
                 "rdpmc read {via_rdpmc} not in bracket [{before}, {after}]"
+            );
+        }
+    }
+
+    #[test]
+    fn rdpmc_preserves_one_branch_intervals() {
+        let config = crate::timer::PmuConfig::try_new().expect("hardware RCB PMU required");
+        let counter = Builder::new(0, -1)
+            .sample_period(0)
+            .event(config.rcb_event())
+            .fast_reads(true)
+            .create()
+            .expect("hardware RCB counter required");
+        let page = counter.mmap.expect("perf metadata required").as_ptr();
+        let mut samples = Vec::with_capacity(4096);
+        counter.reset().unwrap();
+        counter.enable().unwrap();
+        let sequence = unsafe { std::ptr::read_volatile(&raw const (*page).lock) };
+        let index = unsafe { std::ptr::read_volatile(&raw const (*page).index) };
+        let capabilities = unsafe { (*page).__bindgen_anon_1.capabilities };
+        assert_eq!(sequence & 1, 0);
+        assert_ne!(capabilities & (1 << 2), 0, "user RDPMC required");
+        assert_ne!(index, 0, "counter must be scheduled");
+        let selector = index - 1;
+        for _ in 0..4096 {
+            let before = unsafe { rdpmc(selector) };
+            unsafe {
+                core::arch::asm!(
+                    "test eax, eax",
+                    "jz 2f",
+                    "2:",
+                    in("eax") 0,
+                    options(nostack, nomem),
+                );
+            }
+            let after = unsafe { rdpmc(selector) };
+            samples.push([before, after]);
+        }
+        let final_sequence = unsafe { std::ptr::read_volatile(&raw const (*page).lock) };
+        counter.disable().unwrap();
+        assert_eq!(
+            sequence, final_sequence,
+            "PMU mapping changed during measurement"
+        );
+        for (iteration, [before, after]) in samples.into_iter().enumerate() {
+            assert_eq!(
+                after.wrapping_sub(before),
+                1,
+                "sample {iteration}: {before} -> {after}"
             );
         }
     }
