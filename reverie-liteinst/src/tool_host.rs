@@ -153,6 +153,7 @@ where
     T: Tool + 'static,
 {
     let _runtime = crate::runtime_domain::Entry::enter();
+    crate::syscall_fallback::initialize()?;
     let rpc = CoordinatorRpc::<T::GlobalState>::connect(coordinator)?;
     runtime::reserve_coordinator_fd(rpc.raw_fd())?;
     let stats =
@@ -354,11 +355,11 @@ where
                         args,
                     },
                 );
-            } else if let Some(error) = injected_syscall_guard(number, args) {
-                event.result = -i64::from(error.into_raw());
+            } else if let Some(result) = injected_syscall_guard(number, args) {
+                event.result = result;
                 return;
             }
-            event.result = unsafe { raw_syscall6(number, args) };
+            event.result = guarded_raw_injection(number, args);
             return;
         }
         let args = guest.event.args.map(|arg| arg as usize);
@@ -593,6 +594,7 @@ fn finish_tool_exit<T: Tool>(
         {
             tool_fatal(125, &Error::from(error));
         }
+        crate::guest_log::finish();
     }
 }
 
@@ -753,6 +755,7 @@ fn forward_plain_fork(number: i64, args: [u64; 6]) -> i64 {
     } else {
         unsafe { raw_syscall6(number, args) }
     };
+    crate::guest_log::fork_result(result);
     if number == libc::SYS_vfork && result > 0 {
         let mut info = core::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
         loop {
@@ -782,7 +785,10 @@ fn forward_plain_fork(number: i64, args: [u64; 6]) -> i64 {
 }
 
 // TODO-HUMAN-REVIEW(PR-127): Review injected process/signal safety policy.
-fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
+fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<i64> {
+    if let Some(result) = runtime::protected_injected_syscall(number, args) {
+        return Some(result);
+    }
     let unsupported_process =
         // AUTONOMOUS-BOT-IMPLEMENTED
         (matches!(number, libc::SYS_clone | libc::SYS_clone3 | libc::SYS_vfork)
@@ -799,12 +805,17 @@ fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
         || (number == libc::SYS_rt_sigprocmask && args[1] != 0);
 
     if unsupported_process {
-        Some(Errno::EOPNOTSUPP)
+        Some(-i64::from(Errno::EOPNOTSUPP.into_raw()))
     } else if protected_signal {
-        Some(Errno::EPERM)
+        Some(-i64::from(Errno::EPERM.into_raw()))
     } else {
         None
     }
+}
+
+fn guarded_raw_injection(number: i64, args: [u64; 6]) -> i64 {
+    injected_syscall_guard(number, args)
+        .unwrap_or_else(|| runtime::guarded_raw_syscall(number, args))
 }
 
 #[reverie::tool]
@@ -950,8 +961,8 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
             }
             return Err(Errno::EOPNOTSUPP);
         }
-        if let Some(error) = injected_syscall_guard(number, raw_args) {
-            return Err(error);
+        if let Some(result) = injected_syscall_guard(number, raw_args) {
+            return Errno::from_ret(result as usize).map(|value| value as i64);
         }
         if is_exit_syscall(number) {
             self.tail.set_exit(number, raw_args);
@@ -970,7 +981,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
             raw_args[1] = mask as *const u64 as u64;
         }
 
-        let result = unsafe { raw_syscall6(number, raw_args) };
+        let result = guarded_raw_injection(number, raw_args);
         Errno::from_ret(result as usize).map(|value| value as i64)
     }
 
@@ -1000,12 +1011,12 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
             } else {
                 self.tail.set_result(result);
             }
-        } else if let Some(error) = injected_syscall_guard(number, args) {
-            self.tail.set_result(-i64::from(error.into_raw()));
+        } else if let Some(result) = injected_syscall_guard(number, args) {
+            self.tail.set_result(result);
         } else if is_exit_syscall(number) {
             self.tail.set_exit(number, args);
         } else {
-            let value = unsafe { raw_syscall6(number, args) };
+            let value = guarded_raw_injection(number, args);
             self.tail.set_result(value);
         }
         std::future::pending().await
@@ -1127,5 +1138,79 @@ fn fatal(status: i32) -> ! {
     }
     loop {
         core::hint::spin_loop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::fd::AsRawFd;
+
+    use super::*;
+
+    #[test]
+    fn guest_log_direct_injection_preserves_neighboring_operations() {
+        if std::env::var_os("LITEINST_LOG_INJECTION_TEST").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tool_host::tests::guest_log_direct_injection_preserves_neighboring_operations",
+                ])
+                .env("LITEINST_LOG_INJECTION_TEST", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let (log, _log_peer) = crate::guest_log::channel_pair().unwrap();
+        crate::guest_log::LOG_FD.store(log.as_raw_fd(), std::sync::atomic::Ordering::Release);
+        let (neighbor, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        for (fd, expected) in [
+            (log.as_raw_fd(), -i64::from(libc::EBADF)),
+            (neighbor.as_raw_fd(), 1),
+        ] {
+            let result = guarded_raw_injection(
+                libc::SYS_write,
+                [fd as u64, b"x".as_ptr() as u64, 1, 0, 0, 0],
+            );
+            assert_eq!(result, expected);
+        }
+        let mut byte = [0];
+        std::io::Read::read_exact(&mut peer, &mut byte).unwrap();
+        assert_eq!(byte, *b"x");
+        assert_eq!(
+            guarded_raw_injection(libc::SYS_close, [log.as_raw_fd() as u64, 0, 0, 0, 0, 0]),
+            0
+        );
+        assert!(unsafe { libc::fcntl(log.as_raw_fd(), libc::F_GETFD) } >= 0);
+        let mapping = guarded_raw_injection(
+            libc::SYS_mmap,
+            [
+                0,
+                4096,
+                libc::PROT_READ as u64,
+                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64,
+                log.as_raw_fd() as u64,
+                0,
+            ],
+        );
+        assert!(mapping > 0);
+        assert_eq!(
+            guarded_raw_injection(libc::SYS_munmap, [mapping as u64, 4096, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            guarded_raw_injection(
+                libc::SYS_mmap,
+                [
+                    0,
+                    4096,
+                    libc::PROT_READ as u64,
+                    libc::MAP_PRIVATE as u64,
+                    log.as_raw_fd() as u64,
+                    0
+                ]
+            ),
+            -i64::from(libc::EBADF)
+        );
     }
 }

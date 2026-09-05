@@ -10,9 +10,12 @@ use std::process::Command;
 compile_error!("reverie-liteinst requires Linux x86-64");
 
 mod backend;
+mod guest_log;
 mod patch_alloc;
+mod protected_fd;
 mod stats;
 mod straddler;
+mod syscall_fallback;
 
 pub use backend::COORDINATOR_ENV;
 pub use backend::LiteinstBackend;
@@ -20,6 +23,9 @@ pub use backend::PreloadBootstrap;
 pub use backend::STATS_COORDINATOR_ENV;
 pub use backend::TOOL_PRELOAD_ENV;
 pub use backend::take_preload_bootstrap;
+pub use guest_log::CapturedGuestLog;
+pub use guest_log::GuestLog;
+pub use guest_log::GuestLogWriter;
 pub use reverie_ptrace::LiteinstInstrumentationStats;
 pub use stats::LiteinstBackendStatsSnapshot;
 pub use stats::LiteinstBackendStatsSource;
