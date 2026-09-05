@@ -301,6 +301,141 @@ class Fixture(unittest.TestCase):
         child = int(pid_file.read_text().strip())
         self.assert_process_stopped(child)
 
+    def test_timed_out_fetch_removes_only_new_temporary_pack_files(self) -> None:
+        repo = self.clone()
+        pack_dir = repo / ".git" / "objects" / "pack"
+        before = pack_dir / "tmp_pack_before"
+        completed = pack_dir / "pack-before.pack"
+        before.write_bytes(b"pre-existing temporary pack")
+        completed.write_bytes(b"completed pack")
+
+        created = pack_dir / "tmp_pack_created_by_fetch"
+
+        def time_out(command: list[str], timeout: float, on_timeout=None) -> None:
+            self.assertEqual(
+                command,
+                [
+                    "git", "-C", str(repo), "fetch", "--quiet", "origin",
+                    "+refs/heads/*:refs/remotes/origin/*",
+                ],
+            )
+            created.write_bytes(b"partial pack")
+            info = created.stat()
+            with mock.patch.object(
+                gate_module,
+                "open_partial_packs_from_group",
+                return_value=({(created, info.st_dev, info.st_ino)}, []),
+            ):
+                on_timeout(mock.Mock(pid=1234))
+            raise subprocess.TimeoutExpired(command, timeout)
+
+        with (
+            mock.patch.object(gate_module.shutil, "which", return_value=None),
+            mock.patch.object(gate_module, "run_bounded", side_effect=time_out),
+        ):
+            reachable, reason = gate_module.refresh_remote_tracking(
+                repo, time.monotonic() + 1
+            )
+
+        self.assertFalse(reachable)
+        self.assertEqual(reason, "remote fetch timed out")
+        self.assertFalse(created.exists())
+        self.assertEqual(before.read_bytes(), b"pre-existing temporary pack")
+        self.assertEqual(completed.read_bytes(), b"completed pack")
+
+    def test_partial_pack_capture_is_bound_to_the_fetch_process_group(self) -> None:
+        repo = self.clone()
+        pack_dir = repo / ".git" / "objects" / "pack"
+        before = pack_dir / "tmp_pack_before"
+        created = pack_dir / "tmp_pack_created_by_fetch"
+        concurrent = pack_dir / "tmp_pack_concurrent_fetch"
+        before.write_bytes(b"pre-existing")
+        helper = self.root / "hold-pack-open"
+        helper.write_text(
+            "#!/bin/sh\n"
+            "exec 3>\"$1\"\n"
+            "printf '%s\\n' \"$2\" >&3\n"
+            "while :; do sleep 1; done\n"
+        )
+        helper.chmod(0o755)
+        concurrent_process = subprocess.Popen(
+            [str(helper), str(concurrent), "concurrent fetch"],
+            start_new_session=True,
+        )
+        captured: set[tuple[Path, int, int]] = set()
+        errors: list[str] = []
+
+        def capture(process: subprocess.Popen[str]) -> None:
+            packs, failures = gate_module.open_partial_packs_from_group(
+                repo, process.pid, {before}
+            )
+            captured.update(packs)
+            errors.extend(failures)
+
+        try:
+            for _ in range(50):
+                if concurrent.exists():
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("concurrent helper did not create its pack")
+
+            with self.assertRaises(subprocess.TimeoutExpired):
+                gate_module.run_bounded(
+                    [str(helper), str(created), "timed-out fetch"],
+                    0.1,
+                    on_timeout=capture,
+                )
+        finally:
+            gate_module.terminate_process_group(concurrent_process)
+
+        self.assertEqual(errors, [])
+        self.assertEqual({path for path, _device, _inode in captured}, {created})
+        self.assertEqual(gate_module.remove_partial_packs(captured), [])
+        self.assertFalse(created.exists())
+        self.assertEqual(before.read_bytes(), b"pre-existing")
+        self.assertEqual(concurrent.read_bytes(), b"concurrent fetch\n")
+
+    def test_partial_pack_cleanup_preserves_a_replaced_path(self) -> None:
+        repo = self.clone()
+        path = repo / ".git" / "objects" / "pack" / "tmp_pack_fetch"
+        path.write_bytes(b"timed-out fetch")
+        info = path.stat()
+        captured = {(path, info.st_dev, info.st_ino)}
+        path.unlink()
+        path.write_bytes(b"replacement")
+
+        self.assertEqual(gate_module.remove_partial_packs(captured), [])
+        self.assertEqual(path.read_bytes(), b"replacement")
+
+    def test_successful_fetch_preserves_normal_pack_files(self) -> None:
+        repo = self.clone()
+        pack_dir = repo / ".git" / "objects" / "pack"
+        pack = pack_dir / "pack-created.pack"
+        index = pack_dir / "pack-created.idx"
+
+        def succeed(
+            command: list[str], _timeout: float, on_timeout=None
+        ) -> subprocess.CompletedProcess[str]:
+            temporary = pack_dir / "tmp_pack_created_by_fetch"
+            temporary.write_bytes(b"completed pack")
+            temporary.rename(pack)
+            index.write_bytes(b"completed index")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with (
+            mock.patch.object(gate_module.shutil, "which", return_value=None),
+            mock.patch.object(gate_module, "run_bounded", side_effect=succeed),
+        ):
+            reachable, reason = gate_module.refresh_remote_tracking(
+                repo, time.monotonic() + 1
+            )
+
+        self.assertTrue(reachable)
+        self.assertIsNone(reason)
+        self.assertEqual(pack.read_bytes(), b"completed pack")
+        self.assertEqual(index.read_bytes(), b"completed index")
+
     def test_non_object_manifest_is_undetermined_and_does_not_abort_pool(self) -> None:
         malformed = self.clone("dev-hermit-malformed")
         self.clone("dev-hermit-good")
