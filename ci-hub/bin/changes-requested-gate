@@ -1239,12 +1239,48 @@ def evaluate(
             f" ({cleared} other refusal(s) withdrawn by their own lane)"
             if cleared else ""
         ) + one_for_many() + retire_note()
+        # ⚠️ NAME THE CAUSE THAT APPLIES, NOT EVERY CAUSE THERE IS. This used to
+        # assert unconditionally that "a withdrawal from a DIFFERENT lane does not
+        # discharge it", including when every withdrawal present was in the SAME
+        # lane as the refusal it failed to clear. Measured 2026-09-05 on a bare
+        # same-lane pair: the reader is sent hunting a cross-lane problem that is
+        # not there, and this repository has already lost time twice to a refusal
+        # that misidentified its own cause.
+        live_lanes = {lane for lane, _ in live if lane is not None}
+        cross_lane = bool(withdrawn_lanes - live_lanes)
+        cause = (
+            "A refusal naming the head blocks regardless of any lane's approval, "
+            "and a withdrawal from a DIFFERENT lane does not discharge it."
+            if cross_lane else
+            "A refusal naming the head blocks regardless of any lane's approval. "
+            "Every withdrawal present is in the refusal's own lane, so the lane is "
+            "not what is missing: an UNQUOTED withdrawal retires only the refusals "
+            "of the issuer who posted it, and a refusal with no readable issuer "
+            "cannot be matched that way at all."
+        )
+        # ⚠️ AND SAY WHEN THE EVIDENCE WAS NEVER PASSED. `records` is optional, and
+        # without it `retired()` can credit nothing -- so a body carrying a valid
+        # `RETIRES <comment-id>` is silently ignored and the verdict comes back
+        # BLOCKED where the same input with records returns OK. An optional
+        # argument that changes the verdict has to announce itself; measured
+        # 2026-09-05, both production callers do pass it and only a caller that
+        # forgets reaches this.
+        unpassed_retires = (
+            records is None
+            and any(grammar.contains_retires_assertion(body) for body in bodies)
+        )
+        evidence_gap = (
+            " ⚠️ A `RETIRES` claim is present but NO REVIEW RECORDS WERE SUPPLIED to"
+            " this call, so no retirement could be credited. That is missing evidence,"
+            " not a rejected claim: pass `records=` and re-evaluate before treating"
+            " this as a refusal that stands."
+            if unpassed_retires else ""
+        )
         return (
             BLOCKED,
             f"{len(live)} refusal(s) bound to the exact head {head[:12]} from "
-            f"lane(s) {lanes} that have not withdrawn{note}. A refusal naming the "
-            f"head blocks regardless of any lane's approval, and a withdrawal from "
-            f"a DIFFERENT lane does not discharge it. After the objection is resolved, "
+            f"lane(s) {lanes} that have not withdrawn{note}. {cause}"
+            f"{evidence_gap} After the objection is resolved, "
             f"a currently authorized GitHub actor posts {WITHDRAWN} in this lane at the current head with "
             f"exact `RETIRES <comment-id>`.",
         )
