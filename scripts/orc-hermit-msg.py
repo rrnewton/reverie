@@ -133,9 +133,43 @@ ACTIVE_SESSION_ENTRY_RE = re.compile(r"^  (?P<name>orc-\S+)\s*$")
 # placeholder both vanished in the post-1.0 TUI (which shows a `Session:`/`DB:`
 # footer and a bare prompt instead), and the border title had already flipped
 # between builds before that. See the module docstring.
-COMPOSER_RULE_RE = re.compile(r"^-{20,}$")
-# U+203A is the post-1.0 empty-input prompt; '>' covers a plain-ASCII build.
+#
+# ⚠️ AND THE GLYPHS CHANGED UNDER IT. The shape survived; the character set did
+# not. This was `^-{20,}$` -- twenty or more ASCII HYPHENS and nothing else --
+# and the shipped build draws the box with U+250C/U+2502/U+2514/U+2500. Captured
+# from the live coordinator pane on 2026-09-05 and decoded byte by byte; the
+# capture is checked in at scripts/tests/data/captured-orc-composer.txt and is
+# what both the fixture and the parser test are built from, so neither can drift
+# into agreeing with a rendering we invented.
+#
+# Not one ASCII hyphen in the box, so parse_composer returned None on every
+# attempt and the relay refused with "does not render an Orc composer" --
+# accurate about what it saw, misleading about what it meant. The owner-checkout
+# validate report was undeliverable on that refusal.
+#
+# So match the RUN rather than the whole line: twenty or more rule characters in
+# either character set, anywhere on the line. That tolerates the corner and box
+# title the build now puts before the run and the neighbouring column's border
+# after it, without widening what counts as a composer -- discovery has already
+# restricted us to panes running `orc`.
+COMPOSER_RULE_RE = re.compile(r"[-\u2500]{20,}")
+# Body lines carry the box's left border in the current build and the right one
+# lands on them too; older builds have neither.
+COMPOSER_BORDER_CHARS = "\u2502|"
+# U+203A is the post-1.0 empty-input prompt; '>' covers a plain-ASCII build. The
+# current build renders no glyph at all, which is why this stays optional.
 COMPOSER_PROMPT_CHARS = "›>"
+# ⚠️ A TEXT PROBE, AND THIS FILE ALREADY RECORDS THAT TEXT PROBES FLIP BETWEEN
+# BUILDS -- `Type / for commands` vanished in the post-1.0 TUI and has since come
+# back. It is used anyway because this build renders NO prompt glyph, so there is
+# no structural way left to tell an empty box from a draft.
+#
+# The DIRECTION of the risk is the justification: if this goes stale, an EMPTY
+# box stops looking empty and the relay REFUSES rather than typing. Staleness
+# costs a delivery, never somebody else's draft. Pinned by a test rather than
+# left as a comment. Confirmed against the shipped binary: `strings
+# /usr/local/bin/orc` contains this and the `Input (Enter, Esc, ...)` title.
+COMPOSER_EMPTY_PLACEHOLDERS = frozenset({"Type / for commands"})
 # `[idle]` / `[streaming]` / ... — the post-1.0 readiness marker, rendered on the
 # key-hint line just above the composer. Recorded as evidence, never used as the
 # delivery test: a state label is a proxy for acceptance, the composer
@@ -176,7 +210,12 @@ class Composer:
 
     @property
     def is_empty(self) -> bool:
-        return not self.text
+        """Empty means safe to type into, so the placeholder counts as empty.
+
+        The placeholder stays in ``text`` rather than being normalised away, so
+        the delivery record still shows what was on screen.
+        """
+        return not self.text or self.text in COMPOSER_EMPTY_PLACEHOLDERS
 
 
 @dataclass(frozen=True)
@@ -724,6 +763,22 @@ def message_probe(message: str) -> str:
     return squash(message)[:PROBE_LENGTH]
 
 
+def _strip_composer_borders(line: str) -> str:
+    """One body line with the box borders and prompt glyph removed.
+
+    Exactly ONE border character comes off each end, and only where one is
+    present. Stripping greedily would let a draft made only of border characters
+    reduce to the empty string, which is the one way this could turn an occupied
+    composer into an empty-looking one and license typing into it.
+    """
+    text = line.strip()
+    if text[:1] in COMPOSER_BORDER_CHARS:
+        text = text[1:]
+    if text[-1:] in COMPOSER_BORDER_CHARS:
+        text = text[:-1]
+    return text.strip().lstrip(COMPOSER_PROMPT_CHARS).strip()
+
+
 def parse_composer(screen: str) -> Composer | None:
     """Parse the input box out of a captured pane, or None if it is not there.
 
@@ -735,7 +790,7 @@ def parse_composer(screen: str) -> Composer | None:
     """
     lines = [line.rstrip() for line in screen.splitlines()]
     rules = [
-        index for index, line in enumerate(lines) if COMPOSER_RULE_RE.match(line.strip())
+        index for index, line in enumerate(lines) if COMPOSER_RULE_RE.search(line)
     ]
     if len(rules) < 2:
         return None
@@ -743,7 +798,7 @@ def parse_composer(screen: str) -> Composer | None:
 
     body: list[str] = []
     for line in lines[open_index + 1 : close_index]:
-        body.append(line.lstrip().lstrip(COMPOSER_PROMPT_CHARS).strip())
+        body.append(_strip_composer_borders(line))
 
     state: str | None = None
     for line in reversed(lines[max(0, open_index - COMPOSER_STATE_SEARCH_LINES) : open_index]):
@@ -927,6 +982,60 @@ def verify_injected(socket: Path, pane_id: str, probe: str) -> str:
     )
 
 
+#: Where to send the reader when a submission is not consumed. Kept as one
+#: constant rather than inlined so it reads contiguously in the source and a test
+#: can assert on it -- the previous wording said the composer "did not drain" and
+#: told the reader to clear it, which points at a component that is working.
+NOT_THE_COMPOSER = (
+    "THE COMPOSER IS NOT THE SUSPECT -- it was found, it accepted the keystrokes, "
+    "and it echoed them back; what did not happen is Orc consuming them. Check "
+    "whether the coordinator is answering at all: `orc session socket <id>` and "
+    "`orc curl --list --json` fail the same way when it is saturated or wedged, "
+    "and a direct `curl --unix-socket <that socket> http://localhost/api/identity` "
+    "times out with zero bytes."
+)
+
+
+def _clear_our_own_draft(
+    socket: Path, pane_id: str, probe: str, composer: Composer | None
+) -> str:
+    """Remove the draft THIS relay typed, once submitting it has failed.
+
+    ⚠️ WHY THIS EXISTS. Landing the composer-detection fix without it did real
+    damage on 2026-09-05: the relay found the box for the first time, typed the
+    validate report into the owner's live coordinator, failed to submit, and left
+    it sitting there. The next firing then refused on the occupied-composer guard
+    -- correctly -- so the box stayed blocked until a human cleared it, and each
+    time it was cleared the next firing stranded another.
+
+    ⚠️ AND WHY IT CANNOT DESTROY SOMEBODY ELSE'S DRAFT. It clears only when the
+    remaining text still contains this relay's own probe, which is a slice of the
+    message it just injected and verified. Anything else is left exactly where it
+    is and said so in the returned text. The clear is then CHECKED rather than
+    assumed, because Ctrl+U is itself a keystroke this build might have
+    repurposed, and reporting a cleanup that did not happen is worse than
+    reporting none.
+    """
+    if composer is None or probe not in squash(composer.text):
+        return (
+            "The input box was left untouched: what it holds is not what this "
+            "relay typed, so removing it was not this relay's call."
+        )
+    with contextlib.suppress(OrcMessageError):
+        run_tmux(socket, "send-keys", "-t", pane_id, "C-u")
+        time.sleep(DRAIN_RETRY_SLEEP)
+        after = parse_composer(capture_pane(socket, pane_id))
+        if after is not None and after.is_empty:
+            return (
+                "The undelivered draft was this relay's own and has been removed, "
+                "so the box is free for the next attempt and nothing was stranded."
+            )
+    return (
+        "Tried to remove this relay's own undelivered draft and the box did not "
+        "clear, so it is still there and the next relay will refuse on it."
+    )
+
+
 def submit_and_acknowledge(
     socket: Path, pane_id: str, probe: str, state: str | None
 ) -> DeliveryAck:
@@ -960,13 +1069,23 @@ def submit_and_acknowledge(
         if attempt + 1 < DRAIN_ATTEMPTS:
             time.sleep(DRAIN_RETRY_SLEEP)
 
+    # ⚠️ NAME THE CONDITION, NOT THE SYMPTOM. This message used to say the
+    # composer "did not drain" and to tell the reader to clear it, which sends
+    # them after a composer that is working perfectly. Measured 2026-09-05: the
+    # box was found, the text went in, Enter was sent, and Orc simply did not
+    # act -- the same coordinator was failing an identity probe on its own
+    # control socket (`orc session socket` reported "indexed but its Unix socket
+    # is not live", a direct curl timed out after 5s with 0 bytes) while running
+    # at 441% CPU. Both delivery channels were refused by one condition: Orc was
+    # not accepting. The composer was never the suspect.
     remaining = "composer no longer parses" if composer is None else repr(composer.text[:200])
+    cleared = _clear_our_own_draft(socket, pane_id, probe, composer)
     raise OrcMessageError(
-        f"Enter was sent to {pane_id} but the Orc composer did not drain within "
-        f"{DRAIN_ATTEMPTS * DRAIN_RETRY_SLEEP:.0f}s, so the message was NOT "
-        f"accepted and is left in the input box ({remaining}). Not resending: a "
-        "retry here is how a relay delivers twice. Clear the composer before the "
-        f"next relay. Pane tail: {_pane_tail(screen)}"
+        f"Orc did not accept the submission on {pane_id}: Enter was sent and the "
+        f"input box still held the message {DRAIN_ATTEMPTS * DRAIN_RETRY_SLEEP:.0f}s "
+        f"later, so it was NOT delivered ({remaining}). {NOT_THE_COMPOSER} Not "
+        f"resending: a retry here is how a relay delivers twice. {cleared} "
+        f"Pane tail: {_pane_tail(screen)}"
     )
 
 

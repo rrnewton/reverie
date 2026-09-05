@@ -35,6 +35,14 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 RELAY = HERE.parent / "orc-hermit-msg.py"
 FAKE_PANE = HERE / "fake_orc_pane.py"
+CAPTURE = HERE / "data/captured-orc-composer.txt"
+#: The pane must be at least as wide as the captured frame or tmux wraps it, and
+#: the wrapped remainder reads as body text -- which makes an empty composer look
+#: occupied. Derived rather than hardcoded so a re-capture from a wider terminal
+#: cannot silently start wrapping. Measured: the 2026-09-05 capture is 214
+#: columns and the old hardcoded 200 wrapped every frame line.
+PANE_WIDTH = max(200, max(len(line) for line in CAPTURE.read_text(
+    encoding="utf-8").splitlines()) + 2)
 
 
 def _load_module():
@@ -53,6 +61,9 @@ class InertPaneTestCase(unittest.TestCase):
     """One private tmux server per test, torn down unconditionally."""
 
     DB = "faketest"
+    #: Which composer rendering the fixture draws. Both are exercised -- see the
+    #: box-layout subclasses at the bottom of this file.
+    LAYOUT = "ascii"
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="orc-msg-inert-"))
@@ -73,6 +84,8 @@ class InertPaneTestCase(unittest.TestCase):
             [
                 str(self.orc_shim),
                 str(FAKE_PANE),
+                "--layout",
+                self.LAYOUT,
                 "--db",
                 self.DB,
                 "--record",
@@ -84,7 +97,7 @@ class InertPaneTestCase(unittest.TestCase):
             [
                 "tmux", "-S", str(self.socket), "new-session", "-d",
                 "-s", f"orc-{self.DB}", "-n", "orc",
-                "-x", "200", "-y", "50", command,
+                "-x", str(PANE_WIDTH), "-y", "50", command,
             ],
             check=True,
             capture_output=True,
@@ -368,6 +381,24 @@ class TestExplicitSocketNeverRetargets(InertPaneTestCase):
             capture_output=True,
             text=True,
         )
+
+
+# ⚠️ EVERY CASE ABOVE, RE-RUN AGAINST THE RENDERING THE SHIPPED BUILD DRAWS. The
+# fixture drew only the hyphen-rule layout while the coordinator drew box-drawing
+# characters, so the relay's detection was dead in production against a fully
+# green suite. Subclassing rather than adding cases is deliberate: a case added
+# above is automatically run against both, so the two renderings cannot end up
+# covered unequally.
+class BoxLayoutDeliveryPositiveBracket(TestInertDeliveryPositiveBracket):
+    LAYOUT = "box"
+
+
+class BoxLayoutDeliveryNegativeBracket(TestInertDeliveryNegativeBracket):
+    LAYOUT = "box"
+
+
+class BoxLayoutExplicitSocketNeverRetargets(TestExplicitSocketNeverRetargets):
+    LAYOUT = "box"
 
 
 if __name__ == "__main__":

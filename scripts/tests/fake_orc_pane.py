@@ -40,6 +40,19 @@ import tty
 from pathlib import Path
 
 RULE_WIDTH = 178
+#: The box frame as the shipped build actually draws it, captured with
+#: `tmux capture-pane -p` from the live coordinator pane on 2026-09-05.
+#:
+#: ⚠️ READ FROM A CAPTURE RATHER THAN TYPED OUT, AND THAT IS THE POINT. This
+#: fixture used to draw `"-" * RULE_WIDTH` -- exactly what the relay's detector
+#: matched and exactly what the coordinator had stopped drawing. The detection
+#: was dead in production while this suite stayed green, because the fixture and
+#: the detector agreed with each other and neither agreed with reality. A frame
+#: replayed from real captured output cannot drift that way silently: refreshing
+#: it means re-capturing, and a re-capture that changes shape shows up here.
+CAPTURE = Path(__file__).resolve().parent / "data/captured-orc-composer.txt"
+#: What the shipped build shows in an EMPTY box; the relay treats it as empty.
+PLACEHOLDER = "Type / for commands"
 ENTER = "\r"
 CTRL_J = "\n"
 CTRL_U = "\x15"
@@ -51,6 +64,16 @@ def parse_args() -> argparse.Namespace:
     # Named --db because that is the flag the relay parses out of
     # `pane_start_command` to decide which coordinator it is looking at.
     parser.add_argument("--db", default="faketest")
+    parser.add_argument(
+        "--layout",
+        choices=("ascii", "box"),
+        default="ascii",
+        help=(
+            "which composer rendering to draw. `box` replays the frame captured "
+            "from the real coordinator (data/captured-orc-composer.txt); `ascii` "
+            "is the older hyphen-rule form. BOTH are exercised by the suite."
+        ),
+    )
     parser.add_argument(
         "--seed-transcript",
         type=Path,
@@ -100,25 +123,43 @@ class FakeOrcPane:
         self.pending: list[str] = []
 
     def render(self) -> str:
-        rule = "-" * RULE_WIDTH
         lines = ["\x1b[2J\x1b[H"]
         lines.extend(f"[user]\n{entry}" for entry in self.transcript[-10:])
         if self.pending:
             lines.append(f"[queued] {len(self.pending)} pending")
             lines.extend(f"> {entry}" for entry in self.pending)
-        lines.append(
-            f"[{self.args.state}] Enter: submit • Esc: cancel • "
-            "Ctrl+G: pause • Ctrl+T: inbox"
+        lines.extend(
+            self._box_composer() if self.args.layout == "box" else self._ascii_composer()
         )
-        lines.append(rule)
-        draft_lines = self.draft.split("\n") if self.draft else [""]
-        lines.append(f"› {draft_lines[0]}".rstrip())
-        lines.extend(draft_lines[1:])
-        lines.append(rule)
         lines.append(f"Session: {self.args.session_name} (fake-inert)  |  Ctx: 0%")
         lines.append("Agents: total=0 busy=0  |  Workflows: 0")
         lines.append(f"DB: {self.args.db}  |  Tasks: 0/0  |  Ready: 0")
         return "\r\n".join(lines) + "\r\n"
+
+    def _ascii_composer(self) -> list[str]:
+        rule = "-" * RULE_WIDTH
+        draft_lines = self.draft.split("\n") if self.draft else [""]
+        return [
+            f"[{self.args.state}] Enter: submit • Esc: cancel • "
+            "Ctrl+G: pause • Ctrl+T: inbox",
+            rule,
+            f"› {draft_lines[0]}".rstrip(),
+            *draft_lines[1:],
+            rule,
+        ]
+
+    def _box_composer(self) -> list[str]:
+        """The captured frame, with only the body varying as a real one does.
+
+        The opening and closing lines are replayed verbatim from the capture --
+        they are the part the relay's detection keys on. The build puts the key
+        hints in the box title rather than on a line above, so there is no
+        separately parseable readiness marker here, and it renders no prompt
+        glyph at all; an empty box shows the placeholder instead.
+        """
+        frame = CAPTURE.read_text(encoding="utf-8").splitlines()
+        body = self.draft.split("\n") if self.draft else [PLACEHOLDER]
+        return [frame[0], *(f"\u2502  {line}".rstrip() for line in body), frame[-1]]
 
     def submit(self) -> None:
         if self.args.queue_submissions:
