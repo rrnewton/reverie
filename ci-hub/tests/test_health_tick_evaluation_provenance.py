@@ -584,7 +584,7 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
             publisher,
         )
         self.assertIn(
-            '"$DEV_HERMIT_OPERATIONAL_TOOL"\n    --run-current-tool', publisher
+            '"$OPERATIONAL_TOOL"\n    --run-current-tool', publisher
         )
         self.assertIn(
             '--tool-parent-sha "$DEV_HERMIT_TOOL_PARENT_SHA"', publisher

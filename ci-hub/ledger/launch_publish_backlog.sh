@@ -58,12 +58,28 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 # is guaranteed to fail at the push: a silent absence is the exact defect this
 # comment exists to explain.
 if [[ ${LEDGER_PUBLISH_GH_BIN+x} ]]; then
-  GH_BIN=$LEDGER_PUBLISH_GH_BIN
+  GH_CANDIDATES=("$LEDGER_PUBLISH_GH_BIN")
 else
-  GH_BIN=$(command -v gh 2>/dev/null || true)
+  # The user manager's PATH is not the login-shell PATH. In particular, the
+  # production host keeps gh in $HOME/bin while systemd --user omits that
+  # directory. Resolve the known per-user locations explicitly before falling
+  # back to PATH, then pass the selected directory to the transient unit.
+  GH_CANDIDATES=(
+    "$HOME/bin/gh"
+    "${FLEET_REAL_GH:-}"
+    "$(command -v gh 2>/dev/null || true)"
+    "$HOME/.local/libexec/dev-hermit/gh"
+  )
 fi
+GH_BIN=
+for candidate in "${GH_CANDIDATES[@]}"; do
+  if [[ -n $candidate && -f $candidate && -x $candidate ]]; then
+    GH_BIN=$candidate
+    break
+  fi
+done
 if [[ -z $GH_BIN ]]; then
-  echo "state=refused summary=gh not found on PATH; a detached sweep would fail at the push. Not launched; spool retained." \
+  echo "state=refused summary=gh not found in the configured or per-user locations; a detached sweep would fail at the push. Not launched; spool retained." \
     | tee -a "$LOG" 2>/dev/null || true
   exit 0
 fi
@@ -85,16 +101,23 @@ UNIT_PATH="$(dirname -- "$GH_BIN"):${PATH}"
 # falling back to its short-lived root would recreate the silent stall.
 declare -a PUBLISH_COMMAND
 PUBLISH_WORKING_DIRECTORY=$TOOL_ROOT
-if [[ -n ${DEV_HERMIT_OPERATIONAL_TOOL:-} || -n ${DEV_HERMIT_TOOL_PARENT_SHA:-} ]]; then
-  if [[ -z ${DEV_HERMIT_OPERATIONAL_TOOL:-} || \
-        ! -x ${DEV_HERMIT_OPERATIONAL_TOOL:-} || \
+OPERATIONAL_TOOL=${DEV_HERMIT_OPERATIONAL_TOOL:-}
+if [[ -z $OPERATIONAL_TOOL && -n ${DEV_HERMIT_TOOL_PARENT_SHA:-} ]]; then
+  installed_operational_tool=$HOME/.local/libexec/dev-hermit/operational-tool
+  if [[ ! -L $installed_operational_tool && -f $installed_operational_tool && \
+        -x $installed_operational_tool ]]; then
+    OPERATIONAL_TOOL=$installed_operational_tool
+  fi
+fi
+if [[ -n $OPERATIONAL_TOOL || -n ${DEV_HERMIT_TOOL_PARENT_SHA:-} ]]; then
+  if [[ -z $OPERATIONAL_TOOL || ! -x $OPERATIONAL_TOOL || \
         ! ${DEV_HERMIT_TOOL_PARENT_SHA:-} =~ ^[0-9a-f]{40}$ ]]; then
     echo "state=refused summary=incomplete operational-tool handoff; publish sweep not launched; spool retained." \
       | tee -a "$LOG" 2>/dev/null || true
     exit 0
   fi
   PUBLISH_COMMAND=(
-    "$DEV_HERMIT_OPERATIONAL_TOOL"
+    "$OPERATIONAL_TOOL"
     --run-current-tool
     --state-root "$STATE_ROOT"
   )

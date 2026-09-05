@@ -56,6 +56,8 @@ exit "${SYSTEMD_RUN_RC:-0}"
 STUB
 chmod +x "$work/bin/systemd-run"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$work/ghdir/gh"; chmod +x "$work/ghdir/gh"
+mkdir -p "$work/home/bin"
+cp "$work/ghdir/gh" "$work/home/bin/gh"
 # `systemctl` must exist and report the unit inactive, or the launcher short-circuits.
 printf '#!/usr/bin/env bash\nexit 1\n' > "$work/bin/systemctl"; chmod +x "$work/bin/systemctl"
 
@@ -82,6 +84,31 @@ run_operational_launcher() { # script -> records the detached exact-revision re-
     bash "$script" > "$work/out" 2>&1
 }
 
+run_installed_operational_launcher() { # script -> parent SHA plus installed stable bootstrap
+  local script=$1
+  : > "$work/argv"
+  mkdir -p "$work/home/.local/libexec/dev-hermit"
+  cp "$work/operational-tool" "$work/home/.local/libexec/dev-hermit/operational-tool"
+  SYSTEMD_RUN_ARGV_SINK="$work/argv" \
+  DEV_HERMIT_PARENT="$state_root" \
+  DEV_HERMIT_TOOL_PARENT_SHA=0123456789abcdef0123456789abcdef01234567 \
+  DEV_HERMIT_TOOL_CACHE="$work/tool-cache" \
+  LEDGER_PUBLISH_GH_BIN="$work/ghdir/gh" \
+  HOME="$work/home" \
+    PATH="$work/bin:$work/ghdir:/usr/bin:/bin" \
+    bash "$script" > "$work/out" 2>&1
+}
+
+run_home_gh_launcher() { # script -> PATH omits gh; only $HOME/bin supplies it
+  local script=$1
+  : > "$work/argv"
+  SYSTEMD_RUN_ARGV_SINK="$work/argv" \
+  DEV_HERMIT_PARENT="$state_root" \
+  HOME="$work/home" \
+    PATH="$work/bin:/usr/bin:/bin" \
+    bash "$script" > "$work/out" 2>&1
+}
+
 echo "== FIXED launcher, gh present =="
 run_launcher "$launcher" "$work/ghdir"
 check "launch reported"                 "state=launched"                       "$work/out"
@@ -95,6 +122,11 @@ check "state root is explicit"          "--setenv=DEV_HERMIT_PARENT=$state_root"
 check "tool root is explicit"           "--setenv=DEV_HERMIT_TOOL_ROOT=$tool_root" "$work/argv"
 check "publisher code comes from tool"  "$tool_root/ci-hub/ledger/publish_backlog.py" "$work/argv"
 
+echo "== FIXED launcher, gh only in HOME/bin outside systemd-manager PATH =="
+run_home_gh_launcher "$launcher"
+check "home gh launch reported"          "state=launched"                       "$work/out"
+check "home gh directory handed to unit" "$work/home/bin"                       "$work/argv"
+
 echo "== FIXED launcher, detached health-tick handoff =="
 printf '#!/usr/bin/env bash\nexit 0\n' > "$work/operational-tool"
 chmod +x "$work/operational-tool"
@@ -107,6 +139,12 @@ check "configured cache retained"         "--cache-root"                        
 check "publisher selected relatively"     "ci-hub/ledger/publish_backlog.py"      "$work/argv"
 check "stable working directory"          "--working-directory=$state_root"       "$work/argv"
 check_absent "private tool root not lent" "$tool_root/ci-hub/ledger/publish_backlog.py" "$work/argv"
+
+echo "== FIXED launcher, health tick supplies SHA and installed stable bootstrap =="
+run_installed_operational_launcher "$launcher"
+check "installed bootstrap launch reported" "state=launched"                       "$work/out"
+check "installed bootstrap runs"           "$work/home/.local/libexec/dev-hermit/operational-tool" "$work/argv"
+check "installed bootstrap keeps SHA"      "0123456789abcdef0123456789abcdef01234567" "$work/argv"
 
 echo "== FIXED launcher, incomplete detached handoff: refuse and retain =="
 : > "$work/argv"
@@ -139,6 +177,57 @@ cp "$launcher" "$baseline"
 python3 - "$baseline" <<'PY'
 import re, sys, pathlib
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
+new_lookup = '''if [[ ${LEDGER_PUBLISH_GH_BIN+x} ]]; then
+  GH_CANDIDATES=("$LEDGER_PUBLISH_GH_BIN")
+else
+  # The user manager's PATH is not the login-shell PATH. In particular, the
+  # production host keeps gh in $HOME/bin while systemd --user omits that
+  # directory. Resolve the known per-user locations explicitly before falling
+  # back to PATH, then pass the selected directory to the transient unit.
+  GH_CANDIDATES=(
+    "$HOME/bin/gh"
+    "${FLEET_REAL_GH:-}"
+    "$(command -v gh 2>/dev/null || true)"
+    "$HOME/.local/libexec/dev-hermit/gh"
+  )
+fi
+GH_BIN=
+for candidate in "${GH_CANDIDATES[@]}"; do
+  if [[ -n $candidate && -f $candidate && -x $candidate ]]; then
+    GH_BIN=$candidate
+    break
+  fi
+done
+'''
+old_lookup = '''if [[ ${LEDGER_PUBLISH_GH_BIN+x} ]]; then
+  GH_BIN=$LEDGER_PUBLISH_GH_BIN
+else
+  GH_BIN=$(command -v gh 2>/dev/null || true)
+fi
+'''
+assert new_lookup in s, "baseline reconstruction lost the gh lookup anchor"
+s = s.replace(new_lookup, old_lookup, 1)
+new_operational = '''OPERATIONAL_TOOL=${DEV_HERMIT_OPERATIONAL_TOOL:-}
+if [[ -z $OPERATIONAL_TOOL && -n ${DEV_HERMIT_TOOL_PARENT_SHA:-} ]]; then
+  installed_operational_tool=$HOME/.local/libexec/dev-hermit/operational-tool
+  if [[ ! -L $installed_operational_tool && -f $installed_operational_tool && \\
+        -x $installed_operational_tool ]]; then
+    OPERATIONAL_TOOL=$installed_operational_tool
+  fi
+fi
+if [[ -n $OPERATIONAL_TOOL || -n ${DEV_HERMIT_TOOL_PARENT_SHA:-} ]]; then
+  if [[ -z $OPERATIONAL_TOOL || ! -x $OPERATIONAL_TOOL || \\
+        ! ${DEV_HERMIT_TOOL_PARENT_SHA:-} =~ ^[0-9a-f]{40}$ ]]; then
+'''
+old_operational = '''if [[ -n ${DEV_HERMIT_OPERATIONAL_TOOL:-} || -n ${DEV_HERMIT_TOOL_PARENT_SHA:-} ]]; then
+  if [[ -z ${DEV_HERMIT_OPERATIONAL_TOOL:-} || \\
+        ! -x ${DEV_HERMIT_OPERATIONAL_TOOL:-} || \\
+        ! ${DEV_HERMIT_TOOL_PARENT_SHA:-} =~ ^[0-9a-f]{40}$ ]]; then
+'''
+assert new_operational in s, "baseline reconstruction lost the operational lookup anchor"
+s = s.replace(new_operational, old_operational, 1)
+s = s.replace('    "$OPERATIONAL_TOOL"\n    --run-current-tool',
+              '    "$DEV_HERMIT_OPERATIONAL_TOOL"\n    --run-current-tool', 1)
 for line in ('    --property="StandardOutput=append:$LOG" \\\n',
              '    --property="StandardError=append:$LOG" \\\n',
              '    --working-directory="$PUBLISH_WORKING_DIRECTORY" \\\n',
@@ -155,6 +244,12 @@ check_absent "baseline hands NO PATH"         "--setenv=PATH="    "$work/argv"
 check_absent "baseline captures NO stdout"    "StandardOutput="   "$work/argv"
 check_absent "baseline captures NO stderr"    "StandardError="    "$work/argv"
 check_absent "baseline carries NO state root" "DEV_HERMIT_PARENT" "$work/argv"
+run_home_gh_launcher "$baseline"
+check        "baseline cannot find HOME gh"   "state=refused"     "$work/out"
+check_absent "baseline does not launch HOME gh" "--unit="          "$work/argv"
+run_installed_operational_launcher "$baseline"
+check        "baseline cannot recover installed bootstrap" "state=refused" "$work/out"
+check_absent "baseline does not launch recovered bootstrap" "--unit="       "$work/argv"
 
 echo
 if [[ $fails -eq 0 ]]; then
