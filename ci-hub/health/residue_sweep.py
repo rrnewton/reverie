@@ -99,7 +99,9 @@ class Residue:
         return self.disposition == "route"
 
 
-def run_checked(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+def run_checked(
+    argv: Sequence[str], db: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run a child bound to the resolved TaskGraph, or refuse.
 
     Every child here reaches the graph through `tg` -- directly, or inside
@@ -111,7 +113,7 @@ def run_checked(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
     """
 
     try:
-        env = taskgraph_db.child_env(taskgraph_db.resolve())
+        env = taskgraph_db.child_env(taskgraph_db.resolve(db))
     except taskgraph_db.TaskGraphUnavailable as error:
         raise SweepUnavailable(str(error)) from error
     return bounded_capture.capture(
@@ -121,8 +123,8 @@ def run_checked(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def read_live_fleet() -> tuple[set[str], list[Residue]]:
-    result = run_checked((str(ORPHAN_DETECTOR), "--gate"))
+def read_live_fleet(db: Path | None = None) -> tuple[set[str], list[Residue]]:
+    result = run_checked((str(ORPHAN_DETECTOR), "--gate"), db)
     output = result.stdout + result.stderr
     if result.returncode not in (0, 1):
         raise SweepUnavailable(
@@ -426,6 +428,11 @@ def guarded_dead_owner_slots(
         raise SweepUnavailable("worktree-state.json slots is not an object")
 
     residues: list[Residue] = []
+    authority_source = (
+        "wrkslots-owner"
+        if registry.get("_source") == "wrkslots"
+        else "slot-owner-sidecar"
+    )
     for slot, raw in sorted(raw_slots.items()):
         if not isinstance(raw, dict) or raw.get("status") not in {"active", "held"}:
             continue
@@ -462,7 +469,7 @@ def guarded_dead_owner_slots(
                 evidence=(
                     f"owner={agent} tasks={task or 'none'} "
                     f"owner_identity={pid}@{start_ticks} boot_id={boot_id} "
-                    f"authority=slot-owner-sidecar authority_state=dead "
+                    f"authority={authority_source} authority_state=dead "
                     "live_processes_under_slot=0"
                 ),
                 route_task=TASK_ID,

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Measure worktree slot capacity, identity-bound ownership, and disk residue.
 
-THREE DIFFERENT QUANTITIES.  The active-slot cap is an aggregate registry count
-against Hard Invariant 13.  A dead-owner finding is an exact process-identity
-verdict from validate-lock's guarded sidecar.  Disk residue is a per-directory
-size/occupancy/idleness measurement.  None substitutes for another: ninety-two
-fresh slots violate a cap of twelve even though no individual slot is old.
+THREE DIFFERENT QUANTITIES.  The active-slot cap is an aggregate count from the
+current machine's wrkslots registry against Hard Invariant 13.  A dead-owner
+finding is an exact process-identity verdict from that row's recorded owner.
+Disk residue is a per-directory size/occupancy/idleness measurement.  None
+substitutes for another: ninety-two fresh slots violate a cap of twelve even
+though no individual slot is old.
 
 WHAT THIS STILL REFUSES.  Its predecessor guessed agent death from a registry
 name missing in an ORC fleet snapshot.  On 2026-08-08 that disagreement falsely
@@ -35,7 +36,7 @@ tool deliberately gives the coordinator no mechanism to skip that step.
 THREE MEASUREMENT HONESTIES, because a number without them is not evidence:
 
 1. OCCUPANCY IS SIX /proc SIGNALS -- cwd, exe, root, fd, maps, map_files -- the
-   exact set `release-worktree.rs::live_process_users` refuses on. None can be
+   exact set wrkslots removal refuses on. None can be
    forged by editing a file and nobody can forget to update them. This gate is
    NOT the authority on release; it mirrors the authority's predicate so the two
    cannot disagree, and it is allowed to be stricter-or-equal, never looser.
@@ -82,6 +83,7 @@ import residue_sweep
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 from worktree_registry import (  # noqa: E402
     RegistrySchemaError,
+    read_active_wrkslots_registry,
     read_registry as read_typed_registry,
 )
 
@@ -130,12 +132,40 @@ def slots_on_disk(root: Path) -> set[str]:
         raise ResidueUnavailable(f"cannot enumerate {wt}: {exc}") from exc
 
 
-def read_registry(path: Path) -> dict[str, object]:
+def read_registry(root: Path, path: Path | None = None) -> dict[str, object]:
+    """Adapt current wrkslots rows to this gate's narrow slot view."""
+
+    # Disposable pre-wrkslots fixtures retain the old schema so the existing
+    # owner-safety brackets keep exercising their original boundary. Production
+    # has .wrkslots.yml and can never take this compatibility branch.
+    if path is not None and (
+        path.name == "worktree-state.json" or not (root / ".wrkslots.yml").is_file()
+    ):
+        try:
+            return read_typed_registry(path)
+        except RegistrySchemaError as exc:
+            raise ResidueUnavailable(f"cannot read slot registry {path}: {exc}") from exc
     try:
-        value = read_typed_registry(path)
+        active = read_active_wrkslots_registry(root, path)
     except RegistrySchemaError as exc:
-        raise ResidueUnavailable(f"cannot read slot registry {path}: {exc}") from exc
-    return value
+        raise ResidueUnavailable(f"cannot read slot registry: {exc}") from exc
+    return {
+        "_source": "wrkslots",
+        "slots": {
+            name: {
+                "status": "active",
+                "task": row.get("task"),
+                "agents": (
+                    [{"name": row["agent"], "read_only": False}]
+                    if isinstance(row.get("agent"), str) and row["agent"]
+                    else []
+                ),
+                "wrkslots_owner": row.get("owner"),
+            }
+            for name, row in active.items()
+            if row.get("slot_type", "agent") == "agent"
+        },
+    }
 
 
 def active_slot_names(registry: dict[str, object]) -> set[str]:
@@ -167,6 +197,173 @@ def quarantined_slot_names(registry: dict[str, object]) -> set[str]:
         if isinstance(raw, dict)
         and raw.get("status") in {"lease-quarantined", "quarantined-retired"}
     }
+
+
+def _machine_id() -> str:
+    failures: list[str] = []
+    for path in (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id")):
+        try:
+            value = path.read_text(encoding="ascii").strip()
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeError) as exc:
+            failures.append(f"{path}: {exc}")
+            continue
+        if value:
+            return value
+        failures.append(f"{path}: empty")
+    detail = f" ({'; '.join(failures)})" if failures else ""
+    raise ResidueUnavailable(f"cannot establish the stable machine identity{detail}")
+
+
+def _owner_domain_is_empty(
+    cgroup_path: str, cgroup_root: Path = Path("/sys/fs/cgroup")
+) -> bool | None:
+    path = cgroup_root / cgroup_path.lstrip("/") / "cgroup.procs"
+    try:
+        return not any(line.strip() for line in path.read_text().splitlines())
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return None
+
+
+def _wrkslots_owner_authority(
+    slot: str,
+    row: dict[str, object],
+    current_host: str,
+    current_boot: str,
+    proc_root: Path = Path("/proc"),
+    cgroup_root: Path = Path("/sys/fs/cgroup"),
+) -> dict[str, object]:
+    """Classify one exact wrkslots owner process without inferring from its name."""
+
+    agents = row.get("agents")
+    agent = None
+    if isinstance(agents, list) and len(agents) == 1 and isinstance(agents[0], dict):
+        candidate = agents[0].get("name")
+        if isinstance(candidate, str) and candidate:
+            agent = candidate
+    owner = row.get("wrkslots_owner")
+    if not isinstance(owner, dict) or agent is None:
+        return {
+            "schema_version": 1,
+            "state": "indeterminate",
+            "slot": slot,
+            "agent": agent,
+            "owner_identity": None,
+        }
+    pid = owner.get("pid")
+    start_ticks = owner.get("start_ticks")
+    boot_id = owner.get("boot_id")
+    host_id = owner.get("host_id")
+    cgroup_path = owner.get("cgroup_path")
+    if (
+        type(pid) is not int
+        or pid <= 0
+        or type(start_ticks) is not int
+        or start_ticks <= 0
+        or not isinstance(boot_id, str)
+        or not boot_id
+        or not isinstance(host_id, str)
+        or not host_id
+        or not isinstance(cgroup_path, str)
+        or not cgroup_path.startswith("/")
+    ):
+        return {
+            "schema_version": 1,
+            "state": "indeterminate",
+            "slot": slot,
+            "agent": agent,
+            "owner_identity": None,
+        }
+    identity = {
+        "source": "wrkslots-owner",
+        "supervisor_pid": pid,
+        "boot_id": boot_id,
+        "start_ticks": start_ticks,
+    }
+    state = "indeterminate"
+    if host_id == current_host:
+        if boot_id != current_boot:
+            empty = _owner_domain_is_empty(cgroup_path, cgroup_root)
+            state = "dead" if empty is True else "indeterminate"
+        else:
+            try:
+                raw = (proc_root / str(pid) / "stat").read_text(encoding="utf-8")
+                close = raw.rfind(") ")
+                fields = raw[close + 2 :].split() if close >= 0 else []
+                process_state = fields[0]
+                observed_ticks = int(fields[19])
+            except FileNotFoundError:
+                empty = _owner_domain_is_empty(cgroup_path, cgroup_root)
+                state = "dead" if empty is True else "indeterminate"
+            except (OSError, UnicodeError, IndexError, ValueError):
+                state = "indeterminate"
+            else:
+                if observed_ticks == start_ticks and process_state not in {"Z", "X"}:
+                    state = "alive"
+                else:
+                    empty = _owner_domain_is_empty(cgroup_path, cgroup_root)
+                    state = "dead" if empty is True else "indeterminate"
+    return {
+        "schema_version": 1,
+        "state": state,
+        "slot": slot,
+        "agent": agent,
+        "owner_identity": identity,
+    }
+
+
+def wrkslots_owner_authorities(
+    registry: dict[str, object], fixture: Path | None = None
+) -> dict[str, dict[str, object]]:
+    raw_slots = registry.get("slots")
+    if not isinstance(raw_slots, dict):
+        raise ResidueUnavailable("slot registry slots is not an object")
+    selected = sorted(
+        str(slot)
+        for slot, row in raw_slots.items()
+        if isinstance(row, dict) and row.get("status") == "active"
+    )
+    if fixture is not None:
+        try:
+            document = json.loads(fixture.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ResidueUnavailable(f"cannot read owner-authority fixture {fixture}: {exc}") from exc
+        authorities = document.get("authorities") if isinstance(document, dict) else None
+        if (
+            not isinstance(document, dict)
+            or document.get("schema_version") != 1
+            or not isinstance(authorities, dict)
+        ):
+            raise ResidueUnavailable("guarded owner authority has unsupported schema")
+    else:
+        try:
+            current_boot = Path("/proc/sys/kernel/random/boot_id").read_text(
+                encoding="ascii"
+            ).strip()
+        except (OSError, UnicodeError) as exc:
+            raise ResidueUnavailable(f"cannot read the machine boot id: {exc}") from exc
+        if not current_boot:
+            raise ResidueUnavailable("machine boot id is empty")
+        current_host = _machine_id()
+        authorities = {
+            slot: _wrkslots_owner_authority(
+                slot, raw_slots[slot], current_host, current_boot
+            )
+            for slot in selected
+        }
+    for slot in selected:
+        authority = authorities.get(slot)
+        if (
+            not isinstance(authority, dict)
+            or authority.get("schema_version") != 1
+            or authority.get("state") not in {"alive", "dead", "indeterminate"}
+            or authority.get("slot") != slot
+        ):
+            raise ResidueUnavailable(f"slot owner authority for {slot} has invalid shape")
+    return {slot: authorities[slot] for slot in selected}
 
 
 @dataclass
@@ -572,13 +769,13 @@ def suppress_undecided_owners(
         if result.slot in live_owner_slots:
             result.reclaimable = False
             result.reason = (
-                "slot-owner-sidecar registered owner is alive; "
+                "registered owner is alive; "
                 "idle time cannot qualify this slot"
             )
         elif result.slot in unassessable_owner_slots:
             result.reclaimable = False
             result.reason = (
-                "owner liveness is INDETERMINATE and cannot be assessed; "
+                "registered owner liveness is INDETERMINATE and cannot be assessed; "
                 "idle time cannot qualify this slot"
             )
 
@@ -761,8 +958,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-measure", action="store_true",
                    help="skip size and filesystem-headroom measurement")
     p.add_argument("--state", default=None, help=f"state file (default {DEFAULT_STATE})")
-    p.add_argument("--registry", default=None,
-                   help="slot registry (default <root>/worktree-state.json)")
+    p.add_argument(
+        "--registry", default=None,
+        help="active wrkslots registry (default configured ACTIVE.<machine>.json)")
     p.add_argument(
         "--active-slot-cap", type=int,
         default=int(os.environ.get("DEV_HERMIT_ACTIVE_SLOT_CAP", DEFAULT_ACTIVE_SLOT_CAP)),
@@ -788,7 +986,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         root = repo_root(Path(args.root) if args.root else None)
         state_path = Path(args.state) if args.state else root / DEFAULT_STATE
-        registry_path = Path(args.registry) if args.registry else root / "worktree-state.json"
+        registry_path = Path(args.registry) if args.registry else None
         # ``--root`` is the existing disposable-fixture interface used by the
         # disk-only tests.  Such a fixture has neither the parent registry nor
         # ci-hub; preserve that intentionally narrow mode.  Production has the
@@ -798,26 +996,34 @@ def main(argv: list[str] | None = None) -> int:
             raise ResidueUnavailable(
                 "--test-owner-authority-json is restricted to a disposable --root fixture"
             )
-        if disk_only_fixture and args.registry is None and not registry_path.exists():
+        if disk_only_fixture and args.registry is None and not (root / ".wrkslots.yml").exists():
             registry: dict[str, object] = {"slots": {}}
         else:
-            registry = read_registry(registry_path)
+            registry = read_registry(root, registry_path)
         active_slots = active_slot_names(registry)
         quarantined_slots = quarantined_slot_names(registry)
         active_count = len(active_slots)
         active_excess = max(0, active_count - args.active_slot_cap)
         try:
-            if disk_only_fixture and args.test_owner_authority_json is None:
+            if (
+                disk_only_fixture
+                and args.test_owner_authority_json is None
+                and registry.get("_source") != "wrkslots"
+            ):
                 authorities: dict[str, dict[str, object]] = {}
             else:
-                authorities = residue_sweep.read_guarded_owner_authorities(
-                    registry,
-                    root,
+                fixture = (
                     Path(args.test_owner_authority_json)
                     if args.test_owner_authority_json
-                    else None,
+                    else None
                 )
-        except residue_sweep.SweepUnavailable as exc:
+                if registry.get("_source") == "wrkslots":
+                    authorities = wrkslots_owner_authorities(registry, fixture)
+                else:
+                    authorities = residue_sweep.read_guarded_owner_authorities(
+                        registry, root, fixture
+                    )
+        except (residue_sweep.SweepUnavailable, ResidueUnavailable) as exc:
             # Owner liveness is independent of aggregate capacity. If its
             # guarded snapshot cannot complete within its internal bound, keep
             # the known cap breach visible rather than letting the outer 30s
@@ -942,7 +1148,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if dead_owner:
         findings.append(
-            f"{len(dead_owner)} slot(s) have a sidecar-bound owner proven dead "
+            f"{len(dead_owner)} slot(s) have a registered owner proven dead "
             f"and no live process using the slot: "
             + ", ".join(item.key for item in dead_owner)
         )
@@ -955,7 +1161,7 @@ def main(argv: list[str] | None = None) -> int:
         findings.append(
             f"{len(unassessable_owner_slots)} held slot(s) CANNOT BE ASSESSED: "
             f"the guarded authority answers indeterminate, so this gate cannot "
-            f"name them reclaimable and release-worktree.rs will refuse them; "
+            f"name them reclaimable and the removal tooling will refuse them; "
             f"they are neither usable nor recoverable until their owner evidence "
             f"is restored by the allocator: "
             + ", ".join(sorted(unassessable_owner_slots))

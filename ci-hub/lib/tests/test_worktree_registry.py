@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,6 +16,20 @@ import worktree_registry
 
 
 class WorktreeRegistryTest(unittest.TestCase):
+    def write_wrkslots_registry(
+        self, root: Path, slots: list[dict[str, object]]
+    ) -> Path:
+        (root / ".wrkslots.yml").write_text(
+            json.dumps({"machine": "testhost"}), encoding="utf-8"
+        )
+        control = root / "worktrees"
+        control.mkdir()
+        path = control / "ACTIVE.testhost.json"
+        path.write_text(json.dumps({
+            "schema": 2, "machine": "testhost", "revision": 1, "slots": slots,
+        }), encoding="utf-8")
+        return path
+
     def test_passes_exact_bytes_to_schema_checker(self) -> None:
         raw = b'{"version":3,"updated":"now","slots":{}}\n'
         completed = subprocess.CompletedProcess([], 0, b"", b"")
@@ -86,6 +101,34 @@ class WorktreeRegistryTest(unittest.TestCase):
                     b'{"version":3,"updated":"now","slots":{"slot-a":{}}}',
                     include_owner_sidecars=True,
                 )
+
+    def test_active_wrkslots_registry_is_keyed_by_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.write_wrkslots_registry(root, [
+                {"slot": "one", "machine": "testhost"},
+                {"slot": "two", "machine": "testhost"},
+            ])
+            rows = worktree_registry.read_active_wrkslots_registry(root)
+        self.assertEqual(set(rows), {"one", "two"})
+
+    def test_empty_active_wrkslots_registry_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.write_wrkslots_registry(root, [])
+            with self.assertRaisesRegex(
+                worktree_registry.RegistrySchemaError, "unverifiable rather than clean"
+            ):
+                worktree_registry.read_active_wrkslots_registry(root)
+
+    def test_missing_machine_binding_refuses_without_globbing(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / ".wrkslots.yml").write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(
+                worktree_registry.RegistrySchemaError, "records no machine shard"
+            ):
+                worktree_registry.read_active_wrkslots_registry(root)
 
 
 if __name__ == "__main__":

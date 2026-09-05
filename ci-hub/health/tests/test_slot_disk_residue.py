@@ -616,6 +616,102 @@ class TickHubScopeTest(unittest.TestCase):
         self.assertNotIn("--refresh-hours", command)
         self.assertNotIn("--du-timeout", command)
 
+    def test_tick_binds_current_registry_and_taskgraph(self) -> None:
+        commands = self._active_gate_cmds()
+        parity = next(cmd for cmd in commands if "slot_agent_parity.py" in cmd)
+        residue = next(cmd for cmd in commands if "slot_disk_residue.py" in cmd)
+        self.assertIn('--db "$HOME/.tg/hermit2.db"', parity)
+        self.assertNotIn("worktree-state.json", residue)
+
+
+class WrkslotsRegistryInputTest(unittest.TestCase):
+    @staticmethod
+    def write_registry(root: Path, slots: list[dict[str, object]]) -> None:
+        (root / ".wrkslots.yml").write_text(
+            json.dumps({"machine": "testhost"}), encoding="utf-8")
+        (root / "worktrees" / "ACTIVE.testhost.json").write_text(
+            json.dumps({
+                "schema": 2, "machine": "testhost", "revision": 1, "slots": slots,
+            }), encoding="utf-8")
+
+    def test_current_active_registry_produces_a_real_slot_count(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = make_root(Path(raw), ["working"])
+            self.write_registry(root, [{
+                "slot": "working", "machine": "testhost", "agent": "worker",
+                "task": "task", "owner": None,
+            }])
+            proc = subprocess.run(
+                [sys.executable,
+                 str(REPO / "ci-hub/health/slot_disk_residue.py"),
+                 "--root", str(root), "--state", str(root / "state.json"),
+                 "--gate", "--no-measure"],
+                capture_output=True, text=True, timeout=10)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("active_slots=1", proc.stdout)
+        self.assertIn("unassessable_owner_slots=1", proc.stdout)
+        self.assertNotIn("no producer", proc.stdout)
+
+    def test_missing_active_registry_refuses_instead_of_reporting_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = make_root(Path(raw), ["working"])
+            (root / ".wrkslots.yml").write_text(
+                json.dumps({"machine": "testhost"}), encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable,
+                 str(REPO / "ci-hub/health/slot_disk_residue.py"),
+                 "--root", str(root), "--state", str(root / "state.json"),
+                 "--gate", "--no-measure"],
+                capture_output=True, text=True, timeout=10)
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn("state=unknown", proc.stdout)
+        self.assertNotIn("active_slots=0", proc.stdout)
+
+    def test_explicit_legacy_registry_keeps_the_no_producer_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = make_root(Path(raw), ["working"])
+            self.write_registry(root, [])
+            legacy = root / "worktree-state.json"
+            legacy.write_text(json.dumps(registry_document({
+                "working": registry_slot("working", status="active"),
+            })), encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable,
+                 str(REPO / "ci-hub/health/slot_disk_residue.py"),
+                 "--root", str(root), "--registry", str(legacy),
+                 "--gate", "--no-measure"],
+                capture_output=True, text=True, timeout=10)
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn("state=unknown", proc.stdout)
+        self.assertIn("has no producer in this project", proc.stdout)
+
+    def test_exact_wrkslots_owner_is_live_and_reused_pid_is_dead(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            proc_root = root / "proc"
+            cgroup_root = root / "cgroup"
+            (proc_root / "123").mkdir(parents=True)
+            fields = ["S", *("0" for _ in range(18)), "456"]
+            (proc_root / "123" / "stat").write_text(
+                f"123 (worker) {' '.join(fields)}\n", encoding="utf-8")
+            (cgroup_root / "owner").mkdir(parents=True)
+            (cgroup_root / "owner" / "cgroup.procs").write_text(
+                "", encoding="utf-8")
+            row = {
+                "agents": [{"name": "worker", "read_only": False}],
+                "wrkslots_owner": {
+                    "pid": 123, "start_ticks": 456, "boot_id": "boot",
+                    "host_id": "host", "cgroup_path": "/owner",
+                },
+            }
+            live = sdr._wrkslots_owner_authority(
+                "slot", row, "host", "boot", proc_root, cgroup_root)
+            row["wrkslots_owner"]["start_ticks"] = 999
+            dead = sdr._wrkslots_owner_authority(
+                "slot", row, "host", "boot", proc_root, cgroup_root)
+        self.assertEqual(live["state"], "alive")
+        self.assertEqual(dead["state"], "dead")
+
 
 class CapacityDenominatorTest(unittest.TestCase):
     def test_quarantine_stays_visible_beside_active_without_consuming_cap(self) -> None:

@@ -8,12 +8,35 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import residue_sweep
 
 
 class ResidueSweepTest(unittest.TestCase):
+    def test_live_fleet_passes_the_explicit_database_to_the_shared_resolver(self) -> None:
+        database = Path("/tmp/explicit-taskgraph.db")
+        completed = mock.Mock(returncode=0, stdout="live agents: worker\n", stderr="")
+        resolution = mock.sentinel.resolution
+        with mock.patch.object(
+            residue_sweep.taskgraph_db, "resolve", return_value=resolution
+        ) as resolve, mock.patch.object(
+            residue_sweep.taskgraph_db, "child_env", return_value={}
+        ), mock.patch.object(
+            residue_sweep.bounded_capture, "capture", return_value=completed
+        ):
+            live, _ = residue_sweep.read_live_fleet(database)
+        self.assertEqual(live, {"worker"})
+        resolve.assert_called_once_with(database)
+
+    def test_live_fleet_without_a_database_still_refuses(self) -> None:
+        with mock.patch.dict(residue_sweep.os.environ, {}, clear=True):
+            with self.assertRaisesRegex(
+                residue_sweep.SweepUnavailable, "no TaskGraph database bound"
+            ):
+                residue_sweep.read_live_fleet()
+
     def _owner_registry(self) -> dict[str, object]:
         return {
             "slots": {

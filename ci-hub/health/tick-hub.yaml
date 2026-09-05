@@ -119,7 +119,7 @@ reminders:
   - name: slot_agent_parity
     cadence_secs: 3600
     gate:
-      cmd: python3 ci-hub/health/slot_agent_parity.py --gate --root "$DEV_HERMIT_PARENT"
+      cmd: python3 ci-hub/health/slot_agent_parity.py --gate --root "$DEV_HERMIT_PARENT" --db "$HOME/.tg/hermit2.db"
       when: failure
       capture: true
     emit:
@@ -165,7 +165,7 @@ reminders:
       # over the complete current set, never a sum of cached per-slot values.
       # This deduplicates reflinks within the set and refuses an unavailable or
       # physically impossible result instead of printing an invented total.
-      cmd: python3 ci-hub/health/slot_disk_residue.py --gate --size-timeout 5 --root "$DEV_HERMIT_PARENT" --state "$DEV_HERMIT_PARENT/.tick-hub/slot-disk-residue-state.json" --registry "$DEV_HERMIT_PARENT/worktree-state.json"
+      cmd: python3 ci-hub/health/slot_disk_residue.py --gate --size-timeout 5 --root "$DEV_HERMIT_PARENT" --state "$DEV_HERMIT_PARENT/.tick-hub/slot-disk-residue-state.json"
       when: failure
       capture: true
     emit:

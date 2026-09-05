@@ -50,6 +50,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
 import residue_sweep  # noqa: E402
 import agent_snapshot as agent_snapshot_contract  # noqa: E402
+from worktree_registry import (  # noqa: E402
+    RegistrySchemaError,
+    read_active_wrkslots_registry,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 STATE_ROOT = Path(os.environ.get("DEV_HERMIT_PARENT", ROOT)).resolve()
@@ -97,61 +101,12 @@ class ParityUnavailable(Exception):
 # The live authority is the wrkslots registry, one file per machine shard. Its
 # ACTIVE file holds exactly the live rows -- finished ones move to ARCHIVED -- so
 # presence in it IS the active status the old schema spelled out in a field.
-WRKSLOTS_CONFIG = ".wrkslots.yml"
-WRKSLOTS_REGISTRY_DIR = "worktrees"
-
-
-def wrkslots_machine(root: Path) -> str:
-    """The configured machine shard, read rather than guessed.
-
-    Refusing here rather than globbing for any ACTIVE.*.json is deliberate: on a
-    host that has ever carried two shards, picking one by chance would report a
-    number for the wrong fleet, which is the failure this whole change is about.
-    """
-    override = os.environ.get("WRKSLOTS_MACHINE")
-    if override:
-        return override
-    path = root / WRKSLOTS_CONFIG
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ParityUnavailable(f"cannot read {path}: {exc}") from exc
-    machine = document.get("machine") if isinstance(document, dict) else None
-    if not isinstance(machine, str) or not machine:
-        raise ParityUnavailable(f"{path} records no machine shard")
-    return machine
-
-
 def read_slot_registry(root: Path) -> dict[str, dict]:
     """Live slot rows from the wrkslots registry, keyed by slot name."""
-
-    machine = wrkslots_machine(root)
-    path = root / WRKSLOTS_REGISTRY_DIR / f"ACTIVE.{machine}.json"
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ParityUnavailable(f"cannot read slot registry {path}: {exc}") from exc
-    if not isinstance(document, dict):
-        raise ParityUnavailable(f"slot registry {path} root is not an object")
-    rows = document.get("slots")
-    if not isinstance(rows, list):
-        raise ParityUnavailable(f"slot registry {path} slots is not a list")
-    active: dict[str, dict] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        name = row.get("slot")
-        if isinstance(name, str) and name:
-            active[name] = row
-    # An EMPTY registry is a refusal, not a clean bill of health. Zero rows and
-    # an unreadable registry produce the same verdict here for the same reason a
-    # zero-agent census does below: a denominator of zero computes zero orphans.
-    if not active:
-        raise ParityUnavailable(
-            f"slot registry {path} lists no slots; a fleet with no rows at all is "
-            "unverifiable rather than clean"
-        )
-    return active
+        return read_active_wrkslots_registry(root)
+    except RegistrySchemaError as exc:
+        raise ParityUnavailable(str(exc)) from exc
 
 
 def slot_directories(root: Path, active: dict[str, dict]) -> dict[str, Path]:
@@ -178,9 +133,9 @@ def slot_directories(root: Path, active: dict[str, dict]) -> dict[str, Path]:
     return directories
 
 
-def live_agents_from_fleet() -> set[str]:
+def live_agents_from_fleet(db: Path | None = None) -> set[str]:
     try:
-        live, _orphans = residue_sweep.read_live_fleet()
+        live, _orphans = residue_sweep.read_live_fleet(db)
     except residue_sweep.SweepUnavailable as exc:
         raise ParityUnavailable(f"live agent census unavailable: {exc}") from exc
     if not live:
@@ -355,6 +310,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--agent-snapshot", default=None)
     parser.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        help="TaskGraph database used by the live agent census",
+    )
+    parser.add_argument(
         "--max-source-age-secs",
         type=int,
         default=int(
@@ -379,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             live = live_agents_from_snapshot(snapshot, args.max_source_age_secs, time.time())
         else:
-            live = live_agents_from_fleet()
+            live = live_agents_from_fleet(args.db)
 
         state, summary, fields = evaluate(root, live, read_slot_registry(root))
     except ParityUnavailable as exc:
