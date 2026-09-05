@@ -15,6 +15,7 @@ use std::future::Future;
 use std::io;
 use std::io::Read;
 use std::os::fd::AsRawFd;
+use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
@@ -69,6 +70,7 @@ pub struct DbtRunner {
     drrun: PathBuf,
     client: PathBuf,
     client_arguments: Vec<OsString>,
+    diagnostic_file: Option<Arc<File>>,
     evidence: Option<Arc<EvidenceSession>>,
     evidence_log_level: DbtEvidenceLogLevel,
     summary: bool,
@@ -106,6 +108,7 @@ impl DbtRunner {
             drrun,
             client,
             client_arguments: Vec::new(),
+            diagnostic_file: None,
             evidence: None,
             evidence_log_level: DbtEvidenceLogLevel::Info,
             summary: false,
@@ -118,6 +121,24 @@ impl DbtRunner {
     pub fn summary(mut self, enabled: bool) -> Self {
         self.summary = enabled;
         self
+    }
+
+    /// Routes DBT client diagnostics to `file` instead of the launcher's standard error.
+    ///
+    /// The runner clones the open file handle, so the caller may close its handle
+    /// after this method returns. The file must be writable. When output capture is
+    /// requested, the returned [`Output::stderr`] then contains the guest's file
+    /// descriptor 2 stream on a successful `-quiet` DynamoRIO launch. A launcher or
+    /// DynamoRIO failure may still report through its own standard error before the
+    /// guest runs.
+    ///
+    /// When this option is not set, diagnostics retain their historical behavior and
+    /// share the launcher's standard error.
+    pub fn diagnostic_file(mut self, file: &File) -> io::Result<Self> {
+        let file = clone_diagnostic_fd(file.as_raw_fd())?;
+        require_writable_diagnostic_fd(file.as_raw_fd())?;
+        self.diagnostic_file = Some(Arc::new(file));
+        Ok(self)
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
@@ -861,14 +882,16 @@ impl DbtRunner {
             command.process_group(0);
         }
 
-        // SAFETY: personality(2) and dup2(2) are async-signal-safe. Process-group
-        // isolation is configured above through CommandExt::process_group; all
-        // settings survive drrun and guest execs.
+        let diagnostic_file = self.diagnostic_file.clone();
+        // SAFETY: personality(2), dup2(2), and fcntl(2) are async-signal-safe.
+        // Process-group isolation is configured above through
+        // CommandExt::process_group; all settings survive drrun and guest execs.
         unsafe {
-            command.pre_exec(|| {
-                if libc::dup2(libc::STDERR_FILENO, DIAGNOSTIC_FD) == -1 {
-                    return Err(io::Error::last_os_error());
-                }
+            command.pre_exec(move || {
+                let diagnostic_source = diagnostic_file
+                    .as_ref()
+                    .map_or(libc::STDERR_FILENO, |file| file.as_raw_fd());
+                duplicate_to_diagnostic_fd(diagnostic_source)?;
                 let current = libc::personality(0xffff_ffff);
                 if current == -1 {
                     return Err(io::Error::last_os_error());
@@ -1326,12 +1349,61 @@ fn require_file(path: &Path, description: &str) -> io::Result<()> {
     }
 }
 
+fn require_writable_diagnostic_fd(descriptor: libc::c_int) -> io::Result<()> {
+    let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
+    if flags == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    if flags & libc::O_ACCMODE == libc::O_RDONLY {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "DBT diagnostic file is not writable",
+        ));
+    }
+    Ok(())
+}
+
+fn clone_diagnostic_fd(source: libc::c_int) -> io::Result<File> {
+    // Keep the owned descriptor out of the standard-stream range. Command's
+    // child setup can replace 0, 1, and 2 before pre_exec hooks run.
+    let descriptor = unsafe { libc::fcntl(source, libc::F_DUPFD_CLOEXEC, 3) };
+    if descriptor == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
+    Ok(unsafe { File::from_raw_fd(descriptor) })
+}
+
+fn duplicate_to_diagnostic_fd(source: libc::c_int) -> io::Result<()> {
+    if source != DIAGNOSTIC_FD {
+        if unsafe { libc::dup2(source, DIAGNOSTIC_FD) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        return Ok(());
+    }
+
+    // dup2(fd, fd) is a no-op and therefore does not clear FD_CLOEXEC. A
+    // caller can legitimately supply descriptor 198, so clear the flag
+    // explicitly rather than letting the diagnostic channel disappear at exec.
+    let flags = unsafe { libc::fcntl(source, libc::F_GETFD) };
+    if flags == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(source, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Seek as _;
     use std::os::unix::process::ExitStatusExt as _;
 
     use super::*;
+
+    const TEST_DRRUN_STDERR: &str = "REVERIE_DBT_TEST_DRRUN_STDERR";
+    const TEST_DRRUN_DIAGNOSTIC: &str = "REVERIE_DBT_TEST_DRRUN_DIAGNOSTIC";
 
     #[test]
     fn failed_guest_status_is_preserved_before_coordinator_connection() {
@@ -1356,6 +1428,7 @@ mod tests {
             drrun: PathBuf::from("/opt/dynamorio/bin64/drrun"),
             client: PathBuf::from("/opt/reverie/libreverie_dbt_client.so"),
             client_arguments: Vec::new(),
+            diagnostic_file: None,
             evidence: None,
             evidence_log_level: DbtEvidenceLogLevel::Info,
             summary: false,
@@ -1371,6 +1444,17 @@ mod tests {
         let mut permissions = std::fs::metadata(path).unwrap().permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(path, permissions).unwrap();
+    }
+
+    fn fake_drrun(directory: &Path) -> PathBuf {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_drrun.sh");
+        let path = directory.join("drrun");
+        std::os::unix::fs::symlink(source, &path).unwrap();
+        path
+    }
+
+    fn fake_client() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")
     }
 
     fn compile_evidence_forge_fixture(directory: &Path) -> PathBuf {
@@ -1672,20 +1756,8 @@ mod tests {
 
     #[test]
     fn supplies_captured_standard_input() {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let root = tempfile::tempdir().unwrap();
-        let drrun = root.path().join("drrun");
-        let client = root.path().join("client.so");
-        std::fs::write(
-            &drrun,
-            b"#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&drrun, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::fs::write(&client, b"placeholder").unwrap();
-
-        let runner = DbtRunner::new(drrun, client).unwrap();
+        let runner = DbtRunner::new(fake_drrun(root.path()), fake_client()).unwrap();
         let output = runner
             .output_with_input(&Command::new("/bin/cat"), b"hello from stdin\n")
             .unwrap();
@@ -1728,13 +1800,6 @@ mod tests {
     #[test]
     fn keeps_diagnostics_out_of_guest_stderr_redirections() {
         let root = tempfile::tempdir().unwrap();
-        let drrun = root.path().join("drrun");
-        let client = root.path().join("client.so");
-        write_executable_script(
-            &drrun,
-            b"#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
-        );
-        std::fs::write(&client, b"placeholder").unwrap();
 
         let script = format!(
             "output=$(/bin/bash -c 'printf guest-stderr >&2; printf backend-diagnostic >&{DIAGNOSTIC_FD}' 2>&1); printf 'captured=<%s>\\n' \"$output\""
@@ -1742,7 +1807,7 @@ mod tests {
         let mut guest = Command::new("/bin/bash");
         guest.args(["-c", &script]);
 
-        let output = DbtRunner::new(drrun, client)
+        let output = DbtRunner::new(fake_drrun(root.path()), fake_client())
             .unwrap()
             .output(&guest)
             .unwrap();
@@ -1752,39 +1817,321 @@ mod tests {
     }
 
     #[test]
-    fn process_group_cleanup_terminates_descendants_after_root_exit() {
+    fn diagnostic_file_separates_guest_stderr_from_diagnostics() {
         let root = tempfile::tempdir().unwrap();
-        let drrun = root.path().join("drrun");
-        let client = root.path().join("client.so");
-        write_executable_script(
-            &drrun,
-            b"#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
-        );
-        std::fs::write(&client, b"placeholder").unwrap();
-        let runner = DbtRunner::new(drrun, client)
+        let diagnostics = tempfile::tempfile().unwrap();
+        let mut diagnostic_reader = diagnostics.try_clone().unwrap();
+        let mut guest = Command::new("/bin/bash");
+        guest
+            .args([
+                "-c",
+                "printf guest-stdout; printf guest-stderr >&2; printf client-diagnostic >&198; exit 7",
+            ])
+            .env(TEST_DRRUN_STDERR, "drrun-stderr")
+            .env(TEST_DRRUN_DIAGNOSTIC, "drrun-diagnostic");
+
+        let runner = DbtRunner::new(fake_drrun(root.path()), fake_client())
+            .unwrap()
+            .diagnostic_file(&diagnostics)
+            .unwrap();
+        let owned_descriptor = runner.diagnostic_file.as_ref().unwrap().as_raw_fd();
+        assert!(owned_descriptor >= 3);
+        let descriptor_flags = unsafe { libc::fcntl(owned_descriptor, libc::F_GETFD) };
+        assert_ne!(descriptor_flags, -1);
+        assert_ne!(descriptor_flags & libc::FD_CLOEXEC, 0);
+        drop(diagnostics);
+
+        let output = runner.output(&guest).unwrap();
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(output.stdout, b"guest-stdout");
+        assert_eq!(output.stderr, b"drrun-stderrguest-stderr");
+
+        diagnostic_reader.rewind().unwrap();
+        let mut diagnostic_bytes = Vec::new();
+        diagnostic_reader
+            .read_to_end(&mut diagnostic_bytes)
+            .unwrap();
+        assert_eq!(diagnostic_bytes, b"drrun-diagnosticclient-diagnostic");
+    }
+
+    #[test]
+    fn unset_diagnostic_file_preserves_the_shared_stderr_stream() {
+        let root = tempfile::tempdir().unwrap();
+        let mut guest = Command::new("/bin/sh");
+        guest
+            .args(["-c", "printf guest-stderr >&2"])
+            .env(TEST_DRRUN_STDERR, "drrun-stderr")
+            .env(TEST_DRRUN_DIAGNOSTIC, "drrun-diagnostic");
+
+        let output = DbtRunner::new(fake_drrun(root.path()), fake_client())
+            .unwrap()
+            .output(&guest)
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stderr, b"drrun-stderrdrrun-diagnosticguest-stderr");
+    }
+
+    #[test]
+    fn diagnostic_file_rejects_a_read_only_handle() {
+        let read_only = File::open("/dev/null").unwrap();
+        let error = runner().diagnostic_file(&read_only).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn missing_or_closed_diagnostic_descriptor_fails_closed() {
+        let clone_error = clone_diagnostic_fd(-1).unwrap_err();
+        assert_eq!(clone_error.raw_os_error(), Some(libc::EBADF));
+
+        let validation_error = require_writable_diagnostic_fd(-1).unwrap_err();
+        assert_eq!(validation_error.raw_os_error(), Some(libc::EBADF));
+
+        let duplication_error = duplicate_to_diagnostic_fd(-1).unwrap_err();
+        assert_eq!(duplication_error.raw_os_error(), Some(libc::EBADF));
+    }
+
+    #[test]
+    fn diagnostic_descriptor_198_clears_cloexec_and_survives_exec() {
+        use std::os::unix::net::UnixStream;
+
+        let (mut reader, writer) = UnixStream::pair().unwrap();
+        let writer_descriptor = writer.as_raw_fd();
+        let mut command = Command::new("/bin/bash");
+        command
+            .args(["-c", "printf diagnostic-fd-survived >&198"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        // SAFETY: the hook uses only async-signal-safe descriptor operations.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(writer_descriptor, DIAGNOSTIC_FD) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                let flags = libc::fcntl(DIAGNOSTIC_FD, libc::F_GETFD);
+                if flags == -1
+                    || libc::fcntl(DIAGNOSTIC_FD, libc::F_SETFD, flags | libc::FD_CLOEXEC) == -1
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::fcntl(DIAGNOSTIC_FD, libc::F_GETFD) & libc::FD_CLOEXEC == 0 {
+                    return Err(io::Error::from_raw_os_error(libc::EINVAL));
+                }
+
+                duplicate_to_diagnostic_fd(DIAGNOSTIC_FD)?;
+                if libc::fcntl(DIAGNOSTIC_FD, libc::F_GETFD) & libc::FD_CLOEXEC != 0 {
+                    return Err(io::Error::from_raw_os_error(libc::EINVAL));
+                }
+                Ok(())
+            });
+        }
+
+        let mut child = command.spawn().unwrap();
+        drop(writer);
+        assert!(child.wait().unwrap().success());
+        let mut diagnostic_bytes = Vec::new();
+        reader.read_to_end(&mut diagnostic_bytes).unwrap();
+        assert_eq!(diagnostic_bytes, b"diagnostic-fd-survived");
+    }
+
+    #[test]
+    fn diagnostic_file_preserves_process_group_cleanup_and_exit_status() {
+        let root = tempfile::tempdir().unwrap();
+        let mut diagnostics = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::new(fake_drrun(root.path()), fake_client())
+            .unwrap()
+            .diagnostic_file(&diagnostics)
             .unwrap()
             .terminate_process_group_on_exit(true);
         let mut guest = Command::new("/bin/sh");
-        guest.args(["-c", "sleep 60 & printf descendant-started; exit 7"]);
+        guest.args([
+            "-c",
+            "sleep 60 & printf descendant-started; printf cleanup-diagnostic >&198; exit 7",
+        ]);
         let started = std::time::Instant::now();
 
         let output = runner.output(&guest).unwrap();
         assert_eq!(output.status.code(), Some(7));
         assert_eq!(output.stdout, b"descendant-started");
+        assert!(output.stderr.is_empty());
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        diagnostics.rewind().unwrap();
+        let mut diagnostic_bytes = Vec::new();
+        diagnostics.read_to_end(&mut diagnostic_bytes).unwrap();
+        assert_eq!(diagnostic_bytes, b"cleanup-diagnostic");
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn diagnostic_file_keeps_live_summary_out_of_guest_stderr() {
+        let mut diagnostics = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .summary(true)
+            .diagnostic_file(&diagnostics)
+            .unwrap();
+        let mut guest = Command::new("/bin/sh");
+        guest.args(["-c", "printf exact-guest-stderr >&2"]);
+
+        let output = runner.output(&guest).unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stderr, b"exact-guest-stderr");
+        diagnostics.rewind().unwrap();
+        let mut diagnostic_bytes = Vec::new();
+        diagnostics.read_to_end(&mut diagnostic_bytes).unwrap();
+        assert!(
+            diagnostic_bytes
+                .windows(b"reverie-dbt: tool=".len())
+                .any(|window| window == b"reverie-dbt: tool="),
+            "summary was not written to the diagnostic file: {}",
+            String::from_utf8_lossy(&diagnostic_bytes)
+        );
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn quiet_live_runtime_does_not_write_to_guest_stderr() {
+        let diagnostics = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .diagnostic_file(&diagnostics)
+            .unwrap();
+
+        let output = runner.output(&Command::new("/bin/true")).unwrap();
+        assert!(output.status.success());
+        assert!(
+            output.stderr.is_empty(),
+            "successful -quiet DynamoRIO launch wrote non-guest bytes to fd 2: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn protected_evidence_preserves_a_normal_guest_exit_101() {
+        let mut file = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .evidence_file(&file)
+            .unwrap();
+        let mut guest = Command::new("/bin/sh");
+        guest.args(["-c", "exit 101"]);
+
+        let output = runner.output(&guest).unwrap();
+        assert_eq!(output.status.code(), Some(101));
+        file.rewind().unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert!(crate::decode_evidence(&bytes).is_ok());
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn protected_evidence_preserves_a_normal_guest_signal_with_an_exit_callback() {
+        let mut file = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .evidence_file(&file)
+            .unwrap();
+        let mut guest = Command::new("/bin/sh");
+        guest.args(["-c", "kill -TERM $$"]);
+
+        let output = runner.output(&guest).unwrap();
+        assert!(!output.status.success());
+        file.rewind().unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert!(crate::decode_evidence(&bytes).is_ok());
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn protected_evidence_refuses_a_backend_failure_before_returning_output() {
+        let file = tempfile::tempfile().unwrap();
+        let mut diagnostics = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .evidence_file(&file)
+            .unwrap()
+            .diagnostic_file(&diagnostics)
+            .unwrap()
+            .client_argument("-test-backend-failure");
+
+        let error = runner.output(&Command::new("/bin/true")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("DBT backend or Tool reported an internal failure"),
+            "backend failure was reported as the wrong error: {error}"
+        );
+        assert_eq!(file.metadata().unwrap().len(), 0);
+        diagnostics.rewind().unwrap();
+        let mut diagnostic_bytes = Vec::new();
+        diagnostics.read_to_end(&mut diagnostic_bytes).unwrap();
+        assert!(
+            diagnostic_bytes
+                .windows(b"requested backend failure for testing".len())
+                .any(|window| window == b"requested backend failure for testing")
+        );
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn protected_evidence_keeps_a_backend_failure_after_sender_lookup_misses() {
+        let file = tempfile::tempfile().unwrap();
+        let mut diagnostics = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .evidence_file(&file)
+            .unwrap()
+            .diagnostic_file(&diagnostics)
+            .unwrap()
+            .client_argument("-test-backend-failure")
+            .client_argument("-test-backend-failure-sender-lookup-miss");
+
+        let error = runner.output(&Command::new("/bin/true")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("DBT backend or Tool reported an internal failure"),
+            "backend failure was reported as the wrong error: {error}"
+        );
+        assert_eq!(file.metadata().unwrap().len(), 0);
+        diagnostics.rewind().unwrap();
+        let mut diagnostic_bytes = Vec::new();
+        diagnostics.read_to_end(&mut diagnostic_bytes).unwrap();
+        assert!(
+            diagnostic_bytes
+                .windows(b"skipped backend failure sender lookup for testing".len())
+                .any(|window| window == b"skipped backend failure sender lookup for testing")
+        );
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn protected_evidence_initializes_when_tracing_is_off() {
+        let mut file = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .evidence_file(&file)
+            .unwrap()
+            .evidence_log_level(DbtEvidenceLogLevel::Off);
+
+        let output = runner.output(&Command::new("/bin/true")).unwrap();
+        assert!(output.status.success());
+        file.rewind().unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        let evidence = crate::decode_evidence(&bytes).unwrap();
+        assert!(evidence.initialization_records() > 0);
+        assert!(evidence.records().is_empty());
     }
 
     #[test]
     fn returns_when_child_exits_while_input_source_is_blocked() {
         let root = tempfile::tempdir().unwrap();
-        let drrun = root.path().join("drrun");
-        let client = root.path().join("client.so");
-        write_executable_script(
-            &drrun,
-            b"#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
-        );
-        std::fs::write(&client, b"placeholder").unwrap();
-        let runner = DbtRunner::new(drrun, client).unwrap();
+        let runner = DbtRunner::new(fake_drrun(root.path()), fake_client()).unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
         let started = std::time::Instant::now();
 
@@ -2044,8 +2391,8 @@ mod tests {
         file.read_to_end(&mut bytes).unwrap();
         let evidence = crate::decode_evidence(&bytes).unwrap();
         assert!(
-            !evidence.records().is_empty(),
-            "live integrity run produced no canonical evidence records"
+            evidence.initialization_records() > 0,
+            "live integrity run produced no process image initialization evidence"
         );
         assert!(evidence.records().iter().all(|record| {
             !record
@@ -2145,8 +2492,8 @@ mod tests {
         file.read_to_end(&mut bytes).unwrap();
         let evidence = crate::decode_evidence(&bytes).unwrap();
         assert!(
-            !evidence.records().is_empty(),
-            "retry run produced no canonical evidence records"
+            evidence.initialization_records() > 0,
+            "retry run produced no process image initialization evidence"
         );
     }
 

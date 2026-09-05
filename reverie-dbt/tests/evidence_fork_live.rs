@@ -75,8 +75,8 @@ async fn protected_evidence_survives_fork_pthread_lifecycle() {
     let evidence = reverie_dbt::decode_evidence(&evidence_bytes)
         .expect("fork/pthread evidence artifact must decode");
     assert!(
-        !evidence.records().is_empty(),
-        "fork/pthread run must publish protected evidence"
+        evidence.initialization_records() > 0,
+        "fork/pthread run must publish process image initialization evidence"
     );
 }
 
@@ -111,15 +111,7 @@ fn protected_evidence_covers_vfork_open_and_exec() {
         .expect("read evidence artifact");
     let evidence = reverie_dbt::decode_evidence(&evidence_bytes)
         .expect("vfork/open/exec evidence artifact must decode");
-    let initialized_images = evidence
-        .records()
-        .iter()
-        .filter(|record| {
-            record
-                .windows(b"protected evidence initialized".len())
-                .any(|window| window == b"protected evidence initialized")
-        })
-        .count();
+    let initialized_images = evidence.initialization_records();
     assert!(
         initialized_images >= 2,
         "parent and exec child must both contribute protected evidence; got {initialized_images} initialization records"

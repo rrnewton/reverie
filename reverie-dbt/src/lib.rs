@@ -2142,9 +2142,9 @@ pub unsafe extern "C" fn reverie_dbt_runtime_pre_syscall(
 ///
 /// The `argument` is a `*const DbtRuntimeCallbacks` (the native
 /// `runtime_callbacks_t`). It records the re-entrancy-safe stdout emitter. The
-/// native client emits image-initialization evidence from the first application
-/// thread, because DynamoRIO client threads have a distinct process identity
-/// and must not appear as guest-process evidence senders.
+/// native client emits initialization evidence before this callback because a
+/// DynamoRIO client thread has a distinct process identity and therefore sends
+/// its own protected evidence.
 ///
 /// # Safety
 ///
