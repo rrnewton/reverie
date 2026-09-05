@@ -260,14 +260,16 @@ pub(crate) unsafe fn exit_now(code: i32) -> ! {
 /// # Safety
 ///
 /// Only the kernel calls this, on a real `SIGSYS`.
-pub(crate) unsafe extern "C" fn sigsys_handler(
+unsafe extern "C" fn sigsys_body(
     signal_number: libc::c_int,
     info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
-) {
+) -> crate::clock_boundary::Continuation {
     let _runtime = RuntimeEntryGuard::enter();
-    unsafe { dispatch_signal(signal_number, info, context, SYS_SECCOMP_CODE) };
+    unsafe { dispatch_signal(signal_number, info, context, SYS_SECCOMP_CODE) }
 }
+
+crate::clocked_signal!(sigsys_handler, sigsys_body);
 
 pub(crate) unsafe extern "C" fn user_dispatch_handler(
     signal_number: libc::c_int,
@@ -290,7 +292,7 @@ unsafe fn dispatch_signal(
     info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
     expected_code: i32,
-) {
+) -> crate::clock_boundary::Continuation {
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-133): Review fail-closed SIGSYS provenance validation.
     if signal_number != libc::SIGSYS
@@ -323,20 +325,24 @@ unsafe fn dispatch_signal(
         if syscall_info.number == libc::SYS_rt_sigreturn as i32 {
             registers[libc::REG_RIP as usize] = trusted_sigreturn_restorer as *const () as i64;
             IN_HANDLER.set(previous_handler);
-            return;
+            return crate::clock_boundary::Continuation::GUEST;
         }
     }
-    if expected_code == crate::user_dispatch::SYS_USER_DISPATCH_CODE {
+    let continuation = if expected_code == crate::user_dispatch::SYS_USER_DISPATCH_CODE {
         crate::user_dispatch::with_dispatch_mask(&mut context.uc_sigmask, || {
             dispatch_registers(registers, expected_code)
-        });
+        })
     } else {
-        dispatch_registers(registers, expected_code);
-    }
+        dispatch_registers(registers, expected_code)
+    };
     IN_HANDLER.set(previous_handler);
+    continuation
 }
 
-fn dispatch_registers(registers: &mut [libc::greg_t], expected_code: i32) {
+fn dispatch_registers(
+    registers: &mut [libc::greg_t],
+    expected_code: i32,
+) -> crate::clock_boundary::Continuation {
     let mut event = SyscallEvent::new(
         registers[libc::REG_RAX as usize],
         [
@@ -365,6 +371,11 @@ fn dispatch_registers(registers: &mut [libc::greg_t], expected_code: i32) {
         registers[libc::REG_RIP as usize] = resume_address as i64;
     } else {
         registers[libc::REG_RAX as usize] = event.resolved_result();
+    }
+    if event.resume_address().is_some() {
+        crate::clock_boundary::Continuation::hook(event.clock_witness())
+    } else {
+        crate::clock_boundary::Continuation::GUEST
     }
 }
 

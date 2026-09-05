@@ -1,0 +1,18 @@
+[package]
+name = "liteinst-clocked-tool-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libc = "0.2.186"
+reverie = { package = "reverie-core", path = "../../../reverie" }
+reverie-liteinst = { path = "../..", default-features = false }
+reverie-preload = { path = "../../../reverie-preload", default-features = false, features = ["coordinator-rpc"] }
+reverie-rpc-transport = { path = "../../../reverie-rpc-transport" }
+tokio = { version = "1.52.4", features = ["rt", "net"] }

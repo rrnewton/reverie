@@ -52,6 +52,7 @@
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 compile_error!("reverie-preload requires Linux x86-64");
 
+pub mod clock_boundary;
 pub mod dispatch;
 pub mod fmt;
 pub mod fork;

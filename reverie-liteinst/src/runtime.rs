@@ -345,8 +345,19 @@ thread_local! {
 
 /// Install the current thread's in-guest RCB clock before seccomp is active.
 pub(crate) fn initialize_rcb_clock() -> io::Result<()> {
+    if crate::clock_control::active() {
+        return Err(io::Error::other(
+            "clock boundary cannot rebind an active counter",
+        ));
+    }
     initialize_rcb_clock_with(|| unsafe {
-        reverie_ptrace::InGuestRcbCounter::current_thread_with_syscall_gate(raw_syscall6)
+        if crate::clock_control::requested() {
+            reverie_ptrace::InGuestRcbCounter::current_thread_disabled_with_syscall_gate(
+                raw_syscall6,
+            )
+        } else {
+            reverie_ptrace::InGuestRcbCounter::current_thread_with_syscall_gate(raw_syscall6)
+        }
     })
 }
 
@@ -378,6 +389,7 @@ fn initialize_rcb_clock_with(
         // The in-guest clock is optional. CPU discovery, perf-event setup,
         // mmap, reset, and enable failures all mean unavailable, not a failed
         // Tool installation.
+        Err(error) if crate::clock_control::requested() => return Err(io::Error::other(error)),
         Err(_) => return Ok(()),
     };
     let active_entry = if active_depth == 0 {
@@ -387,7 +399,11 @@ fn initialize_rcb_clock_with(
             .read()
             .map_err(|error| io::Error::from_raw_os_error(error.into_raw()))?
     };
-    RCB_CLOCK.set(Box::into_raw(Box::new(clock)));
+    let pointer = Box::into_raw(Box::new(clock));
+    RCB_CLOCK.set(pointer);
+    if crate::clock_control::requested() {
+        crate::clock_control::publish(unsafe { &*pointer })?;
+    }
     RCB_CLOCK_OWNER.set(owner);
     RCB_CLOCK_UNAVAILABLE.set(false);
     RCB_HANDLER_ENTRY.set(active_entry);
@@ -415,6 +431,15 @@ fn rcb_clock() -> io::Result<Option<&'static reverie_ptrace::InGuestRcbCounter>>
 
 /// Mark entry into an ordinary-context tool callback.
 pub(crate) fn enter_rcb_handler() -> io::Result<()> {
+    if crate::clock_control::active() {
+        return if crate::clock_control::paused() {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "Rust callback reached before clock exclusion",
+            ))
+        };
+    }
     let Some(clock) = rcb_clock()? else {
         RCB_HANDLER_DEPTH.set(RCB_HANDLER_DEPTH.get().saturating_add(1));
         return Ok(());
@@ -431,6 +456,15 @@ pub(crate) fn enter_rcb_handler() -> io::Result<()> {
 
 /// Deduct all RCBs retired while the outermost tool callback was active.
 pub(crate) fn leave_rcb_handler() -> io::Result<()> {
+    if crate::clock_control::active() {
+        return if crate::clock_control::paused() {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "clock restarted before Rust callback teardown",
+            ))
+        };
+    }
     let depth = RCB_HANDLER_DEPTH.get();
     if depth == 0 {
         return Err(io::Error::other("LiteInst RCB handler depth underflow"));
@@ -457,6 +491,13 @@ pub(crate) fn leave_rcb_handler() -> io::Result<()> {
 /// Return guest-only RCB time, excluding all completed and currently-active
 /// LiteInst handler branches.
 pub(crate) fn read_guest_rcb_clock() -> io::Result<u64> {
+    if crate::clock_control::active() {
+        if !crate::clock_control::paused() {
+            return Err(io::Error::other("clock read outside excluded runtime"));
+        }
+        let clock = rcb_clock()?.ok_or_else(|| io::Error::other("clock unavailable"))?;
+        return unsafe { clock.read_paused_once() }.map_err(io::Error::other);
+    }
     let Some(clock) = rcb_clock()? else {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -2082,6 +2123,10 @@ pub(crate) fn signal_action_supported(number: i64, args: [u64; 6]) -> bool {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-133): Review nested Tool syscall guards and raw forwarding.
 fn forward_nested_tool_syscall(event: &mut SyscallEvent) {
+    if crate::rpc::allows_channel_io(event.number, event.args[0] as i32) {
+        event.result = unsafe { raw_syscall6(event.number, event.args) };
+        return;
+    }
     let unsupported_process =
         // AUTONOMOUS-BOT-IMPLEMENTED
         event.number == libc::SYS_clone
@@ -2119,7 +2164,7 @@ fn forward_nested_tool_syscall(event: &mut SyscallEvent) {
     } else if unsupported_signal_state {
         event.result = -i64::from(libc::EPERM);
     } else if !(protect_runtime_control(event) || unsafe { protect_coordinator_channel(event) }) {
-        event.result = unsafe { raw_syscall6(event.number, event.args) };
+        event.result = guarded_raw_syscall(event.number, event.args);
         observe_mapping_generation(event);
     }
 }
@@ -2320,11 +2365,11 @@ unsafe fn deliver_default_sigsegv() -> ! {
     unsafe { exit_now(128 + libc::SIGSEGV) }
 }
 
-unsafe extern "C" fn instruction_sigsegv_handler(
+unsafe extern "C" fn instruction_sigsegv_body(
     signal: libc::c_int,
     info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
-) {
+) -> reverie_preload::clock_boundary::Continuation {
     let _runtime = crate::runtime_domain::Entry::enter();
     if signal != libc::SIGSEGV || context.is_null() {
         emit_in_guest_stage(b"instruction-sigsegv-invalid-context");
@@ -2383,7 +2428,7 @@ unsafe extern "C" fn instruction_sigsegv_handler(
             emit_in_guest_stage(b"instruction-sigsegv-disable-native-failed");
             unsafe { deliver_default_sigsegv() };
         }
-        return;
+        return reverie_preload::clock_boundary::Continuation::RUNTIME;
     }
 
     let Some((site, claimed)) = claim_site(address) else {
@@ -2428,7 +2473,12 @@ unsafe extern "C" fn instruction_sigsegv_handler(
     }
     context.uc_mcontext.gregs[libc::REG_RIP as usize] =
         unsafe { (*hook).trampoline().address() } as i64;
+    let witness = crate::clock_control::callback_return_pc(unsafe { (*hook).trampoline() })
+        .unwrap_or_else(|_| unsafe { exit_now(127) });
+    reverie_preload::clock_boundary::Continuation::hook(witness)
 }
+
+reverie_preload::clocked_signal!(instruction_sigsegv_handler, instruction_sigsegv_body);
 
 unsafe fn execute_native_fault_instruction(
     kind: InstructionEventKind,
@@ -2565,19 +2615,33 @@ unsafe fn execute_native_instruction(kind: InstructionEventKind, context: &mut H
     }
 }
 
-unsafe extern "C" fn installed_cpuid_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_cpuid_body(context: *mut HookContext) {
     unsafe { installed_instruction_hook(context, InstructionEventKind::Cpuid) }
 }
 
-unsafe extern "C" fn installed_rdtsc_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_rdtsc_body(context: *mut HookContext) {
     unsafe { installed_instruction_hook(context, InstructionEventKind::Rdtsc) }
 }
 
-unsafe extern "C" fn installed_rdtscp_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_rdtscp_body(context: *mut HookContext) {
     unsafe { installed_instruction_hook(context, InstructionEventKind::Rdtscp) }
 }
 
 unsafe fn installed_syscall_hook_for(context: *mut HookContext, number: Option<i64>) {
+    let _runtime = crate::runtime_domain::Entry::enter();
+    if let Some(context) = unsafe { context.as_ref() }
+        && let Some(site) = find_site(context.instruction_pointer)
+    {
+        site.hook_count.fetch_add(1, Ordering::Relaxed);
+    }
+    unsafe { dispatch_syscall_context(context, number) };
+}
+
+pub(crate) unsafe fn dispatch_fallback_context(context: *mut HookContext) {
+    unsafe { dispatch_syscall_context(context, None) };
+}
+
+unsafe fn dispatch_syscall_context(context: *mut HookContext, number: Option<i64>) {
     let _runtime = crate::runtime_domain::Entry::enter();
     if context.is_null() {
         unsafe {
@@ -2590,9 +2654,6 @@ unsafe fn installed_syscall_hook_for(context: *mut HookContext, number: Option<i
     // SAFETY: generated LiteInst code passes a unique mutable saved frame.
     let context_pointer = context as usize;
     let context = unsafe { &mut *context };
-    if let Some(site) = find_site(context.instruction_pointer) {
-        site.hook_count.fetch_add(1, Ordering::Relaxed);
-    }
     let mut event = SyscallEvent {
         number: number.unwrap_or(context.rax as i64),
         args: [
@@ -2635,7 +2696,7 @@ unsafe fn installed_syscall_hook_for(context: *mut HookContext, number: Option<i
     }
 }
 
-unsafe extern "C" fn installed_syscall_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_syscall_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, None) }
 }
 
@@ -2681,25 +2742,44 @@ pub(crate) fn domain_test_instruction() -> u64 {
     context.rax | context.rdx << 32
 }
 
-unsafe extern "C" fn installed_vdso_time_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_vdso_time_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_time)) }
 }
 
-unsafe extern "C" fn installed_vdso_clock_gettime_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_vdso_clock_gettime_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_clock_gettime)) }
 }
 
-unsafe extern "C" fn installed_vdso_getcpu_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_vdso_getcpu_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_getcpu)) }
 }
 
-unsafe extern "C" fn installed_vdso_gettimeofday_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_vdso_gettimeofday_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_gettimeofday)) }
 }
 
-unsafe extern "C" fn installed_vdso_clock_getres_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_vdso_clock_getres_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_clock_getres)) }
 }
+
+crate::clock_control::installed_hook!(installed_syscall_hook, installed_syscall_body);
+crate::clock_control::installed_hook!(installed_cpuid_hook, installed_cpuid_body);
+crate::clock_control::installed_hook!(installed_rdtsc_hook, installed_rdtsc_body);
+crate::clock_control::installed_hook!(installed_rdtscp_hook, installed_rdtscp_body);
+crate::clock_control::installed_hook!(installed_vdso_time_hook, installed_vdso_time_body);
+crate::clock_control::installed_hook!(
+    installed_vdso_clock_gettime_hook,
+    installed_vdso_clock_gettime_body
+);
+crate::clock_control::installed_hook!(installed_vdso_getcpu_hook, installed_vdso_getcpu_body);
+crate::clock_control::installed_hook!(
+    installed_vdso_gettimeofday_hook,
+    installed_vdso_gettimeofday_body
+);
+crate::clock_control::installed_hook!(
+    installed_vdso_clock_getres_hook,
+    installed_vdso_clock_getres_body
+);
 
 unsafe fn locate_syscall_site(resume_address: u64) -> Option<u64> {
     let candidates = [resume_address.checked_sub(2), Some(resume_address)];
@@ -2817,7 +2897,12 @@ impl SyscallDispatcher for LiteinstDispatcher {
                     )
                 });
                 let restored = unsafe { set_all_instruction_native(false) };
-                if installed.is_err() || restored.is_err() {
+                if restored.is_err() {
+                    site.state.store(SITE_FALLBACK, Ordering::Release);
+                    event.fail(libc::EOPNOTSUPP);
+                    return;
+                }
+                if installed.is_err() {
                     site.state.store(SITE_FALLBACK, Ordering::Release);
                 }
             }
@@ -2828,22 +2913,24 @@ impl SyscallDispatcher for LiteinstDispatcher {
                 let hook = site.hook.load(Ordering::Acquire);
                 if !hook.is_null() {
                     // SAFETY: active sites retain their InstalledHook for process lifetime.
-                    event.defer_to(unsafe { (*hook).trampoline().address() });
+                    let trampoline = unsafe { (*hook).trampoline() };
+                    let witness = crate::clock_control::callback_return_pc(trampoline)
+                        .unwrap_or_else(|_| unsafe { exit_now(127) });
+                    event.defer_to_clocked(trampoline.address(), witness);
                     return;
                 }
             }
         }
 
-        // Generic Tool execution may allocate, lock, and block on coordinator
-        // I/O, so it cannot run as a fallback inside the SIGSYS handler.
-        //
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // Record the escape before failing closed so the residual fallback
-        // surface is observable by syscall number. Counting does not change the
-        // forwarding decision (still `EOPNOTSUPP`), so the dispatch path is
-        // unchanged; this is the by-number analog of e9patch's round-4 counter.
         record_fallback_dispatch(event.number());
         (self.record_fallback_stats)(self.stats, instruction_pointer);
+        if mode == TOOL_REVERIE
+            && let Some(entry) = crate::syscall_fallback::prepare(resume_address)
+        {
+            event.defer_to_clocked(entry, entry);
+            return;
+        }
         event.fail(libc::EOPNOTSUPP);
     }
 }
@@ -2985,21 +3072,74 @@ fn clone_is_fork_like(flags: u64, child_stack: u64) -> bool {
 }
 
 unsafe fn protect_coordinator_channel(event: &mut SyscallEvent) -> bool {
-    let fd = COORDINATOR_FD.load(Ordering::Acquire);
-    if fd < 0 {
-        return false;
+    if let Some(result) = crate::protected_fd::indirect_result(
+        event.number,
+        event.args,
+        &[
+            COORDINATOR_FD.load(Ordering::Acquire),
+            crate::guest_log::LOG_FD.load(Ordering::Acquire),
+            crate::clock_control::descriptor(),
+        ],
+    ) {
+        event.result = result;
+        return true;
     }
-    let fd = fd as u64;
-    if event.number == libc::SYS_close && event.args[0] == fd {
-        event.result = 0;
-    } else if event.number == libc::SYS_close_range && event.args[0] <= fd && fd <= event.args[1] {
-        event.result = unsafe { close_range_preserving_event_fd(event, fd) };
-    } else if syscall_targets_event_fd(event, fd) {
-        event.result = -i64::from(libc::EBADF);
+    let first = u64::from(event.args[0] as u32);
+    let second = u64::from(event.args[1] as u32);
+    for fd in [
+        COORDINATOR_FD.load(Ordering::Acquire),
+        crate::guest_log::LOG_FD.load(Ordering::Acquire),
+        crate::clock_control::descriptor(),
+    ] {
+        if fd < 0 {
+            continue;
+        }
+        let fd = fd as u64;
+        if event.number == libc::SYS_close && first == fd {
+            event.result = 0;
+        } else if event.number == libc::SYS_close_range && first <= fd && fd <= second {
+            event.result = unsafe { close_range_preserving_event_fd(event, fd) };
+        } else if syscall_targets_event_fd(event, fd) {
+            event.result = -i64::from(libc::EBADF);
+        } else {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+pub(crate) fn protected_injected_syscall(number: i64, args: [u64; 6]) -> Option<i64> {
+    let mut event = SyscallEvent {
+        number,
+        args,
+        instruction_pointer: 0,
+        result: 0,
+        context: 0,
+    };
+    if unsafe { protect_coordinator_channel(&mut event) } {
+        Some(event.result)
     } else {
-        return false;
+        None
     }
-    true
+}
+
+pub(crate) fn guarded_raw_syscall(number: i64, args: [u64; 6]) -> i64 {
+    if let Some(result) = protected_injected_syscall(number, args) {
+        return result;
+    }
+    match crate::protected_fd::batch_args(
+        number,
+        args,
+        &[
+            COORDINATOR_FD.load(Ordering::Acquire),
+            crate::guest_log::LOG_FD.load(Ordering::Acquire),
+            crate::clock_control::descriptor(),
+        ],
+    ) {
+        Ok(args) => unsafe { raw_syscall6(number, args) },
+        Err(error) => error,
+    }
 }
 
 unsafe fn protect_compatibility_event_channel(event: &mut SyscallEvent) -> bool {
@@ -3030,9 +3170,9 @@ unsafe fn close_range_preserving_event_fd(event: &SyscallEvent, event_fd: u64) -
     const CLOSE_RANGE_UNSHARE: u64 = 1 << 1;
     const CLOSE_RANGE_CLOEXEC: u64 = 1 << 2;
 
-    let first = event.args[0];
-    let last = event.args[1];
-    let mut flags = event.args[2];
+    let mut first = u64::from(event.args[0] as u32);
+    let last = u64::from(event.args[1] as u32);
+    let mut flags = u64::from(event.args[2] as u32);
     if flags & !(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) != 0 {
         return -i64::from(libc::EINVAL);
     }
@@ -3045,16 +3185,28 @@ unsafe fn close_range_preserving_event_fd(event: &SyscallEvent, event_fd: u64) -
         flags &= !CLOSE_RANGE_UNSHARE;
     }
 
-    if first < event_fd {
-        let result =
-            unsafe { raw_syscall6(libc::SYS_close_range, [first, event_fd - 1, flags, 0, 0, 0]) };
-        if result < 0 {
-            return result;
+    let mut reserved = [
+        event_fd,
+        COORDINATOR_FD.load(Ordering::Acquire) as u64,
+        crate::guest_log::LOG_FD.load(Ordering::Acquire) as u64,
+        crate::clock_control::descriptor() as u64,
+    ];
+    reserved.sort_unstable();
+    for fd in reserved {
+        if fd < first || fd > last {
+            continue;
         }
+        if first < fd {
+            let result =
+                unsafe { raw_syscall6(libc::SYS_close_range, [first, fd - 1, flags, 0, 0, 0]) };
+            if result < 0 {
+                return result;
+            }
+        }
+        first = fd + 1;
     }
-    if event_fd < last {
-        let result =
-            unsafe { raw_syscall6(libc::SYS_close_range, [event_fd + 1, last, flags, 0, 0, 0]) };
+    if first <= last {
+        let result = unsafe { raw_syscall6(libc::SYS_close_range, [first, last, flags, 0, 0, 0]) };
         if result < 0 {
             return result;
         }
@@ -3063,6 +3215,7 @@ unsafe fn close_range_preserving_event_fd(event: &SyscallEvent, event_fd: u64) -
 }
 
 fn syscall_targets_event_fd(event: &SyscallEvent, event_fd: u64) -> bool {
+    let args = event.args.map(|arg| u64::from(arg as u32));
     match event.number {
         libc::SYS_read
         | libc::SYS_readv
@@ -3075,15 +3228,27 @@ fn syscall_targets_event_fd(event: &SyscallEvent, event_fd: u64) -> bool {
         | libc::SYS_pwritev
         | libc::SYS_pwritev2
         | libc::SYS_vmsplice
-        | libc::SYS_sendfile
+        | libc::SYS_lseek
+        | libc::SYS_ftruncate
+        | libc::SYS_fallocate
+        | libc::SYS_shutdown
+        | libc::SYS_sendto
+        | libc::SYS_recvfrom
+        | libc::SYS_sendmsg
+        | libc::SYS_recvmsg
+        | libc::SYS_sendmmsg
+        | libc::SYS_recvmmsg
+        | libc::SYS_setsockopt
+        | libc::SYS_getsockopt
         | libc::SYS_fcntl
         | libc::SYS_ioctl
-        | libc::SYS_dup => event.args[0] == event_fd,
-        libc::SYS_dup2 | libc::SYS_dup3 => event.args[0] == event_fd || event.args[1] == event_fd,
-        libc::SYS_splice | libc::SYS_copy_file_range => {
-            event.args[0] == event_fd || event.args[2] == event_fd
+        | libc::SYS_dup => args[0] == event_fd,
+        libc::SYS_dup2 | libc::SYS_dup3 | libc::SYS_sendfile => {
+            args[0] == event_fd || args[1] == event_fd
         }
-        libc::SYS_tee => event.args[0] == event_fd || event.args[1] == event_fd,
+        libc::SYS_mmap => args[3] & libc::MAP_ANONYMOUS as u64 == 0 && args[4] == event_fd,
+        libc::SYS_splice | libc::SYS_copy_file_range => args[0] == event_fd || args[2] == event_fd,
+        libc::SYS_tee => args[0] == event_fd || args[1] == event_fd,
         _ => false,
     }
 }
@@ -3381,6 +3546,78 @@ impl StackLine {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn protected_guest_log_descriptors() {
+        use std::os::fd::AsRawFd;
+        if std::env::var_os("LITEINST_LOG_GUARD_TEST").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "runtime::tests::protected_guest_log_descriptors"])
+                .env("LITEINST_LOG_GUARD_TEST", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        for fd in [200, 201, 202] {
+            assert_eq!(
+                unsafe { libc::dup3(socket.as_raw_fd(), fd, libc::O_CLOEXEC) },
+                fd
+            );
+        }
+        super::reserve_coordinator_fd(200).unwrap();
+        crate::guest_log::LOG_FD.store(202, Ordering::Release);
+        {
+            let _channel = crate::rpc::ChannelIoGuard::enter(200);
+            assert!(crate::rpc::allows_channel_io(libc::SYS_sendto, 200));
+            assert!(!crate::rpc::allows_channel_io(libc::SYS_sendto, 202));
+            assert_eq!(
+                super::protected_injected_syscall(libc::SYS_sendto, [200, 0, 0, 0, 0, 0]),
+                Some(-i64::from(libc::EBADF))
+            );
+            assert!(!crate::rpc::allows_channel_io(libc::SYS_close, 200));
+        }
+        assert!(!crate::rpc::allows_channel_io(libc::SYS_sendto, 200));
+        for (number, args) in [
+            (libc::SYS_write, [202, 0, 0, 0, 0, 0]),
+            (libc::SYS_read, [202, 0, 0, 0, 0, 0]),
+            (libc::SYS_lseek, [202, 0, 0, 0, 0, 0]),
+            (libc::SYS_fcntl, [202, libc::F_DUPFD as u64, 0, 0, 0, 0]),
+            (libc::SYS_dup2, [1, 202, 0, 0, 0, 0]),
+            (libc::SYS_dup3, [202, 205, 0, 0, 0, 0]),
+            (libc::SYS_shutdown, [202, 0, 0, 0, 0, 0]),
+            (libc::SYS_sendfile, [1, 202, 0, 0, 0, 0]),
+        ] {
+            let mut event = super::SyscallEvent {
+                number,
+                args,
+                instruction_pointer: 0,
+                result: 1,
+                context: 0,
+            };
+            assert!(unsafe { super::protect_coordinator_channel(&mut event) });
+            assert_eq!(event.result, -i64::from(libc::EBADF));
+        }
+        for (number, args) in [
+            (libc::SYS_close, [202, 0, 0, 0, 0, 0]),
+            (libc::SYS_close_range, [200, 202, 4, 0, 0, 0]),
+            (libc::SYS_close_range, [200, 202, 0, 0, 0, 0]),
+        ] {
+            let mut event = super::SyscallEvent {
+                number,
+                args,
+                instruction_pointer: 0,
+                result: 1,
+                context: 0,
+            };
+            assert!(unsafe { super::protect_coordinator_channel(&mut event) });
+            assert_eq!(event.result, 0);
+        }
+        assert!(unsafe { libc::fcntl(200, libc::F_GETFD) } >= 0);
+        assert!(unsafe { libc::fcntl(202, libc::F_GETFD) } >= 0);
+        assert_eq!(unsafe { libc::fcntl(201, libc::F_GETFD) }, -1);
+    }
+
     use core::sync::atomic::Ordering;
     use std::ffi::OsStr;
 
