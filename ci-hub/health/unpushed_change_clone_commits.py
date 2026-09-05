@@ -67,6 +67,10 @@ MAX_PARALLEL_CLONES = 12
 FETCH_TIMEOUT_SECS = 5
 LOCAL_GIT_TIMEOUT_SECS = 1
 PROCESS_GROUP_TERM_GRACE_SECS = 0.2
+# A child such as `git index-pack` can close a partial pack before the parent
+# fetch reaches its timeout.  Observe the process group while it runs, rather
+# than relying on the descriptor still being open at the timeout boundary.
+PROCESS_GROUP_PACK_SCAN_SECS = 0.01
 # `ci-hub-clone-change.py create` defaults its destination to ~/temp/dev-hermit,
 # so sibling clones land beside it. Scanning that one directory is what makes
 # this tractable at all: the creation path knows where it puts clones.
@@ -116,7 +120,7 @@ def terminate_process_group(process: subprocess.Popen[str]) -> None:
 def run_bounded(
     command: list[str],
     timeout: float,
-    on_timeout: Callable[[subprocess.Popen[str]], None] | None = None,
+    while_running: Callable[[subprocess.Popen[str]], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run one command in a killable process group and reap it on timeout."""
     process = subprocess.Popen(
@@ -126,18 +130,35 @@ def run_bounded(
         text=True,
         start_new_session=True,
     )
+    deadline = time.monotonic() + timeout
+    completed = False
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as error:
-        try:
-            if on_timeout is not None:
-                on_timeout(process)
-        finally:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=(
+                        min(PROCESS_GROUP_PACK_SCAN_SECS, remaining)
+                        if while_running is not None
+                        else remaining
+                    )
+                )
+                completed = True
+                return subprocess.CompletedProcess(
+                    command, process.returncode, stdout, stderr
+                )
+            except subprocess.TimeoutExpired as error:
+                if while_running is not None:
+                    while_running(process)
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(
+                        command, timeout, output=error.output, stderr=error.stderr
+                    ) from error
+    finally:
+        if not completed:
             terminate_process_group(process)
-        raise subprocess.TimeoutExpired(
-            command, timeout, output=error.output, stderr=error.stderr
-        ) from error
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def partial_pack_files(clone: Path) -> set[Path]:
@@ -147,7 +168,7 @@ def partial_pack_files(clone: Path) -> set[Path]:
         return {
             entry
             for entry in pack_dir.iterdir()
-            if entry.name.startswith("tmp_pack_") and entry.is_file()
+            if entry.name.startswith("tmp_pack_")
         }
     except FileNotFoundError:
         return set()
@@ -166,6 +187,9 @@ def open_partial_packs_from_group(
             candidates[(info.st_dev, info.st_ino)] = path
     except OSError as error:
         return set(), [f"could not enumerate temporary packs: {error}"]
+
+    if not candidates:
+        return set(), errors
 
     found: set[tuple[Path, int, int]] = set()
     for proc in Path("/proc").iterdir():
@@ -248,28 +272,33 @@ def refresh_remote_tracking(clone: Path, deadline: float) -> tuple[bool, str | N
         command.insert(0, "with-proxy")
     partial_packs_before = partial_pack_files(clone)
     timed_out_packs: set[tuple[Path, int, int]] = set()
-    cleanup_failures: list[str] = []
+    cleanup_failures: set[str] = set()
 
-    def capture_timed_out_packs(process: subprocess.Popen[str]) -> None:
+    def observe_partial_packs(process: subprocess.Popen[str]) -> None:
+        already_seen = partial_packs_before | {
+            path for path, _device, _inode in timed_out_packs
+        }
         packs, failures = open_partial_packs_from_group(
-            clone, process.pid, partial_packs_before
+            clone, process.pid, already_seen
         )
         timed_out_packs.update(packs)
-        cleanup_failures.extend(failures)
+        cleanup_failures.update(failures)
 
     try:
         result = run_bounded(
             command,
             remaining_timeout(deadline, FETCH_TIMEOUT_SECS),
-            on_timeout=capture_timed_out_packs,
+            while_running=observe_partial_packs,
         )
         if result.returncode == 0:
             return True, None
         return False, "remote fetch failed"
     except subprocess.TimeoutExpired:
-        cleanup_failures.extend(remove_partial_packs(timed_out_packs))
+        cleanup_failures.update(remove_partial_packs(timed_out_packs))
         if cleanup_failures:
-            return False, "remote fetch timed out; " + "; ".join(cleanup_failures)
+            return False, "remote fetch timed out; " + "; ".join(
+                sorted(cleanup_failures)
+            )
         return False, "remote fetch timed out"
 
 

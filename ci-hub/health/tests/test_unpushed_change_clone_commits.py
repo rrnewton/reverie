@@ -311,7 +311,9 @@ class Fixture(unittest.TestCase):
 
         created = pack_dir / "tmp_pack_created_by_fetch"
 
-        def time_out(command: list[str], timeout: float, on_timeout=None) -> None:
+        def time_out(
+            command: list[str], timeout: float, while_running=None
+        ) -> None:
             self.assertEqual(
                 command,
                 [
@@ -326,7 +328,7 @@ class Fixture(unittest.TestCase):
                 "open_partial_packs_from_group",
                 return_value=({(created, info.st_dev, info.st_ino)}, []),
             ):
-                on_timeout(mock.Mock(pid=1234))
+                while_running(mock.Mock(pid=1234))
             raise subprocess.TimeoutExpired(command, timeout)
 
         with (
@@ -384,7 +386,7 @@ class Fixture(unittest.TestCase):
                 gate_module.run_bounded(
                     [str(helper), str(created), "timed-out fetch"],
                     0.1,
-                    on_timeout=capture,
+                    while_running=capture,
                 )
         finally:
             gate_module.terminate_process_group(concurrent_process)
@@ -395,6 +397,42 @@ class Fixture(unittest.TestCase):
         self.assertFalse(created.exists())
         self.assertEqual(before.read_bytes(), b"pre-existing")
         self.assertEqual(concurrent.read_bytes(), b"concurrent fetch\n")
+
+    def test_pack_closed_before_timeout_is_still_removed(self) -> None:
+        repo = self.clone()
+        pack = repo / ".git" / "objects" / "pack" / "tmp_pack_closed_early"
+        helper = self.root / "close-pack-before-timeout"
+        helper.write_text(
+            "#!/bin/sh\n"
+            "exec 3>\"$1\"\n"
+            "printf partial-pack >&3\n"
+            "sleep 0.05\n"
+            "exec 3>&-\n"
+            "sleep 1\n"
+        )
+        helper.chmod(0o755)
+        captured: set[tuple[Path, int, int]] = set()
+
+        def observe(process: subprocess.Popen[str]) -> None:
+            packs, errors = gate_module.open_partial_packs_from_group(
+                repo,
+                process.pid,
+                {path for path, _device, _inode in captured},
+            )
+            self.assertEqual(errors, [])
+            captured.update(packs)
+
+        with self.assertRaises(subprocess.TimeoutExpired):
+            gate_module.run_bounded(
+                [str(helper), str(pack)],
+                0.15,
+                while_running=observe,
+            )
+
+        self.assertTrue(pack.exists())
+        self.assertEqual({path for path, _device, _inode in captured}, {pack})
+        self.assertEqual(gate_module.remove_partial_packs(captured), [])
+        self.assertFalse(pack.exists())
 
     def test_partial_pack_cleanup_preserves_a_replaced_path(self) -> None:
         repo = self.clone()
@@ -415,7 +453,7 @@ class Fixture(unittest.TestCase):
         index = pack_dir / "pack-created.idx"
 
         def succeed(
-            command: list[str], _timeout: float, on_timeout=None
+            command: list[str], _timeout: float, while_running=None
         ) -> subprocess.CompletedProcess[str]:
             temporary = pack_dir / "tmp_pack_created_by_fetch"
             temporary.write_bytes(b"completed pack")
