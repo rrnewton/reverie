@@ -645,10 +645,27 @@ class TestDeliveryNegativeBracket(DeliveryTestCase):
         self.assertEqual(pane.enters, 0)
 
     def test_a_composer_that_never_drains_is_refused(self):
+        """The refusal must point at Orc, not at the composer.
+
+        This asserted the earlier wording, "did not drain" plus "NOT accepted".
+        Both were accurate about what was seen and misleading about what it
+        meant: measured 2026-09-05, the box was found, took the keystrokes and
+        echoed them back, and Orc did not consume them -- the same coordinator
+        was failing an identity probe on its own control socket. A reader sent
+        after the composer is sent after a component that is working.
+        """
         pane = FakeOrcPane(drains_on_enter=False)
         message = self.deliver_error(pane)
-        self.assertIn("did not drain", message)
-        self.assertIn("NOT accepted", message)
+        self.assertIn("Orc did not accept the submission", message)
+        self.assertIn("NOT delivered", message)
+        self.assertIn("THE COMPOSER IS NOT THE SUSPECT", message)
+        self.assertIn("orc session socket", message)
+
+    def test_a_composer_that_never_drains_has_our_own_draft_removed(self):
+        """Nothing is stranded: the relay takes back only what it typed."""
+        pane = FakeOrcPane(drains_on_enter=False)
+        message = self.deliver_error(pane)
+        self.assertIn("this relay's own and has been removed", message)
 
     def test_a_composer_that_never_drains_is_not_resent(self):
         pane = FakeOrcPane(drains_on_enter=False)
