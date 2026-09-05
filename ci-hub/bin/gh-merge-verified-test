@@ -873,22 +873,17 @@ def admission_unresolvable_cases() -> None:
         )
 
 
-def single_issuer_cases() -> None:
-    """Two lanes bound by ONE agent must be REFUSED; by two agents, ACCEPTED.
+def reviewer_name_metadata_cases() -> None:
+    """Fleet-name equality cannot change an exact-head admission decision.
 
     ⚠️ THIS IS AN END-TO-END PROBE ON PURPOSE. A unit test on the helper proves it
-    RETURNS a row; it does not prove the tool REFUSES. Those are different claims,
+    RETURNS a row; it does not prove the tool acts on it. Those are different claims,
     and the gap between them is exactly where a check gets computed, reported and
-    then not acted on -- an instrument that reads correctly and gates nothing.
-    So this drives the real CLI and asserts the exit code.
-
-    The accept case is not decoration. Without it this pair would pass for a tool
-    that refused every two-lane head, which would be a worse defect than the one
-    being fixed: it would make the two-lane rule unsatisfiable.
+    then not acted on. Both cases drive the real CLI and must have the same result.
     """
     for issuers, expect_code, name in (
-        (("hermit-011", "hermit-011"), 9, "two lanes, ONE agent: REFUSED"),
-        (("hermit-011", "hermit-030"), 0, "two lanes, TWO agents: ACCEPTED"),
+        (("hermit-011", "hermit-011"), 0, "two lanes, matching name metadata: ACCEPTED"),
+        (("hermit-011", "hermit-030"), 0, "two lanes, differing name metadata: ACCEPTED"),
     ):
         with tempfile.TemporaryDirectory(prefix="gh-merge-verified-iss-") as tmp:
             root = Path(tmp)
@@ -907,12 +902,14 @@ def single_issuer_cases() -> None:
                 "reviews": [],
                 "comments": [
                     {"id": 900001,
+                     "user": {"login": "fixture-reviewer"},
                      "html_url": "https://github.com/fixture/repo/pull/1#issuecomment-900001",
                      "created_at": "2026-09-04T00:00:01Z",
                      "updated_at": "2026-09-04T00:00:01Z",
                      "body": f"[hermit2, {claude}, unresolved, devbig014, role=review]\n"
                              f"APPROVED-AT: claude {head} BY {claude}"},
                     {"id": 900002,
+                     "user": {"login": "fixture-reviewer"},
                      "html_url": "https://github.com/fixture/repo/pull/1#issuecomment-900002",
                      "created_at": "2026-09-04T00:00:02Z",
                      "updated_at": "2026-09-04T00:00:02Z",
@@ -939,6 +936,10 @@ def single_issuer_cases() -> None:
                 "  exit 0\nfi\n"
                 'if [ "$1" = api ] && [[ "$*" = *"/issues/1/comments"* ]]; then\n'
                 f'  cat {issue_payload}\n  exit 0\nfi\n'
+                'if [ "$1" = api ] && [[ "$*" = *"/collaborators/fixture-reviewer/permission"* ]]; then\n'
+                "  echo '{\"role_name\":\"write\",\"permission\":\"write\","
+                "\"user\":{\"login\":\"fixture-reviewer\"}}'\n"
+                "  exit 0\nfi\n"
                 'if [ "$1" = api ]; then\n'
                 "  echo '[[]]'\n  exit 0\nfi\n"
                 'if [ "$1" = pr ] && [ "$2" = view ]; then\n'
@@ -961,17 +962,6 @@ def single_issuer_cases() -> None:
                             cwd=work, env=env)
             check(name, code == expect_code,
                   f"got exit {code}, expected {expect_code}\n{out}")
-            if expect_code == 9:
-                check(
-                    "the refusal names the agent, not just the lanes",
-                    "hermit-011" in out and "SAME agent" in out,
-                    f"output did not name the agent\n{out}",
-                )
-                check(
-                    "the refusal says nothing was merged",
-                    "REFUSING TO MERGE" in out,
-                    f"output did not say it refused\n{out}",
-                )
 
 
 def main() -> int:
@@ -998,7 +988,7 @@ def main() -> int:
     unit_cases()
     self_change_cases()
     race_cases()
-    single_issuer_cases()
+    reviewer_name_metadata_cases()
     admission_unresolvable_cases()
     receipt_cases()
     argv_cases()

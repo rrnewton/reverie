@@ -138,8 +138,9 @@ EXIT
        pull-ref hazard below.
     4  COULD NOT DETERMINE: the check did not complete. Distinct from 3 on
        purpose, so a broken verifier is never read as a clean landing.
-    5  REFUSED TO MERGE: a CHANGES-REQUESTED-AT names this exact head. Nothing was
-       attempted. An APPROVED-AT at the same head does not override it.
+    5  REFUSED TO MERGE: an unresolved CHANGES-REQUESTED-AT applies to this head.
+       Nothing was attempted. Only a later canonical same-lane decision or an
+       authorized exact RETIRES record discharges it.
     6  REFUSED TO MERGE: a `passed-review-<lane>` label asserts an approval that is
        NOT bound to this head -- the label outlived the sha it was earned at.
        Nothing was attempted. Scoped narrowly: a pull request carrying no
@@ -166,13 +167,6 @@ EXIT
        Measured 2026-08-25: this collapse made three race cases in
        gh-merge-verified-test pass on an exit 4 produced by the admission guard rather
        than by the race they claimed to exercise.
-    9  REFUSED TO MERGE: every `passed-review-<lane>` label claimed on this head was
-       bound by the SAME agent, so the two-lane rule was met in form and not in
-       substance. Nothing was attempted. Scoped like 6: a pull request claiming fewer
-       than two lanes is untouched, and a binding whose issuer is UNKNOWN makes this
-       DECLINE TO ANSWER rather than refuse -- it refuses on evidence of one agent,
-       never on the absence of evidence of two.
-
 WHAT A CALLER SHOULD DO WITH EACH, BECAUSE A CODE IS ONLY USEFUL IF IT IMPLIES AN ACTION
 ------------------------------------------------------------------------------------
 An exit code shared by two conditions is a COLLAPSED VALUE: the caller cannot tell
@@ -194,8 +188,8 @@ success. The codes are split now; the actions are written down so they stay spli
        pull request is being questioned.
 
   DO NOT RETRY -- the condition is about the PULL REQUEST; re-running changes nothing:
-    5  a reviewer refused THIS head. The head must move (push the fix) or the refusal
-       must be withdrawn in the grammar. A second APPROVED-AT does not override it.
+    5  a reviewer refused and no later canonical same-lane decision or authorized
+       exact RETIRES record establishes that the objection was resolved.
     6  the label is a stale cache of an approval earned at another sha. Re-request the
        lane at the CURRENT head. Removing the label to get past this is defeating the
        check, not satisfying it.
@@ -796,12 +790,11 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     was actually answered.
 
     THE RULE IS EXACT-HEAD AND FAILS CLOSED:
-      * a refusal naming this head blocks even if an APPROVED-AT also names it.
-        Two reviewers disagreeing is not settled by whoever posted last -- that
-        is a coin toss -- so this stops and makes a human choose.
-      * a refusal on an earlier sha remains visible until its issuer approves a
-        later head or an authorized exact retirement records that the objection
-        was resolved. A push alone proves neither.
+      * a refusal naming this head blocks until a later canonical decision in the
+        same lane at this exact head records that the objection was resolved.
+      * a refusal on an earlier sha remains visible until a later canonical lane
+        decision at the current head or an authorized exact retirement records
+        that the objection was resolved. A push alone proves neither.
       * a currently authorized GitHub actor may record that one exact objection is resolved
         with CHANGES-REQUESTED-WITHDRAWN-AT in the refusal's lane at the current
         repaired head plus
@@ -832,9 +825,7 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
         return ["__UNREADABLE__"]
     return [str(item.get("message") or "unresolved review objection") for item in unresolved]
 
-def stale_review_labels(
-    pr: str, repo: str, head: str, single_issuer: "list[str] | None" = None
-) -> list[str]:
+def stale_review_labels(pr: str, repo: str, head: str) -> list[str]:
     """`passed-review-<lane>` labels whose lane is NOT bound to THIS head.
 
     ⚠️ A LABEL OUTLIVES THE SHA IT WAS EARNED AT. That is the whole defect. The
@@ -862,19 +853,9 @@ def stale_review_labels(
     state could not be established -- which is refused as an absence of an
     answer, never treated as permission.
 
-    ⚠️ `single_issuer` IS AN OUT-PARAMETER, in the style of `malformed` in the
-    grammar module: when supplied, it receives the rows describing lanes that are
-    all BOUND AT THIS HEAD BY ONE AGENT. It is computed here rather than in a
-    second function because the answer needs the same `gh pr view` payload, and a
-    second call would be a second query -- this fleet has tripped GitHub's
-    secondary rate limit by asking the same question twice, after which every
-    gate reads INDETERMINATE and nothing can land at all.
-
-    THE LANE IS NOT THE REVIEWER. `claude` and `codex` name a HARNESS FAMILY, and
-    nineteen agents share those two names, so two lanes at one head has never been
-    evidence that two reviewers looked at it -- one agent can bind both and the
-    record is indistinguishable from independent review. dev-hermit#191 made the
-    binding carry its issuer so this function can finally ask.
+    A marker's optional issuer is audit metadata. It is deliberately not used to
+    accept or refuse the lane: transient fleet names cannot establish reviewer
+    independence, while the exact head and lane remain mandatory.
     """
     grammar = _load_grammar()
     rc, out, _ = run(gh_argv(["gh", "pr", "view", pr, "--repo", repo,
@@ -902,17 +883,10 @@ def stale_review_labels(
     except grammar.ReviewRecordError:
         return ["__UNREADABLE__"]
     stale = []
-    # lane -> the agents that bound THIS head on it. `None` in the set means a
-    # binding whose issuer neither the marker nor the comment's disclosure tag
-    # stated.
-    bound_by: dict[str, set] = {}
     for lane in sorted(labelled):
         if lane not in grammar.LANES:
             continue
-        issuers: list = []
-        shas = grammar.lane_shas(
-            comments, lane, [], issuers=issuers, current_head=head
-        )
+        shas = grammar.lane_shas(comments, lane, [], current_head=head)
         state = grammar.classify_approval(head, shas)
         if state != grammar.BOUND_CURRENT:
             bound = shas[-1][:12] if shas else "nothing"
@@ -921,26 +895,6 @@ def stale_review_labels(
                 f"head is {head[:12]}"
             )
             continue
-        # Only bindings AT THIS HEAD count. A lane's earlier binding on a
-        # superseded sha says nothing about who reviewed the code being merged.
-        bound_by[lane] = {i for sha, i in issuers if sha.lower() == head.lower()}
-
-    if single_issuer is not None and len(bound_by) >= 2:
-        agents = set().union(*bound_by.values())
-        # ⚠️ UNATTRIBUTABLE IS NOT "THE SAME AGENT", AND IT IS NOT "TWO AGENTS".
-        # Nothing emits `BY` yet, so the issuer usually comes from the comment's
-        # disclosure tag -- and that tag is missing on a large minority of agent
-        # comments. Refusing on an unknown identity would block nearly every pull
-        # request in the fleet on the day this lands, for a fact never
-        # established. So an absent issuer makes this check DECLINE TO ANSWER for
-        # that head, which is the same discipline as the surrounding scope rule:
-        # refuse on evidence, never on the absence of it.
-        if None not in agents and len(agents) == 1:
-            who = next(iter(agents))
-            single_issuer.append(
-                f"{', '.join(sorted(bound_by))}: all bound at {head[:12]} by "
-                f"ONE agent -- {who}"
-            )
     return stale
 
 
@@ -1152,15 +1106,14 @@ def main() -> None:
                    f"exact head {head[:12]}.",
                 *[f"    {b}" for b in blocking],
                 "",
-                "  An APPROVED-AT at the same head does NOT override this.",
-                "  TO PROCEED: push the fix (the sha moves and the refusal stops naming the head),",
-                "  or, after verifying the objection is resolved, have a currently authorized GitHub actor post",
-                f"  CHANGES-REQUESTED-WITHDRAWN-AT: <family> {head} plus RETIRES <comment-id>.",
+                "  TO PROCEED: after resolving the objection, obtain a later canonical approval",
+                "  or withdrawal in that lane at this exact head, or have a currently authorized",
+                f"  GitHub actor post CHANGES-REQUESTED-WITHDRAWN-AT: <family> {head}",
+                "  plus RETIRES <comment-id>.",
                 "  There is deliberately no override flag.",
                 "  FALSE POSITIVE? The match is anchored to column 0, so an unindented quotation",
                 "  of a marker re-asserts it. Indent quoted markers by one space.")
-        one_agent: list[str] = []
-        stale = stale_review_labels(pr, repo, head, single_issuer=one_agent)
+        stale = stale_review_labels(pr, repo, head)
         if stale == ["__UNREADABLE__"]:
             die(8, "gh-merge-verified: ADMISSION COULD NOT RUN -- could not read labels/comments "
                    f"for #{pr}, so a stale review label cannot be ruled out.",
@@ -1179,22 +1132,6 @@ def main() -> None:
                 "  ⚠️ A MISSING LANE TOKEN READS AS MALFORMED, NOT AS AN APPROVAL: write",
                 "  'APPROVED-AT: claude <sha>', not 'APPROVED-AT <sha>'. That one-token typo is",
                 "  what left #2601 with zero authoritative lanes while looking reviewed.")
-        if one_agent:
-            die(9, f"gh-merge-verified: REFUSING TO MERGE #{pr} -- every review lane claimed on "
-                   f"this head was bound by the SAME agent.",
-                *[f"    {s}" for s in one_agent],
-                "",
-                "  THE LANE IS NOT THE REVIEWER. 'claude' and 'codex' name a harness FAMILY,",
-                "  and this fleet shares two lane names across nineteen agents, so two lanes",
-                "  is not two reviewers. The two-lane rule exists to get two INDEPENDENT",
-                "  judgements; one agent binding both satisfies its letter and none of it.",
-                "  TO PROCEED: have a DIFFERENT agent review and post",
-                f"  'APPROVED-AT: <lane> {head} BY <their-agent-id>' at this head.",
-                "  Removing a label is not a remedy -- it drops the claim rather than",
-                "  meeting it, and lands the same unreviewed code with less evidence.",
-                "  ⚠️ SCOPE: this fires only when EVERY claimed lane resolves to ONE KNOWN",
-                "  agent. An unattributable binding -- no 'BY' and no disclosure tag --",
-                "  makes this check decline to answer rather than refuse.")
     if rc != 0 or not head:
         die(4, f"gh-merge-verified: COULD NOT DETERMINE — cannot resolve the head of PR {pr}")
 

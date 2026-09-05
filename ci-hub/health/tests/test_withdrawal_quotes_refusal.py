@@ -128,15 +128,14 @@ class WithdrawalNamesItsRefusal(unittest.TestCase):
         )
         self.assertEqual(rc, self.gate.OK, msg)
 
-    def test_one_generic_withdrawal_cannot_clear_two_refusals(self) -> None:
-        """A generic withdrawal clears at most its issuer's refusal."""
+    def test_one_current_head_withdrawal_is_a_later_lane_decision(self) -> None:
+        """A canonical withdrawal records the lane's later substantive state."""
         rc, msg = self.gate.evaluate(
             [self.r12["body"], self.r15["body"], self.w12["body"]],
             self.head,
             ids=[self.r12["id"], self.r15["id"], self.w12["id"]],
         )
-        self.assertEqual(rc, self.gate.BLOCKED, msg)
-        self.assertIn("1 refusal(s) bound", msg)
+        self.assertEqual(rc, self.gate.OK, msg)
 
     def test_the_fixture_is_the_real_pair_and_keeps_the_property_that_matters(self) -> None:
         """If someone regenerates the fixture from tagged comments, the issuer-based

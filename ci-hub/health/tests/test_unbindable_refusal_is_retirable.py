@@ -163,7 +163,7 @@ class TheWellFormedPathIsUnchanged(unittest.TestCase):
         code, _ = self._evaluate([TAG + f"CHANGES-REQUESTED-AT: claude {HEAD}"])
         self.assertEqual(code, BLOCKED)
 
-    def test_its_own_lane_withdrawal_still_clears_it(self):
+    def test_a_current_head_withdrawal_clears_a_well_formed_refusal(self):
         code, _ = self._evaluate(
             [
                 TAG + f"CHANGES-REQUESTED-AT: claude {HEAD}",

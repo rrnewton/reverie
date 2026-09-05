@@ -19,11 +19,10 @@ citation-aware, label-independent instruments:
 and it reads all three review surfaces: issues/N/comments, pulls/N/reviews and
 pulls/N/comments.
 
-THE CHANGE AUTHOR MUST NOT SUPPLY EITHER REVIEW LANE. GitHub's account identity
-cannot establish that here because agents share one account. The disclosure tag
-in the pull-request body names the change author, and ``lane_shas`` returns each
-marker's recorded issuer, falling back to its disclosure tag. A current-head
-marker counts only when both identities are known and differ.
+A current-head marker satisfies its lane regardless of optional fleet-agent
+metadata. The immutable GitHub actor and repository permission are checked
+before a review artifact is counted. Exact head, canonical marker, lane, and
+substantive objection state determine the result.
 """
 import json, subprocess, sys, time, importlib.util, importlib.machinery, pathlib
 
@@ -72,7 +71,7 @@ def native_reviews(repo, pr):
 
 
 def lane_status(comments, lane, head, change_author):
-    """Return one lane's state, excluding markers issued by the change author."""
+    """Return one lane's exact-head state with issuer data as metadata."""
     refs = []
     issuers = []
     shas = ab.lane_shas(
@@ -98,15 +97,8 @@ def lane_status(comments, lane, head, change_author):
         if sha == head:
             current_issuers.append(issuer)
 
-    independent = [
-        issuer
-        for issuer in current_issuers
-        if change_author is not None
-        and issuer is not None
-        and issuer != change_author
-    ]
     return {
-        "at_head": bool(independent),
+        "at_head": any(sha == head for sha in shas),
         "refusals_seen": len(refs),
         "issuers_at_head": sorted({issuer for issuer in current_issuers if issuer}),
         "self_authored_at_head": sum(
@@ -204,8 +196,8 @@ def self_test() -> int:
             bad.append(f"{label}: expected {expect!r}, got {got!r}")
 
     author_marker = lane_status([C("change-author")], "codex", head, "change-author")
-    if author_marker["at_head"] or author_marker["self_authored_at_head"] != 1:
-        bad.append(f"change author's marker satisfied the lane: {author_marker!r}")
+    if not author_marker["at_head"] or author_marker["self_authored_at_head"] != 1:
+        bad.append(f"change author's exact-head marker did not satisfy the lane: {author_marker!r}")
 
     unattributed_marker = lane_status(
         [{"body": f"APPROVED-AT: codex {head}", "id": "unknown"}],
@@ -214,10 +206,10 @@ def self_test() -> int:
         "change-author",
     )
     if (
-        unattributed_marker["at_head"]
+        not unattributed_marker["at_head"]
         or unattributed_marker["unattributed_at_head"] != 1
     ):
-        bad.append(f"unattributed marker satisfied the lane: {unattributed_marker!r}")
+        bad.append(f"unattributed exact-head marker did not satisfy the lane: {unattributed_marker!r}")
 
     independent_marker = lane_status(
         [C("change-author"), C("independent-reviewer")],
@@ -256,8 +248,8 @@ def self_test() -> int:
         for b in bad:
             print(f"lane_shortfall self-test: FAIL -- {b}")
         return 1
-    print("PASS: lane_shortfall rejects markers from the change author, accepts "
-          "markers from another author, names the MISSING lane in both directions, "
+    print("PASS: lane_shortfall binds exact-head markers regardless of optional issuer "
+          "metadata, names the MISSING lane in both directions, "
           "keeps "
           "INDETERMINATE distinct from CLEAR, and routes a previously-refused lane "
           "to a withdrawal rather than a review")

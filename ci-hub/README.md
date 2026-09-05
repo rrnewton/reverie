@@ -236,26 +236,29 @@ policy requires this gateway and forbids raw terminal-status updates.
 
 ## Recording completed reviews
 
-`ci-hub review-attest` is the coordinator's single recording step after a
-reviewer posts an exact-head verdict comment. Pass the full comment URL and the
-outcome; the command verifies that the comment belongs to the selected pull
-request, names the dispatched reviewer, and contains exactly one canonical
-verdict for the selected family and head:
+`ci-hub review-attest` records an exact-head verdict comment. Pass the full
+comment URL and the outcome; the command verifies that the comment belongs to
+the selected pull request, that its immutable GitHub actor still has the
+required repository permission, and that it contains exactly one canonical
+verdict for the selected family and current head:
 
 ```text
 ci-hub review-attest --repo rrnewton/hermit --pr 1234 \
   --head 40_HEX_HEAD --family codex --outcome approval \
   --comment-url https://github.com/rrnewton/hermit/pull/1234#issuecomment-5678 \
-  --reviewer hermit-127 --task review-task-id \
-  --round 1 --who hermit-coordinator --team hermit2
+  --task review-task-id --round 1
 ```
 
-An unattributed review remains visible but cannot be attested. Do not weaken the
-identity check, edit the old comment, or wait for its original author: another
-independent reviewer may inspect the exact current head and publish their own
-verdict through `ci-hub/bin/gh` with its validated five-field disclosure. A
-different coordinator then attests that new comment. A moved head still requires
-a fresh review.
+`--reviewer`, `--who`, and `--team` are optional audit metadata. When supplied,
+they are recorded as unverified metadata and do not grant or deny authority.
+Absent, stale, mismatched, or same-process fleet names therefore do not prevent
+recording an otherwise valid review. A moved head still requires a fresh review,
+and an unauthorized GitHub actor, malformed marker, or unresolved substantive
+objection still blocks.
+
+The canonical exact-head comment is the authority. Review labels are a cache
+that `review-attest` reconciles after verifying the comment; a label without the
+comment does not establish approval.
 
 Approval and refusal both apply the numbered `adversarial-review-<family><N>`
 activity label. Approval additionally applies `passed-review-<family>`; refusal

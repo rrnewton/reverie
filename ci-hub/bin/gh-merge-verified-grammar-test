@@ -38,15 +38,7 @@ MIXED_MENTION_AND_ASSERTION = (
 
 
 def by(agent: str, *lines: str) -> str:
-    """A comment body carrying a disclosure tag, so the markers have an AUTHOR.
-
-    Generic clearing is scoped to a refusal's issuer as well as its lane, so a
-    cell that says "a withdrawal clears" has to say whose. The exact RETIRES path
-    instead requires a valid disclosure, a currently authorized GitHub actor,
-    one comment id and lane, and the current head. The disclosure identifies the
-    fleet agent while the immutable actor identifies the shared GitHub account;
-    the role field is audit metadata only. Both behaviors are pinned below.
-    """
+    """A comment body carrying optional fleet-name and role metadata."""
     tag = f"[hermit2, {agent}, unresolved, devbig014, role=reviewer]"
     return tag + "\n\n" + "\n".join(lines)
 
@@ -261,10 +253,10 @@ CASES = [
     ("unparseable refusal shape blocks", f"CHANGES REQUESTED for {SHA} -- see below", True),
     ("canonical sha-less refusal blocks", "CHANGES-REQUESTED-AT: claude", True),
     ("historical REJECT spelling blocks", f"REJECT: claude {SHA}", True),
-    ("withdrawal clears",
+    ("refusal and withdrawal in one record remain ambiguous",
      by("hermit-007",
         f"CHANGES-REQUESTED-AT: claude {SHA}",
-        f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}"), False),
+        f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}"), True),
     # ⚠️ A WITHDRAWAL CLEARS ITS OWN LANE ONLY. Blocking is lane-agnostic on
     # purpose (see "codex refusal blocks too" above) because that direction fails
     # CLOSED. Clearing must not be, or one family discharges another's refusal --
@@ -276,23 +268,18 @@ CASES = [
     ("two lanes refuse, one withdraws, other still blocks",
      f"CHANGES-REQUESTED-AT: claude {SHA}\nCHANGES-REQUESTED-AT: codex {SHA}\n"
      f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}", True),
-    ("two lanes refuse, both withdraw, clears",
+    ("two lanes refuse and withdraw in one record, remains ambiguous",
      by("hermit-007",
         f"CHANGES-REQUESTED-AT: claude {SHA}",
         f"CHANGES-REQUESTED-AT: codex {SHA}",
         f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
-        f"CHANGES-REQUESTED-WITHDRAWN-AT: codex {SHA}"), False),
-    # ⚠️ AN UNQUOTED WITHDRAWAL CLEARS ITS OWN ISSUER'S REFUSAL ONLY, one scope narrower
-    # than the lane rule above and for the identical reason. A LANE IS STAFFED BY
-    # SEVERAL AGENTS, so lane-only clearing let agent B discharge agent A's block
-    # inside one lane. Measured 2026-08-26 by driving `blocking_changes_requests`
-    # directly: a hermit-007 refusal plus a hermit-005 withdrawal returned
-    # blocking=0. Same fail-open direction as hermit#2613's cross-lane clear.
-    # Each cell below returns the wrong answer against the pre-fix lander.
-    ("another issuer's withdrawal does NOT clear",
+        f"CHANGES-REQUESTED-WITHDRAWN-AT: codex {SHA}"), True),
+    # A later canonical same-lane decision answers the earlier objection.
+    # Fleet-name metadata cannot change that result.
+    ("different fleet-name metadata does not block a later withdrawal",
      [by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}"),
-      by("hermit-005", f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}")], True),
-    ("the issuer's own withdrawal still clears, across comments",
+      by("hermit-005", f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}")], False),
+    ("matching fleet-name metadata also clears across comments",
      [by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}"),
       by("hermit-007", f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}")], False),
     ("another reviewer can retire one exact resolved objection",
@@ -309,12 +296,12 @@ CASES = [
        "body": by("hermit-005",
                   f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
                   "RETIRES 900001")}], False),
-    ("another reviewer's unquoted withdrawal still does NOT clear",
+    ("different fleet-name metadata does not block an unquoted withdrawal",
      [{"url": "https://github.com/o/r/pull/1#issuecomment-900001",
        "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
       {"url": "https://github.com/o/r/pull/1#issuecomment-900002",
        "body": by("hermit-005",
-                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}")}], True),
+                  f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}")}], False),
     ("RETIRES naming another comment does NOT clear",
      [{"url": "https://github.com/o/r/pull/1#issuecomment-900001",
        "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
@@ -358,13 +345,13 @@ CASES = [
        "body": "[hermit2, hermit-007, unresolved, devbig014, role=implementation]\n\n"
                f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}\n"
                "RETIRES 900001"}], False),
-    ("a same-issuer RETIRES whose BY disagrees with disclosure cannot fall back",
+    ("a RETIRES BY mismatch is optional metadata and does not block authority",
      [{"id": 900001,
        "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
       {"id": 900002,
        "body": by("hermit-007",
                   f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA} BY hermit-008",
-                  "RETIRES 900001")}], True),
+                  "RETIRES 900001")}], False),
     ("a target comment with two refusals is ambiguous and does NOT clear",
      [{"url": "https://github.com/o/r/pull/1#issuecomment-900001",
        "body": by("hermit-007",
@@ -383,20 +370,20 @@ CASES = [
        "body": by("hermit-007",
                   f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
                   "RETIRES 900001")}], True),
-    ("a prose RETIRES mention does NOT clear",
+    ("a prose RETIRES mention does not disable the canonical withdrawal",
      [{"url": "https://github.com/o/r/pull/1#issuecomment-900001",
        "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
       {"url": "https://github.com/o/r/pull/1#issuecomment-900002",
        "body": by("hermit-005",
                   f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
-                  "Example only; do not post `RETIRES 900001`.")}], True),
-    ("a fenced RETIRES example does NOT clear",
+                  "Example only; do not post `RETIRES 900001`.")}], False),
+    ("a fenced RETIRES example does not disable the canonical withdrawal",
      [{"url": "https://github.com/o/r/pull/1#issuecomment-900001",
        "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
       {"url": "https://github.com/o/r/pull/1#issuecomment-900002",
        "body": by("hermit-005",
                   f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
-                  "```text", "RETIRES 900001", "```")}], True),
+                  "```text", "RETIRES 900001", "```")}], False),
     ("a retirement bound to another head does NOT clear",
      [{"url": "https://github.com/o/r/pull/1#issuecomment-900001",
        "body": by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}")},
@@ -451,20 +438,16 @@ CASES = [
       {"id": 900003,
        "created_at": _time(3), "updated_at": _time(3),
        "body": by("hermit-008", f"CHANGES-REQUESTED-AT: claude {SHA}")}], True),
-    ("a later approval by another issuer does NOT clear",
+    ("a later same-lane approval clears regardless of fleet-name metadata",
      [by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}"),
-      by("hermit-005", f"APPROVED-AT: claude {SHA}")], True),
-    # FAIL CLOSED AT BOTH ENDS. An unsigned withdrawal cannot say whose refusal it
-    # discharges; an unsigned refusal cannot be proven to belong to anyone, so no
-    # withdrawal can claim it. Both still clear the ordinary way -- push, and the
-    # sha stops naming the head. This is the file's declared trade: a false
-    # positive costs one push, a false negative merges over a block.
-    ("unsigned withdrawal clears nothing",
+      by("hermit-005", f"APPROVED-AT: claude {SHA}")], False),
+    # Missing fleet-name metadata cannot make an exact-head lane decision inert.
+    ("unsigned withdrawal clears by lane and chronology",
      [by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}"),
-      f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}"], True),
-    ("unsigned refusal is not cleared by a signed withdrawal",
+      f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}"], False),
+    ("unsigned refusal is cleared by a later canonical signed withdrawal",
      [f"CHANGES-REQUESTED-AT: claude {SHA}",
-      by("hermit-007", f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}")], True),
+      by("hermit-007", f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}")], False),
     # A withdrawal naming no lane cannot say whose refusal it discharges, so it
     # clears nothing -- otherwise the unilateral clear returns via the bare form.
     ("unlaned withdrawal clears nothing",

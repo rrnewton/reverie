@@ -117,7 +117,7 @@ def _refusal(
 
 
 def _withdrawal(
-    agent: str,
+    agent: str | None,
     target: int | None,
     *,
     lane: str = "claude",
@@ -128,7 +128,8 @@ def _withdrawal(
     extra_target: int | None = None,
 ) -> dict:
     marker_agent = agent if marker_agent is None else marker_agent
-    lines = [f"CHANGES-REQUESTED-WITHDRAWN-AT: {lane} {head} BY {marker_agent}"]
+    suffix = f" BY {marker_agent}" if marker_agent else ""
+    lines = [f"CHANGES-REQUESTED-WITHDRAWN-AT: {lane} {head}{suffix}"]
     if target is not None:
         lines.append(f"RETIRES {target}")
     if extra_target is not None:
@@ -152,14 +153,14 @@ def test_a_retired_unsigned_refusal_stops_blocking() -> None:
     assert unanswered == []
 
 
-def test_the_same_unretired_refusal_still_blocks() -> None:
+def test_a_later_current_head_withdrawal_discharges_the_lane() -> None:
     comments = [
         _approval(), _refusal(REFUSAL_ID), _withdrawal("hermit-030", None)
     ]
-    assert _gate_state(comments) == gate.BLOCKED
+    assert _gate_state(comments) == gate.OK
     state, unanswered = _state(comments)
-    assert state == ab.REFUSED, (state, unanswered)
-    assert unanswered == [(HEAD, None)]
+    assert state == ab.UNDETERMINED, (state, unanswered)
+    assert unanswered == []
 
 
 def test_retiring_a_different_comment_does_not_clear_the_refusal() -> None:
@@ -194,16 +195,16 @@ def test_another_authorized_reviewer_can_retire_a_named_refusal() -> None:
     assert unanswered == []
 
 
-def test_another_reviewer_unquoted_withdrawal_does_not_clear() -> None:
+def test_fleet_name_on_a_current_head_withdrawal_does_not_control_discharge() -> None:
     comments = [
         _approval(),
         _refusal(REFUSAL_ID, "hermit-011"),
         _withdrawal("hermit-030", None),
     ]
-    assert _gate_state(comments) == gate.BLOCKED
+    assert _gate_state(comments) == gate.OK
     state, unanswered = _state(comments)
-    assert state == ab.REFUSED, (state, unanswered)
-    assert unanswered == [(HEAD, "hermit-011")]
+    assert state == ab.UNDETERMINED, (state, unanswered)
+    assert unanswered == []
 
 
 def test_the_refusal_issuer_can_retire_the_named_refusal() -> None:
@@ -283,7 +284,7 @@ def test_shared_github_account_can_publish_an_answered_retirement() -> None:
     assert _state(comments) == (ab.BOUND_CURRENT, [])
 
 
-def test_shared_github_account_without_answering_evidence_does_not_clear() -> None:
+def test_current_head_withdrawal_is_substantive_answering_evidence() -> None:
     comments = [
         _approval(),
         _refusal(REFUSAL_ID, "hermit-011"),
@@ -294,8 +295,8 @@ def test_shared_github_account_without_answering_evidence_does_not_clear() -> No
         ),
     ]
 
-    assert _gate_state(comments) == gate.BLOCKED
-    assert _state(comments)[0] == ab.REFUSED
+    assert _gate_state(comments) == gate.OK
+    assert _state(comments) == (ab.UNDETERMINED, [])
 
 
 def test_shared_github_account_without_repository_permission_cannot_retire() -> None:
@@ -416,7 +417,7 @@ def test_malformed_retires_assertions_do_not_fall_back_to_generic_withdrawal() -
         assert _state(comments)[0] == ab.REFUSED, malformed
 
 
-def test_quoted_malformed_retires_text_does_not_change_generic_withdrawal() -> None:
+def test_retires_text_in_a_quote_does_not_disable_a_canonical_withdrawal() -> None:
     refusal = _refusal(REFUSAL_ID, "hermit-011")
     for quoted in (
         "`RETIRES nope`",
@@ -426,6 +427,7 @@ def test_quoted_malformed_retires_text_does_not_change_generic_withdrawal() -> N
         withdrawal = _withdrawal("hermit-011", None)
         withdrawal["body"] += f"\n{quoted}"
         assert _gate_state([refusal, withdrawal]) == gate.OK, quoted
+        assert _state([refusal, withdrawal]) == (ab.UNDETERMINED, []), quoted
 
 
 def test_a_reviewer_disclosure_after_a_role_tag_can_retire() -> None:
@@ -472,7 +474,7 @@ def test_unrecognized_role_text_is_audit_metadata_not_authority() -> None:
     assert _state(comments)[0] == ab.BOUND_CURRENT
 
 
-def test_a_short_malformed_disclosure_cannot_retire_a_refusal() -> None:
+def test_a_short_malformed_disclosure_is_only_metadata() -> None:
     withdrawal = {
         "id": WITHDRAWAL_ID,
         "body": "\n".join(
@@ -482,15 +484,20 @@ def test_a_short_malformed_disclosure_cannot_retire_a_refusal() -> None:
                 f"RETIRES {REFUSAL_ID}",
             ]
         ),
+        "user": {"login": "rrnewton"},
+        "_review_surface": "issue-comment",
+        "_current_review_actor_authorized": True,
+        "_current_review_actor_login": "rrnewton",
+        "_current_review_actor_permission": "write",
         "created_at": "2026-01-12T10:00:03Z",
         "updated_at": "2026-01-12T10:00:03Z",
     }
     comments = [_approval(), _refusal(REFUSAL_ID, "hermit-011"), withdrawal]
-    assert _gate_state(comments) == gate.BLOCKED
-    assert _state(comments)[0] == ab.REFUSED
+    assert _gate_state(comments) == gate.OK
+    assert _state(comments)[0] == ab.BOUND_CURRENT
 
 
-def test_a_later_copied_reviewer_disclosure_cannot_authorize_impl() -> None:
+def test_a_later_copied_reviewer_disclosure_is_only_metadata() -> None:
     withdrawal = {
         "id": WITHDRAWAL_ID,
         "body": "\n".join(
@@ -501,15 +508,20 @@ def test_a_later_copied_reviewer_disclosure_cannot_authorize_impl() -> None:
                 f"RETIRES {REFUSAL_ID}",
             ]
         ),
+        "user": {"login": "rrnewton"},
+        "_review_surface": "issue-comment",
+        "_current_review_actor_authorized": True,
+        "_current_review_actor_login": "rrnewton",
+        "_current_review_actor_permission": "write",
         "created_at": "2026-01-12T10:00:03Z",
         "updated_at": "2026-01-12T10:00:03Z",
     }
     comments = [_approval(), _refusal(REFUSAL_ID, "hermit-011"), withdrawal]
-    assert _gate_state(comments) == gate.BLOCKED
-    assert _state(comments)[0] == ab.REFUSED
+    assert _gate_state(comments) == gate.OK
+    assert _state(comments)[0] == ab.BOUND_CURRENT
 
 
-def test_a_copied_reviewer_disclosure_after_prose_cannot_authorize() -> None:
+def test_a_copied_reviewer_disclosure_after_prose_is_only_metadata() -> None:
     withdrawal = {
         "id": WITHDRAWAL_ID,
         "body": "\n".join(
@@ -521,15 +533,20 @@ def test_a_copied_reviewer_disclosure_after_prose_cannot_authorize() -> None:
                 f"RETIRES {REFUSAL_ID}",
             ]
         ),
+        "user": {"login": "rrnewton"},
+        "_review_surface": "issue-comment",
+        "_current_review_actor_authorized": True,
+        "_current_review_actor_login": "rrnewton",
+        "_current_review_actor_permission": "write",
         "created_at": "2026-01-12T10:00:03Z",
         "updated_at": "2026-01-12T10:00:03Z",
     }
     comments = [_approval(), _refusal(REFUSAL_ID, "hermit-011"), withdrawal]
-    assert _gate_state(comments) == gate.BLOCKED
-    assert _state(comments)[0] == ab.REFUSED
+    assert _gate_state(comments) == gate.OK
+    assert _state(comments)[0] == ab.BOUND_CURRENT
 
 
-def test_a_by_clause_that_disagrees_with_the_disclosure_cannot_retire() -> None:
+def test_a_by_clause_that_disagrees_with_the_disclosure_is_only_metadata() -> None:
     comments = [
         _approval(),
         _refusal(REFUSAL_ID, "hermit-011"),
@@ -537,8 +554,28 @@ def test_a_by_clause_that_disagrees_with_the_disclosure_cannot_retire() -> None:
             "hermit-030", REFUSAL_ID, marker_agent="hermit-099"
         ),
     ]
-    assert _gate_state(comments) == gate.BLOCKED
-    assert _state(comments)[0] == ab.REFUSED
+    assert _gate_state(comments) == gate.OK
+    assert _state(comments)[0] == ab.BOUND_CURRENT
+
+
+def test_no_fleet_name_is_required_for_exact_authorized_retirement() -> None:
+    comments = [
+        _approval(),
+        _refusal(REFUSAL_ID, "departed-reviewer"),
+        _withdrawal(None, REFUSAL_ID, github_actor="rrnewton"),
+    ]
+    assert _gate_state(comments) == gate.OK
+    assert _state(comments) == (ab.BOUND_CURRENT, [])
+
+
+def test_hostname_shaped_issuer_is_only_metadata() -> None:
+    comments = [
+        _approval(),
+        _refusal(REFUSAL_ID, "devbig014"),
+        _withdrawal(None, REFUSAL_ID, github_actor="rrnewton"),
+    ]
+    assert _gate_state(comments) == gate.OK
+    assert _state(comments) == (ab.BOUND_CURRENT, [])
 
 
 def test_a_retirement_bound_to_another_lane_cannot_retire() -> None:
@@ -1024,7 +1061,7 @@ def test_a_target_comment_with_two_refusals_is_ambiguous() -> None:
     assert _state(comments)[0] == ab.REFUSED
 
 
-def test_retires_mentions_and_code_examples_are_not_assertions() -> None:
+def test_retires_mentions_do_not_change_canonical_withdrawal_semantics() -> None:
     for example in (
         f"Example only; do not post `RETIRES {REFUSAL_ID}`.",
         f"```text\nRETIRES {REFUSAL_ID}\n```",
@@ -1037,8 +1074,8 @@ def test_retires_mentions_and_code_examples_are_not_assertions() -> None:
             example,
         )
         comments = [_approval(), _refusal(REFUSAL_ID, "hermit-011"), withdrawal]
-        assert _gate_state(comments) == gate.BLOCKED, example
-        assert _state(comments)[0] == ab.REFUSED, example
+        assert _gate_state(comments) == gate.OK, example
+        assert _state(comments) == (ab.UNDETERMINED, []), example
 
 
 def test_retires_without_a_withdrawal_does_not_clear_the_refusal() -> None:
@@ -1064,8 +1101,9 @@ def test_old_head_retirement_of_unsigned_refusal_does_not_clear_named_peer() -> 
     assert rc == gate.BLOCKED, reason
     assert "OUTRUN" in reason, reason
     assert "1 other refusal(s) WERE answered" in reason, reason
-    assert "by hermit-011" in reason, reason
-    assert "comment 900002 was issued by <unsigned> and retired by hermit-030" in reason
+    assert f"claude@{HEAD[:12]}" in reason, reason
+    assert "hermit-011" not in reason, reason
+    assert "comment 900002 was retired by authorized GitHub actor hermit-030" in reason
 
 
 def test_old_head_named_refusal_is_cleared_by_its_own_precise_retirement() -> None:
@@ -1087,7 +1125,7 @@ def test_old_head_unsigned_refusal_keeps_its_precise_exit() -> None:
     ]
     rc, reason = _gate_result(comments, MOVED_HEAD)
     assert rc == gate.OK, reason
-    assert "comment 900001 was issued by <unsigned> and retired by hermit-030" in reason
+    assert "comment 900001 was retired by authorized GitHub actor hermit-030" in reason
 
 
 def test_old_head_unsigned_unquoted_withdrawal_clears_nothing() -> None:
@@ -1098,4 +1136,5 @@ def test_old_head_unsigned_unquoted_withdrawal_clears_nothing() -> None:
     ]
     rc, reason = _gate_result(comments, MOVED_HEAD)
     assert rc == gate.BLOCKED, reason
-    assert "by <unsigned>" in reason, reason
+    assert f"claude@{HEAD[:12]}" in reason, reason
+    assert "hermit-030" not in reason, reason

@@ -50,6 +50,8 @@ class FakeGh:
         comment_body: str | None = None,
         comment_url: str = COMMENT_URL,
         pr_labels: set[str] | None = None,
+        github_actor: str | None = "rrnewton",
+        permission: str = "write",
     ) -> None:
         self.heads = iter(heads or [HEAD, HEAD, HEAD])
         self.calls: list[list[str]] = []
@@ -64,6 +66,8 @@ class FakeGh:
         )
         self.comment_url = comment_url
         self.pr_labels = set(pr_labels or ())
+        self.github_actor = github_actor
+        self.permission = permission
 
     def __call__(self, args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         self.calls.append(args)
@@ -78,8 +82,18 @@ class FakeGh:
                     "labels": [{"name": name} for name in sorted(self.pr_labels)],
                 }
             )
+        elif args[1] == "api" and "/collaborators/" in args[2]:
+            actor = args[2].split("/collaborators/", 1)[1].split("/", 1)[0]
+            out = json.dumps({
+                "role_name": self.permission,
+                "permission": self.permission,
+                "user": {"login": actor},
+            })
         elif args[1] == "api":
-            out = json.dumps({"html_url": self.comment_url, "body": self.comment_body})
+            comment = {"html_url": self.comment_url, "body": self.comment_body}
+            if self.github_actor is not None:
+                comment["user"] = {"login": self.github_actor}
+            out = json.dumps(comment)
         elif args[1:3] == ["pr", "edit"]:
             for index, arg in enumerate(args):
                 if arg == "--add-label":
@@ -145,6 +159,8 @@ def assert_approval_records_activity_plus_approval() -> None:
     body = comment[comment.index("--body") + 1]
     assert "review-outcome: approval" in body
     assert f"review-comment: {COMMENT_URL}" in body
+    assert "unverified-reviewer-metadata: codex-2" in body
+    assert "github-actor: rrnewton" in body
     assert "APPROVED-AT" not in body
     assert "dispatch attestation does not prove the executing process family" in body
     assert comment[1:7] == ["--who", "hermit-coord", "--team", "hermit2", "--role", "coordinator"]
@@ -192,39 +208,29 @@ def assert_exact_reviewer_comment_is_required() -> None:
     )
 
 
-def assert_unattributed_review_refuses_and_independent_successor_attests() -> None:
-    invalid = FakeGh(
+def assert_fleet_name_metadata_does_not_control_attestation() -> None:
+    unnamed = FakeGh(
         comment_body=(
             "[adversarial-reviewer agent, gpt-5.6-sol]\n"
             f"APPROVED-AT: codex {HEAD}"
         )
     )
-    stderr = io.StringIO()
-    with redirect_stderr(stderr):
-        assert R.main(BASE_ARGS, invalid) == 1
-    refusal = stderr.getvalue().casefold()
-    assert "reviewer comment issuer is missing" in refusal
-    assert "do not wait for the original reviewer" in refusal
-    assert "another independent reviewer" in refusal
-    assert all(
-        "comment" not in call and call[1:3] != ["pr", "edit"]
-        for call in invalid.calls
-    )
+    assert R.main(BASE_ARGS, unnamed) == 0
 
-    successor = "codex-9"
+    false_name = "not-the-reviewer"
     replacement = FakeGh(
         comment_body=(
-            f"[hermit2, {successor}, unresolved, devbig014, role=reviewer]\n"
+            "[hermit2, another-name, unresolved, devbig014, role=reviewer]\n"
             f"APPROVED-AT: codex {HEAD}"
         ),
         comment_url=SUCCESSOR_COMMENT_URL,
     )
     args = replace_arg(BASE_ARGS, "--comment-url", SUCCESSOR_COMMENT_URL)
-    args = replace_arg(args, "--reviewer", successor)
+    args = replace_arg(args, "--reviewer", false_name)
     assert R.main(args, replacement) == 0
     attestation = next(call for call in replacement.calls if "comment" in call)
     body = attestation[attestation.index("--body") + 1]
-    assert f"reviewer: {successor}" in body
+    assert f"unverified-reviewer-metadata: {false_name}" in body
     assert f"review-comment: {SUCCESSOR_COMMENT_URL}" in body
 
 
@@ -239,14 +245,37 @@ def assert_missing_label_and_head_drift_refuse() -> None:
     assert all(call[1:3] != ["pr", "edit"] for call in drift.calls)
 
 
-def assert_named_reviewer_cannot_self_attest() -> None:
+def assert_matching_reviewer_and_coordinator_metadata_does_not_refuse() -> None:
     fake = FakeGh()
     args = [
         value if value != "hermit-coord" else "codex-2"
         for value in BASE_ARGS
     ]
-    assert R.main(args, fake) == 1
-    assert fake.calls == [], "named reviewer reached GitHub on self-attestation"
+    assert R.main(args, fake) == 0
+    assert any("comment" in call for call in fake.calls)
+
+
+def assert_no_name_path_omits_optional_child_metadata() -> None:
+    fake = FakeGh()
+    args = list(BASE_ARGS)
+    for name in ("--reviewer", "--who", "--team"):
+        index = args.index(name)
+        del args[index:index + 2]
+    assert R.main(args, fake) == 0
+    comment = next(call for call in fake.calls if "comment" in call)
+    assert all(option not in comment for option in ("--who", "--team", "--role"))
+    body = comment[comment.index("--body") + 1]
+    assert "unverified-reviewer-metadata:" not in body
+    assert "github-actor: rrnewton" in body
+
+
+def assert_immutable_github_permission_is_required() -> None:
+    unauthorized = FakeGh(permission="read")
+    assert R.main(BASE_ARGS, unauthorized) == 1
+    assert all("comment" not in call for call in unauthorized.calls)
+    missing_actor = FakeGh(github_actor=None)
+    assert R.main(BASE_ARGS, missing_actor) == 1
+    assert all("comment" not in call for call in missing_actor.calls)
 
 
 def assert_family_validation_mutation_is_observable() -> None:
@@ -286,17 +315,19 @@ def main() -> None:
     assert_refusal_records_activity_without_approval()
     assert_critical_path()
     assert_exact_reviewer_comment_is_required()
-    assert_unattributed_review_refuses_and_independent_successor_attests()
+    assert_fleet_name_metadata_does_not_control_attestation()
     assert_missing_label_and_head_drift_refuse()
-    assert_named_reviewer_cannot_self_attest()
+    assert_matching_reviewer_and_coordinator_metadata_does_not_refuse()
+    assert_no_name_path_omits_optional_child_metadata()
+    assert_immutable_github_permission_is_required()
     assert_family_validation_mutation_is_observable()
     print(
         "review-attest: unknown-family-refusal=1/1 round-outcome-refusal=2/2 "
         "repository-contract=2/2 approval=1/1 refusal=1/1 "
         "critical=1/1 exact-comment-refusal=1/1 "
-        "unattributed-refusal=1/1 successor-recovery=1/1 "
+        "fleet-name-metadata=2/2 no-name-publication=1/1 permission=2/2 "
         "missing-label-refusal=1/1 head-drift-refusal=1/1 "
-        "reviewer-self-attestation-refusal=1/1 mutation=1/1"
+        "same-name-metadata=1/1 mutation=1/1"
     )
 
 

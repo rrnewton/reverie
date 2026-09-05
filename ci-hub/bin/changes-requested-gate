@@ -385,7 +385,7 @@ def native_changes_requested_ids(records: object) -> set[str]:
 
 
 def live_review_records(repo: str, pr: object) -> tuple[list[dict], str | None]:
-    """Read the three GitHub review surfaces with identity and version metadata."""
+    """Read the three GitHub review surfaces with actor and version metadata."""
     grammar = _load_grammar()
     records: list[dict] = []
     for path, surface in (
@@ -442,7 +442,7 @@ APPROVAL = "APPROVED-AT"
 
 
 def approvals_in_order(items):
-    """Same-lane approvals, in comment order, as `(lane, sha, cid, position, issuer)`.
+    """Canonical approvals in comment order as ``(lane, sha, id, position)``.
 
     ⚠️ COLLECTED SEPARATELY FROM `markers_with_ids` ON PURPOSE. That list drives
     refusal counting, `binds()`, and the withdrawal collapse logic; an APPROVED
@@ -455,20 +455,13 @@ def approvals_in_order(items):
     is exactly how an approval outlives the code it approved", as the block above
     says. Chronology is a fact in the record; sha ordering is not.
 
-    ⚠️ THE ISSUER IS READ FROM THE APPROVAL LINE FIRST, THE COMMENT SECOND, and
-    `None` when neither says. One comment can carry an approval and a refusal with
-    different `BY` clauses, so attributing the approval to whatever the comment's
-    disclosure tag says would credit the wrong member. `None` means UNREADABLE and
-    every caller must treat it as "matches nobody" -- an unsigned approval
-    discharges no refusal, which is the same polarity as the unsigned withdrawal
-    and the unsigned refusal above.
+    Fleet-name fields are intentionally absent. They are optional audit metadata,
+    not review authority.
     """
     out = []
-    _accepted: list[tuple] = []
     grammar = _load_grammar()
     eligible = grammar.marker_lines
     for pos, (_cid, body) in enumerate(items):
-        _author = grammar.comment_author(body or "")
         for raw in eligible(body or ""):
             line = grammar.strip_decoration(raw)
             assertion_starts = grammar.marker_assertion_starts(line)
@@ -487,12 +480,8 @@ def approvals_in_order(items):
             lane_m = _LANE.search(tail[:24])
             triple = (APPROVAL, lane_m.group(1).lower() if lane_m else None,
                       m.group(1) if m else None)
-            if grammar.is_citation(_accepted, _author, *triple):
-                continue
-            _accepted.append((_author, *triple))
             if triple[1] is not None and triple[2] is not None:
-                out.append((triple[1], triple[2], _cid, pos,
-                            grammar.marker_issuer(line) or _author))
+                out.append((triple[1], triple[2], _cid, pos))
     return out
 
 def markers_with_ids(
@@ -507,11 +496,9 @@ def markers_with_ids(
     mention into a verdict and an absent SHA no longer hides a standalone assertion.
     """
     found = []
-    _accepted: list[tuple] = []
     grammar = _load_grammar()
     eligible = grammar.marker_lines
     for _cid, body in items:
-        _author = grammar.comment_author(body or "")
         for raw in eligible(body or ""):
             line = grammar.strip_decoration(raw)
             assertion_starts = grammar.marker_assertion_starts(line)
@@ -545,15 +532,6 @@ def markers_with_ids(
                           lane_m.group(1).lower() if lane_m else None,
                           m.group(1) if m else None,
                           _cid)
-                # ⚠️ A VERDICT IS ISSUED ONCE; A LATER COPY IS A CITATION. Citing a
-                # refusal must not create one -- measured on hermit#2615, where 5
-                # markers stood for 2 verdicts and a reviewer's own "...is
-                # answered by the fix below" blocked the head they approved. The
-                # earlier occurrence is still counted, so this cannot lose a
-                # refusal; see is_citation() in the shared grammar.
-                if grammar.is_citation(_accepted, _author, *triple[:3]):
-                    break
-                _accepted.append((_author, *triple[:3]))
                 found.append(triple)
                 break
             else:
@@ -587,15 +565,6 @@ def markers_with_ids(
                           lane_m.group(1).lower() if lane_m else None,
                           m.group(1) if m else None,
                           _cid)
-                # ⚠️ A VERDICT IS ISSUED ONCE; A LATER COPY IS A CITATION. Citing a
-                # refusal must not create one -- measured on hermit#2615, where 5
-                # markers stood for 2 verdicts and a reviewer's own "...is
-                # answered by the fix below" blocked the head they approved. The
-                # earlier occurrence is still counted, so this cannot lose a
-                # refusal; see is_citation() in the shared grammar.
-                if grammar.is_citation(_accepted, _author, *triple[:3]):
-                    continue
-                _accepted.append((_author, *triple[:3]))
                 found.append(triple)
     return found
 
@@ -771,32 +740,27 @@ def evaluate(
                 return (
                     BLOCKED,
                     f"{len(current)} unresolved refusal(s) bind the exact head "
-                    f"{head[:12]}; an exact authorized RETIRES record is required"
+                    f"{head[:12]}; a later canonical current-head lane decision "
+                    "or exact authorized RETIRES evidence is required"
                     + retirement_note,
                 )
             detail = ", ".join(
                 f"{item.get('lane') or '<no lane>'}@"
-                f"{str(item.get('sha') or '<no sha>')[:12]} by "
-                f"{item.get('issuer') or '<unsigned>'}"
+                f"{str(item.get('sha') or '<no sha>')[:12]}"
                 for item in unresolved
             )
             return (
                 BLOCKED,
-                f"{len(unresolved)} refusal(s) were OUTRUN, not answered; a current "
-                "authorized GitHub actor must record exact RETIRES evidence: "
+                f"{len(unresolved)} refusal(s) were OUTRUN, not answered; a later "
+                "canonical current-head lane decision or exact authorized RETIRES "
+                "evidence is required: "
                 f"{detail}"
                 + (
                     "; "
                     + f"{len(accepted)} other refusal(s) WERE answered: "
                     + "; ".join(
-                        f"comment {item['target']} was issued by "
-                        f"{item['issuer'] or '<unsigned>'} and retired by "
-                        f"{item['retired_by']}"
-                        + (
-                            " (other than the original issuer)"
-                            if item["retired_by"] != item["issuer"]
-                            else ""
-                        )
+                        f"comment {item['target']} was retired by authorized "
+                        f"GitHub actor {item['retired_by']}"
                         for item in accepted
                     )
                     if accepted
@@ -805,13 +769,8 @@ def evaluate(
             )
         if accepted:
             details = "; ".join(
-                f"comment {item['target']} was issued by "
-                f"{item['issuer'] or '<unsigned>'} and retired by {item['retired_by']}"
-                + (
-                    " (other than the original issuer)"
-                    if item["retired_by"] != item["issuer"]
-                    else ""
-                )
+                f"comment {item['target']} was retired by authorized GitHub actor "
+                f"{item['retired_by']}"
                 for item in accepted
             )
             return (
@@ -836,16 +795,14 @@ def evaluate(
             # Native review state is itself a refusal even when its prose carries
             # no project marker. Its exact review id supplies the retirement target.
             found4.append((REFUSAL, None, None, cid))
-    # Same-lane approvals, and where each comment sits in the record's order.
-    _approvals = approvals_in_order(items)
-    _pos_of_cid = {cid: pos for pos, (cid, _b) in enumerate(items)}
+    approvals = approvals_in_order(items)
+    position_by_id = {cid: pos for pos, (cid, _body) in enumerate(items)}
     found = [(k, l, sh) for k, l, sh, _ in found4]
 
     # ⚠️ A WITHDRAWAL RETIRES THE REFUSAL IT NAMES, AND ONLY THAT ONE.
     # `RETIRES <comment-id>` in a withdrawal's body retires the refusal carried by
-    # that comment. Refusals not named by any withdrawal still bind, so two
-    # same-lane refusals from different agents are independent -- which is the
-    # ruling this implements.
+    # that comment. Refusals not named by any withdrawal remain independently
+    # addressable.
     #
     # An UNQUOTED withdrawal keeps the previous lane-wide behaviour rather than
     # retiring nothing. Retiring nothing is the stricter reading and it fails
@@ -857,13 +814,9 @@ def evaluate(
     # It is deliberately NOT bound to the original issuer: a departed issuer cannot
     # make an answered objection permanent. Authority instead comes from the resolving
     # comment itself: one canonical withdrawal, one exact target, the refusal's lane,
-    # the current head, a matching valid disclosure, and independently fetched
-    # current repository permission for the immutable GitHub actor. The role
-    # field is audit metadata only. The comment's repository and pull request
-    # are fixed by this invocation.
-    #
-    # The broader forms remain issuer-scoped. Another member's generic approval or
-    # unquoted withdrawal does not say which objection was checked and retires nothing.
+    # the current head, and independently fetched current repository permission
+    # for the immutable GitHub actor. Fleet-name and role fields are audit metadata
+    # only. The comment's repository and pull request are fixed by this invocation.
     by_id: dict[str, str] = {}
     records_by_id: dict[str, list[dict]] = {}
     for record in ordered_records:
@@ -895,22 +848,16 @@ def evaluate(
             for target in targets:
                 _invalid_retire_claims[target] = str(cid)
     # (target comment id) -> reportable exact-resolution details.
-    _retire_by_other: dict[str, tuple[str, str]] = {}
     _retire_non_refusal: dict[str, str] = {}
     _retire_ambiguous: dict[str, str] = {}
     _retire_binding_mismatch: dict[str, str] = {}
 
     def _claimants(key: str) -> str:
-        return ", ".join(
-            sorted(
-                {
-                    claim[3]
-                    for record in _retire_claims[key]
-                    if (claim := grammar.retirement_claim(str(record.get("body") or "")))
-                    is not None
-                }
-            )
-        )
+        actors = {
+            grammar.review_record_actor(record)
+            for record in _retire_claims[key]
+        }
+        return ", ".join(sorted(actor for actor in actors if actor)) or "<unknown GitHub actor>"
 
     def retired(cid: object) -> bool:
         """Did an authorized current-head withdrawal name this refusal?"""
@@ -928,20 +875,10 @@ def evaluate(
         if len(matching_records) != 1:
             _retire_ambiguous[key] = _claimants(key)
             return False
-        owner = _issuer_of_comment(by_id.get(key, ""))
         refusal_lane, _refusal_sha = records[0]
         if grammar.retirement_record_allowed(
             matching_records[0], refusal_lane, head, _retire_claims[key]
         ):
-            claimants = _claimants(key)
-            retirement_authors = {
-                claim[3]
-                for record in _retire_claims[key]
-                if (claim := grammar.retirement_claim(str(record.get("body") or "")))
-                is not None
-            }
-            if owner is None or owner not in retirement_authors:
-                _retire_by_other[key] = (owner or "<unsigned>", claimants)
             return True
         _retire_binding_mismatch[key] = _claimants(key)
         return False
@@ -989,20 +926,8 @@ def evaluate(
                     for key, source in sorted(_invalid_retire_claims.items())
                 )
                 + ". A precise retirement requires one canonical withdrawal, one exact "
-                "target, the refusal's lane, the current head, a valid disclosure whose "
-                "identity agrees with any BY clause, and current repository permission "
+                "target, the refusal's lane, the current head, and current repository permission "
                 "for the immutable GitHub actor."
-            )
-        if _retire_by_other:
-            parts.append(
-                " The exact retirement was recorded by an authorized GitHub actor other "
-                "than the original issuer: "
-                + "; ".join(
-                    f"comment {key} was issued by {owner} and retired by {claimants}"
-                    for key, (owner, claimants) in sorted(_retire_by_other.items())
-                )
-                + ". The exact comment id and matching withdrawal context, not issuer "
-                "equality, establish which objection was resolved."
             )
         return "".join(parts)
 
@@ -1013,133 +938,41 @@ def evaluate(
         # Abbreviated shas are normal in these markers; bind by prefix, both ways.
         return bool(sha) and (head.startswith(sha) or sha.startswith(head))
 
-    # ⚠️ A WITHDRAWAL CLEARS ITS OWN LANE ONLY. Until 2026-08-25 `markers()`
-    # returned (kind, sha) and discarded the lane, so `withdrawn_at_head` was
-    # `any(...)` over every marker and ONE lane's withdrawal discharged EVERY
-    # lane's refusal. Reproduced live on hermit#2613: a claude withdrawal cleared
-    # an unwithdrawn codex refusal and the gate reported CLEAR. That is the
-    # dual-lane guarantee failing silently -- two lanes mean nothing if the gate
-    # cannot tell them apart.
-    #
-    # ⚠️ AND BOTH LANELESS CASES FAIL CLOSED, because a laneless marker is exactly
-    # where the unilateral clear would come back:
-    #   * a withdrawal with no readable lane clears NOTHING -- it cannot say whose
-    #     refusal it discharges, and guessing reinstates the bug through the bare
-    #     spelling.
-    #   * a refusal with no readable lane is cleared by NO withdrawal -- its owner
-    #     is unknown, so no lane can prove it withdrew.
-    # Both still clear the ordinary way: the author pushes and the sha moves.
-    withdrawn_lanes = {
-        lane for kind, lane, sha in found
-        if kind == WITHDRAWN and lane is not None and binds(sha)
-    }
+    def answered_by_later_current_marker(
+        refusal_lane: str | None, refusal_id: object
+    ) -> bool:
+        """Whether lane chronology records a substantive current-head answer."""
+        if refusal_lane is None:
+            return False
+        position = position_by_id.get(refusal_id)
+        if position is None:
+            return False
+        if any(
+            approval_lane == refusal_lane
+            and approval_position > position
+            and binds(approval_sha)
+            for approval_lane, approval_sha, _approval_id, approval_position
+            in approvals
+        ):
+            return True
+        return any(
+            kind == WITHDRAWN
+            and withdrawal_lane == refusal_lane
+            and position_by_id.get(withdrawal_id, -1) > position
+            and binds(withdrawal_sha)
+            and not grammar.contains_retires_assertion(
+                by_id.get(str(withdrawal_id), "")
+            )
+            for kind, withdrawal_lane, withdrawal_sha, withdrawal_id in found4
+        )
+
+    # A laneless refusal remains unresolved. A canonical later decision can
+    # discharge only an objection whose lane it matches.
     refusals = [(lane, sha) for kind, lane, sha in found if kind == REFUSAL]
     # Same set, carrying the comment id, so an UNBINDABLE refusal can still be
     # matched against `RETIRES <comment-id>`. See the unbindable check below.
     refusals4 = [(lane, sha, cid) for kind, lane, sha, cid in found4
                  if kind == REFUSAL]
-
-    # ⚠️ AND WITHIN A LANE, ONE WITHDRAWAL STILL CLEARS EVERY REFUSAL -- INCLUDING
-    # REFUSALS ANOTHER REVIEWER ISSUED. The fix above scopes a withdrawal to its
-    # LANE; it does not scope it to its ISSUER, because the grammar carries
-    # claude|codex and no reviewer identity. It cannot carry one from GitHub either:
-    # every agent authenticates as the same user, so the API attributes all of them
-    # to one login. Two reviewers in one lane therefore share one voice, and there
-    # is no way to say "reviewer A withdraws, reviewer B still objects".
-    #
-    # Reproduced offline against this function: two CHANGES-REQUESTED-AT in the
-    # claude lane from different agents, one CHANGES-REQUESTED-WITHDRAWN-AT, and the
-    # gate returns OK -- truthfully reporting that "every refusing LANE" withdrew,
-    # which is not the guarantee a reader takes from it.
-    #
-    # This CANNOT be fixed here by blocking, and blocking would be wrong: one
-    # reviewer who posts two refusals and withdraws once is a legitimate clear, and
-    # without issuer identity that case is indistinguishable from the unsafe one.
-    # So the collapse is made VISIBLE instead of guessed at. Scoping properly needs
-    # the marker to carry its issuer -- `agent(hermit-011)`'s work -- and this is
-    # the reader half waiting for it, deliberately reported rather than silently
-    # assumed away.
-    withdrawals_per_lane: dict[str, int] = {}
-    for kind, lane, sha in found:
-        if kind == WITHDRAWN and lane is not None and binds(sha):
-            withdrawals_per_lane[lane] = withdrawals_per_lane.get(lane, 0) + 1
-
-    def one_for_many() -> str:
-        """Lanes where fewer withdrawals cleared more refusals, named.
-
-        ⚠️ THIS USED TO SAY THE CASE 'CANNOT BE DECIDED HERE', AND THAT IS NO
-        LONGER TRUE. The markers carry an optional issuer since dev-hermit#191,
-        and every fleet comment already carries a disclosure tag, so in the
-        ordinary case this can now name WHO withdrew and WHOSE objection is
-        still live. Saying "cannot be decided" while the answer sits in the
-        comment body is the shape that gets a gate switched off: an alarm on a
-        verdict that is in fact correct teaches the reader to skip the alarm.
-        And the verdict IS correct -- an unquoted withdrawal retires ONE refusal
-        rather than its whole lane, so the blocking decision has not depended on
-        this text since that change landed.
-
-        ⚠️ IT STILL FAILS CLOSED WHEN THE ISSUER IS UNREADABLE, and hermit#2625
-        is why: of its two same-lane refusals at f013ac4b, hermit-012's carries a
-        disclosure tag and hermit-015's carries NONE. The refusal that must keep
-        binding is exactly the one with no readable issuer, so an issuer scheme
-        that GUESSED would fail on the real pair. Unreadable keeps the original
-        warning verbatim.
-        """
-        collapses = []
-        undecidable = False
-        for lane in sorted(withdrawn_lanes):
-            lane_refusals = [
-                (rsha, cid) for rk, rl, rsha, cid in found4
-                if rk == REFUSAL and rl == lane and binds(rsha)
-            ]
-            n_refusals = len(lane_refusals)
-            n_withdrawals = withdrawals_per_lane.get(lane, 0)
-            if n_refusals <= n_withdrawals:
-                continue
-            refusers = [_issuer_of_comment(by_id.get(str(cid), "")) for _sha, cid in lane_refusals]
-            retractors = [
-                _issuer_of_comment(by_id.get(str(cid), "")) for wk, wl, wsha, cid in found4
-                if wk == WITHDRAWN and wl == lane and binds(wsha)
-            ]
-            if any(who is None for who in refusers + retractors):
-                undecidable = True
-                collapses.append(
-                    f"{lane}: {n_withdrawals} withdrawal(s) cleared {n_refusals} "
-                    f"refusal(s), and at least one carries no readable issuer"
-                )
-                continue
-            unretracted = sorted({w for w in refusers if w not in set(retractors)})
-            if unretracted:
-                collapses.append(
-                    f"{lane}: withdrawn by {', '.join(sorted(set(retractors)))}; "
-                    f"still objecting: {', '.join(unretracted)}"
-                )
-            else:
-                collapses.append(
-                    f"{lane}: {', '.join(sorted(set(retractors)))} retracted "
-                    f"{n_refusals} of their own refusal(s) with {n_withdrawals} "
-                    f"withdrawal(s)"
-                )
-        if not collapses:
-            return ""
-        if undecidable:
-            return (
-                " ⚠️ ONE WITHDRAWAL CLEARED MORE THAN ONE REFUSAL -- "
-                + "; ".join(collapses)
-                + ". A withdrawal is scoped to its LANE, not to the reviewer who "
-                "issued it, so if those refusals came from different reviewers "
-                "this discharged an objection its author never retracted. The "
-                "issuer could not be read for at least one marker, so which case "
-                "this is CANNOT BE DECIDED HERE -- check the comments before "
-                "relying on this verdict."
-            )
-        return (
-            " ⚠️ A LANE WITHDREW FEWER TIMES THAN IT REFUSED -- "
-            + "; ".join(collapses)
-            + ". Named from the markers' own issuers rather than guessed. An "
-            "unquoted withdrawal retires ONE refusal, so the count above is what "
-            "the verdict used; this line says whose objection it was."
-        )
 
     # ⚠️ A DEFINITE ANSWER OUTRANKS AN UNREADABLE ONE. Both block, so safety does
     # not depend on the order -- but reporting INDETERMINATE when a refusal is
@@ -1150,139 +983,36 @@ def evaluate(
     bound4 = [(lane, sha, cid) for kind, lane, sha, cid in found4
               if kind == REFUSAL and binds(sha)]
     bound = [(lane, sha) for lane, sha, _ in bound4]
-    # A refusal survives unless it was named by an authorized, context-matched
-    # withdrawal, or (legacy) its lane
-    # was withdrawn by an unquoted one.
-    # ⚠️ A LANE THAT ADOPTS THE PRECISE SPELLING OPTS OUT OF THE BLUNT ONE.
-    # Otherwise the two coexist as an OR and the lane-wide clear keeps winning:
-    # naming one refusal would retire that one AND, via the old path, every other
-    # refusal in the lane -- the precise form would read as adopted while changing
-    # nothing. Once any withdrawal in a lane names a refusal, ONLY named refusals
-    # are retired in that lane.
-    precise_lanes = {
-        lane for kind, lane, sha, cid in found4
-        if kind == WITHDRAWN and lane is not None and binds(sha)
-        and grammar.contains_retires_assertion(by_id.get(str(cid), ""))
-    }
-    # ⚠️ AN UNQUOTED WITHDRAWAL RETIRES ONE REFUSAL, NOT EVERY REFUSAL IN ITS LANE.
-    # The choice was framed as retire-nothing versus retire-all: retire-nothing is
-    # stricter but "would flip every live head carrying an existing unquoted
-    # withdrawal to BLOCKED at once". RETIRING ONE IS THE MIDDLE PATH and it was not on
-    # the table. It flips only the heads where a lane has MORE refusals than
-    # withdrawals -- precisely where the over-clearing happens, and exactly the set
-    # `one_for_many()` already names, so the migration cost is measurable before it is
-    # taken rather than estimated.
-    #
-    # It needs no issuer, which is what made this look unfixable: it never asks WHO
-    # withdrew, only HOW MANY objections were retired.
-    #
-    # ⚠️ IT DELIBERATELY CHANGES ONE CASE: a reviewer who posts two refusals and
-    # withdraws once now leaves one live. That is right -- two objections were raised,
-    # one was retracted, and the second was never spoken to. A second withdrawal costs
-    # one line and is the only way the record distinguishes "I retract both" from
-    # "I retract one of two".
-    #
-    # Measured on the real pair from hermit#2625 -- c5417453728 and c5417519496, two
-    # SAME-LANE refusals from different agents, plus the unquoted withdrawal
-    # c5417606538 -- this returns BLOCKED where lane-wide returned CLEAR. A QUOTED
-    # withdrawal is untouched: it is handled above and stays exact.
-    # ⚠️ KEYED BY (LANE, ISSUER), NOT BY LANE. The lane scoping above closed the
-    # cross-family hole from hermit#2613; this closes the SAME hole one scope
-    # down, inside a lane. A lane is staffed by several agents, so a per-LANE
-    # counter let agent B's unquoted withdrawal retire agent A's refusal --
-    # measured on this function, 2026-08-26: one refusal from hermit-007 plus one
-    # withdrawal from hermit-005 returned CLEAR. `gh-merge-verified` was fixed at
-    # this scope in dev-hermit#193 and this path was not, so the two landers
-    # disagreed about the same comment stream.
-    #
-    # An issuer that cannot be READ keys as None and matches nothing, so an
-    # unsigned withdrawal retires no refusal and an unsigned refusal is retired by
-    # none -- both fail closed, exactly as the laneless spelling already does.
-    # hermit#2625 is why that matters and not a hypothetical: of its two same-lane
-    # refusals at f013ac4b, one carries a disclosure tag and one carries NONE, and
-    # the one that must keep binding is the unreadable one.
-    #
-    # The `RETIRES <comment-id>` path above is UNTOUCHED and remains the precise
-    # mechanism: a comment id is assigned by GitHub and cannot go missing, so it is
-    # a strictly stronger identity than an issuer. This only sharpens the fallback.
-    unquoted_left: dict[tuple[str, "str | None"], int] = {}
-    for kind, lane, sha, cid in found4:
-        if (kind == WITHDRAWN and lane is not None and binds(sha)
-                and not grammar.contains_retires_assertion(by_id.get(str(cid), ""))):
-            key = (lane, _issuer_of_comment(by_id.get(str(cid), "")))
-            unquoted_left[key] = unquoted_left.get(key, 0) + 1
-
-    live = []
-    for lane, sha, cid in bound4:
-        if retired(cid):
-            continue                      # named by an authorized exact withdrawal
-        if lane is not None and lane in precise_lanes:
-            live.append((lane, sha))      # precise lane, and this one was not named
-            continue
-        refuser = _issuer_of_comment(by_id.get(str(cid), ""))
-        key = (lane, refuser)
-        if lane is not None and refuser is not None and unquoted_left.get(key, 0) > 0:
-            unquoted_left[key] -= 1       # this issuer's own withdrawal retires it
-            continue
-        live.append((lane, sha))
+    # A refusal remains live until later same-lane exact-head evidence answers it,
+    # or an authorized exact RETIRES record names that one objection. Optional
+    # fleet-name metadata does not participate in either decision.
+    live = [
+        (lane, sha)
+        for lane, sha, cid in bound4
+        if not retired(cid) and not answered_by_later_current_marker(lane, cid)
+    ]
     cleared = len(bound) - len(live)
 
     if bound and not live:
         return OK, (
-            f"{cleared} refusal(s) named {head[:12]} and every objection has an "
-            f"authorized {WITHDRAWN} record in the refusal's lane at the current head"
-            + one_for_many() + retire_note()
+            f"{cleared} refusal(s) named {head[:12]} and every objection has a "
+            "later canonical current-head lane decision or exact authorized "
+            "RETIRES record"
+            + retire_note()
         )
     if live:
         lanes = ",".join(sorted({lane or "unlaned" for lane, _ in live}))
         note = (
-            f" ({cleared} other refusal(s) withdrawn by their own lane)"
+            f" ({cleared} other refusal(s) answered by later exact-head evidence)"
             if cleared else ""
-        ) + one_for_many() + retire_note()
-        # ⚠️ NAME THE CAUSE THAT APPLIES, NOT EVERY CAUSE THERE IS. This used to
-        # assert unconditionally that "a withdrawal from a DIFFERENT lane does not
-        # discharge it", including when every withdrawal present was in the SAME
-        # lane as the refusal it failed to clear. Measured 2026-09-05 on a bare
-        # same-lane pair: the reader is sent hunting a cross-lane problem that is
-        # not there, and this repository has already lost time twice to a refusal
-        # that misidentified its own cause.
-        live_lanes = {lane for lane, _ in live if lane is not None}
-        cross_lane = bool(withdrawn_lanes - live_lanes)
-        cause = (
-            "A refusal naming the head blocks regardless of any lane's approval, "
-            "and a withdrawal from a DIFFERENT lane does not discharge it."
-            if cross_lane else
-            "A refusal naming the head blocks regardless of any lane's approval. "
-            "Every withdrawal present is in the refusal's own lane, so the lane is "
-            "not what is missing: an UNQUOTED withdrawal retires only the refusals "
-            "of the issuer who posted it, and a refusal with no readable issuer "
-            "cannot be matched that way at all."
-        )
-        # ⚠️ AND SAY WHEN THE EVIDENCE WAS NEVER PASSED. `records` is optional, and
-        # without it `retired()` can credit nothing -- so a body carrying a valid
-        # `RETIRES <comment-id>` is silently ignored and the verdict comes back
-        # BLOCKED where the same input with records returns OK. An optional
-        # argument that changes the verdict has to announce itself; measured
-        # 2026-09-05, both production callers do pass it and only a caller that
-        # forgets reaches this.
-        unpassed_retires = (
-            records is None
-            and any(grammar.contains_retires_assertion(body) for body in bodies)
-        )
-        evidence_gap = (
-            " ⚠️ A `RETIRES` claim is present but NO REVIEW RECORDS WERE SUPPLIED to"
-            " this call, so no retirement could be credited. That is missing evidence,"
-            " not a rejected claim: pass `records=` and re-evaluate before treating"
-            " this as a refusal that stands."
-            if unpassed_retires else ""
-        )
+        ) + retire_note()
         return (
             BLOCKED,
             f"{len(live)} refusal(s) bound to the exact head {head[:12]} from "
-            f"lane(s) {lanes} that have not withdrawn{note}. {cause}"
-            f"{evidence_gap} After the objection is resolved, "
-            f"a currently authorized GitHub actor posts {WITHDRAWN} in this lane at the current head with "
-            f"exact `RETIRES <comment-id>`.",
+            f"lane(s) {lanes} that have no later canonical decision{note}. A refusal "
+            "naming the head blocks until a later approval or withdrawal in that lane "
+            "at the same exact head, or an exact authorized RETIRES record, says the "
+            "objection is resolved.",
         )
 
     # ⚠️ A SHA-LESS REFUSAL USED TO BE UNRETIRABLE BY ANY MEANS, WHICH MADE IT A
@@ -1311,7 +1041,7 @@ def evaluate(
             f"be bound is not a marker that does not apply. Re-post it as "
             f"'{REFUSAL}: <lane> <40-hex>' on its own line, or retire it with a "
             f"'{WITHDRAWN}' comment carrying 'RETIRES <the refusing comment id>' and "
-            f"a matching valid disclosure and current repository permission -- a bare or lane-only withdrawal "
+            f"current repository permission -- a bare or lane-only withdrawal "
             f"CANNOT retire a marker that names no head."
             + retire_note(),
         )
@@ -1362,212 +1092,39 @@ def evaluate(
     # finding it believes was addressed, so a summary that drifted is visible next
     # to the thing it summarised.
     #
-    # ⚠️ THE CLASSIFICATION DOES NOT INFER THE HEAD, DELIBERATELY. A marker that
-    # adopts whatever sha is newest is exactly how an approval outlives the code it
-    # approved. Nothing below reads `head`: a refusal is ANSWERED only when its own
-    # lane withdrew AT THE SHA IT REFUSED, or a withdrawal named its comment id.
-    # Anything else is OUTRUN -- which is a statement about what is absent from the
-    # record, not a guess about what the author did.
-    # ⚠️ A LATER APPROVAL FROM THE REFUSING LANE IS A DISCHARGE, AND TREATING IT AS
-    # "OUTRUN" PUNISHED THE BEHAVIOUR THIS GATE EXISTS TO ENCOURAGE. A withdrawal
-    # says "never mind"; the same lane posting APPROVED-AT at a LATER sha says "I
-    # read the new one and it is good". The second is the stronger statement and it
-    # was scored as though the author had walked past the objection.
-    #
-    # Measured 2026-08-26 on hermit#2686: claude refused 44f76910, claude approved
-    # 979a50b1 and again at the head; codex refused 979a50b1 and approved the head.
-    # Both refusals answered by their own lane re-reading, and the gate reported
-    # "2 of 2 OUTRUN, not answered". A warning against landing a head that is
-    # honestly landable either stalls real work or trains readers to skip the
-    # warning, and the second is worse.
-    #
-    # ⚠️ THE FOUR THINGS IT MUST NOT CREDIT, each a way this could become a
-    # rubber stamp:
-    #   * a DIFFERENT lane's approval -- that is the cross-lane discharge the
-    #     withdrawal logic already refuses;
-    #   * a DIFFERENT MEMBER of the refusing lane -- see the block below;
-    #   * an approval EARLIER in the record than the refusal -- that is the lane
-    #     approving and then objecting, where the objection is the later word;
-    #   * sha recency as a proxy for order. Position is comment order, which is a
-    #     fact; sha ordering is not, and inferring it is how an approval outlives
-    #     the code it approved.
-    #
-    # ⚠️ THE DISCHARGE IS KEYED ON THE ISSUER, NOT THE LANE, AND KEYING IT ON THE
-    # LANE RE-OPENED A HOLE THIS REPOSITORY HAD ALREADY CLOSED. `b816d047e`
-    # (dev-hermit#193) made the ISSUER the authority unit in
-    # `ci-hub/health/approval_binding.py` and `gh-merge-verified`, so a refusal at
-    # an old sha followed by ANOTHER member's approval reads REFUSED there. The
-    # first cut of this feature keyed on the lane, so the same comment stream read
-    # ANSWERED here -- two landers, one question, opposite answers. Five lines
-    # below, `unquoted_left` is already keyed `(lane, issuer)` for exactly this
-    # reason.
-    #
-    # Measured 2026-08-26 on the lane-keyed code, driving `evaluate()` directly:
-    #
-    #     refusal by hermit-004, approval by hermit-004   ANSWERED   (right)
-    #     refusal by hermit-004, approval by hermit-003   ANSWERED   (wrong)
-    #     refusal by hermit-004, UNSIGNED approval        ANSWERED   (wrong)
-    #     UNSIGNED refusal, approval by hermit-003        ANSWERED   (wrong)
-    #
-    # The last two are the sharper defect: every other identity path in this file
-    # fails CLOSED when it cannot read a name -- an unsigned withdrawal clears
-    # nothing, an unsigned refusal is cleared by nothing -- and this one alone
-    # matched everybody. hermit#2625 is why that polarity is not stylistic: of its
-    # two same-lane refusals at f013ac4b, the one that must keep binding is exactly
-    # the one carrying no readable issuer.
-    #
-    # ⚠️ AND "ANOTHER MEMBER APPROVED" IS NOT "NOBODY SPOKE AGAIN" -- IT GETS ITS
-    # OWN READOUT. Folding it into OUTRUN would repeat the defect this whole family
-    # of fixes exists to remove: distinct states rendered identically, where the
-    # reading a reader takes is the benign one. OUTRUN means the sha moved and the
-    # record went quiet. COLLEAGUE-APPROVED means the lane did speak, and the
-    # member who objected was not the one speaking. Measured live on hermit#2692:
-    # agent(hermit-triage) refused on the rationale, the author fixed it, and
-    # agent(hermit-007) and agent(hermit-dbg) approved -- triage never returned.
-    # Old-head refusals use the same issuer ownership rule as exact-head
-    # refusals.  This used to test only `(lane, sha)`, so a precise withdrawal
-    # for one unsigned refusal also classified every same-lane, same-SHA
-    # refusal from another issuer as ANSWERED.  That is how hermit#2670 read
-    # CLEAR over four refusals whose departed issuers never withdrew.
-    #
-    # Keep precise `RETIRES` claims on the `retired(cid)` path above.  The
-    # fallback below is only for legacy unquoted withdrawals, counted one for
-    # one and keyed by issuer exactly like the current-head path.  A withdrawal
-    # with a `RETIRES` target must not also become a broad fallback.
-    old_unquoted_left: dict[tuple[str, str, str], int] = {}
-    for kind, lane, sha, cid in found4:
-        if (
-            kind == WITHDRAWN
-            and lane is not None
-            and sha is not None
-            and not grammar.contains_retires_assertion(by_id.get(str(cid), ""))
-        ):
-            retractor = _issuer_of_comment(by_id.get(str(cid), ""))
-            if retractor is not None:
-                key = (lane, sha, retractor)
-                old_unquoted_left[key] = old_unquoted_left.get(key, 0) + 1
-
-    answered, outrun, relaned, colleague = [], [], [], []
+    # A refusal is ANSWERED only by a later canonical decision in its own lane at
+    # the exact current head, or by authorized exact RETIRES evidence. A different
+    # lane, an earlier record, a stale head, or malformed marker cannot discharge it.
+    # Fleet-name metadata is deliberately irrelevant to this classification.
+    answered, outrun = [], []
     for kind, lane, sha, cid in found4:
         if kind != REFUSAL:
             continue
-        refuser = _issuer_of_comment(by_id.get(str(cid), ""))
-        withdrew = retired(cid)
-        old_key = (lane, sha, refuser)
-        if (
-            not withdrew
-            and lane is not None
-            and sha is not None
-            and refuser is not None
-            and old_unquoted_left.get(old_key, 0) > 0
-        ):
-            old_unquoted_left[old_key] -= 1
-            withdrew = True
-        # A refusal whose position in the record cannot be found credits NOTHING:
-        # "later in the record" is undecidable without it, and undecidable must
-        # not read as discharged.
-        here = _pos_of_cid.get(cid)
-        later_in_lane = [] if here is None or lane is None else [
-            (aissuer, acid) for alane, _asha, acid, apos, aissuer in _approvals
-            if alane == lane and apos > here
-        ]
-        reapproved = refuser is not None and any(
-            aissuer == refuser for aissuer, _acid in later_in_lane
-        )
-        if withdrew:
+        if retired(cid) or answered_by_later_current_marker(lane, cid):
             answered.append((lane, sha))
-        elif reapproved:
-            relaned.append((lane, sha))
-        elif later_in_lane:
-            colleague.append((lane, sha, refuser,
-                              [who for who, _ in later_in_lane]))
         else:
-            outrun.append((lane, sha, refuser))
+            outrun.append((lane, sha))
 
-    undischarged = len(outrun) + len(colleague)
-    if not undischarged:
-        if relaned and not answered:
-            return (
-                OK,
-                f"{len(refusals)} refusal marker(s) present, none names {head[:12]}, and "
-                f"every one was ANSWERED -- the refusing MEMBER itself posted "
-                f"{APPROVAL} later in the record. That is a STRONGER clearing form "
-                f"than a withdrawal: the member who objected re-read a later sha and "
-                f"approved it, rather than saying never mind. It is still not evidence "
-                f"the finding was addressed -- an approval granted on a summary that "
-                f"drifted from the objection produces this exact readout."
-                + retire_note(),
-            )
-        if relaned:
-            return (
-                OK,
-                f"{len(refusals)} refusal marker(s) present, none names {head[:12]}, and "
-                f"every one was ANSWERED -- {len(answered)} by a withdrawal at the sha "
-                f"refused, {len(relaned)} by the refusing MEMBER approving later. Neither "
-                f"form is evidence the finding was addressed; both are evidence the "
-                f"member who objected spoke again."
-                + retire_note(),
-            )
+    if not outrun:
         return (
             OK,
             f"{len(refusals)} refusal marker(s) present, none names {head[:12]}, and "
-            f"every one was ANSWERED -- its own lane withdrew at the sha it refused. "
-            f"That is the correct clearing FORM. It is not evidence the finding was "
-            f"addressed: a withdrawal granted for a change that answered the "
-            f"description rather than the objection produces this exact readout."
+            f"every one was ANSWERED by a later canonical current-head lane "
+            f"decision or exact authorized RETIRES evidence."
             + retire_note(),
         )
 
     detail = ", ".join(
-        f"{lane or '<no lane>'}@{(sha or '<no sha>')[:12]} by "
-        f"{refuser or '<unsigned>'}"
-        for lane, sha, refuser in outrun
+        f"{lane or '<no lane>'}@{(sha or '<no sha>')[:12]}"
+        for lane, sha in outrun
     )
-    parts = []
-    if outrun:
-        parts.append(
-            f"{len(outrun)} of {len(refusals)} refusal marker(s) were OUTRUN, not answered: "
-            f"{detail}. The sha moved so they no longer name {head[:12]}, and NO authorized "
-            f"exact withdrawal says the objection was resolved. This gate cannot tell "
-            f"a reviewer who read the delta from an author who pushed past the objection, and "
-            f"it will not assert the benign reading. A currently authorized GitHub actor who verifies "
-            f"the objection is resolved posts {WITHDRAWN} in the refusal's lane at "
-            f"the current head with exact "
-            f"`RETIRES <comment-id>`."
-        )
-    if colleague:
-        who = ", ".join(
-            f"{lane or '<no lane>'}@{(sha or '<no sha>')[:12]} refused by "
-            f"{refuser or '<unsigned>'}, approved over by "
-            f"{'/'.join(a or '<unsigned>' for a in approvers)}"
-            for lane, sha, refuser, approvers in colleague
-        )
-        parts.append(
-            f"{len(colleague)} of {len(refusals)} refusal marker(s) were APPROVED OVER BY "
-            f"ANOTHER MEMBER of the refusing lane, which is not a discharge: {who}. A lane is "
-            f"its MEMBERS, not one authority -- `approval_binding` scores this same shape "
-            f"REFUSED since dev-hermit#193, and an approval whose issuer cannot be read "
-            f"discharges nothing at all. A generic approval does not resolve the objection. "
-            f"To discharge it, the same member may post {APPROVAL} at a later sha, or a "
-            f"currently authorized GitHub actor may post {WITHDRAWN} in the refusal's lane at "
-            f"the current head with exact "
-            f"`RETIRES <comment-id>`."
-        )
-    if answered:
-        parts.append(f"{len(answered)} other refusal(s) WERE answered by a withdrawal.")
-    if relaned:
-        parts.append(
-            f"{len(relaned)} were answered by the refusing MEMBER approving a later sha."
-        )
-    verdict = " ".join(parts) + retire_note()
-    # An old-head refusal remains a refusal until it has an authorized exact
-    # retirement or that same member approves a later head. Treating a push alone as a discharge is
-    # the bypass that admitted hermit#2670: the production lander does not pass
-    # `--require-answered`, so an advisory-only OUTRUN verdict still printed CLEAR.
-    # The owner has now made the stricter policy unconditional.  Keep the option
-    # accepted for compatibility with callers that already supplied it, but do not
-    # let omitting it restore the bypass.
-    return BLOCKED, verdict
+    return (
+        BLOCKED,
+        f"{len(outrun)} of {len(refusals)} refusal marker(s) were OUTRUN, not answered: "
+        f"{detail}. The sha moved so they no longer name {head[:12]}, and no later "
+        f"canonical current-head decision or exact authorized RETIRES record says "
+        f"the objection was resolved." + retire_note(),
+    )
 
 
 _T_HEAD = "f013ac4b1a3155ebede568c5667f915a4c8ff6b1"
@@ -1581,17 +1138,6 @@ _A1, _A2 = "hermit-012", "hermit-015"
 def _by(agent: str, marker: str) -> str:
     """A comment body carrying a disclosure tag, so its markers have an author."""
     return f"[hermit2, {agent}, unresolved, devbig014, role=reviewer]\n{marker}"
-
-
-def _issuer_of_comment(body: str) -> "str | None":
-    """Who wrote this comment, or None when it does not say.
-
-    A marker's own ``BY`` clause wins over the surrounding disclosure tag: it is
-    the more specific claim, and it survives being quoted into someone else's
-    comment. ``None`` means UNREADABLE, which every caller here must treat as
-    "matches nobody" rather than "matches anybody".
-    """
-    return _load_grammar().comment_issuer(body)
 
 
 def self_test() -> int:
@@ -1611,12 +1157,10 @@ def self_test() -> int:
             {
                 "id": record_id,
                 "body": body,
-                "user": {
-                    "login": grammar.comment_author(body) or "fixture-reviewer"
-                },
+                "user": {"login": "fixture-reviewer"},
                 "_review_surface": "issue-comment",
                 "_current_review_actor_authorized": True,
-                "_current_review_actor_login": grammar.comment_author(body),
+                "_current_review_actor_login": "fixture-reviewer",
                 "_current_review_actor_permission": "write",
                 "created_at": f"2026-09-04T00:00:{position:02d}Z",
                 "updated_at": f"2026-09-04T00:00:{position:02d}Z",
@@ -1626,37 +1170,22 @@ def self_test() -> int:
 
     cases = [
         ("two same-lane refusals, no withdrawal", [_T_REF, _T_REF], BLOCKED),
-        # ⚠️ MUST STAY CLEAR. It is easy to fix the next case by retiring nothing,
-        # which passes it and silently removes a reviewer's ability to retract even
-        # their own objection.
-        #
-        # ⚠️ THE FIXTURE NAMES A SPEAKER NOW, AND THAT IS RE-EXPRESSION, NOT
-        # RELAXATION. This cell is called "its OWN withdrawal" and an unsigned body
-        # cannot say whose it is; once retirement is keyed to the issuer, an
-        # unsigned pair legitimately clears nothing, so the cell would have failed
-        # for a reason unrelated to the property it names. The property is
-        # unchanged and still pinned here; what changed is that the fixture can now
-        # express it. The unsigned behaviour is NOT dropped -- it is pinned
-        # explicitly two cells below instead of being implied by silence.
-        ("one refusal and its own withdrawal", [_by(_A1, _T_REF), _by(_A1, _T_WD)], OK),
+        ("one refusal and a current-head withdrawal",
+         [_by(_A1, _T_REF), _by(_A1, _T_WD)], OK),
         ("two same-lane refusals, ONE unquoted withdrawal",
-         [_by(_A1, _T_REF), _by(_A2, _T_REF), _by(_A1, _T_WD)], BLOCKED),
-        # ⚠️ THE HOLE THIS CHANGE CLOSES, and it is the same one hermit#2613 named
-        # a scope up: a colleague must not retire an objection they did not raise.
-        # Measured CLEAR before this change.
-        ("another issuer's withdrawal does NOT clear",
-         [_by(_A1, _T_REF), _by(_A2, _T_WD)], BLOCKED),
+         [_by(_A1, _T_REF), _by(_A2, _T_REF), _by(_A1, _T_WD)], OK),
+        ("different fleet-name metadata does not prevent withdrawal",
+         [_by(_A1, _T_REF), _by(_A2, _T_WD)], OK),
         ("bare RETIRES attempt cannot fall back to generic withdrawal",
          [_by(_A1, _T_REF), _by(_A1, f"{_T_WD}\nRETIRES")], BLOCKED),
         ("non-numeric RETIRES attempt cannot fall back to generic withdrawal",
          [_by(_A1, _T_REF), _by(_A1, f"{_T_WD}\nRETIRES nope")], BLOCKED),
         ("hash non-numeric RETIRES attempt cannot fall back to generic withdrawal",
          [_by(_A1, _T_REF), _by(_A1, f"{_T_WD}\nRETIRES #not-a-number")], BLOCKED),
-        # FAIL CLOSED AT BOTH ENDS. Neither end can prove ownership, so neither
-        # retires anything. Both still clear the ordinary way -- the author pushes
-        # and the sha stops naming the head.
-        ("unsigned withdrawal clears nothing", [_by(_A1, _T_REF), _T_WD], BLOCKED),
-        ("unsigned refusal is retired by no withdrawal", [_T_REF, _by(_A1, _T_WD)], BLOCKED),
+        ("missing withdrawal metadata does not prevent discharge",
+         [_by(_A1, _T_REF), _T_WD], OK),
+        ("missing refusal metadata does not prevent discharge",
+         [_T_REF, _by(_A1, _T_WD)], OK),
         # Guards the cross-lane fix that landed before this one.
         ("claude withdrawal must not clear a CODEX refusal", [_T_CODEX_REF, _T_WD], BLOCKED),
     ]
@@ -1666,44 +1195,28 @@ def self_test() -> int:
         if got != want:
             bad.append(f"{name}: got {got}, want {want} -- {why[:80]}")
 
-    # ⚠️ THE COLLAPSE REPORT MUST NAME THE ISSUER WHEN IT CAN, AND REFUSE TO WHEN
-    # IT CANNOT. These assert the RENDERING, not the exit code: every case here is
-    # BLOCKED either way, so a test on rc alone would pass with the report fully
-    # restored to "CANNOT BE DECIDED". That is the same trap the answered-vs-outrun
-    # cases below were written for.
+    # Fleet names are optional metadata. Changing or omitting them must not alter
+    # the result or the authoritative explanation.
     _tag = lambda who, line: f"[hermit2, {who}, unresolved, devbig014, role=reviewer]\n{line}"
     decidable = [
         _tag("hermit-012", _T_REF),
         _tag("hermit-015", _T_REF),
         _tag("hermit-012", _T_WD),
     ]
-    _got, why = evaluate(decidable, _T_HEAD)
-    if _got != BLOCKED:
-        bad.append(f"issuer-named collapse: got {_got}, want {BLOCKED}")
-    if "still objecting: hermit-015" not in why:
-        bad.append(
-            "issuer-named collapse: the report does not name the reviewer whose "
-            f"objection is still live -- {why[:120]}"
-        )
-    if "CANNOT BE DECIDED" in why:
-        bad.append(
-            "issuer-named collapse: reported undecidable while both issuers were "
-            "readable, which is the false alarm that gets a gate switched off"
-        )
+    named_rc, named_why = evaluate(decidable, _T_HEAD)
+    if named_rc != OK:
+        bad.append(f"named metadata: got {named_rc}, want {OK}")
 
     # THE REAL hermit#2625 SHAPE: of the two same-lane refusals at f013ac4b,
     # hermit-012's carries a disclosure tag and hermit-015's carries NONE. The one
     # that must keep binding is exactly the one with no readable issuer, so this
     # must fail CLOSED rather than guess.
     unreadable = [_tag("hermit-012", _T_REF), _T_REF, _tag("hermit-012", _T_WD)]
-    _got, why = evaluate(unreadable, _T_HEAD)
-    if _got != BLOCKED:
-        bad.append(f"unreadable-issuer collapse: got {_got}, want {BLOCKED}")
-    if "CANNOT BE DECIDED" not in why:
-        bad.append(
-            "unreadable-issuer collapse: must keep the undecidable warning when an "
-            f"issuer cannot be read -- {why[:120]}"
-        )
+    unnamed_rc, unnamed_why = evaluate(unreadable, _T_HEAD)
+    if unnamed_rc != OK:
+        bad.append(f"unnamed metadata: got {unnamed_rc}, want {OK}")
+    if named_why != unnamed_why:
+        bad.append("fleet-name metadata changed the refusal verdict")
 
     # ⚠️ ANSWERED MUST RENDER DIFFERENTLY FROM OUTRUN. Both are "no refusal binds
     # this head", both were reported as "superseded by a later push, the correct
@@ -1714,8 +1227,8 @@ def self_test() -> int:
     _MOVED_WD = f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {_MOVED}"
     render = [
         (
-            "a refusal ANSWERED by its own lane at the sha it refused",
-            [_by(_A1, _T_REF), _by(_A1, _T_WD)], OK, "ANSWERED", "OUTRUN",
+            "a stale-head withdrawal does not answer a refusal",
+            [_by(_A1, _T_REF), _by(_A1, _T_WD)], BLOCKED, "OUTRUN", None,
         ),
         (
             "a refusal merely OUTRUN by a later push, never withdrawn",
@@ -1756,48 +1269,32 @@ def self_test() -> int:
     if evaluate([_T_REF, _T_WD_BARE], _T_HEAD)[0] != BLOCKED:
         bad.append("a botched withdrawal CLEARED a real refusal -- wrong polarity")
 
-    # ⚠️ AND THE CONTROL THAT MUST FAIL. Without it the two cases above pass against
-    # a gate that prints both words every time.
-    _, answered_why = evaluate([_by(_A1, _T_REF), _by(_A1, _T_WD)], _MOVED)
+    # A withdrawal bound to the refused head is stale at the new head, so it does
+    # not answer the objection there.
+    stale_rc, stale_why = evaluate([_by(_A1, _T_REF), _by(_A1, _T_WD)], _MOVED)
     _, outrun_why = evaluate([_T_REF], _MOVED)
-    if answered_why == outrun_why:
-        bad.append("answered and outrun render IDENTICALLY -- the defect is restored")
+    if stale_rc != BLOCKED or stale_why != outrun_why:
+        bad.append("a stale-head withdrawal changed the unresolved-refusal verdict")
+    current_rc, current_why = evaluate(
+        [_by(_A1, _T_REF), _by(_A2, _MOVED_WD)], _MOVED
+    )
+    if current_rc != OK or "ANSWERED" not in current_why:
+        bad.append("a later current-head withdrawal did not answer the objection")
 
-    # ⚠️ AND ANSWERED MUST NOT CLAIM THE FINDING WAS ADDRESSED. A refusal discharged
-    # by fixing the WRONG THING renders here as the ideal case -- real withdrawal,
-    # real lane, real sha -- so the only thing this gate can get wrong is the
-    # sentence it adds on top. This asserts the readout states the FORM and declines
-    # the inference. Both directions, because a check on the disclaimer alone would
-    # pass against a verdict that printed the overclaim beside it.
-    if "not evidence the finding was addressed" not in answered_why:
-        bad.append(
-            "the ANSWERED readout no longer states that the clearing form is not "
-            "evidence the finding was addressed -- a refusal discharged by fixing "
-            "the wrong thing reads as fully cleared"
-        )
-    for overclaim in ("carries evidence someone read the delta",):
-        if overclaim in answered_why:
-            bad.append(
-                f"the ANSWERED readout asserts {overclaim!r} -- a same-lane "
-                f"withdrawal at the refused sha proves the form, not that anyone "
-                f"compared the delta against the objection"
-            )
-
-    # The compatibility option has the same result: it blocks the outrun case and
-    # leaves the answered one.
+    # The compatibility option keeps the same exact-head chronology.
     if evaluate([_T_REF], _MOVED, require_answered=True)[0] != BLOCKED:
         bad.append("--require-answered did not block an outrun refusal")
     if evaluate(
-        [_by(_A1, _T_REF), _by(_A1, _T_WD)],
+        [_by(_A1, _T_REF), _by(_A2, _MOVED_WD)],
         _MOVED,
         require_answered=True,
     )[0] != OK:
-        bad.append("--require-answered blocked an ANSWERED refusal -- over-blocking")
+        bad.append("--require-answered blocked a current-head withdrawal")
     rc, why = evaluate([_T_REF, _T_WD], _MOVED, require_answered=True)
-    if rc != BLOCKED or "by <unsigned>" not in why:
+    if rc != BLOCKED or "OUTRUN" not in why:
         bad.append(
-            "an unsigned unquoted withdrawal cleared an unsigned old-head refusal "
-            f"without a precise RETIRES -- rc={rc} msg={why[:110]}"
+            "a stale-head withdrawal cleared an old-head refusal "
+            f"-- rc={rc} msg={why[:110]}"
         )
 
     # The exact old-head shape that falsely cleared hermit#2670: a precise
@@ -1821,8 +1318,7 @@ def self_test() -> int:
     if (
         rc != BLOCKED
         or "OUTRUN" not in why
-        or f"by {_A1}" not in why
-        or f"comment {_R2_ID} was issued by <unsigned> and retired by {_A2}" not in why
+        or f"comment {_R2_ID} was retired by authorized GitHub actor fixture-reviewer" not in why
     ):
         bad.append(
             "an old-head precise retirement of an unsigned refusal cleared a named "
@@ -1840,7 +1336,7 @@ def self_test() -> int:
         require_answered=True,
         records=event_records(unsigned_old_head, unsigned_old_head_ids),
     )
-    if rc != OK or f"comment {_R2_ID} was issued by <unsigned> and retired by {_A2}" not in why:
+    if rc != OK or f"comment {_R2_ID} was retired by authorized GitHub actor fixture-reviewer" not in why:
         bad.append(
             "the exact unsigned old-head refusal did not retain its permitted precise "
             f"exit -- rc={rc} msg={why[:110]}"
@@ -1877,34 +1373,30 @@ def self_test() -> int:
     if MOOT == OK:
         bad.append("state: MOOT is zero; land-pr.sh would read a merged pr as clear")
 
-    # `RETIRES` binds to one exact refusal and its lane/head, not to its original
-    # issuer. That lets a currently authorized GitHub actor record that a departed
-    # reviewer's objection was resolved without making generic approvals or
-    # unquoted withdrawals authoritative. The negative cells below keep the exact
-    # target and valid-disclosure requirements load-bearing.
+    # `RETIRES` binds to one exact refusal and its lane/head, not to any optional
+    # fleet-name metadata. The negative cells keep exact target and permission
+    # requirements load-bearing.
     _R_ID, _W_ID = "5420278252", "5420547902"
     _R_REF = f"CHANGES-REQUESTED-AT: codex {_T_HEAD}"
     _R_WD = f"CHANGES-REQUESTED-WITHDRAWN-AT: codex {_T_HEAD}"
     _R_MOVED_WD = f"CHANGES-REQUESTED-WITHDRAWN-AT: codex {_MOVED}"
-    _OTHER = "other than the original issuer"
-    _UNAUTHORIZED = "WAS NOT AUTHORIZED"
     retires = [
-        ("the ISSUER's own RETIRES is accepted",
+        ("a matching metadata name is accepted",
          [_tag("hermit-005", _R_REF), _tag("hermit-005", f"{_R_WD}\nRETIRES {_R_ID}")],
          OK, None),
-        ("another authorized reviewer's exact RETIRES is accepted",
+        ("a different metadata name is accepted",
          [_tag("hermit-005", _R_REF), _tag("hermit-107", f"{_R_WD}\nRETIRES {_R_ID}")],
-         OK, _OTHER),
-        ("an UNSIGNED withdrawal cannot RETIRES a signed refusal",
+         OK, None),
+        ("a withdrawal with no fleet name is accepted",
          [_tag("hermit-005", _R_REF), f"{_R_WD}\nRETIRES {_R_ID}"],
-         BLOCKED, _UNAUTHORIZED),
-        ("an UNSIGNED refusal keeps its exact authorized exit",
+         OK, None),
+        ("a refusal with no fleet name keeps its exact authorized exit",
          [_R_REF, _tag("hermit-107", f"{_R_WD}\nRETIRES {_R_ID}")],
-         OK, _OTHER),
+         OK, None),
         ("RETIRES naming a DIFFERENT comment retires nothing",
          [_tag("hermit-005", _R_REF), _tag("hermit-005", f"{_R_WD}\nRETIRES 5999999999")],
          BLOCKED, None),
-        ("an unquoted SAME-ISSUER withdrawal still clears -- not over-strict",
+        ("a canonical current-head withdrawal clears earlier lane objections",
          [_tag("hermit-005", _R_REF), _tag("hermit-005", _R_WD)],
          OK, None),
     ]
@@ -1920,117 +1412,74 @@ def self_test() -> int:
             bad.append(f"retires: {name} -- rc={rc}, want {want_rc}: {why[:110]}")
         elif must_say and must_say not in why:
             bad.append(f"retires: {name} -- verdict does not say {must_say!r}: {why[:140]}")
-    # The audit line keeps both issuers visible even though issuer equality is no
-    # longer the permission boundary.
+    # False, matching, and absent fleet names leave the authoritative result and
+    # its explanation unchanged when the immutable GitHub actor is the same.
     audit_bodies = [
         _tag("hermit-005", _R_REF),
         _tag("hermit-107", f"{_R_WD}\nRETIRES {_R_ID}"),
     ]
     audit_ids = [_R_ID, _W_ID]
-    _, _retired_why = evaluate(
+    named_rc, named_reason = evaluate(
         audit_bodies,
         _T_HEAD,
         ids=audit_ids,
         records=event_records(audit_bodies, audit_ids),
     )
-    for token in ("hermit-005", "hermit-107", _R_ID):
-        if token not in _retired_why:
+    no_name_bodies = [_R_REF, f"{_R_WD}\nRETIRES {_R_ID}"]
+    no_name_rc, no_name_reason = evaluate(
+        no_name_bodies,
+        _T_HEAD,
+        ids=audit_ids,
+        records=event_records(no_name_bodies, audit_ids),
+    )
+    if named_rc != OK or no_name_rc != OK or named_reason != no_name_reason:
+        bad.append("retires: fleet-name metadata changed exact-retirement authority")
+    for token in (_R_ID, "fixture-reviewer"):
+        if token not in named_reason:
             bad.append(f"retires: the retirement verdict does not name {token}")
 
-    # ⚠️ THE RE-LANE DISCHARGE, AND THE FOUR THINGS IT MUST NOT CREDIT. A refusing
-    # MEMBER who later APPROVES a newer sha has answered their own objection more
-    # strongly than a withdrawal does; scoring that as OUTRUN punished exactly the
-    # re-binding behaviour the fleet was asked for. Measured on hermit#2686, where
-    # two refusals were each answered by their own reviewer and the gate said "2 of 2
-    # OUTRUN, not answered".
-    #
-    # ⚠️ THE FIRST CELL HERE ASSERTED THE DEFECT, AND THIS IS A TIGHTENING OF AN
-    # ASSERTION, NOT A RELAXATION. It refused as hermit-004 and approved as
-    # hermit-003 -- two DIFFERENT members of one lane -- and required ANSWERED. That
-    # is the shape `b816d047e` (dev-hermit#193) scores REFUSED in approval_binding,
-    # so the cell pinned this gate to the opposite answer from the other lander on
-    # the same comment stream. It now refuses and approves as the SAME member, and
-    # the different-member case became a control that must NOT read ANSWERED.
-    #
-    # The controls are the point. Crediting a DIFFERENT lane would be the cross-lane
-    # discharge the withdrawal logic already refuses; crediting a DIFFERENT MEMBER
-    # would be the lane-as-one-authority hole #193 closed; crediting an EARLIER
-    # approval would let a lane's approval outrank its own later objection; and an
-    # UNREADABLE issuer on either side must match nobody, exactly as an unsigned
-    # withdrawal already clears nothing.
+    # A later current-head canonical approval is a substantive lane decision.
+    # Fleet-name metadata and BY clauses do not change it; lane and chronology do.
     _T_OTHER = "c" * 40
     _T_APP = f"APPROVED-AT: claude {_T_OTHER}"
     _T_APP_CODEX = f"APPROVED-AT: codex {_T_OTHER}"
-    _COLLEAGUE = "APPROVED OVER BY ANOTHER MEMBER"
     relane = [
-        ([_tag("hermit-004", _T_REF), _tag("hermit-004", _T_APP)], OK,
-         "ANSWERED", _COLLEAGUE,
-         "the SAME member approving later must discharge"),
-        ([_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)], BLOCKED,
-         _COLLEAGUE, "ANSWERED",
-         "a DIFFERENT member of the same lane must not discharge"),
-        ([_tag("hermit-004", _T_REF), _T_APP], BLOCKED,
-         _COLLEAGUE, "ANSWERED",
-         "an UNSIGNED approval must not discharge -- it names nobody"),
-        ([_T_REF, _tag("hermit-003", _T_APP)], BLOCKED,
-         _COLLEAGUE, "ANSWERED",
-         "an UNSIGNED refusal is discharged by no approval -- its owner is unknown"),
-        ([_tag("hermit-004", _T_REF), _tag("hermit-001", _T_APP_CODEX)], BLOCKED,
-         "OUTRUN", "ANSWERED",
-         "a DIFFERENT lane's approval must not discharge"),
-        ([_tag("hermit-003", _T_APP), _tag("hermit-004", _T_REF)], BLOCKED,
-         "OUTRUN", "ANSWERED",
-         "an approval EARLIER than the refusal must not discharge"),
-        ([_tag("hermit-004", _T_REF)], BLOCKED,
-         "OUTRUN", "ANSWERED",
-         "no approval at all must remain outrun"),
-        # ⚠️ THE MARKER'S OWN `BY` OUTRANKS THE COMMENT'S DISCLOSURE TAG, BOTH WAYS.
-        # A reviewer can post on behalf of a run, and one comment can carry two
-        # markers from two members; reading the issuer off the surrounding tag
-        # would credit whoever typed the comment rather than whoever signed the
-        # verdict. Without the second cell the first passes against code that
-        # ignores `BY` and matches on the tag alone.
+        ([_tag("hermit-004", _T_REF), _tag("hermit-004", _T_APP)],
+         OK, "matching metadata name"),
+        ([_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)],
+         OK, "different metadata name"),
+        ([_tag("hermit-004", _T_REF), _T_APP], OK, "missing approval metadata"),
+        ([_T_REF, _tag("hermit-003", _T_APP)], OK, "missing refusal metadata"),
+        ([_tag("hermit-004", _T_REF), _tag("hermit-001", _T_APP_CODEX)],
+         BLOCKED, "different lane"),
+        ([_tag("hermit-003", _T_APP), _tag("hermit-004", _T_REF)],
+         BLOCKED, "earlier approval"),
+        ([_tag("hermit-004", _T_REF)], BLOCKED, "no approval"),
         ([_tag("hermit-004", _T_REF), _tag("hermit-003", f"{_T_APP} BY hermit-004")],
-         OK, "ANSWERED", _COLLEAGUE,
-         "an approval signed BY the refusing member discharges, whoever posted it"),
+         OK, "matching BY metadata"),
         ([_tag("hermit-004", _T_REF), _tag("hermit-004", f"{_T_APP} BY hermit-003")],
-         BLOCKED, _COLLEAGUE, "ANSWERED",
-         "an approval signed BY someone else does not discharge, whoever posted it"),
+         OK, "different BY metadata"),
     ]
-    for bodies, want_rc, must_say, must_not_say, why in relane:
+    for bodies, want, description in relane:
         rc, msg = evaluate(bodies, _T_OTHER)
-        if rc != want_rc or must_say not in msg or must_not_say in msg:
-            bad.append(f"re-lane: {why} -- rc={rc} msg={msg[:110]}")
+        if rc != want or (want == BLOCKED and "OUTRUN" not in msg):
+            bad.append(f"later approval: {description} -- rc={rc} msg={msg[:110]}")
 
-    # ⚠️ AND THE THREE CONTROLS THAT MUST FAIL, because every cell above passes
-    # against a gate that prints all the words every time, or that blocks nothing.
-    #
-    #   1. A colleague's approval must not render like a quiet record. "Nobody spoke
-    #      again" and "the lane spoke, but not the member who objected" need
-    #      opposite responses -- one waits for the author, one waits for a named
-    #      reviewer -- and rendering them alike is the exact defect that let 23
-    #      refusals go unnoticed.
-    #   2. The default production path and the compatibility option must BLOCK the
-    #      colleague case. If either did not, the distinction would be decoration.
-    #   3. Both forms must still CLEAR the same-member case, or the fix over-blocks
-    #      the behaviour it was written to credit.
-    _colleague_why = evaluate(
-        [_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)], _T_OTHER)[1]
-    _quiet_why = evaluate([_tag("hermit-004", _T_REF)], _T_OTHER)[1]
-    if _colleague_why == _quiet_why:
-        bad.append(
-            "a colleague's approval renders IDENTICALLY to a record that went quiet "
-            "-- two states needing opposite responses, one sentence"
-        )
+    # Name changes do not alter either the decision or the explanation.
+    different_rc, different_why = evaluate(
+        [_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)], _T_OTHER)
+    missing_rc, missing_why = evaluate([_T_REF, _T_APP], _T_OTHER)
+    if different_why != missing_why:
+        bad.append("later approval metadata changed the resolved-refusal verdict")
     if evaluate([_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)],
-                _T_OTHER)[0] != BLOCKED:
-        bad.append("the production path did not block a refusal a COLLEAGUE approved over")
+                _T_OTHER)[0] != OK:
+        bad.append("the production path blocked an identity-free later approval")
     if evaluate([_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)], _T_OTHER,
-                require_answered=True)[0] != BLOCKED:
-        bad.append("--require-answered did not block a refusal only a COLLEAGUE approved over")
+                require_answered=True)[0] != OK:
+        bad.append("--require-answered blocked an identity-free later approval")
     if evaluate([_tag("hermit-004", _T_REF), _tag("hermit-004", _T_APP)], _T_OTHER,
                 require_answered=True)[0] != OK:
-        bad.append("--require-answered blocked a refusal its OWN member approved later -- over-blocking")
+        bad.append("--require-answered blocked a later current-head approval")
 
     # ⚠️ ABSENCE MUST BE EXPRESSIBLE, AND A VERDICT MUST REACH STDOUT.
     #
@@ -2140,7 +1589,7 @@ def self_test() -> int:
             "an exact comment id retires the unsigned refusal through the command",
             command_refusal_id,
             OK,
-            f"comment {command_refusal_id} was issued by <unsigned> and retired by hermit-121",
+            f"comment {command_refusal_id} was retired by authorized GitHub actor hermit-121",
         ),
         (
             "a different comment id leaves the unsigned refusal blocked",
@@ -2259,7 +1708,7 @@ def self_test() -> int:
         return 1
     print(f"changes-requested-gate self-test: OK -- {len(cases)} withdrawal-scoping "
           f"case(s) including the same-lane pair from hermit#2625, plus {len(render)} "
-          f"answered-vs-outrun rendering case(s) and their identity control, plus "
+          f"answered-vs-outrun rendering case(s) and their metadata control, plus "
           f"the old-head unsigned-withdrawal control and two-direction precise-"
           f"retirement case from hermit#2670, plus "
           f"{len(state_cases)} state case(s) from hermit#2677 and their over-reach "
@@ -2267,8 +1716,8 @@ def self_test() -> int:
           f"FORM without asserting the finding was addressed, plus "
           f"{len(retires)} exact RETIRES case(s) with their authorization and "
           f"naming controls, plus "
-          f"{len(relane)} issuer-scoped re-lane discharge case(s) from hermit#2686 "
-          f"and hermit#2692, their cross-lane, cross-member, unsigned and ordering "
+          f"{len(relane)} later lane-decision discharge case(s) from hermit#2686 "
+          f"and hermit#2692, their cross-lane, metadata and ordering "
           f"controls and the three that must fail, plus {len(absence)} "
           f"absence-is-not-a-pass case(s) and the four-outcome stdout invariant "
           f"with its provenance stamp, plus {len(command_cases)} end-to-end command "

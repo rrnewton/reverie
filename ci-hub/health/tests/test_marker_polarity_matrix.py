@@ -228,18 +228,17 @@ def test_control_refusal_refuses() -> None:
 
 
 # ---------------------------------------------------------------------------
-# ISSUANCE vs CITATION. The cells above feed ONE comment at a time, which is why
-# they cannot see this rule: a lone comment carrying a verdict IS its issuance,
-# whatever the formatting. The defect only exists in a STREAM, which is the real
-# case -- and it FALSELY BLOCKS rather than merely over-counting.
+# ISSUANCE vs MENTION. Marker syntax, not a transient author name, decides whether
+# text is authoritative. Inline prose, blockquotes, and code blocks are mentions;
+# a whole-line canonical marker remains a verdict even when repeated.
 #
 # Measured on hermit#2615: the gate counted FIVE refusal markers where TWO
 # verdicts existed. All three phantoms came from good practice -- sentences
 # naming which marker still stood. A reviewer writing "my earlier refusal is
 # answered by the fix below" and then approving BLOCKED THE HEAD THEY APPROVED.
 # Task: quoting_a_refusal_marker
-# Bodies carry a disclosure tag because THE AUTHOR IS THE RULE: an untagged comment
-# has no known author and is therefore always an issuance, by design.
+# Bodies retain disclosure tags as metadata so changing or omitting them can be
+# checked without changing the marker result.
 _TAG = "[hermit2, hermit-004, unresolved, devbig014, role=reviewer]"
 
 
@@ -273,17 +272,11 @@ def test_the_issuance_itself_is_the_one_that_survives() -> None:
     assert got and got[0][2] == FULL, got
 
 
-def test_a_citation_is_suppressed_however_it_is_written() -> None:
-    """The rule is about WHO ISSUED IT, not about quote characters. A `>` catches
-    only typographic quotation and misses the inline paste that actually happened."""
-    for form in (
-        f"> {_ISS}",
-        f"`{_ISS}`",
-        f"    {_ISS}",
-        f"I posted {_ISS} earlier.",
-        f"## {_ISS}",
-    ):
+def test_markdown_context_distinguishes_mentions_from_verdicts() -> None:
+    for form in (f"> {_ISS}", f"    {_ISS}", f"I posted {_ISS} earlier."):
         assert len(_refusals([_ISS, form])) == 1, form
+    for form in (f"`{_ISS}`", f"## {_ISS}"):
+        assert len(_refusals([_ISS, form])) == 2, form
 
 
 def test_a_different_lane_is_not_a_citation() -> None:
@@ -296,18 +289,18 @@ def test_a_different_head_is_not_a_citation() -> None:
     assert len(_refusals([_ISS, f"CHANGES-REQUESTED-AT: claude {other}"])) == 2
 
 
-def test_a_marker_with_no_sha_is_never_treated_as_a_citation() -> None:
-    """It names no head, so it cannot be shown to repeat one. Guessing here would
-    discard a verdict, which is the one direction this rule must never take."""
-    seen = [("hermit-004", "CHANGES-REQUESTED-AT", "claude", FULL)]
-    assert ab.is_citation(seen, "hermit-004", "CHANGES-REQUESTED-AT", "claude", None) is False
+def test_a_marker_with_no_sha_is_never_suppressed_by_identity() -> None:
+    body = "CHANGES-REQUESTED-AT: claude"
+    got = _refusals([body, body])
+    assert len(got) == 2
+    assert all(sha is None for _kind, _lane, sha in got)
 
 
-def test_an_unknown_author_is_always_an_issuance() -> None:
-    """No disclosure tag, no known author, so nothing can be shown to repeat.
-    Under-suppressing costs a duplicate; over-suppressing loses a refusal."""
-    seen = [("hermit-004", "CHANGES-REQUESTED-AT", "claude", FULL)]
-    assert ab.is_citation(seen, None, "CHANGES-REQUESTED-AT", "claude", FULL) is False
+def test_missing_or_different_author_metadata_does_not_change_issuance() -> None:
+    named = gate.markers([_by("hermit-004", _ISS), _by("false-name", _ISS)])
+    unnamed = gate.markers([_ISS, _ISS])
+    assert named == unnamed
+    assert len(named) == 2
 
 
 def test_two_reviewers_refusing_one_head_are_two_verdicts() -> None:
@@ -318,7 +311,7 @@ def test_two_reviewers_refusing_one_head_are_two_verdicts() -> None:
     assert len(got) == 2, got
 
 
-def test_the_same_reviewer_repeating_themselves_is_one_verdict() -> None:
+def test_inline_prose_mention_is_not_a_second_verdict() -> None:
     got = gate.markers([_by("hermit-004", _ISS), _by("hermit-004", f"`{_ISS}` still stands")])
     assert len(got) == 1, got
 
@@ -369,9 +362,9 @@ def test_an_abbreviated_approval_still_does_not_bind() -> None:
     assert shas == []
 
 
-def test_quoting_your_own_approval_does_not_grant_a_second_one() -> None:
+def test_a_second_whole_line_approval_is_a_second_assertion() -> None:
     shas, _, cit = _approval([_APPR, f"`{_APPR}`"])
-    assert shas == [FULL] and cit == 1, (shas, cit)
+    assert shas == [FULL, FULL] and cit == 0, (shas, cit)
 
 
 def test_a_suppressed_citation_is_counted_rather_than_dropped() -> None:

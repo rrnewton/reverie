@@ -5,14 +5,15 @@ Covers comment and review writes, and the writes that CREATE or REPLACE an
 issue or pull-request body: ``issue create``, ``pr create``, ``issue edit`` and
 ``pr edit``, plus the equivalent REST endpoints.  The GitHub author is a
 constant on this fork, so an unattributed issue or pull request is
-indistinguishable from one the repository owner wrote himself; the disclosure
-prefix in the body is the only thing that separates them.
+indistinguishable from one the repository owner wrote himself. The disclosure
+prefix records process context but grants no authority.
 
-Every supported write requires caller-supplied ``--who``,
-``--team``, and ``--role`` arguments.  The boundary resolves the caller through
-the shared process-context authority (inherited agent identity, ancestry, cwd
-slot owner, pane, cgroup, sidecar, and TaskGraph where readable) and refuses
-unless the result is AGREEMENT and ``--who`` equals the resolved agent.
+The whole disclosure block is optional. With none of ``--who``, ``--team``, or
+``--role``, the boundary preserves the exact body and does not resolve process
+identity. If any metadata option is supplied, ``--role`` remains required,
+``--team`` defaults to the repository's existing team, and ``--who`` is optional
+audit metadata. An absent, unresolved, disagreeing, or different fleet-agent
+name never authorizes or refuses the GitHub operation.
 
 The resulting disclosure prefix is mechanical, not authentication, and is
 always separated from the body by a newline::
@@ -33,17 +34,14 @@ Supplying ``--task`` to ``pr create`` records the exact task/PR ownership fact
 on that task from the URL returned by GitHub. Supplying it to a comment write
 records the exact publication fact. It is refused on other writes.
 
-A shared GitHub credential still cannot prove who typed the arguments.  The
-independent process-context comparison makes a false claim falsifiable.  The
-disclosure prefix is not review-family authority, but an explicit ``--verdict``
-is also checked against the ``codex`` or ``claude`` client found in process
-ancestry before the write is attempted.
+A shared GitHub credential cannot prove who typed an agent-name argument, so the
+disclosure prefix is metadata rather than review authority. An explicit
+``--verdict`` is still checked against the ``codex`` or ``claude`` client family
+found in process ancestry before the write is attempted.
 
-Truly unresolvable ownership is deliberately fail-closed for every comment
-lane.  A missing cwd, pane, or sidecar remains an explicit unavailable signal
-but is not by itself UNRESOLVED when inherited process identity is proven and
-all readable signals agree.  DISAGREEMENT and UNRESOLVED always REFUSE; callers
-may not self-classify a write as non-critical to bypass either outcome.
+Unresolved or disagreeing process ownership is rendered visibly in the
+disclosure metadata. It does not block a write whose substantive repository,
+head, marker, and permission checks pass.
 """
 
 from __future__ import annotations
@@ -156,18 +154,22 @@ def disclosure_options(args: list[str]) -> tuple[list[str], dict[str, str]]:
     return args[index:], values
 
 
-def required_disclosure(values: Mapping[str, str]) -> tuple[str, str, str]:
-    if not values.get("who"):
-        die("missing required --who for a GitHub comment/review write")
-    if not values.get("team"):
-        die("missing required --team for a GitHub comment/review write")
+def optional_disclosure(
+    values: Mapping[str, str],
+) -> tuple[str | None, str, str] | None:
+    if not any(name in values for name in ("who", "team", "role")):
+        return None
     if not values.get("role"):
-        die("missing required --role for a GitHub comment/review write")
-    return values["who"], values["team"], values["role"]
+        die("--role is required when disclosure metadata is supplied")
+    return (
+        values.get("who") or None,
+        values.get("team") or disclosure_tag.DEFAULT_TEAM,
+        values["role"],
+    )
 
 
 def validate_disclosure(
-    claimed_agent: str, team: str, role: str
+    claimed_agent: str | None, team: str, role: str
 ) -> tuple[disclosure_tag.Disclosure, agent_identity.Resolution]:
     resolution = agent_identity.resolve_identity(os.getpid())
     try:
@@ -344,39 +346,33 @@ def with_verdict(body: str, verdict: str | None) -> str:
 
 def attributed(
     body: str,
-    disclosure: disclosure_tag.Disclosure,
+    disclosure: disclosure_tag.Disclosure | None,
     verdict: str | None = None,
 ) -> str:
     # Inside `attributed` on purpose: there are five call sites and a gate that
     # misses one is not a gate. Every comment body passes through here.
     body = with_verdict(body, verdict)
     refuse_unbindable_verdict(body)
+    if disclosure is None:
+        return body
+    unverified = disclosure.unverified_metadata
     existing = DISCLOSURE_RE.match(body)
     if existing:
         if existing.group("role") not in disclosure_tag.ROLES:
             die("malformed five-field who-is-talking prefix must be corrected before posting")
-        observed = (
-            existing.group("team"),
-            existing.group("agent"),
-            existing.group("model"),
-            existing.group("machine"),
-            existing.group("role"),
-        )
-        wanted = (
-            disclosure.team,
-            disclosure.agent,
-            disclosure.model,
-            disclosure.machine,
-            disclosure.role,
-        )
-        if observed != wanted:
-            die("existing who-is-talking prefix conflicts with validated disclosure")
-        return body
+        # A valid existing disclosure is retained as audit metadata. Its agent
+        # field is not compared with process context and grants no authority.
+        if unverified is None or unverified in body:
+            return body
+        return existing.group(0) + "\n" + unverified + body[existing.end():]
     if LEGACY_DISCLOSURE_RE.match(body):
         die("legacy who-is-talking prefix must be removed before posting")
     if MALFORMED_FIVE_FIELD_RE.match(body):
         die("malformed five-field who-is-talking prefix must be corrected before posting")
-    return f"{disclosure.tag}\n{body}"
+    prefix = disclosure.tag
+    if unverified is not None:
+        prefix += "\n" + unverified
+    return f"{prefix}\n{body}"
 
 
 def body_option(args: list[str]) -> tuple[int, int, str] | None:
@@ -429,7 +425,7 @@ def close_comment_option(args: list[str]) -> tuple[int, int, str] | None:
 
 def rewrite_body_option(
     args: list[str],
-    disclosure: disclosure_tag.Disclosure,
+    disclosure: disclosure_tag.Disclosure | None,
     *,
     required: bool,
     verdict: str | None = None,
@@ -448,7 +444,9 @@ def rewrite_body_option(
 
 
 def rewrite_close_comment(
-    args: list[str], disclosure: disclosure_tag.Disclosure, verdict: str | None = None
+    args: list[str],
+    disclosure: disclosure_tag.Disclosure | None,
+    verdict: str | None = None,
 ) -> list[str]:
     found = close_comment_option(args)
     if found is None:
@@ -556,7 +554,7 @@ def is_attributed_write(args: list[str]) -> bool:
 
 def rewrite_api(
     args: list[str],
-    disclosure: disclosure_tag.Disclosure,
+    disclosure: disclosure_tag.Disclosure | None,
     verdict: str | None = None,
 ) -> list[str]:
     if len(args) > 1 and args[1] == "graphql":
@@ -589,9 +587,11 @@ def rewrite_api(
 
 def rewrite(
     args: list[str],
-    disclosure: disclosure_tag.Disclosure,
+    disclosure: disclosure_tag.Disclosure | None,
     verdict: str | None = None,
 ) -> list[str]:
+    if disclosure is None and verdict is None:
+        return args
     if len(args) >= 2 and args[:2] in (["pr", "comment"], ["issue", "comment"]):
         return rewrite_body_option(args, disclosure, required=False, verdict=verdict)
     if len(args) >= 2 and args[:2] in CREATED_BODY_COMMANDS + EDITED_BODY_COMMANDS:
@@ -793,18 +793,27 @@ def main() -> int:
     if verdict is not None and not is_verdict_write(args):
         die("--verdict only applies to a comment or review write")
     if is_attributed_write(args):
-        claimed_agent, team, role = required_disclosure(supplied)
-        disclosure, resolution = validate_disclosure(claimed_agent, team, role)
-        if verdict is not None:
+        metadata = optional_disclosure(supplied)
+        if metadata is None:
+            disclosure = None
+            resolution = None
+        else:
+            claimed_agent, team, role = metadata
+            disclosure, resolution = validate_disclosure(claimed_agent, team, role)
+        if verdict is not None and resolution is not None:
             validate_verdict_family(verdict, resolution)
         args = rewrite(args, disclosure, verdict)
         # A named task couples a created PR or published comment to the exact
         # record written by that operation. It remains optional so historical
         # callers keep working while readers report record coverage.
         if task and args[:2] in (["pr", "comment"], ["issue", "comment"]):
-            return post_and_record(args, task, claimed_agent)
+            return post_and_record(
+                args, task, disclosure.agent if disclosure is not None else "unverified"
+            )
         if task and args[:2] == ["pr", "create"]:
-            return create_pr_and_record(args, task, claimed_agent)
+            return create_pr_and_record(
+                args, task, disclosure.agent if disclosure is not None else "unverified"
+            )
         if task:
             die("--task applies only to a pull-request create or comment write")
     elif task or verdict is not None:

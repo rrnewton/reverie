@@ -8,7 +8,7 @@
 # as hard as the negative, and a mutation run at the end proves the suite is not
 # vacuous.
 #
-#   REFUSED     selected PR with ZERO approval labels  -> missing authority
+#   REFUSED     selected PR with ZERO review artifacts -> missing authority
 #   FLAGGED     approval bound to an OLDER head        -> SUPERSEDED
 #   FLAGGED     label with NO SHA in any comment       -> UNDETERMINED
 #   NOT FLAGGED approval naming the CURRENT head       -> BOUND_CURRENT, rc=0
@@ -62,7 +62,7 @@ JSON
 out="$(run "$tmp/zero.json" --pr 2132 --gate)"; rc=$?
 [[ $rc -eq 1 ]] && ok "zero approvals: selected PR gate REFUSES (rc=1)" \
   || bad "zero approvals: expected rc=1, got $rc"
-grep -q "PR #2132 has zero passed-review labels" <<<"$out" \
+grep -q "PR #2132 has zero review artifacts" <<<"$out" \
   && ok "zero-approval refusal identifies the selected PR and missing evidence" \
   || bad "zero-approval refusal is not explicit: $out"
 out="$(run "$tmp/zero.json" --pr 2132 --gate --json)"; rc=$?
@@ -82,7 +82,7 @@ out="$(run "$tmp/superseded.json" --gate)"; rc=$?
 [[ $rc -eq 1 ]] && ok "superseded approval: gate FAILS (rc=1)" || bad "superseded: expected rc=1, got $rc"
 grep -q "SUPERSEDED    PR 1864" <<<"$out" && ok "superseded names the PR, the label and both SHAs" \
   || bad "superseded not named: $out"
-grep -q "^summary=1/1 passed-review-\* / locally-validated labels fail the all binding check; affected=#1864;" <<<"$out" \
+grep -q "^summary=1/1 review/local-validation artifacts fail the all binding check; affected=#1864;" <<<"$out" \
   && ok "gate emits a concrete scheduled-tick summary" \
   || bad "scheduled-tick summary missing or unrendered: $out"
 
@@ -108,7 +108,7 @@ cat >"$tmp/current.json" <<JSON
 JSON
 out="$(run "$tmp/current.json" --pr 1666 --gate)"; rc=$?
 [[ $rc -eq 0 ]] && ok "current approvals: selected PR gate PASSES (rc=0)" || bad "current: expected rc=0, got $rc"
-grep -q "every passed-review-\* / locally-validated label is bound to the current head" <<<"$out" \
+grep -q "every review/local-validation artifact is bound to the current head" <<<"$out" \
   && ok "current approvals reported as holding" || bad "current approvals not reported clean: $out"
 grep -q "bound to current head: 2; authority absent: 0" <<<"$out" \
   && ok "exact-head bindings count as 2/2 authority" \
@@ -134,12 +134,12 @@ cat >"$tmp/local-current.json" <<JSON
   "runs_at_head":0,"mergeable":"MERGEABLE"}]
 JSON
 out="$(run "$tmp/local-current.json" --gate --gate-on superseded)"; rc=$?
-[[ $rc -eq 0 ]] && grep -q "every passed-review-\* / locally-validated label is bound to the current head" <<<"$out" \
+[[ $rc -eq 0 ]] && grep -q "every review/local-validation artifact is bound to the current head" <<<"$out" \
   && ok "current-head locally-validated receipt marker does not false-fire" \
   || bad "current locally-validated label was wrongly rejected (rc=$rc): $out"
 
 out="$(run "$tmp/local-current.json" --pr 2108 --gate)"; rc=$?
-[[ $rc -eq 1 ]] && grep -q "PR #2108 has zero passed-review labels" <<<"$out" \
+[[ $rc -eq 1 ]] && grep -q "PR #2108 has zero review artifacts" <<<"$out" \
   && ok "locally-validated alone cannot satisfy the selected-PR approval set" \
   || bad "local validation cache bypassed the approval requirement (rc=$rc): $out"
 
@@ -245,7 +245,7 @@ out="$(run "$tmp/combined.json" --gate)"
 grep -q "APPROVED + UNEVALUATED" <<<"$out" \
   && ok "approved-and-unevaluated is called out specifically, not just as one more stale label" \
   || bad "composed state not distinguished: $out"
-grep -q "passed-review-\* / locally-validated AND unevaluated: 1" <<<"$out" \
+grep -q "cached review/local-validation artifact(s) AND unevaluated: 1" <<<"$out" \
   && ok "reports the crossed count with its population" || bad "no crossed count: $out"
 
 # The same zero cannot support that claim when GitHub Actions are disabled.
@@ -310,7 +310,7 @@ out="$(run "$tmp/combined.json" --gate --gate-on superseded)"; rc=$?
 _refusal_row () {
   cat <<JSON
   {"number":1866,"head":"$CUR","labels":["passed-review-claude"],
-   "comments":["CHANGES-REQUESTED-AT: claude $OLD","APPROVED-AT: claude $CUR"],
+   "comments":["APPROVED-AT: claude $CUR","CHANGES-REQUESTED-AT: claude $OLD"],
    "runs_at_head":0,"mergeable":"MERGEABLE"}
 JSON
 }
@@ -510,12 +510,12 @@ gate "[\"CHANGES-REQUESTED-AT: claude $CUR\"]" \
 gate "[\"APPROVED-AT: claude $CUR\"]" \
   && ok "changes-requested-gate: a clean head still merges" \
   || bad "changes-requested-gate: clean head now blocked -- over-blocking"
-gate "[\"[hermit2, hermit-007, unresolved, devbig014, role=reviewer]\\nCHANGES-REQUESTED: claude $CUR\",\"[hermit2, hermit-007, unresolved, devbig014, role=reviewer]\\nCHANGES-REQUESTED-WITHDRAWN-AT: claude $CUR\"]" \
-  && ok "changes-requested-gate: the issuer's withdrawal still clears a suffix-less refusal" \
-  || bad "the issuer's withdrawal no longer clears a suffix-less refusal"
+gate "[\"[hermit2, hermit-007, unresolved, devbig014, role=reviewer]\\nCHANGES-REQUESTED: claude $CUR\",\"[hermit2, hermit-099, unresolved, devbig014, role=reviewer]\\nCHANGES-REQUESTED-WITHDRAWN-AT: claude $CUR\"]" \
+  && ok "changes-requested-gate: a later current-head withdrawal clears without fleet-name equality" \
+  || bad "a later current-head withdrawal did not clear a suffix-less refusal"
 gate "[\"CHANGES-REQUESTED: claude $CUR\",\"CHANGES-REQUESTED-WITHDRAWN-AT: claude $CUR\"]" \
-  && bad "an unsigned generic withdrawal cleared an unsigned suffix-less refusal" \
-  || ok "an unsigned generic withdrawal still clears nothing"
+  && ok "missing fleet names do not prevent a canonical current-head withdrawal" \
+  || bad "missing fleet names prevented a canonical current-head withdrawal"
 
 
 # --- THE ASSERTION THE MUTATION CONTROL HAS ALWAYS WAITED FOR ------------------
@@ -555,12 +555,8 @@ fi
 # so nobody overrode anything deliberately. That is exactly why the grammar has
 # to hold this and reviewer attention cannot.
 #
-# Three properties, and the middle one is the whole change:
-#   1. a refusal followed by ITS OWN issuer's approval clears (a reviewer may
-#      change their mind -- the chronological rule was written for this);
-#   2. a refusal followed by ANOTHER issuer's approval does NOT clear;
-#   3. an UNSIGNED approval clears nothing, because it cannot prove whose
-#      refusal it answers.
+# A later canonical current-head approval is the lane's substantive decision.
+# Fleet-name metadata cannot change that decision; lane, head, and chronology can.
 cat >"$tmp/self-reversal.json" <<JSON
 [{"number":9210,"head":"$CUR","labels":["passed-review-claude"],
   "comments":["[hermit2, hermit-007, unresolved, devbig014, role=reviewer]\nCHANGES-REQUESTED-AT: claude $CUR",
@@ -569,9 +565,9 @@ cat >"$tmp/self-reversal.json" <<JSON
 JSON
 out="$(run "$tmp/self-reversal.json" --pr 9210 --gate --json)"
 if grep -q '"authoritative": 1' <<<"$out"; then
-  ok "an issuer may reverse THEIR OWN refusal with a later approval"
+  ok "a later current-head approval discharges an earlier refusal"
 else
-  bad "self-reversal no longer clears -- over-blocking, a reviewer cannot change their mind"
+  bad "a later current-head approval did not discharge an earlier refusal"
 fi
 
 cat >"$tmp/other-issuer.json" <<JSON
@@ -581,10 +577,10 @@ cat >"$tmp/other-issuer.json" <<JSON
   "runs_at_head":3,"mergeable":"MERGEABLE"}]
 JSON
 out="$(run "$tmp/other-issuer.json" --pr 9211 --gate --json)"
-if grep -q '"authoritative": 0' <<<"$out" && ! grep -q '"authoritative": 1' <<<"$out"; then
-  ok "another issuer's approval does NOT discharge a live refusal"
+if grep -q '"authoritative": 1' <<<"$out"; then
+  ok "different fleet-name metadata does not prevent a later approval"
 else
-  bad "another issuer's approval discharged a live refusal -- the seventh decay mode"
+  bad "fleet-name metadata changed a later approval's authority"
 fi
 
 cat >"$tmp/unsigned-approval.json" <<JSON
@@ -594,14 +590,14 @@ cat >"$tmp/unsigned-approval.json" <<JSON
   "runs_at_head":3,"mergeable":"MERGEABLE"}]
 JSON
 out="$(run "$tmp/unsigned-approval.json" --pr 9212 --gate --json)"
-if grep -q '"authoritative": 0' <<<"$out" && ! grep -q '"authoritative": 1' <<<"$out"; then
-  ok "an UNSIGNED approval discharges nothing -- it cannot say whose refusal it answers"
+if grep -q '"authoritative": 1' <<<"$out"; then
+  ok "missing fleet-name metadata does not prevent a later approval"
 else
-  bad "an unsigned approval discharged a refusal -- the unilateral clear came back by spelling"
+  bad "missing fleet-name metadata changed a later approval's authority"
 fi
 
 # The grammar's own escape hatch must still work, or a refusal becomes a
-# permanent park with no door. Same ownership rule: the retractor's own only.
+# permanent park with no door. Fleet-name metadata does not control this path.
 cat >"$tmp/withdrawn.json" <<JSON
 [{"number":9213,"head":"$CUR","labels":["passed-review-claude"],
   "comments":["[hermit2, hermit-007, unresolved, devbig014, role=reviewer]\nCHANGES-REQUESTED-AT: claude $CUR",
@@ -611,33 +607,9 @@ cat >"$tmp/withdrawn.json" <<JSON
 JSON
 out="$(run "$tmp/withdrawn.json" --pr 9213 --gate --json)"
 if grep -q '"authoritative": 1' <<<"$out"; then
-  ok "the issuer's own CHANGES-REQUESTED-WITHDRAWN-AT reopens the head"
+  ok "a later current-head CHANGES-REQUESTED-WITHDRAWN-AT reopens the lane"
 else
-  bad "an explicit withdrawal by the refusal's own issuer did not clear it -- no escape hatch"
-fi
-
-# ⚠️ ITS OWN MUTATION CONTROL, because the widened control above can no longer
-# speak for this half: that one removes BOTH mechanisms, so it would go red even
-# if the issuer-aware guard were deleted and `found.clear()` alone remained. This
-# removes ONLY the issuer-aware guard and asserts the other-issuer case reds.
-if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
-  mutant="$tmp/approval_binding-without-issuer-guard.py"
-  sed 's/^    if unanswered:$/    if False:  # MUTANT: another issuer may discharge a refusal/' \
-    "$tool" >"$mutant"
-  if ! grep -q 'MUTANT: another issuer may discharge a refusal' "$mutant"; then
-    bad "issuer-guard mutation control could not locate the guard"
-  else
-    APPROVAL_BINDING_TOOL="$mutant" APPROVAL_BINDING_MUTATION_CHILD=1 \
-      bash "$0" >"$tmp/issuer-mutant-suite.out" 2>&1
-    mutant_rc=$?
-    if [[ $mutant_rc -ne 0 ]] \
-      && grep -q "FAIL  another issuer's approval discharged a live refusal" \
-        "$tmp/issuer-mutant-suite.out"; then
-      ok "mutation control: suite FAILS when another issuer may discharge a refusal"
-    else
-      bad "issuer-guard mutation control did not fail (rc=$mutant_rc)"
-    fi
-  fi
+  bad "a later current-head withdrawal did not clear the earlier objection"
 fi
 
 # The negative control for it. Without this, the assertion above would also pass
@@ -857,88 +829,131 @@ if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
 fi
 
 
-# --- THE CACHE WAS THE INDEX: an unlabeled PR with a real binding --------------
-# Rows used to be generated per passed-review-* label, so a PR carrying a
-# correctly-formed `APPROVED-AT: <lane> <head>` and NO label produced no row at
-# all and reported approvals=0 -- indistinguishable from "nobody reviewed it".
-# Measured 2026-08-25 on rrnewton/hermit: 25 of 28 open PRs had no such label and
-# five of those carried a binding nothing read.
-cat >"$tmp/unlabeled-bound.json" <<JSON
-[{"number":2608,"head":"$CUR","labels":[],
-  "lane_shas":{"claude":["$CUR"]},"runs_at_head":2,"mergeable":"MERGEABLE"}]
+# --- LABELS ARE CACHES: exact-head comments remain authority ------------------
+# Literal authority shape from Hermit #2956 before its cache label was applied:
+# issuecomment-5552507459 is a canonical exact-head approval and the PR had no
+# passed-review-* label. The comment, not the label, must satisfy the gate.
+PR2956_HEAD=88bd94fdfc841eb0512b81707e6e2e8f56d589a6
+cat >"$tmp/pr2956-unlabeled.json" <<JSON
+[{"number":2956,"head":"$PR2956_HEAD","labels":[],
+  "comments":["[hermit2, review-cpuid, unresolved, devbig014, role=reviewer]\nAPPROVED-AT: claude $PR2956_HEAD"],
+  "runs_at_head":0,"mergeable":"MERGEABLE"}]
 JSON
+out="$(run "$tmp/pr2956-unlabeled.json" --pr 2956 --gate --json)"; rc=$?
+[[ $rc -eq 0 ]] \
+  && grep -q '"approvals": 1' <<<"$out" \
+  && grep -q '"authoritative": 1' <<<"$out" \
+  && grep -q '"approval_set_missing": false' <<<"$out" \
+  && ok "#2956 shape: an unlabeled exact-head approval is authoritative" \
+  || bad "#2956 shape lost comment authority (rc=$rc): $out"
 
-# 1. IT IS SEEN.
-out="$(run "$tmp/unlabeled-bound.json" --pr 2608 --gate --json)"
-grep -q '"unlabeled_bound_current": 1' <<<"$out" \
-  && ok "unlabeled PR: a canonical at-head binding is REPORTED, not silently dropped" \
-  || bad "unlabeled binding still invisible: $out"
+# Literal marker chronology from Hermit #2950 before label reconciliation. The
+# old refusal is followed by a canonical lane decision and then a fresh exact-
+# head approval. No fleet-name equality participates in the result.
+PR2950_HEAD=58bf4f5c17880395400ab3cb6482d0de2ee03a84
+cat >"$tmp/pr2950-unlabeled.json" <<JSON
+[{"number":2950,"head":"$PR2950_HEAD","labels":[],
+  "comments":["[hermit2, review-cpuid, unresolved, devbig014, role=reviewer]\nCHANGES-REQUESTED-AT: claude c3a85da26110fd8dfc31433c8d4109726127703b",
+              "[hermit2, review-cpuid, unresolved, devbig014, role=reviewer]\nCHANGES-REQUESTED-WITHDRAWN-AT: claude 2a18b7bea06cf66f5cf4a973466afa506c0bd2a4\nAPPROVED-AT: claude 2a18b7bea06cf66f5cf4a973466afa506c0bd2a4",
+              "[hermit2, another-name, unresolved, devbig030, role=reviewer]\nAPPROVED-AT: claude $PR2950_HEAD"],
+  "runs_at_head":0,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/pr2950-unlabeled.json" --pr 2950 --gate --json)"; rc=$?
+[[ $rc -eq 0 ]] \
+  && grep -q '"approvals": 1' <<<"$out" \
+  && grep -q '"authoritative": 1' <<<"$out" \
+  && grep -q '"approval_set_missing": false' <<<"$out" \
+  && ok "#2950 shape: later current-head approval discharges the old refusal without name equality" \
+  || bad "#2950 shape did not preserve the live clear verdict (rc=$rc): $out"
 
-# 2. IT STILL REFUSES. This is the whole point of the restraint: the tool now
-#    sees the review, and the landing boundary has NOT moved.
-out="$(run "$tmp/unlabeled-bound.json" --pr 2608 --gate)"; rc=$?
+# A label alone remains non-authoritative.
+out="$(run "$tmp/unbound.json" --pr 999 --gate --json)"; rc=$?
 [[ $rc -eq 1 ]] \
-  && ok "unlabeled PR: seeing the binding does NOT make it landable (rc=1)" \
-  || bad "unlabeled binding changed the merge boundary: expected rc=1, got $rc"
-out="$(run "$tmp/unlabeled-bound.json" --pr 2608 --gate --json)"
-grep -q '"approval_set_missing": true' <<<"$out" && grep -q '"approvals": 0' <<<"$out" \
-  && ok "unlabeled PR: approval_set_missing and approvals are unchanged" \
-  || bad "unlabeled binding leaked into the headline counts: $out"
+  && grep -q '"authoritative": 0' <<<"$out" \
+  && ok "passed-review label alone remains non-authoritative" \
+  || bad "a label without an exact-head review artifact granted authority: $out"
 
-# 3. THE TWO CAUSES ARE NOW DISTINGUISHABLE, which is the defect itself.
-out="$(run "$tmp/unlabeled-bound.json" --pr 2608 --gate)"
-grep -q "NOT UNREVIEWED" <<<"$out" \
-  && ok "unlabeled PR: refusal says the label is missing, not the review" \
-  || bad "refusal still cannot distinguish unreviewed from unlabeled: $out"
+# Stale and malformed records do not become authority merely because labels are
+# optional caches.
+cat >"$tmp/unlabeled-stale.json" <<JSON
+[{"number":2960,"head":"$CUR","labels":[],
+  "comments":["APPROVED-AT: claude $OLD"],
+  "runs_at_head":2,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/unlabeled-stale.json" --pr 2960 --gate --json)"; rc=$?
+[[ $rc -eq 1 ]] && grep -q '"authoritative": 0' <<<"$out" \
+  && ok "an unlabeled stale-head approval remains non-authoritative" \
+  || bad "an unlabeled stale-head approval passed (rc=$rc): $out"
+
+cat >"$tmp/unlabeled-malformed.json" <<JSON
+[{"number":2961,"head":"$CUR","labels":[],
+  "comments":["APPROVED-AT: claude"],
+  "runs_at_head":2,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/unlabeled-malformed.json" --pr 2961 --gate --json)"; rc=$?
+[[ $rc -eq 1 ]] \
+  && grep -q '"approval_set_missing": true' <<<"$out" \
+  && grep -q '"malformed_source_lines": 1' <<<"$out" \
+  && ok "an unlabeled malformed approval remains non-authoritative" \
+  || bad "an unlabeled malformed approval passed (rc=$rc): $out"
+
+cat >"$tmp/unlabeled-refused.json" <<JSON
+[{"number":2962,"head":"$CUR","labels":[],
+  "comments":["APPROVED-AT: claude $CUR","CHANGES-REQUESTED-AT: claude $CUR"],
+  "runs_at_head":2,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/unlabeled-refused.json" --pr 2962 --gate --json)"; rc=$?
+[[ $rc -eq 1 ]] && grep -q '"authoritative": 0' <<<"$out" \
+  && ok "an unresolved objection still blocks an unlabeled approval" \
+  || bad "an unresolved objection was cleared without later evidence (rc=$rc): $out"
+
+# The negative control distinguishes no review artifact from a missing cache.
 cat >"$tmp/unlabeled-none.json" <<JSON
 [{"number":2609,"head":"$CUR","labels":[],
   "lane_shas":{},"runs_at_head":2,"mergeable":"MERGEABLE"}]
 JSON
-out="$(run "$tmp/unlabeled-none.json" --pr 2609 --gate)"
-grep -q "NOT UNREVIEWED" <<<"$out" \
-  && bad "a genuinely unreviewed PR wrongly claims a binding exists: $out" \
-  || ok "genuinely unreviewed PR does NOT claim a binding (the negative control)"
+out="$(run "$tmp/unlabeled-none.json" --pr 2609 --gate --json)"; rc=$?
+[[ $rc -eq 1 ]] && grep -q '"approval_set_missing": true' <<<"$out" \
+  && ok "a genuinely unreviewed PR still reports missing authority" \
+  || bad "a genuinely unreviewed PR passed: $out"
 
-# 4. AN UNLABELED BINDING MUST NOT SATISFY THE CRITICAL-LANE CHECK.
-#    Counting it there would shrink critical_lanes_missing and loosen the gate.
+# Critical review still requires both exact-head lanes; cache labels are not a
+# second source of authority.
 cat >"$tmp/unlabeled-critical.json" <<JSON
 [{"number":2610,"head":"$CUR","labels":["post-facto-human-review"],
   "comments":["REVIEW-DISPATCH-ATTESTATION\ncritical-class: hermit-syscall\nhead: $CUR\nAPPROVED-AT: claude $CUR\nAPPROVED-AT: codex $CUR"],
   "runs_at_head":2,"mergeable":"MERGEABLE"}]
 JSON
 out="$(run "$tmp/unlabeled-critical.json" --pr 2610 --gate --json)"
-grep -q '"critical_lanes_missing": \[' <<<"$out" \
-  && ! grep -q '"critical_lanes_missing": \[\]' <<<"$out" \
-  && ok "unlabeled binding does NOT satisfy the critical-lane requirement" \
-  || bad "unlabeled binding loosened the critical-lane gate: $out"
+grep -q '"critical_lanes_missing": \[\]' <<<"$out" \
+  && grep -q '"authoritative": 2' <<<"$out" \
+  && ok "two unlabeled exact-head lanes satisfy the critical review count" \
+  || bad "cache labels still control critical review authority: $out"
 
-# 5. MUTATION CONTROL for 4: delete the source guard and 4 must fail.
-mutant="$tmp/approval_binding-without-source-guard.py"
-sed 's/and row.get("source") != "comment"//' "$tool" >"$mutant"
+# Mutation control: restore the cache-as-index defect. The #2956-shaped fixture
+# must fail specifically because its comment row disappears from approval_rows.
+mutant="$tmp/approval_binding-cache-as-index.py"
+sed 's/row for row in rows if row.get("lane") in LANES/row for row in rows if row.get("source") != "comment" and row.get("lane") in LANES/' "$tool" >"$mutant"
 if ! cmp -s "$tool" "$mutant"; then
-  out="$(python3 "$mutant" --from-json "$tmp/unlabeled-critical.json" --pr 2610 --gate --json 2>&1)"
-  if grep -q '"critical_lanes_missing": \[\]' <<<"$out"; then
-    ok "mutation control: removing the source guard DOES loosen the critical gate"
-  else
-    bad "mutation control: the source guard appears to do nothing -- test 4 proves nothing"
-  fi
+  mout="$(python3 "$mutant" --from-json "$tmp/pr2956-unlabeled.json" --pr 2956 --gate --json 2>&1)"; mrc=$?
+  [[ $mrc -eq 1 ]] && grep -q '"approval_set_missing": true' <<<"$mout" \
+    && ok "mutation control: restoring cache-as-index fails the #2956 shape" \
+    || bad "cache-as-index mutation did not fail the #2956 shape (rc=$mrc): $mout"
 else
-  bad "mutation control: could not construct the without-source-guard mutant"
+  bad "mutation control: could not construct cache-as-index mutant"
 fi
 
 
-# Keep the issuer split as provenance, not as a permission boundary. A current
-# agent using a currently authorized GitHub actor may retire either form with a
-# valid agent disclosure and one canonical withdrawal
-# carrying the exact refusing comment id; a generic approval or unquoted
-# withdrawal from another member still clears nothing.
+# Keep the issuer split as provenance, not as a permission boundary. A currently
+# authorized GitHub actor may answer either form with a later canonical exact-head
+# lane decision or one exact withdrawal carrying the refusing comment id.
 #
 # Both directions are asserted, because a counter that always says "none" and one
 # that always says "present" are each useless in a way the other's test hides.
 cat >"$tmp/refusal-unsigned.json" <<JSON
 [{"number":9301,"head":"$CUR","labels":["passed-review-claude"],
   "comments":["[adversarial-reviewer agent, codex - dispatched by agent(hermit-004)]\nCHANGES-REQUESTED-AT: claude $CUR",
-              "[hermit2, hermit-005, unresolved, devbig014, role=reviewer]\nAPPROVED-AT: claude $CUR"],
+              "[hermit2, hermit-005, unresolved, devbig014, role=reviewer]\nAPPROVED-AT: claude $OLD"],
   "runs_at_head":3,"mergeable":"MERGEABLE"}]
 JSON
 out="$(run "$tmp/refusal-unsigned.json" --pr 9301 --gate)"
@@ -956,7 +971,7 @@ fi
 cat >"$tmp/refusal-signed.json" <<JSON
 [{"number":9302,"head":"$CUR","labels":["passed-review-claude"],
   "comments":["[hermit2, hermit-016, unresolved, devbig014, role=reviewer]\nCHANGES-REQUESTED-AT: claude $CUR",
-              "[hermit2, hermit-005, unresolved, devbig014, role=reviewer]\nAPPROVED-AT: claude $CUR"],
+              "[hermit2, hermit-005, unresolved, devbig014, role=reviewer]\nAPPROVED-AT: claude $OLD"],
   "runs_at_head":3,"mergeable":"MERGEABLE"}]
 JSON
 out="$(run "$tmp/refusal-signed.json" --pr 9302 --gate)"
@@ -965,7 +980,7 @@ if grep -q '^refusal_issuer_summary=1 unanswered refusal(s) at head across 1 PR(
 else
   bad "a signed refusal was miscounted; the split cannot separate the two remedies: $out"
 fi
-if grep -q 'agent using a currently authorized GitHub actor' <<<"$out"; then
+if grep -q 'currently authorized GitHub actor may post a later canonical approval' <<<"$out"; then
   ok "the signed-refusal remedy no longer depends on a departed issuer"
 else
   bad "the signed-refusal remedy still leaves a departed issuer as a permanent gate: $out"

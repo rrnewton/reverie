@@ -262,46 +262,49 @@ class FleetGhTest(unittest.TestCase):
             capture_output=True,
         )
 
-    def test_missing_who_is_distinct_and_refused_before_write(self) -> None:
+    def install_failing_identity_stub(self) -> None:
+        (self.root / "ci-hub/lib/agent_identity.py").write_text(
+            "def resolve_identity(*args, **kwargs): "
+            "raise AssertionError('identity resolution must not run')\n"
+        )
+
+    def test_missing_who_uses_resolved_metadata_and_posts(self) -> None:
         result = self.run_shim(
             "--team", "hermit2", "--role", "impl",
             "pr", "comment", "42", "--body", "anonymous",
         )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("missing required --who", result.stderr)
-        self.assertNotIn("mismatch", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.captured()[self.captured().index("--body") + 1]
+        self.assertIn(f"[hermit2, {TEST_AGENT},", body)
+        self.assertNotIn("Unverified --who metadata:", body)
+
+    def test_missing_team_defaults_but_missing_role_is_refused(self) -> None:
+        defaulted = self.run_shim(
+            "--who", TEST_AGENT, "--role", "impl",
+            "pr", "comment", "42", "--body", "default team",
+        )
+        self.assertEqual(defaulted.returncode, 0, defaulted.stderr)
+        body = self.captured()[self.captured().index("--body") + 1]
+        self.assertTrue(body.startswith(f"[hermit2, {TEST_AGENT},"))
+
+        self.capture.unlink(missing_ok=True)
+        refused = self.run_shim(
+            "--who", TEST_AGENT, "--team", "hermit2",
+            "pr", "comment", "42", "--body", "missing role",
+        )
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("--role is required when disclosure metadata is supplied", refused.stderr)
         self.assertFalse(self.capture.exists())
 
-    def test_missing_team_or_role_is_refused_before_write(self) -> None:
-        cases = (
-            (["--who", TEST_AGENT, "--role", "impl"], "missing required --team"),
-            (["--who", TEST_AGENT, "--team", "hermit2"], "missing required --role"),
-        )
-        for supplied, expected in cases:
-            with self.subTest(expected=expected):
-                self.capture.unlink(missing_ok=True)
-                result = self.run_shim(
-                    *supplied, "pr", "comment", "42", "--body", "incomplete"
-                )
-                self.assertEqual(result.returncode, 2)
-                self.assertIn(expected, result.stderr)
-                self.assertFalse(self.capture.exists())
-
-    def test_mismatched_who_is_distinct_and_refused_before_write(self) -> None:
+    def test_mismatched_who_is_unverified_metadata_not_authority(self) -> None:
         result = self.run_shim(
             *self.identity(who="someone-else"),
             "pr", "comment", "42", "--body", "false claim",
         )
-        self.assertNotEqual(
-            result.returncode,
-            0,
-            "MISMATCHED --who WAS POSTED after worktree-owner validation disappeared",
-        )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("--who mismatch", result.stderr)
-        self.assertIn(f"process context resolves to '{TEST_AGENT}'", result.stderr)
-        self.assertNotIn("missing required --who", result.stderr)
-        self.assertFalse(self.capture.exists())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.captured()[self.captured().index("--body") + 1]
+        self.assertTrue(body.startswith(f"[hermit2, {TEST_AGENT},"))
+        self.assertIn("Unverified --who metadata: someone-else", body)
 
     def test_matching_who_posts_mechanical_five_field_newline_prefix(self) -> None:
         result = self.run_shim(
@@ -313,7 +316,9 @@ class FleetGhTest(unittest.TestCase):
         machine = socket.gethostname().split(".", 1)[0]
         self.assertEqual(
             body,
-            f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=reviewer]\nevidence",
+            f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=reviewer]\n"
+            f"Unverified --who metadata: {TEST_AGENT}\n"
+            "evidence",
         )
 
     def test_full_sha_marker_in_prose_is_a_mention(self) -> None:
@@ -480,13 +485,13 @@ class FleetGhTest(unittest.TestCase):
         self.assertIn("could not record", result.stderr)
         self.assertIn("tg-note-verified", result.stderr)
 
-    def test_pr_close_comment_without_identity_is_refused_before_write(self) -> None:
+    def test_pr_close_comment_without_metadata_preserves_exact_body(self) -> None:
         result = self.run_shim(
             "pr", "close", "42", "--comment", "closing disposition"
         )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("missing required --who", result.stderr)
-        self.assertFalse(self.capture.exists())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        captured = self.captured()
+        self.assertEqual(captured[captured.index("--comment") + 1], "closing disposition")
 
     def test_pr_close_comment_gets_mechanical_five_field_prefix(self) -> None:
         result = self.run_shim(
@@ -500,7 +505,9 @@ class FleetGhTest(unittest.TestCase):
         self.assertEqual(
             body,
             f"[hermit2, {TEST_AGENT}, unresolved, {machine}, "
-            "role=coordinator]\nclosing disposition",
+            "role=coordinator]\n"
+            f"Unverified --who metadata: {TEST_AGENT}\n"
+            "closing disposition",
         )
 
     def test_pr_close_attached_short_comment_is_canonicalized_and_prefixed(self) -> None:
@@ -511,7 +518,9 @@ class FleetGhTest(unittest.TestCase):
         captured = self.captured()
         self.assertNotIn("-cclosing disposition", captured)
         body = captured[captured.index("--comment") + 1]
-        self.assertTrue(body.endswith("role=impl]\nclosing disposition"))
+        self.assertTrue(
+            body.endswith(f"Unverified --who metadata: {TEST_AGENT}\nclosing disposition")
+        )
 
     def test_pr_close_duplicate_comment_options_are_refused_before_write(self) -> None:
         result = self.run_shim(
@@ -531,7 +540,9 @@ class FleetGhTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         captured = self.captured()
         body = captured[captured.index("--comment") + 1]
-        self.assertTrue(body.endswith("role=impl]\n--comment=words"))
+        self.assertTrue(
+            body.endswith(f"Unverified --who metadata: {TEST_AGENT}\n--comment=words")
+        )
 
     def test_created_issue_and_pr_bodies_are_prefixed_without_the_author_doing_it(
         self,
@@ -550,7 +561,9 @@ class FleetGhTest(unittest.TestCase):
                 body = self.captured()[self.captured().index("--body") + 1]
                 self.assertEqual(
                     body,
-                    f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\nprose",
+                    f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\n"
+                    f"Unverified --who metadata: {TEST_AGENT}\n"
+                    "prose",
                     "A CREATED ARTIFACT WENT OUT UNATTRIBUTED",
                 )
 
@@ -599,14 +612,29 @@ class FleetGhTest(unittest.TestCase):
         machine = socket.gethostname().split(".", 1)[0]
         self.assertEqual(
             body,
-            f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\nfiled from a file",
+            f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\n"
+            f"Unverified --who metadata: {TEST_AGENT}\n"
+            "filed from a file",
         )
 
-    def test_create_without_identity_is_refused_before_the_artifact_exists(self) -> None:
+    def test_create_without_metadata_preserves_exact_body(self) -> None:
         result = self.run_shim("issue", "create", "--title", "t", "--body", "anonymous")
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("missing required --who", result.stderr)
-        self.assertFalse(self.capture.exists(), "AN UNATTRIBUTED ISSUE WAS CREATED")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.captured()[self.captured().index("--body") + 1]
+        self.assertEqual(body, "anonymous")
+
+    def test_no_metadata_exact_head_verdict_skips_identity_resolution(self) -> None:
+        self.install_failing_identity_stub()
+        marker = f"APPROVED-AT: codex {HEAD}"
+        result = self.run_shim(
+            "--verdict", marker,
+            "pr", "comment", "42", "--body", marker,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.captured()[self.captured().index("--body") + 1]
+        self.assertEqual(body, marker)
+        gate = load_changes_requested_gate()
+        self.assertEqual(gate.evaluate([body], HEAD)[0], gate.OK)
 
     def test_create_without_any_body_is_refused_rather_than_passed_through(self) -> None:
         """Fail closed: a body-less create would otherwise be the hole this
@@ -625,7 +653,9 @@ class FleetGhTest(unittest.TestCase):
         machine = socket.gethostname().split(".", 1)[0]
         self.assertEqual(
             body,
-            f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\nreplacement prose",
+            f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\n"
+            f"Unverified --who metadata: {TEST_AGENT}\n"
+            "replacement prose",
         )
 
     def test_edit_without_a_body_needs_no_identity_and_passes_through(self) -> None:
@@ -644,7 +674,9 @@ class FleetGhTest(unittest.TestCase):
         captured = self.captured()
         machine = socket.gethostname().split(".", 1)[0]
         self.assertIn(
-            f"body=[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\nvia api",
+            f"body=[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\n"
+            f"Unverified --who metadata: {TEST_AGENT}\n"
+            "via api",
             captured,
         )
 
@@ -671,7 +703,9 @@ class FleetGhTest(unittest.TestCase):
         machine = socket.gethostname().split(".", 1)[0]
         self.assertEqual(
             body,
-            f"[hermit2, {TEST_AGENT}, gpt-5.6-sol, {machine}, role=impl]\nevidence",
+            f"[hermit2, {TEST_AGENT}, gpt-5.6-sol, {machine}, role=impl]\n"
+            f"Unverified --who metadata: {TEST_AGENT}\n"
+            "evidence",
             "RESOLVED MODEL WAS LOST OR REPLACED BY A GUESS",
         )
 
@@ -726,15 +760,16 @@ class FleetGhTest(unittest.TestCase):
         self.assertIn("DEGRADED", disagreement.stderr)
         self.assertIn("DISAGREEMENT", disagreement.stderr)
 
-    def test_shared_github_boundary_still_refuses_unresolved_identity(self) -> None:
+    def test_shared_github_boundary_marks_unresolved_identity_as_metadata(self) -> None:
         self.install_identity_stub(state="UNRESOLVED", agent=None)
         result = self.run_shim(
             *self.identity(),
             "pr", "comment", "42", "--body", "nobody established",
         )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("owner unresolved", result.stderr)
-        self.assertFalse(self.capture.exists())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.captured()[self.captured().index("--body") + 1]
+        self.assertIn("degraded-unresolved", body)
+        self.assertIn(f"Unverified --who metadata: {TEST_AGENT}", body)
 
     def test_caller_supplied_model_is_refused(self) -> None:
         result = self.run_shim(
@@ -785,16 +820,16 @@ class FleetGhTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.capture.exists())
 
-    def test_truly_unresolved_identity_is_explicitly_refused(self) -> None:
+    def test_truly_unresolved_identity_does_not_block_a_write(self) -> None:
         self.install_identity_stub(state="UNRESOLVED", agent=None)
         result = self.run_shim(
             *self.identity(),
             "pr", "comment", "42", "--body", "nobody established",
         )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("owner unresolved", result.stderr)
-        self.assertIn("UNRESOLVED", result.stderr)
-        self.assertFalse(self.capture.exists())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.captured()[self.captured().index("--body") + 1]
+        self.assertIn("degraded-unresolved", body)
+        self.assertIn(f"Unverified --who metadata: {TEST_AGENT}", body)
 
     def test_role_can_disclose_a_relay(self) -> None:
         result = self.run_shim(
@@ -836,7 +871,8 @@ class FleetGhTest(unittest.TestCase):
             self.captured()[-2:],
             [
                 "--body",
-                f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=reviewer]\n",
+                f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=reviewer]\n"
+                f"Unverified --who metadata: {TEST_AGENT}\n",
             ],
         )
 
@@ -848,7 +884,9 @@ class FleetGhTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         machine = socket.gethostname().split(".", 1)[0]
         self.assertIn(
-            f"body=[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\nevidence",
+            f"body=[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\n"
+            f"Unverified --who metadata: {TEST_AGENT}\n"
+            "evidence",
             self.captured(),
         )
 
@@ -859,7 +897,10 @@ class FleetGhTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         body = next(value for value in self.captured() if value.startswith("body="))
-        self.assertIn("role=reviewer]\napproved", body)
+        self.assertIn(
+            f"role=reviewer]\nUnverified --who metadata: {TEST_AGENT}\napproved",
+            body,
+        )
 
     def test_raw_graphql_comment_mutation_is_refused(self) -> None:
         result = self.run_shim(
@@ -871,15 +912,18 @@ class FleetGhTest(unittest.TestCase):
         self.assertIn("cannot be attributed safely", result.stderr)
         self.assertFalse(self.capture.exists())
 
-    def test_foreign_existing_disclosure_is_refused(self) -> None:
+    def test_foreign_existing_disclosure_is_preserved_as_metadata(self) -> None:
         result = self.run_shim(
             *self.identity(),
             "pr", "comment", "42", "--body",
             "[other, somebody, gpt-5.6-sol, devbig999, role=impl]\nwords",
         )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("existing who-is-talking prefix conflicts", result.stderr)
-        self.assertFalse(self.capture.exists())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        posted = self.captured()[self.captured().index("--body") + 1]
+        self.assertTrue(posted.startswith(
+            "[other, somebody, gpt-5.6-sol, devbig999, role=impl]\n"
+        ))
+        self.assertIn(f"Unverified --who metadata: {TEST_AGENT}", posted)
 
     def test_matching_existing_disclosure_is_not_duplicated(self) -> None:
         machine = socket.gethostname().split(".", 1)[0]
@@ -892,7 +936,11 @@ class FleetGhTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         posted = self.captured()[self.captured().index("--body") + 1]
-        self.assertEqual(posted, body)
+        first, rest = body.split("\n", 1)
+        self.assertEqual(
+            posted,
+            first + f"\nUnverified --who metadata: {TEST_AGENT}\n" + rest,
+        )
         self.assertEqual(posted.count("[hermit2,"), 1)
 
     def test_legacy_four_field_prefix_is_refused_not_nested(self) -> None:
@@ -923,17 +971,17 @@ class FleetGhTest(unittest.TestCase):
         self.assertIn("malformed five-field", result.stderr)
         self.assertFalse(self.capture.exists())
 
-    def test_environment_and_ancestry_disagreement_is_an_additional_refusal(self) -> None:
+    def test_environment_and_ancestry_disagreement_is_visible_metadata(self) -> None:
         env = dict(self.env, DG_AGENT_NAME="different-process-agent")
         result = self.run_shim(
             *self.identity(),
             "pr", "comment", "42", "--body", "conflicting process context",
             env=env,
         )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("DISAGREEMENT", result.stderr)
-        self.assertNotIn("--who mismatch", result.stderr)
-        self.assertFalse(self.capture.exists())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.captured()[self.captured().index("--body") + 1]
+        self.assertIn("degraded-", body)
+        self.assertIn(f"Unverified --who metadata: {TEST_AGENT}", body)
 
     def test_non_comment_command_needs_no_identity_and_passes_through(self) -> None:
         result = self.run_shim("pr", "view", "42", "--json", "headRefOid")
@@ -944,37 +992,31 @@ class FleetGhTest(unittest.TestCase):
         bool(os.environ.get("FLEET_ATTRIBUTION_MUTATION_CHILD")),
         "mutation child must not recurse",
     )
-    def test_mutation_removing_owner_comparison_fails_on_mismatch_post(self) -> None:
-        mutant_dir = self.root / "mutant"
-        mutant_dir.mkdir()
-        mutant = mutant_dir / "disclosure_tag.py"
-        source = SOURCE_DISCLOSURE.read_text()
-        needle = "if claimed_agent is not None and claimed_agent != agent:"
-        replacement = (
-            "if False and claimed_agent is not None and claimed_agent != agent:  "
-            "# MUTANT: resolved-owner comparison removed"
+    def test_false_who_does_not_change_the_structured_publication_record(self) -> None:
+        url = "https://github.com/rrnewton/hermit/pull/42#issuecomment-124"
+        env = dict(self.env, GH_STDOUT=url + "\n")
+        base = [
+            "--team", "hermit2", "--role", "reviewer", "--task", "review-task",
+            "pr", "comment", "42", "--body", f"APPROVED-AT: codex {HEAD}",
+        ]
+        without_name = self.run_shim(*base, env=env)
+        self.assertEqual(without_name.returncode, 0, without_name.stderr)
+        no_name_record = json.loads(self.note_capture.read_text())["body"]
+        no_name_body = self.captured()[self.captured().index("--body") + 1]
+
+        with_false_name = self.run_shim(
+            "--who", "false-reviewer", *base, env=env
         )
-        self.assertIn(needle, source, "mutation could not locate owner comparison")
-        mutant.write_text(source.replace(needle, replacement, 1))
-        mutant.chmod(0o755)
-        env = dict(
-            os.environ,
-            FLEET_DISCLOSURE_TAG_UNDER_TEST=str(mutant),
-            FLEET_ATTRIBUTION_MUTATION_CHILD="1",
-        )
-        child = subprocess.run(
-            [
-                sys.executable,
-                str(Path(__file__).resolve()),
-                "FleetGhTest.test_mismatched_who_is_distinct_and_refused_before_write",
-            ],
-            env=env,
-            text=True,
-            capture_output=True,
-        )
-        combined = child.stdout + child.stderr
-        self.assertNotEqual(child.returncode, 0, combined)
-        self.assertIn("MISMATCHED --who WAS POSTED", combined)
+        self.assertEqual(with_false_name.returncode, 0, with_false_name.stderr)
+        false_name_record = json.loads(self.note_capture.read_text())["body"]
+        false_name_body = self.captured()[self.captured().index("--body") + 1]
+
+        self.assertEqual(no_name_record, false_name_record)
+        self.assertIn("Unverified --who metadata: false-reviewer", false_name_body)
+        self.assertNotIn("false-reviewer", no_name_body)
+        gate = load_changes_requested_gate()
+        self.assertEqual(gate.evaluate([no_name_body], HEAD)[0], gate.OK)
+        self.assertEqual(gate.evaluate([false_name_body], HEAD)[0], gate.OK)
 
     @unittest.skipIf(
         bool(os.environ.get("FLEET_ATTRIBUTION_MUTATION_CHILD")),

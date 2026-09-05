@@ -1,31 +1,9 @@
 #!/usr/bin/env python3
-"""The marker carries WHO issued it, so lane independence becomes measurable.
+"""Marker issuer fields remain readable as optional audit metadata.
 
-THE LANE IS NOT THE REVIEWER. `claude` and `codex` name a harness FAMILY, and a
-fleet of nineteen agents shares those two names, so "both lanes bound this head"
-has never been evidence that two reviewers looked at it. One agent can bind both
-and the record reads as independent review. That is not a parsing bug -- the
-binding simply did not carry who issued it, so no consumer could ask.
-
-⚠️ THE ISSUER WAS ALREADY COMPUTED AND THEN THROWN AWAY. `lane_shas` reads
-`comment_author(body)` for its citation logic and returns bare shas, so the one
-fact needed to check independence was derived on every call and dropped at the
-`return`. Most of what follows pins the plumbing of that fact, not a new parse.
-
-WHAT THIS FILE DOES **NOT** CLAIM. Nothing emits `BY` yet. These tests pin that
-every READER tolerates the clause, which is the precondition for a writer to be
-allowed to produce one; see `test_readers_tolerate_before_any_writer_emits`. The
-ordering is the safety argument, not a preference -- a marker is a string in a
-GitHub comment read by several independent programs, with no schema handshake, so
-the field has to be inert-but-understood everywhere before it is inert nowhere.
-
-The sharpest case is `test_a_cross_author_quotation_is_now_measurable`, which is
-the cell `test_marker_polarity_matrix.py` records as RESIDUAL and routes to this
-task by name: agent B pasting agent A's approval binds a lane, because a repeat by
-another author is indistinguishable from an independent second verdict when the
-marker does not say who issued it.
-
-Needs no network and no build: every case is a synthetic comment body.
+Approval and refusal authority does not depend on a fleet-agent name. These
+tests preserve compatibility with existing ``BY`` clauses and disclosure tags
+while proving that lane and SHA parsing is unchanged. Needs no network or build.
 """
 
 from __future__ import annotations
@@ -123,8 +101,7 @@ def test_the_issuer_is_read_from_the_binding() -> None:
 
 
 def test_the_issuer_falls_back_to_the_disclosure_tag() -> None:
-    """Why the fallback earns its keep: it makes independence measurable on the
-    markers that ALREADY EXIST, instead of only on ones written after this lands."""
+    """Existing disclosure tags remain available as optional metadata."""
     _, issuers = _bind([_comment("hermit-007", f"APPROVED-AT: claude {FULL}")])
     assert issuers == [(FULL, "hermit-007")], issuers
 
@@ -146,15 +123,11 @@ def test_an_unattributable_binding_reports_none_rather_than_guessing() -> None:
 
 
 # --------------------------------------------------------------------------
-# What the field is FOR.
+# Metadata reporting does not affect authority.
 # --------------------------------------------------------------------------
 
-def test_one_agent_binding_both_lanes_is_now_visible() -> None:
-    """⚠️ THE POINT OF THE CHANGE. Both lanes bound at one head -- the shape every
-    consumer reads as "two independent reviews" -- issued by ONE agent. Before
-    this, the two calls returned `[FULL]` and `[FULL]` and the record was
-    indistinguishable from genuine independence. Note the field does not BLOCK
-    this; it makes it reportable. Enforcement is a later, separate decision."""
+def test_matching_metadata_is_reported_for_both_lanes() -> None:
+    """Matching optional names do not stop either exact-head lane binding."""
     comments = [
         _comment("hermit-011", f"APPROVED-AT: claude {FULL} BY hermit-011"),
         _comment("hermit-011", f"APPROVED-AT: codex {FULL} BY hermit-011"),
@@ -165,10 +138,8 @@ def test_one_agent_binding_both_lanes_is_now_visible() -> None:
     assert {i for _, i in claude_by} == {i for _, i in codex_by} == {"hermit-011"}
 
 
-def test_two_agents_binding_two_lanes_reads_as_independent() -> None:
-    """The control for the case above: same shape, two issuers, and the pair is
-    distinguishable. Without this the previous test only proves the field is
-    constant, not that it DISCRIMINATES."""
+def test_different_metadata_is_reported_for_both_lanes() -> None:
+    """Different optional names likewise do not stop either lane binding."""
     comments = [
         _comment("hermit-011", f"APPROVED-AT: claude {FULL} BY hermit-011"),
         _comment("hermit-030", f"APPROVED-AT: codex {FULL} BY hermit-030"),
@@ -179,18 +150,8 @@ def test_two_agents_binding_two_lanes_reads_as_independent() -> None:
     assert {i for _, i in codex_by} == {"hermit-030"}
 
 
-def test_a_cross_author_quotation_is_now_measurable() -> None:
-    """The RESIDUAL cell `test_marker_polarity_matrix.py` routes here by name.
-
-    Agent B pastes agent A's approval. The existing issuance/citation rule cannot
-    suppress it -- that rule keys on the COMMENT AUTHOR, and a repeat by a
-    different author is indistinguishable from an independent second verdict. So
-    it binds twice, and this test does NOT assert otherwise: changing the binding
-    is a policy decision with its own head.
-
-    What changes is that the second binding no longer LIES about its origin. Both
-    entries report `hermit-a`, so a consumer can see one verdict cited twice
-    rather than two reviews. Read the issuers, not the count."""
+def test_a_repeated_top_level_marker_keeps_its_optional_metadata() -> None:
+    """Two canonical assertions bind; the optional ``BY`` value is preserved."""
     comments = [
         _comment("hermit-a", f"APPROVED-AT: claude {FULL} BY hermit-a"),
         _comment("hermit-b", "Agreed with the analysis:",
@@ -201,11 +162,8 @@ def test_a_cross_author_quotation_is_now_measurable() -> None:
     assert {i for _, i in issuers} == {"hermit-a"}, issuers
 
 
-def test_the_same_paste_without_the_clause_still_reads_as_two_reviewers() -> None:
-    """⚠️ THE LIMIT OF THIS CHANGE, ASSERTED SO IT IS NOT OVERSOLD. Strip the `BY`
-    and the identical paste attributes to hermit-b via its disclosure tag, which
-    is exactly the false-independence reading above. The field HELPS ONLY WHERE IT
-    IS WRITTEN -- so tolerance is a precondition for a fix, not the fix."""
+def test_a_repeated_marker_without_by_reports_each_disclosure_name() -> None:
+    """Disclosure values remain metadata when a ``BY`` clause is absent."""
     comments = [
         _comment("hermit-a", f"APPROVED-AT: claude {FULL}"),
         _comment("hermit-b", "Agreed with the analysis:",
@@ -240,8 +198,7 @@ def test_a_malformed_issuer_does_not_bind() -> None:
 
 
 def test_the_issuer_shares_one_definition_with_the_disclosure_tag() -> None:
-    """Two identity sources that disagreed about what an agent id looks like would
-    resolve the same reviewer two ways. `_AGENT_ID` is why they cannot."""
+    """Disclosure and ``BY`` metadata use the same token grammar."""
     assert ab._AGENT_ID in ab._DISCLOSURE.pattern
     assert ab._AGENT_ID in ab._MARKER_RE.pattern
 
@@ -255,8 +212,7 @@ def test_marker_issuer_reports_absence_distinctly_from_a_non_marker() -> None:
 
 
 def test_the_issuer_is_case_normalised() -> None:
-    """Agent ids are compared as strings by every consumer, so `Hermit-011` and
-    `hermit-011` must not read as two reviewers."""
+    """Optional issuer metadata has stable case-normalized output."""
     assert ab.marker_issuer(f"APPROVED-AT: claude {FULL} BY Hermit-011") == "hermit-011"
 
 
@@ -305,22 +261,13 @@ def test_a_rejection_clears_the_issuers_with_the_shas() -> None:
 
 
 def test_alignment_survives_a_revoke_then_rebind() -> None:
-    """The sequence that makes the desync DANGEROUS rather than untidy: a stale
-    issuer whose sha equals the live one reads as a second reviewer at the
-    current head. Alignment must hold through it, in BOTH directions.
-
-    ⚠️ AND THE TWO DIRECTIONS DIFFER, which is worth pinning on its own. After a
-    revoke the SAME reviewer's re-approval at the same sha does NOT rebind -- their
-    own re-post is a citation of their earlier verdict under the issuance rule --
-    while a DIFFERENT reviewer's does. That is pre-existing behaviour, not
-    something this change introduced; it is asserted here so the alignment fix
-    cannot quietly alter it."""
+    """A later exact-head approval rebinds regardless of fleet-name metadata."""
     same = _bind([
         _comment("hermit-a", f"APPROVED-AT: claude {FULL} BY hermit-a"),
         _comment("hermit-b", f"CHANGES-REQUESTED-AT: claude {OTHER} BY hermit-b"),
         _comment("hermit-a", f"APPROVED-AT: claude {FULL} BY hermit-a"),
     ])
-    assert same == ([], []), same
+    assert same == ([FULL], [(FULL, "hermit-a")]), same
 
     shas, issuers = _bind([
         _comment("hermit-a", f"APPROVED-AT: claude {FULL} BY hermit-a"),

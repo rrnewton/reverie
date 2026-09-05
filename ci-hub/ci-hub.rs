@@ -271,7 +271,7 @@ enum HubCommand {
     ApplyLocalLabel(ApplyLocalLabelArgs),
     /// Publish a qualifying local validation receipt as a GitHub commit status.
     PublishCommitStatus(PublishCommitStatusArgs),
-    /// Record a coordinator's exact-head review outcome and cache labels.
+    /// Record an exact-head review outcome and reconcile cache labels.
     ReviewAttest(ReviewAttestArgs),
     /// Operate the shared-file landing mutex.
     LandLock(landing_lock::LandLockArgs),
@@ -845,9 +845,9 @@ struct ReviewAttestArgs {
     /// Full URL of the reviewer's exact verdict comment.
     #[arg(long)]
     comment_url: String,
-    /// Exact dispatched reviewer agent name.
+    /// Optional reviewer name retained as unverified audit metadata.
     #[arg(long)]
-    reviewer: String,
+    reviewer: Option<String>,
     /// Durable task id through which the review was dispatched and returned.
     #[arg(long)]
     task: String,
@@ -857,12 +857,12 @@ struct ReviewAttestArgs {
     /// Existing critical-change class; also applies post-facto-human-review.
     #[arg(long, value_enum)]
     critical: Option<CriticalReviewClass>,
-    /// Coordinator identity checked by the GitHub disclosure boundary.
+    /// Optional coordinator name retained as unverified audit metadata.
     #[arg(long)]
-    who: String,
-    /// Coordinator team slug emitted by the GitHub disclosure boundary.
+    who: Option<String>,
+    /// Optional coordinator team slug emitted with supplied disclosure metadata.
     #[arg(long)]
-    team: String,
+    team: Option<String>,
 }
 
 /// Name of the committed source-of-truth mode file, relative to the workspace root.
@@ -1876,24 +1876,11 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
             let state_root = operational_state_root(root)?;
             run_publish_commit_status(root, &state_root, args)
         }
-        HubCommand::ReviewAttest(args) => {
-            let mut forwarded = Vec::new();
-            push_option(&mut forwarded, "--pr", args.pr.to_string());
-            push_option(&mut forwarded, "--repo", args.repo);
-            push_option(&mut forwarded, "--head", args.head);
-            push_option(&mut forwarded, "--family", args.family.as_str());
-            push_option(&mut forwarded, "--outcome", args.outcome.as_str());
-            push_option(&mut forwarded, "--comment-url", args.comment_url);
-            push_option(&mut forwarded, "--reviewer", args.reviewer);
-            push_option(&mut forwarded, "--task", args.task);
-            push_option(&mut forwarded, "--round", args.round.to_string());
-            if let Some(critical) = args.critical {
-                push_option(&mut forwarded, "--critical", critical.as_str());
-            }
-            push_option(&mut forwarded, "--who", args.who);
-            push_option(&mut forwarded, "--team", args.team);
-            run_python(root, "ci-hub/bin/review-attest", forwarded)
-        }
+        HubCommand::ReviewAttest(args) => run_python(
+            root,
+            "ci-hub/bin/review-attest",
+            review_attest_forwarded_args(args),
+        ),
         HubCommand::LandLock(args) => landing_lock::execute(root, args).map_err(Into::into),
         HubCommand::ValidateLock(args) => {
             let state_root = operational_state_root(root)?;
@@ -2024,24 +2011,12 @@ fn fleet_gh_command(root: &Path, args: &[&str]) -> Command {
 
 fn receipt_comment_command(root: &Path, agent: &str, pr: u64, repo: &str, body: &str) -> Command {
     let pr_arg = pr.to_string();
-    fleet_gh_command(
-        root,
-        &[
-            "--who",
-            agent,
-            "--team",
-            "hermit2",
-            "--role",
-            "coordinator",
-            "pr",
-            "comment",
-            &pr_arg,
-            "--repo",
-            repo,
-            "--body",
-            body,
-        ],
-    )
+    let mut args = Vec::new();
+    if !agent.trim().is_empty() {
+        args.extend(["--who", agent, "--team", "hermit2", "--role", "coordinator"]);
+    }
+    args.extend(["pr", "comment", &pr_arg, "--repo", repo, "--body", body]);
+    fleet_gh_command(root, &args)
 }
 
 const LOCAL_VALIDATION_STATUS_CONTEXT: &str = "Local validation";
@@ -9744,6 +9719,31 @@ fn push_option(arguments: &mut Vec<OsString>, name: &'static str, value: impl As
     arguments.push(value.as_ref().to_os_string());
 }
 
+fn review_attest_forwarded_args(args: ReviewAttestArgs) -> Vec<OsString> {
+    let mut forwarded = Vec::new();
+    push_option(&mut forwarded, "--pr", args.pr.to_string());
+    push_option(&mut forwarded, "--repo", args.repo);
+    push_option(&mut forwarded, "--head", args.head);
+    push_option(&mut forwarded, "--family", args.family.as_str());
+    push_option(&mut forwarded, "--outcome", args.outcome.as_str());
+    push_option(&mut forwarded, "--comment-url", args.comment_url);
+    if let Some(reviewer) = args.reviewer {
+        push_option(&mut forwarded, "--reviewer", reviewer);
+    }
+    push_option(&mut forwarded, "--task", args.task);
+    push_option(&mut forwarded, "--round", args.round.to_string());
+    if let Some(critical) = args.critical {
+        push_option(&mut forwarded, "--critical", critical.as_str());
+    }
+    if let Some(who) = args.who {
+        push_option(&mut forwarded, "--who", who);
+    }
+    if let Some(team) = args.team {
+        push_option(&mut forwarded, "--team", team);
+    }
+    forwarded
+}
+
 fn operational_state_forwarded_args(
     root: &Path,
     arguments: Vec<OsString>,
@@ -9849,6 +9849,40 @@ mod tests {
             assert_eq!(program, wrapper);
             assert_eq!(args, fleet_args);
         }
+    }
+
+    #[test]
+    fn receipt_comment_without_agent_keeps_exact_subject_and_body() {
+        let root = Path::new("/tmp/ci-hub-receipt-comment-root");
+        let command = receipt_comment_command(root, "", 2938, "rrnewton/hermit", "receipt body");
+        let program = command.get_program().to_string_lossy();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let wrapper = root.join("ci-hub/bin/gh").display().to_string();
+        let forwarded = if program == "with-proxy" {
+            assert_eq!(args.first().map(String::as_str), Some(wrapper.as_str()));
+            &args[1..]
+        } else {
+            assert_eq!(program, wrapper);
+            &args[..]
+        };
+        assert_eq!(
+            forwarded,
+            [
+                "pr",
+                "comment",
+                "2938",
+                "--repo",
+                "rrnewton/hermit",
+                "--body",
+                "receipt body",
+            ]
+        );
+        assert!(!forwarded
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "--who" | "--team" | "--role")));
     }
 
     // ---- COMMITS-SINCE-GREEN rendering -------------------------------------
@@ -14351,6 +14385,47 @@ print((state_root / "receipt.jsonl").read_text(), end="")
         ])
         .unwrap_err();
         assert_eq!(outcome_error.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn review_attest_accepts_and_forwards_no_name_metadata() {
+        let command = Cli::try_parse_from([
+            "ci-hub",
+            "review-attest",
+            "--pr",
+            "42",
+            "--head",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--family",
+            "codex",
+            "--outcome",
+            "approval",
+            "--comment-url",
+            "https://github.com/rrnewton/hermit/pull/42#issuecomment-1234",
+            "--task",
+            "review-pr-42",
+        ])
+        .unwrap()
+        .command;
+        let HubCommand::ReviewAttest(args) = command else {
+            panic!("wrong command variant")
+        };
+        assert!(args.reviewer.is_none());
+        assert!(args.who.is_none());
+        assert!(args.team.is_none());
+        let forwarded: Vec<String> = review_attest_forwarded_args(args)
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(!forwarded
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "--reviewer" | "--who" | "--team")));
+        assert!(forwarded.windows(2).any(|pair| {
+            pair == [
+                "--comment-url",
+                "https://github.com/rrnewton/hermit/pull/42#issuecomment-1234",
+            ]
+        }));
     }
 
     #[test]

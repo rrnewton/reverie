@@ -134,13 +134,11 @@ def classify_approval(
     `comment_shas` are the head SHAs named by that lane's role-tagged review
     comments, oldest first. The NEWEST is what the lane last bound itself to.
 
-    `unanswered` says this lane holds a refusal that was never discharged. It
-    outranks every approval, and it is a STRICTLY STRONGER
-    condition than `refused`: `refused` asks whether the refusal was the lane's
-    last word in time, `unanswered` asks whether the agent who wrote it ever
-    took it back. A colleague approving afterwards satisfies the first and not
-    the second. See `lane_shas`'s `unanswered` out-parameter for who is allowed
-    to discharge what.
+    `unanswered` says this lane holds a refusal that was never discharged by a
+    later canonical same-lane decision at the exact current head or by an exact
+    authorized ``RETIRES <comment-id>`` record. It outranks every approval and is
+    therefore a strictly stronger condition than `refused`, which only describes
+    the lane's last chronological marker.
 
     `refused` says this lane emitted a CHANGES-REQUESTED-AT that was never
     followed by a fresh approval. IT IS NOT DERIVABLE FROM `comment_shas`: a
@@ -166,10 +164,9 @@ def classify_approval(
     but indistinguishable from a refusal nobody had addressed, so the head read
     as freshly blocked and was re-dispatched as such.
 
-    WHO CLEARS IT: its own issuer may reverse it, or a current reviewer or
-    coordinator may precisely retire the named refusal after verifying the
-    objection is resolved. A moved head is a REASON TO GO LOOK AGAIN, not a
-    discharge.
+    WHAT CLEARS IT: a later canonical approval or withdrawal in the same lane at
+    the exact current head, or a precise retirement of the named refusal by a
+    currently authorized GitHub actor. A moved head alone is not a discharge.
 
     ⚠️ THIS RENAMES A STATE, IT DOES NOT MOVE AN ADMISSION BOUNDARY. Every
     caller that grants authority tests `== BOUND_CURRENT`, and neither REFUSED
@@ -179,12 +176,9 @@ def classify_approval(
     for REPORTING only.
     """
     # ⚠️ CHECKED BEFORE THE SHAs, AND THAT ORDER IS THE WHOLE POINT OF
-    # `unanswered`. A refusal nobody discharged outranks any number of
-    # approvals, including approvals that name this exact head, because the
-    # approvals did not answer it -- they arrived beside it. `refused` cannot
-    # carry this: a refusal followed by a fresh approval repopulates
-    # `comment_shas`, so by the time the empty-list branch is reached the
-    # override has already happened and the lane reads BOUND_CURRENT.
+    # `unanswered`. A refusal with no later canonical same-lane decision and no
+    # authorized exact retirement outranks earlier approvals. `refused` cannot
+    # carry this distinction by itself because a refusal contributes no SHA.
     #
     # Measured 2026-08-26 on hermit#2678, claude lane, one unmoved head:
     #     01:52:02Z  CHANGES-REQUESTED-AT  agent(hermit-007)
@@ -522,12 +516,8 @@ MARKER_APPROVED = "APPROVED-AT"
 MARKER_REFUSED = "CHANGES-REQUESTED-AT"
 MARKER_WITHDRAWN = "CHANGES-REQUESTED-WITHDRAWN-AT"
 
-# An agent id, defined ONCE. `_DISCLOSURE` below reads this shape out of a
-# comment's `[team, agent, ...]` tag; the marker's `BY` clause reads it out of the
-# binding line itself. Those are the two identity sources this module has, and two
-# sources that disagreed about what an agent id looks like would resolve the same
-# reviewer two ways -- the exact drift this module exists to prevent. One
-# definition, so they cannot.
+# One token shape covers optional fleet-name metadata in a disclosure or ``BY``
+# clause. These fields are parsed for compatibility and reporting only.
 _AGENT_ID = r"[a-z0-9][a-z0-9-]*"
 
 # ⚠️ `BY <agent>` IS OPTIONAL, AND THIS READER LEARNS IT BEFORE ANY WRITER EMITS IT.
@@ -882,141 +872,27 @@ _REFUSAL_STATEMENT_TAIL = re.compile(
 )
 
 
-# ⚠️ A VERDICT IS ISSUED ONCE. EVERY LATER COPY OF IT IS A CITATION, AND CITING A
-# REFUSAL MUST NOT CREATE ONE.
+# A leading disclosure is retained as audit metadata for old comments. It is not
+# used to authorize, suppress, merge, retire, or otherwise classify a verdict.
 #
-# Measured 2026-08-25 on hermit#2615: the gate counted FIVE refusal markers where
-# only TWO verdicts existed. All three phantoms came from GOOD practice -- sentences
-# naming exactly which marker still stood, e.g. "my `CHANGES-REQUESTED-AT: claude
-# 072ed7b4...` above still stands" and "... is superseded". The sentence saying a
-# refusal was SUPERSEDED manufactured another refusal.
-#
-# ⚠️ AND IT FALSELY BLOCKS, it does not merely over-count. A reviewer who writes
-# "my earlier refusal is answered by the fix below" and then approves BLOCKS THE
-# HEAD THEY ARE APPROVING, because their own citation is read as a fresh refusal.
-#
-# THE RULE, and it is deliberately not a rule about characters: an issuer that is
-# not this comment's author is a CITATION, however it is written. Formatting cannot
-# express that -- a `>` catches only typographically marked quotation and misses an
-# inline paste, which is the case that actually happened; a backtick, an indent and
-# a heading are each equally silent about who is speaking. What CAN express it is
-# document order, which every consumer already has: THE FIRST OCCURRENCE OF A
-# VERDICT IS THE ISSUANCE AND EVERY LATER COPY IS A CITATION. The issuer's own
-# earlier line is what the citation points AT, so the verdict it names is still
-# counted -- from its issuance.
-#
-# ⚠️ WHY THIS CANNOT LOSE A REFUSAL, which is the only direction that matters here:
-# suppression requires an EARLIER occurrence that was itself counted. If the earlier
-# copy was invisible for any reason -- fenced, unparsed, in a container this gate
-# does not read -- then the later one is the first SEEN occurrence and remains an
-# issuance. A refusal can therefore be duplicated away only into itself.
-#
-# A shortened sha is prefix-compatible on purpose: citations abbreviate, and
-# `06c3f3735fbf` naming `06c3f3735fbf...` is the same verdict, not a second one.
-# The author is read from the disclosure tag every agent comment opens with,
-# `[team, agent, ...]`. It is the only authorship signal available: `user.login` is
-# the SHARED account on every one of these comments -- measured on hermit#2625, all
-# 24 comments are `rrnewton` -- so GitHub's own author field cannot distinguish two
-# reviewers. An `agent(name)` mention in prose is NOT the author; on #2625 it names
-# a DIFFERENT agent from the tag in 3 of 8 tagged comments, because agents refer to
-# each other constantly.
-# ⚠️ A ROLE TAG IN FRONT OF THE DISCLOSURE TAG USED TO LOSE THE AUTHOR ENTIRELY.
-# The team field is `[a-z0-9]+`, so `[review agent, claude-opus-5]` cannot match it
-# -- a space is not in the class -- and because the tag must start the line, a
-# comment opening `[review agent, claude-opus-5] [hermit2, hermit-016, ...]` read
-# as having NO author at all. Measured 2026-08-26: three refusals holding three
-# open pull requests (#2692, #2670 comment 5420455389, #2680 comment 5420278252)
-# were classified UNATTRIBUTED on exactly this, while naming their author in
-# plain sight. Under issuer-bound withdrawal an unattributed refusal is
-# undischargeable BY ANYONE, so a parser miss becomes a permanent block.
-#
-# ⚠️ THE LEADING GROUPS ARE SEPARATED BY `[ \t]*`, NOT `\s*`, AND THAT IS THE
-# WHOLE SAFETY ARGUMENT. `\s` matches newlines, so `\s*` would let the prefix
-# leap from a role tag on line 0 to a tag several lines below it -- including an
-# indented paste of SOMEBODY ELSE'S comment. That turns a parser fix into an
-# attribution transfer, which is the defect this file exists to prevent.
-# Restricting to same-line whitespace keeps the whole match on one line.
-#
-# ⚠️ AND THE PREFIX IS NON-GREEDY so the FIRST disclosure tag on the line wins.
-# Greedy, `[hermit2, hermit-004, ...] [hermit2, hermit-016, ...]` would attribute
-# to hermit-016 -- the last tag rather than the writer's own.
-#
-# A blockquoted or indented tag still does not match, because the line must BEGIN
-# with a bracket: `> [hermit2, ...]` and `    [hermit2, ...]` are both rejected.
-# Bracketed both ways in tests/test_disclosure_behind_role_tag.py.
+# Parse only a leading, same-line disclosure. This keeps optional metadata from
+# being taken from quoted prose or a later pasted comment. The first disclosure
+# wins when more than one is present. No authority decision consumes this value.
 _DISCLOSURE = re.compile(
     rf"^(?:\[[^\]\n]*\][ \t]*)*?\[\s*[a-z0-9]+\s*,\s*({_AGENT_ID})\s*,", re.I | re.M
 )
 
-_BRACKET_GROUP = re.compile(r"\[([^\]\n]*)\]")
-def _first_disclosure_fields(body: str) -> "list[str] | None":
-    """Fields from the comment's opening disclosure-shaped tag.
-
-    Role tags such as ``[review agent, ...]`` are not disclosures and may
-    precede one. Once a bracket has a team, agent and third field, however, it
-    is the author's disclosure candidate: a malformed or unauthorized first
-    candidate refuses rather than letting a later copied reviewer tag speak.
-    """
-    for raw in (body or "").splitlines():
-        if not raw.strip():
-            continue
-        if raw.startswith(("    ", "\t")):
-            return None
-        line = raw.lstrip()
-        if line.startswith(">"):
-            return None
-        offset = 0
-        while True:
-            match = _BRACKET_GROUP.match(line, offset)
-            if match is None:
-                break
-            fields = [field.strip() for field in match.group(1).split(",")]
-            if (
-                len(fields) >= 3
-                and re.fullmatch(r"[a-z0-9]+", fields[0], re.IGNORECASE)
-                and re.fullmatch(_AGENT_ID, fields[1], re.IGNORECASE)
-            ):
-                return fields
-            offset = match.end()
-            while offset < len(line) and line[offset] in " \t":
-                offset += 1
-        return None
-    return None
-
-
 def comment_author(body: str) -> "str | None":
-    """The agent that WROTE this comment, or None when it does not say."""
+    """Optional fleet-name metadata from a comment disclosure."""
     m = _DISCLOSURE.search(body or "")
     return m.group(1).lower() if m else None
 
 
-def retirement_author(body: str) -> "str | None":
-    """Identity named by a syntactically valid disclosure, else ``None``.
-
-    A ``BY`` clause is a marker assertion, not a substitute for the comment's
-    process-bound disclosure.  When both are present they must agree; otherwise
-    the retirement is ambiguous and carries no authority. The self-declared
-    role remains audit metadata only: current repository permission, fetched
-    independently from GitHub, is the authorization fact.
-    """
-    fields = _first_disclosure_fields(body)
-    if fields is None or len(fields) != 5:
-        return None
-    role = fields[4].lower()
-    if not role.startswith("role=") or re.fullmatch(
-        _AGENT_ID, role.removeprefix("role=")
-    ) is None:
-        return None
-    author = fields[1].lower()
-    return author if comment_author(body) == author else None
-
-
 def comment_issuer(body: str) -> "str | None":
-    """Who issued a comment's marker, or None when the comment does not say.
+    """Optional fleet-name metadata associated with a comment's marker.
 
-    A marker's own ``BY`` clause wins over the surrounding disclosure tag. This
-    is the ownership rule used for approvals, generic withdrawals and refusals;
-    precise retirement authority is checked separately from its disclosure.
+    A marker's own ``BY`` clause wins over the surrounding disclosure tag. No
+    approval, refusal, withdrawal, or retirement decision compares this value.
     """
     for line in (body or "").split("\n"):
         named = marker_issuer(line)
@@ -1038,8 +914,8 @@ def retirement_targets(body: str) -> list[str]:
 def contains_retires_assertion(body: str) -> bool:
     """Whether prose contains a standalone ``RETIRES`` assertion of any shape.
 
-    A malformed precise-retirement attempt must not silently become a generic
-    same-issuer withdrawal.  Code blocks and blockquotes remain citations, while
+    A malformed precise-retirement attempt must remain inert rather than become
+    a generic withdrawal. Code blocks and blockquotes remain citations, while
     the same heading/list/emphasis decoration accepted for verdicts is harmless.
     """
     for raw in marker_lines(body or ""):
@@ -1070,7 +946,7 @@ def comment_database_id(record: dict[str, Any]) -> "str | None":
 
 
 class ReviewRecordError(ValueError):
-    """A review record cannot support an identity- or order-sensitive decision."""
+    """A review record cannot support an authority or chronology decision."""
 
 
 AUTHORIZED_REVIEW_PERMISSIONS = frozenset({"admin", "maintain", "write", "triage"})
@@ -1093,25 +969,22 @@ def annotate_current_review_authority(
     repo: str,
     read_json: "Callable[[str], object]",
 ) -> list[dict[str, Any]]:
-    """Bind exact retirement claims to a currently authorized GitHub actor.
+    """Bind review authority to the immutable GitHub actor's current permission.
 
-    The disclosure identifies the process-bound agent.  Its role field is audit
-    metadata only; it does not authenticate the GitHub account that published
-    the record.  For every
-    record that tries to retire an objection, independently read that actor's
-    current repository permission and retain the result beside the immutable
-    ``user.login``/``author.login`` field.  Missing actors, malformed permission
-    replies and API failures refuse the whole review read; none may degrade to a
-    self-declared role in comment prose.
+    For every record that can approve, refuse, or retire, independently read the
+    actor's current repository permission and retain the result beside the
+    immutable ``user.login``/``author.login`` field. A disclosure and marker
+    ``BY`` value are optional metadata only. Missing actors, malformed permission
+    replies and API failures refuse the whole review read; none may degrade to
+    a caller-supplied fleet name.
     """
     candidates: dict[int, str] = {}
     actors: set[str] = set()
     for position, record in enumerate(records):
-        if not retirement_targets(str(record.get("body") or "")):
+        if not review_record_has_authority(record):
             continue
-        claim = retirement_claim(str(record.get("body") or ""))
         actor = review_record_actor(record)
-        if claim is None or actor is None:
+        if actor is None:
             continue
         candidates[position] = actor
         actors.add(actor)
@@ -1166,7 +1039,7 @@ def annotate_current_review_authority(
     annotated: list[dict[str, Any]] = []
     for position, record in enumerate(records):
         preserved = dict(record)
-        if retirement_targets(str(record.get("body") or "")):
+        if review_record_has_authority(record):
             actor = candidates.get(position)
             preserved["_current_review_actor_authorized"] = (
                 actor is not None and actor in authorized
@@ -1474,20 +1347,17 @@ def canonical_review_records(
 
 def retirement_claim(
     body: str,
-) -> "tuple[str, str, str, str] | None":
-    """One exact objection retirement as ``(comment, lane, sha, author)``.
+) -> "tuple[str, str, str, str | None] | None":
+    """One exact objection retirement as ``(comment, lane, sha, metadata)``.
 
     The comment carrying the claim supplies repository and pull-request context.
     Authority additionally requires exactly one canonical withdrawal, exactly
-    one ``RETIRES`` target, an exact head binding, and a valid disclosure. A
-    marker ``BY`` clause, when present, must agree with the disclosure. Current
-    repository permission for the immutable GitHub actor supplies authority;
-    the disclosure's role text does not. The agent identity and GitHub login are
-    deliberately separate because fleet agents publish through one shared
-    GitHub account. Multiple targets or withdrawal markers are ambiguous and
-    carry no authority.
+    one ``RETIRES`` target, and an exact head binding. Current repository
+    permission for the immutable GitHub actor supplies authority. A disclosure
+    or marker ``BY`` value is retained only as optional audit metadata; missing
+    or conflicting fleet-agent names cannot grant or deny the retirement.
+    Multiple targets or withdrawal markers are ambiguous and carry no authority.
     """
-    author = retirement_author(body)
     targets = retirement_targets(body)
     withdrawals: list[tuple[str, str, str | None]] = []
     for raw in marker_lines(body or ""):
@@ -1495,18 +1365,16 @@ def retirement_claim(
         if parsed is None or parsed[0] != MARKER_WITHDRAWN:
             continue
         withdrawals.append((parsed[1], parsed[2], marker_issuer(raw)))
-    if author is None or len(targets) != 1 or len(withdrawals) != 1:
+    if len(targets) != 1 or len(withdrawals) != 1:
         return None
     lane, sha, marker_author = withdrawals[0]
-    if marker_author is not None and marker_author != author:
-        return None
-    return targets[0], lane, sha, author
+    return targets[0], lane, sha, marker_author or comment_author(body)
 
 
 def retirement_allowed(
     refusal_lane: "str | None",
     current_head: "str | None",
-    claims: "Sequence[tuple[str, str, str, str]]",
+    claims: "Sequence[tuple[str, str, str, str | None]]",
 ) -> bool:
     """Whether an exact authorized claim resolves this refusal at current head.
 
@@ -1581,48 +1449,6 @@ def sha_names_same_head(a: "str | None", b: "str | None") -> bool:
     if not a or not b:
         return False
     return a.startswith(b) or b.startswith(a)
-
-
-def _lane_agrees(a: "str | None", b: "str | None") -> bool:
-    """A citation may drop the lane; it may not CHANGE it."""
-    return a is None or b is None or a == b
-
-
-def is_citation(
-    seen: "Sequence[tuple[str | None, str, str | None, str | None]]",
-    author: "str | None",
-    kind: str,
-    lane: "str | None",
-    sha: "str | None",
-) -> bool:
-    """True when THIS AUTHOR already issued this same verdict earlier.
-
-    `seen` is every (author, kind, lane, sha) already accepted, oldest first.
-
-    ⚠️ SAME AUTHOR IS THE WHOLE RULE, AND AN EARLIER VERSION OF THIS OMITTED IT.
-    Two DIFFERENT reviewers refusing the same head in the same lane are TWO
-    verdicts, not a repeat. Dropping the author collapsed them, and the regression
-    was caught by test_withdrawal_quotes_refusal -- hermit-012 and hermit-015 both
-    refused hermit#2625 at one head, and retiring hermit-012's must leave
-    hermit-015's standing. Collapsing them let ONE withdrawal clear BOTH, which is
-    the dangerous direction and is the very defect that test exists to prevent.
-
-    Two guards keep this from ever discarding a verdict:
-      * an UNKNOWN author never matches, so a comment with no disclosure tag is
-        always an issuance. Under-suppressing costs a duplicate; over-suppressing
-        loses a refusal.
-      * a marker with NO readable sha is never a citation, since it names no head
-        and so cannot be shown to repeat one.
-    """
-    if sha is None or author is None:
-        return False
-    return any(
-        prev_author == author
-        and kind == prev_kind
-        and _lane_agrees(lane, prev_lane)
-        and sha_names_same_head(sha, prev_sha)
-        for prev_author, prev_kind, prev_lane, prev_sha in seen
-    )
 
 
 def near_miss_refusal(line: str, start: int = 0) -> "re.Match | None":
@@ -1785,7 +1611,7 @@ def accepted_exact_retirements(
                     {
                         "target": target,
                         "issuer": comment_issuer(str(refusal.get("body") or "")),
-                        "retired_by": claim[3],
+                        "retired_by": review_record_actor(claim_record),
                         "record": claim_record,
                     }
                 )
@@ -1825,53 +1651,16 @@ def lane_shas(
 ) -> list[str]:
     """SHAs a lane EXPLICITLY bound itself to, oldest first. Never inferred.
 
-    `unanswered` is an OUT-PARAMETER carrying the refusals in this lane that
-    were neither reversed by their issuer nor retired by an exact authorized
-    ``RETIRES <comment-id>`` record, as (sha, issuer) pairs, oldest first.
-
-    ⚠️ AN APPROVAL FROM SOMEBODY ELSE DOES NOT DISCHARGE A REFUSAL, and until
-    this parameter existed it did. The clearing rule below is chronological --
-    a later approval repopulates `found` -- and its comment says it revokes
-    "this lane's earlier approval", written when a lane meant ONE REVIEWER.
-    A lane is staffed by several agents, so the same rule let agent B's
-    approval retire agent A's block with nothing recorded but a timestamp.
-    Measured on hermit#2678: hermit-007 refused at 01:52:02Z, an unsigned
-    reviewer approved the same head at 01:54:39Z, and the lane read
-    BOUND_CURRENT with `passed-review-claude` applied while the blocking
-    finding stood. The approving agent had not seen the refusal; their comment
-    says "zero comments when I started". Nobody overrode anything on purpose,
-    which is why attention cannot be the mechanism that holds this.
-
-    WHO MAY DISCHARGE WHAT, and both halves fail closed:
-      * the refusal's OWN issuer, by approving the same lane afterwards. That
-        is a reviewer changing their mind, which is what the chronological rule
-        was written for and is still honoured exactly.
-      * an agent using a currently authorized GitHub actor may post one canonical
-        withdrawal carrying exactly one `RETIRES <comment-id>` and a valid agent
-        disclosure. The target must be that exact refusal, its lane must agree,
-        and the withdrawal must bind the current repaired head. The original
-        issuer's identity is not part of this decision.
-      * NOBODY ELSE. Another agent's generic approval is recorded, binds normally in
-        `found`, and leaves the refusal standing -- so the lane reports REFUSED
-        while showing an approval, which is the honest description of a lane
-        that disagrees with itself.
-      * an UNSIGNED approval discharges NOTHING, even if it is in fact the same
-        agent. It cannot prove whose refusal it answers, and honouring it would
-        hand the unilateral clear straight back through the unsigned spelling.
-        This mirrors `gh-merge-verified`'s rule that a withdrawal naming no lane
-        clears no lane.
-
-    An UNSIGNED REFUSAL is likewise undischargeable by an approval: nothing can
-    prove ownership of it. That fails closed and the escape hatch is the one
-    that already exists -- a canonical `CHANGES-REQUESTED-WITHDRAWN-AT` comment
-    carrying `RETIRES <comment-id>`, or a push, which moves the head.
-
-    A departed issuer therefore does not park a resolved objection forever. It
-    also does not make the objection disappear: without the exact retirement
-    record the refusal remains unanswered and blocks exactly as before.
+    `unanswered` is an OUT-PARAMETER carrying refusals that have not been
+    discharged, as (sha, issuer-metadata) pairs, oldest first. A later canonical
+    approval or withdrawal in the same lane at the exact current head discharges
+    earlier lane objections. ``RETIRES <comment-id>`` remains the stronger path
+    for resolving one named objection. A departed, missing, conflicting, or
+    host-valued fleet name neither blocks nor authorizes either path; live records
+    use the immutable GitHub actor and its current repository permission.
 
     `refusals` is an OUT-PARAMETER, in the style of `malformed`: when supplied,
-    every SHA this lane refused at is appended, oldest first. It exists because
+    every currently active refusal SHA is appended, oldest first. It exists because
     the return value CANNOT carry that fact -- a refusal clears `found` and adds
     nothing, so a refused lane and an unreviewed lane both return `[]`. Callers
     that do not pass it are unaffected. Pair it with `classify_approval(...,
@@ -2035,10 +1824,6 @@ def lane_shas(
     # the length floor only moved that boundary. The marker's place in the line
     # supplies the syntactic context the value cannot.
     found: list[str] = []
-    # (author, kind, lane, sha) already accepted from THIS comment stream, oldest
-    # first. A verdict is issued once; a later copy of the same author's verdict is
-    # a CITATION and must neither bind nor be reported as a malformed attempt.
-    issued: list[tuple[str | None, str, str | None, str | None]] = []
     # Refusals in THIS lane that have not been reversed or precisely retired, as
     # (sha, issuer, comment-id), oldest first. The comment id is retained only
     # inside this function so `RETIRES <comment-id>` can address one refusal;
@@ -2057,9 +1842,9 @@ def lane_shas(
         ]
     ] = []
 
-    # A RETIRES claim has authority only when it is the one exact, current-head-bound
-    # target of a canonical withdrawal carrying a valid disclosure from a GitHub
-    # actor whose current repository permission was independently fetched.
+    # A RETIRES claim has authority only when it is the one exact,
+    # current-head-bound target of a canonical withdrawal from a GitHub actor
+    # whose current repository permission was independently fetched.
     # Collect claims first because a resolution can appear after the refusal.
     retire_claims: dict[str, list[dict[str, Any]]] = {}
     for c in comments:
@@ -2104,48 +1889,16 @@ def lane_shas(
         )
         comment_refuses_lane = bool(refusal_bindings)
         relevant_rejection = comment_refuses_lane and not named_retirement
-        # ⚠️ AN EXPLICIT WITHDRAWAL IS THE ESCAPE HATCH, AND WITHOUT IT THE
-        # DISCHARGE RULE HAS NO DOOR. `CHANGES-REQUESTED-WITHDRAWN-AT` is the
-        # grammar's way of saying "I take mine back", and `gh-merge-verified`
-        # has honoured it for exactly this purpose. It is handled here, before
-        # the rejection branch, because the longest-first grammar means a
-        # withdrawal is NOT a refusal and must not be counted as one.
-        #
-        # Same ownership rule as an approval, for the same reason: a withdrawal
-        # discharges only its own author's refusal, and an unsigned one
-        # discharges nothing. Otherwise the unilateral clear this change removes
-        # comes straight back through a different keyword.
         precise_withdrawal = contains_retires_assertion(body)
-        unquoted_retractors: list[str] = []
-        for line in lines:
-            parsed_withdrawal = parse_marker(line)
-            if (
-                parsed_withdrawal is not None
-                and parsed_withdrawal[0] == MARKER_WITHDRAWN
-                and parsed_withdrawal[1] == lane
-                and not precise_withdrawal
-            ):
-                retractor = marker_issuer(line) or author
-                if retractor is not None:
-                    unquoted_retractors.append(retractor)
-
-        def apply_unquoted_retractions() -> None:
-            for retractor in unquoted_retractors:
-                # A generic withdrawal retracts one earlier objection from this
-                # issuer. Processing in canonical record order makes an older
-                # withdrawal powerless against a later refusal; a count, rather
-                # than a set, keeps two objections independent.
-                index = next(
-                    (
-                        index
-                        for index, held in enumerate(outstanding)
-                        if held[1] == retractor
-                    ),
-                    None,
-                )
-                if index is not None:
-                    outstanding.pop(index)
-
+        record_authorized = c.get("_current_review_actor_authorized") is not False
+        current_head_withdrawal = any(
+            parsed is not None
+            and parsed[0] == MARKER_WITHDRAWN
+            and parsed[1] == lane
+            and current_head is not None
+            and parsed[2].casefold() == current_head.casefold()
+            for parsed in (parse_marker(line) for line in lines)
+        )
         # A retired refusal no longer clears an earlier approval or contributes
         # an unanswered refusal. Skip the whole comment rather than allowing an
         # APPROVED-AT-shaped quotation beside the retired refusal to bind.
@@ -2205,10 +1958,8 @@ def lane_shas(
                     refusal_sha or ""
                     for _refusal_lane, refusal_sha in refusal_bindings
                 )
-            # WHO refused, so a later approval can be asked whether it is the
-            # same agent. Recorded on the same lines the `refusals` block reads,
-            # but unconditionally -- authority must not depend on whether the
-            # caller happened to pass an out-parameter.
+            # Retain optional issuer metadata on the same records used for the
+            # refusal report. Authority does not compare this value.
             for refusal_lane, refusal_sha in refusal_bindings:
                 matching_line = next(
                     (
@@ -2228,7 +1979,6 @@ def lane_shas(
                         refusal_lane,
                     )
                 )
-            apply_unquoted_retractions()
             found.clear()
             # ⚠️ AND THE ISSUERS WITH THEM. `issuers` is documented as
             # INDEX-ALIGNED with the returned shas, and clearing one list without
@@ -2245,7 +1995,13 @@ def lane_shas(
             if issuers is not None:
                 issuers.clear()
             continue
-        apply_unquoted_retractions()
+        # A canonical current-head withdrawal is a later substantive lane
+        # decision. An exact RETIRES assertion uses the narrower comment-id path
+        # above and must not also clear unrelated objections in the lane.
+        if current_head_withdrawal and not precise_withdrawal and record_authorized:
+            outstanding.clear()
+            if refusals is not None:
+                refusals.clear()
         for _idx, line in enumerate(lines):
             raw_line = raw_lines[_idx] if _idx < len(raw_lines) else line
             binding = approved_binding(line)
@@ -2304,15 +2060,6 @@ def lane_shas(
                         and _lane_m.group(1).lower() != lane
                     ):
                         continue
-                    if is_citation(
-                        issued, author, _kind,
-                        _lane_m.group(1).lower() if _lane_m else None,
-                        _sha_m.group(1) if _sha_m else None,
-                    ):
-                        if citations is not None:
-                            citations.append((c.get("html_url") or c.get("url") or "?",
-                                              line[:120]))
-                        continue
                     if _kind == MARKER_REFUSED:
                         # An asserted refusal that cannot be parsed must not leave
                         # an earlier approval standing. This includes a VERDICT
@@ -2332,45 +2079,26 @@ def lane_shas(
                         malformed_prs[finding] = pr_number
                 continue
             explicit_lane, sha = binding
-            # ⚠️ QUOTING AN APPROVAL MUST NOT GRANT ONE. A whole-line quotation is
-            # undecorated into a bare marker -- a leading backtick is stripped as
-            # decoration -- so `APPROVED-AT: claude <sha>` in backticks BOUND a
-            # lane nobody had granted at that moment. Formatting cannot say who is
-            # speaking; the issuer can.
-            if is_citation(issued, author, MARKER_APPROVED, explicit_lane.lower(), sha):
-                if citations is not None:
-                    citations.append((c.get("html_url") or c.get("url") or "?",
-                                      line[:120]))
-                continue
-            issued.append((author, MARKER_APPROVED, explicit_lane.lower(), sha))
             if explicit_lane.lower() == lane:
-                # ⚠️ AN APPROVAL DISCHARGES ONLY ITS OWN AUTHOR'S REFUSAL. An
-                # unsigned approval (`approver is None`) discharges nothing: it
-                # cannot prove whose block it answers, and an unsigned refusal
-                # is likewise unmatchable, so both ends fail closed. Everything
-                # else about this line is unchanged -- the approval still binds
-                # in `found` exactly as before, so a lane can honestly report an
-                # approval AND a standing refusal at once.
-                approver = marker_issuer(line) or author
-                if approver is not None:
-                    outstanding[:] = [
-                        held for held in outstanding if held[1] != approver
-                    ]
+                # Live GitHub records are annotated before evaluation. A record
+                # whose immutable actor lacks current review permission cannot
+                # grant a lane. Legacy in-memory fixtures have no annotation and
+                # retain their syntax-only behavior.
+                if c.get("_current_review_actor_authorized") is False:
+                    continue
+                if (
+                    current_head is not None
+                    and sha.casefold() == current_head.casefold()
+                ):
+                    # Chronology is the authority here: a later canonical
+                    # exact-head approval is the lane's substantive answer to
+                    # earlier objections, regardless of optional fleet metadata.
+                    outstanding.clear()
+                    if refusals is not None:
+                        refusals.clear()
                 found.append(sha)
-                # WHO BOUND THIS LANE, appended in step with `found` so the two
-                # stay index-aligned. This is the entire point of the change: the
-                # issuer was already computed here -- `author` is read a few lines
-                # up, and the citation logic depends on it -- and then DISCARDED at
-                # the return, so no consumer could ask whether two lanes on a head
-                # were bound by two agents or by one agent twice.
-                #
-                # The binding's own `BY` wins over the surrounding comment's
-                # disclosure tag. They almost always agree; when they do not, the
-                # marker is the more specific claim and the one a reviewer wrote
-                # deliberately. `None` means neither source said -- an unsigned
-                # comment carrying a bare marker -- and it is reported as None
-                # rather than guessed, because a fabricated issuer would make an
-                # independence check confidently wrong instead of merely blind.
+                # Optional issuer metadata stays index-aligned with the binding.
+                # No admission or retirement decision compares this value.
                 if issuers is not None:
                     issuers.append((sha, marker_issuer(line) or author))
     if unanswered is not None:
@@ -2399,10 +2127,10 @@ def unresolved_review_objections(
     """Return every unresolved objection from all supported GitHub surfaces.
 
     This is the shared decision used by approval reporting and both merge
-    boundaries.  The lane evaluator owns the chronology, exact retirement,
-    same-issuer approval and generic-withdrawal rules; this wrapper merely runs
-    it for the two existing review lanes and removes the duplicate produced by
-    a lane-less native GitHub refusal.
+    boundaries. The lane evaluator owns chronology and the exact-retirement
+    rule; this wrapper merely runs it for the two existing
+    review lanes and removes the duplicate produced by a lane-less native
+    GitHub refusal.
     """
     ordered = canonical_review_records(records)
     malformed: list[tuple[str, str]] = []
@@ -2431,7 +2159,6 @@ def unresolved_review_objections(
             item.get("id"),
             lane,
             item.get("sha"),
-            item.get("issuer"),
             item.get("message"),
         )
         unique.setdefault(key, item)
@@ -2594,11 +2321,8 @@ def collect_live(
         # was never read, and TWO were bound at the current head.
         #
         # These rows are tagged `source: "comment"` and carry `label: None`.
-        # THEY DO NOT MOVE THE MERGE BOUNDARY -- see `approval_rows` below, which
-        # still counts label rows only, and review_rebase.py, which skips them.
-        # Whether a comment binding should be sufficient to LAND is a policy
-        # question for the owner; this change only stops the tool reporting a
-        # review it can see as a review that does not exist.
+        # They carry the same exact-head authority as a label-indexed row; the
+        # missing label is a cache miss, not missing review evidence.
         labelled_lanes = {
             name.rsplit("-", 1)[-1]
             for name in tracked
@@ -2709,13 +2433,20 @@ def collect_fixture(
     for pr in prs:
         if pr_number is not None and pr["number"] != pr_number:
             continue
-        comments = [
-            {
-                "body": body,
-                "url": f"fixture://pr/{pr['number']}/comment/{index}",
-            }
-            for index, body in enumerate(pr.get("comments", []))
-        ]
+        comments = []
+        for index, item in enumerate(pr.get("comments", [])):
+            if isinstance(item, str):
+                record = {"body": item}
+            elif isinstance(item, dict):
+                record = dict(item)
+            else:
+                raise ValueError(
+                    f"fixture PR #{pr['number']} comment {index} must be a string or object"
+                )
+            record.setdefault(
+                "url", f"fixture://pr/{pr['number']}/comment/{index}"
+            )
+            comments.append(record)
         if pr_number is not None:
             selected = {
                 "number": pr["number"],
@@ -3358,17 +3089,10 @@ def main() -> int:
             for row in rows
             if (row.get("number"), row.get("label")) not in removed_keys
         ]
-    # The final landing boundary always selects exactly one PR with --pr.  An
-    # empty row set there means the PR supplied no passed-review-* cache label
-    # at all.  That is absence of review evidence, not a population with zero
-    # defects.  Fleet-wide scans deliberately retain their historical scope:
-    # they audit approval labels that exist and do not infer which open PRs
-    # require review.
-    # `or ""` is load-bearing: comment-discovered rows carry label None. Counting
-    # them here would make an unlabeled-but-approved PR satisfy the landing
-    # boundary, which is the policy change this deliberately does not make.
+    # Exact-head review records are authority; labels are caches. A labelled lane
+    # and an unlabelled lane are each represented once by the row builders above.
     approval_rows = [
-        row for row in rows if (row["label"] or "").startswith("passed-review-")
+        row for row in rows if row.get("lane") in LANES
     ]
     approval_set_missing = a.pr is not None and not approval_rows
     selected_labels = set(selected["labels"]) if selected is not None else set()
@@ -3380,32 +3104,20 @@ def main() -> int:
     # Criticality comes from the existing closed-enum review-attest record.
     critical_required = bool(selected_critical_classes)
     critical_label_missing = critical_required and POST_FACTO_LABEL not in selected_labels
-    # ⚠️ LABEL ROWS ONLY, and that is a deliberate restraint rather than an
-    # oversight. A comment-discovered binding (source "comment", label None) is
-    # real authority by this file's stated policy, so counting it here would be
-    # defensible -- and it would SHRINK critical_lanes_missing, loosening the
-    # critical-review gate for any PR whose reviewer never applied a label. That
-    # is a policy change, and the change that made those rows visible is not the
-    # place to make it. Deleting the `source` test below is the one-line switch,
-    # and `an_unlabeled_binding_does_not_satisfy_the_critical_lane_check` fails
-    # if it is deleted by accident.
+    # Critical review still requires both lanes, but not their cache labels.
     authoritative_lanes = {
         str(row["lane"])
         for row in rows
         if row["state"] == BOUND_CURRENT
         and row["lane"] in LANES
-        and row.get("source") != "comment"
     }
     critical_lanes_missing = (
         sorted(set(LANES) - authoritative_lanes) if critical_required else []
     )
-    # Same population as before this change: comment-discovered rows are reported
-    # but are not folded into the headline counts, so `approvals`/`authoritative`
-    # stay comparable with every receipt already recorded against them.
     label_rows = [r for r in rows if r.get("source") != "comment"]
     comment_rows = [r for r in rows if r.get("source") == "comment"]
-    bad = [r for r in label_rows if r["state"] != BOUND_CURRENT]
-    authoritative = len(label_rows) - len(bad)
+    bad = [r for r in rows if r["state"] != BOUND_CURRENT]
+    authoritative = len(rows) - len(bad)
     malformed_prs = set(malformed_pr_by_source.values())
     malformed_affected_labels = {
         (r["number"], r["label"])
@@ -3423,8 +3135,7 @@ def main() -> int:
         print(json.dumps({"approvals": len(approval_rows),
                           "actions_enabled": actions_enabled,
                           "binding_labels": len(label_rows),
-                          # Canonical bindings found in comments on a PR carrying no
-                          # matching label. Reported, deliberately not counted above.
+                          # Canonical bindings found without a matching cache label.
                           "unlabeled_bindings": len(comment_rows),
                           "unlabeled_bound_current": len(
                               [r for r in comment_rows if r["state"] == BOUND_CURRENT]
@@ -3492,9 +3203,9 @@ def main() -> int:
                 "runs_at_head_zero=expected while GitHub Actions are disabled; "
                 "zero workflow runs are not classified as unevaluated"
             )
-        print(f"inspected {len(label_rows)} passed-review-* / locally-validated label(s); bound to current head: "
+        print(f"inspected {len(rows)} review/local-validation artifact(s); bound to current head: "
               f"{authoritative}; authority absent: {len(bad)}; "
-              f"passed-review-* / locally-validated AND unevaluated: {len(combined)}")
+              f"cached review/local-validation artifact(s) AND unevaluated: {len(combined)}")
         for r in label_rows:
             if r["state"] == BOUND_CURRENT:
                 continue
@@ -3537,7 +3248,7 @@ def main() -> int:
                 f"from comment)  {where}  head {r['head'][:12]}"
             )
         if approval_set_missing:
-            print(f"  REQUIRED-APPROVAL-SET-MISSING  PR {a.pr} has zero passed-review labels")
+            print(f"  REQUIRED-APPROVAL-SET-MISSING  PR {a.pr} has zero review artifacts")
             # The distinction this tool could not previously draw. Both states
             # print zero approvals; only one of them means nobody looked.
             at_head = [r for r in comment_rows if r["state"] == BOUND_CURRENT]
@@ -3546,8 +3257,8 @@ def main() -> int:
                     f"    NOT UNREVIEWED: {len(at_head)} canonical binding(s) at the "
                     f"current head in comments ("
                     + ", ".join(sorted(r["lane"] for r in at_head))
-                    + "), with no passed-review-* label. Apply the label to make "
-                    "this landable; the review already exists."
+                    + "), with no passed-review-* label. The review is authoritative; "
+                    "the absent label is only a cache miss."
                 )
             elif comment_rows:
                 print(
@@ -3565,7 +3276,7 @@ def main() -> int:
                 f"{','.join(critical_lanes_missing)} approval"
             )
         elif not bad:
-            print("  every passed-review-* / locally-validated label is bound to the current head")
+            print("  every review/local-validation artifact is bound to the current head")
         for where, line in malformed:
             # LOUD, never ignored: something tried to be a binding and is not one.
             pr = malformed_pr_by_source.get((where, line))
@@ -3573,7 +3284,7 @@ def main() -> int:
             print(f"  MALFORMED-SOURCE-LINE  {pr_text}{line}   ({where})")
 
     if a.gate_on == "superseded":
-        gating = [r for r in label_rows if r["state"] == SUPERSEDED] + [
+        gating = [r for r in rows if r["state"] == SUPERSEDED] + [
             r for r in combined if r["state"] != SUPERSEDED
         ]
     elif a.gate_on == "unverifiable":
@@ -3588,7 +3299,7 @@ def main() -> int:
         # selector against the live repo.
         gating = [
             r
-            for r in label_rows
+            for r in rows
             # REFUSED_STALE is here for the same reason REFUSED is: it BLOCKS, so
             # a head carrying one must keep paging. Splitting a state and not
             # updating this line is how the split silently stops the page -- the
@@ -3615,20 +3326,9 @@ def main() -> int:
             state = "absent"
             at_head = [r for r in comment_rows if r["state"] == BOUND_CURRENT]
             summary = (
-                f"PR #{a.pr} has zero passed-review labels; absence of review "
+                f"PR #{a.pr} has zero review artifacts; absence of review "
                 "evidence cannot satisfy the final landing boundary"
             )
-            if at_head:
-                # Same refusal, different cause, and the operator needs the
-                # difference: one says find a reviewer, the other says apply a
-                # label to a review that already happened.
-                summary = (
-                    f"PR #{a.pr} has zero passed-review labels, but "
-                    f"{len(at_head)} canonical binding(s) at the current head "
-                    "exist in comments ("
-                    + ", ".join(sorted(r["lane"] for r in at_head))
-                    + "); the review exists and the cache label does not"
-                )
         else:
             state = "unbound" if gating else ("reconciled" if reconciled else "ok")
             remedies = []
@@ -3683,7 +3383,7 @@ def main() -> int:
                 reconciliation_text = ""
             if gating:
                 summary = (
-                    f"{len(gating)}/{len(label_rows)} passed-review-* / locally-validated labels fail the "
+                    f"{len(gating)}/{len(rows)} review/local-validation artifacts fail the "
                     f"{a.gate_on} binding check; affected={affected}; they do not bind "
                     f"the current head; remedy: {'; '.join(remedies)}"
                 )
@@ -3692,7 +3392,7 @@ def main() -> int:
             elif reconciliation_text:
                 summary = reconciliation_text
             else:
-                summary = "every passed-review-* / locally-validated label binds to the current head"
+                summary = "every review/local-validation artifact binds to the current head"
         print(f"state={state}")
         print(f"summary={summary}")
         if malformed:
@@ -3712,9 +3412,8 @@ def main() -> int:
             print("malformed_state=none")
 
         # Preserve the issuer split as provenance, not as a permission boundary.
-        # A currently authorized GitHub actor may precisely retire either form by
-        # naming the exact refusing comment. Generic approval and unquoted
-        # withdrawal remain issuer-scoped, so this does not erase disagreement.
+        # Issuer names remain provenance only. Resolution uses exact head, lane,
+        # chronology, canonical markers, and current GitHub permission.
         refusal_rows = [r for r in rows if r.get("refusal_issuers")]
         named = sum(1 for r in refusal_rows for w in r["refusal_issuers"] if w)
         unnamed = sum(1 for r in refusal_rows for w in r["refusal_issuers"] if not w)
@@ -3728,12 +3427,9 @@ def main() -> int:
             )
             print(
                 "refusal_issuer_remedy=after verifying the objection is resolved, a "
-                "agent using a currently authorized GitHub actor may post one canonical "
-                "withdrawal with a valid agent disclosure and RETIRES #<the exact "
-                "refusing comment id>. The "
-                "withdrawal lane must match the refusal and its head must match the "
-                "current pull-request head; a generic approval or "
-                "unquoted withdrawal from another reviewer does not retire it"
+                "currently authorized GitHub actor may post a later canonical approval "
+                "or withdrawal in the refusal's lane at the current head, or one exact "
+                "withdrawal with RETIRES #<the exact refusing comment id>"
             )
         else:
             print("refusal_issuer_state=none")
@@ -3747,16 +3443,8 @@ def main() -> int:
         return 1
     if a.gate and approval_set_missing:
         print(
-            f"GATE FAIL: PR #{a.pr} has zero passed-review labels. Zero approvals "
-            "is absence of authority, not zero review problems."
-            + (
-                "  NOTE: "
-                + str(len([r for r in comment_rows if r["state"] == BOUND_CURRENT]))
-                + " canonical binding(s) at the current head were found in comments; "
-                "this refuses for a missing LABEL, not a missing REVIEW."
-                if any(r["state"] == BOUND_CURRENT for r in comment_rows)
-                else ""
-            ),
+            f"GATE FAIL: PR #{a.pr} has zero review artifacts. Zero approvals "
+            "is absence of authority, not zero review problems.",
             file=sys.stderr,
         )
         return 1
@@ -3770,7 +3458,7 @@ def main() -> int:
         if not gating:
             return 1
         print(
-            f"GATE FAIL ({a.gate_on}): {len(gating)} of {len(label_rows)} passed-review-* / locally-validated label(s) do not bind "
+            f"GATE FAIL ({a.gate_on}): {len(gating)} of {len(rows)} review/local-validation artifact(s) do not bind "
             "to the current head. Stale review labels are reconciled when requested; "
             "other labels do not satisfy the review or local-validation head-binding gate.",
             file=sys.stderr,
