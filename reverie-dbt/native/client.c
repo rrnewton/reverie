@@ -894,8 +894,7 @@ static void evidence_emit_image_initialization(void) {
       "protected evidence initialized\n";
   evidence_sender_state_t *sender;
   bool emit = false;
-  if (!evidence_is_enabled() ||
-      runtime_callbacks_page.value.evidence_log_level < 3)
+  if (!evidence_is_enabled())
     return;
   dr_mutex_lock(evidence_lock);
   sender = evidence_sender_locked();
@@ -913,6 +912,14 @@ static void evidence_emit_image_initialization(void) {
     return;
   }
   reverie_dbt_emit_evidence(record, sizeof(record) - 1);
+}
+
+static void evidence_initialize_fork_child_thread(
+    prototype_counters_t *counters) {
+  evidence_count_fork_child_thread(counters);
+  evidence_callback_enter();
+  evidence_emit_image_initialization();
+  evidence_callback_leave();
 }
 
 static void evidence_thread_leave(prototype_counters_t *counters) {
@@ -1903,7 +1910,7 @@ static int32_t complete_clone_identity(prototype_counters_t *counters,
   } else if (result == 0) {
     int32_t host_tid = (int32_t)dr_get_thread_id(dr_get_current_drcontext());
     if ((flags & CLONE_THREAD) == 0)
-      evidence_count_fork_child_thread(counters);
+      evidence_initialize_fork_child_thread(counters);
     if ((flags & CLONE_THREAD) != 0 &&
         lookup_virtual_identity(host_tid, &mapped))
       virtual_child = mapped;
@@ -3048,6 +3055,9 @@ static void post_syscall(void *drcontext, int sysnum) {
       counters->pending_process_clone_result != 0) {
     if (!test_leave_process_clone_result_pending)
       counters->pending_process_clone_result = 0;
+    if (host_syscall_result == 0 &&
+        (counters->pending_process_clone_flags & CLONE_THREAD) == 0)
+      evidence_initialize_fork_child_thread(counters);
     evidence_callback_enter();
     int32_t registration = reverie_dbt_runtime_process_clone_result(
         counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
@@ -4185,6 +4195,7 @@ static void runtime_background_init(void *argument) {
   (void)argument;
   atomic_store_explicit(&runtime_background_state, 2, memory_order_release);
   evidence_callback_enter();
+  evidence_emit_image_initialization();
   reverie_dbt_runtime_background_init_v2(&runtime_callbacks_page.value);
   evidence_callback_leave();
   // DynamoRIO implements a client thread as a distinct process sharing the

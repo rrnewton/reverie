@@ -54,6 +54,9 @@ const FILE_HEADER_LEN: usize = 40;
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 const CANONICAL_RECORD_PREFIX: &[u8] = b"1970-01-01T00:00:00.000000Z ";
+const INITIALIZATION_RECORD: &[u8] =
+    b"1970-01-01T00:00:00.000000Z INFO reverie_dbt::evidence: protected evidence initialized\n";
+const INITIALIZATION_MESSAGE_PREFIX: &[u8] = b"reverie_dbt::evidence: protected evidence init";
 const SESSION_NEW: u8 = 0;
 const SESSION_RUNNING: u8 = 1;
 const SESSION_FINISHING: u8 = 2;
@@ -115,15 +118,25 @@ impl DbtEvidenceLogLevel {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DbtEvidence {
     records: Vec<Vec<u8>>,
+    initialization_records: usize,
 }
 
 impl DbtEvidence {
-    /// Exact tracing-callback records in authenticated arrival order.
+    /// Comparable tracing-callback records in authenticated arrival order.
+    ///
+    /// Process image initialization records remain authenticated in the
+    /// artifact but are represented by [`Self::initialization_records`]
+    /// instead.
     pub fn records(&self) -> &[Vec<u8>] {
         &self.records
     }
 
-    /// Consumes the stream and returns its exact tracing-callback records.
+    /// Number of validated process image initialization records in the artifact.
+    pub fn initialization_records(&self) -> usize {
+        self.initialization_records
+    }
+
+    /// Consumes the stream and returns its comparable tracing-callback records.
     pub fn into_records(self) -> Vec<Vec<u8>> {
         self.records
     }
@@ -159,7 +172,7 @@ pub fn decode_evidence(bytes: &[u8]) -> io::Result<DbtEvidence> {
     let mut cursor = FILE_HEADER_LEN;
     let mut payload_bytes = 0_u64;
     let mut hash = FNV_OFFSET;
-    let mut records = Vec::new();
+    let mut raw_records = Vec::new();
     while cursor < bytes.len() {
         let length_end = cursor
             .checked_add(4)
@@ -181,10 +194,10 @@ pub fn decode_evidence(bytes: &[u8]) -> io::Result<DbtEvidence> {
         payload_bytes = payload_bytes
             .checked_add(length as u64)
             .ok_or_else(|| invalid_data("DBT evidence payload length overflowed"))?;
-        records.push(record.to_vec());
+        raw_records.push(record.to_vec());
         cursor = record_end;
     }
-    if records.len() as u64 != expected_records
+    if raw_records.len() as u64 != expected_records
         || payload_bytes != expected_payload
         || hash != expected_hash
     {
@@ -192,7 +205,34 @@ pub fn decode_evidence(bytes: &[u8]) -> io::Result<DbtEvidence> {
             "DBT evidence count, byte length, or digest does not match its header",
         ));
     }
-    Ok(DbtEvidence { records })
+
+    let mut records = Vec::with_capacity(raw_records.len());
+    let mut initialization_records = 0_usize;
+    for record in raw_records {
+        match classify_initialization_record(&record) {
+            InitializationRecord::Exact => {
+                initialization_records =
+                    initialization_records.checked_add(1).ok_or_else(|| {
+                        invalid_data("DBT evidence initialization record count overflowed")
+                    })?;
+            }
+            InitializationRecord::Lookalike => {
+                return Err(invalid_data(
+                    "DBT evidence contains a malformed initialization record",
+                ));
+            }
+            InitializationRecord::Other => records.push(record),
+        }
+    }
+    if initialization_records == 0 {
+        return Err(invalid_data(
+            "DBT evidence contains no process image initialization record",
+        ));
+    }
+    Ok(DbtEvidence {
+        records,
+        initialization_records,
+    })
 }
 
 #[derive(Debug)]
@@ -381,6 +421,7 @@ struct ImageState {
     epoch: u64,
     next_sequence: u64,
     pending_exec: bool,
+    initialized: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -466,22 +507,29 @@ impl Collector {
                         epoch,
                         next_sequence: 1,
                         pending_exec: false,
+                        initialized: false,
                     },
                 );
                 self.saw_start = true;
             }
             FRAME_DATA => {
-                let image = self.image_for(process, sequence)?;
-                if image.pending_exec {
-                    return Err(invalid_data("DBT evidence arrived while exec was pending"));
+                {
+                    let image = self.image_for(process, sequence)?;
+                    if image.pending_exec {
+                        return Err(invalid_data("DBT evidence arrived while exec was pending"));
+                    }
                 }
-                image.next_sequence += 1;
-                self.absorb_records(payload)?;
+                self.absorb_records(process, payload)?;
+                self.images
+                    .get_mut(&process)
+                    .expect("validated image remains live")
+                    .next_sequence += 1;
             }
             FRAME_EXEC => {
                 if !payload.is_empty() {
                     return Err(invalid_data("DBT evidence EXEC frame carried payload"));
                 }
+                self.require_initialized(process)?;
                 let image = self.image_for(process, sequence)?;
                 if image.pending_exec {
                     return Err(invalid_data("DBT evidence nested an exec transition"));
@@ -495,6 +543,7 @@ impl Collector {
                         "DBT evidence EXEC_CANCEL frame carried payload",
                     ));
                 }
+                self.require_initialized(process)?;
                 let image = self.image_for(process, sequence)?;
                 if !image.pending_exec {
                     return Err(invalid_data(
@@ -508,6 +557,7 @@ impl Collector {
                 if !payload.is_empty() {
                     return Err(invalid_data("DBT evidence FINAL frame carried payload"));
                 }
+                self.require_initialized(process)?;
                 let image = self.image_for(process, sequence)?;
                 if image.pending_exec {
                     return Err(invalid_data("DBT evidence finalized with exec pending"));
@@ -532,6 +582,7 @@ impl Collector {
                 if child.pid == 0 || child == process {
                     return Err(invalid_data("DBT evidence CHILD identity is invalid"));
                 }
+                self.require_initialized(process)?;
                 let image = self.image_for(process, sequence)?;
                 if image.pending_exec {
                     return Err(invalid_data(
@@ -613,8 +664,32 @@ impl Collector {
             .len()
     }
 
-    fn absorb_records(&mut self, payload: &[u8]) -> io::Result<()> {
+    fn require_initialized(&self, process: ProcessKey) -> io::Result<()> {
+        if self
+            .images
+            .get(&process)
+            .is_some_and(|image| image.initialized)
+        {
+            Ok(())
+        } else {
+            Err(invalid_data(
+                "DBT evidence process image lifecycle preceded its initialization record",
+            ))
+        }
+    }
+
+    fn absorb_records(&mut self, process: ProcessKey, payload: &[u8]) -> io::Result<()> {
+        if payload.is_empty() {
+            return Err(invalid_data("DBT DATA frame carried no records"));
+        }
         let mut cursor = 0;
+        let mut initialized = self
+            .images
+            .get(&process)
+            .expect("DATA sequence validation requires a live image")
+            .initialized;
+        let mut record_count = 0_u64;
+        let mut payload_bytes = 0_u64;
         while cursor < payload.len() {
             let length_end = cursor
                 .checked_add(4)
@@ -631,21 +706,57 @@ impl Collector {
                 .ok_or_else(|| invalid_data("DBT DATA ends inside a record"))?;
             let record = &payload[length_end..record_end];
             validate_record(record)?;
-            let new_len = self
-                .encoded_records
-                .len()
-                .checked_add(4 + length)
-                .filter(|length| *length <= MAX_EVIDENCE_BYTES)
-                .ok_or_else(|| invalid_data("DBT evidence exceeded its memory bound"))?;
-            self.encoded_records
-                .reserve(new_len - self.encoded_records.len());
-            self.encoded_records.extend_from_slice(&encoded_length);
-            self.encoded_records.extend_from_slice(record);
-            self.hash = fnv_update(self.hash, &encoded_length);
-            self.hash = fnv_update(self.hash, record);
-            self.record_count += 1;
-            self.payload_bytes += length as u64;
+            match classify_initialization_record(record) {
+                InitializationRecord::Exact if initialized => {
+                    return Err(invalid_data(
+                        "DBT evidence process image repeated its initialization record",
+                    ));
+                }
+                InitializationRecord::Exact => initialized = true,
+                InitializationRecord::Lookalike => {
+                    return Err(invalid_data(
+                        "DBT evidence contains a malformed initialization record",
+                    ));
+                }
+                InitializationRecord::Other if !initialized => {
+                    return Err(invalid_data(
+                        "DBT evidence process image data preceded its initialization record",
+                    ));
+                }
+                InitializationRecord::Other => {}
+            }
+            record_count = record_count
+                .checked_add(1)
+                .ok_or_else(|| invalid_data("DBT evidence record count overflowed"))?;
+            payload_bytes = payload_bytes
+                .checked_add(length as u64)
+                .ok_or_else(|| invalid_data("DBT evidence payload length overflowed"))?;
             cursor = record_end;
+        }
+
+        let new_len = self
+            .encoded_records
+            .len()
+            .checked_add(payload.len())
+            .filter(|length| *length <= MAX_EVIDENCE_BYTES)
+            .ok_or_else(|| invalid_data("DBT evidence exceeded its memory bound"))?;
+        self.encoded_records
+            .reserve(new_len - self.encoded_records.len());
+        self.encoded_records.extend_from_slice(payload);
+        self.hash = fnv_update(self.hash, payload);
+        self.record_count = self
+            .record_count
+            .checked_add(record_count)
+            .ok_or_else(|| invalid_data("DBT evidence record count overflowed"))?;
+        self.payload_bytes = self
+            .payload_bytes
+            .checked_add(payload_bytes)
+            .ok_or_else(|| invalid_data("DBT evidence payload length overflowed"))?;
+        if initialized {
+            self.images
+                .get_mut(&process)
+                .expect("validated DATA process remains live")
+                .initialized = true;
         }
         Ok(())
     }
@@ -653,6 +764,11 @@ impl Collector {
     fn finish(self) -> io::Result<CollectedEvidence> {
         if !self.saw_start {
             return Err(invalid_data("DBT evidence received no image START"));
+        }
+        if self.images.values().any(|image| !image.initialized) {
+            return Err(invalid_data(
+                "DBT evidence is missing a process image initialization record",
+            ));
         }
         if !self.images.is_empty() {
             return Err(io::Error::new(
@@ -1025,6 +1141,36 @@ fn validate_record(record: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InitializationRecord {
+    Exact,
+    Lookalike,
+    Other,
+}
+
+fn classify_initialization_record(record: &[u8]) -> InitializationRecord {
+    if record == INITIALIZATION_RECORD {
+        return InitializationRecord::Exact;
+    }
+    let Some(tagged) = record.strip_prefix(CANONICAL_RECORD_PREFIX) else {
+        return InitializationRecord::Other;
+    };
+    let message = [
+        b"ERROR ".as_slice(),
+        b"WARN ",
+        b"INFO ",
+        b"DEBUG ",
+        b"TRACE ",
+    ]
+    .iter()
+    .find_map(|level| tagged.strip_prefix(*level));
+    if message.is_some_and(|message| message.starts_with(INITIALIZATION_MESSAGE_PREFIX)) {
+        InitializationRecord::Lookalike
+    } else {
+        InitializationRecord::Other
+    }
+}
+
 fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
@@ -1079,32 +1225,50 @@ fn invalid_data(message: &'static str) -> io::Error {
 mod tests {
     use super::*;
 
-    #[test]
-    fn framed_evidence_round_trips_and_rejects_injected_lines() {
-        let records = [
-            b"1970-01-01T00:00:00.000000Z INFO detcore: first\n".as_slice(),
-            b"1970-01-01T00:00:00.000000Z DEBUG detcore: second\n",
-        ];
-        let mut encoded_records = Vec::new();
-        let mut hash = FNV_OFFSET;
-        let mut payload_bytes = 0;
+    const FIRST_RECORD: &[u8] = b"1970-01-01T00:00:00.000000Z INFO detcore: first\n";
+    const SECOND_RECORD: &[u8] = b"1970-01-01T00:00:00.000000Z DEBUG detcore: second\n";
+
+    fn encode_records(records: &[&[u8]]) -> Vec<u8> {
+        let mut encoded = Vec::new();
         for record in records {
-            let length = (record.len() as u32).to_le_bytes();
-            encoded_records.extend_from_slice(&length);
-            encoded_records.extend_from_slice(record);
-            hash = fnv_update(hash, &length);
-            hash = fnv_update(hash, record);
-            payload_bytes += record.len() as u64;
+            encoded.extend_from_slice(&(record.len() as u32).to_le_bytes());
+            encoded.extend_from_slice(record);
         }
+        encoded
+    }
+
+    fn encode_artifact(records: &[&[u8]]) -> Vec<u8> {
+        let encoded_records = encode_records(records);
+        let payload_bytes: u64 = records.iter().map(|record| record.len() as u64).sum();
         let mut bytes = vec![0; FILE_HEADER_LEN];
         bytes[..8].copy_from_slice(FILE_MAGIC);
         bytes[8..10].copy_from_slice(&FILE_VERSION.to_le_bytes());
         bytes[10..12].copy_from_slice(&(FILE_HEADER_LEN as u16).to_le_bytes());
         bytes[16..24].copy_from_slice(&(records.len() as u64).to_le_bytes());
         bytes[24..32].copy_from_slice(&payload_bytes.to_le_bytes());
-        bytes[32..40].copy_from_slice(&hash.to_le_bytes());
+        bytes[32..40].copy_from_slice(&fnv_update(FNV_OFFSET, &encoded_records).to_le_bytes());
         bytes.extend_from_slice(&encoded_records);
-        assert_eq!(decode_evidence(&bytes).unwrap().records(), records);
+        bytes
+    }
+
+    fn start_and_initialize(collector: &mut Collector, process: ProcessKey) {
+        collector.absorb(FRAME_START, process, 0, &[]).unwrap();
+        collector
+            .absorb(
+                FRAME_DATA,
+                process,
+                1,
+                &encode_records(&[INITIALIZATION_RECORD]),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn framed_evidence_round_trips_and_rejects_injected_lines() {
+        let raw_records = [INITIALIZATION_RECORD, FIRST_RECORD, SECOND_RECORD];
+        let evidence = decode_evidence(&encode_artifact(&raw_records)).unwrap();
+        assert_eq!(evidence.initialization_records(), 1);
+        assert_eq!(evidence.records(), [FIRST_RECORD, SECOND_RECORD]);
 
         let injected = b"1970-01-01T00:00:00.000000Z INFO detcore: guest=ok\n1970-01-01T00:00:00.000000Z INFO detcore: forged\n";
         assert!(validate_record(injected).is_err());
@@ -1112,18 +1276,7 @@ mod tests {
 
     #[test]
     fn decoder_rejects_truncation_and_digest_changes() {
-        let record = b"1970-01-01T00:00:00.000000Z INFO detcore: one\n";
-        let length = (record.len() as u32).to_le_bytes();
-        let mut bytes = vec![0; FILE_HEADER_LEN];
-        bytes[..8].copy_from_slice(FILE_MAGIC);
-        bytes[8..10].copy_from_slice(&FILE_VERSION.to_le_bytes());
-        bytes[10..12].copy_from_slice(&(FILE_HEADER_LEN as u16).to_le_bytes());
-        bytes[16..24].copy_from_slice(&1_u64.to_le_bytes());
-        bytes[24..32].copy_from_slice(&(record.len() as u64).to_le_bytes());
-        let hash = fnv_update(fnv_update(FNV_OFFSET, &length), record);
-        bytes[32..40].copy_from_slice(&hash.to_le_bytes());
-        bytes.extend_from_slice(&length);
-        bytes.extend_from_slice(record);
+        let mut bytes = encode_artifact(&[INITIALIZATION_RECORD, FIRST_RECORD]);
 
         assert!(decode_evidence(&bytes[..bytes.len() - 1]).is_err());
         *bytes.last_mut().unwrap() ^= 1;
@@ -1131,18 +1284,212 @@ mod tests {
     }
 
     #[test]
-    fn collector_requires_exec_for_restart_and_terminalizes_process() {
+    fn decoder_requires_exact_initialization_and_rejects_lookalikes() {
+        let debug_lookalike = b"1970-01-01T00:00:00.000000Z DEBUG reverie_dbt::evidence: protected evidence initialized\n";
+        let suffixed_lookalike = b"1970-01-01T00:00:00.000000Z INFO reverie_dbt::evidence: protected evidence initialized twice\n";
+
+        let missing = decode_evidence(&encode_artifact(&[FIRST_RECORD])).unwrap_err();
+        assert!(
+            missing
+                .to_string()
+                .contains("no process image initialization")
+        );
+        assert!(decode_evidence(&encode_artifact(&[debug_lookalike])).is_err());
+        assert!(
+            decode_evidence(&encode_artifact(&[
+                INITIALIZATION_RECORD,
+                suffixed_lookalike,
+            ]))
+            .is_err()
+        );
+
+        let mut unauthenticated = encode_artifact(&[FIRST_RECORD]);
+        unauthenticated[32] ^= 1;
+        let error = decode_evidence(&unauthenticated).unwrap_err();
+        assert!(
+            error.to_string().contains("digest does not match"),
+            "raw artifact must be authenticated before semantic decoding: {error}"
+        );
+    }
+
+    #[test]
+    fn decoder_filters_each_authenticated_process_image_initialization_record() {
+        let raw_records = [
+            INITIALIZATION_RECORD,
+            FIRST_RECORD,
+            INITIALIZATION_RECORD,
+            SECOND_RECORD,
+        ];
+        let evidence = decode_evidence(&encode_artifact(&raw_records)).unwrap();
+        assert_eq!(evidence.initialization_records(), 2);
+        assert_eq!(evidence.records(), [FIRST_RECORD, SECOND_RECORD]);
+    }
+
+    #[test]
+    fn independent_artifacts_return_only_comparable_records() {
+        let first = decode_evidence(&encode_artifact(&[
+            INITIALIZATION_RECORD,
+            FIRST_RECORD,
+            SECOND_RECORD,
+        ]))
+        .unwrap();
+        let second = decode_evidence(&encode_artifact(&[
+            INITIALIZATION_RECORD,
+            FIRST_RECORD,
+            SECOND_RECORD,
+        ]))
+        .unwrap();
+
+        assert_eq!(first.initialization_records(), 1);
+        assert_eq!(second.initialization_records(), 1);
+        assert_eq!(first.into_records(), second.into_records());
+    }
+
+    #[test]
+    fn collector_rejects_data_and_lifecycle_before_initialization() {
+        let process = ProcessKey {
+            pid: 11,
+            start_time: 13,
+        };
+        let ordinary = encode_records(&[FIRST_RECORD]);
+        let mut collector = Collector::new();
+        collector.absorb(FRAME_START, process, 0, &[]).unwrap();
+        assert!(collector.absorb(FRAME_DATA, process, 1, &[]).is_err());
+        let error = collector
+            .absorb(FRAME_DATA, process, 1, &ordinary)
+            .unwrap_err();
+        assert!(error.to_string().contains("data preceded"));
+        let error = collector.absorb(FRAME_EXEC, process, 1, &[]).unwrap_err();
+        assert!(error.to_string().contains("lifecycle preceded"));
+        let error = collector.finish().err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("missing a process image initialization")
+        );
+
+        let mut child_payload = Vec::from(19_u32.to_le_bytes());
+        child_payload.extend_from_slice(&23_u64.to_le_bytes());
+        for (kind, payload) in [
+            (FRAME_EXEC_CANCEL, Vec::new()),
+            (FRAME_FINAL, Vec::new()),
+            (FRAME_CHILD, child_payload),
+        ] {
+            let mut collector = Collector::new();
+            collector.absorb(FRAME_START, process, 0, &[]).unwrap();
+            let error = collector.absorb(kind, process, 1, &payload).unwrap_err();
+            assert!(
+                error.to_string().contains("lifecycle preceded"),
+                "frame kind {kind} was not refused for missing initialization: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn collector_rejects_duplicate_malformed_and_truncated_initialization() {
+        let process = ProcessKey {
+            pid: 13,
+            start_time: 17,
+        };
+        let initialization = encode_records(&[INITIALIZATION_RECORD]);
+        let mut collector = Collector::new();
+        start_and_initialize(&mut collector, process);
+        let duplicate = collector
+            .absorb(FRAME_DATA, process, 2, &initialization)
+            .unwrap_err();
+        assert!(duplicate.to_string().contains("repeated"));
+
+        let debug_lookalike = encode_records(&[
+            b"1970-01-01T00:00:00.000000Z DEBUG reverie_dbt::evidence: protected evidence initialized\n",
+        ]);
+        let mut collector = Collector::new();
+        collector.absorb(FRAME_START, process, 0, &[]).unwrap();
+        let malformed = collector
+            .absorb(FRAME_DATA, process, 1, &debug_lookalike)
+            .unwrap_err();
+        assert!(malformed.to_string().contains("malformed initialization"));
+
+        let mut truncated = initialization;
+        truncated.pop();
+        let mut collector = Collector::new();
+        collector.absorb(FRAME_START, process, 0, &[]).unwrap();
+        assert!(
+            collector
+                .absorb(FRAME_DATA, process, 1, &truncated)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn collector_retains_process_image_initializations_in_the_raw_artifact() {
+        let first_process = ProcessKey {
+            pid: 19,
+            start_time: 23,
+        };
+        let second_process = ProcessKey {
+            pid: 29,
+            start_time: 31,
+        };
+        let mut collector = Collector::new();
+        start_and_initialize(&mut collector, first_process);
+        collector
+            .absorb(
+                FRAME_DATA,
+                first_process,
+                2,
+                &encode_records(&[FIRST_RECORD]),
+            )
+            .unwrap();
+        start_and_initialize(&mut collector, second_process);
+        collector
+            .absorb(
+                FRAME_DATA,
+                second_process,
+                2,
+                &encode_records(&[SECOND_RECORD]),
+            )
+            .unwrap();
+        collector
+            .absorb(FRAME_FINAL, first_process, 3, &[])
+            .unwrap();
+        collector
+            .absorb(FRAME_FINAL, second_process, 3, &[])
+            .unwrap();
+
+        let collected = collector.finish().unwrap();
+        assert_eq!(collected.record_count, 4);
+        let mut output = tempfile::tempfile().unwrap();
+        publish(&mut output, collected).unwrap();
+        output.seek(SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        output.read_to_end(&mut bytes).unwrap();
+        let evidence = decode_evidence(&bytes).unwrap();
+        assert_eq!(evidence.initialization_records(), 2);
+        assert_eq!(evidence.records(), [FIRST_RECORD, SECOND_RECORD]);
+    }
+
+    #[test]
+    fn collector_requires_exec_for_restart_and_reinitializes_the_new_image() {
         let process = ProcessKey {
             pid: 17,
             start_time: 23,
         };
         let mut collector = Collector::new();
-        collector.absorb(FRAME_START, process, 0, &[]).unwrap();
+        start_and_initialize(&mut collector, process);
         assert!(collector.absorb(FRAME_START, process, 0, &[]).is_err());
-        collector.absorb(FRAME_EXEC, process, 1, &[]).unwrap();
+        collector.absorb(FRAME_EXEC, process, 2, &[]).unwrap();
         collector.absorb(FRAME_START, process, 0, &[]).unwrap();
-        collector.absorb(FRAME_FINAL, process, 1, &[]).unwrap();
+        collector
+            .absorb(
+                FRAME_DATA,
+                process,
+                1,
+                &encode_records(&[INITIALIZATION_RECORD]),
+            )
+            .unwrap();
+        collector.absorb(FRAME_FINAL, process, 2, &[]).unwrap();
         assert!(collector.absorb(FRAME_START, process, 0, &[]).is_err());
+        assert_eq!(collector.finish().unwrap().record_count, 2);
     }
 
     #[test]
@@ -1152,9 +1499,9 @@ mod tests {
             start_time: 37,
         };
         let mut collector = Collector::new();
-        collector.absorb(FRAME_START, process, 0, &[]).unwrap();
-        collector.absorb(FRAME_FINAL, process, 1, &[]).unwrap();
-        assert!(collector.absorb(FRAME_FINAL, process, 2, &[]).is_err());
+        start_and_initialize(&mut collector, process);
+        collector.absorb(FRAME_FINAL, process, 2, &[]).unwrap();
+        assert!(collector.absorb(FRAME_FINAL, process, 3, &[]).is_err());
     }
 
     #[test]
@@ -1172,14 +1519,37 @@ mod tests {
             .absorb_or_acknowledge_retry(FRAME_START, process, 0, start_digest, &[])
             .unwrap();
 
-        let final_digest = frame_digest(FRAME_FINAL, 1, &[]);
+        let initialization = encode_records(&[INITIALIZATION_RECORD]);
+        let initialization_digest = frame_digest(FRAME_DATA, 1, &initialization);
         collector
-            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 1, final_digest, &[])
+            .absorb_or_acknowledge_retry(
+                FRAME_DATA,
+                process,
+                1,
+                initialization_digest,
+                &initialization,
+            )
             .unwrap();
         collector
-            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 1, final_digest, &[])
+            .absorb_or_acknowledge_retry(
+                FRAME_DATA,
+                process,
+                1,
+                initialization_digest,
+                &initialization,
+            )
             .unwrap();
-        collector.finish().unwrap();
+
+        let final_digest = frame_digest(FRAME_FINAL, 2, &[]);
+        collector
+            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 2, final_digest, &[])
+            .unwrap();
+        collector
+            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 2, final_digest, &[])
+            .unwrap();
+        let collected = collector.finish().unwrap();
+        assert_eq!(collected.record_count, 1);
+        assert_eq!(collected.encoded_records, initialization);
     }
 
     #[test]
@@ -1221,12 +1591,12 @@ mod tests {
         );
 
         let mut collector = Collector::new();
-        collector.absorb(FRAME_START, process, 0, &[]).unwrap();
-        collector.absorb(FRAME_EXEC, process, 1, &[]).unwrap();
+        start_and_initialize(&mut collector, process);
+        collector.absorb(FRAME_EXEC, process, 2, &[]).unwrap();
         collector
-            .absorb(FRAME_EXEC_CANCEL, process, 2, &[])
+            .absorb(FRAME_EXEC_CANCEL, process, 3, &[])
             .unwrap();
-        collector.absorb(FRAME_FINAL, process, 3, &[]).unwrap();
+        collector.absorb(FRAME_FINAL, process, 4, &[]).unwrap();
         collector.finish().unwrap();
     }
 
@@ -1241,11 +1611,11 @@ mod tests {
             start_time: 61,
         };
         let mut collector = Collector::new();
-        collector.absorb(FRAME_START, root, 0, &[]).unwrap();
-        collector.absorb(FRAME_START, descendant, 0, &[]).unwrap();
-        collector.absorb(FRAME_FINAL, root, 1, &[]).unwrap();
+        start_and_initialize(&mut collector, root);
+        start_and_initialize(&mut collector, descendant);
+        collector.absorb(FRAME_FINAL, root, 2, &[]).unwrap();
         assert!(collector.has_admitted(descendant));
-        collector.absorb(FRAME_FINAL, descendant, 1, &[]).unwrap();
+        collector.absorb(FRAME_FINAL, descendant, 2, &[]).unwrap();
         collector.finish().unwrap();
     }
 
@@ -1263,11 +1633,11 @@ mod tests {
         child_payload.extend_from_slice(&child.start_time.to_le_bytes());
 
         let mut collector = Collector::new();
-        collector.absorb(FRAME_START, root, 0, &[]).unwrap();
+        start_and_initialize(&mut collector, root);
         collector
-            .absorb(FRAME_CHILD, root, 1, &child_payload)
+            .absorb(FRAME_CHILD, root, 2, &child_payload)
             .unwrap();
-        collector.absorb(FRAME_FINAL, root, 2, &[]).unwrap();
+        collector.absorb(FRAME_FINAL, root, 3, &[]).unwrap();
         assert!(collector.finish().is_err());
     }
 
@@ -1285,13 +1655,13 @@ mod tests {
         child_payload.extend_from_slice(&child.start_time.to_le_bytes());
 
         let mut collector = Collector::new();
-        collector.absorb(FRAME_START, root, 0, &[]).unwrap();
-        collector.absorb(FRAME_START, child, 0, &[]).unwrap();
-        collector.absorb(FRAME_FINAL, child, 1, &[]).unwrap();
+        start_and_initialize(&mut collector, root);
+        start_and_initialize(&mut collector, child);
+        collector.absorb(FRAME_FINAL, child, 2, &[]).unwrap();
         collector
-            .absorb(FRAME_CHILD, root, 1, &child_payload)
+            .absorb(FRAME_CHILD, root, 2, &child_payload)
             .unwrap();
-        collector.absorb(FRAME_FINAL, root, 2, &[]).unwrap();
+        collector.absorb(FRAME_FINAL, root, 3, &[]).unwrap();
         collector.finish().unwrap();
     }
 
@@ -1342,8 +1712,7 @@ mod tests {
         assert!(initial_peer_is_admissible(descendant, root));
         collector.absorb(FRAME_START, descendant, 0, &[]).unwrap();
         let record = b"1970-01-01T00:00:00.000000Z INFO detcore: reparented child\n";
-        let mut payload = Vec::from((record.len() as u32).to_le_bytes());
-        payload.extend_from_slice(record);
+        let payload = encode_records(&[INITIALIZATION_RECORD, record]);
         collector
             .absorb(FRAME_DATA, descendant, 1, &payload)
             .unwrap();
@@ -1407,6 +1776,57 @@ mod tests {
         session.claim_run().unwrap();
         let error = session.claim_run().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    #[test]
+    fn native_initialization_record_matches_the_decoder_protocol() {
+        let source = include_str!("../native/client.c");
+        let initialization = source
+            .split_once("static void evidence_emit_image_initialization(void) {")
+            .unwrap()
+            .1
+            .split_once("static void evidence_thread_leave")
+            .unwrap()
+            .0;
+        assert!(
+            initialization.contains("\"1970-01-01T00:00:00.000000Z INFO reverie_dbt::evidence: \"")
+        );
+        assert!(initialization.contains("\"protected evidence initialized\\n\""));
+        assert!(!initialization.contains("evidence_log_level"));
+        assert_eq!(
+            classify_initialization_record(INITIALIZATION_RECORD),
+            InitializationRecord::Exact
+        );
+
+        let thread_init = source
+            .split_once("static void thread_init(void *drcontext) {")
+            .unwrap()
+            .1
+            .split_once("static void thread_exit")
+            .unwrap()
+            .0;
+        assert!(
+            thread_init
+                .find("evidence_emit_image_initialization();")
+                .unwrap()
+                < thread_init
+                    .find("reverie_dbt_runtime_thread_init(")
+                    .unwrap()
+        );
+
+        let complete_clone = source
+            .split_once("static int32_t complete_clone_identity(")
+            .unwrap()
+            .1
+            .split_once("static bool pending_identity_is_process")
+            .unwrap()
+            .0;
+        assert!(
+            complete_clone.find("} else if (result == 0) {").unwrap()
+                < complete_clone
+                    .find("evidence_initialize_fork_child_thread(counters);")
+                    .unwrap()
+        );
     }
 
     #[test]
@@ -1516,6 +1936,9 @@ mod tests {
             .split_once("static void ensure_runtime_background(void)")
             .unwrap()
             .0;
+        let background_initialization = background
+            .find("evidence_emit_image_initialization();")
+            .unwrap();
         let background_runtime = background
             .find("reverie_dbt_runtime_background_init_v2(&runtime_callbacks_page.value);")
             .unwrap();
@@ -1526,6 +1949,7 @@ mod tests {
         let background_quiescent = background
             .find("atomic_store_explicit(&runtime_background_state, 3")
             .unwrap();
+        assert!(background_initialization < background_runtime);
         assert!(background_runtime < background_callback_leave);
         assert!(background_callback_leave < background_final);
         assert!(background_final < background_quiescent);
@@ -1611,6 +2035,9 @@ mod tests {
         let consumed = post
             .find("counters->pending_process_clone_result = 0;")
             .unwrap();
+        let child_initialization = post
+            .find("evidence_initialize_fork_child_thread(counters);")
+            .unwrap();
         let callback = post
             .find("int32_t registration = reverie_dbt_runtime_process_clone_result(")
             .unwrap();
@@ -1620,7 +2047,8 @@ mod tests {
         assert!(result < invariant);
         assert!(invariant < guard);
         assert!(guard < consumed);
-        assert!(consumed < callback);
+        assert!(consumed < child_initialization);
+        assert!(child_initialization < callback);
         assert!(callback < identity);
 
         let pre = source

@@ -2008,6 +2008,26 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn protected_evidence_initializes_when_tracing_is_off() {
+        let mut file = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .evidence_file(&file)
+            .unwrap()
+            .evidence_log_level(DbtEvidenceLogLevel::Off);
+
+        let output = runner.output(&Command::new("/bin/true")).unwrap();
+        assert!(output.status.success());
+        file.rewind().unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        let evidence = crate::decode_evidence(&bytes).unwrap();
+        assert!(evidence.initialization_records() > 0);
+        assert!(evidence.records().is_empty());
+    }
+
+    #[test]
     fn returns_when_child_exits_while_input_source_is_blocked() {
         let root = tempfile::tempdir().unwrap();
         let runner = DbtRunner::new(fake_drrun(root.path()), fake_client()).unwrap();
@@ -2270,8 +2290,8 @@ mod tests {
         file.read_to_end(&mut bytes).unwrap();
         let evidence = crate::decode_evidence(&bytes).unwrap();
         assert!(
-            !evidence.records().is_empty(),
-            "live integrity run produced no canonical evidence records"
+            evidence.initialization_records() > 0,
+            "live integrity run produced no process image initialization evidence"
         );
         assert!(evidence.records().iter().all(|record| {
             !record
@@ -2371,8 +2391,8 @@ mod tests {
         file.read_to_end(&mut bytes).unwrap();
         let evidence = crate::decode_evidence(&bytes).unwrap();
         assert!(
-            !evidence.records().is_empty(),
-            "retry run produced no canonical evidence records"
+            evidence.initialization_records() > 0,
+            "retry run produced no process image initialization evidence"
         );
     }
 
