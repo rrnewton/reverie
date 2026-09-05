@@ -50,10 +50,9 @@ TEST_DIRS=(scripts/tests ci-hub/health/tests)
 # ⚠️ THESE ARE NOT KNOWN-BAD TESTS. At least one is reporting a real product
 # defect that has been sitting unread precisely because nothing ran the file.
 # Waiving here buys the other 698 cases their first ever scheduled run; it does
-# not bless the three.
+# not bless the two.
 WAIVED_REASONS=(
-    "ci-hub/health/tests/test_gate_variant_space.py|NOT a test bug: an enumeration over 72 gate cells reporting a REAL defect in ci-hub/bin/changes-requested-gate -- 'silent-or-false: 2', both being FALSE REFUSAL cells where a withdrawal should not have cleared a refusal. Needs its own row; do not fix it by editing this test."
-    "ci-hub/health/tests/test_withdrawal_scope.py|1 of 4 cases: test_one_withdrawal_clearing_two_reviewers_refusals_is_reported expects OK and gets 1, against its own words 'the verdict is unchanged; only the report is'. Last touched 2026-08-25."
+    "ci-hub/health/tests/test_gate_variant_space.py|NOT a test bug: an enumeration over 72 gate cells reporting a REAL defect in ci-hub/bin/changes-requested-gate. Its two failing cells use BARE markers with no disclosure tag, and measured 2026-09-05 a bare refusal CANNOT BE WITHDRAWN AT ALL -- not even by its own lane: 'one lane refuses, its OWN lane withdraws' returns 1, while the disclosure-tagged form of the same shape returns 0. The message compounds it by saying 'a withdrawal from a DIFFERENT lane does not discharge it' when the withdrawal is from the same lane. Needs its own row; do not fix it by editing this test."
     "scripts/tests/test-parent-main-write-failure-messages.sh|8 of 9 assertions pass; the failing one is 'stale local main: message does not name the cause (want: not the freshly fetched origin/main)'. A refusal message that does not name its cause, which is a wording defect in parent-main-write rather than in this bracket."
 )
 
