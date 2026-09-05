@@ -2009,6 +2009,107 @@ mod tests {
 
     #[test]
     #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn protected_evidence_preserves_a_normal_guest_exit_101() {
+        let mut file = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .evidence_file(&file)
+            .unwrap();
+        let mut guest = Command::new("/bin/sh");
+        guest.args(["-c", "exit 101"]);
+
+        let output = runner.output(&guest).unwrap();
+        assert_eq!(output.status.code(), Some(101));
+        file.rewind().unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert!(crate::decode_evidence(&bytes).is_ok());
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn protected_evidence_preserves_a_normal_guest_signal_with_an_exit_callback() {
+        let mut file = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .evidence_file(&file)
+            .unwrap();
+        let mut guest = Command::new("/bin/sh");
+        guest.args(["-c", "kill -TERM $$"]);
+
+        let output = runner.output(&guest).unwrap();
+        assert!(!output.status.success());
+        file.rewind().unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert!(crate::decode_evidence(&bytes).is_ok());
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn protected_evidence_refuses_a_backend_failure_before_returning_output() {
+        let file = tempfile::tempfile().unwrap();
+        let mut diagnostics = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .evidence_file(&file)
+            .unwrap()
+            .diagnostic_file(&diagnostics)
+            .unwrap()
+            .client_argument("-test-backend-failure");
+
+        let error = runner.output(&Command::new("/bin/true")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("DBT backend or Tool reported an internal failure"),
+            "backend failure was reported as the wrong error: {error}"
+        );
+        assert_eq!(file.metadata().unwrap().len(), 0);
+        diagnostics.rewind().unwrap();
+        let mut diagnostic_bytes = Vec::new();
+        diagnostics.read_to_end(&mut diagnostic_bytes).unwrap();
+        assert!(
+            diagnostic_bytes
+                .windows(b"requested backend failure for testing".len())
+                .any(|window| window == b"requested backend failure for testing")
+        );
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn protected_evidence_keeps_a_backend_failure_after_sender_lookup_misses() {
+        let file = tempfile::tempfile().unwrap();
+        let mut diagnostics = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .evidence_file(&file)
+            .unwrap()
+            .diagnostic_file(&diagnostics)
+            .unwrap()
+            .client_argument("-test-backend-failure")
+            .client_argument("-test-backend-failure-sender-lookup-miss");
+
+        let error = runner.output(&Command::new("/bin/true")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("DBT backend or Tool reported an internal failure"),
+            "backend failure was reported as the wrong error: {error}"
+        );
+        assert_eq!(file.metadata().unwrap().len(), 0);
+        diagnostics.rewind().unwrap();
+        let mut diagnostic_bytes = Vec::new();
+        diagnostics.read_to_end(&mut diagnostic_bytes).unwrap();
+        assert!(
+            diagnostic_bytes
+                .windows(b"skipped backend failure sender lookup for testing".len())
+                .any(|window| window == b"skipped backend failure sender lookup for testing")
+        );
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
     fn protected_evidence_initializes_when_tracing_is_off() {
         let mut file = tempfile::tempfile().unwrap();
         let runner = DbtRunner::from_env()
