@@ -12,6 +12,7 @@ use std::ffi::CString;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::io::Read;
+use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
@@ -914,6 +915,87 @@ impl Container {
             }
         }
     }
+
+    /// Runs a function in a new process, publishes its result, and only then
+    /// drops a child-owned cleanup value.
+    ///
+    /// The returned handle owns the mandatory wait for the child. Callers may
+    /// do independent work after receiving `T`, but must call
+    /// [`ContainerCleanup::wait`] and check the exit status before treating the
+    /// operation as successful. Dropping the handle still reaps the child, but
+    /// cannot report an unsuccessful cleanup.
+    ///
+    /// This has the same fork-safety requirements as [`Container::run`].
+    pub fn run_with_deferred_drop<F, T, D>(
+        &mut self,
+        mut f: F,
+    ) -> Result<(T, ContainerCleanup), RunError>
+    where
+        F: FnMut() -> (T, D),
+        T: Serialize + DeserializeOwned,
+    {
+        let clone_flags = self.namespace.bits() | libc::SIGCHLD;
+        let uid_map = &make_id_map(&self.uid_map);
+        let gid_map = &make_id_map(&self.gid_map);
+        let context = ChildContext {
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            uid_map,
+            gid_map,
+            seccomp_fd: None,
+        };
+        let (mut reader, writer) = pipe()?;
+        let writer_fd = writer.as_raw_fd();
+        let mut stack = child_stack();
+
+        #[cfg(feature = "nightly")]
+        let output_capture = std::io::set_output_capture(None);
+
+        let result = clone_with_stack(
+            || {
+                let (value, deferred) = match self.setup(&context, &mut []) {
+                    Ok(()) => {
+                        let (value, deferred) = f();
+                        (Ok(value), Some(deferred))
+                    }
+                    Err(error) => (Err(error), None),
+                };
+                let mut writer = std::io::BufWriter::new(Fd::new(writer_fd));
+                bincode::serde::encode_into_std_write(
+                    &value,
+                    &mut writer,
+                    bincode::config::legacy(),
+                )
+                .expect("Failed to serialize return value");
+                writer.flush().expect("Failed to flush return value");
+                drop(writer);
+                drop(deferred);
+                0
+            },
+            clone_flags,
+            &mut stack,
+        );
+
+        #[cfg(feature = "nightly")]
+        std::io::set_output_capture(output_capture);
+
+        let child = WaitGuard::new(result?);
+        drop(writer);
+
+        let mut buf = Vec::new();
+        match reader.read_to_end(&mut buf) {
+            Ok(0) => Err(RunError::ExitStatus(child.wait()?)),
+            Ok(n) => {
+                let value: Result<T, Error> =
+                    bincode::serde::decode_from_slice(&buf[0..n], bincode::config::legacy())
+                        .unwrap()
+                        .0;
+                Ok((value.map_err(RunError::Spawn)?, ContainerCleanup(child)))
+            }
+            Err(error) => panic!("Got unexpected error: {error}"),
+        }
+    }
 }
 
 pub(super) struct ChildContext<'a> {
@@ -983,6 +1065,17 @@ impl WaitGuard {
     }
 }
 
+/// Mandatory wait handle for a container child finishing deferred cleanup.
+#[must_use = "deferred container cleanup must be waited on and its exit status checked"]
+pub struct ContainerCleanup(WaitGuard);
+
+impl ContainerCleanup {
+    /// Waits for cleanup and returns the child's exact exit status.
+    pub fn wait(self) -> Result<ExitStatus, Errno> {
+        self.0.wait()
+    }
+}
+
 impl Drop for WaitGuard {
     fn drop(&mut self) {
         if let Some(pid) = self.0.take() {
@@ -996,6 +1089,9 @@ impl Drop for WaitGuard {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+
     use nix::sys::signal::Signal;
 
     use super::*;
@@ -1051,6 +1147,115 @@ mod tests {
             Container::new().run(|| String::from("foobar")),
             Ok("foobar".into())
         );
+    }
+
+    struct BlockingDrop {
+        shared: *mut SharedDropState,
+    }
+
+    impl Drop for BlockingDrop {
+        fn drop(&mut self) {
+            let shared = unsafe { &*self.shared };
+            shared.started.store(true, Ordering::Release);
+            while !shared.release.load(Ordering::Acquire) {
+                unsafe { libc::sched_yield() };
+            }
+            shared.finished.store(true, Ordering::Release);
+        }
+    }
+
+    struct SharedDropState {
+        started: AtomicBool,
+        release: AtomicBool,
+        finished: AtomicBool,
+    }
+
+    fn new_shared_drop_state() -> (*mut libc::c_void, *mut SharedDropState) {
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                std::mem::size_of::<SharedDropState>(),
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        let shared = mapping.cast::<SharedDropState>();
+        unsafe {
+            shared.write(SharedDropState {
+                started: AtomicBool::new(false),
+                release: AtomicBool::new(false),
+                finished: AtomicBool::new(false),
+            });
+        }
+        (mapping, shared)
+    }
+
+    unsafe fn unmap_shared_drop_state(mapping: *mut libc::c_void, shared: *mut SharedDropState) {
+        unsafe {
+            std::ptr::drop_in_place(shared);
+            assert_eq!(
+                libc::munmap(mapping, std::mem::size_of::<SharedDropState>()),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn deferred_drop_publishes_result_before_cleanup_completes() {
+        let (mapping, shared) = new_shared_drop_state();
+
+        let (value, cleanup) = Container::new()
+            .run_with_deferred_drop(|| (42, BlockingDrop { shared }))
+            .unwrap();
+        assert_eq!(value, 42);
+
+        let shared_ref = unsafe { &*shared };
+        while !shared_ref.started.load(Ordering::Acquire) {
+            unsafe { libc::sched_yield() };
+        }
+        shared_ref.release.store(true, Ordering::Release);
+        assert_eq!(cleanup.wait(), Ok(ExitStatus::SUCCESS));
+        assert!(shared_ref.finished.load(Ordering::Acquire));
+
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    #[test]
+    fn dropping_cleanup_handle_still_reaps_the_child() {
+        let (mapping, shared) = new_shared_drop_state();
+        let (_value, cleanup) = Container::new()
+            .run_with_deferred_drop(|| ((), BlockingDrop { shared }))
+            .unwrap();
+        let shared_ref = unsafe { &*shared };
+        while !shared_ref.started.load(Ordering::Acquire) {
+            unsafe { libc::sched_yield() };
+        }
+        shared_ref.release.store(true, Ordering::Release);
+        drop(cleanup);
+        assert!(shared_ref.finished.load(Ordering::Acquire));
+
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    struct ExitDuringDrop(i32);
+
+    impl Drop for ExitDuringDrop {
+        fn drop(&mut self) {
+            unsafe { libc::_exit(self.0) }
+        }
+    }
+
+    #[test]
+    fn deferred_drop_exposes_cleanup_failure() {
+        let (value, cleanup) = Container::new()
+            .run_with_deferred_drop(|| (42, ExitDuringDrop(71)))
+            .unwrap();
+
+        assert_eq!(value, 42);
+        assert_eq!(cleanup.wait(), Ok(ExitStatus::Exited(71)));
     }
 
     #[test]
