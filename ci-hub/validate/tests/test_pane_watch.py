@@ -148,6 +148,7 @@ class PaneWatchTest(unittest.TestCase):
                         "profile": "full",
                         "selection_mode": "full",
                         "final_validate_status": "PASSED",
+                        "detail": None,
                         "exit_code": 0,
                         "executed_nodes": 76,
                         "executed_tests": 2129,
@@ -208,6 +209,7 @@ class PaneWatchTest(unittest.TestCase):
                         "profile": "full",
                         "selection_mode": "full",
                         "final_validate_status": "PASSED",
+                        "detail": None,
                         "exit_code": 0,
                         "executed_nodes": 76,
                         "executed_tests": 2129,
@@ -238,7 +240,7 @@ class PaneWatchTest(unittest.TestCase):
             durable = run_registry.read_record(record)
             self.assertEqual("unknown", durable["state"])
             self.assertIsNone(durable["passed_tests"])
-            self.assertIn("schema 4 expected", durable["detail"])
+            self.assertIn("schema 5 expected", durable["detail"])
 
     def test_historical_results_keep_passed_count_unknown(self) -> None:
         for version in (1, 2, 3):

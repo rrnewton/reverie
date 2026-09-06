@@ -37,7 +37,27 @@ TEST_SUMMARY_RE = re.compile(r"^\s*([0-9]+)\s+test\(s\) executed\b")
 HISTORICAL_SCHEMA_VERSION = 1
 WRITEBACK_SCHEMA_VERSION = 2
 SELECTION_SCHEMA_VERSION = 3
-SCHEMA_VERSION = 4
+TEST_COUNTS_SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+SUPPORTED_SCHEMA_VERSIONS = (
+    HISTORICAL_SCHEMA_VERSION,
+    WRITEBACK_SCHEMA_VERSION,
+    SELECTION_SCHEMA_VERSION,
+    TEST_COUNTS_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+)
+WRITEBACK_SCHEMA_VERSIONS = frozenset(SUPPORTED_SCHEMA_VERSIONS[1:])
+SELECTION_SCHEMA_VERSIONS = frozenset(SUPPORTED_SCHEMA_VERSIONS[2:])
+TEST_COUNTS_SCHEMA_VERSIONS = frozenset(SUPPORTED_SCHEMA_VERSIONS[3:])
+AUTHORITATIVE_SCHEMA_VERSIONS = TEST_COUNTS_SCHEMA_VERSIONS
+
+
+def supported_schema_versions_text() -> str:
+    return (
+        ", ".join(str(version) for version in SUPPORTED_SCHEMA_VERSIONS[:-1])
+        + f", or {SCHEMA_VERSION}"
+    )
+
 SCHEMA_RELATIVE_PATH = Path(
     "ci/manifest-plan/validation-service-result-schema.json"
 )
@@ -62,12 +82,25 @@ SELECTION_FIELD_NAMES = (
     "executed_tests",
     "scorecard_writeback",
 )
+TEST_COUNTS_FIELD_NAMES = (
+    "schema_version",
+    "commit",
+    "profile",
+    "selection_mode",
+    "final_validate_status",
+    "exit_code",
+    "executed_nodes",
+    "executed_tests",
+    "passed_tests",
+    "scorecard_writeback",
+)
 FIELD_NAMES = (
     "schema_version",
     "commit",
     "profile",
     "selection_mode",
     "final_validate_status",
+    "detail",
     "exit_code",
     "executed_nodes",
     "executed_tests",
@@ -119,6 +152,7 @@ class RunEvidence:
     final_validate_status: str | None = None
     final_validate_status_error: str | None = None
     result_source: str = "durable-log"
+    detail: tuple[str, ...] | None = None
     commit: str | None = None
     profile: str | None = None
     selection_mode: str | None = None
@@ -144,22 +178,13 @@ def read_schema(path: Path) -> dict[str, Any]:
     """Read the checked schema projection and refuse drift by field name."""
     value = _json_object(path, role="schema")
     version = value.get("schema_version")
-    if version not in {
-        HISTORICAL_SCHEMA_VERSION,
-        WRITEBACK_SCHEMA_VERSION,
-        SELECTION_SCHEMA_VERSION,
-        SCHEMA_VERSION,
-    }:
+    if version not in SUPPORTED_SCHEMA_VERSIONS:
         raise _error(
             "schema_version",
-            f"expected {HISTORICAL_SCHEMA_VERSION}, {WRITEBACK_SCHEMA_VERSION}, {SELECTION_SCHEMA_VERSION}, or {SCHEMA_VERSION}, got {version!r}",
+            f"expected {supported_schema_versions_text()}, got {version!r}",
         )
     expected_top = {"schema_version", "fields", "outcomes"}
-    if version in {
-        WRITEBACK_SCHEMA_VERSION,
-        SELECTION_SCHEMA_VERSION,
-        SCHEMA_VERSION,
-    }:
+    if version in WRITEBACK_SCHEMA_VERSIONS:
         expected_top.add("scorecard_writeback")
     if set(value) != expected_top:
         raise _error(
@@ -171,6 +196,7 @@ def read_schema(path: Path) -> dict[str, Any]:
         WRITEBACK_SCHEMA_VERSION: WRITEBACK_FIELD_NAMES,
         SELECTION_SCHEMA_VERSION: SELECTION_FIELD_NAMES,
         SCHEMA_VERSION: FIELD_NAMES,
+        TEST_COUNTS_SCHEMA_VERSION: TEST_COUNTS_FIELD_NAMES,
     }[version]
     fields = value.get("fields")
     if fields != list(expected_fields):
@@ -211,11 +237,7 @@ def read_schema(path: Path) -> dict[str, Any]:
             "schema-outcomes",
             "schema exits disagree with ci-hub final validate status exits",
         )
-    if version in {
-        WRITEBACK_SCHEMA_VERSION,
-        SELECTION_SCHEMA_VERSION,
-        SCHEMA_VERSION,
-    }:
+    if version in WRITEBACK_SCHEMA_VERSIONS:
         writeback = value.get("scorecard_writeback")
         if writeback != EXPECTED_SCORECARD_WRITEBACK:
             raise _error(
@@ -293,12 +315,13 @@ def read_framework_result_bytes(
         HISTORICAL_SCHEMA_VERSION: HISTORICAL_FIELD_NAMES,
         WRITEBACK_SCHEMA_VERSION: WRITEBACK_FIELD_NAMES,
         SELECTION_SCHEMA_VERSION: SELECTION_FIELD_NAMES,
+        TEST_COUNTS_SCHEMA_VERSION: TEST_COUNTS_FIELD_NAMES,
         SCHEMA_VERSION: FIELD_NAMES,
     }.get(version)
     if expected_fields is None:
         raise _error(
             "schema_version",
-            f"expected {HISTORICAL_SCHEMA_VERSION}, {WRITEBACK_SCHEMA_VERSION}, {SELECTION_SCHEMA_VERSION}, or {SCHEMA_VERSION}, got {version!r}",
+            f"expected {supported_schema_versions_text()}, got {version!r}",
         )
     if set(value) != set(expected_fields):
         raise _error(
@@ -311,7 +334,7 @@ def read_framework_result_bytes(
     if not isinstance(profile, str) or not profile.strip():
         raise _error("profile", "must be a nonempty string")
     selection_mode: str | None = None
-    if version in {SELECTION_SCHEMA_VERSION, SCHEMA_VERSION}:
+    if version in SELECTION_SCHEMA_VERSIONS:
         raw_selection = value.get("selection_mode")
         if raw_selection is not None and (
             not isinstance(raw_selection, str) or not raw_selection.strip()
@@ -325,11 +348,7 @@ def read_framework_result_bytes(
     if not isinstance(exit_code, int) or isinstance(exit_code, bool):
         raise _error("exit_code", "must be an integer")
     scorecard_writeback: dict[str, str] | None = None
-    if version in {
-        WRITEBACK_SCHEMA_VERSION,
-        SELECTION_SCHEMA_VERSION,
-        SCHEMA_VERSION,
-    }:
+    if version in WRITEBACK_SCHEMA_VERSIONS:
         scorecard_writeback = read_scorecard_writeback_value(
             value.get("scorecard_writeback")
         )
@@ -357,15 +376,17 @@ def read_framework_result_bytes(
     executed_tests, passed_tests = read_test_counts(
         value, version=version, status=status
     )
+    detail = read_detail(value, version=version, status=status)
     return RunEvidence(
         inner_exit=exit_code,
         executed_nodes=executed_nodes,
         executed_tests=executed_tests,
         passed_tests=passed_tests,
         final_validate_status=status,
+        detail=detail,
         result_source=(
             "validation-service-result"
-            if version == SCHEMA_VERSION
+            if version in AUTHORITATIVE_SCHEMA_VERSIONS
             else "historical-validation-service-result"
         ),
         commit=commit,
@@ -411,6 +432,28 @@ def read_scorecard_writeback_value(value: Any) -> dict[str, str] | None:
     )
 
 
+def read_detail(
+    value: Mapping[str, Any], *, version: int, status: str
+) -> tuple[str, ...] | None:
+    """Read ordered terminal detail without inventing a cause for old rows."""
+    if version != SCHEMA_VERSION:
+        return None
+    raw = value.get("detail")
+    if raw is None:
+        return None
+    if (
+        not isinstance(raw, list)
+        or not raw
+        or any(not isinstance(line, str) or not line.strip() for line in raw)
+    ):
+        raise _error(
+            "detail", "must be a nonempty list of nonempty strings or null"
+        )
+    if status != "COULD_NOT_RUN":
+        raise _error("detail", f"{status} must carry null")
+    return tuple(raw)
+
+
 def read_test_counts(
     value: Mapping[str, Any], *, version: int, status: str
 ) -> tuple[int | None, int | None]:
@@ -423,7 +466,7 @@ def read_test_counts(
     ):
         raise _error("executed_tests", "must be a nonnegative integer or null")
 
-    if version != SCHEMA_VERSION:
+    if version not in TEST_COUNTS_SCHEMA_VERSIONS:
         return executed_tests, None
 
     passed_tests = value.get("passed_tests")
@@ -567,9 +610,11 @@ def classify(
     }
     if evidence.service_result_schema is not None:
         common["service_result_schema"] = evidence.service_result_schema
-    if evidence.service_result_schema in {SELECTION_SCHEMA_VERSION, SCHEMA_VERSION}:
+    if evidence.service_result_schema == SCHEMA_VERSION:
+        common["detail"] = None
+    if evidence.service_result_schema in SELECTION_SCHEMA_VERSIONS:
         common["selection_mode"] = evidence.selection_mode
-    if evidence.service_result_schema in {SELECTION_SCHEMA_VERSION, SCHEMA_VERSION}:
+    if evidence.service_result_schema in WRITEBACK_SCHEMA_VERSIONS:
         common["scorecard_writeback"] = evidence.scorecard_writeback
     if evidence.final_validate_status_error is not None:
         return {
@@ -580,11 +625,7 @@ def classify(
         }
     status: str | None = None
     if evidence.final_validate_status is not None:
-        if evidence.service_result_schema in {
-            HISTORICAL_SCHEMA_VERSION,
-            WRITEBACK_SCHEMA_VERSION,
-            SELECTION_SCHEMA_VERSION,
-        }:
+        if evidence.service_result_schema in SUPPORTED_SCHEMA_VERSIONS[:3]:
             return {
                 **common,
                 "state": "unknown",
@@ -597,7 +638,7 @@ def classify(
             }
         try:
             status = evidence.final_validate_status
-            if evidence.service_result_schema == SCHEMA_VERSION:
+            if evidence.service_result_schema in AUTHORITATIVE_SCHEMA_VERSIONS:
                 if status not in EXPECTED_OUTCOMES:
                     raise FinalValidateStatusError(f"unsupported value {status!r}")
                 writeback = read_scorecard_writeback_value(
@@ -624,7 +665,16 @@ def classify(
     if status == "FAILED":
         return {**common, "state": "completed", "result": "failure"}
     if status == "COULD_NOT_RUN":
-        return {**common, "state": "completed", "result": "no-result"}
+        return {
+            **common,
+            "state": "completed",
+            "result": "no-result",
+            "detail": (
+                "\n".join(evidence.detail)
+                if evidence.detail is not None
+                else "validation reported COULD_NOT_RUN without detail"
+            ),
+        }
     if exit_code is not None and 129 <= exit_code <= 192:
         return {
             **common,
@@ -660,17 +710,12 @@ def from_run_record(
     marker = record.get("service_result_schema")
     if marker is None:
         return from_log(log_path, properties=properties)
-    if marker not in {
-        HISTORICAL_SCHEMA_VERSION,
-        WRITEBACK_SCHEMA_VERSION,
-        SELECTION_SCHEMA_VERSION,
-        SCHEMA_VERSION,
-    }:
+    if marker not in SUPPORTED_SCHEMA_VERSIONS:
         return classify(
             RunEvidence(
                 final_validate_status_error=(
                     "validation-service-result-schema_version: "
-                    f"expected {HISTORICAL_SCHEMA_VERSION}, {WRITEBACK_SCHEMA_VERSION}, {SELECTION_SCHEMA_VERSION}, or {SCHEMA_VERSION}, got {marker!r}"
+                    f"expected {supported_schema_versions_text()}, got {marker!r}"
                 ),
                 result_source="validation-service-result",
             ),
@@ -735,17 +780,22 @@ def is_evidenced_terminal(record: Mapping[str, Any]) -> bool:
     if not isinstance(status, str):
         return False
     schema_version = record.get("service_result_schema")
-    if schema_version in {
-        HISTORICAL_SCHEMA_VERSION,
-        WRITEBACK_SCHEMA_VERSION,
-        SELECTION_SCHEMA_VERSION,
-    }:
+    if schema_version in SUPPORTED_SCHEMA_VERSIONS[:3]:
         return False
-    if schema_version == SCHEMA_VERSION:
+    if schema_version in AUTHORITATIVE_SCHEMA_VERSIONS:
         if status not in EXPECTED_OUTCOMES:
             return False
         if "passed_tests" not in record:
             return False
+        if schema_version == SCHEMA_VERSION:
+            if "detail" not in record:
+                return False
+            detail = record.get("detail")
+            if status == "COULD_NOT_RUN":
+                if not isinstance(detail, str) or not detail.strip():
+                    return False
+            elif detail is not None:
+                return False
         try:
             writeback = read_scorecard_writeback_value(
                 record.get("scorecard_writeback")

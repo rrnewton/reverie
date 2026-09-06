@@ -1057,13 +1057,7 @@ def _validation_service_result_evidence(
         and isinstance(unit, str)
         and run_registry.record_path(root, unit) == handle_path
         and service_result.result_path(handle_path) == result_path
-        and marker
-        in {
-            service_result.HISTORICAL_SCHEMA_VERSION,
-            service_result.WRITEBACK_SCHEMA_VERSION,
-            service_result.SELECTION_SCHEMA_VERSION,
-            service_result.SCHEMA_VERSION,
-        }
+        and marker in service_result.SUPPORTED_SCHEMA_VERSIONS
     ):
         return None
     target = handle_raw.get("target")
@@ -1162,6 +1156,7 @@ def _is_admitted_pre_plan_no_result(
         and raw.get("service_result_schema") == service_result.SCHEMA_VERSION
         and "scorecard_writeback" in raw
         and raw.get("scorecard_writeback") is None
+        and isinstance(raw.get("detail"), str)
         and raw.get("result_source") == "validation-service-result"
     ):
         return False
@@ -1188,6 +1183,12 @@ def _is_admitted_pre_plan_no_result(
         and evidence.executed_tests is None
         and evidence.passed_tests is None
         and evidence.final_validate_status == "COULD_NOT_RUN"
+        and raw.get("detail")
+        == (
+            "\n".join(evidence.detail)
+            if evidence.detail is not None
+            else "validation reported COULD_NOT_RUN without detail"
+        )
         and evidence.selection_mode is None
         and evidence.scorecard_writeback is None
     )

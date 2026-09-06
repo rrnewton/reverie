@@ -193,6 +193,7 @@ class FakeRun:
         self.executed_nodes: int | None = 55
         self.executed_tests: int | None = 862
         self.passed_tests: int | None = 862
+        self.detail: list[str] | None = None
         self.service_result_schema = start_unit.service_result.SCHEMA_VERSION
         self.include_passed_tests = True
         self.write_service_result = True
@@ -833,12 +834,14 @@ class FakeRun:
                     "executed_nodes": self.executed_nodes or 0,
                     "executed_tests": self.executed_tests,
                 }
-                if self.service_result_schema in (3, 4):
+                if self.service_result_schema in (3, 4, 5):
                     result["selection_mode"] = "full"
-                if self.service_result_schema in (2, 3, 4):
+                if self.service_result_schema in (2, 3, 4, 5):
                     result["scorecard_writeback"] = {"status": "completed"}
-                if self.service_result_schema == 4 and self.include_passed_tests:
+                if self.service_result_schema in (4, 5) and self.include_passed_tests:
                     result["passed_tests"] = self.passed_tests
+                if self.service_result_schema == 5:
+                    result["detail"] = self.detail
                 Path(path).write_text(json.dumps(result) + "\n")
             if frozen := environment.get("HERMIT_VALIDATE_LEDGER"):
                 row = self.default_ledger_row()
@@ -956,7 +959,8 @@ class StartUnitTest(unittest.TestCase):
                     1: start_unit.service_result.HISTORICAL_FIELD_NAMES,
                     2: start_unit.service_result.WRITEBACK_FIELD_NAMES,
                     3: start_unit.service_result.SELECTION_FIELD_NAMES,
-                    4: start_unit.service_result.FIELD_NAMES,
+                    4: start_unit.service_result.TEST_COUNTS_FIELD_NAMES,
+                    5: start_unit.service_result.FIELD_NAMES,
                 }[version]
             ),
             "outcomes": (
@@ -965,7 +969,7 @@ class StartUnitTest(unittest.TestCase):
                 else start_unit.service_result.EXPECTED_OUTCOMES
             ),
         }
-        if version in (2, 3, 4):
+        if version in (2, 3, 4, 5):
             schema["scorecard_writeback"] = (
                 start_unit.service_result.EXPECTED_SCORECARD_WRITEBACK
             )
@@ -1561,7 +1565,7 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertEqual("unknown", record["state"])
         self.assertIsNone(record["passed_tests"])
-        self.assertIn("schema 4 expected", record["detail"])
+        self.assertIn("schema 5 expected", record["detail"])
 
     def test_current_target_refuses_mismatched_passed_count(self) -> None:
         self.write_validation_service_schema(
@@ -5579,6 +5583,7 @@ class StartUnitTest(unittest.TestCase):
                     "profile": "full",
                     "selection_mode": "full",
                     "final_validate_status": "PASSED",
+                    "detail": None,
                     "exit_code": 0,
                     "executed_nodes": 55,
                     "executed_tests": 862,

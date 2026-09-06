@@ -59,6 +59,40 @@ def create_repo(path: Path, marker: str) -> str:
     return git(path, "rev-parse", "HEAD^{commit}", capture=True).stdout.strip()
 
 
+def validation_event(
+    *,
+    repo: str = "rrnewton/hermit",
+    target: str = OLD,
+    status: str = "PASSED",
+    canonical_verdict: str = "VALIDATED",
+    wrapper_exit_code: int = 0,
+    scorecard_writeback_failed: bool = False,
+) -> str:
+    result = {
+        "PASSED": "success",
+        "FAILED": "failure",
+        "COULD_NOT_RUN": "no-result",
+    }[status]
+    row = {
+        "schema_version": 1,
+        "event": "finished",
+        "repo": repo,
+        "target": target,
+        "state": "completed",
+        "result": result,
+        "final_validate_status": status,
+        "canonical_verdict": canonical_verdict,
+        "wrapper_exit_code": wrapper_exit_code,
+        "commit_status_publication": {"state": "published"},
+    }
+    if scorecard_writeback_failed:
+        row["commit_status_publication"] = {
+            "state": "not-attempted",
+            "reason": "scorecard write-back did not complete",
+        }
+    return json.dumps(row) + "\n"
+
+
 class FakeRun:
     def __init__(
         self,
@@ -67,7 +101,7 @@ class FakeRun:
         verdicts=None,
         approval_rc=0,
         validation_rc=0,
-        validation_stdout="",
+        validation_stdout=None,
         validation_stderr="",
     ):
         self.heads = list(heads or [OLD])
@@ -114,10 +148,27 @@ class FakeRun:
             rc = {"VALIDATED": 0, "FAILED": 3}.get(verdict, 4)
             return subprocess.CompletedProcess(command, rc, json.dumps({"verdict": verdict}), "")
         if "validate-run" in command:
+            repo = "rrnewton/hermit"
+            validate_index = command.index("validate-run")
+            if "--repo" in command[validate_index:]:
+                repo_index = command.index("--repo", validate_index)
+                repo = command[repo_index + 1]
+            target = command[command.index("--target", validate_index) + 1]
+            stdout = self.validation_stdout
+            if stdout is None:
+                stdout = validation_event(
+                    repo=repo,
+                    target=target,
+                    status="COULD_NOT_RUN" if self.validation_rc == 75 else "PASSED",
+                    canonical_verdict=(
+                        "NOT-VALIDATED" if self.validation_rc == 75 else "VALIDATED"
+                    ),
+                    wrapper_exit_code=4 if self.validation_rc == 75 else 0,
+                )
             return subprocess.CompletedProcess(
                 command,
                 self.validation_rc,
-                self.validation_stdout,
+                stdout,
                 self.validation_stderr,
             )
         raise AssertionError(command)
@@ -254,7 +305,10 @@ class PrHeadCiTest(unittest.TestCase):
                 "--",
             ],
         )
-        self.assertEqual(command[11:14], ["validate-run", "--checkout", "/tmp/exact-head"])
+        self.assertEqual(
+            command[11:15],
+            ["validate-run", "--json", "--checkout", "/tmp/exact-head"],
+        )
         self.assertIn("--materialize-target", command)
         self.assertNotEqual(command[0], str(P.ROOT / "ci-hub/ci-hub"))
 
@@ -671,6 +725,79 @@ lander_restore_owned_checkout "$checkout" main 0 "$entry" "$fence" "$token" 1
         self.assertIn("validate-run exited 75", stdout.getvalue())
         self.assertIn("PR-HEAD-CI NO_RESULT", stdout.getvalue())
         self.assertNotIn("PR-HEAD-CI FAILED", stdout.getvalue())
+
+    def test_passed_validation_with_failed_writeback_is_not_called_could_not_run(self):
+        run = FakeRun(
+            heads=[OLD, OLD],
+            verdicts=["NOT-VALIDATED", "VALIDATED"],
+            validation_rc=75,
+            validation_stdout=validation_event(scorecard_writeback_failed=True),
+            validation_stderr="validate-run: scorecard write-back did not complete\n",
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            rc = self.main(self.args("--execute"), run=run)
+        self.assertEqual(0, rc)
+        self.assertIn("PR-HEAD-CI VALIDATED", stdout.getvalue())
+        self.assertIn("scorecard write-back did not complete", stdout.getvalue())
+        self.assertIn("scorecard write-back did not complete", stderr.getvalue())
+
+    def test_concurrent_green_does_not_replace_a_missing_terminal_event(self):
+        run = FakeRun(
+            heads=[OLD, OLD],
+            verdicts=["NOT-VALIDATED", "VALIDATED"],
+            validation_rc=75,
+            validation_stdout="",
+        )
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            rc = self.main(self.args("--execute"), run=run)
+        self.assertEqual(4, rc)
+        self.assertIn("emitted 0 terminal events", stdout.getvalue())
+
+    def test_terminal_event_for_another_target_is_not_this_runs_evidence(self):
+        run = FakeRun(
+            heads=[OLD, OLD],
+            verdicts=["NOT-VALIDATED", "VALIDATED"],
+            validation_stdout=validation_event(target=NEW),
+        )
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            rc = self.main(self.args("--execute"), run=run)
+        self.assertEqual(4, rc)
+        self.assertIn("terminal event names", stdout.getvalue())
+
+    def test_malformed_terminal_output_cannot_inherit_a_concurrent_green(self):
+        run = FakeRun(
+            heads=[OLD, OLD],
+            verdicts=["NOT-VALIDATED", "VALIDATED"],
+            validation_stdout="{not-json}\n",
+        )
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            rc = self.main(self.args("--execute"), run=run)
+        self.assertEqual(4, rc)
+        self.assertIn("JSON line 1 is malformed", stdout.getvalue())
+
+    def test_unexpected_runner_exit_cannot_inherit_a_concurrent_green(self):
+        run = FakeRun(
+            heads=[OLD, OLD],
+            verdicts=["NOT-VALIDATED", "VALIDATED"],
+            validation_rc=1,
+            validation_stdout=validation_event(),
+            validation_stderr="unexpected wrapper failure\n",
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            rc = self.main(self.args("--execute"), run=run)
+        self.assertEqual(4, rc)
+        self.assertIn(
+            "only exit 75 with a typed scorecard write-back failure",
+            stdout.getvalue(),
+        )
+        self.assertIn("unexpected wrapper failure", stderr.getvalue())
 
     def test_could_not_run_cannot_inherit_a_canonical_receipt(self):
         run = FakeRun(

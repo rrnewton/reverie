@@ -345,6 +345,7 @@ def manual_validate(
         "profile": framework.profile,
         "selection_mode": framework.selection_mode,
         "final_validate_status": framework.final_validate_status,
+        "detail": list(framework.detail) if framework.detail is not None else None,
         "exit_code": framework.inner_exit,
         "pipeline_exit": pipeline_exit,
         "executed_nodes": framework.executed_nodes,
@@ -372,7 +373,12 @@ def manual_validate(
         )
     final_status = framework.final_validate_status
     if final_status == "COULD_NOT_RUN":
-        return "NO_RESULT", "validate reported COULD_NOT_RUN", observed
+        detail = (
+            "\n".join(framework.detail)
+            if framework.detail is not None
+            else "validation reported COULD_NOT_RUN without detail"
+        )
+        return "NO_RESULT", detail, observed
     if final_status == "FAILED":
         return "FAIL", "validate reported FAILED", observed
     if framework.scorecard_writeback is None:

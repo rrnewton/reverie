@@ -370,20 +370,24 @@ class RunRegistryContractTests(unittest.TestCase):
         selection = run_registry.parse_current_record(
             validation_handle(service_result_schema=3)
         )
-        current = run_registry.parse_current_record(
+        counts = run_registry.parse_current_record(
             validation_handle(service_result_schema=4)
+        )
+        current = run_registry.parse_current_record(
+            validation_handle(service_result_schema=5)
         )
         self.assertEqual(1, historical.raw["service_result_schema"])
         self.assertEqual(2, writeback.raw["service_result_schema"])
         self.assertEqual(3, selection.raw["service_result_schema"])
-        self.assertEqual(4, current.raw["service_result_schema"])
+        self.assertEqual(4, counts.raw["service_result_schema"])
+        self.assertEqual(5, current.raw["service_result_schema"])
 
         with self.assertRaisesRegex(
             RuntimeError,
-            "validation-run-handle-service_result_schema: expected 1, 2, 3, or 4, got 5",
+            "validation-run-handle-service_result_schema: expected 1, 2, 3, 4, or 5, got 6",
         ):
             run_registry.parse_current_record(
-                validation_handle(service_result_schema=5)
+                validation_handle(service_result_schema=6)
             )
 
     def test_bench_failed_state_is_distinct_and_complete(self) -> None:
@@ -438,13 +442,14 @@ class RunRegistryContractTests(unittest.TestCase):
             )
 
     def test_passed_validation_with_failed_writeback_keeps_both_facts(self) -> None:
-        handle = run_registry.parse_current_record(
+        current = run_registry.parse_current_record(
             validation_handle(
                 state="completed",
                 result="success",
                 exit_code=75,
                 finished_at="2026-08-28T07:01:00Z",
                 final_validate_status="PASSED",
+                detail=None,
                 service_result_schema=run_registry.service_result.SCHEMA_VERSION,
                 selection_mode="full",
                 executed_tests=2,
@@ -455,9 +460,67 @@ class RunRegistryContractTests(unittest.TestCase):
                 },
             )
         )
-        self.assertEqual("PASSED", handle.raw["final_validate_status"])
-        self.assertEqual(75, handle.raw["exit_code"])
-        self.assertEqual("failed", handle.raw["scorecard_writeback"]["status"])
+        counts = run_registry.parse_current_record(
+            validation_handle(
+                state="completed",
+                result="success",
+                exit_code=75,
+                finished_at="2026-08-28T07:01:00Z",
+                final_validate_status="PASSED",
+                service_result_schema=(
+                    run_registry.service_result.TEST_COUNTS_SCHEMA_VERSION
+                ),
+                selection_mode="full",
+                executed_tests=2,
+                passed_tests=2,
+                scorecard_writeback={
+                    "status": "failed",
+                    "error": "fixture refusal",
+                },
+            )
+        )
+        for handle in (counts, current):
+            self.assertEqual("PASSED", handle.raw["final_validate_status"])
+            self.assertEqual(75, handle.raw["exit_code"])
+            self.assertEqual(
+                "failed", handle.raw["scorecard_writeback"]["status"]
+            )
+
+    def test_current_could_not_run_requires_explicit_detail(self) -> None:
+        base = dict(
+            state="completed",
+            result="no-result",
+            detail="launcher refused: missing KVM device",
+            exit_code=75,
+            finished_at="2026-08-28T07:01:00Z",
+            final_validate_status="COULD_NOT_RUN",
+            service_result_schema=run_registry.service_result.SCHEMA_VERSION,
+            selection_mode=None,
+            executed_nodes=0,
+            executed_tests=None,
+            passed_tests=None,
+            scorecard_writeback=None,
+        )
+        handle = run_registry.parse_current_record(validation_handle(**base))
+        self.assertEqual(
+            "launcher refused: missing KVM device", handle.raw["detail"]
+        )
+
+        missing = validation_handle(**base)
+        del missing["detail"]
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "detail: is required for a completed current validation result",
+        ):
+            run_registry.parse_current_record(missing)
+
+        null = validation_handle(**base)
+        null["detail"] = None
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "detail: must be a nonempty string",
+        ):
+            run_registry.parse_current_record(null)
 
     def test_current_completed_result_requires_a_named_writeback_value(self) -> None:
         base = dict(
@@ -466,6 +529,7 @@ class RunRegistryContractTests(unittest.TestCase):
             exit_code=0,
             finished_at="2026-08-28T07:01:00Z",
             final_validate_status="PASSED",
+            detail=None,
             service_result_schema=run_registry.service_result.SCHEMA_VERSION,
             selection_mode="full",
             executed_tests=2,
@@ -494,6 +558,7 @@ class RunRegistryContractTests(unittest.TestCase):
             exit_code=1,
             finished_at="2026-08-28T07:01:00Z",
             final_validate_status="FAILED",
+            detail=None,
             service_result_schema=run_registry.service_result.SCHEMA_VERSION,
             selection_mode="full",
             executed_tests=3,

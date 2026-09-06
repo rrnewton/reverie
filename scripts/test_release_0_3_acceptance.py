@@ -167,6 +167,7 @@ class ReleaseAcceptanceTests(unittest.TestCase):
                         "profile": "full",
                         "selection_mode": "full",
                         "final_validate_status": "PASSED",
+                        "detail": None,
                         "exit_code": 0,
                         "executed_nodes": 76,
                         "executed_tests": 2129,
@@ -254,7 +255,7 @@ class ReleaseAcceptanceTests(unittest.TestCase):
             (
                 "missing",
                 lambda result: result.pop("passed_tests"),
-                "schema 4 expected",
+                "schema 5 expected",
             ),
             (
                 "mismatch",
@@ -276,13 +277,15 @@ class ReleaseAcceptanceTests(unittest.TestCase):
     def test_historical_manual_results_remain_readable_but_not_authoritative(self) -> None:
         reference = self.evidence["criteria"]["AC-STRICT-03"]["result_artifact"]
         original = json.loads((self.artifacts / reference["path"]).read_text())
-        for version in (1, 2, 3):
+        for version in (1, 2, 3, 4):
             with self.subTest(version=version):
                 def make_historical(result):
                     result.clear()
                     result.update(copy.deepcopy(original))
                     result["schema_version"] = version
-                    result.pop("passed_tests")
+                    result.pop("detail")
+                    if version < 4:
+                        result.pop("passed_tests")
                     if version < 3:
                         result.pop("selection_mode")
                     if version < 2:
@@ -292,7 +295,46 @@ class ReleaseAcceptanceTests(unittest.TestCase):
                 row = self.row(self.evaluate(), "AC-STRICT-03")
                 self.assertEqual("NO_RESULT", row.verdict)
                 self.assertIn("historical validation service result", row.reason)
-                self.assertIsNone(row.observed["passed_tests"])
+                if version < 4:
+                    self.assertIsNone(row.observed["passed_tests"])
+                else:
+                    self.assertEqual(2129, row.observed["passed_tests"])
+
+    def test_could_not_run_reports_exact_detail(self) -> None:
+        self.mutate_manual_result(
+            lambda result: result.update(
+                final_validate_status="COULD_NOT_RUN",
+                detail=["launcher refused: missing KVM device"],
+                exit_code=75,
+                executed_nodes=0,
+                executed_tests=None,
+                passed_tests=None,
+                scorecard_writeback=None,
+            )
+        )
+        self.mutate_exit(b"75\n")
+        row = self.row(self.evaluate(), "AC-STRICT-03")
+        self.assertEqual("NO_RESULT", row.verdict)
+        self.assertEqual("launcher refused: missing KVM device", row.reason)
+
+    def test_could_not_run_without_detail_is_explicit(self) -> None:
+        self.mutate_manual_result(
+            lambda result: result.update(
+                final_validate_status="COULD_NOT_RUN",
+                detail=None,
+                exit_code=75,
+                executed_nodes=0,
+                executed_tests=None,
+                passed_tests=None,
+                scorecard_writeback=None,
+            )
+        )
+        self.mutate_exit(b"75\n")
+        row = self.row(self.evaluate(), "AC-STRICT-03")
+        self.assertEqual("NO_RESULT", row.verdict)
+        self.assertEqual(
+            "validation reported COULD_NOT_RUN without detail", row.reason
+        )
 
     def test_partial_three_of_four_is_no_result(self) -> None:
         def mutation(raw):

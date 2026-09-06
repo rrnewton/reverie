@@ -799,37 +799,21 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
                     "service_result_schema",
                     "is valid only for Hermit validation handles",
                 )
-            if marker not in {
-                service_result.HISTORICAL_SCHEMA_VERSION,
-                service_result.WRITEBACK_SCHEMA_VERSION,
-                service_result.SELECTION_SCHEMA_VERSION,
-                service_result.SCHEMA_VERSION,
-            }:
+            if marker not in service_result.SUPPORTED_SCHEMA_VERSIONS:
                 raise _error(
                     "service_result_schema",
                     "expected "
-                    f"{service_result.HISTORICAL_SCHEMA_VERSION}, "
-                    f"{service_result.WRITEBACK_SCHEMA_VERSION}, "
-                    f"{service_result.SELECTION_SCHEMA_VERSION}, or "
-                    f"{service_result.SCHEMA_VERSION}, got {marker!r}",
+                    f"{service_result.supported_schema_versions_text()}, got {marker!r}",
                 )
         if "scorecard_writeback" in value:
-            if marker not in {
-                service_result.WRITEBACK_SCHEMA_VERSION,
-                service_result.SELECTION_SCHEMA_VERSION,
-                service_result.SCHEMA_VERSION,
-            }:
+            if marker not in service_result.WRITEBACK_SCHEMA_VERSIONS:
                 raise _error(
                     "scorecard_writeback",
                     "is valid only with the current validation service result schema",
                 )
             _scorecard_writeback(value.get("scorecard_writeback"))
         if (
-            marker in {
-                service_result.HISTORICAL_SCHEMA_VERSION,
-                service_result.WRITEBACK_SCHEMA_VERSION,
-                service_result.SELECTION_SCHEMA_VERSION,
-            }
+            marker not in service_result.TEST_COUNTS_SCHEMA_VERSIONS
             and value.get("passed_tests") is not None
         ):
             raise _error(
@@ -907,7 +891,7 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
                     f"final_validate_status {status} requires {expected_result!r}",
                 )
             marker = value.get("service_result_schema")
-            if marker == service_result.SCHEMA_VERSION:
+            if marker in service_result.AUTHORITATIVE_SCHEMA_VERSIONS:
                 if "selection_mode" not in value:
                     raise _error(
                         "selection_mode",
@@ -923,6 +907,19 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
                         "passed_tests",
                         "is required for a completed current validation result",
                     )
+                if marker == service_result.SCHEMA_VERSION:
+                    if "detail" not in value:
+                        raise _error(
+                            "detail",
+                            "is required for a completed current validation result",
+                        )
+                    if status == "COULD_NOT_RUN":
+                        _required_text(value, "detail")
+                    elif value.get("detail") is not None:
+                        raise _error(
+                            "detail",
+                            f"final_validate_status {status} requires null",
+                        )
                 writeback = _scorecard_writeback(value.get("scorecard_writeback"))
                 service_result.read_test_counts(
                     value,

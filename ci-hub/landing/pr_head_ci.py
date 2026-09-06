@@ -232,6 +232,7 @@ def validate_command(
         "ci-hub/ci-hub",
         "--",
         "validate-run",
+        "--json",
         "--checkout",
         str(checkout),
         "--materialize-target",
@@ -242,6 +243,61 @@ def validate_command(
     if repo == "rrnewton/hermit":
         command += ["--", "full"]
     return command
+
+
+def finished_validation_event(
+    output: str, *, repo: str, head: str
+) -> tuple[dict[str, object] | None, str | None]:
+    """Read this invocation's one terminal event, never a concurrent receipt."""
+    rows: list[dict[str, object]] = []
+    for line_number, line in enumerate(output.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError as error:
+            return None, f"validate-run JSON line {line_number} is malformed: {error}"
+        if not isinstance(row, dict):
+            return None, f"validate-run JSON line {line_number} is not an object"
+        if row.get("event") == "finished":
+            rows.append(row)
+    if len(rows) != 1:
+        return None, f"validate-run emitted {len(rows)} terminal events; expected exactly one"
+    event = rows[0]
+    if event.get("repo") != repo or event.get("target") != head:
+        return (
+            None,
+            "validate-run terminal event names "
+            f"repo={event.get('repo')!r} target={event.get('target')!r}; "
+            f"expected repo={repo!r} target={head!r}",
+        )
+    return event, None
+
+
+def is_passed_validation_event(
+    event: Mapping[str, object], *, canonical_verdict: str
+) -> bool:
+    return (
+        event.get("state") == "completed"
+        and event.get("result") == "success"
+        and event.get("final_validate_status") == "PASSED"
+        and event.get("canonical_verdict") == "VALIDATED"
+        and event.get("wrapper_exit_code") == 0
+        and canonical_verdict == "VALIDATED"
+    )
+
+
+def is_passed_validation_with_failed_scorecard_writeback(
+    event: Mapping[str, object], *, canonical_verdict: str
+) -> bool:
+    """Recognize exit 75 as bookkeeping only from this invocation's final row."""
+    publication = event.get("commit_status_publication")
+    return (
+        is_passed_validation_event(event, canonical_verdict=canonical_verdict)
+        and isinstance(publication, Mapping)
+        and publication.get("state") == "not-attempted"
+        and publication.get("reason") == "scorecard write-back did not complete"
+    )
 
 
 def emit(state: str, *, repo: str, pr: int, head: str, detail: str, as_json: bool) -> None:
@@ -351,8 +407,37 @@ def main(
             emit("SUPERSEDED", repo=args.repo, pr=args.pr, head=after.head,
                  detail=f"validation was bound to {expected}; live head moved and has no inherited verdict", as_json=args.json)
             return 4
+        terminal, terminal_error = finished_validation_event(
+            validation.stdout, repo=args.repo, head=expected
+        )
         verdict, _ = canonical_status(args.repo, expected, run=child_run)
+        if terminal_error is not None:
+            emit(
+                "NO_RESULT",
+                repo=args.repo,
+                pr=args.pr,
+                head=expected,
+                detail=terminal_error,
+                as_json=args.json,
+            )
+            return 4
         if validation.returncode == 75:
+            assert terminal is not None
+            if is_passed_validation_with_failed_scorecard_writeback(
+                terminal, canonical_verdict=verdict
+            ):
+                emit(
+                    "VALIDATED",
+                    repo=args.repo,
+                    pr=args.pr,
+                    head=expected,
+                    detail=(
+                        "this validation completed PASSED with canonical VALIDATED; "
+                        "scorecard write-back did not complete"
+                    ),
+                    as_json=args.json,
+                )
+                return 0
             emit(
                 "NO_RESULT",
                 repo=args.repo,
@@ -366,6 +451,35 @@ def main(
             )
             return 4
         if verdict == "VALIDATED":
+            if validation.returncode != 0:
+                emit(
+                    "NO_RESULT",
+                    repo=args.repo,
+                    pr=args.pr,
+                    head=expected,
+                    detail=(
+                        f"validate-run exited {validation.returncode}; only exit 75 "
+                        "with a typed scorecard write-back failure can preserve PASSED"
+                    ),
+                    as_json=args.json,
+                )
+                return 4
+            assert terminal is not None
+            if not is_passed_validation_event(
+                terminal, canonical_verdict=verdict
+            ):
+                emit(
+                    "NO_RESULT",
+                    repo=args.repo,
+                    pr=args.pr,
+                    head=expected,
+                    detail=(
+                        "validate-run terminal event does not report this invocation "
+                        "as completed PASSED with canonical VALIDATED"
+                    ),
+                    as_json=args.json,
+                )
+                return 4
             emit("VALIDATED", repo=args.repo, pr=args.pr, head=expected,
                  detail="centralized local runner produced a qualifying exact-head receipt", as_json=args.json)
             return 0

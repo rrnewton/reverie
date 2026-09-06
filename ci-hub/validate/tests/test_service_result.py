@@ -18,6 +18,7 @@ class ServiceResultTest(unittest.TestCase):
             service_result.HISTORICAL_SCHEMA_VERSION: service_result.HISTORICAL_FIELD_NAMES,
             service_result.WRITEBACK_SCHEMA_VERSION: service_result.WRITEBACK_FIELD_NAMES,
             service_result.SELECTION_SCHEMA_VERSION: service_result.SELECTION_FIELD_NAMES,
+            service_result.TEST_COUNTS_SCHEMA_VERSION: service_result.TEST_COUNTS_FIELD_NAMES,
             service_result.SCHEMA_VERSION: service_result.FIELD_NAMES,
         }[version]
         value: dict[str, object] = {
@@ -69,6 +70,7 @@ class ServiceResultTest(unittest.TestCase):
                 service_result.HISTORICAL_SCHEMA_VERSION,
                 service_result.WRITEBACK_SCHEMA_VERSION,
                 service_result.SELECTION_SCHEMA_VERSION,
+                service_result.TEST_COUNTS_SCHEMA_VERSION,
             ):
                 with self.subTest(version=version):
                     target = root / f"target-{version}"
@@ -102,7 +104,7 @@ class ServiceResultTest(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                r"validation-service-result-schema_version: expected 1, 2, 3, or 4, got 5",
+                r"validation-service-result-schema_version: expected 1, 2, 3, 4, or 5, got 6",
             ):
                 service_result.read_schema(path)
 
@@ -285,6 +287,7 @@ class ServiceResultTest(unittest.TestCase):
                         "profile": "full",
                         "selection_mode": "full",
                         "final_validate_status": "PASSED",
+                        "detail": None,
                         "exit_code": 0,
                         "executed_nodes": 76,
                         "executed_tests": 2129,
@@ -347,6 +350,7 @@ class ServiceResultTest(unittest.TestCase):
                         "profile": "full",
                         "selection_mode": "full",
                         "final_validate_status": "PASSED",
+                        "detail": None,
                         "exit_code": 75,
                         "executed_nodes": 76,
                         "executed_tests": 2129,
@@ -400,6 +404,10 @@ class ServiceResultTest(unittest.TestCase):
                         "profile": "full",
                         "selection_mode": "full",
                         "final_validate_status": "COULD_NOT_RUN",
+                        "detail": [
+                            "refused by: pre.reverie_pin",
+                            "recorded pin is not an ancestor",
+                        ],
                         "exit_code": 75,
                         "executed_nodes": 0,
                         "executed_tests": None,
@@ -420,6 +428,10 @@ class ServiceResultTest(unittest.TestCase):
             self.assertEqual("completed", result["state"])
             self.assertEqual("no-result", result["result"])
             self.assertEqual("COULD_NOT_RUN", result["final_validate_status"])
+            self.assertEqual(
+                "refused by: pre.reverie_pin\nrecorded pin is not an ancestor",
+                result["detail"],
+            )
             self.assertIsNone(result["passed_tests"])
             self.assertIsNone(result["scorecard_writeback"])
 
@@ -462,6 +474,7 @@ class ServiceResultTest(unittest.TestCase):
                         "profile": "full",
                         "selection_mode": "full",
                         "final_validate_status": "PASSED",
+                        "detail": None,
                         "exit_code": 0,
                         "executed_nodes": 76,
                         "executed_tests": 2129,
@@ -493,6 +506,7 @@ class ServiceResultTest(unittest.TestCase):
                 "profile": "full",
                 "selection_mode": "full",
                 "final_validate_status": "PASSED",
+                "detail": None,
                 "exit_code": 0,
                 "executed_nodes": 76,
                 "executed_tests": 2129,
@@ -645,6 +659,7 @@ class ServiceResultTest(unittest.TestCase):
                         "profile": "full",
                         "selection_mode": "full",
                         "final_validate_status": "PASSED",
+                        "detail": None,
                         "exit_code": 0,
                         "executed_nodes": 76,
                         "executed_tests": 2129,
@@ -654,7 +669,7 @@ class ServiceResultTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 RuntimeError,
-                "validation-service-result-fields: schema 4 expected",
+                "validation-service-result-fields: schema 5 expected",
             ):
                 service_result.read_framework_result(path, expected_commit="a" * 40)
 
@@ -668,6 +683,7 @@ class ServiceResultTest(unittest.TestCase):
                         "commit": "a" * 40,
                         "profile": "full",
                         "final_validate_status": "PASSED",
+                        "detail": None,
                         "exit_code": 0,
                         "executed_nodes": 76,
                         "executed_tests": 2129,
@@ -678,7 +694,7 @@ class ServiceResultTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 RuntimeError,
-                "validation-service-result-fields: schema 4 expected",
+                "validation-service-result-fields: schema 5 expected",
             ):
                 service_result.read_framework_result(path, expected_commit="a" * 40)
 
@@ -693,6 +709,7 @@ class ServiceResultTest(unittest.TestCase):
                         "profile": "full",
                         "selection_mode": "full",
                         "final_validate_status": "PASSED",
+                        "detail": None,
                         "exit_code": 0,
                         "executed_nodes": 76,
                         "executed_tests": 2129,
@@ -702,7 +719,7 @@ class ServiceResultTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 RuntimeError,
-                "validation-service-result-fields: schema 4 expected",
+                "validation-service-result-fields: schema 5 expected",
             ):
                 service_result.read_framework_result(path, expected_commit="a" * 40)
 
@@ -713,6 +730,7 @@ class ServiceResultTest(unittest.TestCase):
             "profile": "full",
             "selection_mode": "full",
             "final_validate_status": "FAILED",
+            "detail": None,
             "exit_code": 1,
             "executed_nodes": 2,
             "executed_tests": 3,
@@ -749,6 +767,68 @@ class ServiceResultTest(unittest.TestCase):
                         json.dumps(value).encode(), expected_commit="a" * 40
                     )
 
+
+    def test_current_result_requires_explicit_nullable_detail(self) -> None:
+        value = {
+            "schema_version": service_result.SCHEMA_VERSION,
+            "commit": "a" * 40,
+            "profile": "full",
+            "selection_mode": "full",
+            "final_validate_status": "COULD_NOT_RUN",
+            "detail": None,
+            "exit_code": 75,
+            "executed_nodes": 0,
+            "executed_tests": None,
+            "passed_tests": None,
+            "scorecard_writeback": None,
+        }
+        evidence = service_result.read_framework_result_bytes(
+            json.dumps(value).encode(), expected_commit="a" * 40
+        )
+        self.assertIsNone(evidence.detail)
+        result = service_result.classify(evidence)
+        self.assertEqual(
+            "validation reported COULD_NOT_RUN without detail", result["detail"]
+        )
+        self.assertTrue(service_result.is_evidenced_terminal(result))
+        missing_terminal_detail = dict(result)
+        del missing_terminal_detail["detail"]
+        self.assertFalse(
+            service_result.is_evidenced_terminal(missing_terminal_detail)
+        )
+        result["detail"] = None
+        self.assertFalse(service_result.is_evidenced_terminal(result))
+        del value["detail"]
+        with self.assertRaisesRegex(RuntimeError, "schema 5 expected"):
+            service_result.read_framework_result_bytes(
+                json.dumps(value).encode(), expected_commit="a" * 40
+            )
+
+    def test_schema_four_pass_with_failed_writeback_retains_authority(self) -> None:
+        value = {
+            "schema_version": service_result.TEST_COUNTS_SCHEMA_VERSION,
+            "commit": "a" * 40,
+            "profile": "full",
+            "selection_mode": "full",
+            "final_validate_status": "PASSED",
+            "exit_code": 75,
+            "executed_nodes": 76,
+            "executed_tests": 2129,
+            "passed_tests": 2129,
+            "scorecard_writeback": {
+                "status": "failed",
+                "error": "fixture writeback refusal",
+            },
+        }
+        evidence = service_result.read_framework_result_bytes(
+            json.dumps(value).encode(), expected_commit="a" * 40
+        )
+        result = service_result.classify(evidence)
+        self.assertEqual("validation-service-result", result["result_source"])
+        self.assertEqual("completed", result["state"])
+        self.assertEqual("success", result["result"])
+        self.assertEqual(75, result["exit_code"])
+        self.assertTrue(service_result.is_evidenced_terminal(result))
 
 if __name__ == "__main__":
     unittest.main()

@@ -102,6 +102,7 @@ def current_service_result(**updates: object) -> dict[str, object]:
         "profile": "full",
         "selection_mode": None,
         "final_validate_status": "COULD_NOT_RUN",
+        "detail": ["refused by: fixture"],
         "exit_code": 75,
         "executed_nodes": 0,
         "executed_tests": None,
@@ -109,6 +110,8 @@ def current_service_result(**updates: object) -> dict[str, object]:
         "scorecard_writeback": None,
     }
     value.update(updates)
+    if "detail" not in updates and value["final_validate_status"] != "COULD_NOT_RUN":
+        value["detail"] = None
     return value
 
 
@@ -1819,6 +1822,7 @@ class SignalCrosscheckTests(unittest.TestCase):
                 "profile": "full",
                 "selection_mode": None,
                 "final_validate_status": "FAILED",
+                "detail": None,
                 "exit_code": 1,
                 "executed_nodes": 1,
                 "executed_tests": 1,
@@ -1832,6 +1836,7 @@ class SignalCrosscheckTests(unittest.TestCase):
                     "profile": "full",
                     "selection_mode": None,
                     "final_validate_status": "FAILED",
+                    "detail": None,
                     "exit_code": 1,
                     "executed_nodes": 1,
                     "executed_tests": 1,
@@ -1845,6 +1850,7 @@ class SignalCrosscheckTests(unittest.TestCase):
                     "profile": "full",
                     "selection_mode": None,
                     "final_validate_status": "FAILED",
+                    "detail": None,
                     "exit_code": 1,
                     "executed_nodes": 1,
                     "executed_tests": 1,
@@ -1958,7 +1964,7 @@ class SignalCrosscheckTests(unittest.TestCase):
             "validation-service-result",
         )
         self.assertIn(
-            "schema 4 expected",
+            "schema 5 expected",
             unreadable["validate-broken-result.service-result.json"]["error"],
         )
         self.assertEqual(
@@ -2000,6 +2006,7 @@ class SignalCrosscheckTests(unittest.TestCase):
                     "run_number": 1,
                 },
                 "result": "no-result",
+                "detail": "refused by: fixture",
                 "exit_code": 75,
                 "finished_at": "2026-08-30T07:00:02+00:00",
                 "service_result_schema": signal_crosscheck.service_result.SCHEMA_VERSION,
@@ -2013,9 +2020,15 @@ class SignalCrosscheckTests(unittest.TestCase):
             }
             cases = {
                 "validate-pre-plan": ({}, {}, True),
+                "validate-pre-plan-absent-detail": (
+                    {"detail": "validation reported COULD_NOT_RUN without detail"},
+                    {"detail": None},
+                    True,
+                ),
                 "validate-passed": (
                     {
                         "result": "success",
+                        "detail": None,
                         "exit_code": 0,
                         "executed_nodes": 1,
                         "executed_tests": 1,
@@ -2034,6 +2047,7 @@ class SignalCrosscheckTests(unittest.TestCase):
                 "validate-failed": (
                     {
                         "result": "failure",
+                        "detail": None,
                         "exit_code": 1,
                         "executed_nodes": 1,
                         "executed_tests": 1,
@@ -2083,6 +2097,11 @@ class SignalCrosscheckTests(unittest.TestCase):
                     {"commit": "b" * 40},
                     True,
                 ),
+                "validate-mismatched-detail": (
+                    {"detail": "different refusal"},
+                    {},
+                    True,
+                ),
             }
             for run_number, (name, (handle_updates, result_updates, write_result)) in enumerate(
                 cases.items(), start=1
@@ -2118,6 +2137,7 @@ class SignalCrosscheckTests(unittest.TestCase):
             {
                 "validate-executed.service",
                 "validate-failed.service",
+                "validate-mismatched-detail.service",
                 "validate-mismatched-result.service",
                 "validate-missing-result.service",
                 "validate-non-full.service",
@@ -2132,12 +2152,16 @@ class SignalCrosscheckTests(unittest.TestCase):
         complete["run_handles"] = report
         issues = signal_crosscheck.reconcile(complete)
         self.assertFalse(any("validate-pre-plan.service" in issue for issue in issues))
+        self.assertFalse(
+            any("validate-pre-plan-absent-detail.service" in issue for issue in issues)
+        )
         self.assertTrue(
             all(
                 any(unit in issue for issue in issues)
                 for unit in {
                     "validate-executed.service",
                     "validate-failed.service",
+                    "validate-mismatched-detail.service",
                     "validate-mismatched-result.service",
                     "validate-missing-result.service",
                     "validate-non-full.service",
@@ -2151,7 +2175,7 @@ class SignalCrosscheckTests(unittest.TestCase):
         output = io.StringIO()
         with redirect_stdout(output):
             signal_crosscheck.print_text(complete)
-        self.assertIn("no-receipt-attempts=1", output.getvalue())
+        self.assertIn("no-receipt-attempts=2", output.getvalue())
 
     def test_missing_or_invalid_raw_handle_attribution_is_loud(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
