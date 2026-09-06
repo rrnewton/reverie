@@ -17,15 +17,30 @@ NAMED outcome, and the negative cases are the point:
 from __future__ import annotations
 
 import json
+import importlib.util
+import os
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 GATE = ROOT / "ci-hub" / "health" / "slot_agent_parity.py"
+
+
+def _load_gate_module():
+    spec = importlib.util.spec_from_file_location("slot_agent_parity", GATE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["slot_agent_parity"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+parity = _load_gate_module()
 
 
 def run(root: Path, *args: str) -> tuple[int, dict[str, str]]:
@@ -330,6 +345,13 @@ class SlotAgentParityTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(fields["state"], "unknown")
 
+    def test_unknown_live_verdict_still_names_the_bound_database(self) -> None:
+        missing = self.root / "current-session.db"
+        code, fields = run(self.root, "--db", str(missing))
+        self.assertEqual(code, 2)
+        self.assertEqual(fields["state"], "unknown")
+        self.assertEqual(fields["taskgraph_db"], str(missing))
+
     # --- item 4: the counts nothing else was counting -------------------------
 
     def test_git_worktree_counts_are_always_reported(self) -> None:
@@ -339,6 +361,46 @@ class SlotAgentParityTests(unittest.TestCase):
         self.assertIn("git_worktrees_hermit", fields)
         self.assertIn("git_worktrees_parent", fields)
         self.assertIn("git_worktrees_total", fields)
+
+
+class TaskGraphBindingTests(unittest.TestCase):
+    def test_explicit_database_wins_without_running_discovery(self) -> None:
+        with mock.patch.object(parity.subprocess, "run") as discover:
+            path = parity.live_taskgraph_db(Path("/tmp/explicit.db"))
+        self.assertEqual(path, Path("/tmp/explicit.db"))
+        discover.assert_not_called()
+
+    def test_environment_database_wins_without_running_discovery(self) -> None:
+        with mock.patch.dict(
+            os.environ, {"TG_DB_PATH": "/tmp/current-session.db"}
+        ), mock.patch.object(parity.subprocess, "run") as discover:
+            path = parity.live_taskgraph_db()
+        self.assertEqual(path, Path("/tmp/current-session.db"))
+        discover.assert_not_called()
+
+    def test_unbound_tick_derives_database_from_live_coordinator(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="/home/test/.tg/hermit3.db\n", stderr=""
+        )
+        with mock.patch.dict(os.environ, {}, clear=False), mock.patch.object(
+            parity.subprocess, "run", return_value=completed
+        ) as discover:
+            os.environ.pop("TG_DB_PATH", None)
+            path = parity.live_taskgraph_db()
+        self.assertEqual(path, Path("/home/test/.tg/hermit3.db"))
+        self.assertIn("--print-db-path", discover.call_args.args[0])
+
+    def test_failed_live_discovery_refuses_instead_of_guessing(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="two Hermit coordinators"
+        )
+        with mock.patch.dict(os.environ, {}, clear=False), mock.patch.object(
+            parity.subprocess, "run", return_value=completed
+        ):
+            os.environ.pop("TG_DB_PATH", None)
+            with self.assertRaises(parity.ParityUnavailable) as caught:
+                parity.live_taskgraph_db()
+        self.assertIn("two Hermit coordinators", str(caught.exception))
 
 
 if __name__ == "__main__":

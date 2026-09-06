@@ -255,6 +255,32 @@ class TestDatabaseIdentityDerivation(unittest.TestCase):
             ("chosen", "explicit --orc-db"),
         )
 
+    def test_print_db_path_uses_the_live_coordinator_without_a_composer(self):
+        argv = ["orc-hermit-msg", "--print-db-path"]
+        pane = ohm.LivePane(
+            session="orc-hermit",
+            window="orc",
+            pane_id="%0",
+            command="orc",
+            orc_db="hermit3",
+            orc_session_id="session-id",
+        )
+        with tempfile.TemporaryDirectory() as raw, mock.patch.object(
+            sys, "argv", argv
+        ), mock.patch.dict(os.environ, {"HOME": raw}, clear=False), mock.patch.object(
+            ohm, "resolve_socket", return_value=Path("/fake.sock")
+        ), mock.patch.object(
+            ohm, "scan_orc_sessions_via_tmux", return_value=["orc-hermit"]
+        ), mock.patch.object(
+            ohm, "list_live_panes", return_value=[pane]
+        ), mock.patch.object(
+            ohm, "locked", side_effect=AssertionError("composer path reached")
+        ), contextlib.redirect_stdout(io.StringIO()) as stdout:
+            os.environ.pop("TG_DB_PATH", None)
+            code = ohm.main()
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue().strip(), f"{raw}/.tg/hermit3.db")
+
     def test_session_hint_is_a_fallback_when_tg_path_is_absent(self):
         self.assertEqual(
             ohm.configured_orc_db(None, None, "orc-hermit2"),
@@ -271,6 +297,43 @@ class TestDatabaseIdentityDerivation(unittest.TestCase):
         with self.assertRaises(ohm.OrcMessageError) as caught:
             ohm.orc_db_from_active_sessions(["orc-hermit", "orc-hermit2"])
         self.assertIn("cannot derive one Hermit database", str(caught.exception))
+
+    def test_db_path_mode_refuses_the_legacy_default(self):
+        with self.assertRaises(ohm.OrcMessageError) as caught:
+            ohm.orc_db_from_active_sessions(
+                ["orc-d0f81544"], allow_legacy_fallback=False
+            )
+        self.assertIn("cannot derive a Hermit database", str(caught.exception))
+
+    def test_print_db_path_refuses_when_live_session_has_no_database_identity(self):
+        argv = ["orc-hermit-msg", "--print-db-path"]
+        pane = ohm.LivePane(
+            session="orc-d0f81544",
+            window="orc",
+            pane_id="%0",
+            command="orc",
+            orc_db=None,
+            orc_session_id="session-id",
+        )
+        with mock.patch.object(sys, "argv", argv), mock.patch.dict(
+            os.environ, {}, clear=False
+        ), mock.patch.object(
+            ohm, "resolve_socket", return_value=Path("/fake.sock")
+        ), mock.patch.object(
+            ohm, "scan_orc_sessions_via_tmux", return_value=["orc-d0f81544"]
+        ), mock.patch.object(
+            ohm, "list_live_panes", return_value=[pane]
+        ), mock.patch.object(
+            ohm, "log_delivery"
+        ), contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(
+            io.StringIO()
+        ) as stderr:
+            os.environ.pop("TG_DB_PATH", None)
+            with self.assertRaises(SystemExit) as caught:
+                ohm.main()
+        self.assertNotEqual(caught.exception.code, 0)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("cannot derive a Hermit database", stderr.getvalue())
 
 
 class TestRecoverableMessagePersistence(unittest.TestCase):

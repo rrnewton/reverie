@@ -616,11 +616,15 @@ class TickHubScopeTest(unittest.TestCase):
         self.assertNotIn("--refresh-hours", command)
         self.assertNotIn("--du-timeout", command)
 
-    def test_tick_binds_current_registry_and_taskgraph(self) -> None:
+    def test_tick_does_not_pin_a_predecessor_taskgraph(self) -> None:
         commands = self._active_gate_cmds()
         parity = next(cmd for cmd in commands if "slot_agent_parity.py" in cmd)
         residue = next(cmd for cmd in commands if "slot_disk_residue.py" in cmd)
-        self.assertIn('--db "$HOME/.tg/hermit2.db"', parity)
+        self.assertEqual(
+            'python3 ci-hub/health/slot_agent_parity.py --gate --root '
+            '"$DEV_HERMIT_PARENT"',
+            parity,
+        )
         self.assertNotIn("worktree-state.json", residue)
 
 

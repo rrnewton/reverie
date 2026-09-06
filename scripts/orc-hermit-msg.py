@@ -355,7 +355,9 @@ def orc_db_from_coordinator_panes(panes: list["LivePane"]) -> tuple[str, str] | 
     return None
 
 
-def orc_db_from_active_sessions(active_sessions: list[str]) -> tuple[str, str]:
+def orc_db_from_active_sessions(
+    active_sessions: list[str], *, allow_legacy_fallback: bool = True
+) -> tuple[str, str]:
     """Derive this Hermit relay's DB from live Orc session metadata.
 
     Other products may have coordinators on the same tmux socket. Selecting
@@ -382,6 +384,11 @@ def orc_db_from_active_sessions(active_sessions: list[str]) -> tuple[str, str]:
             "cannot derive one Hermit database from live Orc sessions: "
             + ", ".join(f"orc-{candidate}" for candidate in candidates)
             + "; pass --orc-db or --session explicitly"
+        )
+    if not allow_legacy_fallback:
+        raise OrcMessageError(
+            "cannot derive a Hermit database from the live coordinator's --db "
+            "argument or Orc session name"
         )
     return DEFAULT_ORC_DB, "legacy fallback"
 
@@ -1584,6 +1591,12 @@ def parse_args() -> argparse.Namespace:
         "validated without delivering anything",
     )
     parser.add_argument(
+        "--print-db-path",
+        action="store_true",
+        help="print the TaskGraph database path selected from TG_DB_PATH or the "
+        "live Hermit coordinator, then exit without contacting its composer",
+    )
+    parser.add_argument(
         "--orc-command",
         type=Path,
         default=DEFAULT_ORC_COMMAND,
@@ -1623,7 +1636,14 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.message_file is not None and args.message is not None:
         parser.error("message and --message-file are mutually exclusive")
-    if args.message_file is None and args.message is None and not args.dry_run:
+    if args.print_db_path and (args.message_file is not None or args.message is not None):
+        parser.error("--print-db-path does not accept a message")
+    if (
+        args.message_file is None
+        and args.message is None
+        and not args.dry_run
+        and not args.print_db_path
+    ):
         parser.error("provide a message or use --message-file")
     if args.self_test:
         refusal = self_test_destination_refusal(args.socket)
@@ -1724,9 +1744,21 @@ def main() -> int:
                 list_live_panes(socket, active_sessions)
             )
             if selection is None:
-                selection = orc_db_from_active_sessions(active_sessions)
+                selection = orc_db_from_active_sessions(
+                    active_sessions,
+                    allow_legacy_fallback=not args.print_db_path,
+                )
         args.orc_db, database_source = selection
         session = args.session or f"db={args.orc_db}"
+
+        if args.print_db_path:
+            inherited = os.environ.get("TG_DB_PATH")
+            if database_source == "TG_DB_PATH" and inherited:
+                path = Path(inherited).expanduser()
+            else:
+                path = Path.home() / ".tg" / f"{args.orc_db}.db"
+            print(path)
+            return 0
 
         # ---- supported API path, chosen before any tmux work ----
         if args.transport in ("api", "auto"):

@@ -72,6 +72,7 @@ DEFAULT_MAX_SOURCE_AGE_SECS = 300
 # hermit 310, reverie 53, liteinst2 19, agent-utils 33.  The 310 in hermit is
 # 1.8x the slot count everyone was discussing and was invisible to every gate.
 COUNTED_REPOS = (".", "hermit", "reverie", "liteinst2", "agent-utils")
+ORC_DB_PATH_HELPER = ROOT / "scripts" / "orc-hermit-msg.py"
 
 
 class ParityUnavailable(Exception):
@@ -143,6 +144,47 @@ def live_agents_from_fleet(db: Path | None = None) -> set[str]:
         # whole point of the file is that an empty denominator never passes.
         raise ParityUnavailable("live agent census is empty")
     return live
+
+
+def live_taskgraph_db(explicit: Path | None = None) -> Path:
+    """Bind the live census to this running Hermit session's TaskGraph.
+
+    Agent-launched ticks carry ``TG_DB_PATH``.  The durable systemd peer does
+    not, so its fallback asks the existing coordinator discovery code which
+    database the live Hermit Orc process was started with.  That discovery
+    rejects zero or multiple Hermit coordinators instead of choosing one.
+    """
+
+    if explicit is not None:
+        return explicit
+    inherited = (os.environ.get("TG_DB_PATH") or "").strip()
+    if inherited:
+        return Path(inherited).expanduser()
+    try:
+        result = subprocess.run(
+            (sys.executable, str(ORC_DB_PATH_HELPER), "--print-db-path"),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ParityUnavailable(
+            f"cannot derive TaskGraph database from the live Hermit coordinator: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        detail = " ".join((result.stderr or result.stdout).split())
+        raise ParityUnavailable(
+            "cannot derive TaskGraph database from the live Hermit coordinator: "
+            f"{detail or f'helper exited {result.returncode}'}"
+        )
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if len(lines) != 1 or not Path(lines[0]).is_absolute():
+        raise ParityUnavailable(
+            "cannot derive TaskGraph database from the live Hermit coordinator: "
+            f"expected one absolute path, got {lines!r}"
+        )
+    return Path(lines[0])
 
 
 def live_agents_from_snapshot(path: Path, max_age_secs: int, now: float) -> set[str]:
@@ -327,6 +369,7 @@ def main(argv: list[str] | None = None) -> int:
 
     root = Path(args.root).resolve() if args.root else STATE_ROOT
     state, summary, fields = UNKNOWN, "", {}
+    database: Path | None = None
     try:
         if args.test_live_agents is not None:
             live = {n for n in args.test_live_agents.split(",") if n}
@@ -340,13 +383,18 @@ def main(argv: list[str] | None = None) -> int:
             )
             live = live_agents_from_snapshot(snapshot, args.max_source_age_secs, time.time())
         else:
-            live = live_agents_from_fleet(args.db)
+            database = live_taskgraph_db(args.db)
+            live = live_agents_from_fleet(database)
 
         state, summary, fields = evaluate(root, live, read_slot_registry(root))
+        if args.test_live_agents is None and args.agent_source == "live":
+            fields["taskgraph_db"] = str(database)
     except ParityUnavailable as exc:
         state = UNKNOWN
         summary = f"parity could not be determined: {' '.join(str(exc).split())}"
         fields = {"live_agents_examined": 0}
+        if database is not None:
+            fields["taskgraph_db"] = str(database)
 
     if args.json:
         print(json.dumps({"state": state, "summary": summary, **fields}, indent=2, sort_keys=True))
