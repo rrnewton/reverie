@@ -39,6 +39,7 @@ use std::io;
 pub use child::Child;
 pub use child::Output;
 pub use container::Container;
+pub use container::DeferredContainerRun;
 pub use container::RunError;
 pub use error::Context;
 pub use error::Error;
