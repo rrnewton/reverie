@@ -201,9 +201,6 @@ pub(crate) enum ProcessAction {
     Fork {
         child_pid: i32,
         child_stack: Option<u64>,
-        /// `vfork(2)` and the equivalent `clone(2)`/`clone3(2)` flag pair share
-        /// the parent's address space until the child execs or exits.
-        shared_address_space: bool,
         // AUTONOMOUS-BOT-IMPLEMENTED: Model legacy process-clone TID bookkeeping.
         // TODO-HUMAN-REVIEW(#89): Review clone TID timing and clear-pointer lifecycle.
         parent_tid: Option<u64>,
@@ -1275,11 +1272,8 @@ impl ElfExecutor {
             self.clear_child_tid = (args[0] != 0).then_some(args[0]);
             return Some(i64::from(self.state.tid));
         }
-        if number == libc::SYS_fork as u64 {
-            return Some(self.prepare_fork(None, None, None, None, false, false));
-        }
-        if number == libc::SYS_vfork as u64 {
-            return Some(self.prepare_fork(None, None, None, None, false, true));
+        if number == libc::SYS_fork as u64 || number == libc::SYS_vfork as u64 {
+            return Some(self.prepare_fork(None, None, None, None, false));
         }
         if number == libc::SYS_clone as u64 {
             return Some(self.prepare_clone(
@@ -1315,7 +1309,6 @@ impl ElfExecutor {
                         None,
                         None,
                         request.flags & CLONE_CLEAR_SIGHAND != 0,
-                        request.flags & libc::CLONE_VFORK as u64 != 0,
                     ),
                 },
                 Err(error) => error,
@@ -1371,7 +1364,6 @@ impl ElfExecutor {
             child_tid,
             clear_child_tid,
             flags & CLONE_CLEAR_SIGHAND != 0,
-            flags & libc::CLONE_VFORK as u64 != 0,
         )
     }
 
@@ -1418,7 +1410,6 @@ impl ElfExecutor {
         child_tid: Option<u64>,
         clear_child_tid: Option<u64>,
         clear_sighand: bool,
-        shared_address_space: bool,
     ) -> i64 {
         if self.process_action.is_some() {
             return negative_errno(libc::EBUSY);
@@ -1430,7 +1421,6 @@ impl ElfExecutor {
         self.process_action = Some(ProcessAction::Fork {
             child_pid,
             child_stack,
-            shared_address_space,
             parent_tid,
             child_tid,
             clear_child_tid,
@@ -20211,7 +20201,6 @@ mod tests {
             Some(ProcessAction::Fork {
                 child_pid,
                 child_stack,
-                shared_address_space,
                 parent_tid,
                 child_tid,
                 clear_child_tid,
@@ -20219,7 +20208,6 @@ mod tests {
             }) => {
                 assert_eq!(child_pid, 2);
                 assert_eq!(child_stack, None);
-                assert!(!shared_address_space);
                 assert!(!clear_sighand);
                 assert_eq!(parent_tid, Some(PARENT_TID));
                 assert_eq!(child_tid, Some(CHILD_TID));
@@ -20265,46 +20253,6 @@ mod tests {
             Some(negative_errno(libc::ENOTSUP))
         );
         assert!(executor.take_process_action().is_none());
-    }
-
-    #[test]
-    fn process_clone_records_whether_the_child_shares_the_address_space() {
-        let root = TestDir::new();
-        let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
-        let cases = [
-            (libc::SYS_fork as u64, [0; 6], false),
-            (libc::SYS_vfork as u64, [0; 6], true),
-            (
-                libc::SYS_clone as u64,
-                [libc::SIGCHLD as u64, 0, 0, 0, 0, 0],
-                false,
-            ),
-            (
-                libc::SYS_clone as u64,
-                [
-                    (libc::CLONE_VM | libc::CLONE_VFORK | libc::SIGCHLD) as u64,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ],
-                true,
-            ),
-        ];
-
-        for (number, args, expected_shared) in cases {
-            let mut executor = ElfExecutor::new(test_state(&root.0), false);
-            let request = SyscallRequest::new(number, args);
-            assert_eq!(executor.execute_process_action(&request, &memory), Some(2));
-            match executor.take_process_action() {
-                Some(ProcessAction::Fork {
-                    shared_address_space,
-                    ..
-                }) => assert_eq!(shared_address_space, expected_shared),
-                _ => panic!("process clone did not produce a fork action"),
-            }
-        }
     }
 
     #[test]
@@ -20491,7 +20439,6 @@ mod tests {
             Some(ProcessAction::Fork {
                 child_pid,
                 child_stack,
-                shared_address_space,
                 parent_tid,
                 child_tid,
                 clear_child_tid,
@@ -20499,7 +20446,6 @@ mod tests {
             }) => {
                 assert_eq!(child_pid, 2);
                 assert_eq!(child_stack, Some(CHILD_STACK + CHILD_STACK_SIZE));
-                assert!(shared_address_space);
                 assert!(clear_sighand);
                 assert_eq!(parent_tid, None);
                 assert_eq!(child_tid, None);
