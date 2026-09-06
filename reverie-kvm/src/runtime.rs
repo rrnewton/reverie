@@ -335,7 +335,15 @@ where
                 }
             }
             .await;
-            let expose_result = expose_tool_scratch(&self.memory);
+            // A successful exec may replace the KVM memory mapping. The
+            // surrounding run loop will expose the Tool scratch area in the
+            // replacement mapping before post-exec delivery; do not re-expose
+            // it in the vfork parent's old shared mapping here.
+            let expose_result = if image_replaced {
+                Ok(())
+            } else {
+                expose_tool_scratch(&self.memory)
+            };
             action_result?;
             expose_result?;
             *self.process_completed = true;
@@ -1616,6 +1624,10 @@ impl KvmBackend {
                 executor.start_pending_child_processes()?;
             }
             if replaced_image {
+                // A vfork child detaches onto a fresh guest-memory mapping at
+                // exec. All later Tool memory access must follow the backend's
+                // replacement mapping instead of the pre-exec shared handle.
+                memory = self.memory.clone();
                 auxv = executor.auxv().to_vec();
                 let post_exec_error = run_post_exec_handler(
                     self,
