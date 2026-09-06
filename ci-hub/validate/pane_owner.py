@@ -217,8 +217,12 @@ def create_pane(
                 "create",
                 "--workspace",
                 workspace,
+                # The observer receives the disposable checkout explicitly
+                # below. Keep the interactive shell rooted in the durable tool
+                # checkout so its normal post-command shell cannot keep a
+                # completed validation checkout live during the linger window.
                 "--cwd",
-                str(checkout),
+                str(root),
                 "--label",
                 title,
                 "--no-focus",

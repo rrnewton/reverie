@@ -5234,6 +5234,73 @@ class StartUnitTest(unittest.TestCase):
         )
         return record, fresh
 
+    def plant_historical_failed_materialized_result(
+        self,
+        record: Path,
+        fresh: Path,
+        *,
+        durable_writeback: bool = True,
+        publish_handoff: bool = True,
+        handoff_writeback_completed: bool = True,
+    ) -> Path | None:
+        """Model a schema-3 failed run without promoting it to current authority."""
+        self.write_validation_service_schema(
+            start_unit.service_result.SELECTION_SCHEMA_VERSION
+        )
+        source_schema = (
+            self.checkout / start_unit.service_result.SCHEMA_RELATIVE_PATH
+        )
+        target_schema = fresh / start_unit.service_result.SCHEMA_RELATIVE_PATH
+        target_schema.parent.mkdir(parents=True, exist_ok=True)
+        target_schema.write_text(source_schema.read_text())
+        start_unit.service_result.result_path(record).write_text(
+            json.dumps(
+                {
+                    "schema_version": start_unit.service_result.SELECTION_SCHEMA_VERSION,
+                    "commit": SHA,
+                    "profile": "full",
+                    "selection_mode": "full",
+                    "final_validate_status": "FAILED",
+                    "exit_code": 1,
+                    "executed_nodes": 267,
+                    "executed_tests": 2816,
+                    "scorecard_writeback": {"status": "completed"},
+                }
+            )
+            + "\n"
+        )
+        handoff = (
+            start_unit.publish_scorecard_handoff(
+                self.root,
+                fresh,
+                SHA,
+                "validate-test",
+                writeback_completed=handoff_writeback_completed,
+            )
+            if publish_handoff
+            else None
+        )
+        durable = start_unit.run_registry.read_record(record)
+        durable.update(
+            state="unknown",
+            result="unknown",
+            exit_code=1,
+            final_validate_status="FAILED",
+            service_result_schema=start_unit.service_result.SELECTION_SCHEMA_VERSION,
+            selection_mode="full",
+            executed_nodes=267,
+            executed_tests=2816,
+            passed_tests=None,
+            result_source="validation-service-result",
+            detail="historical schema 3 is readable but has no current authority",
+        )
+        if durable_writeback:
+            durable["scorecard_writeback"] = {"status": "completed"}
+        if handoff is not None:
+            durable["scorecard_handoff"] = str(handoff)
+        start_unit.run_registry.write_record(record, durable)
+        return handoff
+
     def plant_completed_materialized_service_result(self, record: Path) -> None:
         durable = start_unit.run_registry.read_record(record)
         durable["service_result_schema"] = start_unit.service_result.SCHEMA_VERSION
@@ -5352,6 +5419,185 @@ class StartUnitTest(unittest.TestCase):
             sum(command[0].endswith("scorecard.rs") for command in self.fake.commands),
         )
         self.assertIn("already-published output", second_err.getvalue())
+
+    def test_historical_schema_three_failure_attach_then_sweep_retires_checkout(
+        self,
+    ) -> None:
+        record, fresh = self.materialized_attach_record()
+        handoff = self.plant_historical_failed_materialized_result(record, fresh)
+        self.assertIsNotNone(handoff)
+        self.fake.canonical_verdict = "FAILED"
+        self.fake.canonical_status_rc = start_unit.EXIT_FAILED
+        block_single_remove = True
+
+        def run(command: list[str], **kwargs: object):
+            if block_single_remove and wrkslots_action(command, "remove"):
+                return completed(
+                    command,
+                    rc=2,
+                    stderr="live observer shell still uses validation checkout",
+                )
+            return self.fake(command, **kwargs)
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with (
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+            mock.patch.object(
+                start_unit.service_result,
+                "pinned_schema_path",
+                return_value=fresh / start_unit.service_result.SCHEMA_RELATIVE_PATH,
+            ),
+        ):
+            rc = start_unit.main(
+                ["--attach", "validate-test"],
+                run=run,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_FAILED, rc, err.getvalue())
+        self.assertTrue(fresh.is_dir())
+        self.assertIn("live observer shell", err.getvalue())
+        after_attach = start_unit.run_registry.read_record(record)
+        self.assertEqual("unknown", after_attach["state"])
+        self.assertEqual("unknown", after_attach["result"])
+        self.assertEqual("FAILED", after_attach["final_validate_status"])
+        self.assertIsNone(after_attach["passed_tests"])
+        self.assertNotEqual("VALIDATED", after_attach.get("canonical_verdict"))
+
+        block_single_remove = False
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=run, tool_root=self.root
+        )
+
+        self.assertEqual([str(fresh)], report["removed"])
+        self.assertEqual([str(handoff)], report["scorecard_handoffs"])
+        self.assertFalse(fresh.exists())
+        durable = start_unit.run_registry.read_record(record)
+        self.assertEqual("unknown", durable["state"])
+        self.assertEqual("unknown", durable["result"])
+        self.assertEqual("FAILED", durable["final_validate_status"])
+        self.assertIsNone(durable["passed_tests"])
+        self.assertNotEqual("VALIDATED", durable.get("canonical_verdict"))
+
+    def test_sweep_retains_historical_run_without_recorded_handoff(self) -> None:
+        record, fresh = self.materialized_attach_record()
+        self.plant_historical_failed_materialized_result(
+            record, fresh, publish_handoff=False
+        )
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(
+            any("already-published verified" in row["reason"] for row in report["retained"]),
+            report["retained"],
+        )
+
+    def test_sweep_retains_historical_run_with_unverified_handoff(self) -> None:
+        record, fresh = self.materialized_attach_record()
+        handoff = self.plant_historical_failed_materialized_result(record, fresh)
+        self.assertIsNotNone(handoff)
+        assert handoff is not None
+        (handoff / "SCORECARD.md").write_text("changed after publication\n")
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(
+            any("failed its digest" in row["reason"] for row in report["retained"]),
+            report["retained"],
+        )
+
+    def test_sweep_retains_historical_run_with_unreadable_result_sidecar(self) -> None:
+        record, fresh = self.materialized_attach_record()
+        self.plant_historical_failed_materialized_result(record, fresh)
+        start_unit.service_result.result_path(record).write_text("not json\n")
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(
+            any("malformed JSON" in row["reason"] for row in report["retained"]),
+            report["retained"],
+        )
+
+    def test_sweep_retains_historical_run_with_uncertain_writeback(self) -> None:
+        record, fresh = self.materialized_attach_record()
+        self.plant_historical_failed_materialized_result(
+            record, fresh, durable_writeback=False
+        )
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(
+            any("scorecard_writeback" in row["reason"] for row in report["retained"]),
+            report["retained"],
+        )
+
+    def test_sweep_retains_historical_run_with_incomplete_handoff_writeback(
+        self,
+    ) -> None:
+        record, fresh = self.materialized_attach_record()
+        self.plant_historical_failed_materialized_result(
+            record, fresh, handoff_writeback_completed=False
+        )
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(
+            any("handoff_writeback_completed=False" in row["reason"] for row in report["retained"]),
+            report["retained"],
+        )
+
+    def test_sweep_retains_active_historical_run_with_completed_handoff(self) -> None:
+        record, fresh = self.materialized_attach_record()
+        self.plant_historical_failed_materialized_result(record, fresh)
+
+        def run(command: list[str], **kwargs: object):
+            if (
+                command[:3] == ["systemctl", "--user", "show"]
+                and "validate-test.service" in command
+            ):
+                return completed(
+                    command,
+                    stdout=(
+                        "LoadState=loaded\nActiveState=active\nSubState=running\n"
+                        "InvocationID=historical-active-fixture\n"
+                    ),
+                )
+            return self.fake(command, **kwargs)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=run, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(
+            any(row["reason"] == "unit-running" for row in report["retained"]),
+            report["retained"],
+        )
 
     def test_sweep_retains_inactive_materialized_run_until_writeback_is_recorded(
         self,

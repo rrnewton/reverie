@@ -51,8 +51,10 @@ class FakeHerdr:
         self.close_fails = set(close_fails)
         self.closed: list[str] = []
         self.created = 0
+        self.commands: list[list[str]] = []
 
     def __call__(self, command, **kwargs):
+        self.commands.append(list(command))
         argv = [c for c in command if not c.startswith("--setenv") and "=" not in c]
         try:
             herdr = argv[argv.index("herdr"):]
@@ -234,14 +236,35 @@ with tempfile.TemporaryDirectory() as tmp:
 # POSITIVE control on the same path: under the cap, create_pane still works.
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp)
+    checkout = root / "worktrees" / "validate" / "validate-fresh-observed"
+    checkout.mkdir(parents=True)
     fake = FakeHerdr([tab(1, 5)])
     write_records(root, {"wC:t1": records["wC:t1"]})
     handle = pl.pane_owner.create_pane(
-        root=root, checkout=root, unit="u", target="a" * 40, log=root / "l",
+        root=root, checkout=checkout, unit="u", target="a" * 40, log=root / "l",
         record=root / "r", pr=1, started_at=iso(0), run=fake, environment=ENV,
         sleep=lambda _s: None,
     )
-    check("under the cap, create_pane still creates", fake.created == 1 and handle.tab_id == "wC:tNEW")
+    check(
+        "under the cap, create_pane still creates",
+        fake.created == 1 and handle.tab_id == "wC:tNEW",
+    )
+    tab_create = next(
+        command for command in fake.commands if "tab" in command and "create" in command
+    )
+    tab_argv = tab_create[tab_create.index("herdr"):]
+    check(
+        "observer shell starts in the durable tool root",
+        tab_argv[tab_argv.index("--cwd") + 1] == str(root),
+        tab_argv,
+    )
+    pane_run = next(command for command in fake.commands if "pane" in command and "run" in command)
+    pane_argv = pane_run[pane_run.index("herdr"):]
+    check(
+        "observer still receives the exact disposable checkout",
+        pane_argv[pane_argv.index("--checkout") + 1] == str(checkout),
+        pane_argv,
+    )
 
 # --------------------------------------------------------------------------
 print()

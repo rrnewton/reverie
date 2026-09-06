@@ -2721,6 +2721,7 @@ def sweep_completed_checkouts(
         try:
             handoff = publish_recorded_scorecard_handoff(
                 root,
+                row.path,
                 row.record,
                 Path(str(row.record.get("checkout", ""))),
                 row.unit,
@@ -2792,7 +2793,7 @@ def sweep_completed_checkouts(
         for row in group.rows:
             try:
                 handoff = publish_recorded_scorecard_handoff(
-                    root, row.record, group.checkout, row.unit or row.path.stem
+                    root, row.path, row.record, group.checkout, row.unit or row.path.stem
                 )
                 if handoff is not None:
                     row.scorecard_handoff = str(handoff)
@@ -4329,16 +4330,22 @@ def publish_scorecard_handoff(
 
 def publish_recorded_scorecard_handoff(
     root: Path,
+    record_path: Path,
     record: Mapping[str, Any],
     checkout: Path,
     unit: str,
 ) -> Path | None:
-    """Preserve a completed materialized Hermit scorecard before cleanup.
+    """Preserve or verify a materialized Hermit scorecard before cleanup.
 
     An inactive service is not enough: the waiter may not yet have copied the
     service result into the durable run handle.  Cleanup owns the checkout only
-    after that handle records both a completed run and the writer's typed
-    completion.  In particular, an absent writeback is pending, not ``False``.
+    after that handle records the writer's typed completion. In particular, an
+    absent writeback is pending, not ``False``.
+
+    A historical result deliberately remains ``unknown`` because it lacks
+    current validation authority. That is independent from disposal: an exact,
+    verified handoff whose manifest and durable record both say writeback
+    completed is sufficient to preserve the generated files before cleanup.
     """
     if (
         record.get("materialized_target") is not True
@@ -4357,6 +4364,32 @@ def publish_recorded_scorecard_handoff(
         raise RuntimeError(
             "recorded scorecard handoff does not match the canonical state-root path"
         )
+    state = record.get("state")
+    historical_disposal = state == "unknown" and record.get(
+        "service_result_schema"
+    ) in {
+        service_result.WRITEBACK_SCHEMA_VERSION,
+        service_result.SELECTION_SCHEMA_VERSION,
+    }
+    if historical_disposal:
+        if recorded is None:
+            raise RuntimeError(
+                "historical materialized scorecard cleanup requires an "
+                "already-published verified scorecard handoff"
+            )
+        evidence = service_result.read_framework_result(
+            service_result.result_path(record_path),
+            expected_commit=target,
+            schema_path=checkout / service_result.SCHEMA_RELATIVE_PATH,
+        )
+        if (
+            evidence.service_result_schema != record.get("service_result_schema")
+            or evidence.scorecard_writeback != {"status": "completed"}
+        ):
+            raise RuntimeError(
+                "historical materialized scorecard cleanup requires the readable "
+                "service result and durable run handle to agree on completed writeback"
+            )
     try:
         writeback = service_result.read_scorecard_writeback_value(
             record.get("scorecard_writeback")
@@ -4366,12 +4399,31 @@ def publish_recorded_scorecard_handoff(
             "materialized scorecard cleanup requires a typed completed "
             f"scorecard_writeback in the durable run handle: {error}"
         ) from error
-    if record.get("state") != "completed" or writeback != {"status": "completed"}:
+    if state != "completed" and not historical_disposal:
         raise RuntimeError(
             "materialized scorecard cleanup requires a completed "
-            "scorecard_writeback in a completed durable run handle; got "
-            f"state={record.get('state')!r}, scorecard_writeback={writeback!r}. "
-            "Reattach so the waiter can consume the service result before cleanup"
+            "scorecard_writeback in a completed durable run handle, or an unknown "
+            "historical run with a verified handoff; got "
+            f"state={state!r}"
+        )
+    if historical_disposal:
+        handoff, handoff_writeback_completed = read_scorecard_handoff(
+            root, recorded, target, unit
+        )
+        if writeback != {"status": "completed"} or not handoff_writeback_completed:
+            raise RuntimeError(
+                "materialized scorecard cleanup requires completed writeback in "
+                "both the durable run handle and verified scorecard handoff; got "
+                f"scorecard_writeback={writeback!r}, "
+                f"handoff_writeback_completed={handoff_writeback_completed!r}"
+            )
+        return handoff
+    if writeback != {"status": "completed"}:
+        raise RuntimeError(
+            "materialized scorecard cleanup requires a completed scorecard_writeback; "
+            f"got state={state!r}, scorecard_writeback={writeback!r}. Reattach so "
+            "the waiter can consume a current service result before cleanup; "
+            "historical results require an already-published verified handoff"
         )
     return publish_scorecard_handoff(
         root,
@@ -4812,19 +4864,29 @@ def attach(
     scorecard_handoff: Path | None = None
     handoff_required = materialized_target and repo == "rrnewton/hermit"
     scorecard_updated = repo != "rrnewton/hermit"
-    recorded_handoff = record.get("scorecard_handoff")
-    handoff_exists = (
-        isinstance(recorded_handoff, str)
-        and (
-            Path(recorded_handoff).exists()
-            or Path(recorded_handoff).is_symlink()
-        )
-    )
-    if handoff_required and handoff_exists:
+    recorded_handoff = updated.get("scorecard_handoff")
+    historical_result = updated.get("state") == "unknown" and updated.get(
+        "service_result_schema"
+    ) in {
+        service_result.WRITEBACK_SCHEMA_VERSION,
+        service_result.SELECTION_SCHEMA_VERSION,
+    }
+    handoff_recorded = recorded_handoff is not None
+    if handoff_required and handoff_recorded:
         try:
-            scorecard_handoff, scorecard_updated = read_scorecard_handoff(
-                root, recorded_handoff, target, unit
-            )
+            if historical_result:
+                scorecard_handoff = publish_recorded_scorecard_handoff(
+                    root,
+                    record_path,
+                    updated,
+                    Path(str(updated["checkout"])),
+                    unit,
+                )
+                scorecard_updated = scorecard_handoff is not None
+            else:
+                scorecard_handoff, scorecard_updated = read_scorecard_handoff(
+                    root, recorded_handoff, target, unit
+                )
         except (OSError, RuntimeError, ValueError) as error:
             print(
                 "validate-run: SCORECARD HANDOFF UNREADABLE: "
@@ -4837,12 +4899,18 @@ def attach(
                 "already-published output instead of the retired checkout.",
                 file=sys.stderr,
             )
+    elif handoff_required and historical_result:
+        print(
+            "validate-run: SCORECARD HANDOFF MISSING: a historical result cannot "
+            "publish a new handoff or gain current validation authority.",
+            file=sys.stderr,
+        )
     else:
         try:
             scorecard_updated = repo != "rrnewton/hermit" or write_scorecard_from_results(
-                Path(record["checkout"] if materialized_target else record["source_checkout"]),
+                Path(updated["checkout"] if materialized_target else updated["source_checkout"]),
                 target,
-                Path(record["e2e_result_root"]),
+                Path(updated["e2e_result_root"]),
                 run=run,
                 json_output=json_output,
             )
@@ -4854,11 +4922,16 @@ def attach(
                 file=sys.stderr,
             )
             scorecard_updated = False
-    if handoff_required and scorecard_handoff is None and not handoff_exists:
+    if (
+        handoff_required
+        and scorecard_handoff is None
+        and not handoff_recorded
+        and not historical_result
+    ):
         scorecard_handoff = handoff_scorecard_after_writeback(
             root,
             record_path,
-            Path(record["checkout"]),
+            Path(updated["checkout"]),
             target,
             unit,
             writeback_completed=scorecard_updated,
@@ -4882,7 +4955,7 @@ def attach(
     cleanup_after_attach(
         root,
         record_path,
-        record,
+        updated,
         unit=unit,
         run=run,
         tool_root=tool_root,
