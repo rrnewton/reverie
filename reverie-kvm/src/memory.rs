@@ -447,6 +447,51 @@ impl GuestMemory {
         Ok(())
     }
 
+    /// Discards complete host pages while preserving this mapping's identity.
+    ///
+    /// Every handle to this shared anonymous mapping observes zero-filled pages
+    /// after the discard. Callers must stop guest vCPUs that can access the
+    /// range, just as they must for [`Self::zero_raw`].
+    pub(crate) fn discard_pages(&self, guest_address: u64, length: usize) -> Result<()> {
+        let offset = self.checked_offset(guest_address, length)?;
+        if length == 0 {
+            return Ok(());
+        }
+        if !guest_address.is_multiple_of(PAGE_SIZE as u64) || !length.is_multiple_of(PAGE_SIZE) {
+            return Err(Error::InvalidMemoryLayout {
+                guest_base: guest_address,
+                size: length,
+            });
+        }
+        let _guard = self
+            .mapping
+            .host_access
+            .lock()
+            .expect("guest memory lock poisoned");
+        // SAFETY: checked_offset proves that the page-aligned range lies within
+        // the live MAP_SHARED | MAP_ANONYMOUS mapping. MADV_REMOVE preserves the
+        // virtual mapping and replaces discarded pages with demand-zero pages.
+        let result = unsafe {
+            libc::madvise(
+                self.mapping.mapping.as_ptr().add(offset).cast(),
+                length,
+                libc::MADV_REMOVE,
+            )
+        };
+        if result != 0 {
+            // MADV_REMOVE is an optimization. Preserve the previous reset
+            // semantics on kernels that reject it (or after a partial discard)
+            // by explicitly zeroing the complete range while holding the same
+            // host-access lock.
+            // SAFETY: checked_offset established the same bounds used for the
+            // madvise call, and the host-access guard serializes this write.
+            unsafe {
+                std::ptr::write_bytes(self.mapping.mapping.as_ptr().add(offset), 0, length);
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn host_address(&self) -> u64 {
         self.mapping.mapping.as_ptr() as u64
     }
@@ -801,6 +846,39 @@ mod tests {
         let mut bytes = [0; 3];
         first.read(0x1200, &mut bytes).unwrap();
         assert_eq!(&bytes, b"api");
+    }
+
+    #[test]
+    fn discarded_pages_are_lazy_zeroes_in_every_cloned_handle() {
+        let memory = GuestMemory::new(0x1000, PAGE_SIZE * 3).unwrap();
+        let clone = memory.clone();
+        memory.write_raw(0x1000, &[0x11; PAGE_SIZE]).unwrap();
+        memory.write_raw(0x2000, &[0x5a; PAGE_SIZE]).unwrap();
+        memory.write_raw(0x3000, &[0x33; PAGE_SIZE]).unwrap();
+
+        memory.discard_pages(0x2000, PAGE_SIZE).unwrap();
+        let mut bytes = vec![0xff; PAGE_SIZE];
+        clone.read_raw(0x2000, &mut bytes).unwrap();
+        assert_eq!(bytes, vec![0; PAGE_SIZE]);
+        let mut boundary = [0; 1];
+        clone.read_raw(0x1000, &mut boundary).unwrap();
+        assert_eq!(boundary, [0x11]);
+        clone.read_raw(0x3000, &mut boundary).unwrap();
+        assert_eq!(boundary, [0x33]);
+        assert_eq!(memory.host_address(), clone.host_address());
+    }
+
+    #[test]
+    fn discard_pages_rejects_unaligned_ranges() {
+        let memory = GuestMemory::new(0x1000, PAGE_SIZE * 2).unwrap();
+        assert!(matches!(
+            memory.discard_pages(0x1001, PAGE_SIZE),
+            Err(Error::InvalidMemoryLayout { .. })
+        ));
+        assert!(matches!(
+            memory.discard_pages(0x1000, PAGE_SIZE - 1),
+            Err(Error::InvalidMemoryLayout { .. })
+        ));
     }
 
     #[test]
