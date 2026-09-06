@@ -665,16 +665,18 @@ def classify(
     if status == "FAILED":
         return {**common, "state": "completed", "result": "failure"}
     if status == "COULD_NOT_RUN":
-        return {
+        result = {
             **common,
             "state": "completed",
             "result": "no-result",
-            "detail": (
+        }
+        if evidence.service_result_schema == SCHEMA_VERSION:
+            result["detail"] = (
                 "\n".join(evidence.detail)
                 if evidence.detail is not None
                 else "validation reported COULD_NOT_RUN without detail"
-            ),
-        }
+            )
+        return result
     if exit_code is not None and 129 <= exit_code <= 192:
         return {
             **common,

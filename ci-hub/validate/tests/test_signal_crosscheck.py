@@ -1994,6 +1994,56 @@ class SignalCrosscheckTests(unittest.TestCase):
             unreadable["validate-malformed-handle.service-result.json"],
         )
 
+    def test_schema4_pre_plan_sidecar_survives_classification_and_crosscheck(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_root = root / "ignored" / "validate" / "runs"
+            run_root.mkdir(parents=True)
+            name = "validate-pre-plan-schema4"
+            handle_path = run_root / f"{name}.json"
+            schema4 = signal_crosscheck.service_result.TEST_COUNTS_SCHEMA_VERSION
+            initial_handle = current_validation_handle(
+                name,
+                state="completed",
+                admission_result={
+                    "state": "admitted",
+                    "recorded_at": "2026-08-30T07:00:01+00:00",
+                    "run_number": 1,
+                },
+                finished_at="2026-08-30T07:00:02+00:00",
+                service_result_schema=schema4,
+            )
+            signal_crosscheck.service_result.result_path(handle_path).write_text(
+                json.dumps(current_service_result(schema_version=schema4))
+            )
+
+            classified = signal_crosscheck.service_result.from_run_record(
+                handle_path,
+                initial_handle,
+                root / "missing.log",
+            )
+            self.assertEqual(classified["result"], "no-result")
+            self.assertNotIn("detail", classified)
+            handle_path.write_text(json.dumps({**initial_handle, **classified}))
+
+            report = signal_crosscheck.run_handle_report(
+                root, "a" * 40, "rrnewton/hermit", []
+            )
+
+        by_unit = {item["unit"]: item for item in report["terminal_handles"]}
+        self.assertTrue(by_unit[f"{name}.service"]["no_receipt_attempt"])
+        complete = base_report()
+        complete.update(sha="a" * 40, repo="rrnewton/hermit")
+        complete["run_handles"] = report
+        self.assertFalse(
+            any(
+                f"{name}.service" in issue
+                for issue in signal_crosscheck.reconcile(complete)
+            )
+        )
+
     def test_only_exact_pre_plan_no_result_omits_the_ledger_requirement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2020,14 +2070,8 @@ class SignalCrosscheckTests(unittest.TestCase):
                 "final_validate_status": "COULD_NOT_RUN",
                 "result_source": "validation-service-result",
             }
-            schema4 = signal_crosscheck.service_result.TEST_COUNTS_SCHEMA_VERSION
             cases = {
                 "validate-pre-plan": ({}, {}, True),
-                "validate-pre-plan-schema4": (
-                    {"service_result_schema": schema4},
-                    {"schema_version": schema4},
-                    True,
-                ),
                 "validate-pre-plan-absent-detail": (
                     {"detail": "validation reported COULD_NOT_RUN without detail"},
                     {"detail": None},
@@ -2122,8 +2166,6 @@ class SignalCrosscheckTests(unittest.TestCase):
                         "run_number": run_number,
                     },
                 }
-                if handle_updates["service_result_schema"] == schema4:
-                    handle_updates.pop("detail", None)
                 handle_path = run_root / f"{name}.json"
                 handle_path.write_text(
                     json.dumps(current_validation_handle(name, **handle_updates))
@@ -2139,9 +2181,6 @@ class SignalCrosscheckTests(unittest.TestCase):
 
         by_unit = {item["unit"]: item for item in report["terminal_handles"]}
         self.assertTrue(by_unit["validate-pre-plan.service"]["no_receipt_attempt"])
-        self.assertTrue(
-            by_unit["validate-pre-plan-schema4.service"]["no_receipt_attempt"]
-        )
         self.assertEqual(
             {
                 item["unit"]
@@ -2166,9 +2205,6 @@ class SignalCrosscheckTests(unittest.TestCase):
         issues = signal_crosscheck.reconcile(complete)
         self.assertFalse(any("validate-pre-plan.service" in issue for issue in issues))
         self.assertFalse(
-            any("validate-pre-plan-schema4.service" in issue for issue in issues)
-        )
-        self.assertFalse(
             any("validate-pre-plan-absent-detail.service" in issue for issue in issues)
         )
         self.assertTrue(
@@ -2191,7 +2227,7 @@ class SignalCrosscheckTests(unittest.TestCase):
         output = io.StringIO()
         with redirect_stdout(output):
             signal_crosscheck.print_text(complete)
-        self.assertIn("no-receipt-attempts=3", output.getvalue())
+        self.assertIn("no-receipt-attempts=2", output.getvalue())
 
     def test_missing_or_invalid_raw_handle_attribution_is_loud(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
