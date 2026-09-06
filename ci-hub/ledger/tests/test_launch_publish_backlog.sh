@@ -46,6 +46,9 @@ check() { # label  expected-substring  file
 check_absent() { # label  forbidden-substring  file
   if grep -Fq -- "$2" "$3"; then note FAIL "$1 -- should NOT contain: $2"; fails=$((fails+1)); else note PASS "$1"; fi
 }
+check_rc() { # label expected actual
+  if [[ $2 == "$3" ]]; then note PASS "$1"; else note FAIL "$1 -- expected rc=$2, got rc=$3"; fails=$((fails+1)); fi
+}
 
 # --- stub bin: a systemd-run that records its argv and a gh that merely exists.
 mkdir -p "$work/bin" "$work/ghdir" "$state_root"
@@ -58,13 +61,31 @@ chmod +x "$work/bin/systemd-run"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$work/ghdir/gh"; chmod +x "$work/ghdir/gh"
 mkdir -p "$work/home/bin"
 cp "$work/ghdir/gh" "$work/home/bin/gh"
-# `systemctl` must exist and report the unit inactive, or the launcher short-circuits.
-printf '#!/usr/bin/env bash\nexit 1\n' > "$work/bin/systemctl"; chmod +x "$work/bin/systemctl"
+# `systemctl` must exist and report the unit inactive and not failed unless a
+# test selects a prior failed result explicitly.
+cat >"$work/bin/systemctl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${SYSTEMCTL_ARGV_SINK:-/dev/null}"
+case " $* " in
+  *" is-active "*) exit "${SYSTEMCTL_ACTIVE_RC:-1}" ;;
+  *" is-failed "*) exit "${SYSTEMCTL_FAILED_RC:-1}" ;;
+  *" reset-failed "*) exit "${SYSTEMCTL_RESET_RC:-0}" ;;
+  *" show "*"--property=Result"*) printf '%s\n' "${SYSTEMCTL_RESULT:-exit-code}"; exit 0 ;;
+  *" show "*"--property=ExecMainStatus"*) printf '%s\n' "${SYSTEMCTL_STATUS:-2}"; exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$work/bin/systemctl"
+for command in bash dirname mkdir tee; do
+  ln -s "$(command -v "$command")" "$work/bin/$command"
+done
 
 run_launcher() { # script  extra-PATH-dir  -> writes argv to $work/argv, stdout to $work/out
   local script=$1 extra=${2:-}
   : > "$work/argv"
+  : > "$work/systemctl-argv"
   SYSTEMD_RUN_ARGV_SINK="$work/argv" \
+  SYSTEMCTL_ARGV_SINK="$work/systemctl-argv" \
   DEV_HERMIT_PARENT="$state_root" \
   LEDGER_PUBLISH_GH_BIN="${extra:+$extra/gh}" \
     PATH="$work/bin${extra:+:$extra}:/usr/bin:/bin" \
@@ -105,7 +126,7 @@ run_home_gh_launcher() { # script -> PATH omits gh; only $HOME/bin supplies it
   SYSTEMD_RUN_ARGV_SINK="$work/argv" \
   DEV_HERMIT_PARENT="$state_root" \
   HOME="$work/home" \
-    PATH="$work/bin:/usr/bin:/bin" \
+    PATH="$work/bin" \
     bash "$script" > "$work/out" 2>&1
 }
 
@@ -121,6 +142,25 @@ check "tool cwd is immutable root"      "--working-directory=$tool_root"       "
 check "state root is explicit"          "--setenv=DEV_HERMIT_PARENT=$state_root" "$work/argv"
 check "tool root is explicit"           "--setenv=DEV_HERMIT_TOOL_ROOT=$tool_root" "$work/argv"
 check "publisher code comes from tool"  "$tool_root/ci-hub/ledger/publish_backlog.py" "$work/argv"
+check_absent "failed result remains queryable" "--collect"                        "$work/argv"
+
+echo "== FIXED launcher, previous detached command FAILED: report and retry =="
+SYSTEMCTL_FAILED_RC=0 SYSTEMCTL_RESULT=exit-code SYSTEMCTL_STATUS=2 \
+  run_launcher "$launcher" "$work/ghdir"
+fixed_failed_rc=$?
+check_rc "prior child failure makes the tick fail" 1 "$fixed_failed_rc"
+check "terminal result reported"          "Result=exit-code ExecMainStatus=2" "$work/out"
+check "failed child retried"              "state=relaunched"                 "$work/out"
+check "failed unit reset after reading"   "reset-failed ledger-publish-backlog.service" "$work/systemctl-argv"
+check "retry launched"                    "--unit=ledger-publish-backlog"     "$work/argv"
+
+echo "== FIXED launcher, previous detached command still RUNNING: report it =="
+SYSTEMCTL_ACTIVE_RC=0 run_launcher "$launcher" "$work/ghdir"
+fixed_running_rc=$?
+check_rc "still-running child makes the tick fail" 1 "$fixed_running_rc"
+check "still-running child reported"       "state=running"                    "$work/out"
+check "still-running spool retained"       "spool retained"                   "$work/out"
+check_absent "no overlapping child launched" "--unit="                         "$work/argv"
 
 echo "== FIXED launcher, gh only in HOME/bin outside systemd-manager PATH =="
 run_home_gh_launcher "$launcher"
@@ -160,14 +200,18 @@ check_absent "incomplete handoff not launched" "--unit="                        
 
 echo "== FIXED launcher, gh ABSENT: must refuse rather than launch a doomed sweep =="
 run_launcher "$launcher" ""
+missing_gh_rc=$?
 check "refused"                         "state=refused"                        "$work/out"
 check "names the cause"                 "gh not found"                         "$work/out"
 check_absent "did not launch"           "--unit="                              "$work/argv"
+check_rc "missing gh is a gate failure" 1 "$missing_gh_rc"
 
 echo "== FIXED launcher, systemd-run FAILS: its own error must be kept =="
 SYSTEMD_RUN_RC=1 run_launcher "$launcher" "$work/ghdir"
+launch_refused_rc=$?
 check "refusal reported"                "state=refused"                        "$work/out"
 check "systemd-run's output retained"   "systemd-run said:"                    "$work/out"
+check_rc "launch refusal is a gate failure" 1 "$launch_refused_rc"
 
 echo "== BASELINE (pre-fix) launcher: every positive above must FAIL here =="
 # Reconstruct the invocation as it stood before this change: no --setenv, no
@@ -228,6 +272,30 @@ assert new_operational in s, "baseline reconstruction lost the operational looku
 s = s.replace(new_operational, old_operational, 1)
 s = s.replace('    "$OPERATIONAL_TOOL"\n    --run-current-tool',
               '    "$DEV_HERMIT_OPERATIONAL_TOOL"\n    --run-current-tool', 1)
+failed_result = '''# A collected transient unit vanishes as soon as it exits. `systemctl show`
+# then describes a synthetic not-found unit whose Result=success and
+# ExecMainStatus=0 are ABSENCE, not evidence that the command passed. Keep a
+# failed unit loaded until this next sweep reads its real terminal result. Reset
+# it only after capturing that result so the same unit name can be retried.
+PRIOR_FAILURE=
+if systemctl --user is-failed --quiet "$UNIT.service" 2>/dev/null; then
+  UNIT_RESULT=$(systemctl --user show "$UNIT.service" --property=Result --value \\
+    2>/dev/null || true)
+  UNIT_STATUS=$(systemctl --user show "$UNIT.service" --property=ExecMainStatus --value \\
+    2>/dev/null || true)
+  PRIOR_FAILURE="previous $UNIT failed with Result=${UNIT_RESULT:-unknown} ExecMainStatus=${UNIT_STATUS:-unknown}"
+  if ! reset_error=$(systemctl --user reset-failed "$UNIT.service" 2>&1); then
+    echo "state=refused summary=$PRIOR_FAILURE; could not reset it for retry; spool retained; systemctl said: ${reset_error:-<no output>}" \\
+      | tee -a "$LOG" 2>/dev/null || true
+    exit 1
+  fi
+fi
+
+'''
+assert failed_result in s, "baseline reconstruction lost the failed-result anchor"
+s = s.replace(failed_result, 'PRIOR_FAILURE=\n', 1)
+s = s.replace('systemd-run --user --quiet \\\n',
+              'systemd-run --user --quiet --collect \\\n', 1)
 for line in ('    --property="StandardOutput=append:$LOG" \\\n',
              '    --property="StandardError=append:$LOG" \\\n',
              '    --working-directory="$PUBLISH_WORKING_DIRECTORY" \\\n',
@@ -250,10 +318,16 @@ check_absent "baseline does not launch HOME gh" "--unit="          "$work/argv"
 run_installed_operational_launcher "$baseline"
 check        "baseline cannot recover installed bootstrap" "state=refused" "$work/out"
 check_absent "baseline does not launch recovered bootstrap" "--unit="       "$work/argv"
+SYSTEMCTL_FAILED_RC=0 SYSTEMCTL_RESULT=exit-code SYSTEMCTL_STATUS=2 \
+  run_launcher "$baseline" "$work/ghdir"
+baseline_failed_rc=$?
+check_rc    "baseline hides prior child failure" 0 "$baseline_failed_rc"
+check       "baseline calls the failed run launched" "state=launched" "$work/out"
+check_absent "baseline omits terminal result" "ExecMainStatus=2" "$work/out"
 
 echo
 if [[ $fails -eq 0 ]]; then
-  echo "test_launch_publish_backlog: PASS (fixed launcher hands the unit a gh-bearing PATH and readable output, re-enters the exact cached tool revision for detached work, refuses incomplete handoff and missing gh without dropping the spool, retains systemd-run's own error, and the reconstructed pre-fix launcher fails the original checks)"
+  echo "test_launch_publish_backlog: PASS (fixed launcher hands the unit a gh-bearing PATH and readable output, re-enters the exact cached tool revision for detached work, retains and reports a detached failure before retrying it, refuses incomplete handoff and missing gh without dropping the spool, retains systemd-run's own error, and the reconstructed pre-fix launcher fails the original checks)"
   exit 0
 fi
 echo "test_launch_publish_backlog: FAIL ($fails check(s))"

@@ -12,10 +12,12 @@
 # gate budget with a 65-75s round trip, so the gate reported "could not run ...
 # timed out" every cycle for a day and emitted no measurement at all while the
 # backlog it existed to watch kept growing. Publishing is heavier still, so this
-# wrapper costs the tick one systemd-run call and nothing else: it never waits,
-# and its exit code reports only whether the unit was ACCEPTED, never whether
-# publication succeeded. Publication success is reported by the next
-# ledger_spool_backlog observation, which is the correct place for it.
+# wrapper costs the tick one systemd-run call and nothing else: it never waits.
+# Publication success is reported by the next ledger_spool_backlog observation,
+# which is the correct place for it. A FAILED detached unit is different: it is
+# retained until the next launch, reported through this command's exit status,
+# reset, and retried. Otherwise `--collect` erases the result and a tick whose
+# publisher failed is reported as CLEAN.
 #
 # One unit name means one sweep at a time on this box. A second launch while a
 # sweep is running is refused by systemd, which is the desired behaviour: the
@@ -81,7 +83,7 @@ done
 if [[ -z $GH_BIN ]]; then
   echo "state=refused summary=gh not found in the configured or per-user locations; a detached sweep would fail at the push. Not launched; spool retained." \
     | tee -a "$LOG" 2>/dev/null || true
-  exit 0
+  exit 1
 fi
 UNIT_PATH="$(dirname -- "$GH_BIN"):${PATH}"
 
@@ -114,7 +116,7 @@ if [[ -n $OPERATIONAL_TOOL || -n ${DEV_HERMIT_TOOL_PARENT_SHA:-} ]]; then
         ! ${DEV_HERMIT_TOOL_PARENT_SHA:-} =~ ^[0-9a-f]{40}$ ]]; then
     echo "state=refused summary=incomplete operational-tool handoff; publish sweep not launched; spool retained." \
       | tee -a "$LOG" 2>/dev/null || true
-    exit 0
+    exit 1
   fi
   PUBLISH_COMMAND=(
     "$OPERATIONAL_TOOL"
@@ -135,18 +137,40 @@ else
 fi
 
 if systemctl --user is-active --quiet "$UNIT.service" 2>/dev/null; then
-  echo "state=running summary=ledger publish sweep already active as $UNIT"
-  exit 0
+  echo "state=running summary=ledger publish sweep is still active as $UNIT; no second sweep launched; spool retained"
+  # The scheduled gate runs once per hour. Reaching the next invocation while
+  # the previous one is still active is not a completed sweep, so do not report
+  # it as CLEAN.
+  exit 1
+fi
+
+# A collected transient unit vanishes as soon as it exits. `systemctl show`
+# then describes a synthetic not-found unit whose Result=success and
+# ExecMainStatus=0 are ABSENCE, not evidence that the command passed. Keep a
+# failed unit loaded until this next sweep reads its real terminal result. Reset
+# it only after capturing that result so the same unit name can be retried.
+PRIOR_FAILURE=
+if systemctl --user is-failed --quiet "$UNIT.service" 2>/dev/null; then
+  UNIT_RESULT=$(systemctl --user show "$UNIT.service" --property=Result --value \
+    2>/dev/null || true)
+  UNIT_STATUS=$(systemctl --user show "$UNIT.service" --property=ExecMainStatus --value \
+    2>/dev/null || true)
+  PRIOR_FAILURE="previous $UNIT failed with Result=${UNIT_RESULT:-unknown} ExecMainStatus=${UNIT_STATUS:-unknown}"
+  if ! reset_error=$(systemctl --user reset-failed "$UNIT.service" 2>&1); then
+    echo "state=refused summary=$PRIOR_FAILURE; could not reset it for retry; spool retained; systemctl said: ${reset_error:-<no output>}" \
+      | tee -a "$LOG" 2>/dev/null || true
+    exit 1
+  fi
 fi
 
 if ! command -v systemd-run >/dev/null 2>&1; then
   # No detached substrate: say so rather than running it inline on the tick
   # budget, which is the failure this wrapper exists to avoid.
-  echo "state=unavailable summary=systemd-run unavailable; publish sweep not launched"
-  exit 0
+  echo "state=unavailable summary=${PRIOR_FAILURE:+$PRIOR_FAILURE; }systemd-run unavailable; publish sweep not launched; spool retained"
+  exit 1
 fi
 
-if launch_error=$(systemd-run --user --quiet --collect \
+if launch_error=$(systemd-run --user --quiet \
     --unit="$UNIT" \
     --description="drain ledger spool backlog across producing parents" \
     --property=CPUQuota=100% \
@@ -157,6 +181,14 @@ if launch_error=$(systemd-run --user --quiet --collect \
     --setenv="DEV_HERMIT_PARENT=$STATE_ROOT" \
     --setenv="DEV_HERMIT_TOOL_ROOT=$TOOL_ROOT" \
     -- "${PUBLISH_COMMAND[@]}" 2>&1 >/dev/null); then
+  if [[ -n $PRIOR_FAILURE ]]; then
+    echo "state=relaunched summary=$PRIOR_FAILURE; retry launched detached as $UNIT; output appended to $LOG" \
+      | tee -a "$LOG" 2>/dev/null || true
+    # This invocation DID launch a retry, but it also observed a real failed
+    # publication. Keep that failure visible to the tick instead of calling the
+    # sweep clean merely because the retry was accepted.
+    exit 1
+  fi
   echo "state=launched summary=ledger publish sweep launched detached as $UNIT; output appended to $LOG"
   exit 0
 fi
@@ -166,4 +198,4 @@ fi
 # indistinguishable from the outside.
 echo "state=refused summary=could not launch $UNIT; spool retained for the next tick; systemd-run said: ${launch_error:-<no output>}" \
   | tee -a "$LOG" 2>/dev/null || true
-exit 0
+exit 1
