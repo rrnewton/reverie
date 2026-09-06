@@ -319,6 +319,38 @@ check_absent "combined failure has no missing summary" "{summary}" "$work/tick-o
 check_absent "combined failure has no generic no-signal report" "NO-SIGNAL" "$work/tick-out"
 
 echo "== BASELINE (pre-fix) launcher: every positive above must FAIL here =="
+# == FIXED launcher: the gh directory must not re-point the unit's interpreter ==
+#
+# Pinning gh by prepending its directory once put /usr/bin ahead of
+# /usr/local/bin, so the unit's `python3` became 3.9 and the operational tool's
+# cached-tool-root check died on its `str | None` annotation. Both spools then
+# sat over bound while the launch itself reported success.
+#
+# Mirror that exactly: the launcher's OWN PATH resolves the good interpreter
+# first, and the gh directory -- which is prepended for the unit -- carries a
+# different one. The unit must still get the interpreter the launcher resolved.
+note SECTION "FIXED launcher, gh directory carries another python3: unit keeps the launcher's"
+mkdir -p "$work/goodpy"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$work/goodpy/python3"; chmod +x "$work/goodpy/python3"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$work/ghdir/python3";  chmod +x "$work/ghdir/python3"
+: > "$work/argv"
+: > "$work/systemctl-argv"
+SYSTEMD_RUN_ARGV_SINK="$work/argv" \
+SYSTEMCTL_ARGV_SINK="$work/systemctl-argv" \
+DEV_HERMIT_PARENT="$state_root" \
+LEDGER_PUBLISH_GH_BIN="$work/ghdir/gh" \
+  PATH="$work/bin:$work/goodpy:$work/ghdir:/usr/bin:/bin" \
+  bash "$launcher" > "$work/out" 2>&1
+handed_path=$(sed -n 's/^--setenv=PATH=//p' "$work/argv" | head -1)
+selected_python=$(PATH="$handed_path" command -v python3 2>/dev/null || true)
+if [[ $selected_python == "$work/goodpy/python3" ]]; then
+  note PASS "unit keeps the launcher's interpreter despite the gh directory"
+else
+  note FAIL "unit keeps the launcher's interpreter despite the gh directory -- handed PATH selected ${selected_python:-<none>}"
+  fails=$((fails+1))
+fi
+rm -f "$work/ghdir/python3" "$work/goodpy/python3"
+
 # Reconstruct the invocation as it stood before this change: no --setenv, no
 # StandardOutput/StandardError, and the launcher's own stderr discarded.
 baseline=$work/baseline.sh

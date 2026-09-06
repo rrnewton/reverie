@@ -101,6 +101,17 @@ if [[ -z $GH_BIN ]]; then
   exit 1
 fi
 UNIT_PATH="$(dirname -- "$GH_BIN"):${PATH}"
+# ⚠️ PINNING gh BY DIRECTORY MUST NOT RE-POINT EVERY OTHER TOOL THE UNIT RESOLVES
+# BY NAME. Measured 2026-09-06: when gh resolved to /usr/bin/gh, the prepend above
+# put /usr/bin ahead of /usr/local/bin, so the unit's `python3` became 3.9.25 and
+# the operational tool's cached-tool-root check died on its `str | None`
+# annotation, leaving both spools over bound while the launch itself reported
+# success. Keep the launcher's OWN interpreter ahead of the gh directory so the
+# unit runs the same python3 this script resolved.
+PYTHON_BIN=$(command -v python3 2>/dev/null || true)
+if [[ -n $PYTHON_BIN ]]; then
+  UNIT_PATH="$(dirname -- "$PYTHON_BIN"):$UNIT_PATH"
+fi
 
 # A health tick executes this launcher from its verified private `.run.<sha>`
 # tree. That tree belongs to the foreground tick: the wrapper empties it as soon
