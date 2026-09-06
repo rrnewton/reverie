@@ -7,6 +7,11 @@
  */
 
 use std::collections::BTreeMap;
+use std::io;
+use std::os::fd::AsRawFd;
+use std::os::fd::FromRawFd;
+use std::os::fd::OwnedFd;
+use std::os::fd::RawFd;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -28,6 +33,7 @@ pub struct GuestMemory {
 #[derive(Debug)]
 struct Mapping {
     mapping: NonNull<u8>,
+    backing: OwnedFd,
     guest_base: u64,
     size: usize,
     host_access: Mutex<()>,
@@ -55,26 +61,33 @@ unsafe impl Send for Mapping {}
 unsafe impl Sync for Mapping {}
 
 impl GuestMemory {
-    /// Allocates a shared anonymous mapping for a guest-physical address range.
+    /// Allocates a shared, memfd-backed mapping for a guest-physical address range.
     pub fn new(guest_base: u64, size: usize) -> Result<Self> {
         let size_u64 = u64::try_from(size).expect("usize must fit in u64 on x86-64");
         if size == 0
             || !size.is_multiple_of(PAGE_SIZE)
             || !guest_base.is_multiple_of(PAGE_SIZE as u64)
             || guest_base.checked_add(size_u64).is_none()
+            || libc::off_t::try_from(size).is_err()
         {
             return Err(Error::InvalidMemoryLayout { guest_base, size });
         }
 
-        // SAFETY: mmap is called with an anonymous fd and validated below. The
+        let backing = create_memory_backing().map_err(Error::MemoryMapping)?;
+        // SAFETY: backing is a live, writable memfd and size fits off_t.
+        if unsafe { libc::ftruncate(backing.as_raw_fd(), size as libc::off_t) } != 0 {
+            return Err(Error::MemoryMapping(io::Error::last_os_error()));
+        }
+
+        // SAFETY: mmap is called with the live memfd and validated below. The
         // mapping is owned by this value and released exactly once in Drop.
         let mapping = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
                 size,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_ANONYMOUS | libc::MAP_SHARED | libc::MAP_NORESERVE,
-                -1,
+                libc::MAP_SHARED | libc::MAP_NORESERVE,
+                backing.as_raw_fd(),
                 0,
             )
         };
@@ -85,6 +98,7 @@ impl GuestMemory {
         Ok(Self {
             mapping: Arc::new(Mapping {
                 mapping: NonNull::new(mapping.cast()).expect("mmap returned a null mapping"),
+                backing,
                 guest_base,
                 size,
                 host_access: Mutex::new(()),
@@ -94,6 +108,13 @@ impl GuestMemory {
     }
 
     pub(crate) fn snapshot(&self) -> Result<Self> {
+        self.snapshot_with_sparse_copy(copy_sparse_file)
+    }
+
+    fn snapshot_with_sparse_copy(
+        &self,
+        sparse_copy: impl FnOnce(RawFd, RawFd, usize) -> io::Result<()>,
+    ) -> Result<Self> {
         const COPY_CHUNK: usize = 1024 * 1024;
 
         let snapshot = Self::new(self.guest_base(), self.len())?;
@@ -103,14 +124,39 @@ impl GuestMemory {
             .lock()
             .expect("guest memory access map lock poisoned")
             .clone();
-        let mut buffer = vec![0; COPY_CHUNK.min(self.len())];
-        let mut offset = 0;
-        while offset < self.len() {
-            let length = buffer.len().min(self.len() - offset);
-            let address = self.guest_base() + offset as u64;
-            self.read_raw(address, &mut buffer[..length])?;
-            snapshot.write_raw(address, &buffer[..length])?;
-            offset += length;
+
+        let sparse_result = {
+            let _source_guard = self
+                .mapping
+                .host_access
+                .lock()
+                .expect("guest memory lock poisoned");
+            let _destination_guard = snapshot
+                .mapping
+                .host_access
+                .lock()
+                .expect("guest memory lock poisoned");
+            sparse_copy(
+                self.mapping.backing.as_raw_fd(),
+                snapshot.mapping.backing.as_raw_fd(),
+                self.len(),
+            )
+        };
+
+        // SEEK_DATA/SEEK_HOLE and copy_file_range are Linux optimizations, not
+        // correctness requirements. If either is unavailable or cannot finish
+        // an extent, overwrite the entire destination using the previous copy
+        // path. This also replaces any prefix copied before the failure.
+        if sparse_result.is_err() {
+            let mut buffer = vec![0; COPY_CHUNK.min(self.len())];
+            let mut offset = 0;
+            while offset < self.len() {
+                let length = buffer.len().min(self.len() - offset);
+                let address = self.guest_base() + offset as u64;
+                self.read_raw(address, &mut buffer[..length])?;
+                snapshot.write_raw(address, &buffer[..length])?;
+                offset += length;
+            }
         }
         *snapshot
             .mapping
@@ -478,6 +524,105 @@ impl GuestMemory {
     }
 }
 
+fn create_memory_backing() -> io::Result<OwnedFd> {
+    let name = c"reverie-kvm-guest-memory";
+    // Guest RAM is never executable in the host mapping. Prefer the flag that
+    // also works when the host requires non-executable memfds, but retain
+    // compatibility with kernels predating MFD_NOEXEC_SEAL.
+    // SAFETY: name is a live, NUL-terminated C string.
+    let mut fd =
+        unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_NOEXEC_SEAL) };
+    if fd < 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::EINVAL) {
+            return Err(error);
+        }
+        // SAFETY: name is a live, NUL-terminated C string. Old kernels reject
+        // MFD_NOEXEC_SEAL with EINVAL but accept the original flag set.
+        fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    // SAFETY: memfd_create returned a new descriptor owned by this call.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Copies every data extent from one equal-sized sparse file to another.
+///
+/// A filesystem may conservatively report holes as data, which only makes
+/// this slower. It must not report stored data as a hole. The caller falls
+/// back to a byte-for-byte mapping copy on every error or incomplete extent.
+fn copy_sparse_file(source: RawFd, destination: RawFd, length: usize) -> io::Result<()> {
+    let end = libc::off_t::try_from(length)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "mapping exceeds off_t"))?;
+    let mut cursor: libc::off_t = 0;
+
+    while cursor < end {
+        // SAFETY: source is a live descriptor owned by the source Mapping.
+        let data = unsafe { libc::lseek(source, cursor, libc::SEEK_DATA) };
+        if data < 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ENXIO) {
+                return Ok(());
+            }
+            return Err(error);
+        }
+        if data < cursor || data >= end {
+            return if data >= end {
+                Ok(())
+            } else {
+                Err(io::Error::other("SEEK_DATA moved backwards"))
+            };
+        }
+
+        // SAFETY: source is a live descriptor owned by the source Mapping.
+        let hole = unsafe { libc::lseek(source, data, libc::SEEK_HOLE) };
+        if hole <= data {
+            return Err(if hole < 0 {
+                io::Error::last_os_error()
+            } else {
+                io::Error::other("SEEK_HOLE returned an empty extent")
+            });
+        }
+        let extent_end = hole.min(end);
+        let mut source_offset = data;
+        let mut destination_offset = data;
+        while source_offset < extent_end {
+            let remaining = usize::try_from(extent_end - source_offset)
+                .expect("nonnegative extent length must fit usize");
+            // SAFETY: both descriptors are live for the call, the offsets are
+            // within their equal file sizes, and both offset pointers are valid.
+            let copied = unsafe {
+                libc::copy_file_range(
+                    source,
+                    &mut source_offset,
+                    destination,
+                    &mut destination_offset,
+                    remaining,
+                    0,
+                )
+            };
+            if copied < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if copied == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "copy_file_range stopped before the end of an extent",
+                ));
+            }
+            if source_offset != destination_offset || source_offset > extent_end {
+                return Err(io::Error::other(
+                    "copy_file_range returned inconsistent offsets",
+                ));
+            }
+        }
+        cursor = extent_end;
+    }
+    Ok(())
+}
+
 impl Drop for Mapping {
     fn drop(&mut self) {
         // SAFETY: mapping and size are the exact values returned by mmap and
@@ -660,19 +805,145 @@ mod tests {
 
     #[test]
     fn snapshot_copies_without_sharing_memory() {
-        let mut parent = GuestMemory::new(0x1000, PAGE_SIZE * 2).unwrap();
+        let mut parent = GuestMemory::new(0x1000, PAGE_SIZE * 3).unwrap();
         parent.write(0x1100, b"parent").unwrap();
+        parent.write(0x3100, b"tail!!").unwrap();
 
         let mut child = parent.snapshot().unwrap();
         let mut bytes = [0; 6];
         child.read(0x1100, &mut bytes).unwrap();
         assert_eq!(&bytes, b"parent");
+        child.read(0x3100, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"tail!!");
 
         child.write(0x1100, b"child!").unwrap();
+        parent.write(0x3100, b"source").unwrap();
         parent.read(0x1100, &mut bytes).unwrap();
         assert_eq!(&bytes, b"parent");
         child.read(0x1100, &mut bytes).unwrap();
         assert_eq!(&bytes, b"child!");
+        parent.read(0x3100, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"source");
+        child.read(0x3100, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"tail!!");
+    }
+
+    #[test]
+    fn sparse_snapshot_copies_distant_extents_and_page_boundaries() {
+        const MAPPING_PAGES: usize = 16 * 1024;
+        let mut parent = GuestMemory::new(0, PAGE_SIZE * MAPPING_PAGES).unwrap();
+        let boundary = PAGE_SIZE as u64 - 2;
+        let middle = (PAGE_SIZE * (MAPPING_PAGES / 2)) as u64 + 37;
+        let tail = (PAGE_SIZE * MAPPING_PAGES - 4) as u64;
+
+        parent.write(boundary, b"edge").unwrap();
+        parent.write(middle, b"middle").unwrap();
+        parent.write(tail, b"last").unwrap();
+
+        let snapshot = parent.snapshot().unwrap();
+        let mut bytes = [0; 6];
+        snapshot.read(boundary, &mut bytes[..4]).unwrap();
+        assert_eq!(&bytes[..4], b"edge");
+        snapshot.read(middle, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"middle");
+        snapshot.read(tail, &mut bytes[..4]).unwrap();
+        assert_eq!(&bytes[..4], b"last");
+        snapshot
+            .read((PAGE_SIZE * (MAPPING_PAGES / 4)) as u64, &mut bytes)
+            .unwrap();
+        assert_eq!(bytes, [0; 6]);
+
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+        // SAFETY: stat points to writable storage and the backing descriptor is live.
+        assert_eq!(
+            unsafe { libc::fstat(snapshot.mapping.backing.as_raw_fd(), stat.as_mut_ptr()) },
+            0
+        );
+        // SAFETY: fstat succeeded and initialized the structure.
+        let allocated_bytes = unsafe { stat.assume_init() }.st_blocks as u64 * 512;
+        assert!(
+            allocated_bytes < (snapshot.len() / 2) as u64,
+            "snapshot unexpectedly became dense: {allocated_bytes} allocated bytes"
+        );
+    }
+
+    #[test]
+    fn sparse_snapshot_failure_falls_back_after_a_partial_copy() {
+        let mut parent = GuestMemory::new(0, PAGE_SIZE * 4).unwrap();
+        parent.write(0, &[0x11; PAGE_SIZE]).unwrap();
+        parent
+            .write((PAGE_SIZE * 3) as u64, &[0x44; PAGE_SIZE])
+            .unwrap();
+
+        let snapshot = parent
+            .snapshot_with_sparse_copy(|source, destination, _| {
+                let mut source_offset: libc::loff_t = 0;
+                let mut destination_offset: libc::loff_t = 0;
+                while source_offset < PAGE_SIZE as libc::loff_t {
+                    // SAFETY: snapshot_with_sparse_copy supplies two live,
+                    // equal-sized backing descriptors and valid offset pointers.
+                    let copied = unsafe {
+                        libc::copy_file_range(
+                            source,
+                            &mut source_offset,
+                            destination,
+                            &mut destination_offset,
+                            PAGE_SIZE - source_offset as usize,
+                            0,
+                        )
+                    };
+                    assert!(copied > 0);
+                }
+                Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP))
+            })
+            .unwrap();
+
+        let mut bytes = vec![0; PAGE_SIZE * 4];
+        snapshot.read(0, &mut bytes).unwrap();
+        assert_eq!(&bytes[..PAGE_SIZE], &[0x11; PAGE_SIZE]);
+        assert_eq!(&bytes[PAGE_SIZE..PAGE_SIZE * 3], &[0; PAGE_SIZE * 2]);
+        assert_eq!(&bytes[PAGE_SIZE * 3..], &[0x44; PAGE_SIZE]);
+    }
+
+    #[test]
+    fn sparse_snapshot_copies_file_data_after_dontneed() {
+        let mut parent = GuestMemory::new(0, PAGE_SIZE * 4).unwrap();
+        parent
+            .write(PAGE_SIZE as u64, b"backed after dontneed")
+            .unwrap();
+
+        // MAP_SHARED writes belong to the memfd. Flushing followed by
+        // MADV_DONTNEED gives the kernel permission to discard the resident
+        // mapping pages; sparse copying must enumerate file data, not PTEs.
+        // MADV_DONTNEED is only a hint, so this checks correctness after the
+        // transition without claiming that the kernel actually evicted it.
+        // SAFETY: the address and length identify a page-aligned live mapping.
+        assert_eq!(
+            unsafe {
+                libc::msync(
+                    parent.mapping.mapping.as_ptr().add(PAGE_SIZE).cast(),
+                    PAGE_SIZE,
+                    libc::MS_SYNC,
+                )
+            },
+            0
+        );
+        // SAFETY: the address and length identify a page-aligned live mapping.
+        assert_eq!(
+            unsafe {
+                libc::madvise(
+                    parent.mapping.mapping.as_ptr().add(PAGE_SIZE).cast(),
+                    PAGE_SIZE,
+                    libc::MADV_DONTNEED,
+                )
+            },
+            0
+        );
+
+        let snapshot = parent.snapshot().unwrap();
+        let mut bytes = [0; 21];
+        snapshot.read(PAGE_SIZE as u64, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"backed after dontneed");
     }
 
     #[test]
