@@ -611,6 +611,11 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
             executable = fake_bin / name
             executable.write_text(body)
             executable.chmod(0o755)
+        operational_tool = fake_bin / "operational-tool"
+        operational_tool.write_text("#!/bin/sh\nexit 0\n")
+        operational_tool.chmod(0o755)
+        tool_cache = self.records / "operational-tool-cache"
+        tool_cache.mkdir()
 
         hermit_remote = self.records / "hermit-origin.git"
         subprocess.run(
@@ -702,17 +707,34 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
             "SYSTEMD_RUN_ARGV_SINK": str(systemd_argv),
         }
 
+        pressure_environment = environment | {
+            "DEV_HERMIT_OPERATIONAL_TOOL": str(operational_tool),
+            "DEV_HERMIT_TOOL_PARENT_SHA": "b" * 40,
+            "DEV_HERMIT_TOOL_CACHE": str(tool_cache),
+        }
         pressure = subprocess.run(
             ["bash", "-c", commands["pressure_test"]],
             cwd=ROOT,
-            env=environment,
+            env=pressure_environment,
             check=False,
             capture_output=True,
             text=True,
         )
         self.assertEqual(0, pressure.returncode, pressure.stdout + pressure.stderr)
         pressure_argv = systemd_argv.read_text()
-        self.assertIn(str(ROOT / "ci-hub" / "series" / "pressure_schedule.py"), pressure_argv)
+        self.assertIn(str(operational_tool), pressure_argv)
+        self.assertIn("--run-current-tool", pressure_argv)
+        self.assertIn("--tool-parent-sha", pressure_argv)
+        self.assertIn("b" * 40, pressure_argv)
+        self.assertIn("--cache-root", pressure_argv)
+        self.assertIn(str(tool_cache), pressure_argv)
+        self.assertIn("--tool-relative", pressure_argv)
+        self.assertIn("ci-hub/series/pressure_schedule.py", pressure_argv)
+        self.assertIn(f"--working-directory={state_root}", pressure_argv)
+        self.assertNotIn(
+            str(ROOT / "ci-hub" / "series" / "pressure_schedule.py"),
+            pressure_argv,
+        )
         self.assertIn(f"DEV_HERMIT_PARENT={state_root}", pressure_argv)
         self.assertIn(f"DEV_HERMIT_TOOL_ROOT={ROOT}", pressure_argv)
         self.assertTrue(

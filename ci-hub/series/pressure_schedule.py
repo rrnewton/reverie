@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +34,7 @@ RUN_TIMEOUT_SECONDS = 1500
 LOCK_WAIT_SECONDS = 3600
 LOCK_CHILD_DEADLINE_SECONDS = 1800
 UNIT_RUNTIME_SECONDS = LOCK_WAIT_SECONDS + LOCK_CHILD_DEADLINE_SECONDS + 300
+SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 
 def utc_now() -> str:
@@ -79,8 +80,50 @@ def launch_command(
     with_proxy: str,
     target: str,
     record: Path,
+    environment: Mapping[str, str] | None = None,
 ) -> list[str]:
+    environment = os.environ if environment is None else environment
     log = log_path(root)
+    operational_tool = environment.get("DEV_HERMIT_OPERATIONAL_TOOL", "")
+    parent_sha = environment.get("DEV_HERMIT_TOOL_PARENT_SHA", "")
+    cache_root = environment.get("DEV_HERMIT_TOOL_CACHE", "")
+    has_handoff = bool(operational_tool or parent_sha or cache_root)
+    if has_handoff:
+        if (
+            not operational_tool
+            or not os.path.isabs(operational_tool)
+            or not os.path.isfile(operational_tool)
+            or not os.access(operational_tool, os.X_OK)
+            or SHA_RE.fullmatch(parent_sha) is None
+            or not cache_root
+            or not os.path.isabs(cache_root)
+            or not os.path.isdir(cache_root)
+        ):
+            raise ValueError(
+                "incomplete operational-tool handoff; recurring pressure test "
+                "not launched"
+            )
+        working_directory = root
+        worker = [
+            operational_tool,
+            "--run-current-tool",
+            "--state-root",
+            str(root),
+            "--cache-root",
+            cache_root,
+            "--tool-parent-sha",
+            parent_sha,
+            "--tool-relative",
+            "ci-hub/series/pressure_schedule.py",
+            "--",
+        ]
+    else:
+        working_directory = SOURCE_ROOT
+        worker = [
+            sys.executable,
+            str(SOURCE_ROOT / "ci-hub" / "series" / "pressure_schedule.py"),
+        ]
+
     return [
         systemd_run,
         "--user",
@@ -91,15 +134,14 @@ def launch_command(
         f"--property=RuntimeMaxSec={UNIT_RUNTIME_SECONDS}",
         f"--property=StandardOutput=append:{log}",
         f"--property=StandardError=append:{log}",
-        f"--working-directory={SOURCE_ROOT}",
-        f"--setenv=PATH={os.environ.get('PATH', '')}",
+        f"--working-directory={working_directory}",
+        f"--setenv=PATH={environment.get('PATH', '')}",
         "--setenv=PYTHONUNBUFFERED=1",
         f"--setenv=DEV_HERMIT_PARENT={root}",
         f"--setenv=DEV_HERMIT_TOOL_ROOT={SOURCE_ROOT}",
         "--",
         with_proxy,
-        sys.executable,
-        str(SOURCE_ROOT / "ci-hub" / "series" / "pressure_schedule.py"),
+        *worker,
         "_run",
         "--target",
         target,
@@ -262,8 +304,14 @@ def launch(
             )
             return 1
 
-        previous = read_state(root)
         record = run_registry.record_path(root, UNIT)
+        try:
+            command = launch_command(root, systemd_run, with_proxy, target, record)
+        except ValueError as error:
+            emit("refused", str(error))
+            return 1
+
+        previous = read_state(root)
         started_at = utc_now()
         slot = (
             f"pressure-{target[:12]}-"
@@ -288,7 +336,7 @@ def launch(
             },
         )
         started = run(
-            launch_command(root, systemd_run, with_proxy, target, record),
+            command,
             capture_output=True,
             text=True,
             check=False,
@@ -322,26 +370,29 @@ def launch(
 
 
 def remove_worktree(root: Path, slot: str) -> str | None:
-    completed = subprocess.run(
-        [
-            str(SOURCE_ROOT / "ci-hub/bin/wrkslots"),
-            # Executable authority is the immutable/current tool checkout;
-            # --project-root below keeps all mutable worktree state in root.
-            "--project-root",
-            str(root),
-            "--allow-existing-unregistered-worktrees",
-            "remove",
-            slot,
-            "--validate-complete",
-            "--coordinator-pid",
-            str(os.getpid()),
-            "--expected-generation",
-            "1",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            [
+                str(SOURCE_ROOT / "ci-hub/bin/wrkslots"),
+                # Executable authority is the immutable/current tool checkout;
+                # --project-root below keeps all mutable worktree state in root.
+                "--project-root",
+                str(root),
+                "--allow-existing-unregistered-worktrees",
+                "remove",
+                slot,
+                "--validate-complete",
+                "--coordinator-pid",
+                str(os.getpid()),
+                "--expected-generation",
+                "1",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        return f"could not launch wrkslots remove: {error}"
     if completed.returncode == 0:
         return None
     return (
@@ -452,6 +503,8 @@ def run_campaign(target: str, record: Path, root: Path = STATE_ROOT) -> int:
         if cleanup_error:
             state["cleanup_error"] = cleanup_error
             state["state"] = "failed"
+            if state.get("exit_code") in (None, 0):
+                state["exit_code"] = 1
         write_state(root, state)
         run_registry.update_record(
             record,

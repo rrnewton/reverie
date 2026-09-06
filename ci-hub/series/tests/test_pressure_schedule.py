@@ -68,9 +68,14 @@ class PressureScheduleTest(unittest.TestCase):
                 ).exists()
             )
 
-    def test_launch_is_detached_and_bounded(self):
+    def test_health_tick_launch_is_detached_bounded_and_owns_tool_root(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            operational_tool = root / "operational-tool"
+            operational_tool.write_text("#!/bin/sh\nexit 0\n")
+            operational_tool.chmod(0o755)
+            tool_cache = root / "tool-cache"
+            tool_cache.mkdir()
             calls = []
 
             def run(command, **kwargs):
@@ -81,16 +86,26 @@ class PressureScheduleTest(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 0, "a" * 40 + "\n", "")
                 return subprocess.CompletedProcess(command, 0, "", "")
 
-            with mock.patch.object(
-                pressure_schedule.shutil,
-                "which",
-                side_effect=lambda name: {
-                    "systemctl": "/bin/systemctl",
-                    "systemd-run": "/bin/systemd-run",
-                    "with-proxy": "/bin/with-proxy",
-                }[name],
+            with mock.patch.dict(
+                pressure_schedule.os.environ,
+                {
+                    "DEV_HERMIT_OPERATIONAL_TOOL": str(operational_tool),
+                    "DEV_HERMIT_TOOL_PARENT_SHA": "b" * 40,
+                    "DEV_HERMIT_TOOL_CACHE": str(tool_cache),
+                    "PATH": "/bin",
+                },
+                clear=True,
             ):
-                self.assertEqual(pressure_schedule.launch(root, run), 0)
+                with mock.patch.object(
+                    pressure_schedule.shutil,
+                    "which",
+                    side_effect=lambda name: {
+                        "systemctl": "/bin/systemctl",
+                        "systemd-run": "/bin/systemd-run",
+                        "with-proxy": "/bin/with-proxy",
+                    }[name],
+                ):
+                    self.assertEqual(pressure_schedule.launch(root, run), 0)
 
             launched = calls[3]
             self.assertIn("--unit=hermit-pressure-test", launched)
@@ -98,9 +113,7 @@ class PressureScheduleTest(unittest.TestCase):
                 f"--property=RuntimeMaxSec={pressure_schedule.UNIT_RUNTIME_SECONDS}",
                 launched,
             )
-            self.assertIn(
-                f"--working-directory={pressure_schedule.SOURCE_ROOT}", launched
-            )
+            self.assertIn(f"--working-directory={root}", launched)
             self.assertTrue(any(arg.startswith("--setenv=PATH=") for arg in launched))
             self.assertIn(f"--setenv=DEV_HERMIT_PARENT={root}", launched)
             self.assertIn(
@@ -111,13 +124,17 @@ class PressureScheduleTest(unittest.TestCase):
                 launched[launched.index("--") + 1 :],
                 [
                     "/bin/with-proxy",
-                    sys.executable,
-                    str(
-                        pressure_schedule.SOURCE_ROOT
-                        / "ci-hub"
-                        / "series"
-                        / "pressure_schedule.py"
-                    ),
+                    str(operational_tool),
+                    "--run-current-tool",
+                    "--state-root",
+                    str(root),
+                    "--cache-root",
+                    str(tool_cache),
+                    "--tool-parent-sha",
+                    "b" * 40,
+                    "--tool-relative",
+                    "ci-hub/series/pressure_schedule.py",
+                    "--",
                     "_run",
                     "--target",
                     "a" * 40,
@@ -133,6 +150,15 @@ class PressureScheduleTest(unittest.TestCase):
                     str(root),
                 ],
             )
+            self.assertNotIn(
+                str(
+                    pressure_schedule.SOURCE_ROOT
+                    / "ci-hub"
+                    / "series"
+                    / "pressure_schedule.py"
+                ),
+                launched,
+            )
             record = pressure_schedule.run_registry.read_record(
                 root / "ignored" / "validate" / "runs" / "hermit-pressure-test.json"
             )
@@ -143,6 +169,75 @@ class PressureScheduleTest(unittest.TestCase):
             checkout = Path(record["checkout"])
             self.assertEqual(checkout.parent, root / "worktrees" / "validate")
             self.assertTrue(checkout.name.startswith("pressure-aaaaaaaaaaaa-"))
+
+    def test_manual_launch_keeps_stable_checkout_path(self):
+        command = pressure_schedule.launch_command(
+            Path("/parent"),
+            "/bin/systemd-run",
+            "/bin/with-proxy",
+            "a" * 40,
+            Path("/parent/run.json"),
+            {"PATH": "/bin"},
+        )
+        self.assertIn(f"--working-directory={pressure_schedule.SOURCE_ROOT}", command)
+        self.assertEqual(
+            command[command.index("--") + 1 : command.index("_run")],
+            [
+                "/bin/with-proxy",
+                sys.executable,
+                str(
+                    pressure_schedule.SOURCE_ROOT
+                    / "ci-hub"
+                    / "series"
+                    / "pressure_schedule.py"
+                ),
+            ],
+        )
+
+    def test_incomplete_operational_tool_handoff_refuses_before_run_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            operational_tool = root / "operational-tool"
+            operational_tool.write_text("#!/bin/sh\nexit 0\n")
+            operational_tool.chmod(0o755)
+            tool_cache = root / "tool-cache"
+            tool_cache.mkdir()
+            calls = []
+
+            def run(command, **kwargs):
+                calls.append(command)
+                if command[0] == "/bin/systemctl":
+                    return subprocess.CompletedProcess(command, 3, "", "")
+                if "rev-parse" in command:
+                    return subprocess.CompletedProcess(command, 0, "a" * 40 + "\n", "")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            output = io.StringIO()
+            with mock.patch.dict(
+                pressure_schedule.os.environ,
+                {
+                    "DEV_HERMIT_OPERATIONAL_TOOL": str(operational_tool),
+                    "DEV_HERMIT_TOOL_CACHE": str(tool_cache),
+                    "PATH": "/bin",
+                },
+                clear=True,
+            ):
+                with mock.patch.object(
+                    pressure_schedule.shutil,
+                    "which",
+                    side_effect=lambda name: f"/bin/{name}",
+                ):
+                    with contextlib.redirect_stdout(output):
+                        self.assertEqual(pressure_schedule.launch(root, run), 1)
+
+            self.assertIn("state=refused", output.getvalue())
+            self.assertIn("incomplete operational-tool handoff", output.getvalue())
+            self.assertFalse(
+                pressure_schedule.run_registry.record_path(
+                    root, pressure_schedule.UNIT
+                ).exists()
+            )
+            self.assertFalse(any(command[0] == "/bin/systemd-run" for command in calls))
 
     def test_previous_failure_is_reported_while_next_run_launches(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -303,6 +398,54 @@ class PressureScheduleTest(unittest.TestCase):
             finished = pressure_schedule.run_registry.read_record(record)
             self.assertEqual(finished["state"], "completed")
             self.assertEqual(finished["result"], "passed")
+
+    def test_teardown_launch_error_after_pass_still_finishes_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = pressure_schedule.run_registry.record_path(
+                root, pressure_schedule.UNIT
+            )
+            pressure_schedule.run_registry.write_record(
+                record,
+                {
+                    "schema_version": 1,
+                    "kind": "bench",
+                    "state": "running",
+                    "unit": f"{pressure_schedule.UNIT}.service",
+                    "target": "a" * 40,
+                    "repo": "rrnewton/hermit",
+                    "checkout": str(root / "worktrees/validate/pressure-test"),
+                    "log": str(root / "ignored/ci-hub/pressure-test.log"),
+                    "agent": "tick-pressure-test",
+                    "started_at": "2026-09-06T18:23:18Z",
+                    "producer": pressure_schedule.run_registry.PRODUCER,
+                    "admission": "ci-hub validate-lock",
+                },
+            )
+            calls = []
+
+            def run(command, **kwargs):
+                calls.append(command)
+                if len(calls) == 4:
+                    raise FileNotFoundError(2, "No such file or directory", command[0])
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with mock.patch.object(
+                pressure_schedule.subprocess, "run", side_effect=run
+            ):
+                self.assertEqual(
+                    pressure_schedule.run_campaign("a" * 40, record, root), 1
+                )
+
+            state = pressure_schedule.read_state(root)
+            self.assertEqual(state["state"], "failed")
+            self.assertEqual(state["exit_code"], 1)
+            self.assertIn("could not launch wrkslots remove", state["cleanup_error"])
+            finished = pressure_schedule.run_registry.read_record(record)
+            self.assertEqual(finished["state"], "failed")
+            self.assertEqual(finished["result"], "failed")
+            self.assertEqual(finished["exit_code"], 1)
+            self.assertEqual(finished["cleanup_error"], state["cleanup_error"])
 
     def test_non_sha_main_is_a_visible_refusal(self):
         with tempfile.TemporaryDirectory() as directory:
