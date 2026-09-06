@@ -1648,6 +1648,17 @@ impl Drop for KvmBackend {
         if !self.is_guest_thread {
             self.cancel_guest_threads();
         }
+        let region = kvm_userspace_memory_region {
+            slot: 0,
+            guest_phys_addr: self.memory.guest_base(),
+            memory_size: 0,
+            userspace_addr: 0,
+            flags: 0,
+        };
+        // SAFETY: KVM deletes an existing memory slot when the replacement
+        // region has size zero. Drop is best-effort cleanup; any kernel error
+        // still leaves fd teardown to release the VM.
+        let _ = unsafe { self.vm.set_user_memory_region(region) };
     }
 }
 
