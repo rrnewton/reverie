@@ -42,7 +42,6 @@ use crate::GuestMemory;
 use crate::Result;
 use crate::Syscall;
 use crate::SyscallRequest;
-use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::MAX_GUEST_THREADS;
 use crate::bootstrap::SYSCALL_FRAME_ADDRESS;
 use crate::bootstrap::SYSCALL_TRAMPOLINE_ADDRESS;
@@ -746,6 +745,46 @@ impl KvmBackend {
         Ok(child)
     }
 
+    /// Replaces slot zero while this backend's vCPU is stopped.
+    ///
+    /// KVM rejects changing an existing memory slot's userspace address in
+    /// place, so image replacement must remove and recreate the slot before
+    /// releasing the old host mapping.
+    fn replace_guest_memory(&mut self, memory: GuestMemory) -> Result<()> {
+        let original_region = kvm_userspace_memory_region {
+            slot: 0,
+            guest_phys_addr: self.memory.guest_base(),
+            memory_size: self.memory.len() as u64,
+            userspace_addr: self.memory.host_address(),
+            flags: 0,
+        };
+        let removed_region = kvm_userspace_memory_region {
+            memory_size: 0,
+            ..original_region
+        };
+        let replacement_region = kvm_userspace_memory_region {
+            slot: 0,
+            guest_phys_addr: memory.guest_base(),
+            memory_size: memory.len() as u64,
+            userspace_addr: memory.host_address(),
+            flags: 0,
+        };
+        // SAFETY: the vCPU is stopped at an intercepted exec. `memory` remains
+        // owned by this backend after registration, and the old mapping remains
+        // owned until slot zero no longer refers to it. If registering the new
+        // mapping fails after deletion, restore the still-live original slot
+        // before returning the replacement error.
+        unsafe {
+            self.vm.set_user_memory_region(removed_region)?;
+            if let Err(replacement_error) = self.vm.set_user_memory_region(replacement_region) {
+                self.vm.set_user_memory_region(original_region)?;
+                return Err(replacement_error.into());
+            }
+        }
+        self.memory = memory;
+        Ok(())
+    }
+
     // TODO-HUMAN-REVIEW(PR-156): Review lifecycle-hook exec image replacement API.
     pub(crate) fn exec_process(
         &mut self,
@@ -754,22 +793,20 @@ impl KvmBackend {
         argv: &[String],
         envp: &[String],
     ) -> Result<()> {
-        let user_length = usize::try_from(self.memory.guest_end() - BOOT_RESERVED_END)
-            .expect("guest memory length must fit usize");
-        self.memory.zero_raw(BOOT_RESERVED_END, user_length)?;
-
         let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
         let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
-        let mut loaded = load_static_elf(&mut self.memory, image, &argv, &envp, executor.cwd())?;
+        let mut memory = GuestMemory::new(self.memory.guest_base(), self.memory.len())?;
+        let mut loaded = load_static_elf(&mut memory, image, &argv, &envp, executor.cwd())?;
         loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
         configure_long_mode(
-            &mut self.memory,
+            &mut memory,
             &self.vcpu,
             loaded.entry_point,
             loaded.stack_pointer,
             self.hypercall_instruction,
         )?;
-        self.memory.enable_user_access();
+        memory.enable_user_access();
+        self.replace_guest_memory(memory)?;
         executor.replace_after_exec(loaded);
         Ok(())
     }

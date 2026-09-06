@@ -335,7 +335,14 @@ where
                 }
             }
             .await;
-            let expose_result = expose_tool_scratch(&self.memory);
+            // Successful exec may replace the KVM memory mapping. The caller
+            // will expose Tool scratch in that replacement before delivering
+            // post-exec, so do not re-expose it in the unreachable old image.
+            let expose_result = if image_replaced && action_result.is_ok() {
+                Ok(())
+            } else {
+                expose_tool_scratch(&self.memory)
+            };
             action_result?;
             expose_result?;
             *self.process_completed = true;
@@ -793,7 +800,7 @@ async fn run_post_exec_handler<T>(
     backend: &mut KvmBackend,
     tool: &T,
     pid: Pid,
-    memory: &GuestMemory,
+    memory: &mut GuestMemory,
     auxv: &mut Vec<(libc::c_ulong, libc::c_ulong)>,
     thread_state: &mut T::ThreadState,
     executor: &mut ElfExecutor,
@@ -860,7 +867,10 @@ where
             HandlerOutcome::TailInjected {
                 image_replaced: true,
                 ..
-            } => *auxv = executor.auxv().to_vec(),
+            } => {
+                *memory = backend.memory.clone();
+                *auxv = executor.auxv().to_vec();
+            }
             HandlerOutcome::TailInjected { .. } => {
                 return Err(Error::UnexpectedVcpuExit(
                     "post-exec handler tail-injected a syscall".to_owned(),
@@ -910,7 +920,7 @@ async fn run_initial_exec_handler<T>(
     config: &<T::GlobalState as GlobalTool>::Config,
     subscriptions: &Subscription,
     stack_checked_out: &Arc<AtomicBool>,
-) -> Result<()>
+) -> Result<bool>
 where
     T: Tool + 'static,
     T::ThreadState: 'static,
@@ -964,17 +974,17 @@ where
     hide_tool_scratch(memory)?;
 
     match outcome {
-        HandlerOutcome::Returned(result) => result.map(|_| ()).map_err(Error::Reverie),
+        HandlerOutcome::Returned(result) => result.map(|_| false).map_err(Error::Reverie),
         HandlerOutcome::TailInjected {
             result: Ok(_),
             process_exited: true,
             ..
-        } => Ok(()),
+        } => Ok(false),
         HandlerOutcome::TailInjected {
             result: Ok(_),
             image_replaced: true,
             ..
-        } => Ok(()),
+        } => Ok(true),
         HandlerOutcome::TailInjected {
             result: Err(error), ..
         } => Err(Error::Reverie(error.into())),
@@ -1311,10 +1321,16 @@ impl KvmBackend {
             .await
         };
         hide_tool_scratch(&memory)?;
-        match start_outcome {
-            HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
+        let start_replaced_image = match start_outcome {
+            HandlerOutcome::Returned(result) => {
+                result.map_err(Error::Reverie)?;
+                false
+            }
             HandlerOutcome::RuntimeError(error) => return Err(error),
-            HandlerOutcome::TailInjected { .. } => {}
+            HandlerOutcome::TailInjected { image_replaced, .. } => image_replaced,
+        };
+        if start_replaced_image {
+            memory = self.memory.clone();
         }
         auxv = executor.auxv().to_vec();
         if let Some(exit) = executor.take_exit() {
@@ -1344,7 +1360,7 @@ impl KvmBackend {
                 .iter_syscalls()
                 .any(|number| number == reverie::syscalls::Sysno::execve)
             {
-                run_initial_exec_handler(
+                let initial_exec_replaced_image = run_initial_exec_handler(
                     self,
                     &tool,
                     pid,
@@ -1358,6 +1374,9 @@ impl KvmBackend {
                     &stack_checked_out,
                 )
                 .await?;
+                if initial_exec_replaced_image {
+                    memory = self.memory.clone();
+                }
                 auxv = executor.auxv().to_vec();
                 if let Some(exit) = executor.take_exit() {
                     if exit.group {
@@ -1382,7 +1401,7 @@ impl KvmBackend {
                 self,
                 &tool,
                 pid,
-                &memory,
+                &mut memory,
                 &mut auxv,
                 &mut thread_state,
                 executor,
@@ -1616,12 +1635,16 @@ impl KvmBackend {
                 executor.start_pending_child_processes()?;
             }
             if replaced_image {
+                // Exec publishes a fresh KVM mapping. Drop this loop's old
+                // handle before any post-exec Tool memory access or subsequent
+                // syscall-frame read.
+                memory = self.memory.clone();
                 auxv = executor.auxv().to_vec();
                 let post_exec_error = run_post_exec_handler(
                     self,
                     &tool,
                     pid,
-                    &memory,
+                    &mut memory,
                     &mut auxv,
                     &mut thread_state,
                     executor,

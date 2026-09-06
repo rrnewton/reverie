@@ -2506,6 +2506,107 @@ fn canonical_initial_execveat_does_not_reload_installed_image() {
 }
 
 #[test]
+fn successful_exec_replaces_mapping_without_clearing_old_bytes() {
+    if !kvm_available("KVM exec memory replacement test") {
+        return;
+    }
+
+    const SENTINEL_ADDRESS: u64 = LOAD_ADDRESS + 0x1800;
+    const SENTINEL: [u8; 16] = *b"old-image-bytes!";
+
+    // The replacement image requires its BSS byte to be zero. This asserts the
+    // user-visible exec contract independently of the retained old mapping.
+    let mut target = vec![0x48, 0xb8]; // movabs rax, SENTINEL_ADDRESS
+    target.extend_from_slice(&SENTINEL_ADDRESS.to_le_bytes());
+    target.extend_from_slice(&[
+        0x80, 0x38, 0x00, // cmp byte ptr [rax], 0
+        0x75, 0x0b, // jne stale_memory
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+        0x0f, 0x0b, // ud2
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // stale_memory: mov eax, SYS_exit_group
+        0xbf, 0x2a, 0x00, 0x00, 0x00, // mov edi, 42
+        0x0f, 0x05, // syscall
+        0x0f, 0x0b, // ud2
+    ]);
+    let executable = TestExecutable::new(&static_elf(&target));
+    let path = executable.0.to_str().unwrap().as_bytes();
+
+    let mut root = Vec::new();
+    let path_operand = root.len() + 2;
+    root.extend_from_slice(&[0x48, 0xbf, 0, 0, 0, 0, 0, 0, 0, 0]); // movabs rdi, path
+    let argv_operand = root.len() + 2;
+    root.extend_from_slice(&[0x48, 0xbe, 0, 0, 0, 0, 0, 0, 0, 0]); // movabs rsi, argv
+    let envp_operand = root.len() + 2;
+    root.extend_from_slice(&[0x48, 0xba, 0, 0, 0, 0, 0, 0, 0, 0]); // movabs rdx, envp
+    root.extend_from_slice(&[
+        0xb8, 0x3b, 0x00, 0x00, 0x00, 0x0f, 0x05, // execve
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+        0xbf, 0x4d, 0x00, 0x00, 0x00, // mov edi, 77
+        0x0f, 0x05, // syscall
+        0x0f, 0x0b, // ud2
+    ]);
+    let path_address = LOAD_ADDRESS + root.len() as u64;
+    root.extend_from_slice(path);
+    root.push(0);
+    while !root.len().is_multiple_of(8) {
+        root.push(0);
+    }
+    let argv_address = LOAD_ADDRESS + root.len() as u64;
+    root.extend_from_slice(&path_address.to_le_bytes());
+    root.extend_from_slice(&0_u64.to_le_bytes());
+    let envp_address = LOAD_ADDRESS + root.len() as u64;
+    root.extend_from_slice(&0_u64.to_le_bytes());
+    root[path_operand..path_operand + 8].copy_from_slice(&path_address.to_le_bytes());
+    root[argv_operand..argv_operand + 8].copy_from_slice(&argv_address.to_le_bytes());
+    root[envp_operand..envp_operand + 8].copy_from_slice(&envp_address.to_le_bytes());
+
+    for with_tool in [false, true] {
+        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+        backend
+            .install_static_elf(&static_elf(&root), "/bin/memory-replacement-test")
+            .unwrap();
+        backend
+            .memory_mut()
+            .write(SENTINEL_ADDRESS, &SENTINEL)
+            .unwrap();
+        let old_memory = backend.memory().clone();
+
+        let (exit_code, stdout, stderr) = if with_tool {
+            let (_, exit_code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            (exit_code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+
+        assert_eq!(exit_code, 0, "with_tool={with_tool}");
+        assert!(stdout.is_empty(), "with_tool={with_tool}");
+        assert!(stderr.is_empty(), "with_tool={with_tool}");
+
+        let mut replacement_bytes = [0; SENTINEL.len()];
+        backend
+            .memory()
+            .read(SENTINEL_ADDRESS, &mut replacement_bytes)
+            .unwrap();
+        assert_eq!(replacement_bytes, [0; SENTINEL.len()]);
+
+        // Holding an Arc to the pre-exec mapping distinguishes replacement
+        // from clearing that mapping in place. No surviving task can access
+        // these bytes, but retaining them here makes the optimization directly
+        // testable without depending on wall-clock timing.
+        let mut retained_bytes = [0; SENTINEL.len()];
+        old_memory
+            .read(SENTINEL_ADDRESS, &mut retained_bytes)
+            .unwrap();
+        assert_eq!(retained_bytes, SENTINEL, "with_tool={with_tool}");
+    }
+}
+
+#[test]
 fn tool_receives_post_exec_after_root_execve() {
     match Kvm::new() {
         Ok(_) => {}
@@ -2566,6 +2667,12 @@ fn tool_receives_post_exec_after_root_execve() {
     assert!(stdout.is_empty());
     assert!(stderr.is_empty());
     assert_eq!(log.calls(), 2);
+    let address = log
+        .at_random()
+        .expect("replacement post-exec hook did not observe AT_RANDOM");
+    let mut random = [0; POST_EXEC_RANDOM.len()];
+    backend.memory().read(address as u64, &mut random).unwrap();
+    assert_eq!(random, POST_EXEC_RANDOM);
 }
 
 #[test]
@@ -2702,10 +2809,17 @@ fn malformed_exec_returns_enoexec_without_replacing_image() {
     root[envp_operand..envp_operand + 8].copy_from_slice(&envp_address.to_le_bytes());
 
     for with_tool in [false, true] {
+        const SENTINEL_ADDRESS: u64 = LOAD_ADDRESS + 0x1800;
+        const SENTINEL: [u8; 16] = *b"failed-exec-kept";
         let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
         backend
             .install_static_elf(&static_elf(&root), "/bin/malformed-exec-test")
             .unwrap();
+        backend
+            .memory_mut()
+            .write(SENTINEL_ADDRESS, &SENTINEL)
+            .unwrap();
+        let original_memory = backend.memory().clone();
         let (exit_code, stdout, stderr) = if with_tool {
             let (_, exit_code, stdout, stderr) = futures::executor::block_on(
                 backend.run_static_elf_with_tool::<StraceTool>((), true),
@@ -2718,6 +2832,16 @@ fn malformed_exec_returns_enoexec_without_replacing_image() {
         assert_eq!(exit_code, libc::ENOEXEC, "with_tool={with_tool}");
         assert!(stdout.is_empty(), "with_tool={with_tool}");
         assert!(stderr.is_empty(), "with_tool={with_tool}");
+        let mut observed = [0; SENTINEL.len()];
+        backend
+            .memory()
+            .read(SENTINEL_ADDRESS, &mut observed)
+            .unwrap();
+        assert_eq!(observed, SENTINEL, "with_tool={with_tool}");
+        original_memory
+            .read(SENTINEL_ADDRESS, &mut observed)
+            .unwrap();
+        assert_eq!(observed, SENTINEL, "with_tool={with_tool}");
     }
 }
 
