@@ -1,0 +1,440 @@
+#!/usr/bin/env python3
+"""The wrkslots launcher keeps removal evidence in one host process view."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+LAUNCHER = ROOT / "ci-hub/bin/wrkslots"
+LIFECYCLE_PATH = ROOT / "hermit/agent-utils/py/wrkslots/tests/test_lifecycle.py"
+LIFECYCLE_SPEC = importlib.util.spec_from_file_location(
+    "wrkslots_launcher_lifecycle", LIFECYCLE_PATH
+)
+assert LIFECYCLE_SPEC and LIFECYCLE_SPEC.loader
+lifecycle = importlib.util.module_from_spec(LIFECYCLE_SPEC)
+sys.modules[LIFECYCLE_SPEC.name] = lifecycle
+LIFECYCLE_SPEC.loader.exec_module(lifecycle)
+
+
+class WrkslotsLauncherTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name) / "tool"
+        (self.root / "ci-hub/bin").mkdir(parents=True)
+        (self.root / "ci-hub/health").mkdir(parents=True)
+        package = self.root / "hermit/agent-utils/py/wrkslots"
+        package.mkdir(parents=True)
+        shutil.copy2(LAUNCHER, self.root / "ci-hub/bin/wrkslots")
+        shutil.copy2(
+            ROOT / "ci-hub/health/removal_handoff_writer.py",
+            self.root / "ci-hub/health/removal_handoff_writer.py",
+        )
+
+        (self.root / "ci-hub/health/host_process_context.py").write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env python3
+                import os
+                import sys
+                print("fixture process view", file=sys.stderr)
+                raise SystemExit(int(os.environ.get("FIXTURE_PROCESS_VIEW_RC", "0")))
+                """
+            ),
+            encoding="utf-8",
+        )
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "__main__.py").write_text(
+            textwrap.dedent(
+                """\
+                import json
+                import os
+                from pathlib import Path
+                import sys
+
+                def ancestry():
+                    result = []
+                    current = os.getpid()
+                    while current > 0 and current not in result:
+                        result.append(current)
+                        try:
+                            for line in Path(f"/proc/{current}/status").read_text().splitlines():
+                                if line.startswith("PPid:"):
+                                    current = int(line.split()[1])
+                                    break
+                            else:
+                                break
+                        except OSError:
+                            break
+                    return result
+
+                Path(os.environ["INNER_RECORD"]).write_text(json.dumps({
+                    "argv": sys.argv[1:],
+                    "pid": os.getpid(),
+                    "runner_pid": os.environ.get("WRKSLOTS_REMOVE_RUNNER_PID"),
+                    "coordinator_start_ticks": os.environ.get(
+                        "WRKSLOTS_REMOVE_COORDINATOR_START_TICKS"
+                    ),
+                    "proof_fd": os.environ.get("WRKSLOTS_REMOVE_PROOF_FD"),
+                    "ancestry": ancestry(),
+                }))
+                raise SystemExit(int(os.environ.get("FIXTURE_INNER_RC", "0")))
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        self.bin = self.root / "fixture-bin"
+        self.bin.mkdir()
+        systemd_run = self.bin / "systemd-run"
+        systemd_run.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [[ ${FIXTURE_SYSTEMD_FAIL:-0} == 1 ]]; then
+                  exit 19
+                fi
+                : >"$SYSTEMD_RECORD"
+                for argument in "$@"; do
+                  case "$argument" in
+                    --property=*) printf '%s\n' "$argument" >>"$SYSTEMD_RECORD" ;;
+                  esac
+                done
+                while (($#)); do
+                  case "$1" in
+                    --setenv=WRKSLOTS_ORIGINAL_COORDINATOR_PID=*)
+                      export "WRKSLOTS_ORIGINAL_COORDINATOR_PID=${FIXTURE_COORDINATOR_PID:-${1#*=}}"
+                      ;;
+                    --setenv=WRKSLOTS_ORIGINAL_COORDINATOR_START_TICKS=*)
+                      if [[ ${FIXTURE_CORRUPT_START_TICKS:-0} == 1 ]]; then
+                        export WRKSLOTS_ORIGINAL_COORDINATOR_START_TICKS=0
+                      else
+                        export "${1#--setenv=}"
+                      fi
+                      ;;
+                    --setenv=*) export "${1#--setenv=}" ;;
+                    --working-directory=*) cd -- "${1#--working-directory=}" ;;
+                    --) shift; break ;;
+                  esac
+                  shift
+                done
+                exec "$@"
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemd_run.chmod(0o755)
+        self.record = Path(self.temporary.name) / "inner.json"
+        self.systemd_record = Path(self.temporary.name) / "systemd-argv"
+        self.environment = os.environ | {
+            "PATH": f"{self.bin}:{Path(sys.executable).parent}:/usr/bin:/bin",
+            "INNER_RECORD": str(self.record),
+            "SYSTEMD_RECORD": str(self.systemd_record),
+            "FIXTURE_COORDINATOR_PID": str(os.getpid()),
+        }
+
+    def run_launcher(
+        self, *arguments: str, **environment: str
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(self.root / "ci-hub/bin/wrkslots"), *arguments],
+            cwd=self.root,
+            env=self.environment | environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def removal_arguments(self) -> tuple[str, ...]:
+        return (
+            "--project-root",
+            str(self.root),
+            "remove",
+            "slot01",
+            "--coordinator-pid",
+            str(os.getpid()),
+            "--expected-generation",
+            "7",
+        )
+
+    def use_real_wrkslots_package(self) -> None:
+        package = self.root / "hermit/agent-utils/py/wrkslots"
+        shutil.rmtree(package)
+        shutil.copytree(ROOT / "hermit/agent-utils/py/wrkslots", package)
+
+    def test_removal_reenters_then_preserves_slot_and_generation(self) -> None:
+        completed = self.run_launcher(*self.removal_arguments())
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        record = json.loads(self.record.read_text())
+        self.assertIn("slot01", record["argv"])
+        self.assertEqual(
+            "7", record["argv"][record["argv"].index("--expected-generation") + 1]
+        )
+        coordinator = record["argv"][record["argv"].index("--coordinator-pid") + 1]
+        self.assertEqual(str(os.getpid()), coordinator)
+        self.assertIsNotNone(record["runner_pid"])
+        self.assertIsNotNone(record["coordinator_start_ticks"])
+        self.assertEqual("0", record["proof_fd"])
+        self.assertIn(int(record["runner_pid"]), record["ancestry"])
+        systemd_arguments = self.systemd_record.read_text().splitlines()
+        self.assertIn("--property=PrivateUsers=no", systemd_arguments)
+        self.assertIn("--property=PrivateMounts=no", systemd_arguments)
+        self.assertIn("--property=ProtectProc=default", systemd_arguments)
+        self.assertIn("--property=ProcSubset=all", systemd_arguments)
+
+    def test_restricted_reentry_refuses_without_running_inner_command(self) -> None:
+        completed = self.run_launcher(
+            *self.removal_arguments(), FIXTURE_PROCESS_VIEW_RC="2"
+        )
+
+        self.assertEqual(3, completed.returncode)
+        self.assertIn("does not have a verified full process view", completed.stderr)
+        self.assertFalse(self.record.exists())
+
+    def test_inner_refusal_is_preserved_without_fallback(self) -> None:
+        completed = self.run_launcher(*self.removal_arguments(), FIXTURE_INNER_RC="3")
+
+        self.assertEqual(3, completed.returncode)
+        self.assertTrue(self.record.exists())
+
+    def test_unexpected_inner_failure_does_not_claim_nothing_changed(self) -> None:
+        completed = self.run_launcher(*self.removal_arguments(), FIXTURE_INNER_RC="1")
+
+        self.assertEqual(3, completed.returncode)
+        self.assertIn("state: UNKNOWN", completed.stderr)
+        self.assertNotIn("no worktree or lifecycle record was changed", completed.stderr)
+        self.assertTrue(self.record.exists())
+
+    def test_validate_batch_uses_the_same_host_handoff(self) -> None:
+        completed = self.run_launcher(
+            "--project-root",
+            str(self.root),
+            "remove-validate-batch",
+            "--slot",
+            "validate01=11",
+            "--coordinator-pid",
+            str(os.getpid()),
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        record = json.loads(self.record.read_text())
+        self.assertIn("remove-validate-batch", record["argv"])
+        self.assertEqual(
+            "validate01=11", record["argv"][record["argv"].index("--slot") + 1]
+        )
+        coordinator = record["argv"][record["argv"].index("--coordinator-pid") + 1]
+        self.assertEqual(str(os.getpid()), coordinator)
+
+    def test_coordinator_pid_abbreviations_are_rewritten(self) -> None:
+        for arguments, option in (
+            (
+                (
+                    "--project-root",
+                    str(self.root),
+                    "remove",
+                    "slot01",
+                    "--coordinator-p",
+                    str(os.getpid()),
+                    "--expected-generation",
+                    "7",
+                ),
+                "--coordinator-p",
+            ),
+            (
+                (
+                    "--project-root",
+                    str(self.root),
+                    "remove",
+                    "slot01",
+                    f"--coordinator-pi={os.getpid()}",
+                    "--expected-generation",
+                    "7",
+                ),
+                "--coordinator-pi",
+            ),
+        ):
+            with self.subTest(arguments=arguments):
+                self.record.unlink(missing_ok=True)
+                completed = self.run_launcher(*arguments)
+
+                self.assertEqual(0, completed.returncode, completed.stderr)
+                record = json.loads(self.record.read_text())
+                if option in record["argv"]:
+                    coordinator = record["argv"][record["argv"].index(option) + 1]
+                else:
+                    coordinator = next(
+                        item.split("=", 1)[1]
+                        for item in record["argv"]
+                        if item.startswith(option + "=")
+                    )
+                self.assertEqual(str(os.getpid()), coordinator)
+
+    def test_argparse_global_abbreviation_cannot_bypass_handoff(self) -> None:
+        arguments = self.removal_arguments()
+        completed = self.run_launcher(
+            *arguments[:2], "--wait-l", "0", *arguments[2:]
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        record = json.loads(self.record.read_text())
+        self.assertIn("remove", record["argv"])
+
+    def test_end_of_global_options_cannot_bypass_handoff(self) -> None:
+        arguments = self.removal_arguments()
+        completed = self.run_launcher(
+            "--project-root", str(self.root), "--", *arguments[2:]
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        record = json.loads(self.record.read_text())
+        self.assertIn("remove", record["argv"])
+
+    def test_failed_host_handoff_never_falls_back(self) -> None:
+        completed = self.run_launcher(
+            *self.removal_arguments(), FIXTURE_SYSTEMD_FAIL="1"
+        )
+
+        self.assertEqual(3, completed.returncode)
+        self.assertIn("handoff or command failed with exit 19", completed.stderr)
+        self.assertIn("state: UNKNOWN", completed.stderr)
+        self.assertNotIn("no worktree or lifecycle record was changed", completed.stderr)
+        self.assertFalse(self.record.exists())
+
+    def test_changed_original_coordinator_generation_refuses(self) -> None:
+        completed = self.run_launcher(
+            *self.removal_arguments(), FIXTURE_CORRUPT_START_TICKS="1"
+        )
+
+        self.assertEqual(3, completed.returncode)
+        self.assertIn("coordinator process generation changed", completed.stderr)
+        self.assertFalse(self.record.exists())
+
+    def test_nonancestor_coordinator_is_refused_before_handoff(self) -> None:
+        arguments = list(self.removal_arguments())
+        arguments[arguments.index("--coordinator-pid") + 1] = "999999999"
+
+        completed = self.run_launcher(*arguments)
+
+        self.assertEqual(3, completed.returncode)
+        self.assertIn("cannot read the coordinator process generation", completed.stderr)
+        self.assertFalse(self.record.exists())
+
+    def test_read_only_command_does_not_use_host_handoff(self) -> None:
+        completed = self.run_launcher(
+            "--project-root", str(self.root), "status", FIXTURE_SYSTEMD_FAIL="1"
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        record = json.loads(self.record.read_text())
+        self.assertEqual(["--project-root", str(self.root), "status"], record["argv"])
+
+    def test_help_and_global_early_exits_do_not_require_host_handoff(self) -> None:
+        removal = self.removal_arguments()[2:]
+        cases = (
+            ("--project-root", str(self.root), "remove", "--help"),
+            ("--project-root", str(self.root), "remove", "-h"),
+            ("--project-root", str(self.root), "remove", "--he"),
+            ("--project-root", str(self.root), "--userguide", *removal),
+            ("--project-root", str(self.root), "--version", "remove"),
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                self.record.unlink(missing_ok=True)
+                self.systemd_record.unlink(missing_ok=True)
+                completed = self.run_launcher(
+                    *arguments,
+                    FIXTURE_SYSTEMD_FAIL="1",
+                )
+
+                self.assertEqual(0, completed.returncode, completed.stderr)
+                self.assertFalse(self.systemd_record.exists())
+                self.assertTrue(self.record.exists())
+
+    def test_real_removal_refuses_live_then_removes_dead_unheld_slot(self) -> None:
+        self.use_real_wrkslots_package()
+        lifecycle_root = Path(self.temporary.name) / "lifecycle"
+        lifecycle_root.mkdir()
+        project, _repository, _remote = lifecycle.make_project(
+            lifecycle_root
+        )
+        made = lifecycle.create(
+            project,
+            slot_type="validate",
+            branch=None,
+        )
+        self.assertEqual(0, made.returncode, made.stderr)
+        slot = lifecycle.checkout(project, slot_type="validate").parent
+
+        live = self.run_launcher(
+            "--project-root",
+            str(project),
+            "remove",
+            "slot01",
+            "--coordinator-pid",
+            str(os.getpid()),
+            "--expected-generation",
+            "1",
+        )
+
+        self.assertEqual(3, live.returncode)
+        self.assertIn("owner alive", live.stderr)
+        self.assertTrue(slot.is_dir())
+        self.assertEqual(1, len(lifecycle.active_slots(project)))
+
+        lifecycle.mark_owner_dead(project)
+        lifecycle.set_liveness(project, "dead")
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"],
+            cwd=slot,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(lifecycle.terminate_process, holder)
+        held = self.run_launcher(
+            "--project-root",
+            str(project),
+            "remove",
+            "slot01",
+            "--coordinator-pid",
+            str(os.getpid()),
+            "--expected-generation",
+            "1",
+        )
+
+        self.assertEqual(3, held.returncode)
+        self.assertIn("uses slot", held.stderr)
+        self.assertTrue(slot.is_dir())
+        self.assertEqual(1, len(lifecycle.active_slots(project)))
+        lifecycle.terminate_process(holder)
+
+        dead = self.run_launcher(
+            "--project-root",
+            str(project),
+            "remove",
+            "slot01",
+            "--coordinator-pid",
+            str(os.getpid()),
+            "--expected-generation",
+            "1",
+        )
+
+        self.assertEqual(0, dead.returncode, dead.stderr)
+        self.assertFalse(slot.exists())
+        self.assertEqual([], lifecycle.active_slots(project))
+
+
+if __name__ == "__main__":
+    unittest.main()
