@@ -215,5 +215,5 @@ fi
 # `>/dev/null 2>&1`, so a refused launch and a launch that ran and failed were
 # indistinguishable from the outside.
 emit_logged_result refused \
-  "could not launch $UNIT; spool retained for the next tick; systemd-run said: ${launch_error:-<no output>}"
+  "${PRIOR_FAILURE:+$PRIOR_FAILURE; }could not launch $UNIT; spool retained for the next tick; systemd-run said: ${launch_error:-<no output>}"
 exit 1

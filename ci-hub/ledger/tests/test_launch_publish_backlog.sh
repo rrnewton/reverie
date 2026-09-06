@@ -301,6 +301,23 @@ check_absent "launcher refusal has no unresolved placeholder" "unresolved-placeh
 check_absent "launcher refusal has no missing summary" "{summary}" "$work/tick-out"
 check_absent "launcher refusal has no generic no-signal report" "NO-SIGNAL" "$work/tick-out"
 
+SYSTEMCTL_FAILED_RC=0 SYSTEMCTL_RESULT=exit-code SYSTEMCTL_STATUS=2 \
+SYSTEMD_RUN_RC=1 SYSTEMD_RUN_ERROR="fixture retry refusal" \
+SYSTEMD_RUN_ARGV_SINK="$work/argv" SYSTEMCTL_ARGV_SINK="$work/systemctl-argv" \
+DEV_HERMIT_PARENT="$state_root" LEDGER_PUBLISH_GH_BIN="$work/ghdir/gh" \
+  PATH="$work/bin:$work/ghdir:/usr/bin:/bin" \
+  "$python3_bin" "$tool_root/agent-utils/py/bin/tick-hub" tick \
+    --config "$tick_config" --fired-state "$work/tick-fired-state" \
+    --now 102 --no-header > "$work/tick-out" 2>&1
+retry_refused_tick_rc=$?
+check_rc "failed child plus retry refusal renders through tick-hub" 0 "$retry_refused_tick_rc"
+check "failed child survives retry refusal" \
+  "NOTE: ledger publish sweep: previous ledger-publish-backlog failed with Result=exit-code ExecMainStatus=2; could not launch ledger-publish-backlog; spool retained for the next tick; systemd-run said: fixture retry refusal" \
+  "$work/tick-out"
+check_absent "combined failure has no unresolved placeholder" "unresolved-placeholder" "$work/tick-out"
+check_absent "combined failure has no missing summary" "{summary}" "$work/tick-out"
+check_absent "combined failure has no generic no-signal report" "NO-SIGNAL" "$work/tick-out"
+
 echo "== BASELINE (pre-fix) launcher: every positive above must FAIL here =="
 # Reconstruct the invocation as it stood before this change: no --setenv, no
 # StandardOutput/StandardError, and the launcher's own stderr discarded.
