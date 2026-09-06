@@ -785,6 +785,94 @@ fn static_elf_forks_execs_and_waits_for_child() {
 }
 
 #[test]
+fn real_vfork_shares_memory_until_exec_and_exec_detaches() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM vfork address-space test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "vfork-shared-address-space",
+        r#"
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static volatile int marker;
+static char *child_argv[3];
+static char **child_envp;
+
+int main(int argc, char **argv, char **envp) {
+  if (argc == 2) {
+    return marker == 0 ? 0 : 90;
+  }
+
+  marker = 7;
+  pid_t exited_child = vfork();
+  if (exited_child < 0) {
+    return 88;
+  }
+  if (exited_child == 0) {
+    marker = 21;
+    _exit(0);
+  }
+  if (marker != 21) {
+    return 89;
+  }
+  int status = 0;
+  if (waitpid(exited_child, &status, 0) != exited_child || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 0) {
+    return 90;
+  }
+
+  marker = 7;
+  child_argv[0] = argv[0];
+  child_argv[1] = "child";
+  child_envp = envp;
+
+  pid_t child = vfork();
+  if (child < 0) {
+    return 92;
+  }
+  if (child == 0) {
+    marker = 42;
+    execve(child_argv[0], child_argv, child_envp);
+    _exit(93);
+  }
+
+  if (marker != 42) {
+    return 94;
+  }
+  status = 0;
+  if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 0) {
+    return 95;
+  }
+  puts("vfork shared memory preserved");
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let runs = [
+        run_host_program_captured(executable, &[executable], &directory.0),
+        run_host_program_with_tool_captured(executable, &[executable], &directory.0),
+    ];
+    for (stdout, stderr) in runs {
+        assert_eq!(stdout, b"vfork shared memory preserved\n");
+        assert!(stderr.is_empty());
+    }
+}
+
+#[test]
 fn static_elf_self_abort_terminates_instead_of_faulting() {
     // Regression: glibc abort() writes its diagnostic, then raises SIGABRT via
     // tgkill(pid, tid, SIGABRT). Previously SIGABRT was unhandled (ENOSYS), so

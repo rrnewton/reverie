@@ -15,6 +15,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use futures::channel::oneshot;
 use kvm_bindings::CpuId;
 use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
 use kvm_bindings::kvm_enable_cap;
@@ -150,7 +151,6 @@ struct GuestThreadGroup {
     // AUTONOMOUS-BOT-IMPLEMENTED: Join cancelled KVM workers before root teardown returns.
     // TODO-HUMAN-REVIEW(PR-178): Review KVM worker join ordering.
     worker_handles: Mutex<Vec<std::thread::JoinHandle<()>>>,
-    transport_slots: Mutex<Vec<bool>>,
 }
 
 impl GuestThreadGroup {
@@ -229,14 +229,18 @@ impl GuestThreadGroup {
             .expect("KVM exit-group lock poisoned") = None;
         self.cancelled.store(false, Ordering::Release);
     }
+}
 
+#[derive(Default)]
+struct GuestTransportSlots {
+    slots: Mutex<Vec<bool>>,
+}
+
+impl GuestTransportSlots {
     // AUTONOMOUS-BOT-IMPLEMENTED: Reuse syscall transports after guest threads exit.
     // TODO-HUMAN-REVIEW(PR-176): Review KVM transport slot lifecycle.
     fn reserve_transport_slot(&self, child_tid: i32) -> Result<usize> {
-        let mut slots = self
-            .transport_slots
-            .lock()
-            .expect("KVM transport-slot lock poisoned");
+        let mut slots = self.slots.lock().expect("KVM transport-slot lock poisoned");
         if slots.is_empty() {
             slots.resize(MAX_GUEST_THREADS as usize, false);
         }
@@ -249,10 +253,7 @@ impl GuestThreadGroup {
     }
 
     fn release_transport_slot(&self, slot: usize) {
-        let mut slots = self
-            .transport_slots
-            .lock()
-            .expect("KVM transport-slot lock poisoned");
+        let mut slots = self.slots.lock().expect("KVM transport-slot lock poisoned");
         if let Some(in_use) = slots.get_mut(slot) {
             *in_use = false;
         }
@@ -339,13 +340,23 @@ pub struct KvmBackend {
     pub(crate) vcpu: VcpuFd,
     vm: VmFd,
     pub(crate) memory: GuestMemory,
+    // A vfork child shares this mapping with its blocked parent until exec.
+    // Exec must install a fresh mapping instead of clearing the shared one.
+    detach_memory_on_exec: bool,
     _kvm: Kvm,
     cpuid_policy: CpuidPolicy,
     hypercall_instruction: [u8; 3],
     syscall_trampoline_address: u64,
     pub(crate) syscall_frame_address: u64,
     thread_group: Arc<GuestThreadGroup>,
-    thread_slot: Option<usize>,
+    // All vCPUs sharing a guest address space allocate distinct syscall
+    // trampoline/frame pairs from the same table. Process lifecycle remains in
+    // `thread_group`, which a vfork child must not share with its parent.
+    transport_slots: Arc<GuestTransportSlots>,
+    transport_slot: Option<usize>,
+    // The Tool-backed vfork parent waits on this until its child has detached
+    // the shared address space with exec or has terminated.
+    vfork_parent: Option<oneshot::Sender<()>>,
     is_guest_thread: bool,
     // Who owns this backend's guest threads. The single value drives BOTH the
     // CLONE_THREAD worker dispatch path (`run_process_action_with_tool`) and
@@ -370,6 +381,9 @@ pub struct KvmBackend {
 
 struct KvmProcessSnapshot {
     memory: GuestMemory,
+    detach_memory_on_exec: bool,
+    shared_transport_slots: Option<Arc<GuestTransportSlots>>,
+    shared_syscall_frame: Option<Vec<u8>>,
     registers: kvm_regs,
     xsave: kvm_xsave,
     stdin: Option<File>,
@@ -453,13 +467,16 @@ impl KvmBackend {
             vcpu,
             vm,
             memory,
+            detach_memory_on_exec: false,
             _kvm: kvm,
             cpuid_policy,
             hypercall_instruction,
             syscall_trampoline_address: SYSCALL_TRAMPOLINE_ADDRESS,
             syscall_frame_address: SYSCALL_FRAME_ADDRESS,
             thread_group: Arc::new(GuestThreadGroup::default()),
-            thread_slot: None,
+            transport_slots: Arc::new(GuestTransportSlots::default()),
+            transport_slot: None,
+            vfork_parent: None,
             is_guest_thread: false,
             // Effective ownership before any tool run resolves it. The direct
             // (non-tool) personality never dispatches threads through a Tool loop,
@@ -681,9 +698,24 @@ impl KvmBackend {
         Ok(())
     }
 
-    fn snapshot_process(&self) -> Result<KvmProcessSnapshot> {
+    fn snapshot_process(&self, shared_address_space: bool) -> Result<KvmProcessSnapshot> {
+        let shared_syscall_frame = if shared_address_space {
+            let mut frame = vec![0; FRAME_SIZE];
+            self.memory
+                .read_raw(self.syscall_frame_address, &mut frame)?;
+            Some(frame)
+        } else {
+            None
+        };
         Ok(KvmProcessSnapshot {
-            memory: self.memory.snapshot()?,
+            memory: if shared_address_space {
+                self.memory.clone()
+            } else {
+                self.memory.snapshot()?
+            },
+            detach_memory_on_exec: shared_address_space,
+            shared_transport_slots: shared_address_space.then(|| self.transport_slots.clone()),
+            shared_syscall_frame,
             registers: self.vcpu.get_regs()?,
             xsave: self.vcpu.get_xsave()?,
             stdin: self.stdin.as_ref().map(File::try_clone).transpose()?,
@@ -691,19 +723,49 @@ impl KvmBackend {
         })
     }
 
-    fn from_process_snapshot(snapshot: KvmProcessSnapshot) -> Result<Self> {
+    fn from_process_snapshot(snapshot: KvmProcessSnapshot, child_pid: i32) -> Result<Self> {
         let mut child = Self::new_with_memory_and_cpuid_policy(
             snapshot.memory,
             snapshot.cpuid_policy,
             snapshot.stdin,
         )?;
-        configure_long_mode(
-            &mut child.memory,
-            &child.vcpu,
-            0,
-            snapshot.registers.rsp,
-            child.hypercall_instruction,
-        )?;
+        child.detach_memory_on_exec = snapshot.detach_memory_on_exec;
+        if let Some(transport_slots) = snapshot.shared_transport_slots {
+            child.transport_slots = transport_slots;
+            let slot = child.transport_slots.reserve_transport_slot(child_pid)?;
+            child.transport_slot = Some(slot);
+            let syscall_trampoline_address =
+                THREAD_SYSCALL_AREA_START + slot as u64 * THREAD_SYSCALL_AREA_STRIDE;
+            let syscall_frame_address = syscall_trampoline_address + PAGE_SIZE;
+            child.syscall_trampoline_address = syscall_trampoline_address;
+            child.syscall_frame_address = syscall_frame_address;
+            configure_long_mode_with_syscall_area(
+                &mut child.memory,
+                &child.vcpu,
+                0,
+                snapshot.registers.rsp,
+                child.hypercall_instruction,
+                syscall_trampoline_address,
+                syscall_frame_address,
+                false,
+            )?;
+            child.memory.write_raw(
+                syscall_frame_address,
+                snapshot
+                    .shared_syscall_frame
+                    .as_deref()
+                    .expect("shared transport requires the pending syscall frame"),
+            )?;
+        } else {
+            debug_assert!(snapshot.shared_syscall_frame.is_none());
+            configure_long_mode(
+                &mut child.memory,
+                &child.vcpu,
+                0,
+                snapshot.registers.rsp,
+                child.hypercall_instruction,
+            )?;
+        }
         child.vcpu.set_regs(&snapshot.registers)?;
         // SAFETY: this guest setup does not enable dynamically sized XSTATE features.
         unsafe { child.vcpu.set_xsave(&snapshot.xsave)? };
@@ -711,20 +773,25 @@ impl KvmBackend {
     }
 
     // TODO-HUMAN-REVIEW(PR-172): Review independent vCPU creation from clone3 state.
+    #[allow(clippy::too_many_arguments)]
     fn from_thread_state(
         memory: GuestMemory,
         registers: kvm_regs,
         xsave: kvm_xsave,
         stdin: Option<File>,
         cpuid_policy: CpuidPolicy,
+        detach_memory_on_exec: bool,
         child_tid: i32,
         thread_group: Arc<GuestThreadGroup>,
+        transport_slots: Arc<GuestTransportSlots>,
     ) -> Result<Self> {
         let mut child = Self::new_with_memory_and_cpuid_policy(memory, cpuid_policy, stdin)?;
+        child.detach_memory_on_exec = detach_memory_on_exec;
         child.thread_group = thread_group;
+        child.transport_slots = transport_slots;
         child.is_guest_thread = true;
-        let slot = child.thread_group.reserve_transport_slot(child_tid)?;
-        child.thread_slot = Some(slot);
+        let slot = child.transport_slots.reserve_transport_slot(child_tid)?;
+        child.transport_slot = Some(slot);
         let syscall_trampoline_address =
             THREAD_SYSCALL_AREA_START + slot as u64 * THREAD_SYSCALL_AREA_STRIDE;
         let syscall_frame_address = syscall_trampoline_address + PAGE_SIZE;
@@ -746,6 +813,37 @@ impl KvmBackend {
         Ok(child)
     }
 
+    /// Replace slot zero while this backend's vCPU is stopped.
+    ///
+    /// KVM rejects changing an existing memory slot's userspace address in
+    /// place, so image replacement must remove and recreate the slot before
+    /// releasing the old host mapping.
+    fn replace_guest_memory(&mut self, memory: GuestMemory) -> Result<()> {
+        let removed_region = kvm_userspace_memory_region {
+            slot: 0,
+            guest_phys_addr: self.memory.guest_base(),
+            memory_size: 0,
+            userspace_addr: self.memory.host_address(),
+            flags: 0,
+        };
+        let replacement_region = kvm_userspace_memory_region {
+            slot: 0,
+            guest_phys_addr: memory.guest_base(),
+            memory_size: memory.len() as u64,
+            userspace_addr: memory.host_address(),
+            flags: 0,
+        };
+        // SAFETY: the vCPU is stopped at an intercepted exec. `memory` remains
+        // owned by this backend after registration, and the old mapping remains
+        // owned until slot zero no longer refers to it.
+        unsafe {
+            self.vm.set_user_memory_region(removed_region)?;
+            self.vm.set_user_memory_region(replacement_region)?;
+        }
+        self.memory = memory;
+        Ok(())
+    }
+
     // TODO-HUMAN-REVIEW(PR-156): Review lifecycle-hook exec image replacement API.
     pub(crate) fn exec_process(
         &mut self,
@@ -754,12 +852,36 @@ impl KvmBackend {
         argv: &[String],
         envp: &[String],
     ) -> Result<()> {
+        let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
+        let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
+        if self.detach_memory_on_exec {
+            let mut memory = GuestMemory::new(self.memory.guest_base(), self.memory.len())?;
+            let mut loaded = load_static_elf(&mut memory, image, &argv, &envp, executor.cwd())?;
+            loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
+            self.replace_guest_memory(memory)?;
+            configure_long_mode(
+                &mut self.memory,
+                &self.vcpu,
+                loaded.entry_point,
+                loaded.stack_pointer,
+                self.hypercall_instruction,
+            )?;
+            self.memory.enable_user_access();
+            if let Some(slot) = self.transport_slot.take() {
+                self.transport_slots.release_transport_slot(slot);
+            }
+            self.transport_slots = Arc::new(GuestTransportSlots::default());
+            self.syscall_trampoline_address = SYSCALL_TRAMPOLINE_ADDRESS;
+            self.syscall_frame_address = SYSCALL_FRAME_ADDRESS;
+            self.detach_memory_on_exec = false;
+            executor.replace_after_exec(loaded);
+            self.notify_vfork_parent();
+            return Ok(());
+        }
+
         let user_length = usize::try_from(self.memory.guest_end() - BOOT_RESERVED_END)
             .expect("guest memory length must fit usize");
         self.memory.zero_raw(BOOT_RESERVED_END, user_length)?;
-
-        let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
-        let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
         let mut loaded = load_static_elf(&mut self.memory, image, &argv, &envp, executor.cwd())?;
         loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
         configure_long_mode(
@@ -774,6 +896,12 @@ impl KvmBackend {
         Ok(())
     }
 
+    fn notify_vfork_parent(&mut self) {
+        if let Some(sender) = self.vfork_parent.take() {
+            let _ = sender.send(());
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn prepare_forked_process(
         &mut self,
@@ -784,6 +912,7 @@ impl KvmBackend {
         child_tid: Option<u64>,
         clear_child_tid: Option<u64>,
         clear_sighand: bool,
+        shared_address_space: bool,
         park_syscall_return: bool,
     ) -> Result<ForkedProcess> {
         let mut child_executor = executor.fork_child(child_pid, clear_sighand)?;
@@ -813,10 +942,10 @@ impl KvmBackend {
             )?;
             parked?;
         }
-        let child_snapshot = self.snapshot_process()?;
+        let child_snapshot = self.snapshot_process(shared_address_space)?;
         write_tid_best_effort(&mut self.memory, parent_tid, child_pid);
 
-        let mut child = Self::from_process_snapshot(child_snapshot)?;
+        let mut child = Self::from_process_snapshot(child_snapshot, child_pid)?;
         // Forked children inherit the parent's thread ownership so execution and
         // `is_backend_owned_syscall`'s futex classification stay consistent.
         child.thread_ownership = self.thread_ownership;
@@ -847,8 +976,8 @@ impl KvmBackend {
         stdout: Vec<u8>,
         stderr: Vec<u8>,
     ) -> Result<()> {
-        // A process clone has a private snapshot, so no surviving task can
-        // observe this clear; preserve the child-side ABI.
+        // Shared-address-space process clones reject CHILD_CLEARTID, so any
+        // accepted clear pointer belongs to an ordinary fork's private copy.
         write_tid_best_effort(
             &mut child.backend.memory,
             child.executor.take_clear_child_tid(),
@@ -877,6 +1006,7 @@ impl KvmBackend {
             ProcessAction::Fork {
                 child_pid,
                 child_stack,
+                shared_address_space,
                 parent_tid,
                 child_tid,
                 clear_child_tid,
@@ -890,6 +1020,7 @@ impl KvmBackend {
                     child_tid,
                     clear_child_tid,
                     clear_sighand,
+                    shared_address_space,
                     park_syscall_return,
                 )?;
                 let (code, stdout, stderr) =
@@ -952,8 +1083,10 @@ impl KvmBackend {
                     parent_xsave,
                     child_stdin,
                     self.cpuid_policy,
+                    self.detach_memory_on_exec,
                     child_tid,
                     self.thread_group.clone(),
+                    self.transport_slots.clone(),
                 )?;
                 // Thread children inherit the parent's thread ownership so
                 // execution and futex classification stay consistent.
@@ -1061,6 +1194,7 @@ impl KvmBackend {
             ProcessAction::Fork {
                 child_pid,
                 child_stack,
+                shared_address_space,
                 parent_tid,
                 child_tid,
                 clear_child_tid,
@@ -1074,6 +1208,7 @@ impl KvmBackend {
                     child_tid,
                     clear_child_tid,
                     clear_sighand,
+                    shared_address_space,
                     park_syscall_return,
                 )?;
 
@@ -1096,6 +1231,13 @@ impl KvmBackend {
                 let completion_notifier = executor.child_completion_notifier();
                 let completion = Arc::new(Mutex::new(None));
                 let child_completion = completion.clone();
+                let vfork_completion = if shared_address_space {
+                    let (sender, receiver) = oneshot::channel();
+                    child.backend.vfork_parent = Some(sender);
+                    Some(receiver)
+                } else {
+                    None
+                };
                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
                 let handle = std::thread::Builder::new()
                     .name(format!("reverie-kvm-process-{raw_child_pid}"))
@@ -1119,6 +1261,7 @@ impl KvmBackend {
                                 false,
                             ),
                         );
+                        child.backend.notify_vfork_parent();
                         match result {
                             Ok((status, _, _)) => {
                                 write_tid_best_effort(
@@ -1170,7 +1313,15 @@ impl KvmBackend {
                     self.syscall_frame_address,
                     i64::from(raw_child_pid),
                     None,
-                )
+                )?;
+                if let Some(completion) = vfork_completion {
+                    completion.await.map_err(|_| {
+                        Error::UnexpectedVcpuExit(format!(
+                            "KVM vfork child {raw_child_pid} ended without releasing its parent"
+                        ))
+                    })?;
+                }
+                Ok(())
             }
             // `ThreadOwnership::Host`: CLONE_THREAD workers run uninstrumented on
             // the direct backend personality with host-backed synchronization,
@@ -1249,8 +1400,10 @@ impl KvmBackend {
                     parent_xsave,
                     child_stdin,
                     self.cpuid_policy,
+                    self.detach_memory_on_exec,
                     child_tid,
                     self.thread_group.clone(),
+                    self.transport_slots.clone(),
                 )?;
                 // Thread children inherit the parent's thread ownership so
                 // execution and futex classification stay consistent.
@@ -1638,8 +1791,8 @@ impl BackendStatsSource for KvmBackend {
 
 impl Drop for KvmBackend {
     fn drop(&mut self) {
-        if let Some(slot) = self.thread_slot.take() {
-            self.thread_group.release_transport_slot(slot);
+        if let Some(slot) = self.transport_slot.take() {
+            self.transport_slots.release_transport_slot(slot);
         }
         if !self.is_guest_thread {
             self.cancel_guest_threads();
@@ -1738,20 +1891,23 @@ mod tests {
 
     #[test]
     fn guest_thread_transport_slots_are_bounded_and_reusable() {
-        let group = GuestThreadGroup::default();
+        let slots_table = GuestTransportSlots::default();
         let mut slots = Vec::new();
         for tid in 2..2 + MAX_GUEST_THREADS as i32 {
-            slots.push(group.reserve_transport_slot(tid).unwrap());
+            slots.push(slots_table.reserve_transport_slot(tid).unwrap());
         }
         assert_eq!(slots, (0..MAX_GUEST_THREADS as usize).collect::<Vec<_>>());
         assert!(matches!(
-            group.reserve_transport_slot(10_000),
+            slots_table.reserve_transport_slot(10_000),
             Err(Error::GuestThreadLimitExceeded(10_000))
         ));
 
         let released = slots[slots.len() / 2];
-        group.release_transport_slot(released);
-        assert_eq!(group.reserve_transport_slot(10_001).unwrap(), released);
+        slots_table.release_transport_slot(released);
+        assert_eq!(
+            slots_table.reserve_transport_slot(10_001).unwrap(),
+            released
+        );
     }
 
     #[test]
