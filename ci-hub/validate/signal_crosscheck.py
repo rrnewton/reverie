@@ -1137,6 +1137,7 @@ def _is_admitted_pre_plan_no_result(
     wrapper_outcome: Mapping[str, Any] | None,
 ) -> bool:
     """Return whether a typed admitted run stopped before any DAG node ran."""
+    marker = raw.get("service_result_schema")
     admission = projected.get("admission_result")
     if not (
         projected.get("state") == run_registry.RunState.COMPLETED.value
@@ -1153,10 +1154,16 @@ def _is_admitted_pre_plan_no_result(
         and raw.get("final_validate_status") == "COULD_NOT_RUN"
         and "selection_mode" in raw
         and raw.get("selection_mode") is None
-        and raw.get("service_result_schema") == service_result.SCHEMA_VERSION
+        and marker in service_result.AUTHORITATIVE_SCHEMA_VERSIONS
         and "scorecard_writeback" in raw
         and raw.get("scorecard_writeback") is None
-        and isinstance(raw.get("detail"), str)
+        and (
+            (marker == service_result.TEST_COUNTS_SCHEMA_VERSION and "detail" not in raw)
+            or (
+                marker == service_result.SCHEMA_VERSION
+                and isinstance(raw.get("detail"), str)
+            )
+        )
         and raw.get("result_source") == "validation-service-result"
     ):
         return False
@@ -1183,11 +1190,21 @@ def _is_admitted_pre_plan_no_result(
         and evidence.executed_tests is None
         and evidence.passed_tests is None
         and evidence.final_validate_status == "COULD_NOT_RUN"
-        and raw.get("detail")
-        == (
-            "\n".join(evidence.detail)
-            if evidence.detail is not None
-            else "validation reported COULD_NOT_RUN without detail"
+        and (
+            (
+                marker == service_result.TEST_COUNTS_SCHEMA_VERSION
+                and evidence.detail is None
+                and "detail" not in raw
+            )
+            or (
+                marker == service_result.SCHEMA_VERSION
+                and raw.get("detail")
+                == (
+                    "\n".join(evidence.detail)
+                    if evidence.detail is not None
+                    else "validation reported COULD_NOT_RUN without detail"
+                )
+            )
         )
         and evidence.selection_mode is None
         and evidence.scorecard_writeback is None

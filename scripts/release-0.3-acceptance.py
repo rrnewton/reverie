@@ -355,7 +355,7 @@ def manual_validate(
         "scorecard_writeback": framework.scorecard_writeback,
         "result_source": framework.result_source,
     }
-    if framework.service_result_schema != service_result.SCHEMA_VERSION:
+    if framework.service_result_schema not in service_result.AUTHORITATIVE_SCHEMA_VERSIONS:
         return (
             "NO_RESULT",
             "historical validation service result is readable but has no current authority",

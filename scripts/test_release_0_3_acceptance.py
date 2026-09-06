@@ -277,7 +277,7 @@ class ReleaseAcceptanceTests(unittest.TestCase):
     def test_historical_manual_results_remain_readable_but_not_authoritative(self) -> None:
         reference = self.evidence["criteria"]["AC-STRICT-03"]["result_artifact"]
         original = json.loads((self.artifacts / reference["path"]).read_text())
-        for version in (1, 2, 3, 4):
+        for version in (1, 2, 3):
             with self.subTest(version=version):
                 def make_historical(result):
                     result.clear()
@@ -299,6 +299,22 @@ class ReleaseAcceptanceTests(unittest.TestCase):
                     self.assertIsNone(row.observed["passed_tests"])
                 else:
                     self.assertEqual(2129, row.observed["passed_tests"])
+
+    def test_schema4_manual_result_retains_exact_count_authority(self) -> None:
+        reference = self.evidence["criteria"]["AC-STRICT-03"]["result_artifact"]
+        original = json.loads((self.artifacts / reference["path"]).read_text())
+
+        def make_schema4(result):
+            result.clear()
+            result.update(copy.deepcopy(original))
+            result["schema_version"] = 4
+            result.pop("detail")
+
+        self.mutate_manual_result(make_schema4)
+        row = self.row(self.evaluate(), "AC-STRICT-03")
+        self.assertEqual("PASS", row.verdict)
+        self.assertEqual(2129, row.observed["executed_tests"])
+        self.assertEqual(2129, row.observed["passed_tests"])
 
     def test_could_not_run_reports_exact_detail(self) -> None:
         self.mutate_manual_result(
