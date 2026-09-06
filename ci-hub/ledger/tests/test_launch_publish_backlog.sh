@@ -7,7 +7,7 @@
 #
 # Bracket for the detached ledger publish launcher.
 #
-# TWO DEFECTS, BOTH BRACKETED IN BOTH DIRECTIONS AGAINST THE PRE-FIX SCRIPT.
+# THREE DEFECTS, ALL BRACKETED IN BOTH DIRECTIONS AGAINST THE PRE-FIX SCRIPT.
 # A fix whose before-state is not demonstrated is indistinguishable from a no-op,
 # so every positive here has a matching assertion run against a reconstructed
 # baseline launcher (BASELINE_SNIPPET below), which must FAIL the same check.
@@ -26,6 +26,10 @@
 #      discarded -- it had no reachable audience, which from outside is
 #      indistinguishable from being discarded.
 #
+#   3. RESULT. `systemd-run --collect` discarded a failed child's result, and the
+#      launcher returned zero for every refusal and overlapping run. A
+#      `when: failure` health gate therefore rendered all of them as CLEAN.
+#
 # systemd-run is STUBBED so these assertions test the arguments the unit would
 # receive, not the local systemd. Testing against real systemd would make the
 # bracket a test of this host's manager state instead of the launcher's contract.
@@ -35,6 +39,7 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 launcher=$here/../launch_publish_backlog.sh
 work=$(mktemp -d "${TMPDIR:-/tmp}/launch-publish-test.XXXXXX")
 tool_root=$(cd -- "$here/../../.." && pwd)
+python3_bin=$(command -v python3)
 state_root=$work/state-root
 trap 'rm -rf "$work"' EXIT
 fails=0
@@ -46,6 +51,9 @@ check() { # label  expected-substring  file
 check_absent() { # label  forbidden-substring  file
   if grep -Fq -- "$2" "$3"; then note FAIL "$1 -- should NOT contain: $2"; fails=$((fails+1)); else note PASS "$1"; fi
 }
+check_line() { # label exact-line file
+  if grep -Fxq -- "$2" "$3"; then note PASS "$1"; else note FAIL "$1 -- expected exact line: $2"; fails=$((fails+1)); fi
+}
 check_rc() { # label expected actual
   if [[ $2 == "$3" ]]; then note PASS "$1"; else note FAIL "$1 -- expected rc=$2, got rc=$3"; fails=$((fails+1)); fi
 }
@@ -55,6 +63,9 @@ mkdir -p "$work/bin" "$work/ghdir" "$state_root"
 cat >"$work/bin/systemd-run" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$SYSTEMD_RUN_ARGV_SINK"
+if [[ -n ${SYSTEMD_RUN_ERROR:-} ]]; then
+  printf '%s\n' "$SYSTEMD_RUN_ERROR" >&2
+fi
 exit "${SYSTEMD_RUN_RC:-0}"
 STUB
 chmod +x "$work/bin/systemd-run"
@@ -79,6 +90,11 @@ chmod +x "$work/bin/systemctl"
 for command in bash dirname mkdir tee; do
   ln -s "$(command -v "$command")" "$work/bin/$command"
 done
+mkdir -p "$work/no-systemd-bin"
+for command in bash dirname mkdir tee; do
+  ln -s "$(command -v "$command")" "$work/no-systemd-bin/$command"
+done
+ln -s "$work/bin/systemctl" "$work/no-systemd-bin/systemctl"
 
 run_launcher() { # script  extra-PATH-dir  -> writes argv to $work/argv, stdout to $work/out
   local script=$1 extra=${2:-}
@@ -130,6 +146,18 @@ run_home_gh_launcher() { # script -> PATH omits gh; only $HOME/bin supplies it
     bash "$script" > "$work/out" 2>&1
 }
 
+run_without_systemd_run() { # script -> systemctl exists, systemd-run does not
+  local script=$1
+  : > "$work/argv"
+  : > "$work/systemctl-argv"
+  SYSTEMD_RUN_ARGV_SINK="$work/argv" \
+  SYSTEMCTL_ARGV_SINK="$work/systemctl-argv" \
+  DEV_HERMIT_PARENT="$state_root" \
+  LEDGER_PUBLISH_GH_BIN="$work/ghdir/gh" \
+    PATH="$work/no-systemd-bin" \
+    bash "$script" > "$work/out" 2>&1
+}
+
 echo "== FIXED launcher, gh present =="
 run_launcher "$launcher" "$work/ghdir"
 check "launch reported"                 "state=launched"                       "$work/out"
@@ -151,6 +179,10 @@ fixed_failed_rc=$?
 check_rc "prior child failure makes the tick fail" 1 "$fixed_failed_rc"
 check "terminal result reported"          "Result=exit-code ExecMainStatus=2" "$work/out"
 check "failed child retried"              "state=relaunched"                 "$work/out"
+check_line "failed state is a captured field" "state=relaunched"               "$work/out"
+check_line "failed summary is a captured field" \
+  "summary=previous ledger-publish-backlog failed with Result=exit-code ExecMainStatus=2; retry launched detached as ledger-publish-backlog; output appended to $state_root/ignored/ci-hub/ledger-publish-backlog.log" \
+  "$work/out"
 check "failed unit reset after reading"   "reset-failed ledger-publish-backlog.service" "$work/systemctl-argv"
 check "retry launched"                    "--unit=ledger-publish-backlog"     "$work/argv"
 
@@ -212,6 +244,62 @@ launch_refused_rc=$?
 check "refusal reported"                "state=refused"                        "$work/out"
 check "systemd-run's output retained"   "systemd-run said:"                    "$work/out"
 check_rc "launch refusal is a gate failure" 1 "$launch_refused_rc"
+
+echo "== FIXED launcher, systemd-run UNAVAILABLE: report it as a gate failure =="
+run_without_systemd_run "$launcher"
+unavailable_rc=$?
+check_rc "missing systemd-run is a gate failure" 1 "$unavailable_rc"
+check_line "unavailable state is a captured field" "state=unavailable" "$work/out"
+check_line "unavailable summary is a captured field" \
+  "summary=systemd-run unavailable; publish sweep not launched; spool retained" "$work/out"
+
+echo "== FIXED when:failure rendering preserves the failed child and launcher refusal =="
+tick_config=$work/tick-hub.yaml
+cat >"$tick_config" <<EOF
+reminders:
+  - name: ledger_publish_sweep
+    cadence_secs: 0
+    gate:
+      cmd: "$launcher"
+      when: failure
+      capture: true
+    emit:
+      kind: note
+      fields:
+        component: ledger-publish-sweep
+      title: "ledger publish sweep: {summary}"
+EOF
+SYSTEMCTL_FAILED_RC=0 SYSTEMCTL_RESULT=exit-code SYSTEMCTL_STATUS=2 \
+SYSTEMD_RUN_ARGV_SINK="$work/argv" SYSTEMCTL_ARGV_SINK="$work/systemctl-argv" \
+DEV_HERMIT_PARENT="$state_root" LEDGER_PUBLISH_GH_BIN="$work/ghdir/gh" \
+  PATH="$work/bin:$work/ghdir:/usr/bin:/bin" \
+  "$python3_bin" "$tool_root/agent-utils/py/bin/tick-hub" tick \
+    --config "$tick_config" --fired-state "$work/tick-fired-state" \
+    --now 100 --no-header > "$work/tick-out" 2>&1
+failed_tick_rc=$?
+check_rc "failed child renders through tick-hub" 0 "$failed_tick_rc"
+check "failed child result reaches when:failure note" \
+  "NOTE: ledger publish sweep: previous ledger-publish-backlog failed with Result=exit-code ExecMainStatus=2; retry launched detached as ledger-publish-backlog" \
+  "$work/tick-out"
+check_absent "failed child has no unresolved placeholder" "unresolved-placeholder" "$work/tick-out"
+check_absent "failed child has no missing summary" "{summary}" "$work/tick-out"
+check_absent "failed child has no generic no-signal report" "NO-SIGNAL" "$work/tick-out"
+
+SYSTEMD_RUN_RC=1 SYSTEMD_RUN_ERROR="fixture launcher refusal" \
+SYSTEMD_RUN_ARGV_SINK="$work/argv" SYSTEMCTL_ARGV_SINK="$work/systemctl-argv" \
+DEV_HERMIT_PARENT="$state_root" LEDGER_PUBLISH_GH_BIN="$work/ghdir/gh" \
+  PATH="$work/bin:$work/ghdir:/usr/bin:/bin" \
+  "$python3_bin" "$tool_root/agent-utils/py/bin/tick-hub" tick \
+    --config "$tick_config" --fired-state "$work/tick-fired-state" \
+    --now 101 --no-header > "$work/tick-out" 2>&1
+refused_tick_rc=$?
+check_rc "launcher refusal renders through tick-hub" 0 "$refused_tick_rc"
+check "launcher refusal reaches when:failure note" \
+  "NOTE: ledger publish sweep: could not launch ledger-publish-backlog; spool retained for the next tick; systemd-run said: fixture launcher refusal" \
+  "$work/tick-out"
+check_absent "launcher refusal has no unresolved placeholder" "unresolved-placeholder" "$work/tick-out"
+check_absent "launcher refusal has no missing summary" "{summary}" "$work/tick-out"
+check_absent "launcher refusal has no generic no-signal report" "NO-SIGNAL" "$work/tick-out"
 
 echo "== BASELINE (pre-fix) launcher: every positive above must FAIL here =="
 # Reconstruct the invocation as it stood before this change: no --setenv, no
@@ -285,8 +373,8 @@ if systemctl --user is-failed --quiet "$UNIT.service" 2>/dev/null; then
     2>/dev/null || true)
   PRIOR_FAILURE="previous $UNIT failed with Result=${UNIT_RESULT:-unknown} ExecMainStatus=${UNIT_STATUS:-unknown}"
   if ! reset_error=$(systemctl --user reset-failed "$UNIT.service" 2>&1); then
-    echo "state=refused summary=$PRIOR_FAILURE; could not reset it for retry; spool retained; systemctl said: ${reset_error:-<no output>}" \\
-      | tee -a "$LOG" 2>/dev/null || true
+    emit_logged_result refused \\
+      "$PRIOR_FAILURE; could not reset it for retry; spool retained; systemctl said: ${reset_error:-<no output>}"
     exit 1
   fi
 fi
@@ -327,7 +415,7 @@ check_absent "baseline omits terminal result" "ExecMainStatus=2" "$work/out"
 
 echo
 if [[ $fails -eq 0 ]]; then
-  echo "test_launch_publish_backlog: PASS (fixed launcher hands the unit a gh-bearing PATH and readable output, re-enters the exact cached tool revision for detached work, retains and reports a detached failure before retrying it, refuses incomplete handoff and missing gh without dropping the spool, retains systemd-run's own error, and the reconstructed pre-fix launcher fails the original checks)"
+  echo "test_launch_publish_backlog: PASS (fixed launcher hands the unit a gh-bearing PATH and readable output, re-enters the exact cached tool revision for detached work, retains and reports a detached failure before retrying it, preserves that detail through the when:failure renderer, refuses incomplete handoff and missing gh without dropping the spool, retains systemd-run's own error, and the reconstructed pre-fix launcher fails the original checks)"
   exit 0
 fi
 echo "test_launch_publish_backlog: FAIL ($fails check(s))"

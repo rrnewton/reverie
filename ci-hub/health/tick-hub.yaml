@@ -417,10 +417,11 @@ reminders:
   # because a 65-75s mutation on the 30s gate budget made that gate report
   # "could not run ... timed out" every cycle for a day and emit no measurement
   # at all. A publish is heavier than a rescue, so it gets its own budget and
-  # the detector keeps its own. The exit code reports only whether the unit was
-  # ACCEPTED; whether publication succeeded is reported by the next
-  # ledger_spool_backlog or series_spool_backlog observation, which is the
-  # honest place for it.
+  # the detector keeps its own. A newly accepted unit exits zero. A launcher
+  # refusal, a unit still active at the next scheduled sweep, or a retained
+  # failed unit exits nonzero and names the reason here before the failed unit is
+  # reset and retried. Successful publication is still established by the next
+  # ledger_spool_backlog or series_spool_backlog observation.
   #
   # No new authority: this schedules the existing publisher for both stores. It
   # writes only through a dedicated clone, goes out via the serialized

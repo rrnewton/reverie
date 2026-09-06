@@ -44,6 +44,21 @@ LOG_DIR=${LEDGER_PUBLISH_LOG_DIR:-$STATE_ROOT/ignored/ci-hub}
 LOG=$LOG_DIR/ledger-publish-backlog.log
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 
+# tick-hub captures one key=value field per line. Keep state and summary on
+# separate lines so a failure-gated reminder can render the actual diagnostic
+# rather than refusing an unresolved {summary} placeholder. Collapse embedded
+# command-output newlines so the complete detail remains one summary value.
+emit_result() {
+  local state=$1 summary=$2
+  summary=${summary//$'\r'/ }
+  summary=${summary//$'\n'/ }
+  printf 'state=%s\nsummary=%s\n' "$state" "$summary"
+}
+
+emit_logged_result() {
+  emit_result "$1" "$2" | tee -a "$LOG" 2>/dev/null || true
+}
+
 # WHY THE UNIT NEEDS AN EXPLICIT PATH, AND WHY ONLY WRITES FAILED.
 #
 # Publication pushes through `parent-main-write`, whose git credential helper
@@ -81,8 +96,8 @@ for candidate in "${GH_CANDIDATES[@]}"; do
   fi
 done
 if [[ -z $GH_BIN ]]; then
-  echo "state=refused summary=gh not found in the configured or per-user locations; a detached sweep would fail at the push. Not launched; spool retained." \
-    | tee -a "$LOG" 2>/dev/null || true
+  emit_logged_result refused \
+    "gh not found in the configured or per-user locations; a detached sweep would fail at the push. Not launched; spool retained."
   exit 1
 fi
 UNIT_PATH="$(dirname -- "$GH_BIN"):${PATH}"
@@ -114,8 +129,8 @@ fi
 if [[ -n $OPERATIONAL_TOOL || -n ${DEV_HERMIT_TOOL_PARENT_SHA:-} ]]; then
   if [[ -z $OPERATIONAL_TOOL || ! -x $OPERATIONAL_TOOL || \
         ! ${DEV_HERMIT_TOOL_PARENT_SHA:-} =~ ^[0-9a-f]{40}$ ]]; then
-    echo "state=refused summary=incomplete operational-tool handoff; publish sweep not launched; spool retained." \
-      | tee -a "$LOG" 2>/dev/null || true
+    emit_logged_result refused \
+      "incomplete operational-tool handoff; publish sweep not launched; spool retained."
     exit 1
   fi
   PUBLISH_COMMAND=(
@@ -137,7 +152,8 @@ else
 fi
 
 if systemctl --user is-active --quiet "$UNIT.service" 2>/dev/null; then
-  echo "state=running summary=ledger publish sweep is still active as $UNIT; no second sweep launched; spool retained"
+  emit_result running \
+    "ledger publish sweep is still active as $UNIT; no second sweep launched; spool retained"
   # The scheduled gate runs once per hour. Reaching the next invocation while
   # the previous one is still active is not a completed sweep, so do not report
   # it as CLEAN.
@@ -157,8 +173,8 @@ if systemctl --user is-failed --quiet "$UNIT.service" 2>/dev/null; then
     2>/dev/null || true)
   PRIOR_FAILURE="previous $UNIT failed with Result=${UNIT_RESULT:-unknown} ExecMainStatus=${UNIT_STATUS:-unknown}"
   if ! reset_error=$(systemctl --user reset-failed "$UNIT.service" 2>&1); then
-    echo "state=refused summary=$PRIOR_FAILURE; could not reset it for retry; spool retained; systemctl said: ${reset_error:-<no output>}" \
-      | tee -a "$LOG" 2>/dev/null || true
+    emit_logged_result refused \
+      "$PRIOR_FAILURE; could not reset it for retry; spool retained; systemctl said: ${reset_error:-<no output>}"
     exit 1
   fi
 fi
@@ -166,7 +182,8 @@ fi
 if ! command -v systemd-run >/dev/null 2>&1; then
   # No detached substrate: say so rather than running it inline on the tick
   # budget, which is the failure this wrapper exists to avoid.
-  echo "state=unavailable summary=${PRIOR_FAILURE:+$PRIOR_FAILURE; }systemd-run unavailable; publish sweep not launched; spool retained"
+  emit_result unavailable \
+    "${PRIOR_FAILURE:+$PRIOR_FAILURE; }systemd-run unavailable; publish sweep not launched; spool retained"
   exit 1
 fi
 
@@ -182,20 +199,21 @@ if launch_error=$(systemd-run --user --quiet \
     --setenv="DEV_HERMIT_TOOL_ROOT=$TOOL_ROOT" \
     -- "${PUBLISH_COMMAND[@]}" 2>&1 >/dev/null); then
   if [[ -n $PRIOR_FAILURE ]]; then
-    echo "state=relaunched summary=$PRIOR_FAILURE; retry launched detached as $UNIT; output appended to $LOG" \
-      | tee -a "$LOG" 2>/dev/null || true
+    emit_logged_result relaunched \
+      "$PRIOR_FAILURE; retry launched detached as $UNIT; output appended to $LOG"
     # This invocation DID launch a retry, but it also observed a real failed
     # publication. Keep that failure visible to the tick instead of calling the
     # sweep clean merely because the retry was accepted.
     exit 1
   fi
-  echo "state=launched summary=ledger publish sweep launched detached as $UNIT; output appended to $LOG"
+  emit_result launched \
+    "ledger publish sweep launched detached as $UNIT; output appended to $LOG"
   exit 0
 fi
 
 # Keep the launcher's OWN failure too. It was previously discarded by
 # `>/dev/null 2>&1`, so a refused launch and a launch that ran and failed were
 # indistinguishable from the outside.
-echo "state=refused summary=could not launch $UNIT; spool retained for the next tick; systemd-run said: ${launch_error:-<no output>}" \
-  | tee -a "$LOG" 2>/dev/null || true
+emit_logged_result refused \
+  "could not launch $UNIT; spool retained for the next tick; systemd-run said: ${launch_error:-<no output>}"
 exit 1
