@@ -1806,6 +1806,7 @@ class StartUnitTest(unittest.TestCase):
             self.root,
             self.root,
             record_path,
+            record=start_unit.run_registry.read_record(record_path),
             target=SHA,
             repo="rrnewton/hermit",
             canonical_verdict="VALIDATED",
@@ -5239,11 +5240,15 @@ class StartUnitTest(unittest.TestCase):
         record: Path,
         fresh: Path,
         *,
+        final_validate_status: str = "FAILED",
         durable_writeback: bool = True,
         publish_handoff: bool = True,
         handoff_writeback_completed: bool = True,
     ) -> Path | None:
         """Model a schema-3 failed run without promoting it to current authority."""
+        exit_code = start_unit.service_result.FINAL_VALIDATE_STATUS_EXIT_CODES[
+            final_validate_status
+        ]
         self.write_validation_service_schema(
             start_unit.service_result.SELECTION_SCHEMA_VERSION
         )
@@ -5260,8 +5265,8 @@ class StartUnitTest(unittest.TestCase):
                     "commit": SHA,
                     "profile": "full",
                     "selection_mode": "full",
-                    "final_validate_status": "FAILED",
-                    "exit_code": 1,
+                    "final_validate_status": final_validate_status,
+                    "exit_code": exit_code,
                     "executed_nodes": 267,
                     "executed_tests": 2816,
                     "scorecard_writeback": {"status": "completed"},
@@ -5284,8 +5289,8 @@ class StartUnitTest(unittest.TestCase):
         durable.update(
             state="unknown",
             result="unknown",
-            exit_code=1,
-            final_validate_status="FAILED",
+            exit_code=exit_code,
+            final_validate_status=final_validate_status,
             service_result_schema=start_unit.service_result.SELECTION_SCHEMA_VERSION,
             selection_mode="full",
             executed_nodes=267,
@@ -5300,6 +5305,267 @@ class StartUnitTest(unittest.TestCase):
             durable["scorecard_handoff"] = str(handoff)
         start_unit.run_registry.write_record(record, durable)
         return handoff
+
+    def test_historical_schema_three_pass_attach_after_sweep_uses_durable_handoff(
+        self,
+    ) -> None:
+        record, fresh = self.materialized_attach_record()
+        handoff = self.plant_historical_failed_materialized_result(
+            record,
+            fresh,
+            final_validate_status="PASSED",
+        )
+        self.assertIsNotNone(handoff)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([str(fresh)], report["removed"])
+        self.assertFalse(fresh.exists())
+        durable = start_unit.run_registry.read_record(record)
+        self.assertIsInstance(durable.get("checkout_removed_at"), str)
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with (
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+            mock.patch.object(
+                start_unit.service_result,
+                "pinned_schema_path",
+                return_value=(
+                    self.checkout / start_unit.service_result.SCHEMA_RELATIVE_PATH
+                ),
+            ),
+        ):
+            rc = start_unit.main(
+                ["--attach", "validate-test"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, err.getvalue())
+        self.assertIn("already-published output", err.getvalue())
+        self.assertNotIn("SCORECARD HANDOFF UNREADABLE", err.getvalue())
+
+    def attach_historical_record(
+        self, *, json_output: bool = False
+    ) -> tuple[int, str, str]:
+        out = io.StringIO()
+        err = io.StringIO()
+        arguments = ["--attach", "validate-test"]
+        if json_output:
+            arguments.append("--json")
+        with (
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+            mock.patch.object(
+                start_unit.service_result,
+                "pinned_schema_path",
+                return_value=(
+                    self.checkout / start_unit.service_result.SCHEMA_RELATIVE_PATH
+                ),
+            ),
+        ):
+            rc = start_unit.main(
+                arguments,
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_historical_attach_after_sweep_refuses_malformed_durable_sidecar(
+        self,
+    ) -> None:
+        record, fresh = self.materialized_attach_record()
+        self.plant_historical_failed_materialized_result(
+            record,
+            fresh,
+            final_validate_status="PASSED",
+        )
+        start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+        start_unit.service_result.result_path(record).write_text("not json\n")
+        rc, _out, error = self.attach_historical_record()
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("SCORECARD HANDOFF UNREADABLE", error)
+        self.assertIn("malformed JSON", error)
+        self.assertNotIn("using the already-published output", error)
+
+    def test_historical_attach_after_sweep_refuses_durable_schema_mismatch(
+        self,
+    ) -> None:
+        record, fresh = self.materialized_attach_record()
+        self.plant_historical_failed_materialized_result(
+            record,
+            fresh,
+            final_validate_status="PASSED",
+        )
+        start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+        durable = start_unit.run_registry.read_record(record)
+        durable["service_result_schema"] = start_unit.service_result.WRITEBACK_SCHEMA_VERSION
+        start_unit.run_registry.write_record(record, durable)
+        rc, _out, error = self.attach_historical_record()
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("SCORECARD HANDOFF UNREADABLE", error)
+        self.assertIn("result carries 3", error)
+        self.assertNotIn("using the already-published output", error)
+
+    def test_historical_attach_refuses_absent_checkout_without_removal_record(
+        self,
+    ) -> None:
+        record, fresh = self.materialized_attach_record()
+        self.plant_historical_failed_materialized_result(
+            record,
+            fresh,
+            final_validate_status="PASSED",
+        )
+        shutil.rmtree(fresh)
+        rc, _out, error = self.attach_historical_record()
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("SCORECARD HANDOFF UNREADABLE", error)
+        self.assertIn("absent without a durable checkout_removed_at", error)
+        self.assertNotIn("using the already-published output", error)
+
+    def test_sweep_retains_historical_run_with_malformed_producer_schema(
+        self,
+    ) -> None:
+        record, fresh = self.materialized_attach_record()
+        self.plant_historical_failed_materialized_result(
+            record,
+            fresh,
+            final_validate_status="PASSED",
+        )
+        schema_path = fresh / start_unit.service_result.SCHEMA_RELATIVE_PATH
+        schema = json.loads(schema_path.read_text())
+        schema["fields"] = ["schema_version"]
+        schema_path.write_text(json.dumps(schema))
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(
+            any(
+                "validation-service-result-schema-fields" in row["reason"]
+                for row in report["retained"]
+            ),
+            report["retained"],
+        )
+
+    def retired_historical_pass_record(self) -> tuple[Path, Path, Path]:
+        record, fresh = self.materialized_attach_record()
+        handoff = self.plant_historical_failed_materialized_result(
+            record,
+            fresh,
+            final_validate_status="PASSED",
+        )
+        self.assertIsNotNone(handoff)
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+        self.assertEqual([str(fresh)], report["removed"])
+        self.assertFalse(fresh.exists())
+        assert handoff is not None
+        return record, fresh, handoff
+
+    def attach_with_bookkeeping_contention(
+        self, blocked_field: str
+    ) -> tuple[int, str, str]:
+        update_record = start_unit.run_registry.update_record
+
+        def contended_update(
+            path: Path, *, blocking: bool = True, **fields: object
+        ) -> dict[str, object]:
+            if blocked_field in fields:
+                self.assertFalse(blocking)
+                raise start_unit.run_registry.RecordLocked(
+                    f"fixture holds {blocked_field} bookkeeping lock"
+                )
+            return update_record(path, blocking=blocking, **fields)
+
+        with mock.patch.object(
+            start_unit.run_registry,
+            "update_record",
+            side_effect=contended_update,
+        ):
+            return self.attach_historical_record(json_output=True)
+
+    def test_historical_attach_delivers_validated_when_canonical_bookkeeping_contends(
+        self,
+    ) -> None:
+        _record, fresh, handoff = self.retired_historical_pass_record()
+        scorecard_writes = sum(
+            command[0].endswith("scorecard.rs") for command in self.fake.commands
+        )
+
+        rc, output, error = self.attach_with_bookkeeping_contention(
+            "canonical_verdict"
+        )
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertIn("RUN-RECORD NOT UPDATED", error)
+        self.assertIn("already-published output", error)
+        self.assertIn(str(handoff), error)
+        self.assertNotIn("Traceback", error)
+        self.assertNotIn("SCORECARD HANDOFF UNREADABLE", error)
+        self.assertEqual(
+            scorecard_writes,
+            sum(
+                command[0].endswith("scorecard.rs") for command in self.fake.commands
+            ),
+        )
+        finished = json.loads(output.splitlines()[-1])
+        self.assertEqual("finished", finished["event"])
+        self.assertEqual(SHA, finished["target"])
+        self.assertEqual(str(fresh), finished["checkout"])
+        self.assertEqual("VALIDATED", finished["canonical_verdict"])
+        self.assertEqual(start_unit.EXIT_PASSED, finished["wrapper_exit_code"])
+
+    def test_historical_attach_delivers_validated_when_publication_bookkeeping_contends(
+        self,
+    ) -> None:
+        record, fresh, handoff = self.retired_historical_pass_record()
+        scorecard_writes = sum(
+            command[0].endswith("scorecard.rs") for command in self.fake.commands
+        )
+
+        rc, output, error = self.attach_with_bookkeeping_contention(
+            "commit_status_publication"
+        )
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertIn("RUN-RECORD NOT UPDATED", error)
+        self.assertIn("already-published output", error)
+        self.assertIn(str(handoff), error)
+        self.assertNotIn("Traceback", error)
+        self.assertNotIn("completed checkout RETAINED", error)
+        self.assertEqual(
+            scorecard_writes,
+            sum(
+                command[0].endswith("scorecard.rs") for command in self.fake.commands
+            ),
+        )
+        finished = json.loads(output.splitlines()[-1])
+        self.assertEqual("finished", finished["event"])
+        self.assertEqual(SHA, finished["target"])
+        self.assertEqual(str(fresh), finished["checkout"])
+        self.assertEqual("VALIDATED", finished["canonical_verdict"])
+        self.assertEqual(
+            "published", finished["commit_status_publication"]["state"]
+        )
+        durable = start_unit.run_registry.read_record(record)
+        self.assertNotIn("commit_status_publication", durable)
 
     def plant_completed_materialized_service_result(self, record: Path) -> None:
         durable = start_unit.run_registry.read_record(record)

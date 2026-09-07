@@ -4377,18 +4377,40 @@ def publish_recorded_scorecard_handoff(
                 "historical materialized scorecard cleanup requires an "
                 "already-published verified scorecard handoff"
             )
+        schema_path: Path | None
+        if checkout.is_dir():
+            # Before retirement, bind the sidecar to the exact producer schema.
+            # This is the last point at which that disposable file is expected
+            # to exist, and cleanup must not proceed unless it validates.
+            schema_path = checkout / service_result.SCHEMA_RELATIVE_PATH
+        else:
+            removed_at = record.get("checkout_removed_at")
+            if not isinstance(removed_at, str) or not removed_at.strip():
+                raise RuntimeError(
+                    "historical materialized scorecard checkout is absent without "
+                    "a durable checkout_removed_at record"
+                )
+            # The sweep already validated the producer schema before recording
+            # removal. Re-attachment now reads the durable sidecar under this
+            # consumer's exact versioned parser; it cannot reopen a deleted file.
+            schema_path = None
         evidence = service_result.read_framework_result(
             service_result.result_path(record_path),
             expected_commit=target,
-            schema_path=checkout / service_result.SCHEMA_RELATIVE_PATH,
+            schema_path=schema_path,
         )
-        if (
-            evidence.service_result_schema != record.get("service_result_schema")
-            or evidence.scorecard_writeback != {"status": "completed"}
-        ):
+        recorded_schema = record.get("service_result_schema")
+        if evidence.service_result_schema != recorded_schema:
+            raise RuntimeError(
+                "historical materialized scorecard service result does not match "
+                f"the durable run handle: record declares {recorded_schema!r}, "
+                f"result carries {evidence.service_result_schema!r}"
+            )
+        if evidence.scorecard_writeback != {"status": "completed"}:
             raise RuntimeError(
                 "historical materialized scorecard cleanup requires the readable "
-                "service result and durable run handle to agree on completed writeback"
+                "service result to record completed writeback; got "
+                f"{evidence.scorecard_writeback!r}"
             )
     try:
         writeback = service_result.read_scorecard_writeback_value(
@@ -4442,6 +4464,7 @@ def finalize_commit_status_publication(
     tool_root: Path,
     record_path: Path,
     *,
+    record: Mapping[str, Any],
     target: str,
     repo: str,
     canonical_verdict: str,
@@ -4476,7 +4499,7 @@ def finalize_commit_status_publication(
             f"not invoking publisher again for {repo}@{target}",
             file=sys.stderr,
         )
-        return current
+        return {**record, "commit_status_publication": existing}
 
     common: dict[str, str] = {
         "recorded_at": recorded_at,
@@ -4543,7 +4566,11 @@ def finalize_commit_status_publication(
                     target=target,
                 )
 
-    updated = bookkeep_record(record_path, commit_status_publication=outcome)
+    updated = bookkeep_record(
+        record_path,
+        base_record=record,
+        commit_status_publication=outcome,
+    )
     if outcome["state"] in COMMIT_STATUS_PUBLICATION_SUCCEEDED:
         print(
             f"validate-run: commit status {outcome['state']} for {repo}@{target}",
@@ -4604,7 +4631,13 @@ def commit_status_publication_outcome(
         }
 
 
-def bookkeep_record(record_path, /, **fields):
+def bookkeep_record(
+    record_path: Path,
+    /,
+    *,
+    base_record: Mapping[str, Any] | None = None,
+    **fields: Any,
+) -> dict[str, Any]:
     """Update the run record, but never at the cost of the caller's verdict.
 
     ⚠️ THIS IS THE PRIORITY INVERSION THAT HELD THE OWNER'S BOX. Both callers run
@@ -4617,13 +4650,17 @@ def bookkeep_record(record_path, /, **fields):
 
     Same shape as the rest of tonight: a value produced and never delivered.
 
-    On contention the fact is REPORTED and the caller continues. The in-memory
-    fields are returned so downstream reporting is unaffected, and the record is
-    the only thing that goes stale -- which is the correct thing to sacrifice,
-    because a reader can re-derive it and the human at the terminal cannot.
+    On contention the fact is REPORTED and the caller continues. Callers that
+    keep using the result supply their complete in-memory snapshot; the attempted
+    fields are merged into it whether persistence succeeds or not. The record on
+    disk is the only thing that goes stale -- which is the correct thing to
+    sacrifice, because a reader can re-derive it and the human at the terminal
+    cannot.
     """
+    snapshot = {**(base_record or {}), **fields}
     try:
-        return run_registry.update_record(record_path, blocking=False, **fields)
+        persisted = run_registry.update_record(record_path, blocking=False, **fields)
+        return {**persisted, **snapshot}
     except run_registry.RecordLocked as locked:
         print(
             f"validate-run: RUN-RECORD NOT UPDATED: {locked}. The verdict below is "
@@ -4633,7 +4670,7 @@ def bookkeep_record(record_path, /, **fields):
             f"find the holder with `fuser -v {record_path}.lock` or `lsof`.",
             file=sys.stderr,
         )
-        return dict(fields)
+        return snapshot
 
 
 def handoff_scorecard_after_writeback(
@@ -4769,7 +4806,7 @@ def attach(
         poll_seconds=poll_seconds,
         sleep=sleep,
     )
-    updated = bookkeep_record(record_path, **final)
+    updated = bookkeep_record(record_path, base_record=record, **final)
     if record.get("validation_kind") == FROZEN_VALIDATE_KIND:
         try:
             target = str(record["target"])
@@ -4797,6 +4834,7 @@ def attach(
             )
         updated = bookkeep_record(
             record_path,
+            base_record=updated,
             measured_result=measured_result,
             wrapper_exit_code=measured_exit,
         )
@@ -4841,6 +4879,7 @@ def attach(
         )
     updated = bookkeep_record(
         record_path,
+        base_record=updated,
         canonical_verdict=canonical_verdict,
         wrapper_exit_code=canonical_exit,
     )
@@ -4941,6 +4980,7 @@ def attach(
         root,
         tool_root,
         record_path,
+        record=updated,
         target=target,
         repo=repo,
         canonical_verdict=canonical_verdict,
@@ -5842,6 +5882,7 @@ def main(
             )
         updated = bookkeep_record(
             record_path,
+            base_record=updated,
             measured_result=measured_result,
             wrapper_exit_code=measured_exit,
         )
@@ -5997,6 +6038,7 @@ def main(
         state_root,
         tool_root,
         record_path,
+        record=updated,
         target=args.target,
         repo=repo,
         canonical_verdict=canonical_verdict,
