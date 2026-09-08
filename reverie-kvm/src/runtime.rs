@@ -600,6 +600,30 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     }
 }
 
+#[derive(Debug)]
+struct KvmStackToken {
+    checked_out: Arc<AtomicBool>,
+}
+
+impl KvmStackToken {
+    fn acquire(checked_out: Arc<AtomicBool>) -> Option<Self> {
+        if checked_out.swap(true, Ordering::SeqCst) {
+            None
+        } else {
+            Some(Self { checked_out })
+        }
+    }
+}
+
+impl Drop for KvmStackToken {
+    fn drop(&mut self) {
+        assert!(
+            self.checked_out.swap(false, Ordering::SeqCst),
+            "KVM stack checkout dropped while not checked out",
+        );
+    }
+}
+
 /// A stack allocator backed by a low page reserved for Tool injection buffers.
 pub struct KvmStack {
     memory: GuestMemory,
@@ -607,15 +631,14 @@ pub struct KvmStack {
     stack_pointer: u64,
     capacity: usize,
     writes: Vec<(u64, Vec<u8>)>,
-    checked_out: Arc<AtomicBool>,
+    token: KvmStackToken,
 }
 
 impl KvmStack {
     fn new(memory: GuestMemory, checked_out: Arc<AtomicBool>) -> Self {
-        assert!(
-            !checked_out.swap(true, Ordering::SeqCst),
-            "cannot retrieve a KVM guest stack while its previous guard is live",
-        );
+        let token = KvmStackToken::acquire(checked_out).unwrap_or_else(|| {
+            panic!("cannot retrieve a KVM guest stack while its previous guard is live")
+        });
         let top = if memory.guest_base() <= TOOL_STACK_TOP && memory.guest_end() >= TOOL_STACK_TOP {
             TOOL_STACK_TOP
         } else {
@@ -630,7 +653,7 @@ impl KvmStack {
             top,
             stack_pointer: top,
             writes: Vec::new(),
-            checked_out,
+            token,
         }
     }
 
@@ -656,16 +679,11 @@ impl KvmStack {
 
 /// Guard returned after KVM guest stack writes are committed.
 pub struct KvmStackGuard {
-    checked_out: Arc<AtomicBool>,
+    _token: KvmStackToken,
 }
 
 impl Drop for KvmStackGuard {
-    fn drop(&mut self) {
-        assert!(
-            self.checked_out.swap(false, Ordering::SeqCst),
-            "KVM stack guard dropped without a checked-out stack",
-        );
-    }
+    fn drop(&mut self) {}
 }
 
 impl Stack for KvmStack {
@@ -700,9 +718,7 @@ impl Stack for KvmStack {
                 .write_raw(address, &bytes)
                 .map_err(|_| Errno::EFAULT)?;
         }
-        Ok(KvmStackGuard {
-            checked_out: self.checked_out,
-        })
+        Ok(KvmStackGuard { _token: self.token })
     }
 }
 
@@ -1927,5 +1943,47 @@ mod tests {
 
         let value = memory.read_value(address).unwrap();
         assert_eq!(value, 0x1122_3344_u32);
+    }
+
+    #[test]
+    fn stack_checkout_releases_on_drop_without_commit() {
+        let memory = GuestMemory::new(0x1000, STACK_CAPACITY).unwrap();
+        let checked_out = Arc::new(AtomicBool::new(false));
+
+        let stack = KvmStack::new(memory.clone(), checked_out.clone());
+        assert!(checked_out.load(Ordering::SeqCst));
+        drop(stack);
+        assert!(!checked_out.load(Ordering::SeqCst));
+
+        let stack = KvmStack::new(memory, checked_out.clone());
+        assert!(checked_out.load(Ordering::SeqCst));
+        drop(stack);
+        assert!(!checked_out.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot retrieve a KVM guest stack while its previous guard is live")]
+    fn stack_checkout_rejects_overlapping_stack() {
+        let memory = GuestMemory::new(0x1000, STACK_CAPACITY).unwrap();
+        let checked_out = Arc::new(AtomicBool::new(false));
+        let _stack = KvmStack::new(memory.clone(), checked_out.clone());
+
+        let _overlapping = KvmStack::new(memory, checked_out);
+    }
+
+    #[test]
+    fn stack_guard_holds_checkout_until_drop() {
+        let memory = GuestMemory::new(0x1000, STACK_CAPACITY).unwrap();
+        let checked_out = Arc::new(AtomicBool::new(false));
+        let stack = KvmStack::new(memory.clone(), checked_out.clone());
+
+        let guard = stack.commit().unwrap();
+        assert!(checked_out.load(Ordering::SeqCst));
+        drop(guard);
+        assert!(!checked_out.load(Ordering::SeqCst));
+
+        let stack = KvmStack::new(memory, checked_out.clone());
+        drop(stack);
+        assert!(!checked_out.load(Ordering::SeqCst));
     }
 }
