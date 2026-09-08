@@ -239,6 +239,22 @@ class WrkslotsAuditJobTests(unittest.TestCase):
         self.assertIsNone(receipt["cost"])
         self.assertIsNone(receipt["observer_cost"])
 
+    def test_overlong_audit_summary_is_still_refused(self) -> None:
+        completed = self.run_job(
+            AUDIT_STATE="actionable",
+            AUDIT_RC="1",
+            AUDIT_SUMMARY="x" * 501,
+        )
+
+        self.assertEqual(1, completed.returncode)
+        receipt = json.loads(self.result.read_text())
+        self.assertEqual("NO_RESULT", receipt["verdict"])
+        self.assertEqual(
+            "audit output violated its contract: audit.summary exceeds 500 characters",
+            receipt["summary"],
+        )
+        self.assertIsNone(receipt["audit"])
+
     def test_bad_box_cost_replaces_prior_success_with_no_result(self) -> None:
         cases = (
             ({"OMIT_BOX_ACTUAL": "1"}, "absent or unreadable"),
