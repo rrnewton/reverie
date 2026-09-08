@@ -287,6 +287,19 @@ def is_passed_validation_event(
     )
 
 
+def is_failed_validation_event(
+    event: Mapping[str, object], *, canonical_verdict: str
+) -> bool:
+    return (
+        event.get("state") == "completed"
+        and event.get("result") == "failure"
+        and event.get("final_validate_status") == "FAILED"
+        and event.get("canonical_verdict") == "FAILED"
+        and event.get("wrapper_exit_code") == 3
+        and canonical_verdict == "FAILED"
+    )
+
+
 def is_passed_validation_with_failed_scorecard_writeback(
     event: Mapping[str, object], *, canonical_verdict: str
 ) -> bool:
@@ -484,6 +497,22 @@ def main(
                  detail="centralized local runner produced a qualifying exact-head receipt", as_json=args.json)
             return 0
         if verdict == "FAILED":
+            assert terminal is not None
+            if validation.returncode != 3 or not is_failed_validation_event(
+                terminal, canonical_verdict=verdict
+            ):
+                emit(
+                    "NO_RESULT",
+                    repo=args.repo,
+                    pr=args.pr,
+                    head=expected,
+                    detail=(
+                        "canonical status is FAILED, but this validate-run invocation "
+                        "did not report a matching completed FAILED event and exit 3"
+                    ),
+                    as_json=args.json,
+                )
+                return 4
             emit("FAILED", repo=args.repo, pr=args.pr, head=expected,
                  detail="centralized local runner produced an exact-head red verdict", as_json=args.json)
             return 3

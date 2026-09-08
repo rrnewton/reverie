@@ -799,7 +799,7 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
                     "service_result_schema",
                     "is valid only for Hermit validation handles",
                 )
-            if marker not in service_result.SUPPORTED_SCHEMA_VERSIONS:
+            if not service_result.is_supported_schema_version(marker):
                 raise _error(
                     "service_result_schema",
                     "expected "

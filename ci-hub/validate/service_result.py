@@ -58,6 +58,15 @@ def supported_schema_versions_text() -> str:
         + f", or {SCHEMA_VERSION}"
     )
 
+def is_supported_schema_version(value: object) -> bool:
+    """Accept only JSON integer schema markers, never bools or integral floats."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value in SUPPORTED_SCHEMA_VERSIONS
+    )
+
+
 SCHEMA_RELATIVE_PATH = Path(
     "ci/manifest-plan/validation-service-result-schema.json"
 )
@@ -178,7 +187,7 @@ def read_schema(path: Path) -> dict[str, Any]:
     """Read the checked schema projection and refuse drift by field name."""
     value = _json_object(path, role="schema")
     version = value.get("schema_version")
-    if version not in SUPPORTED_SCHEMA_VERSIONS:
+    if not is_supported_schema_version(version):
         raise _error(
             "schema_version",
             f"expected {supported_schema_versions_text()}, got {version!r}",
@@ -311,6 +320,11 @@ def read_framework_result_bytes(
     if not isinstance(value, dict):
         raise _error("read", "expected an object")
     version = value.get("schema_version")
+    if not is_supported_schema_version(version):
+        raise _error(
+            "schema_version",
+            f"expected {supported_schema_versions_text()}, got {version!r}",
+        )
     expected_fields = {
         HISTORICAL_SCHEMA_VERSION: HISTORICAL_FIELD_NAMES,
         WRITEBACK_SCHEMA_VERSION: WRITEBACK_FIELD_NAMES,
@@ -712,7 +726,7 @@ def from_run_record(
     marker = record.get("service_result_schema")
     if marker is None:
         return from_log(log_path, properties=properties)
-    if marker not in SUPPORTED_SCHEMA_VERSIONS:
+    if not is_supported_schema_version(marker):
         return classify(
             RunEvidence(
                 final_validate_status_error=(
@@ -782,6 +796,8 @@ def is_evidenced_terminal(record: Mapping[str, Any]) -> bool:
     if not isinstance(status, str):
         return False
     schema_version = record.get("service_result_schema")
+    if schema_version is not None and not is_supported_schema_version(schema_version):
+        return False
     if schema_version in SUPPORTED_SCHEMA_VERSIONS[:3]:
         return False
     if schema_version in AUTHORITATIVE_SCHEMA_VERSIONS:

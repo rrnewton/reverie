@@ -108,6 +108,20 @@ class ServiceResultTest(unittest.TestCase):
             ):
                 service_result.read_schema(path)
 
+    def test_schema_reader_refuses_bool_and_integral_float_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self.write_schema(Path(temporary), service_result.SCHEMA_VERSION)
+            for version in (True, 4.0, 5.0):
+                with self.subTest(version=version):
+                    value = self.schema_projection(service_result.SCHEMA_VERSION)
+                    value["schema_version"] = version
+                    path.write_text(json.dumps(value))
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "validation-service-result-schema_version",
+                    ):
+                        service_result.read_schema(path)
+
     def test_genuine_pass_requires_status_and_exit_agreement(self) -> None:
         result = self.classify(
             "   862 test(s) executed, 350 filtered\n"
@@ -786,6 +800,14 @@ class ServiceResultTest(unittest.TestCase):
             json.dumps(value).encode(), expected_commit="a" * 40
         )
         self.assertIsNone(evidence.detail)
+        floating_version = {**value, "schema_version": 5.0}
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "validation-service-result-schema_version",
+        ):
+            service_result.read_framework_result_bytes(
+                json.dumps(floating_version).encode(), expected_commit="a" * 40
+            )
         result = service_result.classify(evidence)
         self.assertEqual(
             "validation reported COULD_NOT_RUN without detail", result["detail"]
@@ -823,6 +845,14 @@ class ServiceResultTest(unittest.TestCase):
         evidence = service_result.read_framework_result_bytes(
             json.dumps(value).encode(), expected_commit="a" * 40
         )
+        floating_version = {**value, "schema_version": 4.0}
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "validation-service-result-schema_version",
+        ):
+            service_result.read_framework_result_bytes(
+                json.dumps(floating_version).encode(), expected_commit="a" * 40
+            )
         result = service_result.classify(evidence)
         self.assertEqual("validation-service-result", result["result_source"])
         self.assertEqual("completed", result["state"])

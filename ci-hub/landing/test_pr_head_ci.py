@@ -799,6 +799,37 @@ lander_restore_owned_checkout "$checkout" main 0 "$entry" "$fence" "$token" 1
         )
         self.assertIn("unexpected wrapper failure", stderr.getvalue())
 
+    def test_failed_verdict_requires_the_same_invocations_typed_failure(self):
+        run = FakeRun(
+            heads=[OLD, OLD],
+            verdicts=["NOT-VALIDATED", "FAILED"],
+            validation_rc=3,
+            validation_stdout=validation_event(
+                status="FAILED",
+                canonical_verdict="FAILED",
+                wrapper_exit_code=3,
+            ),
+        )
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            rc = self.main(self.args("--execute"), run=run)
+        self.assertEqual(3, rc)
+        self.assertIn("PR-HEAD-CI FAILED", stdout.getvalue())
+
+    def test_concurrent_failure_cannot_replace_this_invocations_pass(self):
+        run = FakeRun(
+            heads=[OLD, OLD],
+            verdicts=["NOT-VALIDATED", "FAILED"],
+            validation_rc=0,
+            validation_stdout=validation_event(),
+        )
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            rc = self.main(self.args("--execute"), run=run)
+        self.assertEqual(4, rc)
+        self.assertIn("PR-HEAD-CI NO_RESULT", stdout.getvalue())
+        self.assertNotIn("PR-HEAD-CI FAILED", stdout.getvalue())
+
     def test_could_not_run_cannot_inherit_a_canonical_receipt(self):
         run = FakeRun(
             heads=[OLD, OLD],

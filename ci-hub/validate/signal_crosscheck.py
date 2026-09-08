@@ -1057,7 +1057,7 @@ def _validation_service_result_evidence(
         and isinstance(unit, str)
         and run_registry.record_path(root, unit) == handle_path
         and service_result.result_path(handle_path) == result_path
-        and marker in service_result.SUPPORTED_SCHEMA_VERSIONS
+        and service_result.is_supported_schema_version(marker)
     ):
         return None
     target = handle_raw.get("target")
@@ -1154,6 +1154,7 @@ def _is_admitted_pre_plan_no_result(
         and raw.get("final_validate_status") == "COULD_NOT_RUN"
         and "selection_mode" in raw
         and raw.get("selection_mode") is None
+        and service_result.is_supported_schema_version(marker)
         and marker in service_result.AUTHORITATIVE_SCHEMA_VERSIONS
         and "scorecard_writeback" in raw
         and raw.get("scorecard_writeback") is None

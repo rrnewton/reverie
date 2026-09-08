@@ -390,6 +390,15 @@ class RunRegistryContractTests(unittest.TestCase):
                 validation_handle(service_result_schema=6)
             )
 
+        for invalid in (True, 4.0, 5.0):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(
+                RuntimeError,
+                "validation-run-handle-service_result_schema",
+            ):
+                run_registry.parse_current_record(
+                    validation_handle(service_result_schema=invalid)
+                )
+
     def test_bench_failed_state_is_distinct_and_complete(self) -> None:
         handle = run_registry.parse_current_record(
             bench_handle(
