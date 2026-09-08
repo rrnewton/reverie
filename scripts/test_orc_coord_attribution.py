@@ -25,13 +25,6 @@ GH_BOUNDARY = Path(__file__).resolve().parent.parent / "ci-hub" / "bin" / "gh"
 COMMENT_IDENTITY = ("--who", "codex-boundary", "--team", "hermit2", "--role", "coordinator")
 
 
-class _Tag:
-    """Minimal stand-in for disclosure_tag.Disclosure; only .tag is read."""
-
-    def __init__(self, tag: str) -> None:
-        self.tag = tag
-
-
 def boundary():
     """Import ci-hub/bin/gh as a module so its behaviour can be exercised.
 
@@ -200,8 +193,11 @@ class PolicyTextTests(unittest.TestCase):
             " role=enum]",
             self.text,
         )
-        tag = "[hermit2, fixture-agent, opus-5, devbig014, role=impl]"
-        rendered = boundary().attributed("first body line\nsecond", _Tag(tag))
+        disclosure = disclosure_tag().Disclosure(
+            "hermit2", "fixture-agent", "opus-5", "devbig014", "impl"
+        )
+        tag = disclosure.tag
+        rendered = boundary().attributed("first body line\nsecond", disclosure)
         head, _, rest = rendered.partition("\n")
         self.assertEqual(head, tag)
         self.assertEqual(rest, "first body line\nsecond")

@@ -2062,6 +2062,7 @@ sys.path.insert(0, str(root / "ci-hub/ledger"))
 # the temp repo's copy, inserted ahead of it. Writes stay scoped by the
 # explicit root= handed to record().
 sys.path.append(sys.argv[5])
+sys.path.append(str(Path(sys.argv[5]) / "lib"))
 import validate_rows
 ids_path.parent.mkdir(parents=True, exist_ok=True)
 for index in range(300):
@@ -2107,7 +2108,13 @@ for index in range(300):
             [sys.executable, "-c", script, str(self.repo), str(ids_path),
              base, str(self.repo), str(SOURCE / "ci-hub")],
             cwd=self.repo,
-            env=dict(os.environ),
+            # This fixture deliberately contains only the ledger writer files.
+            # The shared-type checker has its own tests; use its documented
+            # fixture override so this test measures live writes across sync.
+            env=dict(
+                os.environ,
+                CI_HUB_LEDGER_EVENT_CHECKER="/bin/true",
+            ),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -2170,12 +2177,14 @@ for index in range(300):
                 # Same sibling-import chain as the writer above; the reader
                 # needs the real ci-hub for exactly the same reason.
                 "sys.path.append(sys.argv[2]); "
+                "sys.path.append(str(Path(sys.argv[2])/'lib')); "
                 "import validate_rows; "
                 "print(json.dumps([e['event_id'] for e in validate_rows.events(root=root)]))"
             ),
             str(self.repo),
             str(SOURCE / "ci-hub"),
             cwd=self.repo,
+            env={"CI_HUB_LEDGER_EVENT_CHECKER": "/bin/true"},
         )
         self.assertEqual(0, union.returncode, union.stdout + union.stderr)
         union_ids = json.loads(union.stdout)
