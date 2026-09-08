@@ -37,7 +37,10 @@ fn main() -> ExitCode {
     }
     let read = arguments.as_slice() == ["--read"];
     if !arguments.is_empty() && !read {
-        eprintln!("check-series-rows: unexpected argument {:?}\n{USAGE}", arguments[0]);
+        eprintln!(
+            "check-series-rows: unexpected argument {:?}\n{USAGE}",
+            arguments[0]
+        );
         return ExitCode::from(2);
     }
 
@@ -47,7 +50,10 @@ fn main() -> ExitCode {
         let line = match line {
             Ok(line) => line,
             Err(error) => {
-                eprintln!("check-series-rows: cannot read stdin line {}: {error}", index + 1);
+                eprintln!(
+                    "check-series-rows: cannot read stdin line {}: {error}",
+                    index + 1
+                );
                 return ExitCode::from(2);
             }
         };

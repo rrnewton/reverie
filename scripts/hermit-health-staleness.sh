@@ -207,7 +207,8 @@ page() {
             # inherits no proxy variables, and the host has no direct external
             # route. Without it the publication fails with "network is
             # unreachable" and the alarm goes no further than this file.
-            # shellcheck disable=SC2086 -- ESCALATION_SINKS is a flag list
+            # ESCALATION_SINKS is deliberately expanded as a flag list.
+            # shellcheck disable=SC2086
             out2="$(DG_AGENT_NAME="$ESCALATION_AGENT" with-proxy "$ESCALATE" \
                 $ESCALATION_SINKS --tg-db "$ESCALATION_TG_DB" \
                 --key "$ESCALATION_KEY" \

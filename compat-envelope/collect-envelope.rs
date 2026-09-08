@@ -1371,12 +1371,7 @@ fn backend_unavailable_reason(repo: &Path, backend: &str) -> Option<String> {
         .current_dir(repo)
         .output();
     match out {
-        Ok(o) => backend_unavailable_from_probe(
-            backend,
-            o.status.success(),
-            &o.stdout,
-            &o.stderr,
-        ),
+        Ok(o) => backend_unavailable_from_probe(backend, o.status.success(), &o.stdout, &o.stderr),
         Err(e) => Some(format!(
             "backend `{backend}` probe could not be executed: {e}"
         )),
@@ -1399,8 +1394,7 @@ fn backend_unavailable_from_probe(
         return None;
     }
     let stderr = String::from_utf8_lossy(stderr);
-    let expected =
-        format!("HERMIT_INTERNAL_FAILURE class=backend-unavailable backend={backend}");
+    let expected = format!("HERMIT_INTERNAL_FAILURE class=backend-unavailable backend={backend}");
     if stderr.lines().next() != Some(expected.as_str()) {
         return None;
     }

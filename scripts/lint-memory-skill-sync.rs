@@ -231,7 +231,11 @@ fn main() {
     if gate {
         println!(
             "state={}",
-            if problems.is_empty() { "ok" } else { "problems" }
+            if problems.is_empty() {
+                "ok"
+            } else {
+                "problems"
+            }
         );
         println!(
             "summary={} authoritative repository skill problem(s); {} optional warning(s)",
