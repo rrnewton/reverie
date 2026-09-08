@@ -1563,14 +1563,16 @@ def prepare_fresh_checkout(
 ) -> tuple[Path, WrkslotsIdentity | None]:
     """Materialize `target` into a private temp worktree and PROVE it is usable.
 
-    WHY THIS IS THE DEFAULT. `validate_checkout` below refuses a dirty tree, so
-    "no uncommitted changes" is already guaranteed — but `git status
-    --porcelain=v1` says NOTHING ABOUT IGNORED FILES, and that is where the
-    divergence lives. Measured 2026-08-08 on a slot at 393c6a765: `git status
-    --porcelain=v1` reported 0 paths while the tree carried 5.1 GB of ignored
-    build output, caches and materialized dependencies. A validate of that tree
-    is a validate of the commit PLUS 5.1 GB of unrecorded local history, so the
-    40-hex SHA on the receipt does not describe what actually ran.
+    WHY THIS IS THE DEFAULT. An ordinary source checkout must be clean;
+    `--materialize-target` may instead use a dirty or stale checkout only as an
+    object store. In both cases this function creates the runnable tree from
+    exact committed bytes. That also excludes IGNORED source files, which
+    `git status --porcelain=v1` cannot describe and which is where measured
+    divergence lived. On 2026-08-08 a slot at 393c6a765 reported 0 status paths
+    while carrying 5.1 GB of ignored build output, caches and materialized
+    dependencies. Validating that tree would validate the commit PLUS 5.1 GB
+    of unrecorded local history, so the 40-hex SHA on the receipt would not
+    describe what actually ran.
 
     Two measured cases from the same day where ignored state DECIDED a verdict:
     an empty (gitignored) `hermit/agent-utils` made `scripts/validate.rs` die in
@@ -3375,10 +3377,6 @@ def validate_checkout(
     checkout = require_guest_visible_root(checkout, role="source checkout")
     if not SHA_RE.fullmatch(target):
         raise ValueError("--target must be an exact lowercase 40-hex commit SHA")
-    driver = "scripts/validate.rs" if repo == "rrnewton/hermit" else "validate.sh"
-    if not (checkout / driver).is_file():
-        raise ValueError(f"missing {driver} in checkout {checkout}")
-
     top = Path(
         checked_output(
             ["git", "-C", str(checkout), "rev-parse", "--show-toplevel"],
@@ -3387,15 +3385,10 @@ def validate_checkout(
         )
     ).resolve()
     if top != checkout:
-        raise ValueError(f"--checkout must name the repository root ({top}), not {checkout}")
+        raise ValueError(
+            f"--checkout must name the repository root ({top}), not {checkout}"
+        )
 
-    head = checked_output(
-        ["git", "-C", str(checkout), "rev-parse", "HEAD^{commit}"],
-        run=run,
-        purpose="cannot resolve checkout HEAD",
-    )
-    if head != target and not materialize_target:
-        raise ValueError(f"checkout HEAD is {head}, not requested exact target {target}")
     if materialize_target:
         resolved_target = checked_output(
             ["git", "-C", str(checkout), "rev-parse", f"{target}^{{commit}}"],
@@ -3406,6 +3399,25 @@ def validate_checkout(
             raise ValueError(
                 f"requested target resolved to {resolved_target}, not exact commit {target}"
             )
+        # This checkout supplies Git objects only. The runnable tree is a fresh,
+        # registered checkout of `target`, and `preflight` validates that tree
+        # before admission. Requiring this unrelated worktree's HEAD, driver
+        # bytes, or cleanliness would make a deterministic target depend on
+        # whichever edits its owner happens to have in progress.
+        return checkout
+
+    driver = "scripts/validate.rs" if repo == "rrnewton/hermit" else "validate.sh"
+    if not (checkout / driver).is_file():
+        raise ValueError(f"missing {driver} in checkout {checkout}")
+    head = checked_output(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD^{commit}"],
+        run=run,
+        purpose="cannot resolve checkout HEAD",
+    )
+    if head != target:
+        raise ValueError(
+            f"checkout HEAD is {head}, not requested exact target {target}"
+        )
 
     dirty = checked_output(
         ["git", "-C", str(checkout), "status", "--porcelain=v1"],
@@ -3417,7 +3429,9 @@ def validate_checkout(
         and owner_validate_symlink_is_exact(checkout, dirty)
     ):
         first = dirty.splitlines()[0]
-        raise ValueError(f"checkout is dirty ({first}); refusing unrepeatable validation")
+        raise ValueError(
+            f"checkout is dirty ({first}); refusing unrepeatable validation"
+        )
     return checkout
 
 
@@ -5047,8 +5061,9 @@ def parser() -> argparse.ArgumentParser:
         metavar="DIR",
         help=(
             "DIRECTORY of the checkout to validate, normally \"$PWD\". With "
-            "--materialize-target it is instead the clean repository supplying the "
-            "target object. This is a path, NOT a commit -- the SHA goes in --target."
+            "--materialize-target it is instead the repository supplying the exact "
+            "target object; its HEAD, branch, and worktree bytes are not consumed. "
+            "This is a path, NOT a commit -- the SHA goes in --target."
         ),
     )
     result.add_argument(
@@ -5076,11 +5091,11 @@ def parser() -> argparse.ArgumentParser:
         "--materialize-target",
         action="store_true",
         help=(
-            "use a clean --checkout repository as an object source while materializing "
-            "--target into the normal registered fresh validation checkout. The source "
-            "HEAD is never moved; --target must already resolve to that exact commit. "
-            "Generated scorecard files are atomically handed off below the canonical "
-            "state root before the managed checkout is retired"
+            "use --checkout only as the repository containing the exact --target object, "
+            "then build and validate that target in the normal registered fresh checkout. "
+            "The source HEAD, branch, index, and worktree are not read or changed. "
+            "Generated scorecard files are atomically handed off below the canonical state "
+            "root before the managed checkout is retired"
         ),
     )
     result.add_argument(
@@ -5493,11 +5508,14 @@ def main(
             allow_owner_validate_symlink=args.allow_owner_validate_symlink,
             materialize_target=args.materialize_target,
         )
-        source_branch = source_checkout_branch(
-            source_checkout,
-            args.target,
-            run=run,
-            require_target_at_head=not args.materialize_target,
+        source_branch = (
+            None
+            if args.materialize_target
+            else source_checkout_branch(
+                source_checkout,
+                args.target,
+                run=run,
+            )
         )
         unit = sanitize_unit(args.unit) if args.unit else default_unit(args.agent, args.target)
         if args.frozen_validate:
@@ -5531,6 +5549,16 @@ def main(
                 tool_root=tool_root,
                 independent_refs=args.frozen_validate,
             )
+            if args.materialize_target:
+                # The source supplies only Git objects. Prove the tree that will
+                # actually execute has the driver, exact HEAD, and no tracked or
+                # untracked edits before any preflight or systemd admission.
+                validate_checkout(
+                    fresh_checkout,
+                    args.target,
+                    repo=repo,
+                    run=run,
+                )
             checkout = fresh_checkout
         preflight(tool_root, checkout, args.target, repo=repo, run=run)
         runtime_root = prepare_runtime_root(environment)
