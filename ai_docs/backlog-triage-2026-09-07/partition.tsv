@@ -1,0 +1,503 @@
+task_id	category	reason
+a-deliberate-refusal-is-indistinguishable-from-a-cli-mistake	ACTIONABLE	Recorded owner is absent; PolicyRefusal exists but the CLI still needs to expose deliberate refusal distinctly from bad invocation.
+a-gate-reports-a-network-error-as-red-turning-an-outage-into-fleet-wide-failure	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/hermit/pull/2953 remains open, non-draft, clean, and at recorded head a83cbb505505.
+a-pre-push-hook-reports-an-unpopulated-submodule-as-a-compile-failure	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/hermit/pull/2954 remains open, non-draft, clean, and at recorded head 8e45aec34dfc.
+a-spawned-subagent-cannot-hold-an-identity-distinct-from-its-parent-lane	BLOCKED	The task explicitly awaits owner scope for an orchestrator-level identity and lifecycle change.
+a-stale-slot-registration-blocks-wrkslots-operations-for-every-other-lane	STALE-PREMISE	Agent-utils contains the scoped-registry fixes and current Hermit pins the repaired agent-utils revision.
+a-validate-lock-refusal-cannot-name-who-held-the-lock	STALE-PREMISE	Current parent main contains 712bb33f2, which attributes validate-lock residuals instead of leaving the holder unexplained.
+a-validate-ran-from-a-nested-worktree-and-nothing-prevented-it	STALE-PREMISE	Current Hermit deliberately supports nested worktrees through 677df8ff0 and 100529101 rather than refusing them.
+a-worktree-passed-as-checkout-to-a-pinned-root-run-silently-loses-sixteen-nodes	STALE-PREMISE	Current parent main contains 5c86673c6, which makes the frozen validation checkout self-contained.
+a-write-back-refusal-turns-a-validated-run-into-a-no-result	STALE-PREMISE	Current Hermit preserves verdict across write-back failure and current parent consumes write-back outcome separately.
+a_guest_under_the	DUPLICATE	The same descriptor-containment work is carried by drain-open-pr-hermit-2694 and https://github.com/rrnewton/hermit/pull/2694.
+adopt-and-carry-orphaned-author-pull-requests-from-the-grouped-set	DUPLICATE	This umbrella repeats the individual pull-request drain rows, including the PR-specific rows in this slice.
+adopt-hermit-2427-and-meet-its-objection	DUPLICATE	The same https://github.com/rrnewton/hermit/pull/2427 work is represented by hermit_2427_changes_requested.
+advance_dev_hermit_s	STALE-PREMISE	Both parent gitlinks are now far beyond the task's 2026-08-22 target revisions.
+advance_hermit_s_reverie	STALE-PREMISE	Current Hermit and Reverie tips 471a14f93 and 8c8c0a5 are beyond the requested pin update.
+adversarial-review-of-the-host-capability-row-fields	DUPLICATE	The review and integration were absorbed by closed coordinated-land-of-the-type-refactors-across-both-repositories.
+agent-utils-work-gets-its-own-full-checkout-slot-and-lands-on-main	STALE-PREMISE	Its own note says it is a standing coordinator placement procedure rather than a unit of backlog work.
+agents-md-instructs-agents-to-create-worktrees-under-tmp	BLOCKED	Current AGENTS.md still prescribes /tmp, and the task explicitly requires owner wording before editing policy.
+agents-must-use-the-safe-hermit-wrapper-outside-the-official-runner	STALE-PREMISE	Current parent policy and Hermit debugging guidance carry the rule; parent commit 20df0784d landed it.
+allow_merge_gate_to	BLOCKED	https://github.com/rrnewton/hermit/pull/2904 remains open with no checks, and the recorded cross-repository credential decision remains unresolved.
+apply_local_label_sends	STALE-PREMISE	Current parent commit 4beb4f7b6 separates wrapper-only identity flags from the real gh invocation and tests the boundary.
+audit-how-dagrun-integrates-with-test-runners-and-whether-it-is-principled	ACTIONABLE	Recorded owner coord-helper is absent from the fresh name census; the prerequisite marker work landed and the remaining audit is defined.
+audit-the-three-testing-entry-points-and-when-each-is-right	ACTIONABLE	Recorded owner is absent; its only graph blocker is closed and the three-interface audit remains specified.
+audit_whether_gh_merge	ACTIONABLE	Recorded owner is absent; the dynamic-module pinning audit has no named blocker.
+bind_terminal_cellverdicts_to	ACTIONABLE	Recorded owner is absent; current rows still lack the required explicit terminal-verdict-to-SeriesRow event binding.
+bisect-probe-or-semantics-follow-up-bisections-and-streaming-output	ACTIONABLE	Recorded owner is absent; current main still refuses suite-only IDs instead of localizing every requested test ID.
+build-the-compatibility-website-fifth-slice-production-reducer-adapter	BLOCKED	Exact reviewed candidate 89fa0738c35e remains unpublished because direct-main authorization is absent.
+build-the-compatibility-website-fourth-slice-projection-decision-export	BLOCKED	Exact sealed candidate dd0f58ea1cb4 remains unpublished after explicit publication refusal.
+build-the-compatibility-website-sixth-slice-stage-1-data-artifacts	BLOCKED	Review still requests changes and current Hermit lacks the required manifest-metadata producer.
+build-the-compatibility-website-stage-2-static-navigation-and-detail-pages	BLOCKED	It depends on unpublished conditional Stage 1 work and direct-main authorization.
+build_the_compatibility_website	BLOCKED	Its recorded source-integration prerequisite still exists because current Hermit has no manifest-metadata binary.
+bump-agent-utils-to-track-main-as-soon-as-we-are-green	DUPLICATE	The current exact pin gap is already represented by catch-up-bump-hermit-agent-utils-pin-four-commits-ahead-of-the-cadence-change.
+bump-the-hermit-reverie-pin-one-commit-to-unblock-the-parent-snapshot	STALE-PREMISE	Current Hermit and parent Reverie pins have advanced repeatedly beyond the measured one-commit gap.
+can-qemu-expose-its-switch-points-to-an-external-controller	BLOCKED	The standing strong-green-base condition still exists; the latest current-main full receipt is red.
+catch-up-bump-hermit-agent-utils-pin-four-commits-ahead-of-the-cadence-change	ACTIONABLE	Recorded owner is absent; current Hermit pins e5074d1 while agent-utils main is exactly four commits ahead at 250c369.
+cc-parallel-sweep	ACTIONABLE	Recorded owner is absent; its methodology dependency is closed and no live blocker remains.
+cell-state-machine-derived-from-the-ledger-owner-specified	STALE-PREMISE	Its own note says it is a specification record, and current reducer code implements green, red, and never-measured derivation.
+ci-hub-remote-validate-over-ssh-opt-in	BLOCKED	The owner's four-condition clean-and-green launch gate remains unmet by the current red main receipt.
+ci-hub-should-report-whether-current-main-already-has-a-validate-in-flight	ACTIONABLE	Recorded owner is absent; current ci-hub has no direct current-main in-flight answer matching the acceptance test.
+classify-cells-by-proximity-to-their-timeout-ceiling	ACTIONABLE	Recorded owner is absent; the task requests a reusable current-data classifier and no named blocker exists.
+classify_non_sigchld_clone	ACTIONABLE	Recorded owner hermit-015 is absent from the fresh name census; current wait code still leaves non-SIGCHLD clone classification on the legacy path.
+claude_lane_hermit_2668	DUPLICATE	The review already ran and closed review rows carry its verdict; https://github.com/rrnewton/hermit/pull/2668 is merged.
+claude_re_review_of	DUPLICATE	Closed codex_re_review_of and the completed Reverie 503 review carry this obligation; https://github.com/rrnewton/reverie/pull/503 is merged.
+clean-concurrent-validate-pair-with-a-real-solo-baseline	BLOCKED	The owner prioritization remains unanswered and the experiment requires both validation slots.
+close_task_duplicates_closure	ACTIONABLE	Recorded owner is absent; current verified_close still writes the closure anchor before the status transition and has no idempotent resume.
+codex_lane_for_hermit_4	DUPLICATE	Closed codex_lane_hermit_2627 carries this review; https://github.com/rrnewton/hermit/pull/2627 is merged.
+codex_re_review_hermit	DUPLICATE	Completed Hermit 2216 review and drain rows already carry this review obligation.
+codex_reviews_finish_after	BLOCKED	Measurement is complete and the task explicitly waits for the owner to choose bounded hold duration N.
+collapse_full_historical_provenance	BLOCKED	The implementation remains only in the non-landable website scratch stack awaiting the publication path.
+comment-the-sentinel-as-the-only-load-bearing-assertion	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/reverie/pull/524 merged and current main still lacks the requested adjacent comment.
+compat-ld-diverges-on-getdents64-directory-entry-bytes	BLOCKED	The task is held by the standing strong-green-base rule and the latest current-main full receipt is red.
+compatibility_cells_page_transfers	STALE-PREMISE	Its latest measurement already changed 64 MB and 24 seconds to 13.6 MB and roughly 10-11 seconds, and the artifact changed again afterward.
+compatibility_website_excludes_schema	BLOCKED	Current Hermit still emits schema 7 cell results, so the named schema-9 producer activation has not occurred.
+compatibility_website_refusals_must	BLOCKED	Its explicit blocker build-the-compatibility-website-sixth-slice-stage-1-data-artifacts remains BACKLOG with changes requested.
+confirm-where-the-rust-script-smoke-test-is-wired	ACTIONABLE	Recorded owner is absent; this bounded wiring audit has no named blocker.
+coordination_live_lane_status	STALE-PREMISE	This is an August 26 moving board whose counts, heads, and lane identities have expired.
+coordinator-authorized-slot-creation-fails-on-two-environment-preconditions	ACTIONABLE	Recorded owner is absent; the workaround is known but the documented interface still does not expose either prerequisite.
+current-parallel-scaling-per-expensive-step-and-max-clean-concurrent-validate-width	ACTIONABLE	The recorded owner mega-lander is in the fresh name census; the September 7 audit says current width and both curves remain unmeasured.
+dagrun-does-not-parse-the-nextest-fail-line-so-an-error-banner-cannot-lead	STALE-PREMISE	Its own final note says both questions were answered and identifies a different parser defect.
+dagrun-should-detect-and-refuse-nested-invocations	STALE-PREMISE	The guard landed in agent-utils and Hermit main contains the outer-DAG flattening change.
+dagrun-sweep-the-expensive-steps-and-bring-the-html-back-here	ACTIONABLE	Recorded owner is absent; host reachability was established and the two-host browsable artifact remains undelivered.
+dap-phase-4-fork-the-guest-process-tree-for-rr-style-checkpoints	BLOCKED	It awaits the named Hermit process-tree ownership boundary and owner scoping decision.
+dbi-to-dbt-rename-is-complete-but-the-package-split-is-not	BLOCKED	The explicit queue-drain condition still exists; GitHub currently reports 50 open Hermit pull requests.
+dbt-resource-bundle-contains-dangling-libdetcore-symlink	BLOCKED	https://github.com/rrnewton/hermit/issues/2297 remains open and says current source still stages the symlink, while host execution policy blocks the required clean build.
+dbt_leaks_the_host	STALE-PREMISE	Current Hermit main includes process-group identity determinization, invalidating the recorded host-pgid premise.
+decide-whether-to-preserve-the-7664-unreachable-commits	STALE-PREMISE	The latest measurement found the relevant unreachable-tip population is zero by construction.
+decide_whether_rust_shed	BLOCKED	The owner decision remains unresolved and current Cargo manifests still specify rust-shed branch main.
+deletions-must-be-total-no-deactivated-mechanisms-left-behind	BLOCKED	The completed inventory explicitly awaits owner approval before deletion.
+demo-07-is-red-and-the-fix-is-a-demo-owner-decision	STALE-PREMISE	Current parent main contains later Demo 7 fixes, so the measured pre-fix choice is no longer current.
+demo-08-freshen-blocked-by-model-content-filter	STALE-PREMISE	Subsequent Demo 8 repair and review commits supersede the content-filter-blocked freshening premise.
+demo-2-replay-fails-in-release-profile-only	STALE-PREMISE	The cloned-child stack repair is now in the pinned Reverie history and recorded release and debug replay both passing.
+demos-pinned-hermit-binary	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/dev-hermit/pull/157 closed unmerged and current demos still lack the preserved binary identity behavior.
+detcore-sigchld-fixes-parked	BLOCKED	The task remains held until a corrected green regression envelope exists; current main is red.
+determinize-detcore-internal-hashmap-seeding-for-shared-address-space-backends	BLOCKED	The named owner-decision-cross-repo-deterministic-hasher-repair-and-hermit-pin-advance task remains BACKLOG.
+do-qemu-switch-points-coincide-with-guest-runqueue-changes	BLOCKED	The task's standing strong-green-base condition still applies and current main is red.
+does-ci-hub-support-a-remote-validate-concept-cleanly	DUPLICATE	The investigation and concrete proposal are already incorporated into ci-hub-remote-validate-over-ssh-opt-in.
+dogfood-hermit-for-deterministic-base-image-build	ACTIONABLE	Recorded owner is absent; its Hermetic stage-3 dependency is closed and the builder uid/gid target remains concrete.
+drain-hermit-2304-fizzle-recurrence-hold	STALE-PREMISE	https://github.com/rrnewton/hermit/pull/2304 is closed without merge, so holding that PR for a ruling is no longer current.
+drain-open-pr-hermit-2216	DUPLICATE	The same open https://github.com/rrnewton/hermit/pull/2216 is represented by hermit_2216_is_rebased.
+drain-open-pr-hermit-2223	STALE-PREMISE	https://github.com/rrnewton/hermit/pull/2223 merged on 2026-09-03.
+drain-open-pr-hermit-2302	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/hermit/pull/2302 remains open as a draft at the recorded head.
+drain-open-pr-hermit-2368	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/hermit/pull/2368 remains open as a draft at the recorded head.
+drain-open-pr-hermit-2400	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/hermit/pull/2400 remains open as a draft at the recorded head.
+drain-open-pr-hermit-2408	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/hermit/pull/2408 remains open as a draft, with a newer head than the recorded salvage commit.
+drain-open-pr-hermit-2425	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/hermit/pull/2425 remains open as a draft at the recorded head.
+drain-open-pr-hermit-2694	DUPLICATE	The open PR's remaining review and landing work is separately represented by independent-codex-lane-for-hermit-2694-at-446667cf0 and second_lander_of_2668.
+drain-open-pr-reverie-463	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/reverie/pull/463 remains open as a draft at the recorded head.
+drain-open-pr-reverie-467	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/reverie/pull/467 remains open as a draft at the recorded head.
+drain-open-pr-reverie-476	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/reverie/pull/476 remains open as a draft at head 8d5e77769fd1.
+drain-open-pr-reverie-478	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/reverie/pull/478 remains open as a draft at the recorded head.
+drain-open-pr-reverie-479	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/reverie/pull/479 remains open as a draft at the recorded head.
+drain-the-pr-queue-into-the-hermetic-green-base	BLOCKED	Its remaining Hermetic portion is blocked by the BACKLOG task reverie_kvm_has_no.
+drain_hermit_pr_2680	DUPLICATE	This repeats closed drain-open-pr-hermit-2680; https://github.com/rrnewton/hermit/pull/2680 is closed without merge.
+drain_rrnewton_hermit_pr_3	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/hermit/pull/2771 remains open as a draft at the recorded head.
+drain_rrnewton_hermit_pr_4	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/hermit/pull/2783 remains open as a draft at the recorded head.
+drive-the-unselected-cells-to-a-measured-verdict	BLOCKED	Its named dependency qualify_kvm_toward_90 is still IN_PROGRESS in the snapshot.
+emit_backend_child_stop	ACTIONABLE	Recorded owner hermit-015 is absent from the fresh name census; the named KVM dependency is closed but current common code still parks stop and continue handling.
+empty_must_distinguish_never	STALE-PREMISE	Current reducer derives never-measured from absent qualifying rows and tests the empty-history case.
+every-test-in-liteinst-advanced-hangs-nineteen-of-nineteen	STALE-PREMISE	Its latest note records 23 passed and zero failures or timeouts, and later current-main evidence also passed the LiteInst node.
+evidence_for_the_exact	STALE-PREMISE	Its j16 observations and three-PR landing situation predate the current ledger and landing implementation.
+expected-refusal-contract-turns-an-error-into-coverage	ACTIONABLE	Recorded owner is absent; current manifest still marks restart_syscall unavailable and says an expected-refusal contract is needed.
+explore-nix-native-hermit-build	ACTIONABLE	Recorded owner is absent; its explicit Hermetic stage-3 dependency is closed.
+failed-verify-comparisons-keep-their-logs-forever-with-no-retirement-path	ACTIONABLE	Recorded owner is absent; https://github.com/rrnewton/hermit/pull/2925 remains open and dirty at d63465ef6ec4.
+failed_newfstatat_renders_an	ACTIONABLE	Recorded owner is absent; the live demo reproduction remains recorded and no current-main fix was found.
+falsify-the-timeslice-law-with-a-tunable-race-window	STALE-PREMISE	The title and notes explicitly say the law was withdrawn before this task could test it.
+fd_flag_restore_from	DUPLICATE	Its later measurements redirect the actual remaining defect to the open https://github.com/rrnewton/hermit/pull/2694 work.
+fifth-trigger-or-recorded-one-off-owner-question-from-2216	STALE-PREMISE	Current AGENTS.md now defines exactly four post-facto-human-review triggers.
+file-agent-utils-issue-dagrun-should-accept-multiple-graph-files	ACTIONABLE	Recorded owner is absent; current GitHub search found no matching rrnewton/agent-utils issue.
+five-kvm-cells-are-red-on-a-stale-infrastructure-error-and-now-match	ACTIONABLE	Recorded owner demo08review is absent from the fresh name census; https://github.com/rrnewton/hermit/pull/2909 remains open and dirty.
+five-sub-orchestrator-panes-are-unreachable-through-orc-and-need-clearing-at-tmux	STALE-PREMISE	The named September 3 pane population is transient and has no current evidence in the snapshot.
+fix-2357-sixteen-failing-tests-three-classes	STALE-PREMISE	https://github.com/rrnewton/hermit/pull/2357 is closed without merge, while current main already defaults unsupported syscalls to fail closed.
+fix-red-nodes-to-unblock-the-five-gated-pull-requests	BLOCKED	Its named hermetic-validate-v3-clean-base-minimal-env-fixed-test-workdir dependency remains BACKLOG and current main is red.
+fix-the-8190-byte-pipe-divergence-now-that-it-reproduces-at-51-percent	STALE-PREMISE	Current main contains the deterministic pipe-capacity implementation and its load-bearing tests; https://github.com/rrnewton/hermit/pull/2176 is closed.
+fix-the-liteinst-fork-cleanup-failure-and-land-reverie-441	DUPLICATE	The cleanup work was superseded by https://github.com/rrnewton/reverie/pull/447, which merged; PR 441 is closed and concerns different work.
+fix-the-netlink-normalisation-owner-decision-pending	BLOCKED	The named owner ruling remains absent after the supporting audit tasks closed.
+fix-the-newer-cell-results-shape-test-artifact-path	ACTIONABLE	Recorded owner is absent; current fixture still uses target/cells.jsonl, outside the canonical retained-artifact path.
+fix-the-uncontrolled-shared-resources-the-enumeration-found	ACTIONABLE	Recorded owner is absent; current history fixes some private-workdir cases but no evidence closes all 18 recorded resource classes.
+fix-wrkslots-round-two	STALE-PREMISE	Current agent-utils contains multiple later wrkslots review, recovery, and scoping repairs and wrkslots is now active policy.
+fix_2618_heap_extent	DUPLICATE	Closed drain_hermit_pr_2618 carries this work and current main contains the heap DETLOG implementation.
+fix_my_exit_class	DUPLICATE	This repeats the completed Hermit 2680 drain and review work; https://github.com/rrnewton/hermit/pull/2680 is closed.
+flake-in-liteinst-strict-fails-slow-without-evidence	STALE-PREMISE	https://github.com/rrnewton/hermit/issues/2300 remains open, but its current body replaces the old Fix A owner-choice premise with bounded diagnostic work.
+flatten_test_strict_compat	STALE-PREMISE	Hermit main contains 49194b2f8, flattening strict compatibility into the outer DAG.
+four-drain-verdicts-closed-without-reaching-their-pull-requests	STALE-PREMISE	All four named rows now carry either a published permalink or a recorded publication exemption.
+four-fast-check-nodes-are-the-cheapest-of-the-fourteen	STALE-PREMISE	Its own latest note says the fourteen-node population is superseded and a named check already passes.
+four-merged-pull-requests-retain-substantive-findings-on-main	STALE-PREMISE	Current main contains the later heap-log, missing-program, and typed-result repairs identified by the audit.
+four-rulings-block-the-top-of-the-pr-queue	STALE-PREMISE	https://github.com/rrnewton/hermit/pull/2286 merged while the cited 2276, 2277, 2287, 2129, 2218, and 2225 are closed.
+four-weekly-pmu-gates-pin-no-expected-count-so-a-50-percent-shift-lands-silent	ACTIONABLE	Recorded owner hermit-011 is absent from the fresh name census; the old box wait expired and the missing expected-count contract still needs current measurement.
+four_experiment_directories_hold	STALE-PREMISE	The four current directories total about 5.4 MB, not the described 4.4 GB.
+freshness_check_a_positive	STALE-PREMISE	Current commit 3e148af04 refuses stale validation before acquiring the lease.
+gate_is_lexical_concat	STALE-PREMISE	The task's latest note shows normal concatenation is caught; only a split or escaped username passes.
+gdbserver_hangs_after_a	ACTIONABLE	Current Reverie still skips freeze and thaw for a sequentialized guest; no task artifact closes the distinct post-swbreak hang.
+gdbstub-drops-async-interrupt	BLOCKED	The named owner scope decision still exists, and current code leaves Packet::Interrupt empty.
+get-github-actions-green-on-ubuntu	ACTIONABLE	The latest Reverie Rust workflow runs 33290441668 and 33290187187 failed; the width prerequisite is present.
+git-stash-is-repo-wide-races-agents	BLOCKED	The required protocol change remains blocked on targeted owner authorization under AGENTS.md.
+github_does_not_enforce	BLOCKED	The current compatibility release reports immutable=false, so GitHub immutable releases remain the named external blocker.
+github_pages_landing_page	ACTIONABLE	The Pages root returns 200, but https://rrnewton.github.io/favicon.ico returns 404 and the HTML has no icon link.
+give-a-diverged-verdict-its-own-exit-code-instead-of-the-generic-internal-failure	STALE-PREMISE	The current typed-result implementation at f58c31a8a supersedes the described string-error design.
+goal-5-the-scaling-model-for-steps-other-than-the-largest	ACTIONABLE	Measurements for non-largest steps remain absent, and the prior owner pause no longer governs the current fleet.
+goal-first-divergence-for-every-red-cell	DUPLICATE	Duplicate of closed work wire-first-divergent-record-through-so-every-red-cell-carries-it.
+goal-validate-parallel-scaling-model	DUPLICATE	Duplicate of goal-5-the-scaling-model-for-steps-other-than-the-largest; its named blocker e2e_manifest_c_programs_2 is closed.
+guest-stats-a-harness-written-ancestor	STALE-PREMISE	Fresh /test isolation has landed and the old route was owner-superseded.
+harden-and-complete-the-parity-tests	ACTIONABLE	https://github.com/rrnewton/hermit/pull/2945 remains open, non-draft, DIRTY, and absent from main; recorded owner mega-lander is present in the fresh census.
+harnesses-discard-the-bpf-denial-banner-and-relabel-denials-as-timeouts	DUPLICATE	Duplicate of adopt-hermit-2427-and-meet-its-objection.
+headroom-monitor-cannot-see-the-incident	STALE-PREMISE	Current btrfs monitoring includes growth alarms, unknown-state handling, and writer limits.
+held_two_gdbstub_fixes	STALE-PREMISE	Current Reverie contains c47e13f and current Hermit contains cf4b18f, the two described fixes.
+help-and-error-paths-that-refuse-without-guiding	STALE-PREMISE	Current test-harness provides conventional help and the described command-failure fixes.
+herdr-run-is-installed-but-no-server-is-running-so-the-route-is-dead	ACTIONABLE	Current herdr-run status reports the client installed but no server running.
+hermetic-validate-v3-clean-base-minimal-env-fixed-test-workdir	ACTIONABLE	The latest note and current code show that the minimal environment and /test workdir are not universal; recorded owner hermit-138 is absent from the fresh 15-name census.
+hermit-1890-two-stale-dbi-assertions	BLOCKED	https://github.com/rrnewton/hermit/issues/2298 remains open with no comments and asks for the named alias-versus-breaking-removal decision.
+hermit-ci-recovery-six-named-causes-not-one	ACTIONABLE	The latest Hermit Merge Gate and privileged workflow runs still fail, so the six-cause recovery work remains.
+hermit-reverie-pin-lags-6-commits	STALE-PREMISE	The current gitlink and Cargo pins all resolve to 8c8c0a, so the six-commit lag no longer exists.
+hermit_2216_is_rebased	DUPLICATE	Duplicate of drain-open-pr-hermit-2216 and codex_re_review_hermit.
+hermit_2223_blocked_on	DUPLICATE	Duplicate of drain-open-pr-hermit-2223.
+hermit_2427_changes_requested	DUPLICATE	Duplicate of adopt-hermit-2427-and-meet-its-objection.
+hermit_2679_verified_but	STALE-PREMISE	The snapshot row merging-actor-is-recorded-nowhere records that the pull request merged on 2026-08-26.
+hermit_s_own_diagnostics	ACTIONABLE	The O_NONBLOCK short-write reproduction and fix are absent; recorded owner hermit-105 is absent from the fresh 15-name census.
+implement-the-four-standardised-result-rows-once-the-owner-rules-on-vocabulary	BLOCKED	The task explicitly waits on the still-unanswered owner decision for the shared result type.
+import-the-pressure-study-observations-into-the-scorecard	STALE-PREMISE	The current canonical series already contains the cited 6450d9f pressure observations.
+independent-codex-lane-for-hermit-2694-at-446667cf0	DUPLICATE	Duplicate of drain-open-pr-hermit-2694 and the closed adoption task for that pull request.
+independent_exact_head_re	DUPLICATE	Duplicate of closed work independent_exact_head_review for the same pull-request head.
+independent_review_of_hermit	STALE-PREMISE	https://github.com/rrnewton/hermit/pull/2753 closed unmerged on 2026-08-30, with a closing comment retiring the snapshot because main has newer timeout handling.
+investigate-the-recurring-exact-15-second-nextest-timeouts	BLOCKED	The named owner choice of remedy remains unanswered.
+is_invoked_misses_rustc	STALE-PREMISE	The current file has runner_flag_path handling and tests for the described rustc case.
+label-build-steps-as-conflicting-on-the-shared-target-directory	STALE-PREMISE	Current checkout exclusion and publication ordering supersede the proposed shared-target label.
+land-safety-infra-on-main	ACTIONABLE	The latest task note says steps 2 through 6 remain open and step 7 is unlanded.
+land-the-nine-receipt-blocked-pull-requests-one-at-a-time-with-both-gates-read	STALE-PREMISE	The nine-pull-request snapshot is historical; closed task the-per-pull-request-drain-rows-predate-tonight-and-need-auditing-against-the-current-queue records the replacement audit.
+land-through-the-github-recognised-path-going-forward	ACTIONABLE	The GitHub-recognised landing design and recording integration remain unfinished.
+landing-mode-more-landers-soft-green-and-a-full-validate-cadence	ACTIONABLE	The standing landing directive remains applicable while pull requests remain open.
+landing-queue-ready-when-the-serialized-lane-is-released	STALE-PREMISE	The task names historical heads, and the typed-verdict work it awaited has landed.
+lane1-mttcg-chaos-mode-preemption-control	BLOCKED	Named blocker fix-the-netlink-normalisation-owner-decision-pending remains BACKLOG.
+let_absent_agent_recovery	ACTIONABLE	The implementation still has an unresolved P1 exact-tree-equivalence review finding; recorded owner mega-lander is present in the fresh census.
+list_every_missing_compatibility	ACTIONABLE	The latest V9 note names 15 omitted identities needing linked explanations; recorded owner scorecard-website is absent from the fresh 15-name census.
+liteinst-backend-ratchet-to-three-quarters-of-ptrace-green	BLOCKED	https://github.com/rrnewton/hermit/pull/2948 remains open, draft, DIRTY, and absent from main, awaiting owner review release.
+liteinst-startup-fails-to-open-the-tracee-pidfd	STALE-PREMISE	Current Reverie distinguishes the root-identity timeout, and fix 744b610 is on main.
+liteinst_90_percent_architecture	BLOCKED	The September 7 note says the named valid-identity and authorization decision remains unresolved.
+local-off-the-record-run-plans-29-nodes-and-executes-zero	STALE-PREMISE	The described 19f driver predates the Rust driver and typed zero-versus-absent accounting at e37c.
+main-advances-faster-than-a-validate-can-start-so-the-green-bar-is-starved	STALE-PREMISE	Frozen validation now exists, removing the described moving-main premise.
+main_has_a_two	ACTIONABLE	Current make check-portability exits 2, although the task's historical count of 63 is no longer current.
+make-eager-exit-global-so-a-run-stops-at-the-first-failure	ACTIONABLE	Current validation still assigns a separate fail-fast family to each node.
+make-safe-runner-the-easy-path	BLOCKED	Three named owner decisions recorded on the task remain unresolved.
+make_pselect6_temporary_signal	STALE-PREMISE	The requested temporary-signal work is present in current commit 1663138d9.
+make_scorecard_projection_write	ACTIONABLE	Current callers still split project-observations from observe-results rather than use one transaction; recorded owner mega-lander is present in the fresh census.
+make_the_gdbserver_run	STALE-PREMISE	Current Reverie records that instrumentation disproved the run-loop premise; remaining work is in the inferior-resume path.
+manifest-to-commands-verify-recipe-omits-hermit-guest-env-args	ACTIONABLE	Current frontends hard-code six guest environment arguments while the runner emits seven plus isolation paths; recorded owner scorecard-website is absent from the fresh 15-name census.
+mega-lander-charter-serialized-landing-authority	DUPLICATE	Duplicate of mega-lander-standing-authority-owner-approval-required-to-close.
+mega-lander-standing-authority-owner-approval-required-to-close	BLOCKED	The task explicitly requires the named owner's approval before closure, and that approval is absent.
+merge-flake-data-collection-into-the-pressure-tester-for-green-and-red-cells	BLOCKED	The task still requires the named owner discussion before the merge.
+merge_gate_has_been	BLOCKED	The GitHub variable value still differs from the main workflow blob, and the named settings owner controls the change.
+merging-actor-is-recorded-nowhere	ACTIONABLE	Current verified-close and merge paths have no durable merge-actor field or bypass detection.
+move-demos-directory-into-hermit	STALE-PREMISE	Current trees contain Hermit demos and parent redirects, so the described move is complete.
+narrow-the-dbi-to-dbt-directive-to-part-two-the-package-split	DUPLICATE	Duplicate of dbi-to-dbt-rename-is-complete-but-the-package-split-is-not.
+nightly-workflow-for-required-bumps-so-they-stop-depending-on-a-stable-window	ACTIONABLE	Only the Reverie scheduled bump service was found; the broader required bump list remains; recorded owner hermit-016 is absent from the fresh 15-name census.
+no-gate-checks-whether-a-producer-still-exists-only-artefact-age	ACTIONABLE	Current gates check artifact age but no producer-liveness check was found.
+node-bounds-sit-too-close-to-the-work-they-bound	STALE-PREMISE	Current timeout calibration and headroom commits supersede the described node bounds.
+operational-health-tick-now-exceeds-its-own-180s-timeout-and-crashed-three-times	STALE-PREMISE	Current commit 2f818 moved the expensive audit out of the tick and bounded findings.
+operational-tick-times-out-at-180s-and-monitoring-is-blind	ACTIONABLE	drain_publication still loads every task and all notes per run; the optimization remains despite the outer tick repair; recorded owner coord-helper is absent from the fresh 15-name census.
+operational_health_tick_is_10	DUPLICATE	Duplicate of closed operational_health_tick_is; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_is_11	DUPLICATE	Duplicate of closed operational_health_tick_is; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_is_12	DUPLICATE	Duplicate of closed operational_health_tick_is; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_is_13	DUPLICATE	Duplicate of closed operational_health_tick_is; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_is_2	DUPLICATE	Duplicate of closed operational_health_tick_is; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_is_3	DUPLICATE	Duplicate of closed operational_health_tick_is; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_is_4	DUPLICATE	Duplicate of closed operational_health_tick_is; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_is_5	DUPLICATE	Duplicate of closed operational_health_tick_is; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_is_6	DUPLICATE	Duplicate of closed operational_health_tick_is; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_is_7	DUPLICATE	Duplicate of closed operational_health_tick_is; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_is_8	DUPLICATE	Duplicate of closed operational_health_tick_is; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_is_9	DUPLICATE	Duplicate of closed operational_health_tick_is; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_10	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_100	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_11	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_12	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_13	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_14	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_15	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_16	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_17	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_18	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_19	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_20	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_21	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_22	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_23	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_24	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_25	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_26	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_27	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_28	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_29	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_3	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_30	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_31	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_32	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_33	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_34	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_35	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_36	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_37	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_38	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_39	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_4	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_40	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_41	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_42	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_43	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_44	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_45	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_46	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_47	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_48	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_49	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_5	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_50	DUPLICATE	Duplicate of closed operational_health_tick_reports; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_51	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_52	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_53	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_54	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_55	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_56	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_57	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_58	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_59	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_6	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_60	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_61	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_62	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_63	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_64	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_65	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_66	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_67	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_68	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_69	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_7	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_70	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_71	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_72	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_73	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_74	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_75	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_76	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_77	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_78	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_79	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_8	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_80	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_81	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_82	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_83	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_84	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_85	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_86	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_87	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_88	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_89	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_9	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_90	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_91	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_92	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_93	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_94	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_95	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_96	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_97	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_98	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+operational_health_tick_reports_99	DUPLICATE	Recurring snapshot superseded by operational_health_tick_reports_100; repeated filing is tracked by the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one.
+ops-tick-drives-periodic-validate-on-integration-tip	ACTIONABLE	https://github.com/rrnewton/dev-hermit/pull/285 is OPEN and CLEAN at d8f21fb78382; recorded owner mega-lander is present in the fresh 15-name census.
+orc-coordinator-session-died-with-seventy-second-getstate-against-a-3578-node-task-tree	BLOCKED	Evidence belongs to the external ORC team and current ORC root cause cannot be verified from this checkout.
+orc-session-loop-enters-a-paused-state-repeatedly-and-resume-does-not-hold	BLOCKED	Requires owner or ORC session-layer visibility; current ORC state is not locally verifiable.
+ov-basic-sanity-gate	BLOCKED	Current Hermit still lacks the one-DAG change and the scorecard trust work is incomplete.
+ov-nonptrace-80pct-gate	BLOCKED	Threshold gate depends on ov-basic-sanity-gate and has no current trusted denominator.
+ov-pmu-retry	BLOCKED	Owner must decide the skid default and whether retry may proceed without genuine on-hardware overshoot evidence.
+ov-qemu-boot-nonptrace	BLOCKED	Explicitly waits for ov-nonptrace-80pct-gate to fire.
+own-2391-lint-rust-scripts-end-to-end	DUPLICATE	Closed lint-everywhere-we-should-close-the-rust-script-gap delivered the work through merged https://github.com/rrnewton/hermit/pull/2393 and landed commit 010a092bdf49.
+own-pr-2012-parent-ledger-adapter	STALE-PREMISE	https://github.com/rrnewton/hermit/pull/2012 closed unmerged on 2026-08-24, so the row's pending-open-PR decision premise expired.
+own-pr-2177-932-silent-cells	DUPLICATE	Closed land-pr-2376-now-that-the-record-path-works covers merged https://github.com/rrnewton/hermit/pull/2376.
+own-the-flock-fix-and-drive-it-to-landing	DUPLICATE	Closed land-flock-repair-2373-then-unblock-2389 covers merged https://github.com/rrnewton/hermit/pull/2373 and https://github.com/rrnewton/reverie/pull/468.
+own_hermit_2620_end	DUPLICATE	Closed codex_lane_for_hermit_2 covers merged https://github.com/rrnewton/hermit/pull/2620; commit 2d70ccddc is on current main.
+owner-architecture-single-template-plus-loaded-data-not-per-cell-html	ACTIONABLE	https://github.com/rrnewton/hermit/pull/2940 is OPEN, CLEAN and approved at 5f8492776c58; recorded owner scorecard-website is absent from the fresh 15-name census.
+owner-checkout-dirty-set-blocks-periodic-validate-for-23-hours	ACTIONABLE	Current main still launches validation through the primary checkout; no task blocker is recorded and the row is unowned in the fresh census.
+owner-decision-active-slot-cap-is-12-against-26-live-agents	BLOCKED	Owner policy choice remains after the global cap became opt-in.
+owner-decision-audited-registry-edit-to-release-quarantined-slots	BLOCKED	Historical quarantine and release rows still require an explicit owner-authorized migration or disposition.
+owner-decision-container-run-forks-without-exec-and-a-child-can-deadlock	BLOCKED	Owner must authorize a universal fork-path change with product-wide scope.
+owner-decision-cross-repo-deterministic-hasher-repair-and-hermit-pin-advance	BLOCKED	The cross-repository repair remains an owner decision.
+owner-decision-kvm-capture-sink-route-or-answer-as-a-pipe	BLOCKED	Owner must choose the guest-visible syscall semantics.
+owner-decision-pending-clock-fix-leaning-option-a-not-now	BLOCKED	Owner explicitly parked implementation.
+owner-decision-restore-fail-closed-default-for-restart-syscall	BLOCKED	The fail-closed default remains an owner decision.
+owner-decision-scorecard-should-name-membership-and-measurement-separately	DUPLICATE	Its own note says no owner decision is needed; the work is tracked by rename-the-scorecard-colour-to-selected-and-not-selected.
+owner-decision-should-hermit-model-process-groups-sessions-and-supplementary-groups	BLOCKED	Owner must choose modeling versus documented non-hermetic behavior.
+owner-decision-the-landing-gate-and-the-coordination-record-apply-different-rules	BLOCKED	Authority between the exact-head gate and coordination record remains an owner decision.
+owner-decision-which-cells-qualify-288-of-371-are-excluded	BLOCKED	The qualification rule remains an owner policy decision.
+owner-decision-write-a-dap-adapter-for-hermit-to-reach-the-existing-agent-path	BLOCKED	Owner must choose DAP fidelity versus Hermit-specific expressiveness.
+owner-design-tight-cpu-and-loose-wall-bounds-per-test	DUPLICATE	Closed generous-wall-bounds-plus-per-machine-multipliers-on-cpu-and-wall-timeouts landed the design as 976c70986.
+owner-directive-land-hermit-2927-at-the-green-to-green-transition	BLOCKED	https://github.com/rrnewton/hermit/pull/2927 is OPEN and DIRTY, and current main's latest recorded validation failed, so its green-to-green precondition is unmet.
+owner-directive-no-cpu-pinning-establish-whether-dagrun-uses-it	STALE-PREMISE	Completed audit proved no CPU pinning was active in dagrun or the width-two runs.
+owner-review-page-renders-then-goes-blank-in-chrome	ACTIONABLE	The website candidate is on OPEN CLEAN https://github.com/rrnewton/hermit/pull/2940 and its former allocator blocker is closed; recorded owner scorecard-website is absent from the fresh census.
+owner-review-paginate-and-make-every-generated-list-sortable-filterable	ACTIONABLE	Verified implementation is on OPEN CLEAN https://github.com/rrnewton/hermit/pull/2940; recorded owner scorecard-website is absent from the fresh census.
+owner-review-say-what-runs-counts-in-the-series-row-sentence	ACTIONABLE	Verified wording remains in the unpublished website candidate on OPEN CLEAN https://github.com/rrnewton/hermit/pull/2940; recorded owner scorecard-website is absent from the fresh census.
+owner-review-show-run-numbers-not-long-opaque-handles	ACTIONABLE	Verified implementation awaits work on OPEN CLEAN https://github.com/rrnewton/hermit/pull/2940; recorded owner scorecard-website is absent from the fresh census.
+owner-ruling-never-measured-cells-excluded-from-default-views	ACTIONABLE	Its earlier drop-historical blocker is CLOSED and the website candidate is OPEN/CLEAN; recorded owner scorecard-website is absent from the fresh census.
+owner_decision_isolate_var	BLOCKED	Owner must choose the scope of /var/facebook isolation.
+owner_decision_watch_or	BLOCKED	Only the owner can choose server-side protection versus the weaker client-side watcher.
+owner_question_base_env	BLOCKED	Owner must choose whether documentation or the eight-variable implementation defines the minimal environment contract.
+owner_question_should_the	BLOCKED	Owner must decide whether the reconcile bridge should continue to exist.
+parent-dev-hermit-checkout-is-dirty-and-that-is-mine	STALE-PREMISE	Its own note says a help command changed the recorded gitlink state and invalidated the prior remedy; current shared-checkout dirt was not inspected.
+partial-credit-score-summing-fractional-progress-across-cells	BLOCKED	Blocked on producer-owned selected-equal-INFO-prefix evidence; current source still exposes no such field.
+pdeathsig-exit-code-claim-is-wrong-and-the-test-discards-it	DUPLICATE	Closed https://github.com/rrnewton/hermit/pull/2672 work covers the exit-status distinction; landed commit 414cb8ba1 is on current main.
+port-the-validate-dags-to-expose-parallelism-through-cmdtype	BLOCKED	The cmdtype pin is now present, but the row's stated good-green-tree precondition is not met by the latest validation.
+port_reverie_buck_files	BLOCKED	Current Reverie checkout still contains zero BUCK files and the cross-repository choice remains unresolved.
+portable-paths-filetype-gap-needs-attribution-exception-first	ACTIONABLE	Current checker still omits .c/.h and no named blocker exists; the row is unowned in the fresh census.
+pr-465-cannot-work-and-is-still-open-as-a-draft	DUPLICATE	The named work is closed: https://github.com/rrnewton/reverie/pull/465 merged on 2026-08-27 at 64b56b37d78f.
+pr_head_ci_discards	STALE-PREMISE	Current pr_head_ci.py forwards child stdout/stderr on nonzero exit; landed commit 7bf72ddb9b implements the requested behavior.
+pre-create-cell-directories-before-workers-start	STALE-PREMISE	Canonical /test namespace isolation landed at 99e36737f, which this row says supersedes pre-creation for the observed defect.
+prepare-devbig176-as-a-second-full-validate-host	BLOCKED	Owner SSH credentials are still absent; ssh-add reports no authentication agent.
+preserve_dbt_process_child	BLOCKED	The measured fix requires a Reverie copied-child ABI redesign or an owner decision to fail closed.
+preserve_native_attempt_observation	BLOCKED	The remaining producer, schema and website stages are incomplete.
+pressure_tick_uses_the	STALE-PREMISE	Parent commit b088a8711 now keeps detached pressure runs on a live tool root.
+processes-survive-both-the-process-group-kill-and-the-parentage-sweep	ACTIONABLE	The repeated nonce-only cleanup cases have no named blocker; the row is unowned in the fresh census.
+prototype-a-qemu-control-channel-for-vcpu-scheduling	BLOCKED	The owner's strong-green-base precondition is unmet by the latest recorded current-main validation.
+prototype-hermetic-runs-on-github-actions	BLOCKED	It conflicts with the standing disabled-Actions directive and also depends on get-github-actions-green-on-ubuntu.
+prune-validate-wall-time-after-main-is-green-and-stable	BLOCKED	Blocked by profile_and_reduce_kvm, trace_test_strict_compat and the unmet green-and-stable condition.
+publish_authentic_per_cell	BLOCKED	Explicitly blocked by nonterminal bind_terminal_cellverdicts_to.
+published-changes-are-not-active-in-the-primary-two-open-activation-obligations	STALE-PREMISE	Both named candidates 6be3348523e1 and 7fc7e214af69 are ancestors of current parent HEAD.
+quarantined-slots-cannot-be-released-by-any-tool-path	DUPLICATE	Superseded by use-the-quarantine-exit-and-release-slots-protecting-the-ten, which tracks the remaining historical rows.
+read-the-orphaned-validate-status-history-handoff-and-clear-seven-slots	ACTIONABLE	Latest operational snapshot still names validate-status-history as dead-owner residue; no blocker is recorded and the row is unowned in the fresh census.
+realtime_signals_cannot_be	BLOCKED	Current source still narrows timer signals through nix::Signal; the Reverie delivery change remains absent.
+recalibrate_check_lint_checks	STALE-PREMISE	Current main still schedules test_validate_stop_paths.py, so the described post-unscheduling workload does not exist.
+reclaim-the-filesystem-to-one-worktree-per-live-agent	BLOCKED	Emergency pressure is resolved, but the remaining /tmp and cells.json retention policies require owner decisions.
+reinstate_git_repository_workflow	BLOCKED	Explicitly blocked by nonterminal verify-the-st-size-fix-with-a-two-arm-measurement.
+release_profile_replay_injects	STALE-PREMISE	Current Hermit pins Reverie 8c8c0a57, which contains clone-stack fix ce841d74; the old https://github.com/rrnewton/hermit/pull/2936 remains open but is no longer needed for that fix.
+remove-the-cells-json-scan-exemption-once-the-write-fix-lands	BLOCKED	The exemption remains and current cells.json still contains host paths, so its write-fix prerequisite is unmet.
+remove_per_run_and	BLOCKED	Explicitly blocked by nonterminal make_scorecard_projection_write.
+rename-the-scorecard-colour-to-selected-and-not-selected	ACTIONABLE	https://github.com/rrnewton/hermit/pull/2738 is OPEN and DIRTY, so rebase/review work remains; the row is unowned in the fresh census.
+render_build_and_direct	ACTIONABLE	The structured rendering work has no named blocker; recorded owner scorecard-website is absent from the fresh census.
+repair_the_documented_directives	BLOCKED	The executable-bit defect still reproduces and the latest note requests owner authorization for the expanded repair.
+repeat-the-concurrent-pair-with-two-healthy-arms-and-take-the-solo-baseline	BLOCKED	The required devbig030 run still needs an interactive owner SSH login; ssh-add reports no authentication agent.
+restore-the-docs-workflow-after-the-pages-experiment	BLOCKED	Restoration waits for the Pages experiment and a publication design that preserves compatibility subpaths.
+resume-the-concurrency-experiment-on-a-base-that-contains-the-compat-fixture-repair	DUPLICATE	Explicitly superseded by closed saturate-devbig030-with-as-many-simultaneous-validates-as-memory-holds-and-see-what-breaks.
+retain_child_incarnation_identity	BLOCKED	KVM virtual-child pidfd support or an explicit contract ruling remains the named blocker.
+retain_exact_per_test	ACTIONABLE	Current premise remains supported and no named blocker was found; recorded owner lander-2 is absent from the fresh 15-name census, so preserve the work for adoption rather than close it.
+retain_the_cells_selected	BLOCKED	teach_readers_to_accept remains BACKLOG and https://github.com/rrnewton/dev-hermit/pull/276 remains open.
+retained-verification-logs-are-guest-writable-under-keep-logs	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+retry-aggregation-loses-a-skip-record-so-a-skipped-node-becomes-unaccounted	ACTIONABLE	Current premise remains supported and no named blocker was found; recorded owner hermit-147 is absent from the fresh 15-name census, so preserve the work for adoption rather than close it.
+retry-was-asked-for-across-all-compat-envelope-cells-and-built-as-a-one-node-allowlist	BLOCKED	The owner has not authorized the validate.rs retry-policy change.
+return_the_parent_checkout	STALE-PREMISE	The shared parent is now on main; the recorded rescue-branch premise expired, although its tree remains dirty.
+reverie-459-blocked-by-merge-gate-v2-with-actions-disabled	STALE-PREMISE	The latest note already retracts the gate premise and https://github.com/rrnewton/reverie/pull/459 is closed unmerged.
+reverie_kvm_has_no	BLOCKED	The measured KVM signal-delivery gap awaits the recorded owner scope decision.
+review-the-writeback-producer-and-consumer-as-one-contract	STALE-PREMISE	The two parent pull requests in scope are closed unmerged, so the recorded paired-review target no longer exists.
+rewrite-git-cells-self-contained-in-test	BLOCKED	The owner has not ruled whether the dedicated fix-validate work may be reassigned.
+route-the-five-data-carrying-syscalls-to-the-kvm-capture-sink	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+run-dbt-never-writes-canonical-evidence-hermit-side	BLOCKED	The DBT evidence contract still requires the recorded owner decision; its old Reverie gate edge is stale but not the decision.
+run-the-import-that-landed-ten-worktrees-sit-outside-wrkslots	STALE-PREMISE	The registry no longer has zero records; wrkslots is active and currently reports a different 55-finding inconsistent population.
+sabre-shutdown-info-diverges-at-guest-width-20	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+salvage-and-free-all-worktree-slots-before-the-overnight-drain	DUPLICATE	The current cleanup is represented by tear-down-worktree-slots-to-a-tight-active-set; this row is an old salvage/free snapshot.
+salvage-then-reclaim-agentless-worktrees	DUPLICATE	The current cleanup is represented by tear-down-worktree-slots-to-a-tight-active-set; its 296-target measurement is obsolete.
+scalar-write-to-a-blocking-pipe-hangs-under-hermit-where-writev-completes	DUPLICATE	The implementation merged as https://github.com/rrnewton/hermit/pull/2910.
+scheduler_panic_path_a	BLOCKED	The row is explicitly do-not-action pending the owner ruling on a typed scheduler-panic outcome.
+scoping_question_container_run	BLOCKED	The universal fork-without-exec change remains an owner scoping decision.
+scorecard-truthfulness-the-four-known-wrong-counts	BLOCKED	preserve_native_attempt_observation remains BACKLOG with unfinished producer and website stages.
+scorecard-website-round-two-owner-feedback	ACTIONABLE	Current premise remains supported and no named blocker was found; recorded owner scorecard-website is absent from the fresh 15-name census, so preserve the work for adoption rather than close it.
+scorecard-website-ux-specification-owner-stated	BLOCKED	This primary specification record awaits the owner review identified in its latest note.
+scrutiny-tier-is-determinism-enforcement-not-cell-counts	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+second_lander_of_2668	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+serve_the_compatibility_website	BLOCKED	build_the_compatibility_website remains BACKLOG on its source-integration prerequisite.
+settle-cell-population-vocabulary-before-the-reducer-names-its-fields	ACTIONABLE	Current premise remains supported and no named blocker was found; recorded owner scorecard-website is absent from the fresh 15-name census, so preserve the work for adoption rather than close it.
+setup-manifest-plan-has-a-cpu-budget-below-its-own-measured-runtime	STALE-PREMISE	Current Hermit supplies an explicit large CPU budget for setup.manifest_plan; the recorded 10-second gap is historical.
+seven-hundred-and-sixty-five-git-roots-in-tmp-bypass-the-worktree-lifecycle-entirely	STALE-PREMISE	Its own latest note refutes bypass: /tmp landing worktrees were documented policy, and the 765-root measurement was reduced to a different residual population.
+shared-address-space-stack-canary-and-pointer-guard-differ-across-runs	BLOCKED	owner-decision-cross-repo-deterministic-hasher-repair-and-hermit-pin-advance remains BACKLOG.
+shared-types-and-exhaustive-matches-across-ci-hub-and-rust-scripts	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+six_held_refusals_who	BLOCKED	The attested owner escape-route decision remains unresolved.
+skills-dir-missing	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+slots-keep-being-created-while-every-agent-is-idle	STALE-PREMISE	The old 194-to-203 pre-activation measurement has no current after-activation reproduction.
+source-recipe-key-exists-only-as-a-comment	BLOCKED	The offline Reverie-source placement decision remains a real prerequisite.
+stable-1-land-thread-local-removal	DUPLICATE	The work merged as https://github.com/rrnewton/reverie/pull/473.
+stable-3-internal-output-capture	BLOCKED	The owner capture ruling or explicit measurement-first authorization remains absent.
+stable-5-flip-the-toolchain-and-prove-it	BLOCKED	Stable step 3 remains blocked and the required validation resource is not available.
+stale-exit-status-literals-survive-in-two-files-the-sweep-missed	ACTIONABLE	Current premise remains supported and no named blocker was found; recorded owner coord-helper is absent from the fresh 15-name census, so preserve the work for adoption rather than close it.
+standby-to-answer-the-owners-questions-on-validate-and-ci-hub	BLOCKED	This sound standing-duty row waits for owner questions; recorded owner tour-guide is absent, so preserve rather than close it.
+standing-box-state-watch-so-the-coordinator-can-always-answer	BLOCKED	No validate is currently running; authority reports a KVM benchmark in slot 0 and indeterminate remaining slots.
+standing-duty-keep-current-main-green-evidence-and-watch-the-running-validate	ACTIONABLE	Current premise remains supported and no named blocker was found; recorded owner utility is absent from the fresh 15-name census, so preserve the work for adoption rather than close it.
+standing-landing-ledger-195-implemented-not-landed	DUPLICATE	Its own title says the classification is complete and the groups were filed as separate tasks.
+standing-red-cell-register-which-cells-when-they-went-red-and-why	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+standing-what-is-consuming-three-and-a-half-terabytes	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+standing_revalidate_one_validate	BLOCKED	The validation authority currently has slot 0 held by a KVM benchmark and the remaining slots indeterminate.
+storage_plan_step_4	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+strict-mode-should-forbid-nondeterministic-io-by-default	BLOCKED	The mandated stop after the large audit remains pending an owner behavior ruling.
+strict-refuses-the-opt-outs-and-the-error-does-not-say-how-to-spell-minimum-dose	DUPLICATE	The advisory behavior landed in Hermit commit 0f1f6cd0e0, which is on current pinned main.
+strict_mode_warn_once	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+teach_readers_to_accept	ACTIONABLE	Current premise remains supported and no named blocker was found; the recorded owner is visible, but current-task claim state is not determined.
+tear-down-worktree-slots-to-a-tight-active-set	ACTIONABLE	Current premise remains supported and no named blocker was found; recorded owner hermit-141 is absent from the fresh 15-name census, so preserve the work for adoption rather than close it.
+tg-claim-succeeds-on-a-backlogged-already-implemented-task	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+tg-cli-cannot-write-its-log-under-a-read-only-home-so-sandboxed-agents-cannot-claim	BLOCKED	Mechanism established: hardcoded home log path panics at tracing-appender rolling.rs:156 with rc=101 in the sandbox; XDG_CACHE_HOME, XDG_STATE_HOME and TMPDIR do not help; outside-sandbox tg succeeds; upstream binary/environment remedy is required.
+tg-note-file-path-mangles-escapes-contradicting-its-own-documented-guarantee	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+tg-note-verified-panics-in-the-logging-appender	DUPLICATE	Symptom-level match checked against cause: both rows are the same hardcoded tracing-appender home-log failure at rolling.rs:156, not merely two read-only-home symptoms; the broader row preserves protocol impact.
+the-approval-binding-convention-document-teaches-a-marker-form-the-parser-rejects	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+the-fleet-wrapper-resolves-agent-identity-from-a-tmux-pane-that-can-carry-a-stale-name	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+the-health-tick-has-been-blind-for-an-hour-and-cannot-materialize-its-tooling	DUPLICATE	The stable GitHub helper landed in parent commit 712585adb, which is on current main.
+the-kvm-awk-determinism-divergence-is-the-last-red	DUPLICATE	The cited last-red fix merged through https://github.com/rrnewton/hermit/pull/2668; remaining PR 2694 work has specific rows.
+the-live-agent-census-is-unavailable-and-it-blinds-three-separate-consumers	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+the-merge-gate-has-been-inert-repository-wide-since-2026-08-25	BLOCKED	Automatic gating conflicts with the standing owner policy; the repository-setting transition remains owner-reserved.
+the-nested-graph-is-a-composition-artifact-and-can-be-flattened	ACTIONABLE	Current premise remains supported and no named blocker was found; recorded owner hermit-147 is absent from the fresh 15-name census, so preserve the work for adoption rather than close it.
+the-operational-tick-files-a-new-task-per-cycle-instead-of-updating-one	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+the-operational-tick-now-exceeds-its-180-second-timeout-and-crash-loops	DUPLICATE	Symptom-level grouping for review: this row names the whole-tick 180-second crash loop, while the current causal rows separately track the undersized tick budget and wrkslots audit cost; do not close it unless those cause records preserve all 37-gate loss evidence.
+the-operational-tick-script-budget-is-smaller-than-the-work-it-now-does	ACTIONABLE	Current premise remains supported and no named blocker was found; recorded owner tick-2 is absent from the fresh 15-name census, so preserve the work for adoption rather than close it.
+the-publish-path-does-not-carry-stdout-stderr-or-info-log-links	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+the-refusal-gate-attributes-an-objection-to-a-host-name-so-nobody-can-ever-retire-it	DUPLICATE	The cited work merged through https://github.com/rrnewton/hermit/pull/2699.
+the-refusal-gate-is-receipt-shaped-and-deadlocks-when-agents-die	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+the-refusal-gate-tells-agents-to-escalate-and-the-owner-said-not-to	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+the-remaining-timestamp-variation-needs-scheduling-of-copied-processes	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+the-revalidate-loop-dispatches-work-to-agents-without-the-coordinator	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+the-rust-script-cache-intermittently-reports-a-read-only-filesystem	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+the-shared-hermit-checkout-grant-may-structurally-block-parent-snapshot-publication	STALE-PREMISE	Its latest note retracts the claimed monitoring consequence and current policy now forbids work in the shared checkout.
+the-task-closure-policy-documents-an-end-state-the-tooling-refuses-to-produce	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+the-unevaluated-head-gate-does-not-know-actions-are-deliberately-disabled	STALE-PREMISE	The recorded 35-head snapshot and disabled-setting premise are no longer current; repository workflows are enabled though automatic PR triggering remains intentionally off.
+the-validate-launcher-has-a-fetch-to-launch-race-against-main	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+thirty-three-validate-steps-declare-no-cpu-timeout-and-are-reaped-by-a-ten-second-default	DUPLICATE	Current Hermit carries profile-level CPU budgets and tests documenting the historical undeclared-budget gap.
+three-non-product-failure-buckets-and-an-incomplete-validate-verdict	ACTIONABLE	Current premise remains supported and no named blocker was found; recorded owner hermit-147 is absent from the fresh 15-name census, so preserve the work for adoption rather than close it.
+three-self-wakeup-timers-carry-stale-priorities	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+tick-hub-dry-run-that-ignores-fired-state-and-shows-everything-pending	DUPLICATE	The dry-run implementation commit c2891c31 is present in the currently pinned agent-utils revision.
+tick-hub-output-omits-per-gate-wall-duration	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+tmp-scratch-policy	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+tools-fail-opaquely-when-the-home-directory-is-read-only	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+trace-capture-should-not-perturb-the-guest-it-measures	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+trace_test_strict_compat	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+twenty-one-steps-share-a-cargo-target-so-compile-work-migrates-between-them	ACTIONABLE	Current premise remains supported and no named blocker was found; recorded owner ci-hub is absent from the fresh 15-name census, so preserve the work for adoption rather than close it.
+twenty-seven-dead-owner-slots-are-my-own-teardown-debt	DUPLICATE	The current cleanup is represented by tear-down-worktree-slots-to-a-tight-active-set and the wrkslots registry rows.
+twenty-six-slots-are-neither-usable-nor-reclaimable-because-their-owner-evidence-is-gone	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+two-base-images-is-a-feature-not-a-gap	STALE-PREMISE	The row records an owner ruling that the condition is deliberate testing breadth, leaving no defect to act on.
+two-heads-each-correct-alone-that-break-main-if-both-land-ratchet-count	DUPLICATE	The second-head work is represented by second_lander_of_2668; https://github.com/rrnewton/hermit/pull/2668 is merged and PR 2694 remains open.
+two-test-nodes-fail-without-emitting-any-test-id	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+two_demo_green_review	BLOCKED	independent_exact_head_re remains BACKLOG and https://github.com/rrnewton/hermit/pull/2934 remains open on the recorded stale base.
+unanswered_trigger_3_question	BLOCKED	The post-facto owner question on the landed work remains unanswered.
+under_capture_the_kvm	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+unknown-typed-rows-message-cannot-distinguish-unconfigured-from-failed	ACTIONABLE	Current premise remains supported and no named blocker was found; recorded owner review-521-codex is absent from the fresh 15-name census, so preserve the work for adoption rather than close it.
+update-the-unregistered-producer-mutation-test-for-post-341f-status-policy	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+use-the-quarantine-exit-and-release-slots-protecting-the-ten	DUPLICATE	The current cleanup is represented by tear-down-worktree-slots-to-a-tight-active-set; this is an older execution slice.
+validate-concurrency-is-uncoordinated-across-lanes-and-width-2-is-not-clean	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+validate-launcher-omits-slot-number-from-admission-output	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+validate-refusal-should-separate-iterative-testing-from-publishing	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+validate-speed-workstream-standing	BLOCKED	Its explicit main-green and idle-box preconditions are not established; a KVM benchmark currently holds slot 0.
+validate-the-selector-model-against-a-real-pull-request-run	BLOCKED	The required real pull-request run needs an open PR and authorization not to create one solely for validation.
+validate-wall-regression-gate-times-out-before-producing-a-verdict	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+validate-wall-time-gate-cannot-resolve-seven-ledger-objects	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+validate_gh_merge_verified	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+verification-divergence-loses-its-type-at-the-cli-boundary-and-exits-125	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+verify-the-st-size-fix-with-a-two-arm-measurement	BLOCKED	guest-stats-a-harness-written-ancestor remains BACKLOG and the required two-arm measurement has not run.
+version-provenance-rust2021-fixture-copies-rust2024-source	ACTIONABLE	Current premise remains supported and no named blocker was found; recorded owner codex-drain1 is absent from the fresh 15-name census, so preserve the work for adoption rather than close it.
+vision-freshen-and-move-demos	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+vision-hermit-controls-kernel-interleavings	BLOCKED	The current registry still has owner-evidence inconsistencies tracked by twenty-six-slots-are-neither-usable-nor-reclaimable-because-their-owner-evidence-is-gone.
+watch-obligations-bound-is-unsatisfiable-by-construction-16-polls-against-20s	BLOCKED	The latest note still requires the owner tick-identity decision before the per-agent redesign.
+why-is-ci-hub-mostly-python-with-a-little-rust	STALE-PREMISE	The latest note answers the requested historical question from repository history.
+wire_compatibility_website_build_and_serve_through_ci_hub	BLOCKED	repair_the_documented_directives remains BACKLOG awaiting the recorded owner authorization.
+wire_compatibility_website_make_target	BLOCKED	wire_compatibility_website_build_and_serve_through_ci_hub remains BACKLOG.
+worktree-disk-residue-uses-du	DUPLICATE	Current parent main uses bounded compsize accounting; the old du-based implementation is gone.
+write-coordinator-skill-for-freshening-demos	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+write-the-how-to-build-a-cli-skill-doc	ACTIONABLE	Current premise remains supported and no named blocker was found; recorded owner tick-2 is absent from the fresh 15-name census, so preserve the work for adoption rather than close it.
+wrkslots-audit-gate-now-times-out-after-120s-a-second-distinct-no-signal	DUPLICATE	The current instance is tracked by wrkslots-audit-has-returned-no-result-for-hours-so-slot-health-is-unmeasured.
+wrkslots-audit-has-returned-no-result-for-hours-so-slot-health-is-unmeasured	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+wrkslots-coordinator-authorization-is-unsatisfiable-for-orc-spawned-agents	STALE-PREMISE	Its recorded experiment succeeded by using the tmux server PID, refuting the unsatisfiable premise.
+wrkslots-refuses-status-on-a-path-outside-the-parent-blocking-every-validate	DUPLICATE	The fix landed through agent-utils PR 104, Hermit PR 2906, and dev-hermit PR 267; current status no longer refuses for that path reason.
+wrkslots_create_output_and	ACTIONABLE	Current premise remains supported and no named blocker was found; the row is unowned and available for adoption.
+yellow-cells-lock-in-partial-determinism-as-a-ratchet	STALE-PREMISE	Its latest note says the convergence blocker is gone and records populated evidence rather than the title’s all-empty state.
+zombie-process-count-jumped-from-single-digits-to-6423	STALE-PREMISE	A fresh process census found 14 zombies, not 6423; the single-spike premise did not persist.
