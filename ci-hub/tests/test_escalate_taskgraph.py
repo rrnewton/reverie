@@ -91,10 +91,12 @@ def bench(tmp_path: Path):
         )
 
     def rows_for(key: str) -> list[str]:
+        marker = f"escalation-key: {key}"
         return tg_rows(
             db,
-            "SELECT local_id FROM tasks WHERE description LIKE "
-            f"'%escalation-key: {key}%'",
+            "SELECT local_id FROM tasks WHERE "
+            f"instr(description, '{marker}\n') > 0 OR "
+            f"substr(description, -{len(marker)}) = '{marker}'",
         )
 
     def notes_on(local_id: str) -> list[str]:
@@ -159,6 +161,40 @@ def test_changed_content_appends_to_the_same_row(bench) -> None:
     assert len(notes_on(rows[0])) == 2
 
 
+def test_changed_content_updates_a_backlog_row_without_filing_another(bench) -> None:
+    """The production database creates alarm rows as BACKLOG. Missing that
+    active state was the measured cause of one new row per tick."""
+    run, db, rows_for, notes_on, _records = bench
+    run("--key", "gate-failed", "--title", "A gate failed", message="ACTION: first")
+    row = rows_for("gate-failed")[0]
+    tg_run(db, "update", row, "--status", "backlog")
+
+    completed = run(
+        "--key", "gate-failed", "--title", "A gate failed", message="ACTION: second"
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "outcome=published" in completed.stdout
+    assert rows_for("gate-failed") == [row]
+    assert len(notes_on(row)) == 2
+
+
+def test_a_distinct_condition_files_its_own_row(bench) -> None:
+    run, _db, rows_for, notes_on, _records = bench
+    # File the longer key first: a substring lookup for the shorter key would
+    # incorrectly reuse this row instead of filing a distinct condition.
+    run(
+        "--key", "gate-failed-detailed", "--title", "A detailed gate failed",
+        message="ACTION: detailed gate",
+    )
+    run("--key", "gate-failed", "--title", "A gate failed", message="ACTION: gate")
+
+    assert len(rows_for("gate-failed")) == 1
+    assert len(rows_for("gate-failed-detailed")) == 1
+    assert len(notes_on(rows_for("gate-failed")[0])) == 1
+    assert len(notes_on(rows_for("gate-failed-detailed")[0])) == 1
+
+
 def test_a_persistent_alarm_says_so_again_after_the_repeat_window(bench) -> None:
     """Quiet is right for an hour and wrong for a week: a row nobody has touched
     in a month reads as history rather than as a live condition."""
@@ -199,8 +235,8 @@ def test_a_claimed_row_is_still_the_same_row(bench) -> None:
     assert len(notes_on(row)) == 2
 
 
-def test_two_open_rows_for_one_key_refuse_rather_than_guess(bench) -> None:
-    run, db, rows_for, _notes, _records = bench
+def test_existing_unowned_duplicates_update_one_row_without_filing_another(bench) -> None:
+    run, db, rows_for, notes_on, _records = bench
     run("--key", "gate-failed", "--title", "A gate failed", message="ACTION: x")
     row = rows_for("gate-failed")[0]
     description = tg_run(
@@ -213,10 +249,66 @@ def test_two_open_rows_for_one_key_refuse_rather_than_guess(bench) -> None:
         "--tags", "monitoring", "--blocks", GOAL,
         "--description", "escalation-key: gate-failed",
     )
+    duplicate_rows = rows_for("gate-failed")
+    assert len(duplicate_rows) == 2
+    for duplicate in duplicate_rows:
+        tg_run(db, "update", duplicate, "--status", "backlog")
+
+    completed = run("--key", "gate-failed", "--title", "A gate failed", message="ACTION: y")
+    assert completed.returncode == 0, completed.stderr
+    assert rows_for("gate-failed") == duplicate_rows
+    assert sum(len(notes_on(duplicate)) for duplicate in duplicate_rows) == 2
+
+
+def test_resolving_after_unowned_duplicates_leaves_the_old_evidence(bench) -> None:
+    run, db, rows_for, notes_on, _records = bench
+    run("--key", "gate-failed", "--title", "A gate failed", message="ACTION: first")
+    tg_run(
+        db, "add", "A gate failed", "--impact", "60", "--effort", "1",
+        "--tags", "monitoring", "--blocks", GOAL,
+        "--description", "escalation-key: gate-failed",
+    )
+    for row in rows_for("gate-failed"):
+        tg_run(db, "update", row, "--status", "backlog")
+    notes_before = {row: len(notes_on(row)) for row in rows_for("gate-failed")}
+    run("--key", "gate-failed", "--title", "A gate failed", message="ACTION: second")
+    selected = next(
+        row for row in rows_for("gate-failed")
+        if len(notes_on(row)) == notes_before[row] + 1
+    )
+
+    resolved = run("--key", "gate-failed", "--resolve")
+
+    assert resolved.returncode == 0, resolved.stderr
+    assert "outcome=resolved" in resolved.stdout
+    statuses = {
+        row: tg_rows(db, f"SELECT status FROM tasks WHERE local_id='{row}'")[0]
+        for row in rows_for("gate-failed")
+    }
+    assert statuses[selected] == "CLOSED"
+    assert list(statuses.values()).count("BACKLOG") == 1
+
+    returned = run(
+        "--key", "gate-failed", "--title", "A gate failed", message="ACTION: returned"
+    )
+    assert returned.returncode == 0, returned.stderr
+    assert len(rows_for("gate-failed")) == 3
+
+
+def test_two_claimed_rows_for_one_key_refuse_rather_than_choose_an_owner(bench) -> None:
+    run, db, rows_for, _notes, _records = bench
+    run("--key", "gate-failed", "--title", "A gate failed", message="ACTION: x")
+    tg_run(
+        db, "add", "A gate failed", "--impact", "60", "--effort", "1",
+        "--tags", "monitoring", "--blocks", GOAL,
+        "--description", "escalation-key: gate-failed",
+    )
+    for index, row in enumerate(rows_for("gate-failed")):
+        tg_run(db, "update", row, "--status", "in_progress", "--owner", f"agent-{index}")
+
     completed = run("--key", "gate-failed", "--title", "A gate failed", message="ACTION: y")
     assert completed.returncode == 1
-    assert "refusing to guess" in completed.stderr
-    assert "ownership picture" in completed.stderr
+    assert "refusing to choose between multiple owners" in completed.stderr
 
 
 def test_resolving_closes_the_row_through_the_verifier(bench) -> None:

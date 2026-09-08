@@ -86,6 +86,8 @@ TASKGRAPH = "taskgraph"
 SINKS = (GITHUB, TASKGRAPH)
 DEFAULT_TG_DATABASE = "hermit2"
 DEFAULT_TG_BLOCKS = "ci_hub_trust"
+ACTIVE_TASK_STATUSES = frozenset(("BACKLOG", "OPEN", "IN_PROGRESS"))
+TERMINAL_TASK_STATUSES = frozenset(("CLOSED", "RESOLVED"))
 DIGEST_RE = re.compile(rf"^{DIGEST_MARKER}\s*([0-9a-f]{{12}})\s*$", re.MULTILINE)
 
 PUBLISHED = "published"
@@ -694,33 +696,71 @@ def tg_scalar(query: str, **kwargs) -> str | None:
     return body[0].strip()
 
 
+def task_key_predicate(key: str) -> str:
+    """Match one complete marker line, not a key that merely has this prefix."""
+    marker = f"{KEY_MARKER} {key}"
+    return (
+        f"(instr(description, '{marker}\n') > 0 OR "
+        f"substr(description, -{len(marker)}) = '{marker}')"
+    )
+
+
 def find_open_task(key: str, **kwargs) -> str | None:
     """The open queue row carrying this key.
 
-    IN_PROGRESS counts as open on purpose: if an agent has already claimed the
-    alarm, filing a second row would both duplicate the condition and split the
-    ownership picture the queue exists to hold. RESOLVED and CLOSED do not match,
-    so a condition that comes back opens a fresh row rather than reviving a
-    settled one.
+    BACKLOG and IN_PROGRESS both count as open. The live Hermit database creates
+    new rows as BACKLOG; excluding that state made the post-create readback miss
+    the row it had just filed, so every later tick filed another one. RESOLVED
+    and CLOSED do not match, so a condition that comes back opens a fresh row
+    rather than reviving a settled one.
+
+    The historical failure left many unowned BACKLOG rows carrying the same key.
+    Keep those rows as evidence and consistently update the newest one. A single
+    claimed row wins over unowned rows because it already carries the ownership
+    for this condition. More than one claimed row remains an error: choosing
+    between two agents would silently corrupt the ownership picture. Once the
+    selected row is closed, its newer terminal state keeps older duplicate
+    evidence from being mistaken for a new occurrence.
 
     The key is constrained to lowercase letters, digits and hyphens by KEY_RE
     before it reaches here, so it cannot carry SQL syntax.
     """
-    count = tg_scalar(
-        "SELECT COUNT(*) FROM tasks WHERE status IN ('OPEN','IN_PROGRESS') "
-        f"AND description LIKE '%{KEY_MARKER} {key}%'",
+    key_match = task_key_predicate(key)
+    claimed = tg_scalar(
+        "SELECT COUNT(*) FROM tasks WHERE status='IN_PROGRESS' "
+        f"AND {key_match}",
         **kwargs,
     )
-    if count is not None and count.isdigit() and int(count) > 1:
+    if claimed is None or not claimed.isdigit():
         raise TaskGraphUnavailable(
-            f"key {key!r} matches {count} open queue rows; refusing to guess which "
-            "one carries the alarm. Duplicate rows for one condition corrupt the "
-            "ownership picture, so this is a refusal rather than a choice"
+            f"could not determine how many claimed queue rows carry key {key!r}"
         )
-    return tg_scalar(
-        "SELECT local_id FROM tasks WHERE status IN ('OPEN','IN_PROGRESS') "
-        f"AND description LIKE '%{KEY_MARKER} {key}%' LIMIT 1",
+    if int(claimed) > 1:
+        raise TaskGraphUnavailable(
+            f"key {key!r} matches {claimed} claimed queue rows; refusing to choose "
+            "between multiple owners"
+        )
+    selected = tg_scalar(
+        "SELECT status || ' ' || local_id FROM tasks "
+        f"WHERE {key_match} "
+        "ORDER BY CASE status WHEN 'IN_PROGRESS' THEN 0 ELSE 1 END, "
+        "created_at DESC, local_id DESC LIMIT 1",
         **kwargs,
+    )
+    if selected is None:
+        return None
+    try:
+        status, local_id = selected.split(" ", 1)
+    except ValueError as error:
+        raise TaskGraphUnavailable(
+            f"could not read the selected queue row for key {key!r}: {selected!r}"
+        ) from error
+    if status in ACTIVE_TASK_STATUSES:
+        return local_id
+    if status in TERMINAL_TASK_STATUSES:
+        return None
+    raise TaskGraphUnavailable(
+        f"queue row {local_id} for key {key!r} has unknown status {status!r}"
     )
 
 
