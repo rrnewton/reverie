@@ -5908,6 +5908,26 @@ class StartUnitTest(unittest.TestCase):
             report["retained"],
         )
 
+    def test_sweep_retains_historical_run_with_cells_digest_mismatch(self) -> None:
+        record, fresh = self.materialized_attach_record()
+        handoff = self.plant_historical_failed_materialized_result(record, fresh)
+        self.assertIsNotNone(handoff)
+        assert handoff is not None
+        (handoff / "ci/compat-envelope/cells.json").write_text(
+            '{"changed_after_publication": true}\n'
+        )
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(
+            any("failed its digest" in row["reason"] for row in report["retained"]),
+            report["retained"],
+        )
+
     def test_sweep_retains_historical_run_with_unreadable_result_sidecar(self) -> None:
         record, fresh = self.materialized_attach_record()
         self.plant_historical_failed_materialized_result(record, fresh)
@@ -6464,6 +6484,22 @@ class StartUnitTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "invalid file set"):
             start_unit.read_scorecard_handoff(
                 self.root, str(handoff), SHA, "validate-pair"
+            )
+
+    def test_scorecard_handoff_refuses_missing_cells_member(self) -> None:
+        unit = "validate-pair-cells"
+        handoff = start_unit.publish_scorecard_handoff(
+            self.root,
+            self.checkout,
+            SHA,
+            unit,
+            writeback_completed=True,
+        )
+        (handoff / "ci/compat-envelope/cells.json").unlink()
+
+        with self.assertRaisesRegex(RuntimeError, "invalid file set"):
+            start_unit.read_scorecard_handoff(
+                self.root, str(handoff), SHA, unit
             )
 
     def test_materialized_scorecard_handoff_failure_is_no_result_and_retains(self) -> None:
