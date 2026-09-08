@@ -119,8 +119,11 @@ where
     let history_input_row_count = history.len();
     let series_row_count = series.len();
     let manifest = project_manifest(manifest)?;
-    let history = project_history(&history, historical_identity)?;
+    let mut history = project_history(&history, historical_identity)?;
     let series = project_series(&series, &manifest, &history, &mut current_main_ancestry)?;
+    if let Some(historical) = history.historical.as_mut() {
+        bind_historical_measurement_environment(historical, &series.rows)?;
+    }
     let current_validation_run_row_count = history.current.len();
     let validation_history_row_count = history.history.len();
     let HistoryProjection {
@@ -866,6 +869,17 @@ fn historical_source(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .ok_or("historical selected row omits finished_at")?;
+    let measurement_host = row
+        .host
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("historical selected row omits measurement host")?;
+    let measured_reverie_commit = extra_string(row, "reverie_base_sha")?
+        .ok_or("historical selected row omits measured Reverie commit")?;
+    require_object_id(
+        measured_reverie_commit,
+        "historical measured Reverie commit",
+    )?;
     let evidence = match failure_obligations::cell_results_for_website(row)? {
         CellResultsForWebsite::Complete(evidence) => evidence,
         CellResultsForWebsite::Absent
@@ -877,13 +891,102 @@ fn historical_source(
     Ok(serde_json::json!({
         "finished_at": finished_at,
         "history_row_sha256": history_row_digest(&rows[index].raw)?,
+        "measurement_host": measurement_host,
         "measured_hermit_commit": commit,
+        "measured_reverie_commit": measured_reverie_commit,
         "record_id": record_id,
         "run_id": run_id,
         "selected_by_full_cell_count": evidence.selected_count,
         "started_at": started_at,
         "validate_path": "full",
     }))
+}
+
+fn bind_historical_measurement_environment(
+    historical: &mut Value,
+    series_rows: &[Value],
+) -> Result<(), String> {
+    let source = historical
+        .as_object_mut()
+        .ok_or("historical source is not an object")?;
+    let run_id = source
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or("historical source omits run_id")?;
+    let measurement_host = source
+        .get("measurement_host")
+        .and_then(Value::as_str)
+        .ok_or("historical source omits measurement host")?;
+    let mut environment: Option<Value> = None;
+    for raw in series_rows {
+        let row = raw
+            .as_object()
+            .ok_or("projected historical series row is not an object")?;
+        if row.get("run_id").and_then(Value::as_str) != Some(run_id) {
+            continue;
+        }
+        let host = row
+            .get("host")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("historical series row omits measurement host")?;
+        if host != measurement_host {
+            return Err(
+                "historical series row measurement host disagrees with its validation row".into(),
+            );
+        }
+        let payload = row
+            .get("series")
+            .and_then(Value::as_object)
+            .ok_or("historical series row omits its payload")?;
+        let machine = payload
+            .get("machine_shortname")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("historical series row omits machine_shortname")?;
+        if machine != measurement_host {
+            return Err(
+                "historical series machine_shortname disagrees with its validation row host".into(),
+            );
+        }
+        let kernel = payload
+            .get("kernel_version")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("historical series row omits kernel_version")?;
+        let capabilities = payload
+            .get("host_capabilities")
+            .and_then(Value::as_object)
+            .filter(|value| !value.is_empty())
+            .ok_or("historical series row omits host_capabilities")?;
+        let current = serde_json::json!({
+            "host_capabilities": capabilities,
+            "kernel_version": kernel,
+        });
+        match &environment {
+            None => environment = Some(current),
+            Some(expected) if expected == &current => {}
+            Some(_) => {
+                return Err(
+                    "historical series rows disagree about their measurement environment".into(),
+                );
+            }
+        }
+    }
+    let environment = environment
+        .ok_or("historical selected run has no admitted series measurement environment")?;
+    let environment = environment
+        .as_object()
+        .expect("constructed historical measurement environment is an object");
+    source.insert(
+        "host_capabilities".into(),
+        environment["host_capabilities"].clone(),
+    );
+    source.insert(
+        "kernel_version".into(),
+        environment["kernel_version"].clone(),
+    );
+    Ok(())
 }
 
 fn project_history_row(row: &HistoryRow, raw: &Value) -> Result<Value, String> {
@@ -2458,6 +2561,9 @@ mod tests {
             "profile": "full",
             "selection_mode": "full",
             "commit": commit,
+            "reverie_base_sha": "d".repeat(40),
+            "reverie_base_tree": "e".repeat(40),
+            "reverie_pin_current": true,
             "tree_dirty": false,
             "result": "pass",
             "exit_code": 0,
@@ -2849,16 +2955,65 @@ mod tests {
     fn historical_source_requires_an_admitted_terminal_row() {
         let commit = "f".repeat(40);
         let row = history_row(8, "record-eight", "run-eight", &commit);
+        let complete_series = series("run-eight", &commit, "event-eight");
         let value = project(
             &canonical_bytes(&manifest()),
             &jsonl(&[row]),
-            "",
+            &jsonl(&[complete_series]),
             Some(("record-eight", "run-eight")),
-            |_| panic!("empty series must not request ancestry"),
+            |_| Ok(Some(true)),
         )
         .unwrap();
         assert_eq!(value["historical"]["run_id"], "run-eight");
         assert_eq!(value["historical"]["measured_hermit_commit"], commit);
+        assert_eq!(value["historical"]["measurement_host"], "fixture-host");
+        assert_eq!(
+            value["historical"]["measured_reverie_commit"],
+            "d".repeat(40)
+        );
+        assert_eq!(value["historical"]["kernel_version"], "6.1-fixture");
+        assert_eq!(
+            value["historical"]["host_capabilities"]["kvm"]["present"],
+            false
+        );
+    }
+
+    #[test]
+    fn historical_source_refuses_missing_or_inconsistent_measurement_provenance() {
+        let commit = "f".repeat(40);
+        let complete = history_row(8, "record-eight", "run-eight", &commit);
+        let complete_series = series("run-eight", &commit, "event-eight");
+
+        let mut missing_reverie = complete.clone();
+        missing_reverie
+            .as_object_mut()
+            .unwrap()
+            .remove("reverie_base_sha");
+        let error = project(
+            &canonical_bytes(&manifest()),
+            &jsonl(&[missing_reverie]),
+            &jsonl(&[complete_series.clone()]),
+            Some(("record-eight", "run-eight")),
+            |_| Ok(Some(true)),
+        )
+        .unwrap_err();
+        assert!(error.contains("omits measured Reverie commit"), "{error}");
+
+        let mut inconsistent = complete_series;
+        inconsistent["series"]["kernel_version"] = Value::String("other-kernel".into());
+        let second = series("run-eight", &commit, "event-nine");
+        let error = project(
+            &canonical_bytes(&manifest()),
+            &jsonl(&[complete]),
+            &jsonl(&[inconsistent, second]),
+            Some(("record-eight", "run-eight")),
+            |_| Ok(Some(true)),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("disagree about their measurement environment"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -77,7 +77,14 @@ def historical_build_data(
     source = {
         "finished_at": row["finished_at"],
         "history_row_sha256": row["history_row_sha256"],
+        "host_capabilities": {
+            "cpuid-faulting": {"present": True, "evidence": "fixture"},
+            "kvm": {"present": True, "evidence": "fixture"},
+        },
+        "kernel_version": "fixture-kernel",
         "measured_hermit_commit": row["commit"],
+        "measured_reverie_commit": "e" * 40,
+        "measurement_host": "ci-host",
         "record_id": row["record_id"],
         "run_id": row["run_id"],
         "selected_by_full_cell_count": 1,
@@ -527,6 +534,11 @@ def test_historical_compose_is_self_validating_and_discloses_every_page(
             historical["measured_hermit_commit"],
         ),
         (
+            "Measured Reverie gitlink",
+            "reverie",
+            historical["measured_reverie_commit"],
+        ),
+        (
             "Manifest source commit",
             "hermit",
             historical["manifest_source_commit"],
@@ -551,6 +563,12 @@ def test_historical_compose_is_self_validating_and_discloses_every_page(
         ("Run started", "2026-08-30 20:00:00 ET"),
         ("Run finished", "2026-08-30 20:01:00 ET"),
         ("Source history row SHA-256", historical["history_row_sha256"]),
+        ("Measurement host", historical["measurement_host"]),
+        ("Measurement kernel", historical["kernel_version"]),
+        (
+            "Host capability set",
+            "cpuid-faulting: present (fixture); kvm: present (fixture)",
+        ),
         (
             "Manifest and measured commits",
             "manifest source differs from measured Hermit",
@@ -585,7 +603,7 @@ def test_historical_compose_is_self_validating_and_discloses_every_page(
             disclosure = disclosure.split("</details>", 1)[0]
             assert text.count('<details class="snapshot-disclosure">') == 1, path
             assert "Build provenance" not in text, path
-            assert disclosure.count('href="https://github.com/rrnewton/') == 4, path
+            assert disclosure.count('href="https://github.com/rrnewton/') == 5, path
             for label, repository, commit in linked_facts:
                 assert (
                     f'<div><dt>{label}</dt><dd><a class="external-link" '
@@ -657,6 +675,32 @@ def test_historical_compose_refuses_missing_or_non_utc_rfc3339_finished_at(
     set_historical_finished_at(data, finished_at)
 
     with pytest.raises(website.WebsiteRefused, match="finished_at"):
+        website.compose(data, wording="historical")
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "measurement_host",
+        "measured_reverie_commit",
+        "kernel_version",
+        "host_capabilities",
+    ),
+)
+@pytest.mark.parametrize("location", ("historical", "canonical"))
+def test_historical_compose_refuses_missing_measurement_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    location: str,
+) -> None:
+    data = historical_build_data(tmp_path, monkeypatch)
+    source = data["provenance"]["historical"]
+    if location == "canonical":
+        source = data["provenance"]["canonical_input_provenance"]["historical"]
+    source.pop(field)
+
+    with pytest.raises(website.WebsiteRefused, match=field):
         website.compose(data, wording="historical")
 
 

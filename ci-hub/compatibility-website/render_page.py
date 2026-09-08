@@ -164,7 +164,10 @@ def _historical_wording(provenance: Mapping[str, Any]) -> PageWording:
         "run_id",
         "validate_path",
         "selected_by_full_cell_count",
+        "measurement_host",
         "measured_hermit_commit",
+        "measured_reverie_commit",
+        "kernel_version",
         "manifest_source_commit",
         "started_at",
         "finished_at",
@@ -195,6 +198,7 @@ def _historical_wording(provenance: Mapping[str, Any]) -> PageWording:
         reader.get("gitlink_commit"),
         canonical.get("reader_commit"),
         provenance.get("hermit_main_commit"),
+        historical.get("measured_reverie_commit"),
     )
     if any(
         not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{40}", value) is None
@@ -204,6 +208,24 @@ def _historical_wording(provenance: Mapping[str, Any]) -> PageWording:
         for value in hashes
     ):
         raise RenderRefused("historical generator provenance is incomplete")
+    capabilities = historical.get("host_capabilities")
+    if not isinstance(capabilities, Mapping) or set(capabilities) != {
+        "cpuid-faulting",
+        "kvm",
+    }:
+        raise RenderRefused("historical host capability provenance is incomplete")
+    capability_labels = []
+    for name in sorted(capabilities):
+        verdict = capabilities[name]
+        if (
+            not isinstance(verdict, Mapping)
+            or not isinstance(verdict.get("present"), bool)
+            or not isinstance(verdict.get("evidence"), str)
+            or not verdict["evidence"].strip()
+        ):
+            raise RenderRefused("historical host capability provenance is incomplete")
+        state = "present" if verdict["present"] else "absent"
+        capability_labels.append(f"{name}: {state} ({verdict['evidence']})")
     clean = canonical.get("reader_worktree_clean")
     dirty = canonical.get("reader_worktree_dirty_paths")
     if (
@@ -262,11 +284,19 @@ def _historical_wording(provenance: Mapping[str, Any]) -> PageWording:
         ProvenanceFact(
             "Source history row SHA-256", str(historical["history_row_sha256"])
         ),
+        ProvenanceFact("Measurement host", str(historical["measurement_host"])),
         ProvenanceFact(
             "Measured Hermit commit",
             measured,
             _commit_url("hermit", measured),
         ),
+        ProvenanceFact(
+            "Measured Reverie gitlink",
+            str(historical["measured_reverie_commit"]),
+            _commit_url("reverie", str(historical["measured_reverie_commit"])),
+        ),
+        ProvenanceFact("Measurement kernel", str(historical["kernel_version"])),
+        ProvenanceFact("Host capability set", "; ".join(capability_labels)),
         ProvenanceFact(
             "Manifest source commit",
             manifest,

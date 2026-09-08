@@ -153,6 +153,11 @@ and its Hermit gitlink separately. It publishes both generator-side Hermit
 commits plus the exact reader-file and source-identity digests. It refuses a
 missing, dirty, or differently identified actual checkout.
 
+Every historical HTML page also discloses the selected run's measurement host,
+recorded Reverie gitlink, kernel version, and complete host-capability set. The
+projection requires these facts to agree across the run's admitted series rows;
+missing or contradictory measurement provenance refuses the build.
+
 Every generated historical page carries a collapsed disclosure titled **Full
 snapshot provenance (YYYY-MM-DD HH:MM ET)**. Its timestamp is the selected
 validation row's required UTC RFC3339 `finished_at`, converted with the IANA

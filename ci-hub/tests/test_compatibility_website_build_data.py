@@ -217,7 +217,11 @@ def validation_row(
         "commit": commit,
         "started_at": "2026-08-31T00:00:00Z",
         "finished_at": "2026-08-31T00:01:00Z",
+        "host": "fixture-host",
         "result": "pass",
+        "reverie_base_sha": "d" * 40,
+        "reverie_base_tree": "e" * 40,
+        "reverie_pin_current": True,
         "cell_results": {
             "run_id": run_id,
             "hermit_sha": commit,
@@ -365,7 +369,15 @@ def _public_cell_results(row: dict[str, Any]) -> dict[str, Any] | None:
 
 def _public_history(row: dict[str, Any]) -> dict[str, Any]:
     public = {
-        key: copy.deepcopy(value) for key, value in row.items() if key != "cell_results"
+        key: copy.deepcopy(value)
+        for key, value in row.items()
+        if key
+        not in {
+            "cell_results",
+            "reverie_base_sha",
+            "reverie_base_tree",
+            "reverie_pin_current",
+        }
     }
     public["history_row_sha256"] = build_data._digest(row)
     if "cell_results" in row:
@@ -612,10 +624,28 @@ def _fixture_projection(
         ]
         assert len(matches) == 1
         row = matches[0]
+        environments = {
+            build_data._canonical_bytes(
+                {
+                    "host_capabilities": series["series"]["host_capabilities"],
+                    "kernel_version": series["series"]["kernel_version"],
+                    "measurement_host": series["host"],
+                }
+            )
+            for series in raw_series
+            if series["run_id"] == row["run_id"]
+        }
+        assert len(environments) == 1
+        environment = json.loads(next(iter(environments)))
+        assert environment["measurement_host"] == row["host"]
         result["historical"] = {
             "finished_at": row["finished_at"],
             "history_row_sha256": build_data._digest(row),
+            "host_capabilities": environment["host_capabilities"],
+            "kernel_version": environment["kernel_version"],
             "measured_hermit_commit": row["commit"],
+            "measured_reverie_commit": row["reverie_base_sha"],
+            "measurement_host": environment["measurement_host"],
             "record_id": row["record_id"],
             "run_id": row["run_id"],
             "selected_by_full_cell_count": row["cell_results"]["selected_count"],
@@ -1558,8 +1588,6 @@ def test_source_has_no_parallel_rust_type_tables_or_private_qualifying_bridge() 
             "stress-series/v3",
             "product_result_available",
             "machine_shortname",
-            "kernel_version",
-            "host_capabilities",
             "exact pressure repetition membership",
             "runtime.run1.scheduler_turns",
             "runtime.run2.virtual_nanoseconds",

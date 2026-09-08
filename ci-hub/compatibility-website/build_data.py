@@ -72,8 +72,9 @@ _PROVENANCE_FIELDS = frozenset(
     "validation_history_rows_projection_sha256 validation_history_rows_sha256".split()
 )
 _HISTORICAL_SOURCE_FIELDS = frozenset(
-    "finished_at history_row_sha256 measured_hermit_commit record_id run_id "
-    "selected_by_full_cell_count started_at validate_path".split()
+    "finished_at history_row_sha256 host_capabilities kernel_version "
+    "measured_hermit_commit measured_reverie_commit measurement_host record_id "
+    "run_id selected_by_full_cell_count started_at validate_path".split()
 )
 _HISTORICAL_PROVENANCE_FIELDS = frozenset(
     (
@@ -851,7 +852,14 @@ def _run_projection(
 
 def _historical_source(value: Any, label: str) -> dict[str, Any]:
     source = _exact_object(value, label, required=_HISTORICAL_SOURCE_FIELDS)
-    for field in ("record_id", "run_id", "started_at", "finished_at"):
+    for field in (
+        "record_id",
+        "run_id",
+        "started_at",
+        "finished_at",
+        "measurement_host",
+        "kernel_version",
+    ):
         _string(source.get(field), f"{label}.{field}")
     if source.get("validate_path") != "full":
         raise BuildRefused(f"{label}.validate_path must be full")
@@ -860,6 +868,29 @@ def _historical_source(value: Any, label: str) -> dict[str, Any]:
         f"{label}.selected_by_full_cell_count",
     )
     _sha(source.get("measured_hermit_commit"), f"{label}.measured_hermit_commit")
+    _sha(
+        source.get("measured_reverie_commit"),
+        f"{label}.measured_reverie_commit",
+    )
+    capabilities = _exact_object(
+        source.get("host_capabilities"),
+        f"{label}.host_capabilities",
+        required=frozenset({"cpuid-faulting", "kvm"}),
+    )
+    for name, raw in capabilities.items():
+        capability = _exact_object(
+            raw,
+            f"{label}.host_capabilities.{name}",
+            required=frozenset({"evidence", "present"}),
+        )
+        _string(
+            capability.get("evidence"),
+            f"{label}.host_capabilities.{name}.evidence",
+        )
+        _boolean(
+            capability.get("present"),
+            f"{label}.host_capabilities.{name}.present",
+        )
     _sha256(source.get("history_row_sha256"), f"{label}.history_row_sha256")
     return json.loads(_canonical_bytes(source))
 
