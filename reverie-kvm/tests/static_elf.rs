@@ -174,6 +174,26 @@ fn compile_c_program_with_args(
     executable_path
 }
 
+fn compile_assembly_program(directory: &std::path::Path, name: &str, source: &str) -> PathBuf {
+    let source_path = directory.join(format!("{name}.S"));
+    let executable_path = directory.join(name);
+    std::fs::write(&source_path, source).unwrap();
+    let output = std::process::Command::new("/usr/bin/gcc")
+        .args(["-nostdlib", "-static", "-Wl,--build-id=none"])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&executable_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "gcc failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    executable_path
+}
+
 fn set_interrupt_signal_blocked(blocked: bool) -> bool {
     // SAFETY: set and previous are initialized before libc reads or writes them.
     unsafe {
@@ -2566,6 +2586,156 @@ fn tool_receives_post_exec_after_root_execve() {
     assert!(stdout.is_empty());
     assert!(stderr.is_empty());
     assert_eq!(log.calls(), 2);
+}
+
+#[test]
+fn self_exec_proc_aliases_preserve_image_argv_and_envp() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM self-exec test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    const ROOT_PID: i32 = 37;
+    const ARGV0: &str = "preserved-argv0";
+    const ARGV1: &str = "after-exec";
+    const ENVP0: &str = "SELF_EXEC_ENV=preserved";
+    const IMAGE_MARKER: &str = "same-image\n";
+    let expected = format!("{IMAGE_MARKER}{ARGV0}\n{ARGV1}\n{ENVP0}\n");
+
+    for (name, path, execveat) in [
+        ("self-exec-proc-self-execve", "/proc/self/exe", false),
+        ("self-exec-proc-pid-execve", "/proc/37/exe", false),
+        ("self-exec-proc-self-execveat", "/proc/self/exe", true),
+        ("self-exec-proc-pid-execveat", "/proc/37/exe", true),
+    ] {
+        let exec = if execveat {
+            // execveat(AT_FDCWD, path, argv, envp, 0)
+            r#"
+                mov %rdx, %r10
+                mov %rsi, %rdx
+                mov %rdi, %rsi
+                mov $-100, %rdi
+                xor %r8d, %r8d
+                mov $322, %eax
+                syscall
+            "#
+        } else {
+            // execve(path, argv, envp)
+            r#"
+                mov $59, %eax
+                syscall
+            "#
+        };
+        let source = format!(
+            r#"
+                .global _start
+                .text
+            _start:
+                cmpq $2, (%rsp)
+                je after_exec
+
+                lea self_path(%rip), %rdi
+                lea replacement_argv(%rip), %rsi
+                lea replacement_envp(%rip), %rdx
+                {exec}
+                neg %eax
+                mov %eax, %edi
+                mov $231, %eax
+                syscall
+
+            after_exec:
+                mov $1, %edi
+                lea image_marker(%rip), %rsi
+                mov ${image_marker_len}, %edx
+                mov $1, %eax
+                syscall
+
+                mov $1, %edi
+                mov 8(%rsp), %rsi
+                mov ${argv0_len}, %edx
+                mov $1, %eax
+                syscall
+                call write_newline
+
+                mov $1, %edi
+                mov 16(%rsp), %rsi
+                mov ${argv1_len}, %edx
+                mov $1, %eax
+                syscall
+                call write_newline
+
+                mov $1, %edi
+                mov 32(%rsp), %rsi
+                mov ${envp0_len}, %edx
+                mov $1, %eax
+                syscall
+                call write_newline
+
+                xor %edi, %edi
+                mov $231, %eax
+                syscall
+
+            write_newline:
+                mov $1, %edi
+                lea newline(%rip), %rsi
+                mov $1, %edx
+                mov $1, %eax
+                syscall
+                ret
+
+                .section .rodata
+            self_path:
+                .asciz "{path}"
+            replacement_argv0:
+                .asciz "{argv0}"
+            replacement_argv1:
+                .asciz "{argv1}"
+            replacement_envp0:
+                .asciz "{envp0}"
+            image_marker:
+                .ascii "same-image\n"
+            newline:
+                .ascii "\n"
+
+                .section .data
+                .align 8
+            replacement_argv:
+                .quad replacement_argv0, replacement_argv1, 0
+            replacement_envp:
+                .quad replacement_envp0, 0
+            "#,
+            image_marker_len = IMAGE_MARKER.len(),
+            argv0_len = ARGV0.len(),
+            argv1_len = ARGV1.len(),
+            envp0_len = ENVP0.len(),
+            argv0 = ARGV0,
+            argv1 = ARGV1,
+            envp0 = ENVP0,
+        );
+
+        let root = TestDirectory::new();
+        let executable = compile_assembly_program(&root.0, name, &source);
+        let image = std::fs::read(&executable).unwrap();
+        let executable = executable.to_str().unwrap();
+        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+        backend.set_root_pid(ROOT_PID).unwrap();
+        backend
+            .install_static_elf_with_context(&image, &[executable], &["INITIAL=1"], &root.0)
+            .unwrap();
+
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        assert_eq!(code, 0, "path={path} execveat={execveat}");
+        assert_eq!(
+            stdout,
+            expected.as_bytes(),
+            "path={path} execveat={execveat}"
+        );
+        assert!(stderr.is_empty(), "path={path} execveat={execveat}");
+    }
 }
 
 #[test]
