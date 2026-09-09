@@ -58,6 +58,7 @@ use crate::bootstrap::exception_pushes_error_code;
 use crate::bootstrap::set_syscall_return_park;
 use crate::bootstrap::set_user_segment_base;
 use crate::elf::LoadedStaticElf;
+use crate::elf::initial_thread_name;
 use crate::elf::load_static_elf;
 use crate::executor::ChildCompletion;
 use crate::executor::ElfExecutor;
@@ -750,6 +751,7 @@ impl KvmBackend {
     pub(crate) fn exec_process(
         &mut self,
         executor: &mut ElfExecutor,
+        executable_path: &Path,
         image: &[u8],
         argv: &[String],
         envp: &[String],
@@ -761,6 +763,7 @@ impl KvmBackend {
         let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
         let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
         let mut loaded = load_static_elf(&mut self.memory, image, &argv, &envp, executor.cwd())?;
+        loaded.thread_name = initial_thread_name(executable_path);
         loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
         configure_long_mode(
             &mut self.memory,
@@ -784,9 +787,11 @@ impl KvmBackend {
         child_tid: Option<u64>,
         clear_child_tid: Option<u64>,
         clear_sighand: bool,
+        share_address_space: bool,
         park_syscall_return: bool,
     ) -> Result<ForkedProcess> {
-        let mut child_executor = executor.fork_child(child_pid, clear_sighand)?;
+        let mut child_executor =
+            executor.fork_child(child_pid, clear_sighand, share_address_space)?;
         child_executor.set_clear_child_tid(clear_child_tid);
         if park_syscall_return {
             set_syscall_return_park(
@@ -881,6 +886,7 @@ impl KvmBackend {
                 child_tid,
                 clear_child_tid,
                 clear_sighand,
+                share_address_space,
             } => {
                 let mut child = self.prepare_forked_process(
                     executor,
@@ -890,6 +896,7 @@ impl KvmBackend {
                     child_tid,
                     clear_child_tid,
                     clear_sighand,
+                    share_address_space,
                     park_syscall_return,
                 )?;
                 let (code, stdout, stderr) =
@@ -999,7 +1006,12 @@ impl KvmBackend {
                     })?;
                 self.thread_group.add_worker_handle(handle);
             }
-            ProcessAction::Exec { image, argv, envp } => {
+            ProcessAction::Exec {
+                executable_path,
+                image,
+                argv,
+                envp,
+            } => {
                 if park_syscall_return {
                     set_syscall_return_park(
                         &mut self.memory,
@@ -1032,7 +1044,7 @@ impl KvmBackend {
                 if !self.is_guest_thread {
                     self.cancel_guest_threads();
                 }
-                let result = self.exec_process(executor, &image, &argv, &envp);
+                let result = self.exec_process(executor, &executable_path, &image, &argv, &envp);
                 if !self.is_guest_thread {
                     self.thread_group.rearm_after_exec();
                 }
@@ -1065,6 +1077,7 @@ impl KvmBackend {
                 child_tid,
                 clear_child_tid,
                 clear_sighand,
+                share_address_space,
             } => {
                 let mut child = self.prepare_forked_process(
                     executor,
@@ -1074,6 +1087,7 @@ impl KvmBackend {
                     child_tid,
                     clear_child_tid,
                     clear_sighand,
+                    share_address_space,
                     park_syscall_return,
                 )?;
 

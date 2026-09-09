@@ -8,9 +8,12 @@
 
 use std::fs::OpenOptions;
 use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use goblin::elf::Elf;
 use goblin::elf::header::EI_CLASS;
@@ -33,6 +36,7 @@ use crate::bootstrap::PROGRAM_HEADERS_ADDRESS;
 use crate::bootstrap::VDSO_ADDRESS;
 
 const PAGE_SIZE: u64 = 4096;
+pub(crate) const TASK_COMM_LEN: usize = 16;
 pub(crate) const STACK_LIMIT: u64 = 8 * 1024 * 1024;
 const STACK_STRING_HEADROOM: u64 = 4096;
 const MMAP_GAP: u64 = 1024 * 1024;
@@ -252,6 +256,21 @@ pub(crate) struct LoadedStaticElf {
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-228): Review caller-provided deterministic random seed state.
     pub random_seed: u64,
+    /// Linux task name (`comm`), including the terminating NUL byte.
+    ///
+    /// This is per-thread state: fork and clone inherit the caller's value,
+    /// later changes affect only the calling thread, and exec initializes it
+    /// from the replacement image name.
+    pub thread_name: [u8; TASK_COMM_LEN],
+    /// Signal requested with `PR_SET_PDEATHSIG` for this thread.
+    ///
+    /// Linux clears this field in newly cloned tasks and preserves it across
+    /// an ordinary exec.
+    pub parent_death_signal: libc::c_int,
+    /// Process-address-space policy controlled by `PR_SET_THP_DISABLE`.
+    /// Threads share this flag; fork takes an independent copy and exec keeps
+    /// the existing value.
+    pub thp_disabled: std::sync::Arc<AtomicBool>,
     // TODO-HUMAN-REVIEW(PR-181): Review virtual capability lifecycle state.
     pub keep_capabilities: bool,
     pub capability_effective: u64,
@@ -350,6 +369,11 @@ impl LoadedStaticElf {
             logical_clock_ns: self.logical_clock_ns,
             umask: self.umask,
             random_seed: self.random_seed,
+            thread_name: self.thread_name,
+            parent_death_signal: 0,
+            thp_disabled: std::sync::Arc::new(AtomicBool::new(
+                self.thp_disabled.load(Ordering::SeqCst),
+            )),
             keep_capabilities: self.keep_capabilities,
             capability_effective: self.capability_effective,
             capability_permitted: self.capability_permitted,
@@ -397,6 +421,10 @@ impl LoadedStaticElf {
 
     // TODO-HUMAN-REVIEW(PR-136): Review live identity filtering across exec.
     pub(crate) fn inherit_process_state(&mut self, previous: Self) {
+        let parent_death_signal = previous.parent_death_signal;
+        let thp_disabled = std::sync::Arc::new(AtomicBool::new(
+            previous.thp_disabled.load(Ordering::SeqCst),
+        ));
         let cloexec_fds = previous.cloexec_fds;
         let previous_signalfd_state = previous
             .signalfd_state
@@ -489,6 +517,9 @@ impl LoadedStaticElf {
         self.logical_clock_ns = previous.logical_clock_ns;
         self.umask = previous.umask;
         self.random_seed = previous.random_seed;
+        // `thread_name` intentionally remains the replacement image's name.
+        self.parent_death_signal = parent_death_signal;
+        self.thp_disabled = thp_disabled;
         self.keep_capabilities = false;
         self.capability_bounding = previous.capability_bounding;
         self.capability_effective = previous.capability_bounding;
@@ -696,6 +727,11 @@ fn load_executable(
         .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
         .open(cwd)?;
 
+    let executable_path =
+        resolve_executable_path(argv0, envp, cwd).unwrap_or_else(|_| PathBuf::from(argv0));
+    let thread_name = initial_thread_name(&executable_path);
+    let argv0 = executable_path.to_string_lossy().into_owned().into_bytes();
+
     Ok(LoadedStaticElf {
         entry_point,
         stack_pointer,
@@ -705,11 +741,7 @@ fn load_executable(
         mmap_base: mmap_next,
         mmap_next,
         mmap_limit,
-        argv0: resolve_executable_path(argv0, envp, cwd)
-            .unwrap_or_else(|_| PathBuf::from(argv0))
-            .to_string_lossy()
-            .into_owned()
-            .into_bytes(),
+        argv0,
         cwd: cwd.to_owned(),
         cwd_fd,
         stdin: None,
@@ -726,6 +758,9 @@ fn load_executable(
         logical_clock_ns: 0,
         umask: 0o022,
         random_seed: 0,
+        thread_name,
+        parent_death_signal: 0,
+        thp_disabled: std::sync::Arc::new(AtomicBool::new(false)),
         keep_capabilities: false,
         capability_effective: GUEST_CAPABILITY_MASK,
         capability_permitted: GUEST_CAPABILITY_MASK,
@@ -760,6 +795,17 @@ fn load_executable(
             objects: std::collections::BTreeMap::new(),
         })),
     })
+}
+
+pub(crate) fn initial_thread_name(executable_path: &Path) -> [u8; TASK_COMM_LEN] {
+    let basename = executable_path
+        .file_name()
+        .unwrap_or(executable_path.as_os_str())
+        .as_bytes();
+    let mut name = [0; TASK_COMM_LEN];
+    let length = basename.len().min(TASK_COMM_LEN - 1);
+    name[..length].copy_from_slice(&basename[..length]);
+    name
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review Linux shebang parsing limits.
@@ -1139,6 +1185,17 @@ fn interpreter_load_bias(main_end: u64) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_thread_name_uses_basename_and_15_byte_limit() {
+        let short = initial_thread_name(Path::new("/usr/bin/program"));
+        assert_eq!(&short[..8], b"program\0");
+        assert!(short[8..].iter().all(|byte| *byte == 0));
+        assert_eq!(
+            initial_thread_name(Path::new("/tmp/abcdefghijklmnopq")),
+            *b"abcdefghijklmno\0",
+        );
+    }
 
     #[test]
     fn small_pie_keeps_fixed_interpreter_base() {
