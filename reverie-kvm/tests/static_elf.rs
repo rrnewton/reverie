@@ -11,6 +11,8 @@
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::sync::Barrier;
+use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
@@ -26,6 +28,7 @@ use reverie::GlobalRPC;
 use reverie::GlobalTool;
 use reverie::Guest;
 use reverie::Pid;
+use reverie::Stack;
 use reverie::Subscription;
 use reverie::ThreadOwnership;
 use reverie::Tool;
@@ -33,6 +36,7 @@ use reverie::syscalls::CArrayPtr;
 use reverie::syscalls::CStrPtr;
 use reverie::syscalls::Errno;
 use reverie::syscalls::Execve;
+use reverie::syscalls::ExitGroup;
 use reverie::syscalls::Fork;
 use reverie::syscalls::FromToRaw;
 use reverie::syscalls::MemoryAccess;
@@ -408,6 +412,213 @@ impl Tool for RpcRoundTripTool {
         let ordinal = thread_state + 1;
         assert_eq!(global.send_rpc(ordinal).await, *global.config() + ordinal);
         Ok(())
+    }
+}
+
+struct ConcurrentToolStackLog {
+    rendezvous: Barrier,
+    tids: Mutex<Vec<Pid>>,
+}
+
+impl Default for ConcurrentToolStackLog {
+    fn default() -> Self {
+        Self {
+            rendezvous: Barrier::new(2),
+            tids: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl ConcurrentToolStackLog {
+    fn tids(&self) -> Vec<Pid> {
+        self.tids
+            .lock()
+            .expect("concurrent Tool stack log poisoned")
+            .clone()
+    }
+}
+
+#[reverie::global_tool]
+impl GlobalTool for ConcurrentToolStackLog {
+    type Request = ();
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, from: Pid, (): ()) {
+        self.tids
+            .lock()
+            .expect("concurrent Tool stack log poisoned")
+            .push(from);
+        self.rendezvous.wait();
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ConcurrentToolStackTool;
+
+#[reverie::tool]
+impl Tool for ConcurrentToolStackTool {
+    type GlobalState = ConcurrentToolStackLog;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscall(Sysno::getppid);
+        subscriptions
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        assert!(matches!(syscall, Syscall::Getppid(_)));
+        let expected = u64::try_from(guest.tid().as_raw()).unwrap();
+        let mut stack = guest.stack().await;
+        let address = stack.push(expected);
+        let guard = stack.commit()?;
+        guest.send_rpc(()).await;
+        let observed = guest.memory().read_value(address)?;
+        if observed != expected {
+            guest.tail_inject(ExitGroup::new().with_status(91)).await
+        }
+        drop(guard);
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
+struct WorkerExecOverlapLog {
+    rendezvous: Barrier,
+    worker_errno: Mutex<Option<i32>>,
+    worker_ready: Condvar,
+    root_value_preserved: AtomicBool,
+}
+
+impl Default for WorkerExecOverlapLog {
+    fn default() -> Self {
+        Self {
+            rendezvous: Barrier::new(2),
+            worker_errno: Mutex::new(None),
+            worker_ready: Condvar::new(),
+            root_value_preserved: AtomicBool::new(false),
+        }
+    }
+}
+
+impl WorkerExecOverlapLog {
+    fn worker_errno(&self) -> Option<i32> {
+        *self
+            .worker_errno
+            .lock()
+            .expect("worker exec result lock poisoned")
+    }
+
+    fn root_value_preserved(&self) -> bool {
+        self.root_value_preserved.load(Ordering::SeqCst)
+    }
+}
+
+#[reverie::global_tool]
+impl GlobalTool for WorkerExecOverlapLog {
+    type Request = (u8, i64);
+    type Response = i64;
+    type Config = (usize, usize, usize);
+
+    async fn receive_rpc(&self, _from: Pid, (operation, value): (u8, i64)) -> i64 {
+        match operation {
+            // Both callbacks hold committed stack guards before either
+            // proceeds to the image-replacement attempt.
+            0 => {
+                self.rendezvous.wait();
+                0
+            }
+            // Publish the worker's observed errno and wake the root callback.
+            1 => {
+                *self
+                    .worker_errno
+                    .lock()
+                    .expect("worker exec result lock poisoned") =
+                    Some(i32::try_from(value).expect("errno must fit i32"));
+                self.worker_ready.notify_all();
+                0
+            }
+            // Wait with a bound so the pre-fix successful replacement cannot
+            // leave the test blocked indefinitely.
+            2 => {
+                let result = self
+                    .worker_errno
+                    .lock()
+                    .expect("worker exec result lock poisoned");
+                let (result, _) = self
+                    .worker_ready
+                    .wait_timeout_while(result, std::time::Duration::from_secs(5), |result| {
+                        result.is_none()
+                    })
+                    .expect("worker exec result wait poisoned");
+                result.map(i64::from).unwrap_or(-1)
+            }
+            // Record that the root callback could still read its committed
+            // value after the worker's refused image replacement.
+            3 => {
+                self.root_value_preserved
+                    .store(value != 0, Ordering::SeqCst);
+                0
+            }
+            _ => panic!("unexpected worker exec test operation {operation}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct WorkerExecOverlapTool;
+
+#[reverie::tool]
+impl Tool for WorkerExecOverlapTool {
+    type GlobalState = WorkerExecOverlapLog;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &(usize, usize, usize)) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscall(Sysno::getppid);
+        subscriptions
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        assert!(matches!(syscall, Syscall::Getppid(_)));
+        let expected = u64::try_from(guest.tid().as_raw()).unwrap();
+        let mut stack = guest.stack().await;
+        let address = stack.push(expected);
+        let guard = stack.commit()?;
+        guest.send_rpc((0, 0)).await;
+
+        if guest.is_main_thread() {
+            let worker_errno = guest.send_rpc((2, 0)).await;
+            let observed = guest.memory().read_value(address)?;
+            let preserved =
+                worker_errno == i64::from(Errno::ENOSYS.into_raw()) && observed == expected;
+            guest.send_rpc((3, i64::from(preserved))).await;
+            if !preserved {
+                guest.tail_inject(ExitGroup::new().with_status(92)).await
+            }
+        } else {
+            let (path, argv, envp) = *guest.config();
+            let request = Execve::new()
+                .with_path(PathPtr::from_ptr(path as *const libc::c_char))
+                .with_argv(Option::<CArrayPtr<CStrPtr>>::from_raw(argv))
+                .with_envp(Option::<CArrayPtr<CStrPtr>>::from_raw(envp));
+            let error = guest
+                .inject(request)
+                .await
+                .expect_err("worker image replacement unexpectedly succeeded");
+            guest.send_rpc((1, i64::from(error.into_raw()))).await;
+        }
+
+        drop(guard);
+        Ok(guest.inject(syscall).await?)
     }
 }
 
@@ -2070,7 +2281,7 @@ fn stats_fork_program() -> Vec<u8> {
     code
 }
 
-fn stats_clone_thread_program() -> Vec<u8> {
+fn clone_thread_program(probe_tool_stacks: bool) -> Vec<u8> {
     const CHILD_TID: u64 = LOAD_ADDRESS + 0x1800;
     const CHILD_STACK: u64 = LOAD_ADDRESS + 0x1900;
     const CHILD_STACK_SIZE: u64 = 0x600;
@@ -2101,6 +2312,12 @@ fn stats_clone_thread_program() -> Vec<u8> {
     ]);
     let child_jump = code.len() - 4;
 
+    if probe_tool_stacks {
+        code.extend_from_slice(&[
+            0xb8, 0x6e, 0x00, 0x00, 0x00, // mov eax, SYS_getppid
+            0x0f, 0x05, // syscall
+        ]);
+    }
     code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_tid
     code.extend_from_slice(&CHILD_TID.to_le_bytes());
     let wait = code.len();
@@ -2114,6 +2331,12 @@ fn stats_clone_thread_program() -> Vec<u8> {
 
     let child = code.len();
     patch_stats_jump(&mut code, child_jump, child);
+    if probe_tool_stacks {
+        code.extend_from_slice(&[
+            0xb8, 0x6e, 0x00, 0x00, 0x00, // mov eax, SYS_getppid
+            0x0f, 0x05, // syscall
+        ]);
+    }
     code.extend_from_slice(&[
         0xb8, 0xba, 0x00, 0x00, 0x00, // mov eax, SYS_gettid
         0x0f, 0x05, // syscall
@@ -2124,6 +2347,9 @@ fn stats_clone_thread_program() -> Vec<u8> {
         code.push(0);
     }
     let clone_args_address = LOAD_ADDRESS + code.len() as u64;
+    // The branch target is patched before the trailing clone arguments are
+    // appended, so the optional parent/child probes cannot make it point into
+    // the data block.
     code[clone_args_operand..clone_args_operand + 8]
         .copy_from_slice(&clone_args_address.to_le_bytes());
     let mut clone_args = [0_u8; 88];
@@ -2203,12 +2429,12 @@ fn kvm_stats_clone_thread_process_tree_is_exact_and_repeatable() {
     }
 
     let first = run_stats_program(
-        &stats_clone_thread_program(),
+        &clone_thread_program(false),
         "/bin/kvm-stats-thread",
         BackendStatsRequest::ENABLED,
     );
     let second = run_stats_program(
-        &stats_clone_thread_program(),
+        &clone_thread_program(false),
         "/bin/kvm-stats-thread",
         BackendStatsRequest::ENABLED,
     );
@@ -2216,6 +2442,84 @@ fn kvm_stats_clone_thread_process_tree_is_exact_and_repeatable() {
     // guest memory for CLONE_CHILD_CLEARTID, so the child exit is counted first.
     assert_exact_stats(&first, 4, 1);
     assert_eq!(first, second);
+}
+
+#[test]
+fn tool_owned_threads_keep_independent_stack_guards_live() {
+    if !kvm_available("tool_owned_threads_keep_independent_stack_guards_live") {
+        return;
+    }
+
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf(
+            &static_elf(&clone_thread_program(true)),
+            "/bin/tool-stack-threads",
+        )
+        .unwrap();
+    let (log, code, stdout, stderr) = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<ConcurrentToolStackTool>((), true),
+    )
+    .unwrap();
+
+    assert_eq!(code, 0);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    let tids = log.tids();
+    assert_eq!(tids.len(), 2);
+    assert_ne!(tids[0], tids[1]);
+}
+
+#[test]
+fn worker_exec_is_refused_without_replacing_shared_memory() {
+    if !kvm_available("worker_exec_is_refused_without_replacing_shared_memory") {
+        return;
+    }
+
+    let target = [
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+        0x0f, 0x0b, // ud2
+    ];
+    let executable = TestExecutable::new(&static_elf(&target));
+    let path = executable.0.to_str().unwrap().as_bytes();
+
+    let mut code = clone_thread_program(true);
+    let path_address = LOAD_ADDRESS + code.len() as u64;
+    code.extend_from_slice(path);
+    code.push(0);
+    while !code.len().is_multiple_of(8) {
+        code.push(0);
+    }
+    let argv_address = LOAD_ADDRESS + code.len() as u64;
+    code.extend_from_slice(&path_address.to_le_bytes());
+    code.extend_from_slice(&0_u64.to_le_bytes());
+    let envp_address = LOAD_ADDRESS + code.len() as u64;
+    code.extend_from_slice(&0_u64.to_le_bytes());
+
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf(
+            &static_elf(&code),
+            "/bin/worker-exec-preserves-shared-memory",
+        )
+        .unwrap();
+    let config = (
+        path_address as usize,
+        argv_address as usize,
+        envp_address as usize,
+    );
+    let (log, exit_code, stdout, stderr) = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<WorkerExecOverlapTool>(config, true),
+    )
+    .unwrap();
+
+    assert_eq!(exit_code, 0);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    assert_eq!(log.worker_errno(), Some(Errno::ENOSYS.into_raw()));
+    assert!(log.root_value_preserved());
 }
 
 #[test]

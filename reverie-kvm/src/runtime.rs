@@ -44,15 +44,14 @@ use crate::KvmBackend;
 use crate::Result;
 use crate::SyscallRequest;
 use crate::VMCALL_SYSCALL_TRANSPORT;
-use crate::bootstrap::TOOL_STACK_TOP;
+use crate::bootstrap::TOOL_STACK_SIZE;
 use crate::bootstrap::configure_process_syscall_return;
 use crate::bootstrap::set_user_segment_base;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
 use crate::executor::conventional_exit_code;
 
-const STACK_CAPACITY: usize = 4096;
-const TOOL_STACK_BOTTOM: u64 = TOOL_STACK_TOP - STACK_CAPACITY as u64;
+const STACK_CAPACITY: usize = TOOL_STACK_SIZE as usize;
 
 enum HandlerSignal {
     TailInjected {
@@ -289,7 +288,7 @@ where
                 });
             };
             let image_replaced = matches!(&action, ProcessAction::Exec { .. });
-            hide_tool_scratch(&self.memory)?;
+            hide_tool_scratch(&self.memory, self.backend.tool_stack_top())?;
             let action_result: Result<()> = async {
                 match self.process_context {
                     ProcessExecutionContext::SyscallBoundary(boundary) => {
@@ -335,7 +334,7 @@ where
                 }
             }
             .await;
-            let expose_result = expose_tool_scratch(&self.memory);
+            let expose_result = expose_tool_scratch(&self.memory, self.backend.tool_stack_top());
             action_result?;
             expose_result?;
             *self.process_completed = true;
@@ -385,6 +384,7 @@ struct KvmGuest<'a, T: Tool> {
     subscriptions: &'a Subscription,
     handler_signal: SharedHandlerSignal,
     pending_child_starts: SharedChildStarts,
+    tool_stack_top: u64,
     stack_checked_out: Arc<AtomicBool>,
 }
 
@@ -404,6 +404,7 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
         subscriptions: &'a Subscription,
         handler_signal: SharedHandlerSignal,
         pending_child_starts: SharedChildStarts,
+        tool_stack_top: u64,
         stack_checked_out: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -420,6 +421,7 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
             subscriptions,
             handler_signal,
             pending_child_starts,
+            tool_stack_top,
             stack_checked_out,
         }
     }
@@ -487,7 +489,11 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     }
 
     async fn stack(&mut self) -> Self::Stack {
-        KvmStack::new(self.memory.clone(), self.stack_checked_out.clone())
+        KvmStack::new(
+            self.memory.clone(),
+            self.tool_stack_top,
+            self.stack_checked_out.clone(),
+        )
     }
 
     async fn daemonize(&mut self) {}
@@ -611,21 +617,20 @@ pub struct KvmStack {
 }
 
 impl KvmStack {
-    fn new(memory: GuestMemory, checked_out: Arc<AtomicBool>) -> Self {
+    fn new(memory: GuestMemory, top: u64, checked_out: Arc<AtomicBool>) -> Self {
+        let bottom = top
+            .checked_sub(TOOL_STACK_SIZE)
+            .expect("KVM Tool stack address underflow");
+        assert!(
+            memory.guest_base() <= bottom && top <= memory.guest_end(),
+            "KVM Tool stack lies outside guest memory"
+        );
         assert!(
             !checked_out.swap(true, Ordering::SeqCst),
             "cannot retrieve a KVM guest stack while its previous guard is live",
         );
-        let top = if memory.guest_base() <= TOOL_STACK_TOP && memory.guest_end() >= TOOL_STACK_TOP {
-            TOOL_STACK_TOP
-        } else {
-            memory.guest_end()
-        };
-        let capacity = usize::try_from(top - memory.guest_base())
-            .unwrap_or(usize::MAX)
-            .min(STACK_CAPACITY);
         Self {
-            capacity,
+            capacity: STACK_CAPACITY,
             memory,
             top,
             stack_pointer: top,
@@ -793,12 +798,16 @@ async fn drive_handler<T>(
     .await
 }
 
-fn expose_tool_scratch(memory: &GuestMemory) -> Result<()> {
-    memory.map_user_range(TOOL_STACK_BOTTOM, STACK_CAPACITY as u64, false)
+fn tool_stack_bottom(tool_stack_top: u64) -> u64 {
+    tool_stack_top - TOOL_STACK_SIZE
 }
 
-fn hide_tool_scratch(memory: &GuestMemory) -> Result<()> {
-    memory.unmap_user_range(TOOL_STACK_BOTTOM, STACK_CAPACITY as u64)
+fn expose_tool_scratch(memory: &GuestMemory, tool_stack_top: u64) -> Result<()> {
+    memory.map_user_range(tool_stack_bottom(tool_stack_top), TOOL_STACK_SIZE, false)
+}
+
+fn hide_tool_scratch(memory: &GuestMemory, tool_stack_top: u64) -> Result<()> {
+    memory.unmap_user_range(tool_stack_bottom(tool_stack_top), TOOL_STACK_SIZE)
 }
 
 // TODO-HUMAN-REVIEW(PR-156): Review repeated post-exec lifecycle delivery.
@@ -822,11 +831,12 @@ where
     T::GlobalState: 'static,
     <T::GlobalState as GlobalTool>::Config: 'static,
 {
+    let tool_stack_top = backend.tool_stack_top();
     loop {
+        let registers = kvm_registers(backend.vcpu.get_regs()?, 0);
         let handler_signal = Arc::new(Mutex::new(None));
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
-        expose_tool_scratch(memory)?;
-        let registers = kvm_registers(backend.vcpu.get_regs()?, 0);
+        expose_tool_scratch(memory, tool_stack_top)?;
         let mut _process_completed = false;
         let outcome = {
             let mut guest_executor = StaticElfSyscallExecutor {
@@ -853,6 +863,7 @@ where
                 subscriptions,
                 handler_signal.clone(),
                 pending_child_starts.clone(),
+                tool_stack_top,
                 stack_checked_out.clone(),
             );
             drive_handler(
@@ -862,7 +873,7 @@ where
             )
             .await
         };
-        hide_tool_scratch(memory)?;
+        hide_tool_scratch(memory, tool_stack_top)?;
         match outcome {
             HandlerOutcome::Returned(Ok(())) => return Ok(()),
             HandlerOutcome::Returned(Err(error)) => return Err(Error::PostExec(error)),
@@ -931,6 +942,7 @@ where
     T::GlobalState: 'static,
     <T::GlobalState as GlobalTool>::Config: 'static,
 {
+    let tool_stack_top = backend.tool_stack_top();
     let request = initial_exec_request(memory, executor.initial_stack_pointer())?;
     let syscall = request.into_syscall()?;
     let mut registers = kvm_registers(backend.vcpu.get_regs()?, request.number());
@@ -940,7 +952,7 @@ where
 
     let handler_signal = Arc::new(Mutex::new(None));
     let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
-    expose_tool_scratch(memory)?;
+    expose_tool_scratch(memory, tool_stack_top)?;
     let mut _process_completed = false;
     let outcome = {
         let mut guest_executor = StaticElfSyscallExecutor {
@@ -966,6 +978,7 @@ where
             subscriptions,
             handler_signal.clone(),
             pending_child_starts.clone(),
+            tool_stack_top,
             stack_checked_out.clone(),
         );
         drive_handler(
@@ -975,7 +988,7 @@ where
         )
         .await
     };
-    hide_tool_scratch(memory)?;
+    hide_tool_scratch(memory, tool_stack_top)?;
 
     match outcome {
         HandlerOutcome::Returned(result) => result.map(|_| ()).map_err(Error::Reverie),
@@ -1030,6 +1043,26 @@ async fn notify_tool_exit<T: Tool>(
 }
 
 impl KvmBackend {
+    /// Releases a worker's reusable slot before its exit becomes visible to
+    /// the scheduler. A newly admitted guest thread can then make the same
+    /// first-free choice independent of host-thread destruction timing.
+    pub(crate) async fn notify_tool_exit<T: Tool>(
+        &mut self,
+        tool: T,
+        identity: (Pid, Pid),
+        global_state: &T::GlobalState,
+        config: &<T::GlobalState as GlobalTool>::Config,
+        thread_state: T::ThreadState,
+        status: ExitStatus,
+    ) -> Result<()> {
+        let (pid, tid) = identity;
+        // No guest execution or Tool callback can use this backend's transport
+        // or scratch page after a terminal exit has been observed. Release it
+        // before on_exit_thread can wake and admit another guest thread.
+        self.release_thread_slot();
+        notify_tool_exit(tool, pid, tid, global_state, config, thread_state, status).await
+    }
+
     /// Runs the installed guest program through a shared Reverie `Tool`.
     ///
     /// The executor supplies Linux syscall semantics that a future guest kernel
@@ -1045,6 +1078,7 @@ impl KvmBackend {
         T: Tool,
         E: SyscallExecutor,
     {
+        let tool_stack_top = self.tool_stack_top();
         let pid = Pid::from_raw(self.root_pid);
         let global_state = T::GlobalState::init_global_state(&config).await;
         let tool = T::new(pid, &config);
@@ -1057,7 +1091,7 @@ impl KvmBackend {
         let registers = kvm_registers(self.vcpu.get_regs()?, 0);
         let handler_signal = Arc::new(Mutex::new(None));
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
-        expose_tool_scratch(&memory)?;
+        expose_tool_scratch(&memory, tool_stack_top)?;
         let start_outcome = {
             let mut guest_executor = DirectSyscallExecutor {
                 executor: &mut executor,
@@ -1077,6 +1111,7 @@ impl KvmBackend {
                 &subscriptions,
                 handler_signal.clone(),
                 pending_child_starts.clone(),
+                tool_stack_top,
                 stack_checked_out.clone(),
             );
             drive_handler(
@@ -1086,7 +1121,7 @@ impl KvmBackend {
             )
             .await
         };
-        hide_tool_scratch(&memory)?;
+        hide_tool_scratch(&memory, tool_stack_top)?;
         match start_outcome {
             HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
             HandlerOutcome::RuntimeError(error) => return Err(error),
@@ -1116,7 +1151,7 @@ impl KvmBackend {
                         loop {
                             let handler_signal = Arc::new(Mutex::new(None));
                             let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
-                            expose_tool_scratch(&memory)?;
+                            expose_tool_scratch(&memory, tool_stack_top)?;
                             let outcome = {
                                 let mut guest_executor = DirectSyscallExecutor {
                                     executor: &mut executor,
@@ -1136,6 +1171,7 @@ impl KvmBackend {
                                     &subscriptions,
                                     handler_signal.clone(),
                                     pending_child_starts.clone(),
+                                    tool_stack_top,
                                     stack_checked_out.clone(),
                                 );
                                 drive_handler(
@@ -1145,7 +1181,7 @@ impl KvmBackend {
                                 )
                                 .await
                             };
-                            hide_tool_scratch(&memory)?;
+                            hide_tool_scratch(&memory, tool_stack_top)?;
                             break match outcome {
                                 HandlerOutcome::Returned(result) => {
                                     match classify_handler_result(result)? {
@@ -1171,18 +1207,15 @@ impl KvmBackend {
                 }
                 VcpuExit::Hlt => {
                     let status = ExitStatus::SUCCESS;
-                    // This HLT path terminates the process leader (tid == pid).
-                    let global = KvmGlobal {
-                        tid: pid,
-                        state: &global_state,
-                        config: &config,
-                    };
-                    tool.on_exit_thread(pid, &global, thread_state, status)
-                        .await
-                        .map_err(Error::Reverie)?;
-                    tool.on_exit_process(pid, &global, status)
-                        .await
-                        .map_err(Error::Reverie)?;
+                    self.notify_tool_exit(
+                        tool,
+                        (pid, pid),
+                        &global_state,
+                        &config,
+                        thread_state,
+                        status,
+                    )
+                    .await?;
                     return Ok(global_state);
                 }
                 exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
@@ -1280,6 +1313,7 @@ impl KvmBackend {
         T::GlobalState: 'static,
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
+        let tool_stack_top = self.tool_stack_top();
         let _registration = self.register_guest_thread()?;
         let mut auxv = executor.auxv().to_vec();
         // Clones share the MAP_SHARED guest mapping; a mutable handle lets the
@@ -1290,7 +1324,7 @@ impl KvmBackend {
         let registers = kvm_registers(self.vcpu.get_regs()?, 0);
         let handler_signal = Arc::new(Mutex::new(None));
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
-        expose_tool_scratch(&memory)?;
+        expose_tool_scratch(&memory, tool_stack_top)?;
         let mut _process_completed = false;
         let start_outcome = {
             let mut guest_executor = StaticElfSyscallExecutor {
@@ -1315,6 +1349,7 @@ impl KvmBackend {
                 subscriptions,
                 handler_signal.clone(),
                 pending_child_starts.clone(),
+                tool_stack_top,
                 stack_checked_out.clone(),
             );
             drive_handler(
@@ -1324,7 +1359,7 @@ impl KvmBackend {
             )
             .await
         };
-        hide_tool_scratch(&memory)?;
+        hide_tool_scratch(&memory, tool_stack_top)?;
         match start_outcome {
             HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
             HandlerOutcome::RuntimeError(error) => return Err(error),
@@ -1336,10 +1371,9 @@ impl KvmBackend {
                 self.request_guest_thread_group_exit(exit.status);
             }
             self.cancel_guest_threads();
-            notify_tool_exit(
+            self.notify_tool_exit(
                 tool,
-                pid,
-                tid,
+                (pid, tid),
                 global_state.as_ref(),
                 config,
                 thread_state,
@@ -1378,10 +1412,9 @@ impl KvmBackend {
                         self.request_guest_thread_group_exit(exit.status);
                     }
                     self.cancel_guest_threads();
-                    notify_tool_exit(
+                    self.notify_tool_exit(
                         tool,
-                        pid,
-                        tid,
+                        (pid, tid),
                         global_state.as_ref(),
                         config,
                         thread_state,
@@ -1408,10 +1441,9 @@ impl KvmBackend {
             .await
             .err();
             if let Some(error) = post_exec_error {
-                notify_tool_exit(
+                self.notify_tool_exit(
                     tool,
-                    pid,
-                    tid,
+                    (pid, tid),
                     global_state.as_ref(),
                     config,
                     thread_state,
@@ -1430,10 +1462,9 @@ impl KvmBackend {
                 self.request_guest_thread_group_exit(exit.status);
             }
             self.cancel_guest_threads();
-            notify_tool_exit(
+            self.notify_tool_exit(
                 tool,
-                pid,
-                tid,
+                (pid, tid),
                 global_state.as_ref(),
                 config,
                 thread_state,
@@ -1450,10 +1481,9 @@ impl KvmBackend {
         loop {
             if let Some(status) = self.guest_thread_group_exit_status() {
                 self.cancel_guest_threads();
-                notify_tool_exit(
+                self.notify_tool_exit(
                     tool,
-                    pid,
-                    tid,
+                    (pid, tid),
                     global_state.as_ref(),
                     config,
                     thread_state,
@@ -1520,7 +1550,7 @@ impl KvmBackend {
                 loop {
                     let handler_signal = Arc::new(Mutex::new(None));
                     let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
-                    expose_tool_scratch(&memory)?;
+                    expose_tool_scratch(&memory, tool_stack_top)?;
                     let outcome = {
                         let mut guest_executor = StaticElfSyscallExecutor {
                             backend: self,
@@ -1549,6 +1579,7 @@ impl KvmBackend {
                             subscriptions,
                             handler_signal.clone(),
                             pending_child_starts.clone(),
+                            tool_stack_top,
                             stack_checked_out.clone(),
                         );
                         drive_handler(
@@ -1559,7 +1590,7 @@ impl KvmBackend {
                         .await
                     };
                     executor.start_pending_child_processes()?;
-                    hide_tool_scratch(&memory)?;
+                    hide_tool_scratch(&memory, tool_stack_top)?;
                     break match outcome {
                         HandlerOutcome::Returned(result) => {
                             match classify_handler_result(result)? {
@@ -1647,10 +1678,9 @@ impl KvmBackend {
                 .await
                 .err();
                 if let Some(error) = post_exec_error {
-                    notify_tool_exit(
+                    self.notify_tool_exit(
                         tool,
-                        pid,
-                        tid,
+                        (pid, tid),
                         global_state.as_ref(),
                         config,
                         thread_state,
@@ -1670,10 +1700,9 @@ impl KvmBackend {
                     self.request_guest_thread_group_exit(exit.status);
                 }
                 self.cancel_guest_threads();
-                notify_tool_exit(
+                self.notify_tool_exit(
                     tool,
-                    pid,
-                    tid,
+                    (pid, tid),
                     global_state.as_ref(),
                     config,
                     thread_state,
@@ -1771,6 +1800,9 @@ fn kvm_registers(registers: kvm_regs, syscall_number: u64) -> libc::user_regs_st
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bootstrap::BOOT_RESERVED_END;
+    use crate::bootstrap::TOOL_STACK_TOP;
+    use crate::bootstrap::thread_tool_stack_top;
 
     fn synthetic_initial_exec() -> SyscallRequest {
         SyscallRequest::new(libc::SYS_execve as u64, [0x100, 0x200, 0x300, 0, 0, 0])
@@ -1934,9 +1966,9 @@ mod tests {
 
     #[test]
     fn stack_commits_to_shared_guest_memory() {
-        let memory = GuestMemory::new(0x1000, STACK_CAPACITY).unwrap();
+        let memory = GuestMemory::new(0, TOOL_STACK_TOP as usize).unwrap();
         let checked_out = Arc::new(AtomicBool::new(false));
-        let mut stack = KvmStack::new(memory.clone(), checked_out.clone());
+        let mut stack = KvmStack::new(memory.clone(), TOOL_STACK_TOP, checked_out.clone());
         let address = stack.push(0x1122_3344_u32);
         let guard = stack.commit().unwrap();
 
@@ -1950,35 +1982,71 @@ mod tests {
 
     #[test]
     fn dropping_uncommitted_stack_releases_checkout() {
-        let memory = GuestMemory::new(0x1000, STACK_CAPACITY).unwrap();
+        let memory = GuestMemory::new(0, TOOL_STACK_TOP as usize).unwrap();
         let checked_out = Arc::new(AtomicBool::new(false));
 
-        drop(KvmStack::new(memory.clone(), checked_out.clone()));
+        drop(KvmStack::new(
+            memory.clone(),
+            TOOL_STACK_TOP,
+            checked_out.clone(),
+        ));
         assert!(!checked_out.load(Ordering::SeqCst));
 
-        drop(KvmStack::new(memory, checked_out));
+        drop(KvmStack::new(memory, TOOL_STACK_TOP, checked_out));
     }
 
     #[test]
     fn failed_stack_commit_releases_checkout() {
-        let memory = GuestMemory::new(0x1000, STACK_CAPACITY).unwrap();
+        let memory = GuestMemory::new(0, TOOL_STACK_TOP as usize).unwrap();
         let checked_out = Arc::new(AtomicBool::new(false));
-        let mut stack = KvmStack::new(memory.clone(), checked_out.clone());
+        let mut stack = KvmStack::new(memory.clone(), TOOL_STACK_TOP, checked_out.clone());
         stack.writes.push((memory.guest_end(), vec![0]));
 
         assert!(matches!(stack.commit(), Err(Errno::EFAULT)));
         assert!(!checked_out.load(Ordering::SeqCst));
 
-        drop(KvmStack::new(memory, checked_out));
+        drop(KvmStack::new(memory, TOOL_STACK_TOP, checked_out));
+    }
+
+    #[test]
+    fn guest_threads_use_disjoint_tool_stacks() {
+        let memory = GuestMemory::new(0, BOOT_RESERVED_END as usize).unwrap();
+        let first_top = thread_tool_stack_top(0);
+        let second_top = thread_tool_stack_top(1);
+        let first_checked_out = Arc::new(AtomicBool::new(false));
+        let second_checked_out = Arc::new(AtomicBool::new(false));
+
+        expose_tool_scratch(&memory, first_top).unwrap();
+        expose_tool_scratch(&memory, second_top).unwrap();
+        let mut first = KvmStack::new(memory.clone(), first_top, first_checked_out.clone());
+        let mut second = KvmStack::new(memory.clone(), second_top, second_checked_out.clone());
+        let first_address = first.push(0x1122_3344_u32);
+        let second_address = second.push(0x5566_7788_u32);
+        let first_guard = first.commit().unwrap();
+        let second_guard = second.commit().unwrap();
+
+        assert_ne!(first_address, second_address);
+        assert_eq!(memory.read_value(first_address).unwrap(), 0x1122_3344_u32);
+        assert_eq!(memory.read_value(second_address).unwrap(), 0x5566_7788_u32);
+        assert!(first_checked_out.load(Ordering::SeqCst));
+        assert!(second_checked_out.load(Ordering::SeqCst));
+
+        hide_tool_scratch(&memory, first_top).unwrap();
+        assert!(!memory.user_range_is_mapped(tool_stack_bottom(first_top), TOOL_STACK_SIZE));
+        assert!(memory.user_range_is_mapped(tool_stack_bottom(second_top), TOOL_STACK_SIZE));
+
+        drop(first_guard);
+        drop(second_guard);
+        hide_tool_scratch(&memory, second_top).unwrap();
     }
 
     #[test]
     #[should_panic(expected = "cannot retrieve a KVM guest stack while its previous guard is live")]
-    fn concurrent_stack_checkout_still_panics() {
-        let memory = GuestMemory::new(0x1000, STACK_CAPACITY).unwrap();
+    fn same_thread_stack_checkout_still_panics() {
+        let memory = GuestMemory::new(0, TOOL_STACK_TOP as usize).unwrap();
         let checked_out = Arc::new(AtomicBool::new(false));
-        let _first = KvmStack::new(memory.clone(), checked_out.clone());
+        let _first = KvmStack::new(memory.clone(), TOOL_STACK_TOP, checked_out.clone());
 
-        let _second = KvmStack::new(memory, checked_out);
+        let _second = KvmStack::new(memory, TOOL_STACK_TOP, checked_out);
     }
 }
