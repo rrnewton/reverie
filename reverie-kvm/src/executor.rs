@@ -3616,10 +3616,24 @@ fn ensure_mutation_parent_not_procfs(host_dirfd: RawFd, path: &CStr) -> Result<(
     if bytes.is_empty() {
         return Ok(());
     }
-    let parent = match bytes.iter().rposition(|byte| *byte == b'/') {
-        Some(0) => b"/".as_slice(),
-        Some(index) => &bytes[..index],
-        None => b".".as_slice(),
+
+    // Trailing slashes constrain how Linux resolves the target, but they are
+    // not part of its name. Ignore them only while locating the parent for
+    // this safety check; read_path_at still returns the original path to the
+    // host syscall.
+    let target_end = bytes
+        .iter()
+        .rposition(|byte| *byte != b'/')
+        .map_or(0, |index| index + 1);
+    let target = &bytes[..target_end];
+    let parent = if target.is_empty() {
+        b"/".as_slice()
+    } else {
+        match target.iter().rposition(|byte| *byte == b'/') {
+            Some(0) => b"/".as_slice(),
+            Some(index) => &target[..index],
+            None => b".".as_slice(),
+        }
     };
     let parent = CString::new(parent).map_err(|_| negative_errno(libc::EINVAL))?;
     let parent = open_host_metadata_path(host_dirfd, &parent, false)?;
@@ -19449,6 +19463,304 @@ mod tests {
                 [99, DIRECTORY, 0o755, 0, 0, 0],
             ),
             negative_errno(libc::EBADF)
+        );
+    }
+
+    #[test]
+    fn read_path_at_preserves_trailing_slashes_and_edge_cases() {
+        const EMPTY: u64 = 0x900;
+
+        let root = TestDir::new();
+        std::fs::create_dir_all(root.0.join("nested/existing")).unwrap();
+        std::fs::write(root.0.join("regular"), b"payload").unwrap();
+        let state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let absolute = format!("{}/absolute///", root.0.display());
+        let cases = [
+            (0x100, "new/"),
+            (0x200, "new///"),
+            (0x300, "nested//new///"),
+            (0x400, absolute.as_str()),
+            (0x500, "nested/existing///"),
+            (0x600, "regular///"),
+            (0x700, "/"),
+            (0x800, "///"),
+        ];
+
+        for (address, value) in cases {
+            write_c_string(&mut memory, address, value);
+            let (_, path) = read_path_at(&memory, &state, libc::AT_FDCWD, address, false)
+                .unwrap_or_else(|error| panic!("{value:?} failed with {error}"));
+            assert_eq!(path.to_bytes(), value.as_bytes(), "{value:?}");
+        }
+
+        write_c_string(&mut memory, EMPTY, "");
+        let (_, empty) = read_path_at(&memory, &state, libc::AT_FDCWD, EMPTY, true).unwrap();
+        assert!(empty.to_bytes().is_empty());
+        assert_eq!(
+            read_path_at(&memory, &state, libc::AT_FDCWD, EMPTY, false).unwrap_err(),
+            negative_errno(libc::ENOENT)
+        );
+    }
+
+    #[test]
+    fn mkdir_with_trailing_slash_creates_git_hooks_directory() {
+        const HOOKS: u64 = 0x100;
+        const OBJECTS: u64 = 0x300;
+        const REFS: u64 = 0x500;
+
+        let root = TestDir::new();
+        std::fs::create_dir_all(root.0.join("repo/.git")).unwrap();
+        let mut state = test_state(&root.0);
+        state
+            .files
+            .insert(3, std::fs::File::open(root.0.join("repo")).unwrap());
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        write_c_string(&mut memory, HOOKS, "repo/.git/hooks/");
+        write_c_string(&mut memory, OBJECTS, ".git/objects///");
+        write_c_string(
+            &mut memory,
+            REFS,
+            &format!("{}/repo/.git/refs///", root.0.display()),
+        );
+
+        // Mutation check: restoring the old last-slash parent selection makes
+        // the first mkdir return ENOENT instead of creating the hooks directory.
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mkdir,
+                [HOOKS, 0o755, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert!(root.0.join("repo/.git/hooks").is_dir());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mkdirat,
+                [3, OBJECTS, 0o755, 0, 0, 0],
+            ),
+            0
+        );
+        assert!(root.0.join("repo/.git/objects").is_dir());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mkdir,
+                [REFS, 0o755, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert!(root.0.join("repo/.git/refs").is_dir());
+    }
+
+    #[test]
+    fn trailing_slash_keeps_linux_target_semantics() {
+        const DIRECTORY: u64 = 0x100;
+        const REGULAR: u64 = 0x300;
+        const ROOT: u64 = 0x500;
+        const REPEATED_ROOT: u64 = 0x700;
+        const EMPTY: u64 = 0x900;
+
+        let root = TestDir::new();
+        std::fs::create_dir(root.0.join("directory")).unwrap();
+        std::fs::set_permissions(
+            root.0.join("directory"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::fs::write(root.0.join("regular"), b"payload").unwrap();
+        std::fs::set_permissions(
+            root.0.join("regular"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        for (address, value) in [
+            (DIRECTORY, "directory///"),
+            (REGULAR, "regular///"),
+            (ROOT, "/"),
+            (REPEATED_ROOT, "///"),
+            (EMPTY, ""),
+        ] {
+            write_c_string(&mut memory, address, value);
+        }
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chmod,
+                [DIRECTORY, 0o711, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(root.0.join("directory")).unwrap().mode() & 0o777,
+            0o711
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chmod,
+                [REGULAR, 0o777, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOTDIR)
+        );
+        assert_eq!(
+            std::fs::metadata(root.0.join("regular")).unwrap().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_unlink,
+                [REGULAR, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOTDIR)
+        );
+        assert!(root.0.join("regular").exists());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mkdir,
+                [DIRECTORY, 0o755, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EEXIST)
+        );
+        for address in [ROOT, REPEATED_ROOT] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_mkdir,
+                    [address, 0o755, 0, 0, 0, 0],
+                ),
+                negative_errno(libc::EEXIST)
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mkdir,
+                [EMPTY, 0o755, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOENT)
+        );
+    }
+
+    #[test]
+    fn all_read_path_at_mutation_dispatchers_reject_procfs_with_trailing_slash() {
+        const PROTECTED: u64 = 0x100;
+        const LOCAL_SOURCE: u64 = 0x500;
+
+        let root = TestDir::new();
+        std::fs::write(root.0.join("local-source"), b"payload").unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        write_c_string(
+            &mut memory,
+            PROTECTED,
+            &format!(
+                "/proc/{}/reverie-kvm-mutation-missing///",
+                std::process::id()
+            ),
+        );
+        write_c_string(&mut memory, LOCAL_SOURCE, "local-source");
+        let at_fdcwd = libc::AT_FDCWD as u64;
+        let calls = [
+            ("mkdir", libc::SYS_mkdir, [PROTECTED, 0o755, 0, 0, 0, 0]),
+            (
+                "mkdirat",
+                libc::SYS_mkdirat,
+                [at_fdcwd, PROTECTED, 0o755, 0, 0, 0],
+            ),
+            ("unlink", libc::SYS_unlink, [PROTECTED, 0, 0, 0, 0, 0]),
+            ("rmdir", libc::SYS_rmdir, [PROTECTED, 0, 0, 0, 0, 0]),
+            (
+                "unlinkat",
+                libc::SYS_unlinkat,
+                [at_fdcwd, PROTECTED, 0, 0, 0, 0],
+            ),
+            (
+                "rename",
+                libc::SYS_rename,
+                [LOCAL_SOURCE, PROTECTED, 0, 0, 0, 0],
+            ),
+            (
+                "renameat",
+                libc::SYS_renameat,
+                [at_fdcwd, LOCAL_SOURCE, at_fdcwd, PROTECTED, 0, 0],
+            ),
+            (
+                "renameat2",
+                libc::SYS_renameat2,
+                [at_fdcwd, LOCAL_SOURCE, at_fdcwd, PROTECTED, 0, 0],
+            ),
+            (
+                "link",
+                libc::SYS_link,
+                [LOCAL_SOURCE, PROTECTED, 0, 0, 0, 0],
+            ),
+            (
+                "linkat",
+                libc::SYS_linkat,
+                [at_fdcwd, LOCAL_SOURCE, at_fdcwd, PROTECTED, 0, 0],
+            ),
+            (
+                "symlink",
+                libc::SYS_symlink,
+                [LOCAL_SOURCE, PROTECTED, 0, 0, 0, 0],
+            ),
+            (
+                "symlinkat",
+                libc::SYS_symlinkat,
+                [LOCAL_SOURCE, at_fdcwd, PROTECTED, 0, 0, 0],
+            ),
+            ("chmod", libc::SYS_chmod, [PROTECTED, 0o600, 0, 0, 0, 0]),
+            (
+                "fchmodat",
+                libc::SYS_fchmodat,
+                [at_fdcwd, PROTECTED, 0o600, 0, 0, 0],
+            ),
+            (
+                "mknod",
+                libc::SYS_mknod,
+                [PROTECTED, (libc::S_IFIFO | 0o600) as u64, 0, 0, 0, 0],
+            ),
+            (
+                "mknodat",
+                libc::SYS_mknodat,
+                [at_fdcwd, PROTECTED, (libc::S_IFIFO | 0o600) as u64, 0, 0, 0],
+            ),
+            (
+                "utimensat",
+                libc::SYS_utimensat,
+                [at_fdcwd, PROTECTED, 0, 0, 0, 0],
+            ),
+        ];
+        assert_eq!(calls.len(), 17);
+
+        for (name, number, args) in calls {
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, number, args),
+                negative_errno(libc::EACCES),
+                "{name} did not preserve the procfs mutation guard"
+            );
+        }
+        assert_eq!(
+            std::fs::read(root.0.join("local-source")).unwrap(),
+            b"payload"
         );
     }
 
