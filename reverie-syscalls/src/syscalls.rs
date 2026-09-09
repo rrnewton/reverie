@@ -491,6 +491,7 @@ syscall_list! {
         // Missing: landlock_create_ruleset => LandlockCreateRuleset,
         // Missing: landlock_add_rule => LandlockAddRule,
         // Missing: landlock_restrict_self => LandlockRestrictSelf,
+        fchmodat2 => Fchmodat2,
     }
 }
 
@@ -2837,6 +2838,14 @@ typed_syscall! {
         dirfd: i32,
         path: Option<PathPtr>,
         mode: Mode,
+    }
+}
+
+typed_syscall! {
+    pub struct Fchmodat2 {
+        dirfd: i32,
+        path: Option<PathPtr>,
+        mode: Mode,
         flags: AtFlags,
     }
 }
@@ -3584,6 +3593,70 @@ mod test {
     use crate::Displayable;
     use crate::LocalMemory;
     use crate::ReadAddr;
+
+    #[test]
+    fn fchmodat_variants_have_distinct_arities_and_preserve_raw_registers() {
+        let memory = LocalMemory::new();
+        let old_raw = SyscallArgs::new(
+            libc::AT_FDCWD as usize,
+            0,
+            0o600,
+            0xdead_beef,
+            0xfeed_face,
+            0xcafe_babe,
+        );
+        let old = Syscall::from_raw(Sysno::fchmodat, old_raw);
+        assert!(matches!(old, Syscall::Fchmodat(_)));
+        assert_eq!(
+            format!("{}", old.display(&memory)),
+            "fchmodat(-100, NULL, Mode(S_IRUSR | S_IWUSR))"
+        );
+        let (number, raw) = old.into_parts();
+        assert_eq!(number, Sysno::fchmodat);
+        assert_eq!(
+            [raw.arg0, raw.arg1, raw.arg2, raw.arg3, raw.arg4, raw.arg5],
+            [
+                libc::AT_FDCWD as usize,
+                0,
+                0o600,
+                0xdead_beef,
+                0xfeed_face,
+                0xcafe_babe,
+            ]
+        );
+
+        let flags = AtFlags::AT_SYMLINK_NOFOLLOW | AtFlags::AT_EMPTY_PATH;
+        let new_raw = SyscallArgs::new(
+            libc::AT_FDCWD as usize,
+            0,
+            0o600,
+            flags.bits() as usize,
+            0xdead_beef,
+            0xcafe_babe,
+        );
+        let new = Syscall::from_raw(Sysno::fchmodat2, new_raw);
+        assert!(matches!(new, Syscall::Fchmodat2(_)));
+        let rendered = format!("{}", new.display(&memory));
+        assert!(rendered.starts_with("fchmodat2(-100, NULL, Mode(S_IRUSR | S_IWUSR), AtFlags("));
+        assert!(rendered.contains("AT_SYMLINK_NOFOLLOW"));
+        assert!(rendered.contains("AT_EMPTY_PATH"));
+        assert_eq!(rendered.matches(", ").count(), 3);
+        assert!(!rendered.contains("3735928559"));
+        assert!(!rendered.contains("3405691582"));
+        let (number, raw) = new.into_parts();
+        assert_eq!(number, Sysno::fchmodat2);
+        assert_eq!(
+            [raw.arg0, raw.arg1, raw.arg2, raw.arg3, raw.arg4, raw.arg5],
+            [
+                libc::AT_FDCWD as usize,
+                0,
+                0o600,
+                flags.bits() as usize,
+                0xdead_beef,
+                0xcafe_babe,
+            ]
+        );
+    }
 
     #[test]
     fn test_syscall_openat_path() {
