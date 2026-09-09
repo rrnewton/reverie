@@ -5463,8 +5463,17 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
     let Ok(requested_length) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
+    if !range_is_valid(memory, args[1], args[2]) {
+        return negative_errno(libc::EFAULT);
+    }
     let length = requested_length.min(MAX_HOST_IO);
-    let mut bytes = vec![0; length];
+    let Ok(writable) = memory.user_accessible_prefix(args[1], length) else {
+        return negative_errno(libc::EFAULT);
+    };
+    if writable == 0 && requested_length != 0 {
+        return negative_errno(libc::EFAULT);
+    }
+    let mut bytes = vec![0; writable];
 
     // SAFETY: a zeroed sockaddr_storage is valid scratch space for recvfrom.
     let mut address =
@@ -5966,8 +5975,9 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
 // so the executor only faithfully performs the host receive and copies the
 // control/name bytes back into guest memory for Detcore to sanitize.
 fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
-        return negative_errno(libc::EBADF);
+    let host_fd = match host_socket_fd(state, args[0] as libc::c_int) {
+        Ok(host_fd) => host_fd,
+        Err(error) => return error,
     };
     let message_address = args[1];
     if message_address == 0 {
@@ -5980,6 +5990,9 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
     // Validate the final header copyout before consuming a datagram.
     if write_struct(memory, message_address, &message) != 0 {
         return negative_errno(libc::EFAULT);
+    }
+    if !message.msg_name.is_null() && libc::c_int::try_from(message.msg_namelen).is_err() {
+        return negative_errno(libc::EINVAL);
     }
 
     let iov_count = message.msg_iovlen;
@@ -6175,8 +6188,9 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-210): Review guest mmsghdr translation and nonblocking receive semantics.
 fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
-        return negative_errno(libc::EBADF);
+    let host_fd = match host_socket_fd(state, args[0] as libc::c_int) {
+        Ok(host_fd) => host_fd,
+        Err(error) => return error,
     };
     let Ok(message_count) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
@@ -6212,6 +6226,15 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
                 };
             }
         };
+        if !message.msg_hdr.msg_name.is_null()
+            && libc::c_int::try_from(message.msg_hdr.msg_namelen).is_err()
+        {
+            return if delivered == 0 {
+                negative_errno(libc::EINVAL)
+            } else {
+                delivered as i64
+            };
+        }
         let iov_count = message.msg_hdr.msg_iovlen;
         if iov_count > libc::UIO_MAXIOV as usize {
             return if delivered == 0 {
@@ -8375,6 +8398,28 @@ fn host_fd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Option<RawFd> {
                 Some(guest_fd)
             }
         })
+}
+
+fn host_socket_fd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Result<RawFd, i64> {
+    let host_fd = host_fd(state, guest_fd).ok_or_else(|| negative_errno(libc::EBADF))?;
+    let mut socket_type = 0;
+    let mut length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: socket_type and length are writable host storage. SO_TYPE has no
+    // side effect and asks the host to verify that this descriptor is a socket,
+    // matching sockfd_lookup before Linux imports the guest message header.
+    if unsafe {
+        libc::getsockopt(
+            host_fd,
+            libc::SOL_SOCKET,
+            libc::SO_TYPE,
+            std::ptr::from_mut(&mut socket_type).cast::<libc::c_void>(),
+            std::ptr::from_mut(&mut length),
+        )
+    } != 0
+    {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    Ok(host_fd)
 }
 
 // TODO-HUMAN-REVIEW(PR-52): Review KVM guest fcntl compatibility boundaries.
@@ -14749,7 +14794,8 @@ mod tests {
     }
 
     #[test]
-    fn recvfrom_reports_host_errors_before_guest_output_errors() {
+    fn recvfrom_preflights_payload_but_defers_address_copyout() {
+        const PAYLOAD: u64 = 0x80;
         const SOURCE_ADDRESS: u64 = 0x100;
 
         let root = TestDir::new();
@@ -14772,6 +14818,20 @@ mod tests {
         );
         assert_eq!(empty_socket, 4);
 
+        for fd in [regular_file, empty_socket] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_recvfrom,
+                    [fd as u64, u64::MAX, 1, 0, SOURCE_ADDRESS, 0],
+                ),
+                negative_errno(libc::EFAULT),
+                "payload fault was not detected before host recvfrom for guest fd {fd}"
+            );
+        }
+
+        memory.write(PAYLOAD, b"?").unwrap();
         for (fd, error) in [
             (regular_file, negative_errno(libc::ENOTSOCK)),
             (empty_socket, negative_errno(libc::EAGAIN)),
@@ -14781,10 +14841,10 @@ mod tests {
                     &mut memory,
                     &mut state,
                     libc::SYS_recvfrom,
-                    [fd as u64, u64::MAX, 1, 0, SOURCE_ADDRESS, 0],
+                    [fd as u64, PAYLOAD, 1, 0, SOURCE_ADDRESS, 0],
                 ),
                 error,
-                "host recvfrom error lost precedence for guest fd {fd}"
+                "source-address validation preceded host recvfrom for guest fd {fd}"
             );
         }
     }
@@ -14931,9 +14991,8 @@ mod tests {
             "recvfrom address did not follow its overlapping length copy"
         );
 
-        // A payload copy fault happens after the host has consumed the queued
-        // datagram. The following nonblocking receive must therefore see an
-        // empty socket rather than the same datagram again.
+        // Payload accessibility is checked before the host receive. A failed
+        // copy must leave both the guest buffer and the queued datagram intact.
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -14950,6 +15009,7 @@ mod tests {
             ),
             5
         );
+        memory.write(RECV_BUFFER, b"stale").unwrap();
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -14959,6 +15019,8 @@ mod tests {
             ),
             negative_errno(libc::EFAULT)
         );
+        memory.read(RECV_BUFFER, &mut received).unwrap();
+        assert_eq!(&received, b"stale");
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -14966,9 +15028,11 @@ mod tests {
                 libc::SYS_recvfrom,
                 [receiver as u64, RECV_BUFFER, 5, 0, 0, 0],
             ),
-            negative_errno(libc::EAGAIN),
-            "payload copy failure left the datagram queued"
+            5,
+            "payload fault consumed the queued datagram"
         );
+        memory.read(RECV_BUFFER, &mut received).unwrap();
+        assert_eq!(&received, b"udp4!");
 
         // The datagram was processed on some host CPU, yet the option must read
         // back a canonical virtual CPU 0, matching detcore's handle_getsockopt.
@@ -15305,6 +15369,32 @@ mod tests {
         assert!(state.files.is_empty());
     }
 
+    #[test]
+    fn receive_messages_report_enotsock_before_guest_header_faults() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let regular_file = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        assert_eq!(regular_file, 3);
+
+        for (syscall, arguments) in [
+            (
+                libc::SYS_recvmsg,
+                [regular_file as u64, u64::MAX, 0, 0, 0, 0],
+            ),
+            (
+                libc::SYS_recvmmsg,
+                [regular_file as u64, u64::MAX, 1, 0, 0, 0],
+            ),
+        ] {
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, syscall, arguments,),
+                negative_errno(libc::ENOTSOCK),
+                "guest header was inspected before socket validation for syscall {syscall}"
+            );
+        }
+    }
+
     fn assert_receive_message_name_follows_length_copy(syscall: libc::c_long) {
         const BIND_ADDRESS: u64 = 0x100;
         const NAME_ADDRESS: u64 = 0x200;
@@ -15443,6 +15533,63 @@ mod tests {
                 1
             );
         }
+
+        // A non-null name uses signed-int length semantics and is checked
+        // before its iovec or the host receive. The rejected call must leave
+        // the payload untouched and the datagram queued.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendto,
+                [
+                    sender as u64,
+                    PAYLOAD,
+                    1,
+                    libc::MSG_NOSIGNAL as u64,
+                    DEST_ADDRESS,
+                    address_length as u64,
+                ],
+            ),
+            1
+        );
+        memory.write(RECV_BUFFER, b"?").unwrap();
+        message.msg_hdr.msg_name = NAME_ADDRESS as usize as *mut libc::c_void;
+        message.msg_hdr.msg_namelen = u32::MAX;
+        message.msg_hdr.msg_iov = u64::MAX as usize as *mut libc::iovec;
+        assert_eq!(write_struct(&mut memory, MESSAGE, &message), 0);
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, syscall, arguments),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(read_guest_bytes::<1>(&memory, RECV_BUFFER).unwrap(), *b"?");
+        assert_eq!(
+            read_struct::<libc::socklen_t>(&memory, name_length_address),
+            u32::MAX
+        );
+
+        // A null name ignores the same oversized length. Restoring only the
+        // valid iovec must receive the datagram rejected above.
+        message.msg_hdr.msg_name = std::ptr::null_mut();
+        message.msg_hdr.msg_iov = RECV_IOV as usize as *mut libc::iovec;
+        assert_eq!(write_struct(&mut memory, MESSAGE, &message), 0);
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, syscall, arguments),
+            1
+        );
+        assert_eq!(read_guest_bytes::<1>(&memory, RECV_BUFFER).unwrap(), *b"x");
+        assert_eq!(
+            read_struct::<libc::socklen_t>(&memory, name_length_address),
+            u32::MAX
+        );
+        if syscall == libc::SYS_recvmmsg {
+            let message_length_address =
+                MESSAGE + std::mem::offset_of!(libc::mmsghdr, msg_len) as u64;
+            assert_eq!(
+                read_struct::<libc::c_uint>(&memory, message_length_address),
+                1
+            );
+        }
     }
 
     #[test]
@@ -15453,6 +15600,133 @@ mod tests {
     #[test]
     fn recvmmsg_name_follows_overlapping_length_copy() {
         assert_receive_message_name_follows_length_copy(libc::SYS_recvmmsg);
+    }
+
+    #[test]
+    fn recvmmsg_preserves_datagram_for_later_invalid_name_length() {
+        const PAIR_FDS: u64 = 0x100;
+        const FIRST_PAYLOAD: u64 = 0x200;
+        const SECOND_PAYLOAD: u64 = 0x210;
+        const MESSAGES: u64 = 0x300;
+        const FIRST_IOV: u64 = 0x400;
+        const SECOND_IOV: u64 = 0x420;
+        const FIRST_BUFFER: u64 = 0x500;
+        const SECOND_BUFFER: u64 = 0x510;
+        const SOURCE_ADDRESS: u64 = 0x600;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    (libc::SOCK_DGRAM | libc::SOCK_NONBLOCK) as u64,
+                    0,
+                    PAIR_FDS,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+        memory.write(FIRST_PAYLOAD, b"a").unwrap();
+        memory.write(SECOND_PAYLOAD, b"b").unwrap();
+        for payload in [FIRST_PAYLOAD, SECOND_PAYLOAD] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_write,
+                    [socket_fds[1] as u64, payload, 1, 0, 0, 0],
+                ),
+                1
+            );
+        }
+
+        let first_iov = libc::iovec {
+            iov_base: FIRST_BUFFER as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        let second_iov = libc::iovec {
+            iov_base: SECOND_BUFFER as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(write_struct(&mut memory, FIRST_IOV, &first_iov), 0);
+        assert_eq!(write_struct(&mut memory, SECOND_IOV, &second_iov), 0);
+        memory.write(FIRST_BUFFER, b"?").unwrap();
+        memory.write(SECOND_BUFFER, b"?").unwrap();
+
+        let mut first_message = unsafe { std::mem::zeroed::<libc::mmsghdr>() };
+        first_message.msg_hdr.msg_name = std::ptr::null_mut();
+        first_message.msg_hdr.msg_namelen = u32::MAX;
+        first_message.msg_hdr.msg_iov = FIRST_IOV as usize as *mut libc::iovec;
+        first_message.msg_hdr.msg_iovlen = 1;
+        let mut second_message = unsafe { std::mem::zeroed::<libc::mmsghdr>() };
+        second_message.msg_hdr.msg_name = SOURCE_ADDRESS as usize as *mut libc::c_void;
+        second_message.msg_hdr.msg_namelen = u32::MAX;
+        second_message.msg_hdr.msg_iov = SECOND_IOV as usize as *mut libc::iovec;
+        second_message.msg_hdr.msg_iovlen = 1;
+        assert_eq!(write_struct(&mut memory, MESSAGES, &first_message), 0);
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                MESSAGES + std::mem::size_of::<libc::mmsghdr>() as u64,
+                &second_message,
+            ),
+            0
+        );
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmmsg,
+                [
+                    socket_fds[0] as u64,
+                    MESSAGES,
+                    2,
+                    libc::MSG_DONTWAIT as u64,
+                    0,
+                    0,
+                ],
+            ),
+            1,
+            "later invalid message did not return the preceding delivery count"
+        );
+        assert_eq!(read_guest_bytes::<1>(&memory, FIRST_BUFFER).unwrap(), *b"a");
+        assert_eq!(
+            read_guest_bytes::<1>(&memory, SECOND_BUFFER).unwrap(),
+            *b"?"
+        );
+        assert_eq!(
+            read_struct::<libc::socklen_t>(
+                &memory,
+                MESSAGES
+                    + std::mem::size_of::<libc::mmsghdr>() as u64
+                    + std::mem::offset_of!(libc::mmsghdr, msg_hdr) as u64
+                    + std::mem::offset_of!(libc::msghdr, msg_namelen) as u64,
+            ),
+            u32::MAX
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvfrom,
+                [socket_fds[0] as u64, SECOND_BUFFER, 1, 0, 0, 0],
+            ),
+            1,
+            "later invalid message consumed its datagram"
+        );
+        assert_eq!(
+            read_guest_bytes::<1>(&memory, SECOND_BUFFER).unwrap(),
+            *b"b"
+        );
     }
 
     #[test]
