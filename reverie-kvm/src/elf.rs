@@ -262,11 +262,10 @@ pub(crate) struct LoadedStaticElf {
     /// later changes affect only the calling thread, and exec initializes it
     /// from the replacement image name.
     pub thread_name: [u8; TASK_COMM_LEN],
-    /// Signal requested with `PR_SET_PDEATHSIG` for this thread.
-    ///
-    /// Linux clears this field in newly cloned tasks and preserves it across
-    /// an ordinary exec.
-    pub parent_death_signal: libc::c_int,
+    /// The thread-group leader's name, exposed by process-level procfs files.
+    /// Threads share this value while process children receive an independent
+    /// copy initialized from the calling thread's name.
+    pub thread_group_leader_name: std::sync::Arc<std::sync::Mutex<[u8; TASK_COMM_LEN]>>,
     /// Process-address-space policy controlled by `PR_SET_THP_DISABLE`.
     /// Threads share this flag; fork takes an independent copy and exec keeps
     /// the existing value.
@@ -370,7 +369,7 @@ impl LoadedStaticElf {
             umask: self.umask,
             random_seed: self.random_seed,
             thread_name: self.thread_name,
-            parent_death_signal: 0,
+            thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(self.thread_name)),
             thp_disabled: std::sync::Arc::new(AtomicBool::new(
                 self.thp_disabled.load(Ordering::SeqCst),
             )),
@@ -421,7 +420,6 @@ impl LoadedStaticElf {
 
     // TODO-HUMAN-REVIEW(PR-136): Review live identity filtering across exec.
     pub(crate) fn inherit_process_state(&mut self, previous: Self) {
-        let parent_death_signal = previous.parent_death_signal;
         let thp_disabled = std::sync::Arc::new(AtomicBool::new(
             previous.thp_disabled.load(Ordering::SeqCst),
         ));
@@ -518,7 +516,6 @@ impl LoadedStaticElf {
         self.umask = previous.umask;
         self.random_seed = previous.random_seed;
         // `thread_name` intentionally remains the replacement image's name.
-        self.parent_death_signal = parent_death_signal;
         self.thp_disabled = thp_disabled;
         self.keep_capabilities = false;
         self.capability_bounding = previous.capability_bounding;
@@ -759,7 +756,7 @@ fn load_executable(
         umask: 0o022,
         random_seed: 0,
         thread_name,
-        parent_death_signal: 0,
+        thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(thread_name)),
         thp_disabled: std::sync::Arc::new(AtomicBool::new(false)),
         keep_capabilities: false,
         capability_effective: GUEST_CAPABILITY_MASK,

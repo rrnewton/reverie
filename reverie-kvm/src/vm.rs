@@ -763,7 +763,12 @@ impl KvmBackend {
         let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
         let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
         let mut loaded = load_static_elf(&mut self.memory, image, &argv, &envp, executor.cwd())?;
-        loaded.thread_name = initial_thread_name(executable_path);
+        let thread_name = initial_thread_name(executable_path);
+        loaded.thread_name = thread_name;
+        *loaded
+            .thread_group_leader_name
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = thread_name;
         loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
         configure_long_mode(
             &mut self.memory,

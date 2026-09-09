@@ -3062,6 +3062,110 @@ fn put_u64(image: &mut [u8], offset: usize, value: u64) {
     image[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
+#[test]
+fn real_pthread_prctl_names_keep_worker_local_and_procfs_leader_bytes() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM thread-name test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "pthread-prctl-name",
+        r#"
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <string.h>
+#include <sys/prctl.h>
+#include <unistd.h>
+
+static const unsigned char leader_name[4] = {0xff, 0x80, 'L', 0};
+static const unsigned char stat_name[5] = {'(', 0xff, 0x80, 'L', ')'};
+static const unsigned char status_name[10] = {
+    'N', 'a', 'm', 'e', ':', '\t', 0xff, 0x80, 'L', '\n'
+};
+
+static const unsigned char *find_bytes(const unsigned char *haystack, size_t haystack_len,
+                                       const unsigned char *needle, size_t needle_len) {
+  if (needle_len > haystack_len) return 0;
+  for (size_t i = 0; i <= haystack_len - needle_len; ++i) {
+    if (memcmp(haystack + i, needle, needle_len) == 0) return haystack + i;
+  }
+  return 0;
+}
+
+static int read_proc(const char *path, unsigned char *buffer, size_t capacity) {
+  int fd = open(path, O_RDONLY);
+  if (fd < 0) return -1;
+  ssize_t count = read(fd, buffer, capacity);
+  close(fd);
+  return count < 0 ? -1 : (int)count;
+}
+
+static void *worker(void *unused) {
+  (void)unused;
+  unsigned char worker_name[16] = "worker";
+  unsigned char observed[16] = {0};
+  unsigned char buffer[1024];
+  if (prctl(PR_SET_NAME, worker_name) != 0) return (void *)(uintptr_t)1;
+  if (prctl(PR_GET_NAME, observed) != 0) return (void *)(uintptr_t)2;
+  if (memcmp(observed, worker_name, sizeof(observed)) != 0)
+    return (void *)(uintptr_t)3;
+  if (write(1, observed, sizeof(observed)) != sizeof(observed))
+    return (void *)(uintptr_t)4;
+
+  int count = read_proc("/proc/self/stat", buffer, sizeof(buffer));
+  const unsigned char *found = count < 0 ? 0 : find_bytes(
+      buffer, (size_t)count, stat_name, sizeof(stat_name));
+  if (!found) return (void *)(uintptr_t)5;
+  if (write(1, found, sizeof(stat_name)) != sizeof(stat_name))
+    return (void *)(uintptr_t)6;
+
+  count = read_proc("/proc/self/status", buffer, sizeof(buffer));
+  found = count < 0 ? 0 : find_bytes(
+      buffer, (size_t)count, status_name, sizeof(status_name));
+  if (!found) return (void *)(uintptr_t)7;
+  if (write(1, found, sizeof(status_name)) != sizeof(status_name))
+    return (void *)(uintptr_t)8;
+  return 0;
+}
+
+int main(void) {
+  if (prctl(PR_SET_NAME, leader_name) != 0) return 10;
+  pthread_t thread;
+  if (pthread_create(&thread, 0, worker, 0) != 0) return 11;
+  void *result = 0;
+  if (pthread_join(thread, &result) != 0) return 12;
+  if (result != 0) return 20 + (int)(uintptr_t)result;
+
+  unsigned char observed[16] = {0};
+  if (prctl(PR_GET_NAME, observed) != 0) return 13;
+  if (memcmp(observed, leader_name, sizeof(leader_name)) != 0) return 14;
+  if (write(1, observed, sizeof(observed)) != sizeof(observed)) return 15;
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let (stdout, stderr) = run_host_program_captured(executable, &[executable], &directory.0);
+
+    let mut expected = b"worker".to_vec();
+    expected.resize(16, 0);
+    expected.extend_from_slice(&[b'(', 0xff, 0x80, b'L', b')']);
+    expected.extend_from_slice(b"Name:\t");
+    expected.extend_from_slice(&[0xff, 0x80, b'L', b'\n']);
+    expected.extend_from_slice(&[0xff, 0x80, b'L']);
+    expected.resize(47, 0);
+    assert_eq!(stdout, expected);
+    assert!(stderr.is_empty());
+}
+
 /// A LIVE pthread worker exercises the `pid != tid` path end to end.
 ///
 /// ⚠️ THIS IS THE CASE THE REJECTED IMPLEMENTATION COULD NOT SEE. Every earlier
