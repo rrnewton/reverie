@@ -780,6 +780,56 @@ lander_restore_owned_checkout "$checkout" main 0 "$entry" "$fence" "$token" 1
         self.assertEqual(4, rc)
         self.assertIn("JSON line 1 is malformed", stdout.getvalue())
 
+    def test_terminal_event_requires_exact_supported_schema_version(self):
+        missing = object()
+        for schema_version in (missing, True, 1.0, 2):
+            with self.subTest(schema_version=schema_version):
+                event = json.loads(validation_event())
+                if schema_version is missing:
+                    event.pop("schema_version")
+                else:
+                    event["schema_version"] = schema_version
+                run = FakeRun(
+                    heads=[OLD, OLD],
+                    verdicts=["NOT-VALIDATED", "VALIDATED"],
+                    validation_stdout=json.dumps(event) + "\n",
+                )
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    rc = self.main(self.args("--execute"), run=run)
+                self.assertEqual(4, rc)
+                self.assertIn("terminal event schema_version", stdout.getvalue())
+                self.assertNotIn("PR-HEAD-CI VALIDATED", stdout.getvalue())
+
+    def test_terminal_event_requires_exact_integer_wrapper_exit_code(self):
+        cases = (
+            (False, "PASSED", "VALIDATED", 0),
+            (3.0, "FAILED", "FAILED", 3),
+        )
+        for wrapper_exit_code, status, verdict, process_exit in cases:
+            with self.subTest(wrapper_exit_code=wrapper_exit_code):
+                event = json.loads(
+                    validation_event(
+                        status=status,
+                        canonical_verdict=verdict,
+                        wrapper_exit_code=int(wrapper_exit_code),
+                    )
+                )
+                event["wrapper_exit_code"] = wrapper_exit_code
+                run = FakeRun(
+                    heads=[OLD, OLD],
+                    verdicts=["NOT-VALIDATED", verdict],
+                    validation_rc=process_exit,
+                    validation_stdout=json.dumps(event) + "\n",
+                )
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    rc = self.main(self.args("--execute"), run=run)
+                self.assertEqual(4, rc)
+                self.assertIn("terminal event wrapper_exit_code", stdout.getvalue())
+                self.assertNotIn("PR-HEAD-CI VALIDATED", stdout.getvalue())
+                self.assertNotIn("PR-HEAD-CI FAILED", stdout.getvalue())
+
     def test_unexpected_runner_exit_cannot_inherit_a_concurrent_green(self):
         run = FakeRun(
             heads=[OLD, OLD],

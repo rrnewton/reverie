@@ -24,6 +24,7 @@ import git_env  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 SUPPORTED_REPOS = frozenset(("rrnewton/hermit", "rrnewton/reverie"))
 SHA_LEN = 40
+TERMINAL_EVENT_SCHEMA_VERSION = 1
 Run = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -264,6 +265,20 @@ def finished_validation_event(
     if len(rows) != 1:
         return None, f"validate-run emitted {len(rows)} terminal events; expected exactly one"
     event = rows[0]
+    schema_version = event.get("schema_version")
+    if type(schema_version) is not int or schema_version != TERMINAL_EVENT_SCHEMA_VERSION:
+        return (
+            None,
+            "validate-run terminal event schema_version is "
+            f"{schema_version!r}; expected integer {TERMINAL_EVENT_SCHEMA_VERSION}",
+        )
+    wrapper_exit_code = event.get("wrapper_exit_code")
+    if type(wrapper_exit_code) is not int:
+        return (
+            None,
+            "validate-run terminal event wrapper_exit_code is "
+            f"{wrapper_exit_code!r}; expected an integer",
+        )
     if event.get("repo") != repo or event.get("target") != head:
         return (
             None,
