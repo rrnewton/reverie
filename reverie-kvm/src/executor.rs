@@ -3616,15 +3616,50 @@ fn ensure_mutation_parent_not_procfs(host_dirfd: RawFd, path: &CStr) -> Result<(
     if bytes.is_empty() {
         return Ok(());
     }
-    let parent = match bytes.iter().rposition(|byte| *byte == b'/') {
-        Some(0) => b"/".as_slice(),
-        Some(index) => &bytes[..index],
-        None => b".".as_slice(),
+
+    // Trailing slashes constrain how Linux resolves the target, but they are
+    // not part of its name. Ignore them only while locating the parent for
+    // this safety check; read_path_at still returns the original path to the
+    // host syscall.
+    let target_end = bytes
+        .iter()
+        .rposition(|byte| *byte != b'/')
+        .map_or(0, |index| index + 1);
+    let target = &bytes[..target_end];
+    let parent = if target.is_empty() {
+        b"/".as_slice()
+    } else {
+        match target.iter().rposition(|byte| *byte == b'/') {
+            Some(0) => b"/".as_slice(),
+            Some(index) => &target[..index],
+            None => b".".as_slice(),
+        }
     };
     let parent = CString::new(parent).map_err(|_| negative_errno(libc::EINVAL))?;
     let parent = open_host_metadata_path(host_dirfd, &parent, false)?;
     if !parent.metadata().map_err(io_error)?.is_dir() {
         return Err(negative_errno(libc::ENOTDIR));
+    }
+    Ok(())
+}
+
+fn ensure_mutation_dirfd_not_synthetic_procfs(
+    state: &LoadedStaticElf,
+    guest_dirfd: libc::c_int,
+    path: &[u8],
+) -> Result<(), i64> {
+    if path.starts_with(b"/") {
+        return Ok(());
+    }
+    let Some(&inode) = state.proc_files.get(&guest_dirfd) else {
+        return Ok(());
+    };
+    // Synthetic proc directories use / as a harmless host backing descriptor.
+    // Check guest identity before translation so relative mutations cannot
+    // escape into the host root. An empty path names the descriptor itself, so
+    // every synthetic proc inode is protected in that case.
+    if path.is_empty() || is_synthetic_proc_directory_inode(inode) {
+        return Err(negative_errno(libc::EACCES));
     }
     Ok(())
 }
@@ -7105,6 +7140,7 @@ fn read_path_at(
     if path.is_empty() && !allow_empty {
         return Err(negative_errno(libc::ENOENT));
     }
+    ensure_mutation_dirfd_not_synthetic_procfs(state, guest_dirfd, &path)?;
     let (host_dirfd, path) = host_dirfd_and_path(state, guest_dirfd, &path)?;
     ensure_mutation_parent_not_procfs(host_dirfd, &path)?;
     Ok((host_dirfd, path))
@@ -7443,6 +7479,9 @@ fn utimensat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
     let mut opened_path = None;
     let target_fd = if args[1] == 0 {
         let guest_fd = args[0] as libc::c_int;
+        if let Err(error) = ensure_mutation_dirfd_not_synthetic_procfs(state, guest_fd, b"") {
+            return error;
+        }
         let Some(host_fd) = host_fd(state, guest_fd) else {
             return negative_errno(libc::EBADF);
         };
@@ -19449,6 +19488,574 @@ mod tests {
                 [99, DIRECTORY, 0o755, 0, 0, 0],
             ),
             negative_errno(libc::EBADF)
+        );
+    }
+
+    #[test]
+    fn read_path_at_preserves_trailing_slashes_and_edge_cases() {
+        const EMPTY: u64 = 0x900;
+
+        let root = TestDir::new();
+        std::fs::create_dir_all(root.0.join("nested/existing")).unwrap();
+        std::fs::write(root.0.join("regular"), b"payload").unwrap();
+        let state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let absolute = format!("{}/absolute///", root.0.display());
+        let cases = [
+            (0x100, "new/"),
+            (0x200, "new///"),
+            (0x300, "nested//new///"),
+            (0x400, absolute.as_str()),
+            (0x500, "nested/existing///"),
+            (0x600, "regular///"),
+            (0x700, "/"),
+            (0x800, "///"),
+        ];
+
+        for (address, value) in cases {
+            write_c_string(&mut memory, address, value);
+            let (_, path) = read_path_at(&memory, &state, libc::AT_FDCWD, address, false)
+                .unwrap_or_else(|error| panic!("{value:?} failed with {error}"));
+            assert_eq!(path.to_bytes(), value.as_bytes(), "{value:?}");
+        }
+
+        write_c_string(&mut memory, EMPTY, "");
+        let (_, empty) = read_path_at(&memory, &state, libc::AT_FDCWD, EMPTY, true).unwrap();
+        assert!(empty.to_bytes().is_empty());
+        assert_eq!(
+            read_path_at(&memory, &state, libc::AT_FDCWD, EMPTY, false).unwrap_err(),
+            negative_errno(libc::ENOENT)
+        );
+    }
+
+    #[test]
+    fn mkdir_with_trailing_slash_creates_git_hooks_directory() {
+        const HOOKS: u64 = 0x100;
+        const OBJECTS: u64 = 0x300;
+        const REFS: u64 = 0x500;
+
+        let root = TestDir::new();
+        std::fs::create_dir_all(root.0.join("repo/.git")).unwrap();
+        let mut state = test_state(&root.0);
+        state
+            .files
+            .insert(3, std::fs::File::open(root.0.join("repo")).unwrap());
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        write_c_string(&mut memory, HOOKS, "repo/.git/hooks/");
+        write_c_string(&mut memory, OBJECTS, ".git/objects///");
+        write_c_string(
+            &mut memory,
+            REFS,
+            &format!("{}/repo/.git/refs///", root.0.display()),
+        );
+
+        // Mutation check: restoring the old last-slash parent selection makes
+        // the first mkdir return ENOENT instead of creating the hooks directory.
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mkdir,
+                [HOOKS, 0o755, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert!(root.0.join("repo/.git/hooks").is_dir());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mkdirat,
+                [3, OBJECTS, 0o755, 0, 0, 0],
+            ),
+            0
+        );
+        assert!(root.0.join("repo/.git/objects").is_dir());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mkdir,
+                [REFS, 0o755, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert!(root.0.join("repo/.git/refs").is_dir());
+    }
+
+    #[test]
+    fn trailing_slash_keeps_linux_target_semantics() {
+        const DIRECTORY: u64 = 0x100;
+        const REGULAR: u64 = 0x300;
+        const ROOT: u64 = 0x500;
+        const REPEATED_ROOT: u64 = 0x700;
+        const EMPTY: u64 = 0x900;
+
+        let root = TestDir::new();
+        std::fs::create_dir(root.0.join("directory")).unwrap();
+        std::fs::set_permissions(
+            root.0.join("directory"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::fs::write(root.0.join("regular"), b"payload").unwrap();
+        std::fs::set_permissions(
+            root.0.join("regular"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        for (address, value) in [
+            (DIRECTORY, "directory///"),
+            (REGULAR, "regular///"),
+            (ROOT, "/"),
+            (REPEATED_ROOT, "///"),
+            (EMPTY, ""),
+        ] {
+            write_c_string(&mut memory, address, value);
+        }
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chmod,
+                [DIRECTORY, 0o711, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(root.0.join("directory")).unwrap().mode() & 0o777,
+            0o711
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chmod,
+                [REGULAR, 0o777, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOTDIR)
+        );
+        assert_eq!(
+            std::fs::metadata(root.0.join("regular")).unwrap().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_unlink,
+                [REGULAR, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOTDIR)
+        );
+        assert!(root.0.join("regular").exists());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mkdir,
+                [DIRECTORY, 0o755, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EEXIST)
+        );
+        for address in [ROOT, REPEATED_ROOT] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_mkdir,
+                    [address, 0o755, 0, 0, 0, 0],
+                ),
+                negative_errno(libc::EEXIST)
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mkdir,
+                [EMPTY, 0o755, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOENT)
+        );
+    }
+
+    #[test]
+    fn all_read_path_at_mutation_dispatchers_reject_procfs_with_trailing_slash() {
+        const PROTECTED: u64 = 0x100;
+        const LOCAL_SOURCE: u64 = 0x500;
+
+        let root = TestDir::new();
+        std::fs::write(root.0.join("local-source"), b"payload").unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        write_c_string(
+            &mut memory,
+            PROTECTED,
+            &format!(
+                "/proc/{}/reverie-kvm-mutation-missing///",
+                std::process::id()
+            ),
+        );
+        write_c_string(&mut memory, LOCAL_SOURCE, "local-source");
+        let at_fdcwd = libc::AT_FDCWD as u64;
+        let calls = [
+            ("mkdir", libc::SYS_mkdir, [PROTECTED, 0o755, 0, 0, 0, 0]),
+            (
+                "mkdirat",
+                libc::SYS_mkdirat,
+                [at_fdcwd, PROTECTED, 0o755, 0, 0, 0],
+            ),
+            ("unlink", libc::SYS_unlink, [PROTECTED, 0, 0, 0, 0, 0]),
+            ("rmdir", libc::SYS_rmdir, [PROTECTED, 0, 0, 0, 0, 0]),
+            (
+                "unlinkat",
+                libc::SYS_unlinkat,
+                [at_fdcwd, PROTECTED, 0, 0, 0, 0],
+            ),
+            (
+                "rename",
+                libc::SYS_rename,
+                [LOCAL_SOURCE, PROTECTED, 0, 0, 0, 0],
+            ),
+            (
+                "renameat",
+                libc::SYS_renameat,
+                [at_fdcwd, LOCAL_SOURCE, at_fdcwd, PROTECTED, 0, 0],
+            ),
+            (
+                "renameat2",
+                libc::SYS_renameat2,
+                [at_fdcwd, LOCAL_SOURCE, at_fdcwd, PROTECTED, 0, 0],
+            ),
+            (
+                "link",
+                libc::SYS_link,
+                [LOCAL_SOURCE, PROTECTED, 0, 0, 0, 0],
+            ),
+            (
+                "linkat",
+                libc::SYS_linkat,
+                [at_fdcwd, LOCAL_SOURCE, at_fdcwd, PROTECTED, 0, 0],
+            ),
+            (
+                "symlink",
+                libc::SYS_symlink,
+                [LOCAL_SOURCE, PROTECTED, 0, 0, 0, 0],
+            ),
+            (
+                "symlinkat",
+                libc::SYS_symlinkat,
+                [LOCAL_SOURCE, at_fdcwd, PROTECTED, 0, 0, 0],
+            ),
+            ("chmod", libc::SYS_chmod, [PROTECTED, 0o600, 0, 0, 0, 0]),
+            (
+                "fchmodat",
+                libc::SYS_fchmodat,
+                [at_fdcwd, PROTECTED, 0o600, 0, 0, 0],
+            ),
+            (
+                "mknod",
+                libc::SYS_mknod,
+                [PROTECTED, (libc::S_IFIFO | 0o600) as u64, 0, 0, 0, 0],
+            ),
+            (
+                "mknodat",
+                libc::SYS_mknodat,
+                [at_fdcwd, PROTECTED, (libc::S_IFIFO | 0o600) as u64, 0, 0, 0],
+            ),
+            (
+                "utimensat",
+                libc::SYS_utimensat,
+                [at_fdcwd, PROTECTED, 0, 0, 0, 0],
+            ),
+        ];
+        assert_eq!(calls.len(), 17);
+
+        for (name, number, args) in calls {
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, number, args),
+                negative_errno(libc::EACCES),
+                "{name} did not preserve the procfs mutation guard"
+            );
+        }
+        assert_eq!(
+            std::fs::read(root.0.join("local-source")).unwrap(),
+            b"payload"
+        );
+    }
+
+    #[test]
+    fn synthetic_proc_directory_fd_rejects_relative_mutation() {
+        const PROC: u64 = 0x100;
+        const ESCAPE: u64 = 0x300;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        write_c_string(&mut memory, PROC, "/proc");
+        let proc_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                PROC,
+                (libc::O_RDONLY | libc::O_DIRECTORY) as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert!(proc_fd >= 0, "open /proc failed: {proc_fd}");
+
+        let escaped = format!(
+            "tmp/{}/escaped/",
+            root.0.file_name().unwrap().to_string_lossy()
+        );
+        write_c_string(&mut memory, ESCAPE, &escaped);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mkdirat,
+                [proc_fd as u64, ESCAPE, 0o755, 0, 0, 0],
+            ),
+            negative_errno(libc::EACCES)
+        );
+        assert!(!root.0.join("escaped").exists());
+    }
+
+    #[test]
+    fn synthetic_proc_directory_fd_rejects_every_relative_mutation_dispatcher() {
+        const PROC: u64 = 0x100;
+        const ESCAPED_MISSING: u64 = 0x300;
+        const ESCAPED_FILE: u64 = 0x500;
+        const ESCAPED_DIRECTORY: u64 = 0x700;
+        const LOCAL_SOURCE: u64 = 0x900;
+        const LOCAL_DESTINATION: u64 = 0xb00;
+        const ABSOLUTE_TARGET: u64 = 0xd00;
+
+        let root = TestDir::new();
+        std::fs::write(root.0.join("local-source"), b"payload").unwrap();
+        std::fs::set_permissions(
+            root.0.join("local-source"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        std::fs::create_dir(root.0.join("removable")).unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
+        write_c_string(&mut memory, PROC, "/proc");
+        let proc_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                PROC,
+                (libc::O_RDONLY | libc::O_DIRECTORY) as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert!(proc_fd >= 0, "open /proc failed: {proc_fd}");
+
+        let host_relative_root = format!("tmp/{}", root.0.file_name().unwrap().to_string_lossy());
+        write_c_string(
+            &mut memory,
+            ESCAPED_MISSING,
+            &format!("{host_relative_root}/escaped///"),
+        );
+        write_c_string(
+            &mut memory,
+            ESCAPED_FILE,
+            &format!("{host_relative_root}/local-source"),
+        );
+        write_c_string(
+            &mut memory,
+            ESCAPED_DIRECTORY,
+            &format!("{host_relative_root}/removable///"),
+        );
+        write_c_string(&mut memory, LOCAL_SOURCE, "local-source");
+        write_c_string(&mut memory, LOCAL_DESTINATION, "local-destination");
+        write_c_string(
+            &mut memory,
+            ABSOLUTE_TARGET,
+            &format!("{}/absolute-target///", root.0.display()),
+        );
+        let proc_fd = proc_fd as u64;
+        let at_fdcwd = libc::AT_FDCWD as u64;
+        let calls = [
+            (
+                "mkdirat",
+                libc::SYS_mkdirat,
+                [proc_fd, ESCAPED_MISSING, 0o755, 0, 0, 0],
+            ),
+            (
+                "unlinkat",
+                libc::SYS_unlinkat,
+                [
+                    proc_fd,
+                    ESCAPED_DIRECTORY,
+                    libc::AT_REMOVEDIR as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            (
+                "renameat source",
+                libc::SYS_renameat,
+                [proc_fd, ESCAPED_FILE, at_fdcwd, LOCAL_DESTINATION, 0, 0],
+            ),
+            (
+                "renameat destination",
+                libc::SYS_renameat,
+                [at_fdcwd, LOCAL_SOURCE, proc_fd, ESCAPED_MISSING, 0, 0],
+            ),
+            (
+                "renameat2 source",
+                libc::SYS_renameat2,
+                [proc_fd, ESCAPED_FILE, at_fdcwd, LOCAL_DESTINATION, 0, 0],
+            ),
+            (
+                "renameat2 destination",
+                libc::SYS_renameat2,
+                [at_fdcwd, LOCAL_SOURCE, proc_fd, ESCAPED_MISSING, 0, 0],
+            ),
+            (
+                "linkat source",
+                libc::SYS_linkat,
+                [proc_fd, ESCAPED_FILE, at_fdcwd, LOCAL_DESTINATION, 0, 0],
+            ),
+            (
+                "linkat destination",
+                libc::SYS_linkat,
+                [at_fdcwd, LOCAL_SOURCE, proc_fd, ESCAPED_MISSING, 0, 0],
+            ),
+            (
+                "symlinkat",
+                libc::SYS_symlinkat,
+                [LOCAL_SOURCE, proc_fd, ESCAPED_MISSING, 0, 0, 0],
+            ),
+            (
+                "fchmodat",
+                libc::SYS_fchmodat,
+                [proc_fd, ESCAPED_FILE, 0o777, 0, 0, 0],
+            ),
+            (
+                "mknodat",
+                libc::SYS_mknodat,
+                [
+                    proc_fd,
+                    ESCAPED_MISSING,
+                    (libc::S_IFIFO | 0o600) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            (
+                "utimensat",
+                libc::SYS_utimensat,
+                [proc_fd, ESCAPED_FILE, 0, 0, 0, 0],
+            ),
+        ];
+        assert_eq!(calls.len(), 12);
+
+        for (name, number, args) in calls {
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, number, args),
+                negative_errno(libc::EACCES),
+                "{name} lost the guest synthetic-proc directory identity"
+            );
+        }
+        assert_eq!(
+            std::fs::read(root.0.join("local-source")).unwrap(),
+            b"payload"
+        );
+        assert_eq!(
+            std::fs::metadata(root.0.join("local-source"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(root.0.join("removable").is_dir());
+        assert!(!root.0.join("escaped").exists());
+        assert!(!root.0.join("local-destination").exists());
+
+        // Absolute paths ignore dirfd on Linux, including a synthetic proc fd.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mkdirat,
+                [proc_fd, ABSOLUTE_TARGET, 0o755, 0, 0, 0],
+            ),
+            0
+        );
+        assert!(root.0.join("absolute-target").is_dir());
+    }
+
+    #[test]
+    fn utimensat_rejects_empty_paths_on_every_synthetic_proc_inode() {
+        const EMPTY: u64 = 0x500;
+        const CHILD: u64 = 0x700;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
+        let proc_directory_fd = open_readonly(&mut memory, &mut state, "/proc");
+        assert!(proc_directory_fd >= 0);
+        let proc_file_fd = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        assert!(proc_file_fd >= 0);
+        write_c_string(&mut memory, EMPTY, "");
+        write_c_string(&mut memory, CHILD, "child/");
+
+        for (name, fd, path, flags) in [
+            ("directory NULL", proc_directory_fd, 0, 0),
+            (
+                "directory empty",
+                proc_directory_fd,
+                EMPTY,
+                libc::AT_EMPTY_PATH as u64,
+            ),
+            ("file NULL", proc_file_fd, 0, 0),
+            (
+                "file empty",
+                proc_file_fd,
+                EMPTY,
+                libc::AT_EMPTY_PATH as u64,
+            ),
+        ] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_utimensat,
+                    [fd as u64, path, 0, flags, 0, 0],
+                ),
+                negative_errno(libc::EACCES),
+                "{name} mutated a synthetic proc backing descriptor"
+            );
+        }
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mkdirat,
+                [proc_file_fd as u64, CHILD, 0o755, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOTDIR),
+            "a nonempty path under a synthetic regular file retains ENOTDIR"
         );
     }
 
