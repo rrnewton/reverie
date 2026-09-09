@@ -85,13 +85,6 @@ pub(crate) fn is_backend_owned_syscall(number: u64, thread_ownership: ThreadOwne
     if number == libc::SYS_futex as u64 {
         return thread_ownership.futex_is_host_owned();
     }
-    // QEMU's root event loop waits on worker eventfds. KVM syscall
-    // injection cannot perform ppoll, so use translated host descriptors in
-    // either ownership mode.
-    if number == libc::SYS_ppoll as u64 {
-        return true;
-    }
-
     // Host-owned workers execute outside the Tool and can create descriptors
     // that the root event loop consumes. Their scalar and vectored reads must
     // therefore use the backend's shared descriptor table. Tool-owned workers,
@@ -780,7 +773,11 @@ async fn drive_handler<T>(
 }
 
 fn expose_tool_scratch(memory: &GuestMemory) -> Result<()> {
-    memory.map_user_range(TOOL_STACK_BOTTOM, STACK_CAPACITY as u64, false)
+    memory.map_user_range(
+        TOOL_STACK_BOTTOM,
+        STACK_CAPACITY as u64,
+        (libc::PROT_READ | libc::PROT_WRITE) as u64,
+    )
 }
 
 fn hide_tool_scratch(memory: &GuestMemory) -> Result<()> {
@@ -1817,9 +1814,10 @@ mod tests {
 
     #[test]
     fn worker_shared_syscall_ownership_follows_thread_ownership() {
-        // ppoll always stays backend-owned because KVM injection cannot execute it.
+        // ppoll reaches the Tool for both ownership modes. Detcore owns the
+        // guest timeout and uses KVM injection only for zero-time probes.
         for ownership in [ThreadOwnership::Host, ThreadOwnership::Tool] {
-            assert!(is_backend_owned_syscall(libc::SYS_ppoll as u64, ownership));
+            assert!(!is_backend_owned_syscall(libc::SYS_ppoll as u64, ownership));
             assert!(!is_backend_owned_syscall(
                 libc::SYS_clock_gettime as u64,
                 ownership

@@ -3039,7 +3039,9 @@ fn static_elf(code: &[u8]) -> Vec<u8> {
     put_u16(&mut image, 56, 1);
 
     put_u32(&mut image, 64, 1);
-    put_u32(&mut image, 68, 5);
+    // The synthetic image stores test data and kernel copyout targets in BSS.
+    // Declare that segment readable, writable, and executable.
+    put_u32(&mut image, 68, 7);
     put_u64(&mut image, 72, CODE_OFFSET as u64);
     put_u64(&mut image, 80, LOAD_ADDRESS);
     put_u64(&mut image, 88, LOAD_ADDRESS);
