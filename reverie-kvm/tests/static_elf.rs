@@ -1287,6 +1287,108 @@ int main(void) {
 }
 
 #[test]
+fn dynamic_inotify_guest_observes_events_and_readiness() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM inotify test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "inotify-readiness",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+#include <sys/epoll.h>
+#include <sys/inotify.h>
+#include <unistd.h>
+
+int main(void) {
+  int legacy = inotify_init();
+  if (legacy < 0 || (fcntl(legacy, F_GETFD) & FD_CLOEXEC) != 0 ||
+      (fcntl(legacy, F_GETFL) & O_NONBLOCK) != 0) {
+    return 10;
+  }
+  close(legacy);
+
+  int fd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
+  if (fd < 0 || (fcntl(fd, F_GETFD) & FD_CLOEXEC) == 0 ||
+      (fcntl(fd, F_GETFL) & O_NONBLOCK) == 0) {
+    return 11;
+  }
+  int wd = inotify_add_watch(fd, ".", IN_CREATE);
+  if (wd < 0) {
+    return 12;
+  }
+  int duplicate = dup(fd);
+  int high_duplicate = fcntl(fd, F_DUPFD, 20);
+  if (duplicate < 0 || high_duplicate < 20 || close(fd) != 0) {
+    return 13;
+  }
+
+  int epfd = epoll_create1(EPOLL_CLOEXEC);
+  struct epoll_event interest = {.events = EPOLLIN, .data.u64 = 0x1a071f1};
+  if (epfd < 0 || epoll_ctl(epfd, EPOLL_CTL_ADD, duplicate, &interest) != 0) {
+    return 14;
+  }
+  int created = open("watched", O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, 0600);
+  if (created < 0 || close(created) != 0) {
+    return 15;
+  }
+
+  struct pollfd pollfd = {.fd = duplicate, .events = POLLIN};
+  struct epoll_event ready = {0};
+  if (poll(&pollfd, 1, 0) != 1 || (pollfd.revents & POLLIN) == 0 ||
+      epoll_wait(epfd, &ready, 1, 0) != 1 || ready.data.u64 != 0x1a071f1) {
+    return 16;
+  }
+
+  char buffer[512] __attribute__((aligned(__alignof__(struct inotify_event))));
+  ssize_t bytes = read(high_duplicate, buffer, sizeof(buffer));
+  if (bytes < (ssize_t)sizeof(struct inotify_event)) {
+    return 17;
+  }
+  struct inotify_event *event = (struct inotify_event *)buffer;
+  if (event->wd != wd || (event->mask & IN_CREATE) == 0 ||
+      event->len == 0 || strcmp(event->name, "watched") != 0) {
+    return 18;
+  }
+  if (read(duplicate, buffer, sizeof(buffer)) != -1 || errno != EAGAIN) {
+    return 19;
+  }
+
+  if (inotify_rm_watch(duplicate, wd) != 0) {
+    return 20;
+  }
+  bytes = read(high_duplicate, buffer, sizeof(buffer));
+  if (bytes < (ssize_t)sizeof(struct inotify_event) ||
+      ((struct inotify_event *)buffer)->wd != wd ||
+      (((struct inotify_event *)buffer)->mask & IN_IGNORED) == 0) {
+    return 21;
+  }
+  if (close(epfd) != 0 || close(duplicate) != 0 ||
+      close(high_duplicate) != 0 || unlink("watched") != 0) {
+    return 22;
+  }
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    run_host_program(executable, &[executable], &directory.0);
+}
+
+#[test]
 fn real_glibc_get_robust_list_tracks_fork_and_thread_lifecycles() {
     match Kvm::new() {
         Ok(_) => {}
