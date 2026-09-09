@@ -1179,7 +1179,9 @@ mod tests {
 
     fn clock_tick_entries(auxv: &[(libc::c_ulong, libc::c_ulong)]) -> Vec<(u64, u64)> {
         auxv.iter()
-            .filter(|(key, _)| *key == AT_CLKTCK)
+            // Keep the test oracle independent of the production constants: a
+            // regression in either the Linux tag or USER_HZ value must fail.
+            .filter(|(key, _)| *key == 17)
             .map(|&(key, value)| (key, value))
             .collect()
     }
@@ -1197,10 +1199,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            clock_tick_entries(&loaded.auxv),
-            vec![(AT_CLKTCK, CLOCK_TICKS_PER_SECOND)]
-        );
+        assert_eq!(clock_tick_entries(&loaded.auxv), vec![(17, 100)]);
     }
 
     #[test]
@@ -1226,14 +1225,8 @@ mod tests {
             .find(|(key, _)| *key == AT_EXECFN)
             .map(|(_, value)| *value);
         assert_ne!(first_execfn, second_execfn);
-        assert_eq!(
-            clock_tick_entries(&first.auxv),
-            vec![(AT_CLKTCK, CLOCK_TICKS_PER_SECOND)]
-        );
-        assert_eq!(
-            clock_tick_entries(&second.auxv),
-            vec![(AT_CLKTCK, CLOCK_TICKS_PER_SECOND)]
-        );
+        assert_eq!(clock_tick_entries(&first.auxv), vec![(17, 100)]);
+        assert_eq!(clock_tick_entries(&second.auxv), vec![(17, 100)]);
     }
 
     #[test]
