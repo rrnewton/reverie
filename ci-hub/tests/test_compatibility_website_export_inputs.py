@@ -424,6 +424,70 @@ def test_empty_inputs_stay_empty_without_a_stored_measurement_state(tmp_path: Pa
     assert "state" not in first["validation_ledger"]
 
 
+def test_export_includes_valid_rows_from_a_partially_rejected_pressure_campaign(
+    tmp_path: Path,
+):
+    repo, commit = repository(tmp_path)
+
+    def pressure_row(event_id: str, cell: str) -> dict[str, Any]:
+        return series_row(
+            schema="stress-series/v3",
+            event_id=event_id,
+            run_id="pressure-mixed-evidence",
+            series={
+                "cell": cell,
+                "failure_class": None,
+                "host_capabilities": {
+                    "cpuid-faulting": {
+                        "present": False,
+                        "evidence": "fixture absence",
+                    },
+                    "kvm": {"present": True, "evidence": "fixture presence"},
+                },
+                "kernel_version": "7.1.3-test",
+                "machine_shortname": "hosta",
+                "num_runs": 1,
+                "outcome": "passed",
+                "result": "pass",
+                "run_index": 0,
+                "tree": "a" * 40,
+            },
+        )
+
+    retained = [
+        pressure_row("series-pressure-valid-1", "applications/thread-output/verify/kvm"),
+        pressure_row(
+            "series-pressure-valid-2",
+            "applications/perl-io-subprocess-time/verify/kvm",
+        ),
+    ]
+    write_spool(
+        repo,
+        "ignored/ci-hub/series-spool/pressure-mixed-evidence.jsonl",
+        b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in retained),
+    )
+    # The rejected input remains in its pressure evidence tree, outside the
+    # canonical series store. It must neither hide the valid observations nor
+    # be mistaken for one by the exporter.
+    write_spool(
+        repo,
+        "ignored/compat-envelope/pressure-mixed-evidence/"
+        "invalid-verify-kvm/results.jsonl",
+        b'{"attempts":[],"mode":"verify","outcome":"ERROR"}\n',
+    )
+
+    output = build_export(repo, commit)
+
+    assert output["series"]["row_count"] == 2
+    assert output["series"]["represented_run_count"] == 2
+    assert output["series"]["rows"] == retained
+    assert {
+        (source["store"], source["location"])
+        for source in output["provenance"]["sources"]
+    } == {("series", "live")}
+    assert "invalid-verify-kvm" not in json.dumps(output)
+
+
 def test_real_nonempty_readers_keep_v1_and_deduplicate_published_and_live(
     tmp_path: Path,
 ):

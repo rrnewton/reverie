@@ -215,6 +215,15 @@ Every production consumer of the row shape reaches one of these checks:
   `validate_for_projection`, which additionally refuses v1 and dirty-source
   rows as scorecard evidence.
 
+`append-cells` keeps the same whole-batch refusal for malformed provenance,
+duplicate identities, changed replays, and every other invalid row. One narrow
+historical case is recoverable: in a pressure-test campaign, a comparison cell
+with no typed attempts is rejected as non-qualifying while independent typed
+cells are appended together. The command prints a structured identity and
+SHA-256 of each rejected retained CellResult and exits nonzero. Re-emitting the
+campaign is idempotent, and the rejected raw result is never synthesized into a
+series observation.
+
 `parse_line` and `read_shard` remain raw line-format plumbing inherited from the
 ledger; they do not interpret a row as measurement evidence. `observed_range`
 still filters on `outcome` itself so a retained row cannot leak a position into

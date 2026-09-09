@@ -126,6 +126,10 @@ class MalformedRow(SeriesError):
     """A row that does not satisfy the schema."""
 
 
+class _UntypedComparisonCell(MalformedRow):
+    """A pressure comparison result predating typed attempt evidence."""
+
+
 @dataclass(frozen=True)
 class PublishedSnapshot:
     """One immutable published-series revision and its canonical rows."""
@@ -948,7 +952,7 @@ def _cell_outcome(row: dict) -> str:
 
     attempts = row.get("attempts")
     if not isinstance(attempts, list) or not attempts:
-        raise MalformedRow("comparison cell result has no typed attempts")
+        raise _UntypedComparisonCell("comparison cell result has no typed attempts")
     # The framework-owned result above decides the projection. Attempt reports
     # remain independently validated so malformed evidence cannot hide behind
     # a well-formed terminal classification, but an outer reader must not
@@ -1167,7 +1171,7 @@ def _no_verdict_evidence(row: dict, projected_outcome: str) -> dict | None:
         return None
     attempts = row.get("attempts")
     if not isinstance(attempts, list) or not attempts:
-        raise MalformedRow("comparison cell result has no typed attempts")
+        raise _UntypedComparisonCell("comparison cell result has no typed attempts")
 
     dispositions = []
     for ordinal, attempt in enumerate(attempts, 1):
@@ -1431,9 +1435,10 @@ def collapse_rows(rows: Sequence[dict]) -> list[dict]:
     return collapsed
 
 
-def rows_from_cell_results(
+def _rows_from_cell_results(
     cell_results: Sequence[dict], *, parent: Any, producer: str, run_id: str,
     tree: str, emitted_at: str, hermit_checkout: Any | None = None,
+    rejected_untyped: list[dict] | None,
 ) -> list[dict]:
     """Convert typed harness results into validated, compressed series rows."""
     if producer not in {"validate", "pressure-test", "hermit-repeat"}:
@@ -1462,7 +1467,7 @@ def rows_from_cell_results(
             if isinstance(run_index, int) and not isinstance(run_index, bool):
                 key = (_cell_name(cell_result), run_index)
                 pressure_counts[key] = pressure_counts.get(key, 0) + 1
-    for cell_result in cell_results:
+    for input_row, cell_result in enumerate(cell_results, 1):
         # An unmet prerequisite is recorded by the validate-level ledger. It
         # produced no execution and therefore produces no cell observation.
         if cell_result.get("outcome") == "HOST-INAPPLICABLE":
@@ -1521,7 +1526,47 @@ def rows_from_cell_results(
                     "pressure-test cell result attempt must be a positive int, "
                     f"got {attempt!r}"
                 )
-        projected_outcome = _cell_outcome(cell_result)
+        detcore_tree = cell_result.get("detcore_tree")
+        if detcore_tree is not None and (
+            not isinstance(detcore_tree, str)
+            or _SHA_RE.fullmatch(detcore_tree) is None
+        ):
+            raise MalformedRow(
+                "cell result detcore_tree must be a 40-hex object id when present, "
+                f"got {detcore_tree!r}"
+            )
+        runtime = _cell_runtime(cell_result)
+        try:
+            projected_outcome = _cell_outcome(cell_result)
+        except _UntypedComparisonCell as error:
+            if rejected_untyped is None or producer != "pressure-test":
+                raise
+            # Old retained pressure campaigns can contain one comparison cell
+            # written before typed attempts were mandatory alongside many
+            # current, fully typed cells. That untyped cell cannot qualify as a
+            # measurement, but it must not erase the independent observations.
+            # Keep the original batch in pressure_counts above so the identity
+            # of every accepted row is unchanged by this rejection.
+            rejected_untyped.append({
+                "attempt": cell_result.get("attempt"),
+                "backend": cell_result.get("backend"),
+                "campaign_run_id": run_id,
+                "cell_result_sha256": hashlib.sha256(json.dumps(
+                    cell_result,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()).hexdigest(),
+                "cell_result_run_id": cell_result.get("run_id"),
+                "hermit_sha": cell_result.get("hermit_sha"),
+                "input_row": input_row,
+                "mode": cell_result.get("mode"),
+                "reason": str(error),
+                "run_index": cell_result.get("run_index"),
+                "test": cell_result.get("test"),
+                "tree": tree,
+            })
+            continue
         no_verdict_evidence = _no_verdict_evidence(cell_result, projected_outcome)
         payload = {
             "cell": _cell_name(cell_result),
@@ -1533,7 +1578,7 @@ def rows_from_cell_results(
             "failure_class": cell_result.get("failure_class"),
             "main_ancestry": ancestry,
             "depth": depth,
-            "runtime": _cell_runtime(cell_result),
+            "runtime": runtime,
             "source_tree_dirty": source_tree_dirty,
             "machine_shortname": machine_shortname,
             "kernel_version": kernel_version,
@@ -1546,7 +1591,6 @@ def rows_from_cell_results(
             # to readers that do not know producer-specific run_index rules.
             payload["attempt"] = run_index if producer == "validate" else attempt
             payload["no_verdict_evidence"] = no_verdict_evidence
-        detcore_tree = cell_result.get("detcore_tree")
         if detcore_tree is None and no_verdict_evidence is not None:
             if recorded_detcore_tree is None:
                 resolved = _git(source, ["rev-parse", "--verify", f"{tree}:detcore"])
@@ -1561,11 +1605,6 @@ def rows_from_cell_results(
                     )
             detcore_tree = recorded_detcore_tree
         if detcore_tree is not None:
-            if not isinstance(detcore_tree, str) or _SHA_RE.fullmatch(detcore_tree) is None:
-                raise MalformedRow(
-                    "cell result detcore_tree must be a 40-hex object id when present, "
-                    f"got {detcore_tree!r}"
-                )
             payload["detcore_tree"] = detcore_tree
         if (
             producer == "pressure-test"
@@ -1609,6 +1648,23 @@ def rows_from_cell_results(
         row["event_id"] = "series-" + hashlib.sha256(identity.encode()).hexdigest()
     validate_rows(collapsed)
     return collapsed
+
+
+def rows_from_cell_results(
+    cell_results: Sequence[dict], *, parent: Any, producer: str, run_id: str,
+    tree: str, emitted_at: str, hermit_checkout: Any | None = None,
+) -> list[dict]:
+    """Convert a complete typed harness batch or refuse it before writing."""
+    return _rows_from_cell_results(
+        cell_results,
+        parent=parent,
+        producer=producer,
+        run_id=run_id,
+        tree=tree,
+        emitted_at=emitted_at,
+        hermit_checkout=hermit_checkout,
+        rejected_untyped=None,
+    )
 
 
 __all__ = [
@@ -1772,8 +1828,9 @@ def _cmd_append_cells(argv: list[str]) -> int:
         print("series: no cell results on stdin; nothing appended", file=sys.stderr)
         return 1
     emitted_at = emitted_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rejected_untyped: list[dict] = []
     try:
-        series_rows = rows_from_cell_results(
+        series_rows = _rows_from_cell_results(
             rows,
             parent=parent,
             producer=str(producer),
@@ -1781,8 +1838,25 @@ def _cmd_append_cells(argv: list[str]) -> int:
             tree=str(tree),
             emitted_at=emitted_at,
             hermit_checkout=hermit_checkout,
+            rejected_untyped=(
+                rejected_untyped if producer == "pressure-test" else None
+            ),
         )
         if not series_rows:
+            if rejected_untyped:
+                for rejection in rejected_untyped:
+                    print(
+                        "series: REJECTED non-qualifying cell "
+                        + json.dumps(rejection, sort_keys=True, separators=(",", ":")),
+                        file=sys.stderr,
+                    )
+                print(
+                    "series: REFUSED "
+                    f"{len(rejected_untyped)} untyped comparison cell result(s); "
+                    "no valid completed cell rows were available to retain",
+                    file=sys.stderr,
+                )
+                return 1
             print(
                 "series: no completed cell rows; unmet prerequisites remain in the validate record",
                 file=sys.stderr,
@@ -1801,6 +1875,21 @@ def _cmd_append_cells(argv: list[str]) -> int:
     print(
         f"series: appended {written} row(s) representing {represented} run(s) to {target}"
     )
+    if rejected_untyped:
+        for rejection in rejected_untyped:
+            print(
+                "series: REJECTED non-qualifying cell "
+                + json.dumps(rejection, sort_keys=True, separators=(",", ":")),
+                file=sys.stderr,
+            )
+        print(
+            "series: REFUSED "
+            f"{len(rejected_untyped)} untyped comparison cell result(s); "
+            f"retained {len(series_rows)} valid series row(s) representing "
+            f"{represented} run(s)",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

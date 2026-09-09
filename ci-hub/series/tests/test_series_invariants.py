@@ -2270,6 +2270,165 @@ class CellResultProjection(unittest.TestCase):
         self.assertFalse(files[0].exists())
         self.assertEqual(len(tracked.read_text().splitlines()), 1)
 
+    def test_append_cells_retains_typed_pressure_rows_when_one_cell_is_untyped(self):
+        import contextlib
+        import io
+
+        thread_output = self._cell(0)
+        thread_output["test"] = "applications/thread-output"
+        thread_output["backend"] = "kvm"
+        thread_output_retry = self._cell(0)
+        thread_output_retry["test"] = "applications/thread-output"
+        thread_output_retry["backend"] = "kvm"
+        thread_output_retry["attempt"] = 2
+        subprocess_time = self._cell(0)
+        subprocess_time["test"] = "applications/perl-io-subprocess-time"
+        subprocess_time["backend"] = "kvm"
+        untyped = self._cell(0, outcome="ERROR")
+        untyped["test"] = "applications/invalid-without-typed-attempts"
+        untyped["backend"] = "kvm"
+        untyped["attempts"] = []
+        cells = [thread_output, untyped, thread_output_retry, subprocess_time]
+
+        with self.assertRaisesRegex(
+            series.MalformedRow, "comparison cell result has no typed attempts"
+        ):
+            self._project(cells)
+        self.assertEqual(list(series.spool_dir(self.parent).glob("*.jsonl")), [])
+
+        def append(emitted_at):
+            real_stdin = sys.stdin
+            sys.stdin = io.StringIO(
+                "\n".join(json.dumps(cell) for cell in cells) + "\n"
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    rc = series.main([
+                        "append-cells",
+                        "--parent", str(self.parent),
+                        "--producer", "pressure-test",
+                        "--run-id", "pressure-mixed-evidence",
+                        "--tree", self.tree,
+                        "--emitted-at", emitted_at,
+                    ])
+            finally:
+                sys.stdin = real_stdin
+            return rc, stdout.getvalue(), stderr.getvalue()
+
+        rc, stdout, stderr = append("2026-08-26T10:00:00Z")
+        self.assertEqual(rc, 1)
+        self.assertIn("appended 3 row(s) representing 3 run(s)", stdout)
+        self.assertIn("REJECTED non-qualifying cell", stderr)
+        self.assertIn('"input_row":2', stderr)
+        self.assertIn('"run_index":0', stderr)
+        self.assertIn('"campaign_run_id":"pressure-mixed-evidence"', stderr)
+        self.assertIn(f'"tree":"{self.tree}"', stderr)
+        self.assertIn(
+            '"test":"applications/invalid-without-typed-attempts"', stderr
+        )
+        self.assertIn("comparison cell result has no typed attempts", stderr)
+        self.assertRegex(stderr, r'"cell_result_sha256":"[0-9a-f]{64}"')
+        self.assertIn("retained 3 valid series row(s)", stderr)
+
+        target = series.spool_dir(self.parent) / "pressure-mixed-evidence.jsonl"
+        first_bytes = target.read_bytes()
+        stored = series.union([target])
+        self.assertEqual(len(stored), 3)
+        self.assertEqual(
+            {row["series"]["cell"] for row in stored},
+            {
+                "applications/thread-output/verify/kvm",
+                "applications/perl-io-subprocess-time/verify/kvm",
+            },
+        )
+        self.assertEqual(len({row["event_id"] for row in stored}), 3)
+        thread_rows = [
+            row for row in stored
+            if row["series"]["cell"] == "applications/thread-output/verify/kvm"
+        ]
+        self.assertEqual({row["series"]["attempt"] for row in thread_rows}, {1, 2})
+        self.assertTrue(all(row["run_id"] == "pressure-mixed-evidence" for row in stored))
+        self.assertTrue(all(row["series"]["tree"] == self.tree for row in stored))
+        self.assertTrue(all(row["series"]["run_index"] == 0 for row in stored))
+        for row in stored:
+            payload = row["series"]
+            identity = {
+                "run_id": "pressure-mixed-evidence",
+                "producer": "pressure-test",
+                "cell": payload["cell"],
+                "tree": self.tree,
+                "run_index": payload["run_index"],
+            }
+            if "attempt" in payload:
+                identity["attempt"] = payload["attempt"]
+            expected = "series-" + hashlib.sha256(json.dumps(
+                identity, sort_keys=True, separators=(",", ":")
+            ).encode()).hexdigest()
+            self.assertEqual(row["event_id"], expected)
+        self.assertEqual(sum(row["series"]["num_runs"] for row in stored), 3)
+        self.assertNotIn("invalid-without-typed-attempts", json.dumps(stored))
+        series.validate_read_rows(stored)
+
+        rc, stdout, stderr = append("2026-08-27T10:00:00Z")
+        self.assertEqual(rc, 1)
+        self.assertIn("appended 0 row(s) representing 3 run(s)", stdout)
+        self.assertIn("REJECTED non-qualifying cell", stderr)
+        self.assertEqual(target.read_bytes(), first_bytes)
+
+    def test_append_cells_rejects_an_all_untyped_pressure_batch_without_a_spool(self):
+        import contextlib
+        import io
+
+        untyped = self._cell(0, outcome="ERROR")
+        untyped["attempts"] = []
+        real_stdin = sys.stdin
+        sys.stdin = io.StringIO(json.dumps(untyped) + "\n")
+        stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(stderr):
+                rc = series.main([
+                    "append-cells",
+                    "--parent", str(self.parent),
+                    "--producer", "pressure-test",
+                    "--run-id", "pressure-untyped-only",
+                    "--tree", self.tree,
+                    "--emitted-at", "2026-08-26T10:00:00Z",
+                ])
+        finally:
+            sys.stdin = real_stdin
+        self.assertEqual(rc, 1)
+        self.assertIn("no valid completed cell rows were available", stderr.getvalue())
+        self.assertEqual(list(series.spool_dir(self.parent).glob("*.jsonl")), [])
+
+        # The narrow recovery must not hide another malformed provenance field
+        # on the same untyped result or partially append its valid sibling.
+        untyped["detcore_tree"] = "not-a-sha"
+        valid = self._cell(0)
+        valid["test"] = "applications/thread-output"
+        real_stdin = sys.stdin
+        sys.stdin = io.StringIO(
+            json.dumps(valid) + "\n" + json.dumps(untyped) + "\n"
+        )
+        stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(stderr):
+                rc = series.main([
+                    "append-cells",
+                    "--parent", str(self.parent),
+                    "--producer", "pressure-test",
+                    "--run-id", "pressure-untyped-and-malformed",
+                    "--tree", self.tree,
+                    "--emitted-at", "2026-08-26T10:00:00Z",
+                ])
+        finally:
+            sys.stdin = real_stdin
+        self.assertEqual(rc, 1)
+        self.assertIn("detcore_tree must be a 40-hex object id", stderr.getvalue())
+        self.assertNotIn("REJECTED non-qualifying cell", stderr.getvalue())
+        self.assertEqual(list(series.spool_dir(self.parent).glob("*.jsonl")), [])
+
     def test_append_cells_uses_the_producing_checkout_for_an_off_main_tree(self):
         import contextlib
         import io
