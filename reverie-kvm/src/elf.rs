@@ -216,6 +216,10 @@ pub(crate) struct LoadedStaticElf {
     pub mmap_base: u64,
     pub mmap_next: u64,
     pub mmap_limit: u64,
+    /// Host path of the image loaded for this guest. This is independent of
+    /// the guest-controlled `argv[0]` and backs `/proc/self/exe`.
+    pub executable_path: PathBuf,
+    /// The guest-provided `argv[0]`, used for `/proc/self/cmdline` and `comm`.
     pub argv0: Vec<u8>,
     pub cwd: PathBuf,
     pub cwd_fd: std::fs::File,
@@ -331,6 +335,7 @@ impl LoadedStaticElf {
             mmap_base: self.mmap_base,
             mmap_next: self.mmap_next,
             mmap_limit: self.mmap_limit,
+            executable_path: self.executable_path.clone(),
             argv0: self.argv0.clone(),
             cwd: self.cwd.clone(),
             cwd_fd: self.cwd_fd.try_clone()?,
@@ -696,6 +701,9 @@ fn load_executable(
         .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
         .open(cwd)?;
 
+    let executable_path =
+        resolve_executable_path(argv0, envp, cwd).unwrap_or_else(|_| PathBuf::from(argv0));
+
     Ok(LoadedStaticElf {
         entry_point,
         stack_pointer,
@@ -705,11 +713,8 @@ fn load_executable(
         mmap_base: mmap_next,
         mmap_next,
         mmap_limit,
-        argv0: resolve_executable_path(argv0, envp, cwd)
-            .unwrap_or_else(|_| PathBuf::from(argv0))
-            .to_string_lossy()
-            .into_owned()
-            .into_bytes(),
+        executable_path,
+        argv0: argv0.as_bytes().to_vec(),
         cwd: cwd.to_owned(),
         cwd_fd,
         stdin: None,

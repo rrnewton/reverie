@@ -320,9 +320,19 @@ where
                     }
                     ProcessExecutionContext::InitialExec(_)
                     | ProcessExecutionContext::Lifecycle => match action {
-                        ProcessAction::Exec { image, argv, envp } => {
-                            self.backend
-                                .exec_process(self.executor, &image, &argv, &envp)?;
+                        ProcessAction::Exec {
+                            executable_path,
+                            image,
+                            argv,
+                            envp,
+                        } => {
+                            self.backend.exec_process(
+                                self.executor,
+                                &executable_path,
+                                &image,
+                                &argv,
+                                &envp,
+                            )?;
                             Ok(())
                         }
                         _ => Err(Error::UnexpectedVcpuExit(

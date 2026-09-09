@@ -219,6 +219,7 @@ pub(crate) enum ProcessAction {
         tls: Option<u64>,
     },
     Exec {
+        executable_path: std::path::PathBuf,
         image: Vec<u8>,
         argv: Vec<String>,
         envp: Vec<String>,
@@ -1457,32 +1458,9 @@ impl ElfExecutor {
             Ok(envp) => envp,
             Err(error) => return error,
         };
-        let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(path));
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-kvm-execve-path): PATH resolution for a
-        // slash-less execve program name. A bare name such as
-        // `execve("bash", ...)` must be searched on PATH the same way the
-        // initial ELF loader (elf::resolve_executable_path) and libc's execvp
-        // do; joining a bare name onto cwd yields ENOENT and breaks every
-        // KVM-backend corpus example launched by bare name (bash/python3).
-        // Under the ptrace backend the initial launcher resolves the program
-        // via execvp before the guest starts, so this restores parity for the
-        // initial exec that Detcore re-injects with a rewritten path pointer.
-        // Names that already contain a slash keep exact execve(2) semantics
-        // (absolute used as-is, relative resolved against cwd) and are NOT
-        // PATH-searched.
-        let path = if path.is_absolute() || path.components().count() > 1 {
-            if path.is_absolute() {
-                path
-            } else {
-                self.state.cwd.join(path)
-            }
-        } else {
-            let envp_refs = envp.iter().map(String::as_str).collect::<Vec<_>>();
-            match resolve_executable_path(&path.to_string_lossy(), &envp_refs, &self.state.cwd) {
-                Ok(resolved) => resolved,
-                Err(_) => return negative_errno(libc::ENOENT),
-            }
+        let path = match resolve_guest_exec_path(&self.state, path, &envp) {
+            Ok(path) => path,
+            Err(error) => return error,
         };
         let image = match std::fs::read(&path) {
             Ok(image) => image,
@@ -1497,8 +1475,8 @@ impl ElfExecutor {
         // resolution. The KVM ELF loader only maps ELF images, so a guest that
         // execs a `#!`-script must have its interpreter resolved here, as the
         // kernel's binfmt_script loader does.
-        let (image, argv) = match resolve_exec_shebang(path, image, argv) {
-            Ok((_interpreter, image, argv)) => (image, argv),
+        let (executable_path, image, argv) = match resolve_exec_shebang(path, image, argv) {
+            Ok(result) => result,
             Err(errno) => return errno,
         };
         // TODO-HUMAN-REVIEW(PR-156): Review preflight validation before exec image replacement.
@@ -1521,7 +1499,12 @@ impl ElfExecutor {
         {
             return negative_errno(libc::ENOEXEC);
         }
-        self.process_action = Some(ProcessAction::Exec { image, argv, envp });
+        self.process_action = Some(ProcessAction::Exec {
+            executable_path,
+            image,
+            argv,
+            envp,
+        });
         0
     }
 
@@ -2196,6 +2179,51 @@ fn ensure_readable(file: &std::fs::File) -> Result<(), i64> {
         return Err(negative_errno(libc::EISDIR));
     }
     Ok(())
+}
+
+/// Resolve the file whose image an in-guest exec replaces the current image with.
+///
+/// `/proc/self/exe` and the equivalent numeric spelling name the current guest
+/// image, not the host executor. Resolve those aliases to the executable path
+/// retained by the loaded guest before performing any host file-system read.
+/// All other paths retain execve's existing absolute, cwd-relative, and PATH
+/// search behavior.
+fn resolve_guest_exec_path(
+    state: &LoadedStaticElf,
+    path: Vec<u8>,
+    envp: &[String],
+) -> Result<std::path::PathBuf, i64> {
+    let path = if normalize_proc_path(state, &path).as_deref() == Some(b"/proc/self/exe") {
+        state.executable_path.as_os_str().as_bytes().to_vec()
+    } else {
+        path
+    };
+    let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(path));
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-kvm-execve-path): PATH resolution for a
+    // slash-less execve program name. A bare name such as
+    // `execve("bash", ...)` must be searched on PATH the same way the
+    // initial ELF loader (elf::resolve_executable_path) and libc's execvp
+    // do; joining a bare name onto cwd yields ENOENT and breaks every
+    // KVM-backend corpus example launched by bare name (bash/python3).
+    // Under the ptrace backend the initial launcher resolves the program
+    // via execvp before the guest starts, so this restores parity for the
+    // initial exec that Detcore re-injects with a rewritten path pointer.
+    // Names that already contain a slash keep exact execve(2) semantics
+    // (absolute used as-is, relative resolved against cwd) and are NOT
+    // PATH-searched.
+    if path.is_absolute() || path.components().count() > 1 {
+        Ok(if path.is_absolute() {
+            path
+        } else {
+            state.cwd.join(path)
+        })
+    } else {
+        let envp_refs = envp.iter().map(String::as_str).collect::<Vec<_>>();
+        resolve_executable_path(&path.to_string_lossy(), &envp_refs, &state.cwd)
+            .map_err(|_| negative_errno(libc::ENOENT))
+    }
 }
 
 fn ensure_writable(file: &std::fs::File) -> Result<(), i64> {
@@ -9805,7 +9833,7 @@ fn readlink_at_impl(
 
     let normalized = normalize_proc_path(state, &path);
     let proc_link_target: Option<&[u8]> = match normalized.as_deref() {
-        Some(b"/proc/self/exe") => Some(&state.argv0),
+        Some(b"/proc/self/exe") => Some(state.executable_path.as_os_str().as_bytes()),
         Some(b"/proc/self/cwd") => Some(state.cwd.as_os_str().as_bytes()),
         Some(b"/proc/self/root") => Some(b"/"),
         _ => None,
@@ -10783,6 +10811,7 @@ mod tests {
             mmap_base: BOOT_RESERVED_END + PAGE_SIZE,
             mmap_next: BOOT_RESERVED_END + PAGE_SIZE,
             mmap_limit: BOOT_RESERVED_END + 2 * PAGE_SIZE,
+            executable_path: cwd.join("test"),
             argv0: b"test".to_vec(),
             cwd: cwd.to_owned(),
             cwd_fd: std::fs::File::open(cwd).unwrap(),
@@ -22534,6 +22563,46 @@ mod tests {
         assert_eq!(
             signal_disposition(&state, libc::SIGABRT),
             SignalDisposition::Handled
+        );
+    }
+
+    #[test]
+    fn resolve_guest_exec_path_maps_self_aliases_and_preserves_other_resolution() {
+        let dir = TestDir::new();
+        let executable = dir.0.join("current-image");
+        std::fs::write(&executable, b"image").unwrap();
+        let mut state = test_state(&dir.0);
+        state.pid = 37;
+        state.executable_path = executable.clone();
+        let envp = Vec::new();
+
+        for alias in [b"/proc/self/exe".as_slice(), b"/proc/37/exe".as_slice()] {
+            assert_eq!(
+                resolve_guest_exec_path(&state, alias.to_vec(), &envp).unwrap(),
+                executable,
+            );
+        }
+        assert_eq!(
+            resolve_guest_exec_path(&state, b"/proc/38/exe".to_vec(), &envp).unwrap(),
+            Path::new("/proc/38/exe"),
+        );
+        assert_eq!(
+            resolve_guest_exec_path(&state, b"relative/program".to_vec(), &envp).unwrap(),
+            dir.0.join("relative/program"),
+        );
+        assert_eq!(
+            resolve_guest_exec_path(&state, b"/absolute/program".to_vec(), &envp).unwrap(),
+            Path::new("/absolute/program"),
+        );
+
+        let bin = dir.0.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let searched = bin.join("searched-program");
+        std::fs::write(&searched, b"image").unwrap();
+        let envp = vec![format!("PATH={}", bin.display())];
+        assert_eq!(
+            resolve_guest_exec_path(&state, b"searched-program".to_vec(), &envp).unwrap(),
+            searched.canonicalize().unwrap(),
         );
     }
 

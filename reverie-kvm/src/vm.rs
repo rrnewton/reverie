@@ -629,8 +629,10 @@ impl KvmBackend {
     /// Loads a static ELF with an explicit `argv` and `envp` and prepares the
     /// vCPU to enter it in long mode.
     ///
-    /// `argv` must be non-empty; `argv[0]` becomes the program name reported to
-    /// the guest (initial stack and `AT_EXECFN`/`readlink("/proc/self/exe")`).
+    /// `argv` must be non-empty; `argv[0]` remains the guest-visible program
+    /// name on the initial stack, in `AT_EXECFN`, and on the synthetic cmdline
+    /// and process-name surfaces. The independently retained resolved path is
+    /// returned by `readlink("/proc/self/exe")`.
     /// The guest observes a standard System V initial stack: `argc`, the `argv`
     /// pointer array, a NULL terminator, the `envp` pointer array, a NULL
     /// terminator, and the auxiliary vector.
@@ -750,6 +752,7 @@ impl KvmBackend {
     pub(crate) fn exec_process(
         &mut self,
         executor: &mut ElfExecutor,
+        executable_path: &Path,
         image: &[u8],
         argv: &[String],
         envp: &[String],
@@ -761,6 +764,7 @@ impl KvmBackend {
         let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
         let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
         let mut loaded = load_static_elf(&mut self.memory, image, &argv, &envp, executor.cwd())?;
+        loaded.executable_path = executable_path.to_owned();
         loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
         configure_long_mode(
             &mut self.memory,
@@ -999,7 +1003,12 @@ impl KvmBackend {
                     })?;
                 self.thread_group.add_worker_handle(handle);
             }
-            ProcessAction::Exec { image, argv, envp } => {
+            ProcessAction::Exec {
+                executable_path,
+                image,
+                argv,
+                envp,
+            } => {
                 if park_syscall_return {
                     set_syscall_return_park(
                         &mut self.memory,
@@ -1032,7 +1041,7 @@ impl KvmBackend {
                 if !self.is_guest_thread {
                     self.cancel_guest_threads();
                 }
-                let result = self.exec_process(executor, &image, &argv, &envp);
+                let result = self.exec_process(executor, &executable_path, &image, &argv, &envp);
                 if !self.is_guest_thread {
                     self.thread_group.rearm_after_exec();
                 }
