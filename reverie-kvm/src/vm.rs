@@ -1654,6 +1654,19 @@ fn write_tid_best_effort(memory: &mut GuestMemory, address: Option<u64>, tid: i3
     }
 }
 
+/// Applies Linux's best-effort CHILD_CLEARTID zero store.
+///
+/// Tool-owned threads call this before their exit callback so a scheduler wake
+/// cannot make a waiter observe the old TID. The worker wrapper subsequently
+/// issues the host futex wake in [`clear_tid_and_wake`] for Tools that leave
+/// futex handling to the backend.
+pub(crate) fn clear_tid(memory: &mut GuestMemory, address: Option<u64>) -> bool {
+    let Some(address) = address else {
+        return false;
+    };
+    memory.write(address, &0_i32.to_le_bytes()).is_ok()
+}
+
 // TODO-HUMAN-REVIEW(PR-172): Review CHILD_CLEARTID store and shared futex wake ordering.
 fn clear_tid_and_wake(memory: &mut GuestMemory, address: Option<u64>) {
     let Some(address) = address else {
@@ -1661,7 +1674,7 @@ fn clear_tid_and_wake(memory: &mut GuestMemory, address: Option<u64>) {
     };
     // Linux treats a failed CHILD_CLEARTID store as best-effort and skips the
     // wake when the user address is invalid.
-    if memory.write(address, &0_i32.to_le_bytes()).is_err() {
+    if !clear_tid(memory, Some(address)) {
         return;
     }
     let Some(offset) = address.checked_sub(memory.guest_base()) else {
@@ -1810,11 +1823,13 @@ mod tests {
         memory.read(TID_ADDRESS, &mut bytes).unwrap();
         assert_eq!(i32::from_le_bytes(bytes), 7);
 
-        write_tid_best_effort(&mut memory, Some(TID_ADDRESS), 0);
+        assert!(clear_tid(&mut memory, Some(TID_ADDRESS)));
         memory.read(TID_ADDRESS, &mut bytes).unwrap();
         assert_eq!(i32::from_le_bytes(bytes), 0);
 
         write_tid_best_effort(&mut memory, Some(4095), 9);
         write_tid_best_effort(&mut memory, None, 9);
+        assert!(!clear_tid(&mut memory, Some(4095)));
+        assert!(!clear_tid(&mut memory, None));
     }
 }
