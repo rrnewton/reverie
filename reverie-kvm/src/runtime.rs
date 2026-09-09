@@ -288,9 +288,8 @@ where
                     InjectionCompletion::Returns
                 });
             };
-            let image_replaced = matches!(&action, ProcessAction::Exec { .. });
             hide_tool_scratch(&self.memory)?;
-            let action_result: Result<()> = async {
+            let action_result: Result<bool> = async {
                 match self.process_context {
                     ProcessExecutionContext::SyscallBoundary(boundary) => {
                         let result = self
@@ -306,34 +305,34 @@ where
                         unsafe {
                             (boundary.return_slot as *mut u64).write(0);
                         }
-                        self.backend
+                        let image_replaced = self
+                            .backend
                             .run_process_action_with_tool(self.executor, action, true, context)
                             .await?;
                         self.process_context = ProcessExecutionContext::SyscallReturn;
-                        Ok(())
+                        Ok(image_replaced)
                     }
                     ProcessExecutionContext::SyscallReturn => {
                         self.backend
                             .run_process_action_with_tool(self.executor, action, false, context)
-                            .await?;
-                        Ok(())
+                            .await
                     }
                     ProcessExecutionContext::InitialExec(_)
                     | ProcessExecutionContext::Lifecycle => match action {
                         ProcessAction::Exec {
-                            executable_path,
-                            image,
+                            executable,
+                            comm,
                             argv,
                             envp,
                         } => {
                             self.backend.exec_process(
                                 self.executor,
-                                &executable_path,
-                                &image,
+                                &executable,
+                                &comm,
                                 &argv,
                                 &envp,
                             )?;
-                            Ok(())
+                            Ok(true)
                         }
                         _ => Err(Error::UnexpectedVcpuExit(
                             "fork/clone injection requires a guest syscall boundary".to_owned(),
@@ -346,7 +345,7 @@ where
             }
             .await;
             let expose_result = expose_tool_scratch(&self.memory);
-            action_result?;
+            let image_replaced = action_result?;
             expose_result?;
             *self.process_completed = true;
             if image_replaced || self.executor.has_pending_exit() {
@@ -1611,7 +1610,6 @@ impl KvmBackend {
             }
             let mut replaced_image = handler_replaced_image;
             if let Some(action) = pending_process {
-                replaced_image |= matches!(&action, ProcessAction::Exec { .. });
                 let context: ToolContext<'_, T> = ToolContext {
                     pid,
                     tid,
@@ -1621,7 +1619,8 @@ impl KvmBackend {
                     subscriptions: subscriptions.clone(),
                     pending_child_starts: Arc::new(Mutex::new(Vec::new())),
                 };
-                self.run_process_action_with_tool(executor, action, true, context)
+                replaced_image |= self
+                    .run_process_action_with_tool(executor, action, true, context)
                     .await?;
                 executor.start_pending_child_processes()?;
             }
