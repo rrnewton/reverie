@@ -8643,6 +8643,7 @@ fn arch_prctl(
 // TODO-HUMAN-REVIEW(PR-181): Review deterministic capability prctls.
 fn prctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     match args[0] {
+        // TODO-HUMAN-REVIEW(PR-537): Review deterministic task-name state and lifecycle.
         option if option == libc::PR_SET_NAME as u64 => set_prctl_name(memory, state, args[1]),
         option if option == libc::PR_GET_NAME as u64 => memory
             .write(args[1], &state.thread_name)
@@ -8659,8 +8660,9 @@ fn prctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
         option if option == libc::PR_GET_PDEATHSIG as u64 => memory
             .write(args[1], &0_i32.to_ne_bytes())
             .map_or_else(|_| negative_errno(libc::EFAULT), |_| 0),
+        // TODO-HUMAN-REVIEW(PR-537): Review deterministic transparent-hugepage state and lifecycle.
         option if option == libc::PR_SET_THP_DISABLE as u64 => {
-            if args[2..].iter().any(|argument| *argument != 0) {
+            if args[2..5].iter().any(|argument| *argument != 0) {
                 negative_errno(libc::EINVAL)
             } else {
                 state.thp_disabled.store(args[1] != 0, Ordering::SeqCst);
@@ -8668,7 +8670,7 @@ fn prctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
             }
         }
         option if option == libc::PR_GET_THP_DISABLE as u64 => {
-            if args[1..].iter().any(|argument| *argument != 0) {
+            if args[1..5].iter().any(|argument| *argument != 0) {
                 negative_errno(libc::EINVAL)
             } else {
                 i64::from(state.thp_disabled.load(Ordering::SeqCst))
@@ -23131,7 +23133,7 @@ mod tests {
             0,
         );
 
-        for index in 2..6 {
+        for index in 2..5 {
             let mut invalid = set(1);
             invalid[index] = 1;
             assert_eq!(
@@ -23139,7 +23141,7 @@ mod tests {
                 negative_errno(libc::EINVAL),
             );
         }
-        for index in 1..6 {
+        for index in 1..5 {
             let mut invalid = get;
             invalid[index] = 1;
             assert_eq!(
@@ -23147,6 +23149,28 @@ mod tests {
                 negative_errno(libc::EINVAL),
             );
         }
+        let mut ignored_sixth_argument = set(1);
+        ignored_sixth_argument[5] = u64::MAX;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_prctl,
+                ignored_sixth_argument,
+            ),
+            0,
+        );
+        let mut ignored_sixth_argument = get;
+        ignored_sixth_argument[5] = u64::MAX;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_prctl,
+                ignored_sixth_argument,
+            ),
+            1,
+        );
         assert_eq!(
             syscall_result(&mut memory, &mut state, libc::SYS_prctl, get),
             1,
