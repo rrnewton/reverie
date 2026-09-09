@@ -107,6 +107,10 @@ pub enum Error {
     #[error("KVM guest thread limit exceeded by tid {0}")]
     GuestThreadLimitExceeded(i32),
 
+    /// Replacing the process image from a guest thread is not implemented.
+    #[error("KVM guest threads cannot replace the process image")]
+    GuestThreadExecUnsupported,
+
     /// The fixed long-mode bootstrap layout does not fit in guest memory.
     #[error("guest memory is too small for the long-mode bootstrap")]
     LongModeMemoryTooSmall,

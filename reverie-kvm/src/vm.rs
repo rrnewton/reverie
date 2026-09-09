@@ -49,6 +49,9 @@ use crate::bootstrap::SYSCALL_TRAMPOLINE_ADDRESS;
 use crate::bootstrap::SegmentBase;
 use crate::bootstrap::THREAD_SYSCALL_AREA_START;
 use crate::bootstrap::THREAD_SYSCALL_AREA_STRIDE;
+use crate::bootstrap::THREAD_TOOL_STACK_AREA_START;
+use crate::bootstrap::TOOL_STACK_SIZE;
+use crate::bootstrap::TOOL_STACK_TOP;
 use crate::bootstrap::configure_long_mode;
 use crate::bootstrap::configure_long_mode_with_syscall_area;
 use crate::bootstrap::configure_process_syscall_return;
@@ -57,6 +60,7 @@ use crate::bootstrap::exception_from_halt;
 use crate::bootstrap::exception_pushes_error_code;
 use crate::bootstrap::set_syscall_return_park;
 use crate::bootstrap::set_user_segment_base;
+use crate::bootstrap::thread_tool_stack_top;
 use crate::elf::LoadedStaticElf;
 use crate::elf::load_static_elf;
 use crate::executor::ChildCompletion;
@@ -382,6 +386,19 @@ struct ForkedProcess {
     executor: ElfExecutor,
 }
 
+// A process snapshot can be taken while another Tool-owned thread has its own
+// scratch page exposed in the shared user-access map. The fork child must not
+// inherit any of those temporary mappings; normalize only the copied map and
+// leave the parent's live handlers unchanged.
+fn hide_tool_scratch_pages(memory: &GuestMemory) -> Result<()> {
+    memory.unmap_user_range(TOOL_STACK_TOP - TOOL_STACK_SIZE, TOOL_STACK_SIZE)?;
+    memory.unmap_user_range(
+        THREAD_TOOL_STACK_AREA_START,
+        BOOT_RESERVED_END - THREAD_TOOL_STACK_AREA_START,
+    )?;
+    Ok(())
+}
+
 impl KvmBackend {
     /// Creates a VM with one vCPU and a memory slot starting at GPA zero.
     pub fn new(memory_size: usize) -> Result<Self> {
@@ -607,6 +624,26 @@ impl KvmBackend {
         Ok(())
     }
 
+    /// Returns the Tool scratch-page top for this backend. Process leaders use
+    /// the fixed root page; guest threads use the page paired with their
+    /// transport slot.
+    pub(crate) fn tool_stack_top(&self) -> u64 {
+        self.thread_slot
+            .map_or(TOOL_STACK_TOP, thread_tool_stack_top)
+    }
+
+    /// Releases a guest thread's transport and Tool scratch-page slot.
+    ///
+    /// Normal exit paths call this before notifying the scheduler or clearing
+    /// the child TID, so the next guest thread's slot does not depend on when
+    /// the host worker object is destroyed. `Drop` remains the error-path
+    /// fallback.
+    pub(crate) fn release_thread_slot(&mut self) {
+        if let Some(slot) = self.thread_slot.take() {
+            self.thread_group.release_transport_slot(slot);
+        }
+    }
+
     /// Returns the VM's guest memory.
     pub fn memory(&self) -> &GuestMemory {
         &self.memory
@@ -682,8 +719,10 @@ impl KvmBackend {
     }
 
     fn snapshot_process(&self) -> Result<KvmProcessSnapshot> {
+        let memory = self.memory.snapshot()?;
+        hide_tool_scratch_pages(&memory)?;
         Ok(KvmProcessSnapshot {
-            memory: self.memory.snapshot()?,
+            memory,
             registers: self.vcpu.get_regs()?,
             xsave: self.vcpu.get_xsave()?,
             stdin: self.stdin.as_ref().map(File::try_clone).transpose()?,
@@ -754,6 +793,9 @@ impl KvmBackend {
         argv: &[String],
         envp: &[String],
     ) -> Result<()> {
+        if self.is_guest_thread {
+            return Err(Error::GuestThreadExecUnsupported);
+        }
         let user_length = usize::try_from(self.memory.guest_end() - BOOT_RESERVED_END)
             .expect("guest memory length must fit usize");
         self.memory.zero_raw(BOOT_RESERVED_END, user_length)?;
@@ -986,6 +1028,7 @@ impl KvmBackend {
                     .name(format!("reverie-kvm-guest-{child_tid}"))
                     .spawn(move || {
                         let result = child.run_static_elf_process(&mut child_executor);
+                        child.release_thread_slot();
                         clear_tid_and_wake(
                             &mut child.memory,
                             child_executor.take_clear_child_tid(),
@@ -1029,13 +1072,9 @@ impl KvmBackend {
                 // new address space becomes visible. Leaving a sibling vCPU
                 // alive lets it execute stale instructions in the replacement
                 // image and can turn an otherwise successful exec into a fault.
-                if !self.is_guest_thread {
-                    self.cancel_guest_threads();
-                }
+                self.cancel_guest_threads();
                 let result = self.exec_process(executor, &image, &argv, &envp);
-                if !self.is_guest_thread {
-                    self.thread_group.rearm_after_exec();
-                }
+                self.thread_group.rearm_after_exec();
                 result?;
             }
         }
@@ -1317,6 +1356,7 @@ impl KvmBackend {
                                 &subscriptions,
                                 false,
                             ));
+                        child.release_thread_slot();
                         clear_tid_and_wake(
                             &mut child.memory,
                             child_executor.take_clear_child_tid(),
@@ -1638,9 +1678,7 @@ impl BackendStatsSource for KvmBackend {
 
 impl Drop for KvmBackend {
     fn drop(&mut self) {
-        if let Some(slot) = self.thread_slot.take() {
-            self.thread_group.release_transport_slot(slot);
-        }
+        self.release_thread_slot();
         if !self.is_guest_thread {
             self.cancel_guest_threads();
         }
@@ -1710,6 +1748,48 @@ fn supported_hypercall_instruction(cpuid: &CpuId) -> Result<[u8; 3]> {
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct SlotReleaseLog {
+        group: Arc<GuestThreadGroup>,
+        reused: Mutex<Option<usize>>,
+    }
+
+    #[reverie::global_tool]
+    impl GlobalTool for SlotReleaseLog {
+        type Request = ();
+        type Response = ();
+        type Config = ();
+
+        async fn receive_rpc(&self, _from: Pid, (): ()) {
+            let slot = self
+                .group
+                .reserve_transport_slot(10_000)
+                .expect("exiting worker slot was not released before on_exit_thread");
+            self.group.release_transport_slot(slot);
+            *self.reused.lock().expect("slot result lock poisoned") = Some(slot);
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct SlotReleaseTool;
+
+    #[reverie::tool]
+    impl Tool for SlotReleaseTool {
+        type GlobalState = SlotReleaseLog;
+        type ThreadState = ();
+
+        async fn on_exit_thread<G: reverie::GlobalRPC<Self::GlobalState>>(
+            &self,
+            _tid: Pid,
+            global: &G,
+            _thread_state: Self::ThreadState,
+            _status: ExitStatus,
+        ) -> std::result::Result<(), reverie::Error> {
+            global.send_rpc(()).await;
+            Ok(())
+        }
+    }
+
     #[test]
     fn root_guest_pid_must_be_positive() {
         assert_eq!(validate_root_pid(1).unwrap(), 1);
@@ -1752,6 +1832,79 @@ mod tests {
         let released = slots[slots.len() / 2];
         group.release_transport_slot(released);
         assert_eq!(group.reserve_transport_slot(10_001).unwrap(), released);
+    }
+
+    #[test]
+    fn tool_exit_releases_transport_slot_before_exit_callback() {
+        match Kvm::new() {
+            Ok(_) => {}
+            Err(error) if matches!(error.errno(), libc::ENOENT | libc::EACCES | libc::EPERM) => {
+                eprintln!("skipping KVM slot-release test: cannot open /dev/kvm: {error}");
+                return;
+            }
+            Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+        }
+
+        let group = Arc::new(GuestThreadGroup::default());
+        for tid in 2..MAX_GUEST_THREADS as i32 + 1 {
+            group.reserve_transport_slot(tid).unwrap();
+        }
+        let exiting_slot = group.reserve_transport_slot(10_000).unwrap();
+        assert_eq!(exiting_slot, MAX_GUEST_THREADS as usize - 1);
+
+        let mut backend = KvmBackend::new(16 * 1024 * 1024).unwrap();
+        backend.thread_group = group.clone();
+        backend.thread_slot = Some(exiting_slot);
+        backend.is_guest_thread = true;
+        let log = SlotReleaseLog {
+            group,
+            reused: Mutex::new(None),
+        };
+
+        futures::executor::block_on(backend.notify_tool_exit(
+            SlotReleaseTool,
+            (Pid::from_raw(3), Pid::from_raw(10_000)),
+            &log,
+            &(),
+            (),
+            ExitStatus::SUCCESS,
+        ))
+        .unwrap();
+
+        assert_eq!(backend.thread_slot, None);
+        assert_eq!(*log.reused.lock().unwrap(), Some(exiting_slot));
+    }
+
+    #[test]
+    fn process_snapshot_hides_internal_tool_scratch_pages() {
+        let memory = GuestMemory::new(0, (BOOT_RESERVED_END + PAGE_SIZE) as usize).unwrap();
+        let root_bottom = TOOL_STACK_TOP - TOOL_STACK_SIZE;
+        let first_worker_bottom = thread_tool_stack_top(0) - TOOL_STACK_SIZE;
+        let last_worker_bottom =
+            thread_tool_stack_top(MAX_GUEST_THREADS as usize - 1) - TOOL_STACK_SIZE;
+        let ordinary_page = BOOT_RESERVED_END;
+
+        memory
+            .map_user_range(root_bottom, TOOL_STACK_SIZE, false)
+            .unwrap();
+        memory
+            .map_user_range(first_worker_bottom, TOOL_STACK_SIZE, false)
+            .unwrap();
+        memory
+            .map_user_range(last_worker_bottom, TOOL_STACK_SIZE, false)
+            .unwrap();
+        memory
+            .map_user_range(ordinary_page, PAGE_SIZE, false)
+            .unwrap();
+        let snapshot = memory.snapshot().unwrap();
+
+        hide_tool_scratch_pages(&snapshot).unwrap();
+
+        assert!(memory.user_range_is_mapped(root_bottom, TOOL_STACK_SIZE));
+        assert!(!snapshot.user_range_is_mapped(root_bottom, TOOL_STACK_SIZE));
+        assert!(!snapshot.user_range_is_mapped(first_worker_bottom, TOOL_STACK_SIZE));
+        assert!(!snapshot.user_range_is_mapped(last_worker_bottom, TOOL_STACK_SIZE));
+        assert!(snapshot.user_range_is_mapped(ordinary_page, PAGE_SIZE));
     }
 
     #[test]

@@ -40,6 +40,7 @@ const EXCEPTION_STUB_ADDRESS: u64 = 0xb000;
 const EXCEPTION_STACK_BOTTOM: u64 = 0xc000;
 const EXCEPTION_STACK_TOP: u64 = 0xd000;
 pub(crate) const TOOL_STACK_TOP: u64 = 0xe000;
+pub(crate) const TOOL_STACK_SIZE: u64 = PAGE_SIZE;
 // Includes the 0xe000..0xf000 third page directory and 160 private
 // trampoline/frame pairs used by concurrent KVM guest threads.
 // AUTONOMOUS-BOT-IMPLEMENTED: Reserve transport slots for savevm worker pools.
@@ -59,7 +60,30 @@ pub(crate) const MAX_GUEST_THREADS: u64 = 160;
 // directly without an executor round-trip.
 pub(crate) const VDSO_ADDRESS: u64 =
     THREAD_SYSCALL_AREA_START + THREAD_SYSCALL_AREA_STRIDE * MAX_GUEST_THREADS;
-pub(crate) const BOOT_RESERVED_END: u64 = VDSO_ADDRESS + PAGE_SIZE;
+// Keep the established syscall-transport and vDSO addresses unchanged. Each
+// worker gets one Tool scratch page after the vDSO, indexed by the same slot
+// that owns its private syscall transport.
+pub(crate) const THREAD_TOOL_STACK_AREA_START: u64 = VDSO_ADDRESS + PAGE_SIZE;
+pub(crate) const BOOT_RESERVED_END: u64 =
+    THREAD_TOOL_STACK_AREA_START + TOOL_STACK_SIZE * MAX_GUEST_THREADS;
+const _: () = {
+    assert!(TOOL_STACK_TOP <= THREAD_SYSCALL_AREA_START);
+    assert!(
+        THREAD_SYSCALL_AREA_START + THREAD_SYSCALL_AREA_STRIDE * MAX_GUEST_THREADS <= VDSO_ADDRESS
+    );
+    assert!(VDSO_ADDRESS + PAGE_SIZE <= THREAD_TOOL_STACK_AREA_START);
+};
+
+/// Returns the exclusive upper address of the Tool scratch page assigned to a
+/// guest thread's transport slot.
+pub(crate) fn thread_tool_stack_top(slot: usize) -> u64 {
+    assert!(
+        slot < MAX_GUEST_THREADS as usize,
+        "KVM Tool scratch slot exceeds the guest thread limit"
+    );
+    THREAD_TOOL_STACK_AREA_START
+        + (u64::try_from(slot).expect("KVM Tool scratch slot must fit u64") + 1) * TOOL_STACK_SIZE
+}
 // AUTONOMOUS-BOT-IMPLEMENTED: Isolate each KVM worker's privilege-transition state.
 // TODO-HUMAN-REVIEW(PR-179): Review the packed per-thread TSS/stack layout.
 const THREAD_TSS_OFFSET: u64 = PAGE_SIZE / 2;
@@ -798,6 +822,17 @@ mod tests {
         memory.read(first.1, &mut stack_edges[..1]).unwrap();
         memory.read(first.2 - 1, &mut stack_edges[1..]).unwrap();
         assert_eq!(stack_edges, [0, 0]);
+    }
+
+    #[test]
+    fn worker_tool_stacks_are_reserved_and_disjoint() {
+        let first_top = thread_tool_stack_top(0);
+        let second_top = thread_tool_stack_top(1);
+        let last_top = thread_tool_stack_top(MAX_GUEST_THREADS as usize - 1);
+
+        assert_eq!(first_top - TOOL_STACK_SIZE, THREAD_TOOL_STACK_AREA_START);
+        assert_eq!(second_top - first_top, TOOL_STACK_SIZE);
+        assert_eq!(last_top, BOOT_RESERVED_END);
     }
 
     #[test]

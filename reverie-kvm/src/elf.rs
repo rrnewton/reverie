@@ -40,6 +40,7 @@ const MAX_PROGRAM_HEADERS_SIZE: usize = PAGE_SIZE as usize;
 const MAX_INTERPRETER_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SCRIPT_INTERPRETERS: usize = 4;
 const MAIN_LOAD_BIAS: u64 = 2 * 1024 * 1024;
+const _: () = assert!(BOOT_RESERVED_END <= MAIN_LOAD_BIAS);
 const INTERPRETER_LOAD_BIAS: u64 = 16 * 1024 * 1024;
 const IOPRIO_CLASS_SHIFT: u32 = 13;
 pub(crate) const GUEST_CAPABILITY_MASK: u64 = (1_u64 << 41) - 1;

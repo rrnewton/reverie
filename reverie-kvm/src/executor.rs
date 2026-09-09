@@ -1444,6 +1444,13 @@ impl ElfExecutor {
         if flags != 0 || dirfd != libc::AT_FDCWD {
             return negative_errno(libc::ENOTSUP);
         }
+        // Linux makes a non-leader caller the new thread-group leader while it
+        // tears down every sibling. The KVM backend does not yet implement that
+        // promotion. Refuse the syscall before reading the image or publishing
+        // a ProcessAction, so a worker cannot clear the shared address space.
+        if self.state.tid != self.state.pid {
+            return negative_errno(libc::ENOSYS);
+        }
         let path = match read_c_string(memory, path_address, 4096) {
             Ok(path) if !path.is_empty() => path,
             Ok(_) => return negative_errno(libc::ENOENT),
@@ -20178,6 +20185,44 @@ mod tests {
         );
         assert!(!replacement.signal_actions.contains_key(&libc::SIGUSR2));
         assert!(replacement.signal_alt_stack.is_none());
+    }
+
+    #[test]
+    fn worker_exec_is_refused_before_reading_guest_pointers() {
+        const SENTINEL_ADDRESS: u64 = 0x100;
+        const SENTINEL: [u8; 8] = *b"still-ok";
+
+        let root = TestDir::new();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory.write(SENTINEL_ADDRESS, &SENTINEL).unwrap();
+        let leader = ElfExecutor::new(test_state(&root.0), false);
+        let mut worker = leader.thread_child(7).unwrap();
+        assert_ne!(worker.state.pid, worker.state.tid);
+        let invalid = memory.guest_end() + PAGE_SIZE;
+        let requests = [
+            SyscallRequest::new(
+                libc::SYS_execve as u64,
+                [invalid, invalid, invalid, 0, 0, 0],
+            ),
+            SyscallRequest::new(
+                libc::SYS_execveat as u64,
+                [libc::AT_FDCWD as u64, invalid, invalid, invalid, 0, 0],
+            ),
+        ];
+
+        for request in requests {
+            assert_eq!(
+                worker.execute_process_action(&request, &memory),
+                Some(negative_errno(libc::ENOSYS))
+            );
+            assert!(
+                worker.take_process_action().is_none(),
+                "worker exec published a process-image replacement"
+            );
+            let mut observed = [0; SENTINEL.len()];
+            memory.read(SENTINEL_ADDRESS, &mut observed).unwrap();
+            assert_eq!(observed, SENTINEL);
+        }
     }
 
     #[test]
