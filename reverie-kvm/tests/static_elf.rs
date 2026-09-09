@@ -271,6 +271,94 @@ impl Tool for PostExecTool {
     }
 }
 
+#[derive(Default)]
+struct FollowThreadsLog {
+    process_exit_calls: Mutex<std::collections::BTreeMap<i32, u64>>,
+    leader_continuation_checks: AtomicU64,
+}
+
+impl FollowThreadsLog {
+    fn process_exit_calls(&self) -> std::collections::BTreeMap<i32, u64> {
+        self.process_exit_calls
+            .lock()
+            .expect("process-exit call log poisoned")
+            .clone()
+    }
+
+    fn leader_continuation_checks(&self) -> u64 {
+        self.leader_continuation_checks.load(Ordering::SeqCst)
+    }
+}
+
+#[reverie::global_tool]
+impl GlobalTool for FollowThreadsLog {
+    type Request = bool;
+    type Response = u64;
+    type Config = ();
+
+    async fn receive_rpc(&self, from: Pid, process_exited: bool) -> u64 {
+        if process_exited {
+            let mut calls = self
+                .process_exit_calls
+                .lock()
+                .expect("process-exit call log poisoned");
+            let count = calls.entry(from.as_raw()).or_default();
+            let previous = *count;
+            *count += 1;
+            previous
+        } else {
+            self.leader_continuation_checks
+                .fetch_add(1, Ordering::SeqCst);
+            self.process_exit_calls
+                .lock()
+                .expect("process-exit call log poisoned")
+                .get(&from.as_raw())
+                .copied()
+                .unwrap_or(0)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct FollowThreadsTool;
+
+#[reverie::tool]
+impl Tool for FollowThreadsTool {
+    type GlobalState = FollowThreadsLog;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscall(Sysno::getpid);
+        subscriptions
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        assert!(matches!(syscall, Syscall::Getpid(_)));
+        assert_eq!(
+            guest.send_rpc(false).await,
+            0,
+            "process-exit callback ran before the leader finished"
+        );
+        Ok(guest.inject(syscall).await?)
+    }
+
+    async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
+        self,
+        _pid: Pid,
+        global: &G,
+        _status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        let previous = global.send_rpc(true).await;
+        assert_eq!(previous, 0, "process-exit callback ran more than once");
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct CanonicalInitialExecTool;
 
@@ -2604,11 +2692,25 @@ fn self_exec_proc_aliases_use_loaded_image_after_unlink_or_replacement() {
     const ARGV1: &str = "after-exec";
     const ENVP0: &str = "SELF_EXEC_ENV=preserved";
     const IMAGE_MARKER: &str = "same-image\n";
-    let expected = format!("{IMAGE_MARKER}{ARGV0}\n{ARGV1}\n{ENVP0}\n");
 
     for (case, (name, path, execveat)) in [
         ("self-exec-proc-self-execve", "/proc/self/exe", false),
         ("self-exec-proc-pid-execve", "/proc/37/exe", false),
+        (
+            "self-exec-proc-thread-self-execve",
+            "/proc/thread-self/exe",
+            false,
+        ),
+        (
+            "self-exec-proc-self-task-execve",
+            "/proc/self/task/37/exe",
+            false,
+        ),
+        (
+            "self-exec-proc-tgid-task-execve",
+            "/proc/37/task/37/exe",
+            false,
+        ),
         ("self-exec-proc-self-execveat", "/proc/self/exe", true),
         ("self-exec-proc-pid-execveat", "/proc/37/exe", true),
     ]
@@ -2651,6 +2753,20 @@ fn self_exec_proc_aliases_use_loaded_image_after_unlink_or_replacement() {
                 syscall
 
             after_exec:
+                lea self_path(%rip), %rdi
+                lea link_buffer(%rip), %rsi
+                mov $4096, %edx
+                mov $89, %eax
+                syscall
+                test %rax, %rax
+                js exit_with_errno
+                mov %eax, %edx
+                mov $1, %edi
+                lea link_buffer(%rip), %rsi
+                mov $1, %eax
+                syscall
+                call write_newline
+
                 mov $1, %edi
                 lea image_marker(%rip), %rsi
                 mov ${image_marker_len}, %edx
@@ -2682,6 +2798,12 @@ fn self_exec_proc_aliases_use_loaded_image_after_unlink_or_replacement() {
                 mov $231, %eax
                 syscall
 
+            exit_with_errno:
+                neg %eax
+                mov %eax, %edi
+                mov $231, %eax
+                syscall
+
             write_newline:
                 mov $1, %edi
                 lea newline(%rip), %rsi
@@ -2710,6 +2832,11 @@ fn self_exec_proc_aliases_use_loaded_image_after_unlink_or_replacement() {
                 .quad replacement_argv0, replacement_argv1, 0
             replacement_envp:
                 .quad replacement_envp0, 0
+
+                .section .bss
+                .align 8
+            link_buffer:
+                .skip 4096
             "#,
             image_marker_len = IMAGE_MARKER.len(),
             argv0_len = ARGV0.len(),
@@ -2754,6 +2881,10 @@ fn self_exec_proc_aliases_use_loaded_image_after_unlink_or_replacement() {
         };
 
         let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        let expected = format!(
+            "{} (deleted)\n{IMAGE_MARKER}{ARGV0}\n{ARGV1}\n{ENVP0}\n",
+            executable.display(),
+        );
         assert_eq!(code, 0, "path={path} execveat={execveat} {mutation}");
         assert_eq!(
             stdout,
@@ -3086,6 +3217,882 @@ fn repeated_self_exec_preserves_executable_identity_argv_and_envp() {
     );
     assert_eq!(code, 0);
     assert_eq!(stdout, expected.as_bytes());
+    assert!(stderr.is_empty());
+}
+
+#[test]
+fn exec_comm_tracks_the_requested_filename_independently_of_exe_target_and_argv0() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM exec comm test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let root = TestDirectory::new();
+    let target = compile_c_program(
+        &root.0,
+        "actual-name",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+
+extern char **environ;
+
+static int write_all(const char *bytes, size_t length) {
+  while (length != 0) {
+    ssize_t written = write(STDOUT_FILENO, bytes, length);
+    if (written <= 0) return -1;
+    bytes += written;
+    length -= (size_t)written;
+  }
+  return 0;
+}
+
+static int print_identity(const char *argv0) {
+  char link[4096];
+  ssize_t link_length = readlink("/proc/self/exe", link, sizeof(link));
+  if (link_length < 0 || write_all(link, (size_t)link_length) != 0 ||
+      write_all("\n", 1) != 0) return -1;
+
+  int fd = open("/proc/self/stat", O_RDONLY);
+  char stat[4096];
+  ssize_t length = fd < 0 ? -1 : read(fd, stat, sizeof(stat) - 1);
+  if (fd >= 0) close(fd);
+  if (length <= 0) return -1;
+  stat[length] = 0;
+  char *left = strchr(stat, '(');
+  char *right = strrchr(stat, ')');
+  if (left == NULL || right == NULL || right <= left ||
+      write_all(left + 1, (size_t)(right - left - 1)) != 0 ||
+      write_all("\n", 1) != 0 || write_all(argv0, strlen(argv0)) != 0 ||
+      write_all("\n", 1) != 0) return -1;
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  if (print_identity(argv[0]) != 0) return 20;
+  if (argc == 1) {
+    char *next[] = {"second-argv-zero", "after-self-exec", NULL};
+    execve("/proc/self/exe", next, environ);
+    return errno;
+  }
+  return argc == 2 && strcmp(argv[1], "after-self-exec") == 0 ? 0 : 21;
+}
+"#,
+    );
+    let alias = root.0.join("alias-name");
+    std::os::unix::fs::symlink(&target, &alias).unwrap();
+    let launcher_source = format!(
+        r#"
+#include <errno.h>
+#include <unistd.h>
+
+int main(void) {{
+  char *argv[] = {{"not-the-path", NULL}};
+  char *envp[] = {{NULL}};
+  execve("{}", argv, envp);
+  return errno;
+}}
+"#,
+        alias.display(),
+    );
+    let launcher = compile_c_program(&root.0, "comm-launcher", &launcher_source);
+    let launcher = launcher.to_str().unwrap();
+    let (stdout, stderr) = run_host_program_captured(launcher, &[launcher], &root.0);
+    let target = target.canonicalize().unwrap();
+    let expected = format!(
+        "{target}\nalias-name\nnot-the-path\n{target}\nexe\nsecond-argv-zero\n",
+        target = target.display(),
+    );
+    assert_eq!(stdout, expected.as_bytes());
+    assert!(stderr.is_empty());
+}
+
+#[test]
+fn nonleader_exec_cancels_siblings_becomes_leader_and_keeps_proc_exe_virtual() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM worker exec test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let root = TestDirectory::new();
+    let executable = compile_c_program(
+        &root.0,
+        "worker-exec",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <linux/futex.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+extern char **environ;
+static const char *selector;
+
+static int same_link(const char *path, const char *expected, ssize_t expected_length) {
+  char actual[4096];
+  ssize_t length = readlink(path, actual, sizeof(actual));
+  return length == expected_length && memcmp(actual, expected, (size_t)length) == 0;
+}
+
+static int comm_is_exe(void) {
+  int fd = open("/proc/self/stat", 0);
+  char stat[4096];
+  ssize_t length = fd < 0 ? -1 : read(fd, stat, sizeof(stat) - 1);
+  if (fd >= 0) close(fd);
+  if (length <= 0) return 0;
+  stat[length] = 0;
+  char *left = strchr(stat, '(');
+  char *right = strrchr(stat, ')');
+  return left != NULL && right != NULL && right - left == 4 &&
+         memcmp(left + 1, "exe", 3) == 0;
+}
+
+static void *sibling(void *unused) {
+  (void)unused;
+  for (;;) __asm__ volatile("pause");
+}
+
+static void *post_exec_worker(void *unused) {
+  (void)unused;
+  char *argv[] = {"second-worker-argv-zero", "after-second-worker-exec", NULL};
+  execve("/proc/thread-self/exe", argv, environ);
+  _exit(errno);
+}
+
+static void *execer(void *unused) {
+  (void)unused;
+  pid_t pid = getpid();
+  pid_t tid = (pid_t)syscall(SYS_gettid);
+  if (pid == tid) _exit(30);
+  char path[128];
+  if (strcmp(selector, "thread-self") == 0) {
+    strcpy(path, "/proc/thread-self/exe");
+  } else if (strcmp(selector, "tid") == 0) {
+    snprintf(path, sizeof(path), "/proc/%d/exe", tid);
+  } else if (strcmp(selector, "self-task") == 0) {
+    snprintf(path, sizeof(path), "/proc/self/task/%d/exe", tid);
+  } else if (strcmp(selector, "tgid-task") == 0) {
+    snprintf(path, sizeof(path), "/proc/%d/task/%d/exe", pid, tid);
+  } else if (strcmp(selector, "tid-group-leader-task") == 0) {
+    snprintf(path, sizeof(path), "/proc/%d/task/%d/exe", tid, pid);
+  } else {
+    _exit(31);
+  }
+  char old_tid[32];
+  snprintf(old_tid, sizeof(old_tid), "%d", tid);
+  char *argv[] = {"worker-argv-zero", "after-worker-exec", old_tid, NULL};
+  execve(path, argv, environ);
+  _exit(errno);
+}
+
+int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "after-second-worker-exec") == 0) {
+    pid_t pid = getpid();
+    pid_t tid = (pid_t)syscall(SYS_gettid);
+    if (pid != tid || !comm_is_exe()) return 46;
+    if (write(STDOUT_FILENO, "worker exec twice ok\n", 21) != 21) return 47;
+    return 0;
+  }
+
+  if (argc == 3 && strcmp(argv[1], "after-worker-exec") == 0) {
+    pid_t pid = getpid();
+    pid_t tid = (pid_t)syscall(SYS_gettid);
+    if (pid != tid) return 40;
+
+    char expected[4096];
+    ssize_t expected_length = readlink("/proc/self/exe", expected, sizeof(expected));
+    if (expected_length <= 0 || !comm_is_exe()) return 41;
+    char numeric[128];
+    char self_task[128];
+    char tgid_task[128];
+    snprintf(numeric, sizeof(numeric), "/proc/%d/exe", tid);
+    snprintf(self_task, sizeof(self_task), "/proc/self/task/%d/exe", tid);
+    snprintf(tgid_task, sizeof(tgid_task), "/proc/%d/task/%d/exe", pid, tid);
+    if (!same_link("/proc/thread-self/exe", expected, expected_length) ||
+        !same_link(numeric, expected, expected_length) ||
+        !same_link(self_task, expected, expected_length) ||
+        !same_link(tgid_task, expected, expected_length)) return 42;
+
+    pid_t old_tid = (pid_t)strtol(argv[2], NULL, 10);
+    void *head = NULL;
+    size_t length = 0;
+    errno = 0;
+    if (old_tid == pid || syscall(SYS_get_robust_list, old_tid, &head, &length) != -1 ||
+        errno != ESRCH) return 43;
+    pthread_t post_exec;
+    if (pthread_create(&post_exec, NULL, post_exec_worker, NULL) != 0 ||
+        pthread_join(post_exec, NULL) != 0) return 44;
+    return 45;
+  }
+
+  if (argc != 2) return 10;
+  selector = argv[1];
+  pthread_t other;
+  pthread_t worker;
+  if (pthread_create(&other, NULL, sibling, NULL) != 0) return 11;
+  if (pthread_create(&worker, NULL, execer, NULL) != 0) return 12;
+  for (;;) __asm__ volatile("pause");
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    for selector in [
+        "thread-self",
+        "tid",
+        "self-task",
+        "tgid-task",
+        "tid-group-leader-task",
+    ] {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend.set_root_pid(37).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable, selector],
+                &["PATH=/usr/bin:/bin"],
+                &root.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        assert_eq!(code, 0, "selector={selector}");
+        assert_eq!(stdout, b"worker exec twice ok\n", "selector={selector}");
+        assert!(stderr.is_empty(), "selector={selector}");
+    }
+
+    // A Tool-driven worker has async Tool and scheduler state that the
+    // direct vCPU handoff cannot transfer to the replacement leader. Both Tool
+    // ownership modes therefore fail visibly until that handoff exists.
+    for ownership in [None, Some(ThreadOwnership::Host)] {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend.set_root_pid(37).unwrap();
+        if let Some(ownership) = ownership {
+            backend.set_thread_ownership(ownership);
+        }
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable, "thread-self"],
+                &["PATH=/usr/bin:/bin"],
+                &root.0,
+            )
+            .unwrap();
+        let (log, code, stdout, stderr) =
+            futures::executor::block_on(backend.run_static_elf_with_tool::<PostExecTool>((), true))
+                .unwrap();
+        assert_eq!(code, libc::ENOTSUP, "ownership={ownership:?}");
+        assert_eq!(
+            log.calls(),
+            1,
+            "refused worker exec ran a post-exec hook; ownership={ownership:?}"
+        );
+        assert!(stdout.is_empty(), "ownership={ownership:?}");
+        assert!(stderr.is_empty(), "ownership={ownership:?}");
+    }
+}
+
+#[test]
+fn tool_worker_exit_does_not_wait_for_process_child() {
+    if !kvm_available("KVM worker-exit child ownership test") {
+        return;
+    }
+
+    let root = TestDirectory::new();
+    let executable = compile_c_program(
+        &root.0,
+        "worker-exit-process-child",
+        r#"
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static const char *started_path;
+static const char *release_path;
+
+static int touch(const char *path) {
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0) return -1;
+  return close(fd);
+}
+
+static int exists(const char *path) {
+  return access(path, F_OK) == 0;
+}
+
+static void *finish_worker(void *unused) {
+  (void)unused;
+  return NULL;
+}
+
+int main(int argc, char **argv) {
+  if (argc != 3) return 10;
+  started_path = argv[1];
+  release_path = argv[2];
+
+  pid_t child = fork();
+  if (child < 0) return 11;
+  if (child == 0) {
+    if (touch(started_path) != 0) _exit(20);
+    while (!exists(release_path)) __asm__ volatile("pause");
+    _exit(0);
+  }
+
+  while (!exists(started_path)) __asm__ volatile("pause");
+  pthread_t worker;
+  if (pthread_create(&worker, NULL, finish_worker, NULL) != 0) return 12;
+  if (pthread_join(worker, NULL) != 0) return 13;
+  if (getpid() <= 0) return 17;
+  if (touch(release_path) != 0) return 14;
+
+  int status = 0;
+  if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 0) return 15;
+  if (write(STDOUT_FILENO, "worker exit did not wait\n", 25) != 25) return 16;
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let started = root.0.join("process-child-started");
+    let release = root.0.join("process-child-release");
+    let started = started.to_str().unwrap();
+    let release = release.to_str().unwrap();
+
+    let native = std::process::Command::new(executable)
+        .args([started, release])
+        .output()
+        .unwrap();
+    assert!(native.status.success(), "native: {native:?}");
+    assert_eq!(native.stdout, b"worker exit did not wait\n");
+    assert!(native.stderr.is_empty());
+    std::fs::remove_file(started).unwrap();
+    std::fs::remove_file(release).unwrap();
+
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend.set_root_pid(37).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable, started, release],
+            &["PATH=/usr/bin:/bin"],
+            &root.0,
+        )
+        .unwrap();
+
+    // If an ordinary worker exit waits on the process-wide child set, the
+    // leader cannot create the release file because it is waiting in
+    // pthread_join. This host-side release bounds that failure mode.
+    let watchdog_release = std::path::PathBuf::from(release);
+    let (done_sender, done_receiver) = std::sync::mpsc::channel();
+    let watchdog = std::thread::spawn(move || {
+        if done_receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .is_ok()
+        {
+            false
+        } else {
+            std::fs::write(watchdog_release, b"watchdog").unwrap();
+            true
+        }
+    });
+    let result = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<FollowThreadsTool>((), true),
+    );
+    let _ = done_sender.send(());
+    let watchdog_fired = watchdog.join().unwrap();
+    assert!(
+        !watchdog_fired,
+        "a worker exit waited for a process child owned by the thread group"
+    );
+    let (log, code, stdout, stderr) = result.unwrap();
+    assert_eq!(code, 0);
+    assert_eq!(stdout, b"worker exit did not wait\n");
+    assert!(stderr.is_empty());
+    assert!(log.leader_continuation_checks() >= 1);
+    let process_exit_calls = log.process_exit_calls();
+    assert_eq!(process_exit_calls.len(), 2, "{process_exit_calls:?}");
+    assert_eq!(
+        process_exit_calls.get(&37),
+        Some(&1),
+        "the root process-exit callback must run exactly once"
+    );
+    assert!(
+        process_exit_calls.values().all(|calls| *calls == 1),
+        "each process-exit callback must run exactly once: {process_exit_calls:?}"
+    );
+}
+
+#[test]
+fn nonleader_exec_observes_post_clone_fs_and_sighand_updates() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM shared exec-state test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let root = TestDirectory::new();
+    let new_cwd = root.0.join("post-clone-cwd");
+    std::fs::create_dir(&new_cwd).unwrap();
+    let executable = compile_c_program(
+        &root.0,
+        "worker-exec-shared-state",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+extern char **environ;
+static _Atomic int may_exec;
+static const char *expected_cwd;
+
+static void *execer(void *unused) {
+  (void)unused;
+  while (!atomic_load_explicit(&may_exec, memory_order_acquire))
+    __asm__ volatile("pause");
+  char *next[] = {"worker-argv-zero", "after-worker-exec", (char *)expected_cwd, NULL};
+  execve("/proc/thread-self/exe", next, environ);
+  _exit(errno);
+}
+
+int main(int argc, char **argv) {
+  if (argc == 3 && strcmp(argv[1], "after-worker-exec") == 0) {
+    char cwd[4096];
+    if (getcwd(cwd, sizeof(cwd)) == NULL || strcmp(cwd, argv[2]) != 0) return 40;
+
+    int fd = open("umask-witness", O_WRONLY | O_CREAT | O_EXCL, 0666);
+    if (fd < 0 || close(fd) != 0) return 41;
+    struct stat metadata;
+    if (stat("umask-witness", &metadata) != 0 ||
+        (metadata.st_mode & 0777) != 0600) return 42;
+
+    struct sigaction current;
+    memset(&current, 0, sizeof(current));
+    if (sigaction(SIGUSR1, NULL, &current) != 0 || current.sa_handler != SIG_IGN)
+      return 43;
+    if (raise(SIGUSR1) != 0) return 44;
+    if (write(STDOUT_FILENO, "shared exec state ok\n", 21) != 21) return 45;
+    return 0;
+  }
+
+  if (argc != 2) return 10;
+  expected_cwd = argv[1];
+  pthread_t worker;
+  if (pthread_create(&worker, NULL, execer, NULL) != 0) return 11;
+  if (chdir(expected_cwd) != 0) return 12;
+  (void)umask(077);
+  struct sigaction ignored;
+  memset(&ignored, 0, sizeof(ignored));
+  ignored.sa_handler = SIG_IGN;
+  sigemptyset(&ignored.sa_mask);
+  if (sigaction(SIGUSR1, &ignored, NULL) != 0) return 13;
+  atomic_store_explicit(&may_exec, 1, memory_order_release);
+  for (;;) __asm__ volatile("pause");
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let new_cwd = new_cwd.to_str().unwrap();
+
+    let native = std::process::Command::new(executable)
+        .arg(new_cwd)
+        .current_dir(&root.0)
+        .output()
+        .unwrap();
+    assert!(native.status.success(), "native: {native:?}");
+    assert_eq!(native.stdout, b"shared exec state ok\n");
+    assert!(native.stderr.is_empty());
+    std::fs::remove_file(root.0.join("post-clone-cwd/umask-witness")).unwrap();
+
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend.set_root_pid(37).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable, new_cwd],
+            &["PATH=/usr/bin:/bin"],
+            &root.0,
+        )
+        .unwrap();
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!(code, 0);
+    assert_eq!(stdout, b"shared exec state ok\n");
+    assert!(stderr.is_empty());
+    assert_eq!(
+        std::fs::metadata(root.0.join("post-clone-cwd/umask-witness"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600,
+    );
+}
+
+#[test]
+fn nonleader_exec_preserves_wait4_and_waitid_process_children() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM worker-exec child-wait test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let root = TestDirectory::new();
+    let executable = compile_c_program(
+        &root.0,
+        "worker-exec-wait-child",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char **environ;
+static pid_t saved_child;
+static const char *saved_mode;
+
+static void *execer(void *unused) {
+  (void)unused;
+  char child[32];
+  snprintf(child, sizeof(child), "%d", saved_child);
+  char *next[] = {"worker-argv-zero", "after-worker-exec", (char *)saved_mode, child, NULL};
+  execve("/proc/thread-self/exe", next, environ);
+  _exit(errno);
+}
+
+int main(int argc, char **argv) {
+  if (argc == 4 && strcmp(argv[1], "after-worker-exec") == 0) {
+    pid_t child = (pid_t)strtol(argv[3], NULL, 10);
+    if (strcmp(argv[2], "wait4") == 0) {
+      int status = 0;
+      if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+          WEXITSTATUS(status) != 37) return 40;
+      if (write(STDOUT_FILENO, "wait4 child 37\n", 15) != 15) return 41;
+      return 0;
+    }
+    if (strcmp(argv[2], "waitid") == 0) {
+      siginfo_t info;
+      memset(&info, 0, sizeof(info));
+      if (waitid(P_PID, (id_t)child, &info, WEXITED) != 0 ||
+          info.si_pid != child || info.si_code != CLD_EXITED ||
+          info.si_status != 37) return 42;
+      if (write(STDOUT_FILENO, "waitid child 37\n", 16) != 16) return 43;
+      return 0;
+    }
+    return 44;
+  }
+
+  if (argc != 2) return 10;
+  pid_t child = fork();
+  if (child < 0) return 11;
+  if (child == 0) _exit(37);
+  saved_child = child;
+  saved_mode = argv[1];
+  pthread_t worker;
+  if (pthread_create(&worker, NULL, execer, NULL) != 0) return 12;
+  for (;;) __asm__ volatile("pause");
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    for (mode, expected) in [
+        ("wait4", b"wait4 child 37\n".as_slice()),
+        ("waitid", b"waitid child 37\n".as_slice()),
+    ] {
+        let native = std::process::Command::new(executable)
+            .arg(mode)
+            .output()
+            .unwrap();
+        assert!(native.status.success(), "native mode={mode}: {native:?}");
+        assert_eq!(native.stdout, expected, "native mode={mode}");
+        assert!(native.stderr.is_empty(), "native mode={mode}");
+
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend.set_root_pid(37).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable, mode],
+                &["PATH=/usr/bin:/bin"],
+                &root.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        assert_eq!(code, 0, "mode={mode}");
+        assert_eq!(stdout, expected, "mode={mode}");
+        assert!(stderr.is_empty(), "mode={mode}");
+    }
+}
+
+#[test]
+fn nonleader_exec_fails_visibly_while_a_direct_fork_child_blocks_the_leader() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM blocked-leader exec test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let root = TestDirectory::new();
+    let executable = compile_c_program(
+        &root.0,
+        "worker-exec-blocked-leader",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char **environ;
+static const char *started_path;
+static const char *attempt_path;
+static const char *release_path;
+
+static int touch(const char *path) {
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0) return -1;
+  return close(fd);
+}
+
+static int exists(const char *path) {
+  return access(path, F_OK) == 0;
+}
+
+static void *execer(void *unused) {
+  (void)unused;
+  while (!exists(started_path)) __asm__ volatile("pause");
+  if (touch(attempt_path) != 0) _exit(30);
+  char *next[] = {"worker-argv-zero", "unexpected-success", NULL};
+  execve("/proc/thread-self/exe", next, environ);
+  if (errno != ENOTSUP) _exit(31);
+  if (touch(release_path) != 0) _exit(32);
+  return NULL;
+}
+
+int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "unexpected-success") == 0) return 77;
+  if (argc != 4) return 10;
+  started_path = argv[1];
+  attempt_path = argv[2];
+  release_path = argv[3];
+
+  pthread_t worker;
+  if (pthread_create(&worker, NULL, execer, NULL) != 0) return 11;
+  pid_t child = fork();
+  if (child < 0) return 12;
+  if (child == 0) {
+    if (touch(started_path) != 0) _exit(20);
+    while (!exists(attempt_path)) __asm__ volatile("pause");
+    for (unsigned outer = 0; outer < 20000; ++outer) {
+      if (exists(release_path)) _exit(0);
+      for (unsigned inner = 0; inner < 1000; ++inner)
+        __asm__ volatile("pause");
+    }
+    _exit(21);
+  }
+
+  if (pthread_join(worker, NULL) != 0) return 13;
+  int status = 0;
+  if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 0) return 14;
+  if (write(STDOUT_FILENO, "blocked exec refused\n", 21) != 21) return 15;
+  return 0;
+}
+"#,
+    );
+    let started = root.0.join("child-started");
+    let attempt = root.0.join("exec-attempted");
+    let release = root.0.join("child-release");
+    let executable = executable.to_str().unwrap();
+    let started = started.to_str().unwrap();
+    let attempt = attempt.to_str().unwrap();
+    let release = release.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend.set_root_pid(37).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable, started, attempt, release],
+            &["PATH=/usr/bin:/bin"],
+            &root.0,
+        )
+        .unwrap();
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!(code, 0);
+    assert_eq!(stdout, b"blocked exec refused\n");
+    assert!(stderr.is_empty());
+}
+
+#[test]
+fn leader_exec_fails_visibly_while_a_worker_runs_a_direct_fork_child() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM blocked-worker exec test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let root = TestDirectory::new();
+    let executable = compile_c_program(
+        &root.0,
+        "leader-exec-blocked-worker",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char **environ;
+static const char *started_path;
+static const char *release_path;
+
+static int touch(const char *path) {
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0) return -1;
+  return close(fd);
+}
+
+static int exists(const char *path) {
+  return access(path, F_OK) == 0;
+}
+
+static void *forker(void *unused) {
+  (void)unused;
+  pid_t child = fork();
+  if (child < 0) _exit(30);
+  if (child == 0) {
+    if (touch(started_path) != 0) _exit(31);
+    while (!exists(release_path)) __asm__ volatile("pause");
+    _exit(0);
+  }
+  int status = 0;
+  if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 0) _exit(32);
+  return NULL;
+}
+
+int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "unexpected-success") == 0) return 77;
+  if (argc != 3) return 10;
+  started_path = argv[1];
+  release_path = argv[2];
+
+  pthread_t worker;
+  if (pthread_create(&worker, NULL, forker, NULL) != 0) return 11;
+  while (!exists(started_path)) __asm__ volatile("pause");
+
+  char *next[] = {"leader-argv-zero", "unexpected-success", NULL};
+  int exec_result = execve("/proc/self/exe", next, environ);
+  int exec_errno = errno;
+  if (touch(release_path) != 0) return 13;
+  if (exec_result != -1 || exec_errno != ENOTSUP) return 12;
+  if (pthread_join(worker, NULL) != 0) return 14;
+  if (write(STDOUT_FILENO, "inverse exec refused\n", 21) != 21) return 15;
+  return 0;
+}
+"#,
+    );
+    let started = root.0.join("worker-child-started");
+    let release = root.0.join("worker-child-release");
+    let executable = executable.to_str().unwrap();
+    let started = started.to_str().unwrap();
+    let release = release.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend.set_root_pid(37).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable, started, release],
+            &["PATH=/usr/bin:/bin"],
+            &root.0,
+        )
+        .unwrap();
+
+    // The release file is a test-only deadlock fuse. The correct refusal lets
+    // the old leader create it immediately; the buggy leader-exec path blocks
+    // joining the worker until this host watchdog releases the nested child.
+    let watchdog_release = std::path::PathBuf::from(release);
+    let (done_sender, done_receiver) = std::sync::mpsc::channel();
+    let watchdog = std::thread::spawn(move || {
+        if done_receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .is_ok()
+        {
+            false
+        } else {
+            std::fs::write(watchdog_release, b"watchdog").unwrap();
+            true
+        }
+    });
+    backend.set_thread_ownership(ThreadOwnership::Host);
+    let result =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<PostExecTool>((), true));
+    let _ = done_sender.send(());
+    let watchdog_fired = watchdog.join().unwrap();
+    assert!(
+        !watchdog_fired,
+        "leader exec blocked while joining a worker-owned process child"
+    );
+    let (log, code, stdout, stderr) = result.unwrap();
+    assert_eq!(log.calls(), 1);
+    assert_eq!(code, 0);
+    assert_eq!(stdout, b"inverse exec refused\n");
     assert!(stderr.is_empty());
 }
 

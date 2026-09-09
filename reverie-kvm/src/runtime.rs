@@ -50,6 +50,7 @@ use crate::bootstrap::set_user_segment_base;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
 use crate::executor::conventional_exit_code;
+use crate::vm::ProcessActionOutcome;
 
 const STACK_CAPACITY: usize = 4096;
 const TOOL_STACK_BOTTOM: u64 = TOOL_STACK_TOP - STACK_CAPACITY as u64;
@@ -125,7 +126,9 @@ where
 }
 
 enum InjectionCompletion {
-    Returns,
+    Returns {
+        syscall_result: Option<i64>,
+    },
     DoesNotReturn {
         image_replaced: bool,
         process_exited: bool,
@@ -172,7 +175,11 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
     where
         T: 'a,
     {
-        Box::pin(async { Ok(InjectionCompletion::Returns) })
+        Box::pin(async {
+            Ok(InjectionCompletion::Returns {
+                syscall_result: None,
+            })
+        })
     }
 }
 
@@ -285,12 +292,13 @@ where
                         process_exited: true,
                     }
                 } else {
-                    InjectionCompletion::Returns
+                    InjectionCompletion::Returns {
+                        syscall_result: None,
+                    }
                 });
             };
-            let image_replaced = matches!(&action, ProcessAction::Exec { .. });
             hide_tool_scratch(&self.memory)?;
-            let action_result: Result<()> = async {
+            let action_result: Result<ProcessActionOutcome> = async {
                 match self.process_context {
                     ProcessExecutionContext::SyscallBoundary(boundary) => {
                         let result = self
@@ -306,34 +314,34 @@ where
                         unsafe {
                             (boundary.return_slot as *mut u64).write(0);
                         }
-                        self.backend
+                        let outcome = self
+                            .backend
                             .run_process_action_with_tool(self.executor, action, true, context)
                             .await?;
                         self.process_context = ProcessExecutionContext::SyscallReturn;
-                        Ok(())
+                        Ok(outcome)
                     }
                     ProcessExecutionContext::SyscallReturn => {
                         self.backend
                             .run_process_action_with_tool(self.executor, action, false, context)
-                            .await?;
-                        Ok(())
+                            .await
                     }
                     ProcessExecutionContext::InitialExec(_)
                     | ProcessExecutionContext::Lifecycle => match action {
                         ProcessAction::Exec {
-                            executable_path,
-                            image,
+                            executable,
+                            comm,
                             argv,
                             envp,
                         } => {
                             self.backend.exec_process(
                                 self.executor,
-                                &executable_path,
-                                &image,
+                                &executable,
+                                &comm,
                                 &argv,
                                 &envp,
                             )?;
-                            Ok(())
+                            Ok(ProcessActionOutcome::replaced())
                         }
                         _ => Err(Error::UnexpectedVcpuExit(
                             "fork/clone injection requires a guest syscall boundary".to_owned(),
@@ -346,16 +354,18 @@ where
             }
             .await;
             let expose_result = expose_tool_scratch(&self.memory);
-            action_result?;
+            let outcome = action_result?;
             expose_result?;
             *self.process_completed = true;
-            if image_replaced || self.executor.has_pending_exit() {
+            if outcome.image_replaced || self.executor.has_pending_exit() {
                 Ok(InjectionCompletion::DoesNotReturn {
-                    image_replaced,
+                    image_replaced: outcome.image_replaced,
                     process_exited: self.executor.has_pending_exit(),
                 })
             } else {
-                Ok(InjectionCompletion::Returns)
+                Ok(InjectionCompletion::Returns {
+                    syscall_result: Some(outcome.syscall_result),
+                })
             }
         })
     }
@@ -504,7 +514,7 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> std::result::Result<i64, Errno> {
         let request = SyscallRequest::from_syscall(syscall);
-        let result = raw_to_result(self.executor.execute(&request, &self.memory));
+        let mut result = raw_to_result(self.executor.execute(&request, &self.memory));
         if result.is_ok() {
             let context = ToolContext {
                 pid: self.pid,
@@ -530,7 +540,11 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
                     });
                     return std::future::pending().await;
                 }
-                Ok(InjectionCompletion::Returns) => {}
+                Ok(InjectionCompletion::Returns { syscall_result }) => {
+                    if let Some(syscall_result) = syscall_result {
+                        result = raw_to_result(syscall_result);
+                    }
+                }
                 Err(error) => {
                     self.signal_handler(HandlerSignal::RuntimeError(error));
                     return std::future::pending().await;
@@ -995,6 +1009,20 @@ where
     }
 }
 
+#[derive(Clone, Copy)]
+struct ToolExit {
+    status: ExitStatus,
+    process_exited: bool,
+}
+impl ToolExit {
+    fn for_executor(executor: &ElfExecutor, status: ExitStatus) -> Self {
+        Self {
+            status,
+            process_exited: executor.is_thread_group_leader(),
+        }
+    }
+}
+
 async fn notify_tool_exit<T: Tool>(
     tool: T,
     pid: Pid,
@@ -1002,7 +1030,7 @@ async fn notify_tool_exit<T: Tool>(
     global_state: &T::GlobalState,
     config: &<T::GlobalState as GlobalTool>::Config,
     thread_state: T::ThreadState,
-    status: ExitStatus,
+    exit: ToolExit,
 ) -> Result<()> {
     // on_exit_thread deregisters this thread from the scheduler, so its RPCs
     // must be attributed to the exiting thread's tid.
@@ -1011,16 +1039,19 @@ async fn notify_tool_exit<T: Tool>(
         state: global_state,
         config,
     };
-    tool.on_exit_thread(tid, &thread_global, thread_state, status)
+    tool.on_exit_thread(tid, &thread_global, thread_state, exit.status)
         .await
         .map_err(Error::Reverie)?;
+    if !exit.process_exited {
+        return Ok(());
+    }
     // The process-exit hook belongs to the thread-group leader (tid == pid).
     let process_global = KvmGlobal {
         tid: pid,
         state: global_state,
         config,
     };
-    tool.on_exit_process(pid, &process_global, status)
+    tool.on_exit_process(pid, &process_global, exit.status)
         .await
         .map_err(Error::Reverie)
 }
@@ -1331,7 +1362,10 @@ impl KvmBackend {
             if exit.group {
                 self.request_guest_thread_group_exit(exit.status);
             }
-            self.cancel_guest_threads();
+            if executor.is_thread_group_leader() {
+                self.cancel_guest_threads();
+            }
+            executor.join_child_processes_on_process_exit()?;
             notify_tool_exit(
                 tool,
                 pid,
@@ -1339,7 +1373,7 @@ impl KvmBackend {
                 global_state.as_ref(),
                 config,
                 thread_state,
-                exit.status,
+                ToolExit::for_executor(executor, exit.status),
             )
             .await?;
             let (stdout, stderr) = executor.take_output();
@@ -1373,7 +1407,10 @@ impl KvmBackend {
                     if exit.group {
                         self.request_guest_thread_group_exit(exit.status);
                     }
-                    self.cancel_guest_threads();
+                    if executor.is_thread_group_leader() {
+                        self.cancel_guest_threads();
+                    }
+                    executor.join_child_processes_on_process_exit()?;
                     notify_tool_exit(
                         tool,
                         pid,
@@ -1381,7 +1418,7 @@ impl KvmBackend {
                         global_state.as_ref(),
                         config,
                         thread_state,
-                        exit.status,
+                        ToolExit::for_executor(executor, exit.status),
                     )
                     .await?;
                     let (stdout, stderr) = executor.take_output();
@@ -1411,7 +1448,7 @@ impl KvmBackend {
                     global_state.as_ref(),
                     config,
                     thread_state,
-                    ExitStatus::Exited(255),
+                    ToolExit::for_executor(executor, ExitStatus::Exited(255)),
                 )
                 .await?;
                 return Err(error);
@@ -1425,7 +1462,10 @@ impl KvmBackend {
             if exit.group {
                 self.request_guest_thread_group_exit(exit.status);
             }
-            self.cancel_guest_threads();
+            if executor.is_thread_group_leader() {
+                self.cancel_guest_threads();
+            }
+            executor.join_child_processes_on_process_exit()?;
             notify_tool_exit(
                 tool,
                 pid,
@@ -1433,7 +1473,7 @@ impl KvmBackend {
                 global_state.as_ref(),
                 config,
                 thread_state,
-                exit.status,
+                ToolExit::for_executor(executor, exit.status),
             )
             .await?;
             let (stdout, stderr) = executor.take_output();
@@ -1445,7 +1485,10 @@ impl KvmBackend {
         let thread_ownership = self.thread_ownership;
         loop {
             if let Some(status) = self.guest_thread_group_exit_status() {
-                self.cancel_guest_threads();
+                if executor.is_thread_group_leader() {
+                    self.cancel_guest_threads();
+                }
+                executor.join_child_processes_on_process_exit()?;
                 notify_tool_exit(
                     tool,
                     pid,
@@ -1453,7 +1496,7 @@ impl KvmBackend {
                     global_state.as_ref(),
                     config,
                     thread_state,
-                    status,
+                    ToolExit::for_executor(executor, status),
                 )
                 .await?;
                 let (stdout, stderr) = executor.take_output();
@@ -1611,7 +1654,6 @@ impl KvmBackend {
             }
             let mut replaced_image = handler_replaced_image;
             if let Some(action) = pending_process {
-                replaced_image |= matches!(&action, ProcessAction::Exec { .. });
                 let context: ToolContext<'_, T> = ToolContext {
                     pid,
                     tid,
@@ -1621,8 +1663,10 @@ impl KvmBackend {
                     subscriptions: subscriptions.clone(),
                     pending_child_starts: Arc::new(Mutex::new(Vec::new())),
                 };
-                self.run_process_action_with_tool(executor, action, true, context)
+                let outcome = self
+                    .run_process_action_with_tool(executor, action, true, context)
                     .await?;
+                replaced_image |= outcome.image_replaced;
                 executor.start_pending_child_processes()?;
             }
             if replaced_image {
@@ -1650,7 +1694,7 @@ impl KvmBackend {
                         global_state.as_ref(),
                         config,
                         thread_state,
-                        ExitStatus::Exited(255),
+                        ToolExit::for_executor(executor, ExitStatus::Exited(255)),
                     )
                     .await?;
                     return Err(error);
@@ -1661,11 +1705,13 @@ impl KvmBackend {
             }
             pending_exit = pending_exit.or_else(|| executor.take_exit());
             if let Some(exit) = pending_exit {
-                executor.join_all_child_processes()?;
                 if exit.group {
                     self.request_guest_thread_group_exit(exit.status);
                 }
-                self.cancel_guest_threads();
+                if executor.is_thread_group_leader() {
+                    self.cancel_guest_threads();
+                }
+                executor.join_child_processes_on_process_exit()?;
                 notify_tool_exit(
                     tool,
                     pid,
@@ -1673,7 +1719,7 @@ impl KvmBackend {
                     global_state.as_ref(),
                     config,
                     thread_state,
-                    exit.status,
+                    ToolExit::for_executor(executor, exit.status),
                 )
                 .await?;
                 let (stdout, stderr) = executor.take_output();

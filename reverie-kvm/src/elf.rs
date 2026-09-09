@@ -8,6 +8,7 @@
 
 use std::fs::OpenOptions;
 use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -182,6 +183,13 @@ impl TaskLifecycleTable {
         }
     }
 
+    /// Replace every thread in `tgid` with the execing thread, whose Linux TID
+    /// changes to the thread-group ID when a non-leader successfully execs.
+    pub(crate) fn promote_execing_thread(&mut self, tgid: i32) -> u64 {
+        self.tasks.retain(|_, task| task.tgid != tgid);
+        self.register(tgid, tgid, true)
+    }
+
     pub(crate) fn set_robust_list(&mut self, tid: i32, head: u64) -> bool {
         let Some(task) = self.tasks.get_mut(&tid) else {
             return false;
@@ -219,11 +227,17 @@ pub(crate) struct LoadedStaticElf {
     /// Host path of the image loaded for this guest. This is independent of
     /// the guest-controlled `argv[0]` and backs `/proc/self/exe`.
     pub executable_path: PathBuf,
+    /// Open handle for the loaded executable. Linux's procfs renders this
+    /// file object's current path and appends ` (deleted)` after unlink.
+    pub executable_file: Option<std::sync::Arc<std::fs::File>>,
     /// Stable bytes of the current executable image.
     ///
     /// A self-exec through `/proc/self/exe` must keep using the image that is
     /// already running even if its directory entry is unlinked or replaced.
     pub executable_image: std::sync::Arc<[u8]>,
+    /// Linux's task name, derived from the basename of the filename passed to
+    /// exec rather than from the canonical executable target or `argv[0]`.
+    pub comm: Vec<u8>,
     /// The guest-provided `argv[0]`, used for `/proc/self/cmdline`.
     pub argv0: Vec<u8>,
     pub cwd: PathBuf,
@@ -341,7 +355,9 @@ impl LoadedStaticElf {
             mmap_next: self.mmap_next,
             mmap_limit: self.mmap_limit,
             executable_path: self.executable_path.clone(),
+            executable_file: self.executable_file.clone(),
             executable_image: self.executable_image.clone(),
+            comm: self.comm.clone(),
             argv0: self.argv0.clone(),
             cwd: self.cwd.clone(),
             cwd_fd: self.cwd_fd.try_clone()?,
@@ -709,6 +725,17 @@ fn load_executable(
 
     let executable_path =
         resolve_executable_path(argv0, envp, cwd).unwrap_or_else(|_| PathBuf::from(argv0));
+    // The embedding API supplies bytes and a nominal argv[0] independently,
+    // so initial-image identity remains deliberately best effort. In-guest
+    // execs replace these fields from the one file they actually opened.
+    let executable_file = std::fs::File::open(&executable_path)
+        .ok()
+        .map(std::sync::Arc::new);
+    let comm = Path::new(argv0)
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new(argv0))
+        .as_bytes()
+        .to_vec();
 
     Ok(LoadedStaticElf {
         entry_point,
@@ -720,7 +747,9 @@ fn load_executable(
         mmap_next,
         mmap_limit,
         executable_path,
+        executable_file,
         executable_image: std::sync::Arc::from(image),
+        comm,
         argv0: argv0.as_bytes().to_vec(),
         cwd: cwd.to_owned(),
         cwd_fd,

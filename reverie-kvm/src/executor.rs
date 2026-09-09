@@ -198,12 +198,23 @@ impl CapturedOutput {
     }
 }
 
-fn read_executable_file(path: &std::path::Path) -> Result<(std::path::PathBuf, Vec<u8>), i64> {
+#[derive(Debug)]
+pub(crate) struct ResolvedExecutable {
+    pub path: std::path::PathBuf,
+    pub file: Option<Arc<std::fs::File>>,
+    pub image: Vec<u8>,
+}
+
+fn read_executable_file(path: &std::path::Path) -> Result<ResolvedExecutable, i64> {
     let mut file = std::fs::File::open(path).map_err(io_error)?;
     let executable_path = canonical_fd_path(file.as_raw_fd())?;
     let mut image = Vec::new();
     file.read_to_end(&mut image).map_err(io_error)?;
-    Ok((executable_path, image))
+    Ok(ResolvedExecutable {
+        path: executable_path,
+        file: Some(Arc::new(file)),
+        image,
+    })
 }
 
 pub(crate) enum ProcessAction {
@@ -228,8 +239,8 @@ pub(crate) enum ProcessAction {
         tls: Option<u64>,
     },
     Exec {
-        executable_path: std::path::PathBuf,
-        image: Vec<u8>,
+        executable: ResolvedExecutable,
+        comm: Vec<u8>,
         argv: Vec<String>,
         envp: Vec<String>,
     },
@@ -994,26 +1005,57 @@ pub(crate) struct ElfExecutor {
     task_generation: u64,
     address_space: Arc<std::sync::Mutex<AddressSpaceState>>,
     file_table: Arc<std::sync::Mutex<FileTableState>>,
+    /// `CLONE_THREAD` requests accepted by this backend also require
+    /// `CLONE_FS`, so cwd and umask changes are process-wide rather than
+    /// snapshots taken when the worker was created.
+    fs_state: Arc<Mutex<FsState>>,
+    /// Accepted thread clones require `CLONE_SIGHAND`; every thread therefore
+    /// observes disposition changes made by its siblings.
+    signal_actions: Arc<Mutex<std::collections::BTreeMap<i32, [u8; 32]>>>,
     output: Option<CapturedOutput>,
     owns_output: bool,
     next_pid: Arc<AtomicI32>,
     sigchld_auto_reap: Arc<AtomicBool>,
-    // TODO-HUMAN-REVIEW(PR-235): Review concurrent KVM process lifecycle ownership.
-    pending_processes: std::collections::BTreeMap<i32, PendingProcess>,
-    completed_processes: Vec<std::thread::JoinHandle<crate::Result<()>>>,
-    child_completion_sender: std::sync::mpsc::Sender<i32>,
-    child_completion_receiver: Mutex<std::sync::mpsc::Receiver<i32>>,
+    // Process children belong to the thread group, not to whichever
+    // thread happened to create them. Sharing this state also preserves every
+    // zombie, running-child handle, and completion channel when a worker execs.
+    child_wait: Arc<Mutex<ChildWaitState>>,
     process_action: Option<ProcessAction>,
     pending_segment: Option<(SegmentBase, u64)>,
     exit_status: Option<ExitStatus>,
     exit_group: bool,
     clear_child_tid: Option<u64>,
+    /// Whether a worker may use the direct vCPU leadership handoff.
+    /// Tool-driven processes disable it because their async Tool and scheduler
+    /// state cannot yet move safely from the displaced leader.
+    allow_nonleader_exec: bool,
 }
 
 struct PendingProcess {
     start: Option<std::sync::mpsc::Sender<()>>,
     completion: Arc<Mutex<Option<ChildCompletion>>>,
     handle: std::thread::JoinHandle<crate::Result<()>>,
+}
+
+struct ChildWaitState {
+    children: std::collections::BTreeMap<i32, ExitStatus>,
+    pending_processes: std::collections::BTreeMap<i32, PendingProcess>,
+    completed_processes: Vec<std::thread::JoinHandle<crate::Result<()>>>,
+    completion_sender: std::sync::mpsc::Sender<i32>,
+    completion_receiver: std::sync::mpsc::Receiver<i32>,
+}
+
+impl ChildWaitState {
+    fn new(children: std::collections::BTreeMap<i32, ExitStatus>) -> Self {
+        let (completion_sender, completion_receiver) = std::sync::mpsc::channel();
+        Self {
+            children,
+            pending_processes: std::collections::BTreeMap::new(),
+            completed_processes: Vec::new(),
+            completion_sender,
+            completion_receiver,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1050,6 +1092,29 @@ struct FileTableState {
     closed_standard_fds: std::collections::BTreeSet<i32>,
     proc_files: std::collections::BTreeMap<i32, u64>,
     fd_object_inodes: std::collections::BTreeMap<i32, Arc<GuestFileIdentity>>,
+}
+
+struct FsState {
+    cwd: std::path::PathBuf,
+    cwd_fd: std::fs::File,
+    umask: libc::mode_t,
+}
+
+impl FsState {
+    fn try_from_elf(state: &LoadedStaticElf) -> std::io::Result<Self> {
+        Ok(Self {
+            cwd: state.cwd.clone(),
+            cwd_fd: state.cwd_fd.try_clone()?,
+            umask: state.umask,
+        })
+    }
+
+    fn install(&self, state: &mut LoadedStaticElf) -> std::io::Result<()> {
+        state.cwd.clone_from(&self.cwd);
+        state.cwd_fd = self.cwd_fd.try_clone()?;
+        state.umask = self.umask;
+        Ok(())
+    }
 }
 
 impl FileTableState {
@@ -1200,7 +1265,7 @@ impl ElfExecutor {
         (self.state.heap_base, self.state.program_break)
     }
 
-    pub(crate) fn new(state: LoadedStaticElf, capture_output: bool) -> Self {
+    pub(crate) fn new(mut state: LoadedStaticElf, capture_output: bool) -> Self {
         let task_generation = state
             .task_lifecycle
             .lock()
@@ -1212,25 +1277,31 @@ impl ElfExecutor {
         let file_table = Arc::new(std::sync::Mutex::new(
             FileTableState::try_from_elf(&state).expect("clone initial KVM file table"),
         ));
-        let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
+        let fs_state = Arc::new(Mutex::new(
+            FsState::try_from_elf(&state).expect("clone initial KVM fs state"),
+        ));
+        let signal_actions = Arc::new(Mutex::new(state.signal_actions.clone()));
+        let child_wait = Arc::new(Mutex::new(ChildWaitState::new(std::mem::take(
+            &mut state.children,
+        ))));
         Self {
             state,
             task_generation,
             address_space,
             file_table,
+            fs_state,
+            signal_actions,
             output: capture_output.then(CapturedOutput::default),
             owns_output: true,
             next_pid: Arc::new(AtomicI32::new(next_pid)),
             sigchld_auto_reap,
-            pending_processes: std::collections::BTreeMap::new(),
-            completed_processes: Vec::new(),
-            child_completion_sender,
-            child_completion_receiver: Mutex::new(child_completion_receiver),
+            child_wait,
             process_action: None,
             pending_segment: None,
             exit_status: None,
             exit_group: false,
             clear_child_tid: None,
+            allow_nonleader_exec: true,
         }
     }
 
@@ -1451,6 +1522,9 @@ impl ElfExecutor {
         if self.process_action.is_some() {
             return negative_errno(libc::EBUSY);
         }
+        if self.state.tid != self.state.pid && !self.allow_nonleader_exec {
+            return negative_errno(libc::ENOTSUP);
+        }
         if flags != 0 || dirfd != libc::AT_FDCWD {
             return negative_errno(libc::ENOTSUP);
         }
@@ -1467,12 +1541,13 @@ impl ElfExecutor {
             Ok(envp) => envp,
             Err(error) => return error,
         };
-        let (path, image) = match resolve_guest_exec_image(&self.state, path, &envp) {
+        let comm = exec_comm(&path);
+        let executable = match resolve_guest_exec_image(&self.state, path, &envp) {
             Ok(executable) => executable,
             Err(error) => return error,
         };
         let argv = if argv.is_empty() {
-            vec![path.to_string_lossy().into_owned()]
+            vec![executable.path.to_string_lossy().into_owned()]
         } else {
             argv
         };
@@ -1480,7 +1555,7 @@ impl ElfExecutor {
         // resolution. The KVM ELF loader only maps ELF images, so a guest that
         // execs a `#!`-script must have its interpreter resolved here, as the
         // kernel's binfmt_script loader does.
-        let (executable_path, image, argv) = match resolve_exec_shebang(path, image, argv) {
+        let (executable, argv) = match resolve_exec_shebang(executable, argv) {
             Ok(result) => result,
             Err(errno) => return errno,
         };
@@ -1495,7 +1570,7 @@ impl ElfExecutor {
         let envp_refs = envp.iter().map(String::as_str).collect::<Vec<_>>();
         if load_static_elf(
             &mut validation_memory,
-            &image,
+            &executable.image,
             &argv_refs,
             &envp_refs,
             &self.state.cwd,
@@ -1505,8 +1580,8 @@ impl ElfExecutor {
             return negative_errno(libc::ENOEXEC);
         }
         self.process_action = Some(ProcessAction::Exec {
-            executable_path,
-            image,
+            executable,
+            comm,
             argv,
             envp,
         });
@@ -1528,31 +1603,35 @@ impl ElfExecutor {
         }
         let address_space = Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state)));
         let file_table = Arc::new(std::sync::Mutex::new(FileTableState::try_from_elf(&state)?));
+        let fs_state = Arc::new(Mutex::new(FsState::try_from_elf(&state)?));
+        let signal_actions = Arc::new(Mutex::new(state.signal_actions.clone()));
         let task_generation = state
             .task_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .register(state.tid, state.pid, state.dumpable);
         let sigchld_auto_reap = sigchld_auto_reaps(&state);
-        let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
+        let child_wait = Arc::new(Mutex::new(ChildWaitState::new(std::mem::take(
+            &mut state.children,
+        ))));
         let child = Self {
             state,
             task_generation,
             address_space,
             file_table,
+            fs_state,
+            signal_actions,
             output: self.output.clone(),
             owns_output: false,
             next_pid: self.next_pid.clone(),
             sigchld_auto_reap: Arc::new(AtomicBool::new(sigchld_auto_reap)),
-            pending_processes: std::collections::BTreeMap::new(),
-            completed_processes: Vec::new(),
-            child_completion_sender,
-            child_completion_receiver: Mutex::new(child_completion_receiver),
+            child_wait,
             process_action: None,
             pending_segment: None,
             exit_status: None,
             exit_group: false,
             clear_child_tid: None,
+            allow_nonleader_exec: self.allow_nonleader_exec,
         };
         Ok(child)
     }
@@ -1572,25 +1651,24 @@ impl ElfExecutor {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .register(state.tid, state.pid, state.dumpable);
-        let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
         let child = Self {
             state,
             task_generation,
             address_space: self.address_space.clone(),
             file_table: self.file_table.clone(),
+            fs_state: self.fs_state.clone(),
+            signal_actions: self.signal_actions.clone(),
             output: self.output.clone(),
             owns_output: false,
             next_pid: self.next_pid.clone(),
             sigchld_auto_reap: self.sigchld_auto_reap.clone(),
-            pending_processes: std::collections::BTreeMap::new(),
-            completed_processes: Vec::new(),
-            child_completion_sender,
-            child_completion_receiver: Mutex::new(child_completion_receiver),
+            child_wait: self.child_wait.clone(),
             process_action: None,
             pending_segment: None,
             exit_status: None,
             exit_group: false,
             clear_child_tid: None,
+            allow_nonleader_exec: self.allow_nonleader_exec,
         };
         Ok(child)
     }
@@ -1608,21 +1686,25 @@ impl ElfExecutor {
     }
 
     pub(crate) fn child_completion_notifier(&self) -> std::sync::mpsc::Sender<i32> {
-        self.child_completion_sender.clone()
+        self.child_wait
+            .lock()
+            .expect("KVM child-wait lock poisoned")
+            .completion_sender
+            .clone()
     }
 
     pub(crate) fn child_completion(&self, status: ExitStatus) -> ChildCompletion {
         ChildCompletion::from_waitability(status, !self.sigchld_auto_reap.load(Ordering::SeqCst))
     }
 
-    pub(crate) fn record_child_completion(
-        &mut self,
+    fn record_child_completion_locked(
+        child_wait: &mut ChildWaitState,
         pid: i32,
         completion: ChildCompletion,
     ) -> crate::Result<()> {
         match completion {
             ChildCompletion::Waitable(status) => {
-                self.state.children.insert(pid, status);
+                child_wait.children.insert(pid, status);
                 Ok(())
             }
             ChildCompletion::AutoReaped(_) => Ok(()),
@@ -1630,6 +1712,18 @@ impl ElfExecutor {
                 "KVM child process {pid} failed before publishing its status"
             ))),
         }
+    }
+
+    pub(crate) fn record_child_completion(
+        &mut self,
+        pid: i32,
+        completion: ChildCompletion,
+    ) -> crate::Result<()> {
+        let mut child_wait = self
+            .child_wait
+            .lock()
+            .expect("KVM child-wait lock poisoned");
+        Self::record_child_completion_locked(&mut child_wait, pid, completion)
     }
 
     // TODO-HUMAN-REVIEW(PR-235): Review KVM child registration and join semantics.
@@ -1640,20 +1734,29 @@ impl ElfExecutor {
         completion: Arc<Mutex<Option<ChildCompletion>>>,
         handle: std::thread::JoinHandle<crate::Result<()>>,
     ) {
-        let previous = self.pending_processes.insert(
-            pid,
-            PendingProcess {
-                start: Some(start),
-                completion,
-                handle,
-            },
-        );
+        let previous = self
+            .child_wait
+            .lock()
+            .expect("KVM child-wait lock poisoned")
+            .pending_processes
+            .insert(
+                pid,
+                PendingProcess {
+                    start: Some(start),
+                    completion,
+                    handle,
+                },
+            );
         debug_assert!(previous.is_none(), "duplicate KVM child pid {pid}");
     }
 
     // TODO-HUMAN-REVIEW(PR-235): Review parent-registration ordering for KVM children.
     pub(crate) fn start_pending_child_processes(&mut self) -> crate::Result<()> {
-        for process in self.pending_processes.values_mut() {
+        let mut child_wait = self
+            .child_wait
+            .lock()
+            .expect("KVM child-wait lock poisoned");
+        for process in child_wait.pending_processes.values_mut() {
             if let Some(start) = process.start.take() {
                 let _ = start.send(());
             }
@@ -1661,8 +1764,12 @@ impl ElfExecutor {
         Ok(())
     }
 
-    fn collect_child_process(&mut self, pid: i32, block: bool) -> crate::Result<bool> {
-        let Some(process) = self.pending_processes.get_mut(&pid) else {
+    fn collect_child_process_locked(
+        child_wait: &mut ChildWaitState,
+        pid: i32,
+        block: bool,
+    ) -> crate::Result<bool> {
+        let Some(process) = child_wait.pending_processes.get_mut(&pid) else {
             return Ok(true);
         };
         if let Some(start) = process.start.take() {
@@ -1681,7 +1788,7 @@ impl ElfExecutor {
 
         let PendingProcess {
             completion, handle, ..
-        } = self
+        } = child_wait
             .pending_processes
             .remove(&pid)
             .expect("KVM child disappeared during collection");
@@ -1690,7 +1797,7 @@ impl ElfExecutor {
                 crate::Error::UnexpectedVcpuExit(format!("KVM child process {pid} panicked"))
             })??;
         } else {
-            self.completed_processes.push(handle);
+            child_wait.completed_processes.push(handle);
         }
         let completion = completion
             .lock()
@@ -1701,17 +1808,25 @@ impl ElfExecutor {
                     "KVM child process {pid} exited without publishing its status"
                 ))
             })?;
-        self.record_child_completion(pid, completion)?;
+        Self::record_child_completion_locked(child_wait, pid, completion)?;
         Ok(true)
     }
 
     // TODO-HUMAN-REVIEW(PR-235): Review KVM root-exit child synchronization.
     pub(crate) fn join_all_child_processes(&mut self) -> crate::Result<()> {
-        let pids = self.pending_processes.keys().copied().collect::<Vec<_>>();
+        let mut child_wait = self
+            .child_wait
+            .lock()
+            .expect("KVM child-wait lock poisoned");
+        let pids = child_wait
+            .pending_processes
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         for pid in pids {
-            self.collect_child_process(pid, true)?;
+            Self::collect_child_process_locked(&mut child_wait, pid, true)?;
         }
-        for handle in self.completed_processes.drain(..) {
+        for handle in child_wait.completed_processes.drain(..) {
             handle.join().map_err(|_| {
                 crate::Error::UnexpectedVcpuExit("completed KVM child process panicked".to_owned())
             })??;
@@ -1719,33 +1834,56 @@ impl ElfExecutor {
         Ok(())
     }
 
-    fn synchronize_wait4(&mut self, request: &SyscallRequest) -> Option<i64> {
+    pub(crate) fn is_thread_group_leader(&self) -> bool {
+        self.state.tid == self.state.pid
+    }
+
+    /// Wait for process children only when this executor is terminating the
+    /// process. A `CLONE_THREAD` worker shares `child_wait`, but its ordinary
+    /// thread exit must not wait for an unrelated process child.
+    pub(crate) fn join_child_processes_on_process_exit(&mut self) -> crate::Result<()> {
+        if !self.is_thread_group_leader() {
+            return Ok(());
+        }
+        self.join_all_child_processes()
+    }
+
+    fn synchronize_wait4(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> Option<i64> {
         if request.number() != libc::SYS_wait4 as u64 {
             return None;
         }
         let args = request.args();
         let requested = args[0] as u32 as libc::pid_t;
         let matches = |pid: i32| requested == -1 || requested > 0 && pid == requested;
-        if self.state.children.keys().copied().any(matches) {
-            return None;
-        }
         let nonblocking = args[2] & libc::WNOHANG as u64 != 0;
+        let mut child_wait = self
+            .child_wait
+            .lock()
+            .expect("KVM child-wait lock poisoned");
 
         loop {
-            let pids = self
+            if child_wait.children.keys().copied().any(matches) {
+                let mut memory = memory.clone();
+                return Some(wait4_children(&mut memory, &mut child_wait.children, args));
+            }
+            let pids = child_wait
                 .pending_processes
                 .keys()
                 .copied()
                 .filter(|pid| matches(*pid))
                 .collect::<Vec<_>>();
             if pids.is_empty() {
-                return None;
+                let mut memory = memory.clone();
+                return Some(wait4_children(&mut memory, &mut child_wait.children, args));
             }
 
             let mut running = None;
             for pid in pids {
-                match self.collect_child_process(pid, false) {
-                    Ok(true) if self.state.children.contains_key(&pid) => return None,
+                match Self::collect_child_process_locked(&mut child_wait, pid, false) {
+                    Ok(true) if child_wait.children.contains_key(&pid) => {
+                        let mut memory = memory.clone();
+                        return Some(wait4_children(&mut memory, &mut child_wait.children, args));
+                    }
                     Ok(true) => {}
                     Ok(false) => {
                         running.get_or_insert(pid);
@@ -1766,13 +1904,7 @@ impl ElfExecutor {
             if running.is_none() {
                 continue;
             }
-            if self
-                .child_completion_receiver
-                .lock()
-                .expect("KVM child completion receiver poisoned")
-                .recv()
-                .is_err()
-            {
+            if child_wait.completion_receiver.recv().is_err() {
                 eprintln!("reverie-kvm child completion channel disconnected before wait4");
                 return Some(negative_errno(libc::EIO));
             }
@@ -1780,20 +1912,9 @@ impl ElfExecutor {
     }
 
     // Mirror `synchronize_wait4` for `waitid`. KVM child processes run on
-    // separate host threads tracked in `pending_processes`; their exit codes
-    // only reach `state.children` after `join_child_process`. `waitid()` (like
-    // `wait4()`) reads exclusively from `state.children`, so without this
-    // synchronization a `waitid` on a not-yet-joined child returns spurious
-    // `ECHILD`. The tool's `waitid` poll loop (detcore) converts every wait to
-    // `WNOHANG` and treats `ECHILD` as terminal, so that spurious error
-    // propagates to the guest instead of retrying — a timing-raced failure a
-    // determinism engine must not produce.
-    //
-    // While a target child is still running under a `WNOHANG` poll, report the
-    // POSIX "no child ready yet" result by zeroing the siginfo at `infop` so
-    // `si_pid == 0`; the tool's poll loop then retries instead of erroring.
-    // Once the child has finished (or for a blocking wait), join it so its exit
-    // is recorded, then fall through to `waitid()` which reaps it normally.
+    // separate host threads tracked in the shared child-wait state; their exit
+    // codes become waitable only after the corresponding handle is collected.
+    // A `WNOHANG` poll of a live child must report si_pid == 0, not ECHILD.
     fn synchronize_waitid(
         &mut self,
         request: &SyscallRequest,
@@ -1813,26 +1934,35 @@ impl ElfExecutor {
             _ => return None,
         };
         let matches = |pid: i32| exact.is_none_or(|expected| pid == expected);
-        if self.state.children.keys().copied().any(matches) {
-            return None;
-        }
         let nonblocking = args[3] & libc::WNOHANG as u64 != 0;
+        let mut child_wait = self
+            .child_wait
+            .lock()
+            .expect("KVM child-wait lock poisoned");
 
         loop {
-            let pids = self
+            if child_wait.children.keys().copied().any(matches) {
+                let mut memory = memory.clone();
+                return Some(waitid_children(&mut memory, &mut child_wait.children, args));
+            }
+            let pids = child_wait
                 .pending_processes
                 .keys()
                 .copied()
                 .filter(|pid| matches(*pid))
                 .collect::<Vec<_>>();
             if pids.is_empty() {
-                return None;
+                let mut memory = memory.clone();
+                return Some(waitid_children(&mut memory, &mut child_wait.children, args));
             }
 
             let mut running = None;
             for pid in pids {
-                match self.collect_child_process(pid, false) {
-                    Ok(true) if self.state.children.contains_key(&pid) => return None,
+                match Self::collect_child_process_locked(&mut child_wait, pid, false) {
+                    Ok(true) if child_wait.children.contains_key(&pid) => {
+                        let mut memory = memory.clone();
+                        return Some(waitid_children(&mut memory, &mut child_wait.children, args));
+                    }
                     Ok(true) => {}
                     Ok(false) => {
                         running.get_or_insert(pid);
@@ -1859,13 +1989,7 @@ impl ElfExecutor {
             if running.is_none() {
                 continue;
             }
-            if self
-                .child_completion_receiver
-                .lock()
-                .expect("KVM child completion receiver poisoned")
-                .recv()
-                .is_err()
-            {
+            if child_wait.completion_receiver.recv().is_err() {
                 eprintln!("reverie-kvm child completion channel disconnected before waitid");
                 return Some(negative_errno(libc::EIO));
             }
@@ -1885,9 +2009,51 @@ impl ElfExecutor {
         self.exit_status.is_some()
     }
 
+    pub(crate) fn thread_identity(&self) -> (i32, i32) {
+        (self.state.pid, self.state.tid)
+    }
+
+    pub(crate) fn replace_nonleader_exec_support(&mut self, supported: bool) -> bool {
+        std::mem::replace(&mut self.allow_nonleader_exec, supported)
+    }
+
+    /// Apply Linux's non-leader exec identity transition before replacing the
+    /// image: the caller assumes the thread-group leader's TID, all sibling
+    /// lifecycle entries disappear, and CLONE_CHILD_CLEARTID is disarmed.
+    pub(crate) fn promote_after_thread_exec(&mut self) -> i32 {
+        let tgid = self.state.pid;
+        debug_assert_ne!(self.state.tid, tgid);
+        self.task_generation = self
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .promote_execing_thread(tgid);
+        self.state.tid = tgid;
+        self.clear_child_tid = None;
+        tgid
+    }
+
     pub(crate) fn replace_after_exec(&mut self, state: LoadedStaticElf) {
-        let previous = std::mem::replace(&mut self.state, state);
+        let mut previous = std::mem::replace(&mut self.state, state);
+        self.fs_state
+            .lock()
+            .expect("KVM fs-state lock poisoned")
+            .install(&mut previous)
+            .expect("clone pre-exec KVM fs state");
+        previous.signal_actions.clone_from(
+            &self
+                .signal_actions
+                .lock()
+                .expect("KVM signal-actions lock poisoned"),
+        );
         self.state.inherit_process_state(previous);
+        *self.fs_state.lock().expect("KVM fs-state lock poisoned") =
+            FsState::try_from_elf(&self.state).expect("clone post-exec KVM fs state");
+        self.signal_actions
+            .lock()
+            .expect("KVM signal-actions lock poisoned")
+            .clone_from(&self.state.signal_actions);
         self.task_generation = self
             .state
             .task_lifecycle
@@ -2043,7 +2209,7 @@ impl Drop for ElfExecutor {
 
 impl SyscallExecutor for ElfExecutor {
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
-        if let Some(result) = self.synchronize_wait4(request) {
+        if let Some(result) = self.synchronize_wait4(request, memory) {
             return result;
         }
         if let Some(result) = self.synchronize_waitid(request, memory) {
@@ -2071,9 +2237,48 @@ impl SyscallExecutor for ElfExecutor {
         if !mutating_file_table {
             shared_files.take();
         }
+
+        let fs_state = self.fs_state.clone();
+        if let Err(error) = fs_state
+            .lock()
+            .expect("KVM fs-state lock poisoned")
+            .install(&mut self.state)
+        {
+            return io_error(error);
+        }
+        let signal_actions = self.signal_actions.clone();
+        self.state.signal_actions.clone_from(
+            &signal_actions
+                .lock()
+                .expect("KVM signal-actions lock poisoned"),
+        );
+
         if let Some(result) = self.execute_process_action(request, memory) {
             return result;
         }
+
+        let shared_fs = matches!(
+            request.number(),
+            number if number == libc::SYS_chdir as u64
+                || number == libc::SYS_fchdir as u64
+                || number == libc::SYS_umask as u64
+        )
+        .then(|| fs_state.lock().expect("KVM fs-state lock poisoned"));
+        if let Some(shared_fs) = shared_fs.as_ref()
+            && let Err(error) = shared_fs.install(&mut self.state)
+        {
+            return io_error(error);
+        }
+        let shared_signal_actions =
+            (request.number() == libc::SYS_rt_sigaction as u64).then(|| {
+                signal_actions
+                    .lock()
+                    .expect("KVM signal-actions lock poisoned")
+            });
+        if let Some(shared_signal_actions) = shared_signal_actions.as_ref() {
+            self.state.signal_actions.clone_from(shared_signal_actions);
+        }
+
         // Clones share the underlying MAP_SHARED mapping, so writes through this
         // handle reach the guest; `execute_basic_syscall` needs `&mut` access.
         let mut memory = memory.clone();
@@ -2115,6 +2320,12 @@ impl SyscallExecutor for ElfExecutor {
                 self.output.as_mut(),
             )
         };
+        if let Some(mut shared_fs) = shared_fs {
+            *shared_fs = FsState::try_from_elf(&self.state).expect("clone updated KVM fs state");
+        }
+        if let Some(mut shared_signal_actions) = shared_signal_actions {
+            shared_signal_actions.clone_from(&self.state.signal_actions);
+        }
         if let Some(before) = sigchld_action_before {
             let after = self.state.signal_actions.get(&libc::SIGCHLD).copied();
             if after != before {
@@ -2195,15 +2406,30 @@ fn resolve_guest_exec_image(
     state: &LoadedStaticElf,
     path: Vec<u8>,
     envp: &[String],
-) -> Result<(std::path::PathBuf, Vec<u8>), i64> {
-    if normalize_proc_path(state, &path).as_deref() == Some(b"/proc/self/exe") {
-        return Ok((
-            state.executable_path.clone(),
-            state.executable_image.to_vec(),
-        ));
+) -> Result<ResolvedExecutable, i64> {
+    match guest_proc_exe_path(state, &path) {
+        Some(true) => {
+            return Ok(ResolvedExecutable {
+                path: state.executable_path.clone(),
+                file: state.executable_file.clone(),
+                image: state.executable_image.to_vec(),
+            });
+        }
+        // A guest-shaped executable link must never escape into the
+        // supervisor's procfs merely because its virtual task does not exist.
+        Some(false) => return Err(negative_errno(libc::ENOENT)),
+        None => {}
     }
     let path = resolve_guest_exec_path(state, path, envp)?;
     read_executable_file(&path)
+}
+
+fn exec_comm(path: &[u8]) -> Vec<u8> {
+    std::path::Path::new(std::ffi::OsStr::from_bytes(path))
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::from_bytes(path))
+        .as_bytes()
+        .to_vec()
 }
 
 /// Resolve an ordinary exec path using execve's existing absolute,
@@ -2278,51 +2504,53 @@ const MAX_SHEBANG_DEPTH: usize = 4;
 /// `[interp, shebang_args.., script_path, <original argv[1..]>]`. Errors are
 /// returned as negative errnos.
 fn resolve_exec_shebang(
-    mut path: std::path::PathBuf,
-    mut image: Vec<u8>,
+    mut executable: ResolvedExecutable,
     mut argv: Vec<String>,
-) -> Result<(std::path::PathBuf, Vec<u8>, Vec<String>), i64> {
+) -> Result<(ResolvedExecutable, Vec<String>), i64> {
     let mut depth = 0;
-    while image.starts_with(b"#!") {
+    while executable.image.starts_with(b"#!") {
         depth += 1;
         if depth > MAX_SHEBANG_DEPTH {
             return Err(negative_errno(libc::ELOOP));
         }
-        let line_end = image
+        let line_end = executable
+            .image
             .iter()
             .position(|&b| b == b'\n')
-            .unwrap_or(image.len());
+            .unwrap_or(executable.image.len());
         // Skip "#!" and any leading blanks, then take the interpreter token.
         let mut start = 2;
-        while start < line_end && matches!(image[start], b' ' | b'\t') {
+        while start < line_end && matches!(executable.image[start], b' ' | b'\t') {
             start += 1;
         }
         let mut end = start;
-        while end < line_end && !matches!(image[end], b' ' | b'\t' | b'\r') {
+        while end < line_end && !matches!(executable.image[end], b' ' | b'\t' | b'\r') {
             end += 1;
         }
         if start == end {
             return Err(negative_errno(libc::ENOEXEC));
         }
-        let interpreter = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&image[start..end]));
+        let interpreter =
+            std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&executable.image[start..end]));
         // Remaining tokens on the directive line become interpreter arguments.
-        let mut shebang_args: Vec<String> = String::from_utf8_lossy(&image[end..line_end])
-            .split_ascii_whitespace()
-            .map(str::to_owned)
-            .collect();
+        let mut shebang_args: Vec<String> =
+            String::from_utf8_lossy(&executable.image[end..line_end])
+                .split_ascii_whitespace()
+                .map(str::to_owned)
+                .collect();
 
         let mut rewritten = Vec::with_capacity(argv.len() + shebang_args.len() + 2);
         rewritten.push(interpreter.to_string_lossy().into_owned());
         rewritten.append(&mut shebang_args);
-        rewritten.push(path.to_string_lossy().into_owned());
+        rewritten.push(executable.path.to_string_lossy().into_owned());
         if argv.len() > 1 {
             rewritten.extend_from_slice(&argv[1..]);
         }
         argv = rewritten;
 
-        (path, image) = read_executable_file(&interpreter)?;
+        executable = read_executable_file(&interpreter)?;
     }
-    Ok((path, image, argv))
+    Ok((executable, argv))
 }
 
 fn ensure_read_capable(file: &std::fs::File) -> Result<(), i64> {
@@ -7808,6 +8036,49 @@ fn synthetic_proc_relative_path(
     Some(resolved)
 }
 
+fn parse_proc_id(component: &[u8]) -> Option<i32> {
+    if component.is_empty() || !component.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    component.iter().try_fold(0_i32, |value, digit| {
+        value.checked_mul(10)?.checked_add(i32::from(*digit - b'0'))
+    })
+}
+
+fn live_thread_in_process(state: &LoadedStaticElf, tid: i32) -> bool {
+    state
+        .task_lifecycle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(tid)
+        .is_some_and(|task| task.tgid == state.pid)
+}
+
+/// Classify a procfs executable-link spelling. `Some(false)` is a syntactically
+/// valid guest proc link naming a task outside the current process; callers
+/// must refuse it rather than accidentally opening the supervisor's procfs.
+fn guest_proc_exe_path(state: &LoadedStaticElf, path: &[u8]) -> Option<bool> {
+    if path == b"/proc/self/exe" || path == b"/proc/thread-self/exe" {
+        return Some(true);
+    }
+    let components = path
+        .strip_prefix(b"/proc/")?
+        .split(|byte| *byte == b'/')
+        .collect::<Vec<_>>();
+    match components.as_slice() {
+        [task, b"exe"] => parse_proc_id(task).map(|tid| live_thread_in_process(state, tid)),
+        [b"self", b"task", task, b"exe"] => {
+            parse_proc_id(task).map(|tid| live_thread_in_process(state, tid))
+        }
+        [group, b"task", task, b"exe"] => {
+            let group = parse_proc_id(group)?;
+            let task = parse_proc_id(task)?;
+            Some(live_thread_in_process(state, group) && live_thread_in_process(state, task))
+        }
+        _ => None,
+    }
+}
+
 /// Rewrite a `/proc/<pid>` path (for this guest's own pid) to the canonical
 /// `/proc/self` form so both spellings resolve to the same synthetic content.
 fn normalize_proc_path(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8>> {
@@ -7816,6 +8087,9 @@ fn normalize_proc_path(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8>> 
     }
     if path == b"/proc/self/../locks" {
         return Some(b"/proc/locks".to_vec());
+    }
+    if guest_proc_exe_path(state, path) == Some(true) {
+        return Some(b"/proc/self/exe".to_vec());
     }
     let pid = format!("/proc/{}", state.pid).into_bytes();
     if path == pid.as_slice() {
@@ -7968,14 +8242,22 @@ fn proc_locks_content(state: &LoadedStaticElf) -> Vec<u8> {
     rows.concat().into_bytes()
 }
 
-/// The kernel's `comm`: the program basename, capped at 15 bytes.
-fn proc_comm(state: &LoadedStaticElf) -> String {
-    let base = state
-        .executable_path
-        .file_name()
-        .unwrap_or_else(|| state.executable_path.as_os_str())
-        .as_bytes();
-    String::from_utf8_lossy(&base.iter().copied().take(15).collect::<Vec<u8>>()).into_owned()
+/// The kernel's `comm`: the program basename, capped at 15 bytes because the
+/// terminating byte occupies the sixteenth byte of `TASK_COMM_LEN`. Linux
+/// exposes this value as bytes, so do not decode or replace non-UTF-8 input.
+fn proc_comm(state: &LoadedStaticElf) -> &[u8] {
+    &state.comm[..state.comm.len().min(15)]
+}
+
+fn proc_executable_link_target(state: &LoadedStaticElf) -> Vec<u8> {
+    state
+        .executable_file
+        .as_ref()
+        .and_then(|file| canonical_fd_path(file.as_raw_fd()).ok())
+        .unwrap_or_else(|| state.executable_path.clone())
+        .as_os_str()
+        .as_bytes()
+        .to_vec()
 }
 
 fn proc_self_cmdline_content(state: &LoadedStaticElf) -> Vec<u8> {
@@ -8000,23 +8282,22 @@ fn proc_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
     // pid (comm) state ppid ... The fields after ppid are process-accounting
     // values reported as zero so no nondeterministic host state leaks. The real
     // file has 52 fields; pad with zeros so field-counting parsers are satisfied.
-    let mut line = format!(
-        "{} ({}) R {} 0 0 0 -1 0",
-        state.pid,
-        proc_comm(state),
-        state.ppid
-    );
+    let mut line = format!("{} (", state.pid).into_bytes();
+    line.extend_from_slice(proc_comm(state));
+    line.extend_from_slice(format!(") R {} 0 0 0 -1 0", state.ppid).as_bytes());
     for _ in 0..44 {
-        line.push_str(" 0");
+        line.extend_from_slice(b" 0");
     }
-    line.push('\n');
-    line.into_bytes()
+    line.push(b'\n');
+    line
 }
 
 fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
-    format!(
-        "Name:\t{comm}\n\
-         Umask:\t{umask:04o}\n\
+    let mut content = b"Name:\t".to_vec();
+    content.extend_from_slice(proc_comm(state));
+    content.extend_from_slice(
+        format!(
+            "\nUmask:\t{umask:04o}\n\
          State:\tR (running)\n\
          Tgid:\t{pid}\n\
          Ngid:\t0\n\
@@ -8027,12 +8308,13 @@ fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
          Gid:\t0\t0\t0\t0\n\
          FDSize:\t64\n\
          Threads:\t1\n",
-        comm = proc_comm(state),
-        umask = state.umask,
-        pid = state.pid,
-        ppid = state.ppid,
-    )
-    .into_bytes()
+            umask = state.umask,
+            pid = state.pid,
+            ppid = state.ppid,
+        )
+        .as_bytes(),
+    );
+    content
 }
 
 /// Back a synthesized /proc file with a memfd holding `content` and record it in
@@ -9846,11 +10128,18 @@ fn readlink_at_impl(
     }
 
     let normalized = normalize_proc_path(state, &path);
-    let proc_link_target: Option<&[u8]> = match normalized.as_deref() {
-        Some(b"/proc/self/exe") => Some(state.executable_path.as_os_str().as_bytes()),
-        Some(b"/proc/self/cwd") => Some(state.cwd.as_os_str().as_bytes()),
-        Some(b"/proc/self/root") => Some(b"/"),
-        _ => None,
+    let executable_target;
+    let proc_link_target: Option<&[u8]> = match guest_proc_exe_path(state, &path) {
+        Some(true) => {
+            executable_target = proc_executable_link_target(state);
+            Some(&executable_target)
+        }
+        Some(false) => return negative_errno(libc::ENOENT),
+        None => match normalized.as_deref() {
+            Some(b"/proc/self/cwd") => Some(state.cwd.as_os_str().as_bytes()),
+            Some(b"/proc/self/root") => Some(b"/"),
+            _ => None,
+        },
     };
     if let Some(target) = proc_link_target {
         let count = capacity.min(target.len());
@@ -10392,6 +10681,14 @@ fn rt_sigtimedwait(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: 
 }
 
 fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    wait4_children(memory, &mut state.children, args)
+}
+
+fn wait4_children(
+    memory: &mut GuestMemory,
+    children: &mut std::collections::BTreeMap<i32, ExitStatus>,
+    args: &[u64; 6],
+) -> i64 {
     // pid_t is a 32-bit signed value; the guest passes wait4(-1) as 0xFFFFFFFF
     // in a 64-bit register. Truncate to i32 before sign-extending so the common
     // wait-for-any-child form (-1), process-group forms (0, <-1), and a specific
@@ -10403,16 +10700,16 @@ fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
     let child_pid = if requested > 0 {
         i32::try_from(requested)
             .ok()
-            .filter(|pid| state.children.contains_key(pid))
+            .filter(|pid| children.contains_key(pid))
     } else {
         // -1 (any child), 0 and <-1 (any child in a process group): this guest
         // models a single process group, so reap any recorded child.
-        state.children.keys().next().copied()
+        children.keys().next().copied()
     };
     let Some(child_pid) = child_pid else {
         return negative_errno(libc::ECHILD);
     };
-    let status = state.children[&child_pid].into_raw();
+    let status = children[&child_pid].into_raw();
     if args[1] != 0 && memory.write(args[1], &status.to_le_bytes()).is_err() {
         return negative_errno(libc::EFAULT);
     }
@@ -10423,7 +10720,7 @@ fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
     {
         return negative_errno(libc::EFAULT);
     }
-    state.children.remove(&child_pid);
+    children.remove(&child_pid);
     i64::from(child_pid)
 }
 
@@ -10445,6 +10742,14 @@ struct GuestWaitidSiginfo {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-227): Review serialized-child waitid ABI emulation.
 fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    waitid_children(memory, &mut state.children, args)
+}
+
+fn waitid_children(
+    memory: &mut GuestMemory,
+    children: &mut std::collections::BTreeMap<i32, ExitStatus>,
+    args: &[u64; 6],
+) -> i64 {
     const EVENT_OPTIONS: u64 = libc::WEXITED as u64;
     const ALLOWED_OPTIONS: u64 = EVENT_OPTIONS | libc::WNOHANG as u64 | libc::WNOWAIT as u64;
 
@@ -10458,14 +10763,14 @@ fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
     let child_pid = match args[0] as libc::idtype_t {
         libc::P_PID => libc::pid_t::try_from(args[1])
             .ok()
-            .filter(|pid| state.children.contains_key(pid)),
-        libc::P_ALL | libc::P_PGID => state.children.keys().next().copied(),
+            .filter(|pid| children.contains_key(pid)),
+        libc::P_ALL | libc::P_PGID => children.keys().next().copied(),
         _ => return negative_errno(libc::EINVAL),
     };
     let Some(child_pid) = child_pid else {
         return negative_errno(libc::ECHILD);
     };
-    let status = state.children[&child_pid];
+    let status = children[&child_pid];
     let (si_code, si_status) = match status {
         ExitStatus::Exited(code) => (libc::CLD_EXITED, code),
         ExitStatus::Signaled(signal, true) => (libc::CLD_DUMPED, signal as libc::c_int),
@@ -10498,7 +10803,7 @@ fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
         }
     }
     if args[3] & libc::WNOWAIT as u64 == 0 {
-        state.children.remove(&child_pid);
+        children.remove(&child_pid);
     }
     0
 }
@@ -10826,7 +11131,9 @@ mod tests {
             mmap_next: BOOT_RESERVED_END + PAGE_SIZE,
             mmap_limit: BOOT_RESERVED_END + 2 * PAGE_SIZE,
             executable_path: cwd.join("test"),
+            executable_file: None,
             executable_image: Arc::from(b"test image".as_slice()),
+            comm: b"test".to_vec(),
             argv0: b"test".to_vec(),
             cwd: cwd.to_owned(),
             cwd_fd: std::fs::File::open(cwd).unwrap(),
@@ -21118,7 +21425,7 @@ mod tests {
         unsafe {
             assert_eq!(info.si_pid(), 0);
         }
-        assert!(executor.state.children.is_empty());
+        assert!(executor.child_wait.lock().unwrap().children.is_empty());
 
         // Once the child publishes exit 9, blocking waitid observes and reaps it.
         exit_sender.send(()).unwrap();
@@ -21138,7 +21445,119 @@ mod tests {
             assert_eq!(info.si_pid(), 2);
             assert_eq!(info.si_status(), 9);
         }
-        assert!(executor.state.children.is_empty());
+        assert!(executor.child_wait.lock().unwrap().children.is_empty());
+    }
+
+    #[test]
+    fn worker_exit_cleanup_does_not_join_a_process_child() {
+        let root = TestDir::new();
+        let mut parent = ElfExecutor::new(test_state(&root.0), false);
+        let mut worker = parent.thread_child(2).unwrap();
+        assert!(!worker.is_thread_group_leader());
+        assert!(Arc::ptr_eq(&parent.child_wait, &worker.child_wait));
+
+        let (start_sender, start_receiver) = std::sync::mpsc::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let completion = Arc::new(Mutex::new(None));
+        let child_completion = completion.clone();
+        let handle = std::thread::spawn(move || {
+            start_receiver.recv().unwrap();
+            release_receiver.recv().unwrap();
+            *child_completion.lock().unwrap() =
+                Some(ChildCompletion::Waitable(ExitStatus::Exited(0)));
+            Ok(())
+        });
+        parent.register_child_process(41, start_sender, completion, handle);
+        parent.start_pending_child_processes().unwrap();
+
+        let watchdog_release = release_sender.clone();
+        let (done_sender, done_receiver) = std::sync::mpsc::channel();
+        let watchdog = std::thread::spawn(move || {
+            if done_receiver
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .is_ok()
+            {
+                false
+            } else {
+                watchdog_release.send(()).unwrap();
+                true
+            }
+        });
+
+        worker.join_child_processes_on_process_exit().unwrap();
+        let _ = done_sender.send(());
+        let watchdog_fired = watchdog.join().unwrap();
+        if !watchdog_fired {
+            release_sender.send(()).unwrap();
+        }
+        assert!(parent.is_thread_group_leader());
+        parent.join_child_processes_on_process_exit().unwrap();
+        assert!(
+            !watchdog_fired,
+            "worker exit cleanup waited for a process child"
+        );
+    }
+
+    #[test]
+    fn thread_exec_preserves_completed_and_pending_child_wait_state() {
+        const STATUS: u64 = 0x100;
+        const INFO: u64 = 0x200;
+
+        let root = TestDir::new();
+        let mut parent = ElfExecutor::new(test_state(&root.0), false);
+        let mut worker = parent.thread_child(2).unwrap();
+        assert!(Arc::ptr_eq(&parent.child_wait, &worker.child_wait));
+
+        parent
+            .record_child_completion(41, ChildCompletion::Waitable(ExitStatus::Exited(37)))
+            .unwrap();
+
+        let (start_sender, start_receiver) = std::sync::mpsc::channel();
+        let completion = Arc::new(Mutex::new(None));
+        let child_completion = completion.clone();
+        let completion_notifier = parent.child_completion_notifier();
+        let handle = std::thread::spawn(move || {
+            start_receiver.recv().unwrap();
+            *child_completion.lock().unwrap() =
+                Some(ChildCompletion::Waitable(ExitStatus::Exited(38)));
+            completion_notifier.send(42).unwrap();
+            Ok(())
+        });
+        parent.register_child_process(42, start_sender, completion, handle);
+
+        // Replacing the worker's image must retain the one process-wide wait
+        // namespace, including an existing zombie and a running child's handle
+        // and completion channel.
+        worker.replace_after_exec(test_state(&root.0));
+        let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(libc::SYS_wait4 as u64, [41, STATUS, 0, 0, 0, 0]),
+                &memory,
+            ),
+            41,
+        );
+        let status: libc::c_int = read_struct(&memory, STATUS);
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 37);
+
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_waitid as u64,
+                    [libc::P_PID as u64, 42, INFO, libc::WEXITED as u64, 0, 0,],
+                ),
+                &memory,
+            ),
+            0,
+        );
+        let info: libc::siginfo_t = read_struct(&memory, INFO);
+        // SAFETY: waitid wrote the SIGCHLD variant.
+        unsafe {
+            assert_eq!(info.si_pid(), 42);
+            assert_eq!(info.si_status(), 38);
+        }
+        assert!(parent.child_wait.lock().unwrap().children.is_empty());
     }
 
     #[test]
@@ -21964,7 +22383,7 @@ mod tests {
             .record_child_completion(7, exited_before_ignore)
             .unwrap();
         assert_eq!(
-            executor.state.children.remove(&7),
+            executor.child_wait.lock().unwrap().children.remove(&7),
             Some(ExitStatus::Exited(3)),
             "installing SIG_IGN after exit must not discard an existing zombie",
         );
@@ -21992,7 +22411,12 @@ mod tests {
             .record_child_completion(8, exited_while_ignored)
             .unwrap();
         assert!(
-            !executor.state.children.contains_key(&8),
+            !executor
+                .child_wait
+                .lock()
+                .unwrap()
+                .children
+                .contains_key(&8),
             "restoring SIG_DFL after exit must not resurrect an auto-reaped child",
         );
 
@@ -22582,42 +23006,82 @@ mod tests {
     }
 
     #[test]
-    fn resolve_guest_exec_image_is_stable_and_uses_open_file_identity() {
+    fn resolve_guest_exec_image_is_stable_for_every_task_alias() {
         let dir = TestDir::new();
         let executable = dir.0.join("current-image");
         std::fs::write(&executable, b"image").unwrap();
-        let mut state = test_state(&dir.0);
-        state.pid = 37;
-        state.executable_path = executable.clone();
-        state.executable_image = Arc::from(b"loaded image".as_slice());
+        let mut leader = test_state(&dir.0);
+        leader.pid = 37;
+        leader.tid = 37;
+        leader.task_lifecycle = Arc::new(std::sync::Mutex::new(
+            crate::elf::TaskLifecycleTable::with_root(37, 37, true),
+        ));
+        leader.executable_path = executable.clone();
+        leader.executable_file = Some(Arc::new(std::fs::File::open(&executable).unwrap()));
+        leader.executable_image = Arc::from(b"loaded image".as_slice());
+        leader.task_lifecycle.lock().unwrap().register(38, 37, true);
+        let mut worker = leader.try_clone_for_fork(38).unwrap();
+        worker.pid = 37;
+        worker.ppid = leader.ppid;
         let envp = Vec::new();
 
+        let aliases = |tid: i32| {
+            [
+                b"/proc/self/exe".to_vec(),
+                b"/proc/thread-self/exe".to_vec(),
+                format!("/proc/{tid}/exe").into_bytes(),
+                format!("/proc/self/task/{tid}/exe").into_bytes(),
+                format!("/proc/37/task/{tid}/exe").into_bytes(),
+                format!("/proc/{tid}/task/37/exe").into_bytes(),
+                format!("/proc/{tid}/task/38/exe").into_bytes(),
+            ]
+        };
         std::fs::write(&executable, b"replacement image").unwrap();
-        for alias in [b"/proc/self/exe".as_slice(), b"/proc/37/exe".as_slice()] {
-            let (path, image) = resolve_guest_exec_image(&state, alias.to_vec(), &envp).unwrap();
-            assert_eq!(path, executable);
-            assert_eq!(image, b"loaded image");
+        for state in [&leader, &worker] {
+            for alias in aliases(state.tid) {
+                let resolved = resolve_guest_exec_image(state, alias, &envp).unwrap();
+                assert_eq!(resolved.path, executable);
+                assert!(resolved.file.is_some());
+                assert_eq!(resolved.image, b"loaded image");
+            }
         }
-        std::fs::remove_file(&executable).unwrap();
-        let (path, image) =
-            resolve_guest_exec_image(&state, b"/proc/self/exe".to_vec(), &envp).unwrap();
-        assert_eq!(path, executable);
-        assert_eq!(image, b"loaded image");
-        let child = state.try_clone_for_fork(2).unwrap();
-        let (path, image) =
-            resolve_guest_exec_image(&child, b"/proc/2/exe".to_vec(), &envp).unwrap();
-        assert_eq!(path, executable);
-        assert_eq!(image, b"loaded image");
         assert_eq!(
-            resolve_guest_exec_path(&state, b"/proc/38/exe".to_vec(), &envp).unwrap(),
-            Path::new("/proc/38/exe"),
+            resolve_guest_exec_image(&leader, b"/proc/39/exe".to_vec(), &envp).unwrap_err(),
+            negative_errno(libc::ENOENT),
         );
+        for foreign in [
+            b"/proc/37/task/39/exe".to_vec(),
+            b"/proc/39/task/37/exe".to_vec(),
+            b"/proc/39/task/38/exe".to_vec(),
+        ] {
+            assert_eq!(
+                resolve_guest_exec_image(&leader, foreign, &envp).unwrap_err(),
+                negative_errno(libc::ENOENT),
+            );
+        }
+        let supervisor_pid = std::process::id();
+        assert_ne!(supervisor_pid, leader.pid as u32);
+        let supervisor_exe = format!("/proc/{supervisor_pid}/exe").into_bytes();
+        assert!(std::path::Path::new(std::ffi::OsStr::from_bytes(&supervisor_exe)).exists());
         assert_eq!(
-            resolve_guest_exec_path(&state, b"relative/program".to_vec(), &envp).unwrap(),
+            resolve_guest_exec_image(&leader, supervisor_exe, &envp).unwrap_err(),
+            negative_errno(libc::ENOENT),
+            "a live supervisor proc entry must not become a guest executable",
+        );
+
+        std::fs::remove_file(&executable).unwrap();
+        let resolved =
+            resolve_guest_exec_image(&worker, b"/proc/thread-self/exe".to_vec(), &envp).unwrap();
+        assert_eq!(resolved.path, executable);
+        assert!(resolved.file.is_some());
+        assert_eq!(resolved.image, b"loaded image");
+
+        assert_eq!(
+            resolve_guest_exec_path(&leader, b"relative/program".to_vec(), &envp).unwrap(),
             dir.0.join("relative/program"),
         );
         assert_eq!(
-            resolve_guest_exec_path(&state, b"/absolute/program".to_vec(), &envp).unwrap(),
+            resolve_guest_exec_path(&leader, b"/absolute/program".to_vec(), &envp).unwrap(),
             Path::new("/absolute/program"),
         );
 
@@ -22626,37 +23090,107 @@ mod tests {
         let searched = bin.join("searched-program");
         std::fs::write(&searched, b"image").unwrap();
         let envp = vec![format!("PATH={}", bin.display())];
-        let (path, image) =
-            resolve_guest_exec_image(&state, b"searched-program".to_vec(), &envp).unwrap();
-        assert_eq!(path, searched.canonicalize().unwrap());
-        assert_eq!(image, b"image");
+        let resolved =
+            resolve_guest_exec_image(&leader, b"searched-program".to_vec(), &envp).unwrap();
+        assert_eq!(resolved.path, searched.canonicalize().unwrap());
+        assert_eq!(resolved.image, b"image");
 
         let target = dir.0.join("target-program");
         std::fs::write(&target, b"target image").unwrap();
         let alias = dir.0.join("program-link");
         std::os::unix::fs::symlink(&target, &alias).unwrap();
-        let (path, image) =
-            resolve_guest_exec_image(&state, alias.as_os_str().as_bytes().to_vec(), &envp).unwrap();
-        assert_eq!(path, target.canonicalize().unwrap());
-        assert_eq!(image, b"target image");
+        let resolved =
+            resolve_guest_exec_image(&leader, alias.as_os_str().as_bytes().to_vec(), &envp)
+                .unwrap();
+        assert_eq!(resolved.path, target.canonicalize().unwrap());
+        assert_eq!(resolved.image, b"target image");
     }
 
     #[test]
-    fn proc_comm_uses_executable_name_not_guest_argv0() {
+    fn proc_comm_uses_exec_filename_not_target_or_argv0() {
         let dir = TestDir::new();
         let mut state = test_state(&dir.0);
         state.executable_path = dir.0.join("actual-executable-name");
         state.argv0 = b"chosen/argv-zero".to_vec();
 
-        assert_eq!(proc_comm(&state), "actual-executab");
+        state.comm = b"actual-executable-name".to_vec();
+        assert_eq!(proc_comm(&state), b"actual-executab");
+        state.comm = b"alias-name".to_vec();
+        assert_eq!(proc_comm(&state), b"alias-name");
+        assert_eq!(exec_comm(b"/proc/self/exe"), b"exe");
+        assert_eq!(exec_comm(b"somewhere/alias-name"), b"alias-name");
         assert_eq!(
             proc_self_cmdline_content(&state),
             b"chosen/argv-zero\0".to_vec()
         );
     }
 
+    #[test]
+    fn proc_comm_preserves_raw_bytes_and_linux_width() {
+        let dir = TestDir::new();
+        let mut state = test_state(&dir.0);
+
+        state.comm = b"abcdefghijklmn".to_vec();
+        assert_eq!(proc_comm(&state), b"abcdefghijklmn");
+
+        let raw_name = b"abcdefghijklmn\xff";
+        state.comm = raw_name.to_vec();
+        assert_eq!(proc_comm(&state), raw_name);
+
+        let mut stat_prefix = format!("{} (", state.pid).into_bytes();
+        stat_prefix.extend_from_slice(raw_name);
+        stat_prefix.extend_from_slice(b") R ");
+        assert!(proc_self_stat_content(&state).starts_with(&stat_prefix));
+
+        let mut status_prefix = b"Name:\t".to_vec();
+        status_prefix.extend_from_slice(raw_name);
+        status_prefix.push(b'\n');
+        assert!(proc_self_status_content(&state).starts_with(&status_prefix));
+
+        state.comm = b"abcdefghijklmnop".to_vec();
+        assert_eq!(proc_comm(&state), b"abcdefghijklmno");
+        assert_eq!(proc_comm(&state).len(), 15);
+    }
+
+    #[test]
+    fn proc_executable_link_marks_unlinked_and_replaced_files_deleted() {
+        let dir = TestDir::new();
+        let executable = dir.0.join("program");
+        std::fs::write(&executable, b"first").unwrap();
+        let mut state = test_state(&dir.0);
+        state.executable_path = executable.clone();
+        state.executable_file = Some(Arc::new(std::fs::File::open(&executable).unwrap()));
+        assert_eq!(
+            proc_executable_link_target(&state),
+            executable.as_os_str().as_bytes(),
+        );
+
+        let replacement = dir.0.join("replacement");
+        std::fs::write(&replacement, b"second").unwrap();
+        std::fs::rename(&replacement, &executable).unwrap();
+        let expected = format!("{} (deleted)", executable.display());
+        assert_eq!(proc_executable_link_target(&state), expected.as_bytes());
+
+        std::fs::remove_file(&executable).unwrap();
+        assert_eq!(proc_executable_link_target(&state), expected.as_bytes());
+        state.executable_file = None;
+        assert_eq!(
+            proc_executable_link_target(&state),
+            executable.as_os_str().as_bytes(),
+            "the embedding API's unknown initial identity stays best effort",
+        );
+    }
+
     // Non-`#!` payload; the resolver only checks that it is not a script.
     const FAKE_ELF: &[u8] = b"\x7fELF\x02\x01\x01\x00 fake elf body";
+
+    fn fake_executable(path: PathBuf, image: Vec<u8>) -> ResolvedExecutable {
+        ResolvedExecutable {
+            path,
+            file: None,
+            image,
+        }
+    }
 
     #[test]
     fn resolve_exec_shebang_plain_elf_is_unchanged() {
@@ -22664,14 +23198,13 @@ mod tests {
         let prog = dir.0.join("prog");
         std::fs::write(&prog, FAKE_ELF).unwrap();
 
-        let (path, image, argv) = resolve_exec_shebang(
-            prog.clone(),
-            FAKE_ELF.to_vec(),
+        let (executable, argv) = resolve_exec_shebang(
+            fake_executable(prog.clone(), FAKE_ELF.to_vec()),
             vec!["prog".to_owned(), "-a".to_owned()],
         )
         .unwrap();
-        assert_eq!(path, prog);
-        assert_eq!(image, FAKE_ELF);
+        assert_eq!(executable.path, prog);
+        assert_eq!(executable.image, FAKE_ELF);
         assert_eq!(argv, vec!["prog".to_owned(), "-a".to_owned()]);
     }
 
@@ -22683,14 +23216,13 @@ mod tests {
         let script = dir.0.join("script");
         let script_body = format!("#!{} -x\necho hi\n", interp.display());
 
-        let (path, image, argv) = resolve_exec_shebang(
-            script.clone(),
-            script_body.into_bytes(),
+        let (executable, argv) = resolve_exec_shebang(
+            fake_executable(script.clone(), script_body.into_bytes()),
             vec!["script".to_owned(), "arg1".to_owned()],
         )
         .unwrap();
-        assert_eq!(path, interp);
-        assert_eq!(image, FAKE_ELF);
+        assert_eq!(executable.path, interp);
+        assert_eq!(executable.image, FAKE_ELF);
         // Kernel order: [interp, shebang args.., script_path, original args[1..]].
         assert_eq!(
             argv,
@@ -22711,8 +23243,11 @@ mod tests {
         std::fs::write(&a, format!("#!{}\n", b.display())).unwrap();
         std::fs::write(&b, format!("#!{}\n", a.display())).unwrap();
 
-        let err = resolve_exec_shebang(a.clone(), std::fs::read(&a).unwrap(), vec!["a".to_owned()])
-            .unwrap_err();
+        let err = resolve_exec_shebang(
+            fake_executable(a.clone(), std::fs::read(&a).unwrap()),
+            vec!["a".to_owned()],
+        )
+        .unwrap_err();
         assert_eq!(err, negative_errno(libc::ELOOP));
     }
 
