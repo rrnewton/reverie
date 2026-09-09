@@ -118,7 +118,8 @@ pub(crate) struct SignalFdState {
 #[derive(Debug)]
 pub(crate) struct InotifyDescriptionState {
     pub next_cookie: u64,
-    pub cookies: std::collections::BTreeMap<u32, u32>,
+    pub next_observation: u64,
+    pub cookies: std::collections::BTreeMap<u32, (u32, u32, u64)>,
 }
 
 impl Default for InotifyDescriptionState {
@@ -127,18 +128,27 @@ impl Default for InotifyDescriptionState {
             // Linux reserves zero for events without a related event. Start
             // canonical move pairs at one.
             next_cookie: 1,
+            next_observation: 0,
             cookies: std::collections::BTreeMap::new(),
         }
     }
 }
 
 // Metadata that follows an inotify open file description while SCM_RIGHTS
-// carries it between guest descriptor tables. The retained duplicate is used
-// only to identify the received open file description with KCMP_FILE.
+// carries it between guest descriptor tables. The retained duplicate provides
+// exact open-description identity through KCMP_FILE; the process-tree queue is
+// bounded and fails a send before it can exceed that bound.
 #[derive(Debug)]
 pub(crate) struct PendingInotifyRight {
+    pub transfer: u64,
     pub file: std::fs::File,
     pub description: std::sync::Arc<std::sync::Mutex<InotifyDescriptionState>>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PendingInotifyRights {
+    pub next_transfer: u64,
+    pub rights: Vec<PendingInotifyRight>,
 }
 
 /// Process-tree-wide state whose lifetime follows a guest task rather than an
@@ -304,7 +314,7 @@ pub(crate) struct LoadedStaticElf {
     // fork share cookie numbering while separate inotify instances do not.
     pub inotify_fds:
         std::collections::BTreeMap<i32, std::sync::Arc<std::sync::Mutex<InotifyDescriptionState>>>,
-    pub pending_inotify_rights: std::sync::Arc<std::sync::Mutex<Vec<PendingInotifyRight>>>,
+    pub pending_inotify_rights: std::sync::Arc<std::sync::Mutex<PendingInotifyRights>>,
 
     // One process-tree-wide membership table distinguishes a live task with no
     // robust-list registration from an unknown/dead tid. Entries are created
@@ -312,6 +322,10 @@ pub(crate) struct LoadedStaticElf {
     // destroyed.
     pub task_lifecycle: std::sync::Arc<std::sync::Mutex<TaskLifecycleTable>>,
     pub files: std::collections::BTreeMap<i32, std::fs::File>,
+    // Guest fd numbers occupied in the authoritative CLONE_FILES table but
+    // intentionally omitted from this executor's exact host-fd snapshot.
+    // This contains no host resources and is cleared after each syscall.
+    pub transient_unavailable_fds: std::collections::BTreeSet<i32>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Keep deterministic random descriptors on the Tool path.
     // TODO-HUMAN-REVIEW(PR-235): Review random-device descriptor lifecycle parity.
     pub random_device_fds: std::collections::BTreeSet<i32>,
@@ -419,6 +433,7 @@ impl LoadedStaticElf {
             pending_inotify_rights: self.pending_inotify_rights.clone(),
             task_lifecycle: self.task_lifecycle.clone(),
             files,
+            transient_unavailable_fds: std::collections::BTreeSet::new(),
             random_device_fds: self.random_device_fds.clone(),
             stdout_alias_fds: self.stdout_alias_fds.clone(),
             stderr_alias_fds: self.stderr_alias_fds.clone(),
@@ -556,6 +571,7 @@ impl LoadedStaticElf {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .reset_after_exec(self.tid, self.pid);
         self.files = files;
+        self.transient_unavailable_fds.clear();
         self.random_device_fds = random_device_fds;
         self.stdout_alias_fds = stdout_alias_fds;
         self.stderr_alias_fds = stderr_alias_fds;
@@ -788,12 +804,15 @@ fn load_executable(
         signal_alt_stack: None,
         signalfd_state: std::sync::Arc::new(std::sync::Mutex::new(SignalFdState::default())),
         inotify_fds: std::collections::BTreeMap::new(),
-        pending_inotify_rights: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        pending_inotify_rights: std::sync::Arc::new(std::sync::Mutex::new(
+            PendingInotifyRights::default(),
+        )),
 
         task_lifecycle: std::sync::Arc::new(std::sync::Mutex::new(TaskLifecycleTable::with_root(
             1, 1, true,
         ))),
         files: std::collections::BTreeMap::new(),
+        transient_unavailable_fds: std::collections::BTreeSet::new(),
         random_device_fds: std::collections::BTreeSet::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
         stderr_alias_fds: std::collections::BTreeSet::new(),
