@@ -1161,14 +1161,12 @@ fn mutates_file_table(number: u64) -> bool {
     )
 }
 
-fn accept_flags(request: &SyscallRequest) -> Option<Result<libc::c_int, i64>> {
+fn accept_flags(request: &SyscallRequest) -> Option<u64> {
     match request.number() {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        number if number == libc::SYS_accept as u64 => Some(Ok(0)),
+        number if number == libc::SYS_accept as u64 => Some(0),
         // AUTONOMOUS-BOT-IMPLEMENTED
-        number if number == libc::SYS_accept4 as u64 => {
-            Some(libc::c_int::try_from(request.args()[3]).map_err(|_| negative_errno(libc::EINVAL)))
-        }
+        number if number == libc::SYS_accept4 as u64 => Some(request.args()[3]),
         _ => None,
     }
 }
@@ -1228,11 +1226,7 @@ impl ElfExecutor {
     }
 
     fn execute_accept(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> Option<i64> {
-        let raw_flags = accept_flags(request)?;
-        let flags = match raw_flags {
-            Ok(flags) => flags,
-            Err(error) => return Some(error),
-        };
+        let flags = accept_flags(request)?;
         let file_table = self.file_table.clone();
         {
             let shared_files = file_table.lock().expect("KVM file-table lock poisoned");
@@ -1254,7 +1248,7 @@ impl ElfExecutor {
         let result = insert_file_with_flags(
             &mut self.state,
             accepted,
-            flags & libc::SOCK_CLOEXEC != 0,
+            flags & (libc::SOCK_CLOEXEC as u64) != 0,
             None,
         );
         if result >= 0 {
@@ -5092,6 +5086,80 @@ fn listen(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     zero_or_errno(unsafe { libc::listen(host_fd, args[1] as libc::c_int) })
 }
 
+/// Copy a host-produced socket address and its complete length to guest memory.
+///
+/// Linux reads the input capacity as a signed `int`, rejects negative values,
+/// writes the complete returned length, and only then copies the bounded
+/// address. The order matters when the two guest pointers overlap.
+fn move_addr_to_user(
+    memory: &mut GuestMemory,
+    guest_address: u64,
+    guest_length: u64,
+    address: &[u8],
+    returned_length: libc::socklen_t,
+) -> i64 {
+    if guest_length == 0 {
+        return negative_errno(libc::EFAULT);
+    }
+    let capacity = match read_guest_struct::<libc::socklen_t>(memory, guest_length) {
+        Ok(capacity) => capacity,
+        Err(_) => return negative_errno(libc::EFAULT),
+    };
+    move_addr_to_user_with_capacity(
+        memory,
+        guest_address,
+        guest_length,
+        capacity,
+        address,
+        returned_length,
+    )
+}
+
+fn move_addr_to_user_with_capacity(
+    memory: &mut GuestMemory,
+    guest_address: u64,
+    guest_length: u64,
+    capacity: libc::socklen_t,
+    address: &[u8],
+    returned_length: libc::socklen_t,
+) -> i64 {
+    let Ok(capacity) = libc::c_int::try_from(capacity) else {
+        return negative_errno(libc::EINVAL);
+    };
+
+    let length_result = write_struct(memory, guest_length, &returned_length);
+    if length_result != 0 {
+        return length_result;
+    }
+
+    copy_socket_address_to_user(memory, guest_address, capacity, address, returned_length)
+}
+
+/// Copy only the bounded address bytes after its containing length field has
+/// already been written. `recvmsg` and `recvmmsg` store that length inside the
+/// message header, so they share this half of `move_addr_to_user`.
+fn copy_socket_address_to_user(
+    memory: &mut GuestMemory,
+    guest_address: u64,
+    capacity: libc::c_int,
+    address: &[u8],
+    returned_length: libc::socklen_t,
+) -> i64 {
+    debug_assert!(capacity >= 0);
+    let copy_length = (capacity as usize)
+        .min(returned_length as usize)
+        .min(address.len());
+    if copy_length != 0
+        && (guest_address == 0
+            || memory
+                .write(guest_address, &address[..copy_length])
+                .is_err())
+    {
+        return negative_errno(libc::EFAULT);
+    }
+    0
+}
+
 #[derive(Clone, Copy)]
 enum SocketNameQuery {
     Local,
@@ -5130,23 +5198,7 @@ fn socket_name(
         return io_error(std::io::Error::last_os_error());
     }
 
-    if args[2] == 0 {
-        return negative_errno(libc::EFAULT);
-    }
-    let Ok(capacity) = read_guest_struct::<libc::socklen_t>(memory, args[2]) else {
-        return negative_errno(libc::EFAULT);
-    };
-    let copy_length = (capacity as usize).min(length as usize).min(address.len());
-    let address_failed = copy_length != 0
-        && (args[1] == 0 || memory.write(args[1], &address[..copy_length]).is_err());
-    let length_result = write_struct(memory, args[2], &length);
-    if length_result != 0 {
-        return length_result;
-    }
-    if address_failed {
-        return negative_errno(libc::EFAULT);
-    }
-    0
+    move_addr_to_user(memory, args[1], args[2], &address, length)
 }
 
 // TODO-HUMAN-REVIEW(PR-213): Review bounded getsockname copyback semantics.
@@ -5164,31 +5216,23 @@ fn accept_socket(
     memory: &mut GuestMemory,
     state: &LoadedStaticElf,
     args: &[u64; 6],
-    flags: libc::c_int,
+    raw_flags: u64,
 ) -> Result<std::fs::File, i64> {
+    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
+        return Err(negative_errno(libc::EBADF));
+    };
+    let Ok(flags) = libc::c_int::try_from(raw_flags) else {
+        return Err(negative_errno(libc::EINVAL));
+    };
     let allowed_flags = libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
     if flags & !allowed_flags != 0 {
         return Err(negative_errno(libc::EINVAL));
     }
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
-        return Err(negative_errno(libc::EBADF));
-    };
 
     // SAFETY: a zeroed sockaddr_storage is valid scratch space for accept4.
     let mut address =
         unsafe { std::mem::MaybeUninit::<libc::sockaddr_storage>::zeroed().assume_init() };
     let mut length = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-    let guest_capacity = if args[1] == 0 {
-        0
-    } else {
-        if args[2] == 0 {
-            return Err(negative_errno(libc::EFAULT));
-        }
-        let capacity = read_guest_struct::<libc::socklen_t>(memory, args[2])
-            .map_err(|_| negative_errno(libc::EFAULT))?;
-        length = length.min(capacity);
-        capacity as usize
-    };
     let address_pointer = if args[1] == 0 {
         std::ptr::null_mut()
     } else {
@@ -5217,21 +5261,15 @@ fn accept_socket(
     let accepted = unsafe { std::fs::File::from_raw_fd(accepted_fd) };
 
     if args[1] != 0 {
-        let copy_length = guest_capacity
-            .min(length as usize)
-            .min(std::mem::size_of::<libc::sockaddr_storage>());
-        if copy_length != 0 {
-            // SAFETY: address is initialized storage and copy_length is bounded
-            // by its size.
-            let bytes = unsafe {
-                std::slice::from_raw_parts(std::ptr::from_ref(&address).cast::<u8>(), copy_length)
-            };
-            if memory.write(args[1], bytes).is_err() {
-                return Err(negative_errno(libc::EFAULT));
-            }
-        }
-        let result = write_struct(memory, args[2], &length);
-        if result < 0 {
+        // SAFETY: address is initialized storage and the slice covers exactly it.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::from_ref(&address).cast::<u8>(),
+                std::mem::size_of::<libc::sockaddr_storage>(),
+            )
+        };
+        let result = move_addr_to_user(memory, args[1], args[2], bytes, length);
+        if result != 0 {
             return Err(result);
         }
     }
@@ -5425,35 +5463,13 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
     let Ok(requested_length) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
-    if !range_is_valid(memory, args[1], args[2]) {
-        return negative_errno(libc::EFAULT);
-    }
     let length = requested_length.min(MAX_HOST_IO);
-    let Ok(writable) = memory.user_accessible_prefix(args[1], length) else {
-        return negative_errno(libc::EFAULT);
-    };
-    if writable == 0 && requested_length != 0 {
-        return negative_errno(libc::EFAULT);
-    }
-    let mut bytes = vec![0; writable];
+    let mut bytes = vec![0; length];
 
     // SAFETY: a zeroed sockaddr_storage is valid scratch space for recvfrom.
     let mut address =
         unsafe { std::mem::MaybeUninit::<libc::sockaddr_storage>::zeroed().assume_init() };
     let mut address_length = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-    let guest_address_capacity = if args[4] == 0 {
-        0
-    } else {
-        if args[5] == 0 {
-            return negative_errno(libc::EFAULT);
-        }
-        let capacity = match read_guest_struct::<libc::socklen_t>(memory, args[5]) {
-            Ok(capacity) => capacity,
-            Err(_) => return negative_errno(libc::EFAULT),
-        };
-        address_length = address_length.min(capacity);
-        capacity as usize
-    };
     let address_pointer = if args[4] == 0 {
         std::ptr::null_mut()
     } else {
@@ -5486,24 +5502,16 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
     }
 
     if args[4] != 0 {
-        let address_copy_length = guest_address_capacity
-            .min(address_length as usize)
-            .min(std::mem::size_of::<libc::sockaddr_storage>());
-        if address_copy_length != 0 {
-            // SAFETY: address is initialized storage and address_copy_length
-            // is bounded by its size.
-            let address_bytes = unsafe {
-                std::slice::from_raw_parts(
-                    std::ptr::from_ref(&address).cast::<u8>(),
-                    address_copy_length,
-                )
-            };
-            if memory.write(args[4], address_bytes).is_err() {
-                return negative_errno(libc::EFAULT);
-            }
-        }
-        let copy_result = write_struct(memory, args[5], &address_length);
-        if copy_result < 0 {
+        // SAFETY: address is initialized storage and the slice covers exactly it.
+        let address_bytes = unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::from_ref(&address).cast::<u8>(),
+                std::mem::size_of::<libc::sockaddr_storage>(),
+            )
+        };
+        let copy_result =
+            move_addr_to_user(memory, args[4], args[5], address_bytes, address_length);
+        if copy_result != 0 {
             return copy_result;
         }
     }
@@ -5965,7 +5973,7 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
     if message_address == 0 {
         return negative_errno(libc::EFAULT);
     }
-    let mut message: libc::msghdr = match read_guest_struct(memory, message_address) {
+    let message: libc::msghdr = match read_guest_struct(memory, message_address) {
         Ok(message) => message,
         Err(error) => return error,
     };
@@ -6013,29 +6021,27 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
         guest_iovecs.push(iov);
     }
 
-    let name_capacity = message.msg_namelen as usize;
     let control_capacity = message.msg_controllen;
-    if name_capacity > MAX_HOST_IO || control_capacity > MAX_HOST_IO {
+    if control_capacity > MAX_HOST_IO {
         return negative_errno(libc::EINVAL);
-    }
-    if name_capacity != 0 && message.msg_name.is_null() {
-        return negative_errno(libc::EFAULT);
     }
     if control_capacity != 0 && message.msg_control.is_null() {
         return negative_errno(libc::EFAULT);
     }
     let mut payload = vec![0u8; payload_length];
-    let mut name = vec![0u8; name_capacity];
+    let mut name = if message.msg_name.is_null() {
+        Vec::new()
+    } else {
+        vec![0u8; std::mem::size_of::<libc::sockaddr_storage>()]
+    };
     let mut control = vec![0u8; control_capacity];
-    for (address, length) in [
-        (message.msg_name as usize as u64, name_capacity),
-        (message.msg_control as usize as u64, control_capacity),
-    ] {
-        if length != 0 {
-            let mut probe = vec![0; length];
-            if memory.read(address, &mut probe).is_err() {
-                return negative_errno(libc::EFAULT);
-            }
+    if control_capacity != 0 {
+        let mut probe = vec![0; control_capacity];
+        if memory
+            .read(message.msg_control as usize as u64, &mut probe)
+            .is_err()
+        {
+            return negative_errno(libc::EFAULT);
         }
     }
 
@@ -6102,16 +6108,6 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
         }
         copied += length;
     }
-    if name_capacity != 0
-        && memory
-            .write(
-                message.msg_name as usize as u64,
-                &name[..name_capacity.min(host_header.msg_namelen as usize)],
-            )
-            .is_err()
-    {
-        return negative_errno(libc::EFAULT);
-    }
 
     let installed = match install_received_rights(
         state,
@@ -6137,15 +6133,41 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
             return negative_errno(libc::EFAULT);
         }
     }
-    message.msg_namelen = host_header.msg_namelen;
-    message.msg_controllen = control_bytes.len();
-    message.msg_flags = host_header.msg_flags;
-    if stripped_unsupported {
-        message.msg_flags |= libc::MSG_CTRUNC;
+
+    if !message.msg_name.is_null() {
+        let name_length_address =
+            message_address + std::mem::offset_of!(libc::msghdr, msg_namelen) as u64;
+        let copy_result = move_addr_to_user_with_capacity(
+            memory,
+            message.msg_name as usize as u64,
+            name_length_address,
+            message.msg_namelen,
+            &name,
+            host_header.msg_namelen,
+        );
+        if copy_result != 0 {
+            rollback_received_rights(state, &installed);
+            return copy_result;
+        }
     }
-    if write_struct(memory, message_address, &message) != 0 {
+
+    let control_length_address =
+        message_address + std::mem::offset_of!(libc::msghdr, msg_controllen) as u64;
+    let copy_result = write_struct(memory, control_length_address, &control_bytes.len());
+    if copy_result != 0 {
         rollback_received_rights(state, &installed);
-        return negative_errno(libc::EFAULT);
+        return copy_result;
+    }
+
+    let mut returned_flags = host_header.msg_flags;
+    if stripped_unsupported {
+        returned_flags |= libc::MSG_CTRUNC;
+    }
+    let flags_address = message_address + std::mem::offset_of!(libc::msghdr, msg_flags) as u64;
+    let copy_result = write_struct(memory, flags_address, &returned_flags);
+    if copy_result != 0 {
+        rollback_received_rights(state, &installed);
+        return copy_result;
     }
     received as i64
 }
@@ -6180,7 +6202,7 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
                 delivered as i64
             };
         };
-        let mut message: libc::mmsghdr = match read_guest_struct(memory, message_address) {
+        let message: libc::mmsghdr = match read_guest_struct(memory, message_address) {
             Ok(message) => message,
             Err(error) => {
                 return if delivered == 0 {
@@ -6253,9 +6275,8 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
             guest_iovecs.push(iov);
         }
 
-        let name_capacity = message.msg_hdr.msg_namelen as usize;
         let control_capacity = message.msg_hdr.msg_controllen;
-        if name_capacity > MAX_HOST_IO || control_capacity > MAX_HOST_IO {
+        if control_capacity > MAX_HOST_IO {
             return if delivered == 0 {
                 negative_errno(libc::EINVAL)
             } else {
@@ -6263,19 +6284,12 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
             };
         }
         let mut payload = vec![0u8; payload_length];
-        let mut name = vec![0u8; name_capacity];
+        let mut name = if message.msg_hdr.msg_name.is_null() {
+            Vec::new()
+        } else {
+            vec![0u8; std::mem::size_of::<libc::sockaddr_storage>()]
+        };
         let mut control = vec![0u8; control_capacity];
-        if name_capacity != 0
-            && memory
-                .read(message.msg_hdr.msg_name as usize as u64, &mut name)
-                .is_err()
-        {
-            return if delivered == 0 {
-                negative_errno(libc::EFAULT)
-            } else {
-                delivered as i64
-            };
-        }
         if control_capacity != 0
             && memory
                 .read(message.msg_hdr.msg_control as usize as u64, &mut control)
@@ -6364,20 +6378,6 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
             }
             copied += length;
         }
-        if name_capacity != 0
-            && memory
-                .write(
-                    message.msg_hdr.msg_name as usize as u64,
-                    &name[..name_capacity.min(host_header.msg_namelen as usize)],
-                )
-                .is_err()
-        {
-            return if delivered == 0 {
-                negative_errno(libc::EFAULT)
-            } else {
-                delivered as i64
-            };
-        }
         let installed = match install_received_rights(
             state,
             &mut control_bytes,
@@ -6408,17 +6408,65 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
                 };
             }
         }
-        message.msg_hdr.msg_namelen = host_header.msg_namelen;
-        message.msg_hdr.msg_controllen = control_bytes.len();
-        message.msg_hdr.msg_flags = host_header.msg_flags;
-        if stripped_unsupported {
-            message.msg_hdr.msg_flags |= libc::MSG_CTRUNC;
+
+        if !message.msg_hdr.msg_name.is_null() {
+            let header_address =
+                message_address + std::mem::offset_of!(libc::mmsghdr, msg_hdr) as u64;
+            let name_length_address =
+                header_address + std::mem::offset_of!(libc::msghdr, msg_namelen) as u64;
+            let copy_result = move_addr_to_user_with_capacity(
+                memory,
+                message.msg_hdr.msg_name as usize as u64,
+                name_length_address,
+                message.msg_hdr.msg_namelen,
+                &name,
+                host_header.msg_namelen,
+            );
+            if copy_result != 0 {
+                rollback_received_rights(state, &installed);
+                return if delivered == 0 {
+                    copy_result
+                } else {
+                    delivered as i64
+                };
+            }
         }
-        message.msg_len = received as libc::c_uint;
-        if write_struct(memory, message_address, &message) != 0 {
+
+        let header_address = message_address + std::mem::offset_of!(libc::mmsghdr, msg_hdr) as u64;
+        let control_length_address =
+            header_address + std::mem::offset_of!(libc::msghdr, msg_controllen) as u64;
+        let copy_result = write_struct(memory, control_length_address, &control_bytes.len());
+        if copy_result != 0 {
             rollback_received_rights(state, &installed);
             return if delivered == 0 {
-                negative_errno(libc::EFAULT)
+                copy_result
+            } else {
+                delivered as i64
+            };
+        }
+
+        let mut returned_flags = host_header.msg_flags;
+        if stripped_unsupported {
+            returned_flags |= libc::MSG_CTRUNC;
+        }
+        let flags_address = header_address + std::mem::offset_of!(libc::msghdr, msg_flags) as u64;
+        let copy_result = write_struct(memory, flags_address, &returned_flags);
+        if copy_result != 0 {
+            rollback_received_rights(state, &installed);
+            return if delivered == 0 {
+                copy_result
+            } else {
+                delivered as i64
+            };
+        }
+
+        let message_length_address =
+            message_address + std::mem::offset_of!(libc::mmsghdr, msg_len) as u64;
+        let copy_result = write_struct(memory, message_length_address, &(received as libc::c_uint));
+        if copy_result != 0 {
+            rollback_received_rights(state, &installed);
+            return if delivered == 0 {
+                copy_result
             } else {
                 delivered as i64
             };
@@ -13357,6 +13405,34 @@ mod tests {
     }
 
     #[test]
+    fn accept4_reports_descriptor_errors_before_flag_errors() {
+        let root = TestDir::new();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut state = test_state(&root.0);
+        let regular_file = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        assert_eq!(regular_file, 3);
+        let mut executor = ElfExecutor::new(state, false);
+
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_accept4 as u64, [u64::MAX, 0, 0, u64::MAX, 0, 0],),
+                &memory,
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_accept4 as u64,
+                    [regular_file as u64, 0, 0, u64::MAX, 0, 0],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::EINVAL)
+        );
+    }
+
+    #[test]
     fn elf_executor_accepts_unix_listener_connection() {
         const ADDRESS: u64 = 0x100;
         const PAYLOAD: u64 = 0x300;
@@ -13599,6 +13675,7 @@ mod tests {
         const NAME_LENGTH: u64 = 0x300;
         const CONNECT_ADDRESS: u64 = 0x400;
         const PAYLOAD: u64 = 0x500;
+        const OVERLAP_ADDRESS: u64 = 0x600;
 
         let loopback_v4 = libc::sockaddr_in {
             sin_family: libc::AF_INET as libc::sa_family_t,
@@ -13716,13 +13793,41 @@ mod tests {
             ),
             0
         );
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                OVERLAP_ADDRESS,
+                &(sockaddr_len as libc::socklen_t)
+            ),
+            0
+        );
+        let (accept_number, accept_flags) = if domain == libc::AF_INET {
+            (libc::SYS_accept as u64, 0)
+        } else {
+            (libc::SYS_accept4 as u64, libc::SOCK_CLOEXEC as u64)
+        };
         let accepted = executor.execute(
-            &SyscallRequest::new(libc::SYS_accept4 as u64, [server as u64, 0, 0, 0, 0, 0]),
+            &SyscallRequest::new(
+                accept_number,
+                [
+                    server as u64,
+                    OVERLAP_ADDRESS,
+                    OVERLAP_ADDRESS,
+                    accept_flags,
+                    0,
+                    0,
+                ],
+            ),
             &memory,
         );
         assert_eq!(accepted, 5);
+        assert_eq!(
+            read_struct::<libc::sa_family_t>(&memory, OVERLAP_ADDRESS),
+            domain as libc::sa_family_t,
+            "accept address did not follow its overlapping length copy"
+        );
 
-        // Move one datagram to prove the accepted connection is live.
+        // Move one payload to prove the accepted connection is live.
         assert_eq!(write_struct(&mut memory, PAYLOAD, b"ping\0"), 0);
         assert_eq!(
             executor.execute(
@@ -14226,6 +14331,7 @@ mod tests {
         const PAIR_FDS: u64 = 0x100;
         const RESULT: u64 = 0x200;
         const RESULT_LENGTH: u64 = 0x300;
+        const OVERLAP: u64 = 0x400;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
@@ -14289,24 +14395,48 @@ mod tests {
         assert_eq!(truncated[0], libc::AF_UNIX as u8);
         assert_eq!(&truncated[1..], &sentinel[1..]);
 
-        memory.write(RESULT, &sentinel).unwrap();
-        assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &0_u32), 0);
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_getpeername,
-                [socket_fd as u64, 0, RESULT_LENGTH, 0, 0, 0],
-            ),
-            0
-        );
-        assert_eq!(
-            read_struct::<libc::socklen_t>(&memory, RESULT_LENGTH),
-            family_length
-        );
-        let mut zero_capacity = [0; 4];
-        memory.read(RESULT, &mut zero_capacity).unwrap();
-        assert_eq!(zero_capacity, sentinel);
+        for syscall in [libc::SYS_getsockname, libc::SYS_getpeername] {
+            // A non-null address with zero capacity is left untouched while the
+            // complete returned length is still reported.
+            memory.write(RESULT, &sentinel).unwrap();
+            assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &0_u32), 0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    syscall,
+                    [socket_fd as u64, RESULT, RESULT_LENGTH, 0, 0, 0],
+                ),
+                0
+            );
+            assert_eq!(
+                read_struct::<libc::socklen_t>(&memory, RESULT_LENGTH),
+                family_length
+            );
+            let mut zero_capacity = [0; 4];
+            memory.read(RESULT, &mut zero_capacity).unwrap();
+            assert_eq!(zero_capacity, sentinel);
+
+            // A null address is likewise accepted only when the input capacity
+            // is zero, and cannot disturb an unrelated address sentinel.
+            memory.write(RESULT, &sentinel).unwrap();
+            assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &0_u32), 0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    syscall,
+                    [socket_fd as u64, 0, RESULT_LENGTH, 0, 0, 0],
+                ),
+                0
+            );
+            assert_eq!(
+                read_struct::<libc::socklen_t>(&memory, RESULT_LENGTH),
+                family_length
+            );
+            memory.read(RESULT, &mut zero_capacity).unwrap();
+            assert_eq!(zero_capacity, sentinel);
+        }
 
         assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &1_u32), 0);
         assert_eq!(
@@ -14322,6 +14452,47 @@ mod tests {
             read_struct::<libc::socklen_t>(&memory, RESULT_LENGTH),
             family_length
         );
+
+        for syscall in [libc::SYS_getsockname, libc::SYS_getpeername] {
+            // Linux writes the returned length first, then the address. If the
+            // pointers overlap, the address family must therefore be the final
+            // value at the start of the shared region.
+            assert_eq!(write_struct(&mut memory, OVERLAP, &full_length), 0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    syscall,
+                    [socket_fd as u64, OVERLAP, OVERLAP, 0, 0, 0],
+                ),
+                0,
+                "overlapping socket address copy failed for syscall {syscall}"
+            );
+            assert_eq!(
+                read_struct::<libc::sa_family_t>(&memory, OVERLAP),
+                libc::AF_UNIX as libc::sa_family_t,
+                "socket address did not follow length copy for syscall {syscall}"
+            );
+
+            // The kernel reads socklen_t through a signed int. 0xffffffff is
+            // negative in that domain and must fail before either output moves.
+            memory.write(RESULT, &sentinel).unwrap();
+            assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &u32::MAX), 0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    syscall,
+                    [socket_fd as u64, RESULT, RESULT_LENGTH, 0, 0, 0],
+                ),
+                negative_errno(libc::EINVAL)
+            );
+            assert_eq!(read_struct::<u32>(&memory, RESULT_LENGTH), u32::MAX);
+            let mut oversized_address = [0; 4];
+            memory.read(RESULT, &mut oversized_address).unwrap();
+            assert_eq!(oversized_address, sentinel);
+        }
+
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -14578,6 +14749,47 @@ mod tests {
     }
 
     #[test]
+    fn recvfrom_reports_host_errors_before_guest_output_errors() {
+        const SOURCE_ADDRESS: u64 = 0x100;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let regular_file = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        assert_eq!(regular_file, 3);
+        let empty_socket = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_socket,
+            [
+                libc::AF_INET as u64,
+                (libc::SOCK_DGRAM | libc::SOCK_NONBLOCK) as u64,
+                0,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert_eq!(empty_socket, 4);
+
+        for (fd, error) in [
+            (regular_file, negative_errno(libc::ENOTSOCK)),
+            (empty_socket, negative_errno(libc::EAGAIN)),
+        ] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_recvfrom,
+                    [fd as u64, u64::MAX, 1, 0, SOURCE_ADDRESS, 0],
+                ),
+                error,
+                "host recvfrom error lost precedence for guest fd {fd}"
+            );
+        }
+    }
+
+    #[test]
     fn so_incoming_cpu_udp4_loopback_flow_is_canonical_zero() {
         // End-to-end model of the so_incoming_cpu_udp4 compat cell: an AF_INET
         // SOCK_DGRAM receiver bound to loopback, a real datagram delivered from
@@ -14594,6 +14806,7 @@ mod tests {
         const RECV_BUFFER: u64 = 0x600;
         const OPT_RESULT: u64 = 0x700;
         const OPT_LENGTH: u64 = 0x800;
+        const RECV_ADDRESS: u64 = 0x900;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
@@ -14615,7 +14828,14 @@ mod tests {
             &mut memory,
             &mut state,
             libc::SYS_socket,
-            [libc::AF_INET as u64, libc::SOCK_DGRAM as u64, 0, 0, 0, 0],
+            [
+                libc::AF_INET as u64,
+                (libc::SOCK_DGRAM | libc::SOCK_NONBLOCK) as u64,
+                0,
+                0,
+                0,
+                0,
+            ],
         );
         assert_eq!(receiver, 3);
         assert_eq!(
@@ -14685,6 +14905,60 @@ mod tests {
             ),
             5
         );
+        assert_eq!(write_struct(&mut memory, RECV_ADDRESS, &address_length), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvfrom,
+                [
+                    receiver as u64,
+                    RECV_BUFFER,
+                    5,
+                    0,
+                    RECV_ADDRESS,
+                    RECV_ADDRESS
+                ],
+            ),
+            5
+        );
+        let mut received = [0u8; 5];
+        memory.read(RECV_BUFFER, &mut received).unwrap();
+        assert_eq!(&received, b"udp4!");
+        assert_eq!(
+            read_struct::<libc::sa_family_t>(&memory, RECV_ADDRESS),
+            libc::AF_INET as libc::sa_family_t,
+            "recvfrom address did not follow its overlapping length copy"
+        );
+
+        // A payload copy fault happens after the host has consumed the queued
+        // datagram. The following nonblocking receive must therefore see an
+        // empty socket rather than the same datagram again.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendto,
+                [
+                    sender as u64,
+                    PAYLOAD,
+                    5,
+                    libc::MSG_NOSIGNAL as u64,
+                    DEST_ADDRESS,
+                    address_length as u64,
+                ],
+            ),
+            5
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvfrom,
+                [receiver as u64, u64::MAX, 5, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -14692,11 +14966,9 @@ mod tests {
                 libc::SYS_recvfrom,
                 [receiver as u64, RECV_BUFFER, 5, 0, 0, 0],
             ),
-            5
+            negative_errno(libc::EAGAIN),
+            "payload copy failure left the datagram queued"
         );
-        let mut received = [0u8; 5];
-        memory.read(RECV_BUFFER, &mut received).unwrap();
-        assert_eq!(&received, b"udp4!");
 
         // The datagram was processed on some host CPU, yet the option must read
         // back a canonical virtual CPU 0, matching detcore's handle_getsockopt.
@@ -15031,6 +15303,156 @@ mod tests {
             );
         }
         assert!(state.files.is_empty());
+    }
+
+    fn assert_receive_message_name_follows_length_copy(syscall: libc::c_long) {
+        const BIND_ADDRESS: u64 = 0x100;
+        const NAME_ADDRESS: u64 = 0x200;
+        const NAME_LENGTH: u64 = 0x300;
+        const DEST_ADDRESS: u64 = 0x400;
+        const PAYLOAD: u64 = 0x500;
+        const RECV_BUFFER: u64 = 0x600;
+        const RECV_IOV: u64 = 0x700;
+        const MESSAGE: u64 = 0x800;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let loopback = libc::sockaddr_in {
+            sin_family: libc::AF_INET as libc::sa_family_t,
+            sin_port: 0,
+            sin_addr: libc::in_addr {
+                s_addr: u32::from_ne_bytes([127, 0, 0, 1]),
+            },
+            sin_zero: [0; 8],
+        };
+        let address_length = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        assert_eq!(write_struct(&mut memory, BIND_ADDRESS, &loopback), 0);
+
+        let receiver = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_socket,
+            [
+                libc::AF_INET as u64,
+                (libc::SOCK_DGRAM | libc::SOCK_NONBLOCK) as u64,
+                0,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert_eq!(receiver, 3);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_bind,
+                [
+                    receiver as u64,
+                    BIND_ADDRESS,
+                    address_length as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert_eq!(write_struct(&mut memory, NAME_LENGTH, &address_length), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getsockname,
+                [receiver as u64, NAME_ADDRESS, NAME_LENGTH, 0, 0, 0],
+            ),
+            0
+        );
+        let bound: libc::sockaddr_in = read_struct(&memory, NAME_ADDRESS);
+        let destination = libc::sockaddr_in {
+            sin_family: libc::AF_INET as libc::sa_family_t,
+            sin_port: bound.sin_port,
+            sin_addr: libc::in_addr {
+                s_addr: u32::from_ne_bytes([127, 0, 0, 1]),
+            },
+            sin_zero: [0; 8],
+        };
+        assert_eq!(write_struct(&mut memory, DEST_ADDRESS, &destination), 0);
+
+        let sender = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_socket,
+            [libc::AF_INET as u64, libc::SOCK_DGRAM as u64, 0, 0, 0, 0],
+        );
+        assert_eq!(sender, 4);
+        memory.write(PAYLOAD, b"x").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendto,
+                [
+                    sender as u64,
+                    PAYLOAD,
+                    1,
+                    libc::MSG_NOSIGNAL as u64,
+                    DEST_ADDRESS,
+                    address_length as u64,
+                ],
+            ),
+            1
+        );
+
+        let receive_iov = libc::iovec {
+            iov_base: RECV_BUFFER as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(write_struct(&mut memory, RECV_IOV, &receive_iov), 0);
+        let name_length_address = MESSAGE
+            + std::mem::offset_of!(libc::mmsghdr, msg_hdr) as u64
+            + std::mem::offset_of!(libc::msghdr, msg_namelen) as u64;
+        let mut message = unsafe { std::mem::zeroed::<libc::mmsghdr>() };
+        message.msg_hdr.msg_name = name_length_address as usize as *mut libc::c_void;
+        message.msg_hdr.msg_namelen = address_length;
+        message.msg_hdr.msg_iov = RECV_IOV as usize as *mut libc::iovec;
+        message.msg_hdr.msg_iovlen = 1;
+        assert_eq!(write_struct(&mut memory, MESSAGE, &message), 0);
+
+        let arguments = if syscall == libc::SYS_recvmsg {
+            [receiver as u64, MESSAGE, libc::MSG_DONTWAIT as u64, 0, 0, 0]
+        } else {
+            [receiver as u64, MESSAGE, 1, libc::MSG_DONTWAIT as u64, 0, 0]
+        };
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, syscall, arguments),
+            1
+        );
+        assert_eq!(read_guest_bytes::<1>(&memory, RECV_BUFFER).unwrap(), *b"x");
+        assert_eq!(
+            read_struct::<libc::sa_family_t>(&memory, name_length_address),
+            libc::AF_INET as libc::sa_family_t,
+            "message name did not follow its overlapping length copy"
+        );
+        if syscall == libc::SYS_recvmmsg {
+            let message_length_address =
+                MESSAGE + std::mem::offset_of!(libc::mmsghdr, msg_len) as u64;
+            assert_eq!(
+                read_struct::<libc::c_uint>(&memory, message_length_address),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn recvmsg_name_follows_overlapping_length_copy() {
+        assert_receive_message_name_follows_length_copy(libc::SYS_recvmsg);
+    }
+
+    #[test]
+    fn recvmmsg_name_follows_overlapping_length_copy() {
+        assert_receive_message_name_follows_length_copy(libc::SYS_recvmmsg);
     }
 
     #[test]
