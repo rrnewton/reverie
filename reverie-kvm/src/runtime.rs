@@ -607,7 +607,7 @@ pub struct KvmStack {
     stack_pointer: u64,
     capacity: usize,
     writes: Vec<(u64, Vec<u8>)>,
-    checked_out: Arc<AtomicBool>,
+    checked_out: Option<Arc<AtomicBool>>,
 }
 
 impl KvmStack {
@@ -630,7 +630,7 @@ impl KvmStack {
             top,
             stack_pointer: top,
             writes: Vec::new(),
-            checked_out,
+            checked_out: Some(checked_out),
         }
     }
 
@@ -651,6 +651,17 @@ impl KvmStack {
         self.writes.push((address, bytes));
         AddrMut::from_raw(address as usize)
             .expect("KVM guest stack allocation produced a null address")
+    }
+}
+
+impl Drop for KvmStack {
+    fn drop(&mut self) {
+        if let Some(checked_out) = self.checked_out.take() {
+            assert!(
+                checked_out.swap(false, Ordering::SeqCst),
+                "KVM stack dropped without a checked-out stack",
+            );
+        }
     }
 }
 
@@ -694,14 +705,17 @@ impl Stack for KvmStack {
         self.allocate(vec![0; std::mem::size_of::<T>()])
     }
 
-    fn commit(self) -> std::result::Result<Self::StackGuard, Errno> {
-        for (address, bytes) in self.writes {
+    fn commit(mut self) -> std::result::Result<Self::StackGuard, Errno> {
+        for (address, bytes) in &self.writes {
             self.memory
-                .write_raw(address, &bytes)
+                .write_raw(*address, bytes)
                 .map_err(|_| Errno::EFAULT)?;
         }
         Ok(KvmStackGuard {
-            checked_out: self.checked_out,
+            checked_out: self
+                .checked_out
+                .take()
+                .expect("KVM stack commit lost its checkout"),
         })
     }
 }
@@ -1921,11 +1935,50 @@ mod tests {
     #[test]
     fn stack_commits_to_shared_guest_memory() {
         let memory = GuestMemory::new(0x1000, STACK_CAPACITY).unwrap();
-        let mut stack = KvmStack::new(memory.clone(), Arc::new(AtomicBool::new(false)));
+        let checked_out = Arc::new(AtomicBool::new(false));
+        let mut stack = KvmStack::new(memory.clone(), checked_out.clone());
         let address = stack.push(0x1122_3344_u32);
-        stack.commit().unwrap();
+        let guard = stack.commit().unwrap();
 
         let value = memory.read_value(address).unwrap();
         assert_eq!(value, 0x1122_3344_u32);
+        assert!(checked_out.load(Ordering::SeqCst));
+
+        drop(guard);
+        assert!(!checked_out.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn dropping_uncommitted_stack_releases_checkout() {
+        let memory = GuestMemory::new(0x1000, STACK_CAPACITY).unwrap();
+        let checked_out = Arc::new(AtomicBool::new(false));
+
+        drop(KvmStack::new(memory.clone(), checked_out.clone()));
+        assert!(!checked_out.load(Ordering::SeqCst));
+
+        drop(KvmStack::new(memory, checked_out));
+    }
+
+    #[test]
+    fn failed_stack_commit_releases_checkout() {
+        let memory = GuestMemory::new(0x1000, STACK_CAPACITY).unwrap();
+        let checked_out = Arc::new(AtomicBool::new(false));
+        let mut stack = KvmStack::new(memory.clone(), checked_out.clone());
+        stack.writes.push((memory.guest_end(), vec![0]));
+
+        assert!(matches!(stack.commit(), Err(Errno::EFAULT)));
+        assert!(!checked_out.load(Ordering::SeqCst));
+
+        drop(KvmStack::new(memory, checked_out));
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot retrieve a KVM guest stack while its previous guard is live")]
+    fn concurrent_stack_checkout_still_panics() {
+        let memory = GuestMemory::new(0x1000, STACK_CAPACITY).unwrap();
+        let checked_out = Arc::new(AtomicBool::new(false));
+        let _first = KvmStack::new(memory.clone(), checked_out.clone());
+
+        let _second = KvmStack::new(memory, checked_out);
     }
 }
