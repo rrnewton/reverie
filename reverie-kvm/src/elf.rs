@@ -20,6 +20,8 @@ use goblin::elf::header::ELFDATA2LSB;
 use goblin::elf::header::EM_X86_64;
 use goblin::elf::header::ET_DYN;
 use goblin::elf::header::ET_EXEC;
+use goblin::elf::program_header::PF_R;
+use goblin::elf::program_header::PF_W;
 use goblin::elf::program_header::PF_X;
 use goblin::elf::program_header::PT_INTERP;
 use goblin::elf::program_header::PT_LOAD;
@@ -655,7 +657,7 @@ fn load_executable(
         .unwrap_or(PROGRAM_HEADERS_ADDRESS);
     copy_program_headers(memory, image, &elf)?;
     if program_headers_address == PROGRAM_HEADERS_ADDRESS {
-        memory.map_user_range(PROGRAM_HEADERS_ADDRESS, PAGE_SIZE, false)?;
+        memory.map_user_range(PROGRAM_HEADERS_ADDRESS, PAGE_SIZE, libc::PROT_READ as u64)?;
     }
     let (stack_pointer, auxv) = build_initial_stack(
         memory,
@@ -666,7 +668,11 @@ fn load_executable(
         at_base,
         main_entry,
     )?;
-    memory.map_user_range(memory.guest_end() - STACK_LIMIT, STACK_LIMIT, false)?;
+    memory.map_user_range(
+        memory.guest_end() - STACK_LIMIT,
+        STACK_LIMIT,
+        (libc::PROT_READ | libc::PROT_WRITE) as u64,
+    )?;
     let program_break = align_up(main_end, PAGE_SIZE)?;
     let mmap_next = align_up(
         image_end
@@ -923,6 +929,20 @@ fn read_interpreter_image(path: &str) -> Result<Vec<u8>> {
     Ok(image)
 }
 
+fn elf_segment_protection(flags: u32) -> u64 {
+    let mut protection = libc::PROT_NONE as u64;
+    if flags & PF_R != 0 {
+        protection |= libc::PROT_READ as u64;
+    }
+    if flags & PF_W != 0 {
+        protection |= libc::PROT_WRITE as u64;
+    }
+    if flags & PF_X != 0 {
+        protection |= libc::PROT_EXEC as u64;
+    }
+    protection
+}
+
 fn load_segments(
     memory: &mut GuestMemory,
     image: &[u8],
@@ -976,7 +996,13 @@ fn load_segments(
         memory.zero_raw(zero_start, zero_len)?;
         let mapped_start = segment_start & !(PAGE_SIZE - 1);
         let mapped_end = align_up(segment_end, PAGE_SIZE)?;
-        memory.map_user_range(mapped_start, mapped_end - mapped_start, false)?;
+        // Program headers are applied in file order, matching the loader's
+        // content writes; a later overlapping PT_LOAD owns the shared page.
+        memory.map_user_range(
+            mapped_start,
+            mapped_end - mapped_start,
+            elf_segment_protection(header.p_flags),
+        )?;
 
         entry_is_executable |=
             header.p_flags & PF_X != 0 && (segment_start..segment_end).contains(&entry);
@@ -1186,6 +1212,53 @@ mod tests {
             base,
             align_up(main_end + INTERPRETER_MIN_BRK_HEADROOM, PAGE_SIZE).unwrap()
         );
+    }
+
+    #[test]
+    fn loaded_nonwritable_segment_rejects_user_copyout() {
+        let image = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        let elf = Elf::parse(&image).unwrap();
+        let end = elf
+            .program_headers
+            .iter()
+            .filter(|header| header.p_type == PT_LOAD)
+            .map(|header| MAIN_LOAD_BIAS + header.p_vaddr + header.p_memsz)
+            .max()
+            .unwrap();
+        let memory_size = usize::try_from(align_up(end, PAGE_SIZE).unwrap()).unwrap();
+        let mut memory = GuestMemory::new(0, memory_size).unwrap();
+        load_segments(&mut memory, &image, &elf, MAIN_LOAD_BIAS).unwrap();
+        memory.enable_user_access();
+
+        let address = elf
+            .program_headers
+            .iter()
+            .filter(|header| {
+                header.p_type == PT_LOAD
+                    && header.p_memsz != 0
+                    && header.p_flags & PF_R != 0
+                    && header.p_flags & PF_W == 0
+            })
+            .map(|header| MAIN_LOAD_BIAS + header.p_vaddr)
+            .find(|address| {
+                let page = *address & !(PAGE_SIZE - 1);
+                !elf.program_headers.iter().any(|other| {
+                    other.p_type == PT_LOAD && other.p_flags & PF_W != 0 && {
+                        let start = (MAIN_LOAD_BIAS + other.p_vaddr) & !(PAGE_SIZE - 1);
+                        let end =
+                            align_up(MAIN_LOAD_BIAS + other.p_vaddr + other.p_memsz, PAGE_SIZE)
+                                .unwrap();
+                        (start..end).contains(&page)
+                    }
+                })
+            })
+            .expect("test executable has a nonwritable PT_LOAD page");
+
+        memory.read(address, &mut [0]).unwrap();
+        assert!(matches!(
+            memory.write(address, &[0]),
+            Err(Error::GuestMemoryAccessDenied { .. })
+        ));
     }
 
     #[test]

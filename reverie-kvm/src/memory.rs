@@ -37,13 +37,24 @@ struct Mapping {
 #[derive(Clone, Debug, Default)]
 struct UserAccess {
     enabled: bool,
-    pages: BTreeMap<u64, UserPageState>,
+    pages: BTreeMap<u64, UserPagePermissions>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum UserPageState {
-    Accessible,
-    NoAccess,
+struct UserPagePermissions {
+    readable: bool,
+    writable: bool,
+}
+
+impl UserPagePermissions {
+    fn from_protection(protection: u64) -> Self {
+        // The KVM backend is x86-64. Its page tables do not distinguish an
+        // execute-only mapping, and a writable page is also readable.
+        Self {
+            readable: protection != libc::PROT_NONE as u64,
+            writable: protection & libc::PROT_WRITE as u64 != 0,
+        }
+    }
 }
 
 // SAFETY: Mapping owns an mmap allocation, not a Rust reference. Host access
@@ -165,23 +176,19 @@ impl GuestMemory {
         &self,
         guest_address: u64,
         length: u64,
-        no_access: bool,
+        protection: u64,
     ) -> Result<()> {
         let Some((first_page, last_page)) = self.checked_page_range(guest_address, length)? else {
             return Ok(());
         };
-        let state = if no_access {
-            UserPageState::NoAccess
-        } else {
-            UserPageState::Accessible
-        };
+        let permissions = UserPagePermissions::from_protection(protection);
         let mut access = self
             .mapping
             .user_access
             .lock()
             .expect("guest memory access map lock poisoned");
         for page in first_page..=last_page {
-            access.pages.insert(page, state);
+            access.pages.insert(page, permissions);
         }
         Ok(())
     }
@@ -311,7 +318,7 @@ impl GuestMemory {
     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
     pub fn read(&self, guest_address: u64, destination: &mut [u8]) -> Result<()> {
         self.checked_offset(guest_address, destination.len())?;
-        if self.user_accessible_prefix(guest_address, destination.len())? != destination.len() {
+        if self.user_readable_prefix(guest_address, destination.len())? != destination.len() {
             return Err(Error::GuestMemoryAccessDenied {
                 address: guest_address,
                 length: destination.len(),
@@ -344,7 +351,7 @@ impl GuestMemory {
     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
     pub fn write(&mut self, guest_address: u64, source: &[u8]) -> Result<()> {
         self.checked_offset(guest_address, source.len())?;
-        if self.user_accessible_prefix(guest_address, source.len())? != source.len() {
+        if self.user_writable_prefix(guest_address, source.len())? != source.len() {
             return Err(Error::GuestMemoryAccessDenied {
                 address: guest_address,
                 length: source.len(),
@@ -376,7 +383,7 @@ impl GuestMemory {
     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
     pub fn zero(&mut self, guest_address: u64, length: usize) -> Result<()> {
         self.checked_offset(guest_address, length)?;
-        if self.user_accessible_prefix(guest_address, length)? != length {
+        if self.user_writable_prefix(guest_address, length)? != length {
             return Err(Error::GuestMemoryAccessDenied {
                 address: guest_address,
                 length,
@@ -437,10 +444,20 @@ impl GuestMemory {
     }
 
     // TODO-HUMAN-REVIEW(PR-132): Review partial user-range validation.
-    pub(crate) fn user_accessible_prefix(
+    pub(crate) fn user_readable_prefix(&self, guest_address: u64, length: usize) -> Result<usize> {
+        self.user_access_prefix(guest_address, length, |permissions| permissions.readable)
+    }
+
+    // TODO-HUMAN-REVIEW(PR-536): Review write-permission enforcement for KVM user copies.
+    pub(crate) fn user_writable_prefix(&self, guest_address: u64, length: usize) -> Result<usize> {
+        self.user_access_prefix(guest_address, length, |permissions| permissions.writable)
+    }
+
+    fn user_access_prefix(
         &self,
         guest_address: u64,
         length: usize,
+        permits: impl Fn(UserPagePermissions) -> bool,
     ) -> Result<usize> {
         if length == 0 {
             return Ok(0);
@@ -468,7 +485,12 @@ impl GuestMemory {
 
         let mut cursor = guest_address;
         while cursor < end {
-            if access.pages.get(&(cursor / PAGE_SIZE as u64)) != Some(&UserPageState::Accessible) {
+            if access
+                .pages
+                .get(&(cursor / PAGE_SIZE as u64))
+                .copied()
+                .is_none_or(|permissions| !permits(permissions))
+            {
                 break;
             }
             let next_page = (cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64;
@@ -517,7 +539,7 @@ impl MemoryAccess for GuestMemory {
                 .min(write_to[destination_index].len() - destination_offset);
             let address = read_from[source_index].as_ptr() as u64 + source_offset as u64;
             let count = self
-                .user_accessible_prefix(address, requested)
+                .user_readable_prefix(address, requested)
                 .unwrap_or_default();
             if count == 0 {
                 return if total == 0 {
@@ -574,7 +596,7 @@ impl MemoryAccess for GuestMemory {
                 write_to[destination_index].as_mut_ptr() as u64 + destination_offset as u64;
             let requested = count;
             let count = self
-                .user_accessible_prefix(address, requested)
+                .user_writable_prefix(address, requested)
                 .unwrap_or_default();
             if count == 0 {
                 return if total == 0 {
@@ -679,10 +701,18 @@ mod tests {
     fn tracked_user_access_faults_and_returns_partial_copies() {
         let mut memory = GuestMemory::new(0, PAGE_SIZE * 3).unwrap();
         memory
-            .map_user_range(PAGE_SIZE as u64, PAGE_SIZE as u64, false)
+            .map_user_range(
+                PAGE_SIZE as u64,
+                PAGE_SIZE as u64,
+                (libc::PROT_READ | libc::PROT_WRITE) as u64,
+            )
             .unwrap();
         memory
-            .map_user_range((PAGE_SIZE * 2) as u64, PAGE_SIZE as u64, true)
+            .map_user_range(
+                (PAGE_SIZE * 2) as u64,
+                PAGE_SIZE as u64,
+                libc::PROT_NONE as u64,
+            )
             .unwrap();
         memory.enable_user_access();
 
@@ -707,7 +737,11 @@ mod tests {
     fn snapshot_preserves_user_access_map() {
         let mut parent = GuestMemory::new(0, PAGE_SIZE * 2).unwrap();
         parent
-            .map_user_range(PAGE_SIZE as u64, PAGE_SIZE as u64, false)
+            .map_user_range(
+                PAGE_SIZE as u64,
+                PAGE_SIZE as u64,
+                (libc::PROT_READ | libc::PROT_WRITE) as u64,
+            )
             .unwrap();
         parent.enable_user_access();
         parent.write(PAGE_SIZE as u64, b"mapped").unwrap();
@@ -724,10 +758,90 @@ mod tests {
     }
 
     #[test]
+    fn tracked_user_permissions_distinguish_reads_from_writes() {
+        let page = PAGE_SIZE as u64;
+        let mut memory = GuestMemory::new(0, PAGE_SIZE * 4).unwrap();
+        memory.write_raw(page, b"read-only").unwrap();
+        memory
+            .map_user_range(page, page, libc::PROT_READ as u64)
+            .unwrap();
+        memory
+            .map_user_range(page * 2, page, libc::PROT_WRITE as u64)
+            .unwrap();
+        memory
+            .map_user_range(page * 3, page, libc::PROT_NONE as u64)
+            .unwrap();
+        memory.enable_user_access();
+
+        let mut bytes = [0; 9];
+        memory.read(page, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"read-only");
+        assert!(matches!(
+            memory.write(page, b"x"),
+            Err(Error::GuestMemoryAccessDenied { .. })
+        ));
+
+        // On x86-64 a PROT_WRITE mapping is also readable.
+        memory.write(page * 2, b"write").unwrap();
+        let mut bytes = [0; 5];
+        memory.read(page * 2, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"write");
+        assert!(matches!(
+            memory.read(page * 3, &mut [0]),
+            Err(Error::GuestMemoryAccessDenied { .. })
+        ));
+        assert!(matches!(
+            memory.write(page * 3, &[0]),
+            Err(Error::GuestMemoryAccessDenied { .. })
+        ));
+
+        let mut snapshot = memory.snapshot().unwrap();
+        assert!(snapshot.read(page, &mut [0]).is_ok());
+        assert!(matches!(
+            snapshot.write(page, &[0]),
+            Err(Error::GuestMemoryAccessDenied { .. })
+        ));
+        snapshot.remap_user_range(page, page, 0, page).unwrap();
+        assert!(snapshot.read(0, &mut [0]).is_ok());
+        assert!(matches!(
+            snapshot.write(0, &[0]),
+            Err(Error::GuestMemoryAccessDenied { .. })
+        ));
+        assert!(matches!(
+            snapshot.read(page, &mut [0]),
+            Err(Error::GuestMemoryAccessDenied { .. })
+        ));
+    }
+
+    #[test]
+    fn vectored_write_stops_at_read_only_page() {
+        let page = PAGE_SIZE as u64;
+        let mut memory = GuestMemory::new(0, PAGE_SIZE * 3).unwrap();
+        memory
+            .map_user_range(page, page, (libc::PROT_READ | libc::PROT_WRITE) as u64)
+            .unwrap();
+        memory
+            .map_user_range(page * 2, page, libc::PROT_READ as u64)
+            .unwrap();
+        memory.enable_user_access();
+
+        let address = AddrMut::from_raw(PAGE_SIZE * 2 - 8).unwrap();
+        let written = MemoryAccess::write(&mut memory, address, &[0x3c; 16]).unwrap();
+        assert_eq!(written, 8);
+        let mut bytes = [0; 8];
+        memory.read(page * 2 - 8, &mut bytes).unwrap();
+        assert_eq!(bytes, [0x3c; 8]);
+    }
+
+    #[test]
     fn finds_first_unmapped_user_range() {
         let memory = GuestMemory::new(0x1000, PAGE_SIZE * 8).unwrap();
-        memory.map_user_range(0x2000, 0x2000, false).unwrap();
-        memory.map_user_range(0x5000, 0x1000, true).unwrap();
+        memory
+            .map_user_range(0x2000, 0x2000, (libc::PROT_READ | libc::PROT_WRITE) as u64)
+            .unwrap();
+        memory
+            .map_user_range(0x5000, 0x1000, libc::PROT_NONE as u64)
+            .unwrap();
 
         assert_eq!(
             memory.find_unmapped_user_range(0x1000, 0x9000, 0x1000),

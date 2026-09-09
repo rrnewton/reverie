@@ -343,13 +343,17 @@ fn execute_basic_syscall_with_output(
         pipe2(memory, state, args[0], args[1])
     } else if number == libc::SYS_select as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        select(memory, state, args)
+        return select(memory, state, args);
+    } else if number == libc::SYS_pselect6 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-536): Review KVM pselect6 readiness and signal-mask validation.
+        return pselect6(memory, state, args);
     } else if number == libc::SYS_poll as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         poll(memory, state, args)
     } else if number == libc::SYS_ppoll as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        ppoll(memory, state, args)
+        return ppoll(memory, state, args);
     } else if number == libc::SYS_epoll_create1 as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         epoll_create1(state, args[0])
@@ -362,6 +366,10 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_epoll_pwait as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         epoll_wait(memory, state, args, true)
+    } else if number == libc::SYS_epoll_pwait2 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-536): Review KVM epoll_pwait2 readiness and timeout handling.
+        epoll_pwait2(memory, state, args)
     } else if number == libc::SYS_eventfd as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         eventfd2(state, args[0], 0)
@@ -2572,7 +2580,7 @@ fn host_read(memory: &mut GuestMemory, fd: RawFd, address: u64, length: usize) -
     if !range_is_valid(memory, address, length as u64) {
         return negative_errno(libc::EFAULT);
     }
-    let Ok(writable) = memory.user_accessible_prefix(address, length) else {
+    let Ok(writable) = memory.user_writable_prefix(address, length) else {
         return negative_errno(libc::EFAULT);
     };
     if writable == 0 && length != 0 {
@@ -2659,7 +2667,7 @@ fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -
     if !range_is_valid(memory, args[1], length as u64) {
         return negative_errno(libc::EFAULT);
     }
-    let Ok(writable) = memory.user_accessible_prefix(args[1], length) else {
+    let Ok(writable) = memory.user_writable_prefix(args[1], length) else {
         return negative_errno(libc::EFAULT);
     };
     if writable == 0 {
@@ -4042,19 +4050,175 @@ fn remove_inserted_file(state: &mut LoadedStaticElf, fd: libc::c_int) {
     cleanup_fd_object_inodes(state);
 }
 
+#[derive(Clone, Copy)]
+enum SelectTimeoutKind {
+    Timeval,
+    Timespec,
+}
+
+#[derive(Clone, Copy)]
+enum SelectTimeoutWriteback {
+    None,
+    Zero,
+}
+
+struct SelectOptions {
+    timeout_kind: SelectTimeoutKind,
+    pselect_timeout: Option<libc::timespec>,
+    pending_mask: Option<[u8; KERNEL_SIGSET_SIZE]>,
+    force_nonblocking: bool,
+    timeout_writeback: SelectTimeoutWriteback,
+}
+
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-205): Review deterministic select readiness and timeout semantics.
-fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(nfds) = libc::c_int::try_from(args[0]) else {
-        return negative_errno(libc::EINVAL);
+fn select(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> SyscallAction {
+    select_with_timeout(
+        memory,
+        state,
+        args,
+        SelectOptions {
+            timeout_kind: SelectTimeoutKind::Timeval,
+            pselect_timeout: None,
+            pending_mask: None,
+            force_nonblocking: false,
+            timeout_writeback: SelectTimeoutWriteback::Zero,
+        },
+    )
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-536): Review KVM pselect6 readiness and signal-mask validation.
+fn pselect6(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+) -> SyscallAction {
+    // Linux copies the outer { sigmask, sigsetsize } wrapper before it
+    // validates the timeout or nfds. Keep that fault precedence: callers can
+    // distinguish a bad sixth argument from an invalid descriptor count.
+    let signal_argument = if args[5] == 0 {
+        None
+    } else {
+        match read_guest_struct::<[u64; 2]>(memory, args[5]) {
+            Ok(argument) => Some(argument),
+            Err(error) => return continue_with(error),
+        }
     };
+    let timeout = if args[4] == 0 {
+        None
+    } else {
+        let timeout = match read_guest_struct::<libc::timespec>(memory, args[4]) {
+            Ok(timeout) => timeout,
+            Err(error) => return continue_with(error),
+        };
+        if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
+            return continue_with(negative_errno(libc::EINVAL));
+        }
+        Some(timeout)
+    };
+    let temporary_mask = if let Some(signal_argument) = signal_argument {
+        if signal_argument[0] != 0 {
+            if signal_argument[1] != KERNEL_SIGSET_SIZE as u64 {
+                return continue_with(negative_errno(libc::EINVAL));
+            }
+            let mut signal_mask = [0; KERNEL_SIGSET_SIZE];
+            if memory.read(signal_argument[0], &mut signal_mask).is_err() {
+                return continue_with(negative_errno(libc::EFAULT));
+            }
+            for signal in [libc::SIGKILL, libc::SIGSTOP] {
+                let bit = (signal - 1) as usize;
+                signal_mask[bit / 8] &= !(1 << (bit % 8));
+            }
+            Some(signal_mask)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let effective_mask = temporary_mask.unwrap_or(state.signal_mask);
+    select_with_timeout(
+        memory,
+        state,
+        args,
+        SelectOptions {
+            timeout_kind: SelectTimeoutKind::Timespec,
+            pselect_timeout: timeout,
+            pending_mask: Some(effective_mask),
+            force_nonblocking: temporary_mask.is_some(),
+            timeout_writeback: SelectTimeoutWriteback::None,
+        },
+    )
+}
+
+fn complete_pselect6(
+    memory: &mut GuestMemory,
+    timeout_address: u64,
+    initial_timeout: Option<libc::timespec>,
+    remaining: Option<libc::timespec>,
+    action: SyscallAction,
+) -> SyscallAction {
+    if let Some(initial_timeout) = initial_timeout
+        && (initial_timeout.tv_sec != 0 || initial_timeout.tv_nsec != 0)
+    {
+        // Linux keeps the syscall result if this best-effort copyout faults.
+        // Before a host wait, unchanged is the deterministic remaining time.
+        let remaining = remaining.unwrap_or(initial_timeout);
+        let _ = write_struct(memory, timeout_address, &remaining);
+    }
+    action
+}
+
+fn select_core_error(
+    memory: &mut GuestMemory,
+    timeout_kind: SelectTimeoutKind,
+    timeout_address: u64,
+    pselect_timeout: Option<libc::timespec>,
+    result: i64,
+) -> SyscallAction {
+    let action = continue_with(result);
+    match timeout_kind {
+        SelectTimeoutKind::Timespec => {
+            complete_pselect6(memory, timeout_address, pselect_timeout, None, action)
+        }
+        SelectTimeoutKind::Timeval => action,
+    }
+}
+
+fn select_with_timeout(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    options: SelectOptions,
+) -> SyscallAction {
+    let SelectOptions {
+        timeout_kind,
+        pselect_timeout,
+        pending_mask,
+        force_nonblocking,
+        timeout_writeback,
+    } = options;
+    let nfds = args[0] as libc::c_int;
     if !(0..=GUEST_NOFILE_LIMIT).contains(&nfds) {
-        return negative_errno(libc::EINVAL);
+        return select_core_error(
+            memory,
+            timeout_kind,
+            args[4],
+            pselect_timeout,
+            negative_errno(libc::EINVAL),
+        );
     }
     let word_count = (nfds as usize).div_ceil(u64::BITS as usize);
     let byte_length = word_count * std::mem::size_of::<u64>();
     if byte_length > MAX_HOST_IO {
-        return negative_errno(libc::EINVAL);
+        return select_core_error(
+            memory,
+            timeout_kind,
+            args[4],
+            pselect_timeout,
+            negative_errno(libc::EINVAL),
+        );
     }
 
     let mut sets = [Vec::new(), Vec::new(), Vec::new()];
@@ -4067,18 +4231,29 @@ fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
                 std::slice::from_raw_parts_mut(set.as_mut_ptr().cast::<u8>(), byte_length)
             };
             if memory.read(*address, bytes).is_err() {
-                return negative_errno(libc::EFAULT);
+                return select_core_error(
+                    memory,
+                    timeout_kind,
+                    args[4],
+                    pselect_timeout,
+                    negative_errno(libc::EFAULT),
+                );
             }
         }
     }
 
     if args[4] != 0 {
-        let timeout = match read_guest_struct::<libc::timeval>(memory, args[4]) {
-            Ok(timeout) => timeout,
-            Err(error) => return error,
-        };
-        if timeout.tv_sec < 0 || !(0..1_000_000).contains(&timeout.tv_usec) {
-            return negative_errno(libc::EINVAL);
+        match timeout_kind {
+            SelectTimeoutKind::Timeval => {
+                let timeout = match read_guest_struct::<libc::timeval>(memory, args[4]) {
+                    Ok(timeout) => timeout,
+                    Err(error) => return continue_with(error),
+                };
+                if timeout.tv_sec < 0 || !(0..1_000_000).contains(&timeout.tv_usec) {
+                    return continue_with(negative_errno(libc::EINVAL));
+                }
+            }
+            SelectTimeoutKind::Timespec => debug_assert!(pselect_timeout.is_some()),
         }
     }
 
@@ -4090,7 +4265,13 @@ fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
             continue;
         }
         let Some(host_fd) = host_fd(state, guest_fd) else {
-            return negative_errno(libc::EBADF);
+            return select_core_error(
+                memory,
+                timeout_kind,
+                args[4],
+                pselect_timeout,
+                negative_errno(libc::EBADF),
+            );
         };
         let mut events = 0;
         if membership[0] {
@@ -4110,55 +4291,125 @@ fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
         requested.push((guest_fd, membership));
     }
 
-    // Detcore owns guest time. Preserve readiness that exists now without
-    // blocking the supervisor on host wall time for a guest timeout.
-    let ready = unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as libc::nfds_t, 0) };
-    if ready < 0 {
-        return io_error(std::io::Error::last_os_error());
-    }
-
-    let mut ready_sets = [
-        vec![0_u64; word_count],
-        vec![0_u64; word_count],
-        vec![0_u64; word_count],
-    ];
-    let mut ready_count = 0_i64;
-    for (poll_fd, (guest_fd, membership)) in poll_fds.iter().zip(requested) {
-        let ready = [
-            poll_fd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0,
-            poll_fd.revents & (libc::POLLOUT | libc::POLLERR) != 0,
-            poll_fd.revents & libc::POLLPRI != 0,
+    let has_exposed_pending_signal = pending_mask
+        .as_ref()
+        .is_some_and(|mask| poll_has_exposed_pending_signal(state, mask));
+    let force_probe = force_nonblocking || has_exposed_pending_signal;
+    let wait = match timeout_kind {
+        SelectTimeoutKind::Timeval => PollWait::Milliseconds(0),
+        SelectTimeoutKind::Timespec => PollWait::Timespec(if force_probe {
+            Some(libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            })
+        } else {
+            pselect_timeout
+        }),
+    };
+    let (mut host_result, mut pselect_remaining) = host_poll(&mut poll_fds, wait);
+    let mut used_force_probe = force_probe;
+    let mut check_pending = has_exposed_pending_signal;
+    let mut action;
+    loop {
+        if host_result < 0 {
+            action = continue_with(host_result);
+            break;
+        }
+        let mut ready_sets = [
+            vec![0_u64; word_count],
+            vec![0_u64; word_count],
+            vec![0_u64; word_count],
         ];
-        for index in 0..ready_sets.len() {
-            if membership[index] && ready[index] {
-                fd_set_insert(&mut ready_sets[index], guest_fd);
-                ready_count += 1;
+        let mut ready_count = 0_i64;
+        for (poll_fd, (guest_fd, membership)) in poll_fds.iter().zip(&requested) {
+            let ready = [
+                poll_fd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0,
+                poll_fd.revents & (libc::POLLOUT | libc::POLLERR) != 0,
+                poll_fd.revents & libc::POLLPRI != 0,
+            ];
+            for index in 0..ready_sets.len() {
+                if membership[index] && ready[index] {
+                    fd_set_insert(&mut ready_sets[index], *guest_fd);
+                    ready_count += 1;
+                }
             }
         }
+
+        if ready_count == 0 && check_pending {
+            check_pending = false;
+            if let Some(effective_mask) = pending_mask.as_ref()
+                && let Some(pending_action) = poll_pending_signal_action(state, effective_mask)
+            {
+                action = pending_action;
+                break;
+            }
+            if !force_nonblocking {
+                // Ignored signals do not complete pselect6. Once they have
+                // been removed, perform the original unmasked wait.
+                for poll_fd in &mut poll_fds {
+                    poll_fd.revents = 0;
+                }
+                (host_result, pselect_remaining) =
+                    host_poll(&mut poll_fds, PollWait::Timespec(pselect_timeout));
+                used_force_probe = false;
+                continue;
+            }
+        }
+
+        if ready_count == 0 {
+            let nonzero_or_infinite =
+                pselect_timeout.is_none_or(|timeout| timeout.tv_sec != 0 || timeout.tv_nsec != 0);
+            if force_nonblocking
+                && matches!(timeout_kind, SelectTimeoutKind::Timespec)
+                && nonzero_or_infinite
+            {
+                action = continue_with(negative_errno(libc::ENOSYS));
+                break;
+            }
+        }
+
+        action = continue_with(ready_count);
+        for (address, ready_set) in args[1..4].iter().zip(&ready_sets) {
+            if *address == 0 || byte_length == 0 {
+                continue;
+            }
+            // SAFETY: the vector contains initialized u64 words and the byte
+            // view is exactly bounded to its allocation.
+            let bytes =
+                unsafe { std::slice::from_raw_parts(ready_set.as_ptr().cast::<u8>(), byte_length) };
+            if memory.write(*address, bytes).is_err() {
+                action = continue_with(negative_errno(libc::EFAULT));
+                break;
+            }
+        }
+        break;
     }
 
-    for (address, ready_set) in args[1..4].iter().zip(&ready_sets) {
-        if *address == 0 || byte_length == 0 {
-            continue;
-        }
-        // SAFETY: the vector contains initialized u64 words and the byte view
-        // is exactly bounded to its allocation.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(ready_set.as_ptr().cast::<u8>(), byte_length) };
-        if memory.write(*address, bytes).is_err() {
-            return negative_errno(libc::EFAULT);
-        }
+    if matches!(timeout_kind, SelectTimeoutKind::Timespec) {
+        let remaining = (!used_force_probe).then_some(pselect_remaining).flatten();
+        return complete_pselect6(memory, args[4], pselect_timeout, remaining, action);
     }
-    if args[4] != 0 {
-        let timeout = libc::timeval {
-            tv_sec: 0,
-            tv_usec: 0,
-        };
-        if write_struct(memory, args[4], &timeout) != 0 {
-            return negative_errno(libc::EFAULT);
+    match timeout_writeback {
+        SelectTimeoutWriteback::None => {}
+        SelectTimeoutWriteback::Zero if args[4] != 0 => {
+            let write_result = match timeout_kind {
+                SelectTimeoutKind::Timeval => write_struct(
+                    memory,
+                    args[4],
+                    &libc::timeval {
+                        tv_sec: 0,
+                        tv_usec: 0,
+                    },
+                ),
+                SelectTimeoutKind::Timespec => unreachable!("timespec uses remaining writeback"),
+            };
+            if write_result != 0 {
+                action = continue_with(negative_errno(libc::EFAULT));
+            }
         }
+        SelectTimeoutWriteback::Zero => {}
     }
-    ready_count
+    action
 }
 
 fn fd_set_contains(set: &[u64], fd: libc::c_int) -> bool {
@@ -4175,81 +4426,210 @@ fn fd_set_insert(set: &mut [u64], fd: libc::c_int) {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-92): Review guest descriptor translation and deterministic nonblocking poll semantics.
 fn poll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    poll_with_timeout(memory, state, args, 0)
+    let attempt = poll_without_copyout(state, memory, args, PollWait::Milliseconds(0));
+    if let Some(poll_fds) = attempt.poll_fds.as_deref()
+        && let Err(error) = write_poll_fds(memory, args[0], poll_fds)
+    {
+        return error;
+    }
+    attempt.result
+}
+
+#[derive(Clone, Copy)]
+enum PollWait {
+    Milliseconds(libc::c_int),
+    Timespec(Option<libc::timespec>),
+}
+
+fn host_poll(poll_fds: &mut [libc::pollfd], wait: PollWait) -> (i64, Option<libc::timespec>) {
+    let (result, remaining) = match wait {
+        PollWait::Milliseconds(timeout) => {
+            let result = unsafe {
+                libc::poll(
+                    poll_fds.as_mut_ptr(),
+                    poll_fds.len() as libc::nfds_t,
+                    timeout,
+                )
+            };
+            (result as libc::c_long, None)
+        }
+        PollWait::Timespec(mut timeout) => {
+            let timeout_pointer = timeout.as_mut().map_or(std::ptr::null_mut(), |timeout| {
+                timeout as *mut libc::timespec
+            });
+            // SAFETY: the pollfd array and optional timeout are live for the
+            // call. Guest signals are represented in state, so installing the
+            // guest mask on this host thread would introduce host timing.
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_ppoll,
+                    poll_fds.as_mut_ptr(),
+                    poll_fds.len() as libc::nfds_t,
+                    timeout_pointer,
+                    std::ptr::null::<libc::sigset_t>(),
+                    KERNEL_SIGSET_SIZE,
+                )
+            };
+            (result, timeout)
+        }
+    };
+    let result = if result < 0 {
+        io_error(std::io::Error::last_os_error())
+    } else {
+        result
+    };
+    (result, remaining)
+}
+
+struct PollAttempt {
+    result: i64,
+    poll_fds: Option<Vec<libc::pollfd>>,
+    remaining: Option<libc::timespec>,
 }
 
 // TODO-HUMAN-REVIEW(PR-172): Review host-blocking KVM ppoll timeout and signal-mask semantics.
-fn ppoll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn ppoll(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> SyscallAction {
     // Validate the timeout up front for every ppoll, mirroring detcore's
     // handle_ppoll (hermit detcore/src/syscalls/io.rs:824-828): the kernel
     // rejects a malformed timeout (bad pointer or out-of-range nanoseconds)
     // regardless of whether a signal mask is present.
     let timeout = if args[2] == 0 {
-        -1
+        None
     } else {
         let timeout = match read_guest_struct::<libc::timespec>(memory, args[2]) {
             Ok(timeout) => timeout,
-            Err(error) => return error,
+            Err(error) => return continue_with(error),
         };
         if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
-            return negative_errno(libc::EINVAL);
+            return continue_with(negative_errno(libc::EINVAL));
         }
-        let milliseconds = (timeout.tv_sec as u128)
-            .saturating_mul(1_000)
-            .saturating_add((timeout.tv_nsec as u128).div_ceil(1_000_000));
-        milliseconds.min(libc::c_int::MAX as u128) as libc::c_int
+        Some(timeout)
     };
-    if args[3] != 0 {
+    let temporary_mask = if args[3] == 0 {
+        None
+    } else {
         if args[4] != KERNEL_SIGSET_SIZE as u64 {
-            return negative_errno(libc::EINVAL);
+            return continue_with(negative_errno(libc::EINVAL));
         }
         // The kernel copies the signal mask out of user space (copy_from_user)
         // before it polls, so an unreadable mask pointer must fault with EFAULT
         // rather than return a readiness result. Detcore's golden
-        // prepare_ppoll_probe does the same via read_value(signal_mask)? (hermit
-        // detcore/src/syscalls/io.rs:874-892). Observe the mask here to
-        // reproduce that fault semantics; its value is deliberately not applied
-        // across the wait (see the note below), but a bogus pointer can never be
-        // serviced as ready.
+        // prepare_ppoll_probe does the same via read_value(signal_mask)?.
         let mut signal_mask = [0u8; KERNEL_SIGSET_SIZE];
         if memory.read(args[3], &mut signal_mask).is_err() {
-            return negative_errno(libc::EFAULT);
+            return continue_with(negative_errno(libc::EFAULT));
         }
-        // A masked ppoll mirrors detcore's handle_internal_ppoll (hermit
-        // detcore/src/syscalls/io.rs:922-939): a zero-timeout probe can honor a
-        // temporary signal mask atomically, but keeping the mask active across a
-        // parked wait would require scheduler-level pending-signal state. So
-        // probe non-blocking and fail closed with ENOSYS only when the call
-        // would have blocked (nothing ready). The mask cannot affect an
-        // instantaneous poll, so a plain non-blocking poll reproduces the kernel
-        // result: a ready descriptor returns its count exactly as the unmasked
-        // path would, and a poll/read error propagates unchanged.
-        let ready = poll_with_timeout(memory, state, args, 0);
-        if ready == 0 {
-            return negative_errno(libc::ENOSYS);
+        for signal in [libc::SIGKILL, libc::SIGSTOP] {
+            let bit = (signal - 1) as usize;
+            signal_mask[bit / 8] &= !(1 << (bit % 8));
         }
-        return ready;
+        Some(signal_mask)
+    };
+    // A temporary signal mask cannot remain installed while this synchronous
+    // executor is parked in the host. Probe once and fail closed only if the
+    // call would block; Detcore performs the repeated probes at virtual-time
+    // boundaries. Calls without a temporary mask may retain the host wait in
+    // non-sequentialized modes; strict Detcore calls reach this executor only
+    // as zero-time probes.
+    let effective_mask = temporary_mask.unwrap_or(state.signal_mask);
+    let has_exposed_pending_signal = poll_has_exposed_pending_signal(state, &effective_mask);
+    let force_probe = temporary_mask.is_some() || has_exposed_pending_signal;
+    let wait_timeout = if force_probe {
+        Some(libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        })
+    } else {
+        timeout
+    };
+    let mut used_force_probe = force_probe;
+    let mut attempt = poll_without_copyout(state, memory, args, PollWait::Timespec(wait_timeout));
+    let mut action = continue_with(attempt.result);
+    let mut has_pending_action = false;
+    let mut output_succeeded = true;
+    if let Some(poll_fds) = attempt.poll_fds.as_deref()
+        && let Err(error) = write_poll_fds(memory, args[0], poll_fds)
+    {
+        action = continue_with(error);
+        output_succeeded = false;
     }
-    poll_with_timeout(memory, state, args, timeout)
+    if output_succeeded && attempt.result == 0 && has_exposed_pending_signal {
+        if let Some(pending_action) = poll_pending_signal_action(state, &effective_mask) {
+            action = pending_action;
+            has_pending_action = true;
+        } else if temporary_mask.is_none() {
+            // Ignored signals do not complete ppoll. Once they have been
+            // removed, perform the original unmasked wait.
+            attempt = poll_without_copyout(state, memory, args, PollWait::Timespec(timeout));
+            action = continue_with(attempt.result);
+            used_force_probe = false;
+            if let Some(poll_fds) = attempt.poll_fds.as_deref()
+                && let Err(error) = write_poll_fds(memory, args[0], poll_fds)
+            {
+                action = continue_with(error);
+                output_succeeded = false;
+            }
+        }
+    }
+    if output_succeeded && !has_pending_action && attempt.result == 0 {
+        let nonzero_or_infinite =
+            timeout.is_none_or(|timeout| timeout.tv_sec != 0 || timeout.tv_nsec != 0);
+        if temporary_mask.is_some() && nonzero_or_infinite {
+            action = continue_with(negative_errno(libc::ENOSYS));
+        }
+    }
+    if let Some(timeout) = timeout
+        && (timeout.tv_sec != 0 || timeout.tv_nsec != 0)
+    {
+        let remaining = if used_force_probe {
+            timeout
+        } else {
+            attempt
+                .remaining
+                .expect("a non-null ppoll timeout has a remaining value")
+        };
+        // Linux preserves the syscall result when this best-effort copyout
+        // faults, including when the timeout page is read-only.
+        let _ = write_struct(memory, args[2], &remaining);
+    }
+    action
 }
 
-fn poll_with_timeout(
-    memory: &mut GuestMemory,
+/// Executes one poll without changing the guest array. The caller decides
+/// whether Linux semantics permit copying the resulting revents back.
+fn poll_without_copyout(
     state: &LoadedStaticElf,
+    memory: &GuestMemory,
     args: &[u64; 6],
-    timeout: libc::c_int,
-) -> i64 {
-    let Ok(count) = usize::try_from(args[1]) else {
-        return negative_errno(libc::EINVAL);
+    wait: PollWait,
+) -> PollAttempt {
+    let initial_remaining = match wait {
+        PollWait::Milliseconds(_) => None,
+        PollWait::Timespec(timeout) => timeout,
     };
+    // The kernel ABI takes `nfds_t`, an unsigned 32-bit value on x86-64.
+    // Register bits above that width are not part of the argument.
+    let count = args[1] as libc::c_uint as usize;
     if count > GUEST_NOFILE_LIMIT as usize {
-        return negative_errno(libc::EINVAL);
+        return PollAttempt {
+            result: negative_errno(libc::EINVAL),
+            poll_fds: None,
+            remaining: initial_remaining,
+        };
     }
     let Some(byte_length) = count.checked_mul(std::mem::size_of::<libc::pollfd>()) else {
-        return negative_errno(libc::EINVAL);
+        return PollAttempt {
+            result: negative_errno(libc::EINVAL),
+            poll_fds: None,
+            remaining: initial_remaining,
+        };
     };
     if byte_length > MAX_HOST_IO {
-        return negative_errno(libc::EINVAL);
+        return PollAttempt {
+            result: negative_errno(libc::EINVAL),
+            poll_fds: None,
+            remaining: initial_remaining,
+        };
     }
 
     let mut poll_fds = vec![
@@ -4260,14 +4640,18 @@ fn poll_with_timeout(
         };
         count
     ];
-    {
+    if byte_length != 0 {
         // SAFETY: poll_fds is initialized plain ABI data and the byte view is
         // exactly bounded to the vector allocation.
         let bytes = unsafe {
             std::slice::from_raw_parts_mut(poll_fds.as_mut_ptr().cast::<u8>(), byte_length)
         };
         if memory.read(args[0], bytes).is_err() {
-            return negative_errno(libc::EFAULT);
+            return PollAttempt {
+                result: negative_errno(libc::EFAULT),
+                poll_fds: None,
+                remaining: initial_remaining,
+            };
         }
     }
 
@@ -4275,8 +4659,7 @@ fn poll_with_timeout(
         .iter()
         .map(|poll_fd| poll_fd.fd)
         .collect::<Vec<_>>();
-    let mut invalid = vec![false; count];
-    for (index, poll_fd) in poll_fds.iter_mut().enumerate() {
+    for poll_fd in &mut poll_fds {
         poll_fd.revents = 0;
         if poll_fd.fd < 0 {
             continue;
@@ -4284,37 +4667,47 @@ fn poll_with_timeout(
         match host_fd(state, poll_fd.fd) {
             Some(host_fd) => poll_fd.fd = host_fd,
             None => {
-                poll_fd.fd = -1;
-                invalid[index] = true;
+                // A negative descriptor is ignored by poll. Use a positive
+                // value beyond Linux's descriptor limit so the kernel reports
+                // POLLNVAL immediately and includes it in the ready count.
+                poll_fd.fd = libc::c_int::MAX;
             }
         }
     }
 
-    // SYS_poll remains nonblocking for deterministic personality calls. The
-    // concurrent KVM ppoll path may block in the host so QEMU's root event loop
-    // can wait for worker eventfds without spinning on virtual clock reads.
-    let ready = unsafe { libc::poll(poll_fds.as_mut_ptr(), count as libc::nfds_t, timeout) };
-    if ready < 0 {
-        return io_error(std::io::Error::last_os_error());
-    }
-    let mut invalid_count = 0;
+    let (result, remaining) = host_poll(&mut poll_fds, wait);
     for (index, poll_fd) in poll_fds.iter_mut().enumerate() {
         poll_fd.fd = guest_fds[index];
-        if invalid[index] {
-            poll_fd.revents = libc::POLLNVAL;
-            invalid_count += 1;
-        }
     }
-    {
-        // SAFETY: poll_fds remains initialized ABI data and the byte view is
-        // exactly bounded to the vector allocation.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(poll_fds.as_ptr().cast::<u8>(), byte_length) };
-        if memory.write(args[0], bytes).is_err() {
-            return negative_errno(libc::EFAULT);
-        }
+    PollAttempt {
+        result,
+        poll_fds: Some(poll_fds),
+        remaining,
     }
-    i64::from(ready + invalid_count)
+}
+
+fn write_poll_fds(
+    memory: &mut GuestMemory,
+    address: u64,
+    poll_fds: &[libc::pollfd],
+) -> std::result::Result<(), i64> {
+    let byte_length = std::mem::size_of_val(poll_fds);
+    if byte_length == 0 {
+        return Ok(());
+    }
+    for (index, poll_fd) in poll_fds.iter().enumerate() {
+        let offset = index
+            .checked_mul(std::mem::size_of::<libc::pollfd>())
+            .and_then(|offset| offset.checked_add(std::mem::offset_of!(libc::pollfd, revents)))
+            .ok_or_else(|| negative_errno(libc::EFAULT))?;
+        let destination = address
+            .checked_add(offset as u64)
+            .ok_or_else(|| negative_errno(libc::EFAULT))?;
+        memory
+            .write(destination, &poll_fd.revents.to_ne_bytes())
+            .map_err(|_| negative_errno(libc::EFAULT))?;
+    }
+    Ok(())
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -4357,6 +4750,33 @@ fn epoll_ctl(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
     zero_or_errno(unsafe { libc::epoll_ctl(epoll_fd, operation, target_fd, &mut event) })
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-536): Review KVM epoll_pwait2 readiness and timeout handling.
+fn epoll_pwait2(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let zero_timeout = if args[3] == 0 {
+        false
+    } else {
+        let timeout = match read_guest_struct::<libc::timespec>(memory, args[3]) {
+            Ok(timeout) => timeout,
+            Err(error) => return error,
+        };
+        if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
+            return negative_errno(libc::EINVAL);
+        }
+        timeout.tv_sec == 0 && timeout.tv_nsec == 0
+    };
+
+    let ready = epoll_wait(memory, state, args, true);
+    if ready != 0 || zero_timeout {
+        return ready;
+    }
+
+    // Detcore currently forwards epoll_pwait2 rather than retrying it against
+    // virtual time. Preserve immediately-ready and zero-timeout calls, but do
+    // not turn a guest timeout into a host wall-clock wait.
+    negative_errno(libc::ENOSYS)
+}
+
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn epoll_wait(
     memory: &mut GuestMemory,
@@ -4376,9 +4796,7 @@ fn epoll_wait(
     let Some(epoll_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
     };
-    let Ok(max_events) = libc::c_int::try_from(args[2]) else {
-        return negative_errno(libc::EINVAL);
-    };
+    let max_events = args[2] as libc::c_int;
     if max_events <= 0 {
         return negative_errno(libc::EINVAL);
     }
@@ -4391,30 +4809,58 @@ fn epoll_wait(
     if byte_length > MAX_HOST_IO {
         return negative_errno(libc::EINVAL);
     }
-    let mut events = vec![libc::epoll_event { events: 0, u64: 0 }; count];
+    if !range_is_valid(memory, args[1], byte_length as u64) {
+        return negative_errno(libc::EFAULT);
+    }
+    let event_size = std::mem::size_of::<libc::epoll_event>();
+    let writable_events = memory
+        .user_writable_prefix(args[1], byte_length)
+        .unwrap_or(0)
+        / event_size;
+    if writable_events == 0 {
+        // A null host output validates that this is an epoll descriptor without
+        // consuming a ready event: Linux returns zero when it is empty, EFAULT
+        // when an event is ready, EINVAL for a descriptor of the wrong type,
+        // and EBADF for a closed descriptor. In the EFAULT case Linux retains
+        // one-shot and edge-triggered events for a later writable call.
+        // SAFETY: epoll_wait accepts an inaccessible events pointer and reports
+        // EFAULT if it needs to copy an event there.
+        let result = unsafe { libc::epoll_wait(epoll_fd, std::ptr::null_mut(), 1, 0) };
+        if result < 0 {
+            return io_error(std::io::Error::last_os_error());
+        }
+        return i64::from(result);
+    }
+    let host_count = count.min(writable_events);
+    let mut events = vec![libc::epoll_event { events: 0, u64: 0 }; host_count];
     // A real-time host timeout is not a deterministic guest clock. Readiness
     // for already-available descriptor events is preserved with a zero timeout.
     // Guest signal masks are modeled in guest state and must not alter the
     // supervisor thread. With a zero timeout there is no guest blocking window.
-    // SAFETY: the event array is writable for max_events entries.
-    let ready = unsafe { libc::epoll_wait(epoll_fd, events.as_mut_ptr(), max_events, 0) };
+    // SAFETY: the event array is writable for host_count entries.
+    let ready =
+        unsafe { libc::epoll_wait(epoll_fd, events.as_mut_ptr(), host_count as libc::c_int, 0) };
     if ready < 0 {
         return io_error(std::io::Error::last_os_error());
     }
     let ready = ready as usize;
-    if ready == 0 {
-        return 0;
+    for (index, event) in events[..ready].iter().enumerate() {
+        let Some(address) = args[1].checked_add((index * event_size) as u64) else {
+            return index as i64;
+        };
+        // SAFETY: event points to one initialized epoll_event value.
+        let bytes = unsafe {
+            std::slice::from_raw_parts((event as *const libc::epoll_event).cast::<u8>(), event_size)
+        };
+        if memory.write(address, bytes).is_err() {
+            return if index == 0 {
+                negative_errno(libc::EFAULT)
+            } else {
+                index as i64
+            };
+        }
     }
-    let bytes = unsafe {
-        std::slice::from_raw_parts(
-            events.as_ptr().cast::<u8>(),
-            ready * std::mem::size_of::<libc::epoll_event>(),
-        )
-    };
-    match memory.write(args[1], bytes) {
-        Ok(()) => ready as i64,
-        Err(_) => negative_errno(libc::EFAULT),
-    }
+    ready as i64
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
@@ -4588,6 +5034,87 @@ fn queue_blocked_signal(state: &mut LoadedStaticElf, signal: libc::c_int) -> Res
         set_signalfd_ready(file, true)?;
     }
     Ok(())
+}
+
+fn poll_has_exposed_pending_signal(
+    state: &LoadedStaticElf,
+    effective_mask: &[u8; KERNEL_SIGSET_SIZE],
+) -> bool {
+    state
+        .signalfd_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .pending
+        .iter()
+        .any(|signal| !signal_mask_contains(effective_mask, *signal))
+}
+
+/// Resolves a virtual pending signal that a wait's temporary mask exposes.
+///
+/// KVM cannot run a guest-installed signal handler. Keep those signals queued
+/// and report the limitation instead of fabricating EINTR without executing
+/// the handler. Ignored signals are discarded; default-terminating signals
+/// retain their ordinary process action. A signal still blocked by the
+/// temporary mask is not observable by this wait probe.
+fn poll_pending_signal_action(
+    state: &mut LoadedStaticElf,
+    effective_mask: &[u8; KERNEL_SIGSET_SIZE],
+) -> Option<SyscallAction> {
+    loop {
+        let signal = {
+            let signalfd_state = state
+                .signalfd_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            signalfd_state
+                .pending
+                .iter()
+                .copied()
+                .find(|signal| !signal_mask_contains(effective_mask, *signal))
+        }?;
+        match signal_disposition(state, signal) {
+            SignalDisposition::Terminate => {
+                return Some(
+                    terminating_signal_status(signal, process_dumpable(state))
+                        .map(SyscallAction::Exit)
+                        .unwrap_or_else(|| continue_with(negative_errno(libc::ENOSYS))),
+                );
+            }
+            SignalDisposition::Stop | SignalDisposition::Handled => {
+                return Some(continue_with(negative_errno(libc::ENOSYS)));
+            }
+            SignalDisposition::Ignore => {
+                let readiness = {
+                    let mut signalfd_state = state
+                        .signalfd_state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if !signalfd_state.pending.remove(&signal) {
+                        continue;
+                    }
+                    signalfd_state
+                        .masks
+                        .iter()
+                        .filter(|(_, mask)| signal_mask_contains(mask, signal))
+                        .map(|(&fd, mask)| {
+                            let ready = signalfd_state
+                                .pending
+                                .iter()
+                                .any(|&pending| signal_mask_contains(mask, pending));
+                            (fd, ready)
+                        })
+                        .collect::<Vec<_>>()
+                };
+                for (fd, ready) in readiness {
+                    if let Some(file) = state.files.get(&fd)
+                        && let Err(error) = set_signalfd_ready(file, ready)
+                    {
+                        return Some(continue_with(error));
+                    }
+                }
+            }
+        }
+    }
 }
 
 // TODO-HUMAN-REVIEW(PR-235): Review virtual signalfd dequeue semantics.
@@ -5383,7 +5910,7 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
         return negative_errno(libc::EFAULT);
     }
     let length = requested_length.min(MAX_HOST_IO);
-    let Ok(writable) = memory.user_accessible_prefix(args[1], length) else {
+    let Ok(writable) = memory.user_writable_prefix(args[1], length) else {
         return negative_errno(libc::EFAULT);
     };
     if writable == 0 && requested_length != 0 {
@@ -8229,7 +8756,7 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
         return negative_errno(libc::EFAULT);
     }
     if length >= 24 {
-        let Ok(writable) = memory.user_accessible_prefix(args[1], length) else {
+        let Ok(writable) = memory.user_writable_prefix(args[1], length) else {
             return negative_errno(libc::EFAULT);
         };
         if writable < 24 {
@@ -8924,7 +9451,11 @@ fn brk(memory: &mut GuestMemory, state: &mut LoadedStaticElf, requested: u64) ->
         };
         if memory.zero_raw(previous, length).is_err()
             || memory
-                .map_user_range(previous, requested - previous, false)
+                .map_user_range(
+                    previous,
+                    requested - previous,
+                    (libc::PROT_READ | libc::PROT_WRITE) as u64,
+                )
                 .is_err()
         {
             return state.program_break as i64;
@@ -9033,7 +9564,7 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
         return negative_errno(libc::EFAULT);
     }
     if memory
-        .map_user_range(address, length as u64, args[2] == libc::PROT_NONE as u64)
+        .map_user_range(address, length as u64, args[2])
         .is_err()
     {
         return negative_errno(libc::ENOMEM);
@@ -9115,7 +9646,7 @@ fn mprotect(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     if !range_is_valid(memory, address, length) || !memory.user_range_is_mapped(address, length) {
         return negative_errno(libc::ENOMEM);
     }
-    match memory.map_user_range(address, length, protection == libc::PROT_NONE as u64) {
+    match memory.map_user_range(address, length, protection) {
         Ok(()) => 0,
         Err(_) => negative_errno(libc::ENOMEM),
     }
@@ -12799,6 +13330,28 @@ mod tests {
             ),
             0
         );
+        let finite_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 1,
+        };
+        assert_eq!(write_struct(&mut memory, POLL_TIMEOUT, &finite_timeout), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ppoll,
+                [0, 0, POLL_TIMEOUT, 0, KERNEL_SIGSET_SIZE as u64, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            read_struct::<libc::timespec>(&memory, POLL_TIMEOUT),
+            libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            },
+            "a raw unmasked ppoll reports the host kernel's remaining timeout"
+        );
 
         assert_eq!(
             syscall_result(
@@ -12927,6 +13480,273 @@ mod tests {
         );
     }
 
+    #[test]
+    fn poll_count_uses_low_32_bits_and_invalid_fds_are_immediately_ready() {
+        const POLL_FD: u64 = 0x100;
+        const TIMEOUT: u64 = 0x180;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_poll,
+                [u64::MAX, 1_u64 << 32, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                TIMEOUT,
+                &libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                },
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ppoll,
+                [u64::MAX, 1_u64 << 32, TIMEOUT, 0, 0, 0],
+            ),
+            0
+        );
+
+        let invalid = libc::pollfd {
+            fd: GUEST_NOFILE_LIMIT - 1,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let one_second = libc::timespec {
+            tv_sec: 1,
+            tv_nsec: 0,
+        };
+        assert_eq!(write_struct(&mut memory, POLL_FD, &invalid), 0);
+        assert_eq!(write_struct(&mut memory, TIMEOUT, &one_second), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ppoll,
+                [POLL_FD, 1, TIMEOUT, 0, 0, 0],
+            ),
+            1
+        );
+        let result: libc::pollfd = read_struct(&memory, POLL_FD);
+        assert_eq!(result.fd, invalid.fd);
+        assert_eq!(result.events, invalid.events);
+        assert_eq!(result.revents, libc::POLLNVAL);
+        let remaining: libc::timespec = read_struct(&memory, TIMEOUT);
+        assert_eq!(remaining.tv_sec, 0);
+        assert!((0..1_000_000_000).contains(&remaining.tv_nsec));
+    }
+
+    #[test]
+    fn ppoll_timeout_copyout_follows_revents_and_skips_zero_timeout() {
+        const PIPE_FDS: u64 = 0x100;
+        const PAYLOAD: u64 = 0x180;
+        const POLL_FD: u64 = 0x200;
+        const SIGNAL_MASK: u64 = 0x300;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory.write(PAYLOAD, b"x").unwrap();
+        memory.write(SIGNAL_MASK, &[0; KERNEL_SIGSET_SIZE]).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe,
+                [PIPE_FDS, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [pipe_fds[1] as u64, PAYLOAD, 1, 0, 0, 0],
+            ),
+            1
+        );
+        let poll_fd = libc::pollfd {
+            fd: pipe_fds[0],
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let timeout_address = POLL_FD + std::mem::offset_of!(libc::pollfd, revents) as u64;
+
+        assert_eq!(write_struct(&mut memory, POLL_FD, &poll_fd), 0);
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                timeout_address,
+                &libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                },
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ppoll,
+                [
+                    POLL_FD,
+                    1,
+                    timeout_address,
+                    SIGNAL_MASK,
+                    KERNEL_SIGSET_SIZE as u64,
+                    0,
+                ],
+            ),
+            1
+        );
+        let result: libc::pollfd = read_struct(&memory, POLL_FD);
+        assert_eq!(result.revents & libc::POLLIN, libc::POLLIN);
+
+        let finite_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 1,
+        };
+        assert_eq!(write_struct(&mut memory, POLL_FD, &poll_fd), 0);
+        assert_eq!(
+            write_struct(&mut memory, timeout_address, &finite_timeout),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ppoll,
+                [
+                    POLL_FD,
+                    1,
+                    timeout_address,
+                    SIGNAL_MASK,
+                    KERNEL_SIGSET_SIZE as u64,
+                    0,
+                ],
+            ),
+            1
+        );
+        let result: libc::pollfd = read_struct(&memory, POLL_FD);
+        assert_eq!(
+            result.revents, 0,
+            "the later nonzero-timeout copyout must overwrite aliased revents"
+        );
+        assert_eq!(
+            read_struct::<libc::timespec>(&memory, timeout_address),
+            finite_timeout
+        );
+    }
+
+    #[test]
+    fn poll_revents_copyout_is_entrywise_and_precedes_pending_signal_changes() {
+        let page = PAGE_SIZE;
+        let poll_address = page - std::mem::size_of::<libc::pollfd>() as u64;
+        let initial = [
+            libc::pollfd {
+                fd: 11,
+                events: libc::POLLIN,
+                revents: 7,
+            },
+            libc::pollfd {
+                fd: 12,
+                events: libc::POLLOUT,
+                revents: 9,
+            },
+        ];
+        let output = [
+            libc::pollfd {
+                revents: libc::POLLIN,
+                ..initial[0]
+            },
+            libc::pollfd {
+                revents: libc::POLLOUT,
+                ..initial[1]
+            },
+        ];
+        let mut memory = GuestMemory::new(0, (PAGE_SIZE * 2) as usize).unwrap();
+        assert_eq!(write_struct(&mut memory, poll_address, &initial), 0);
+        memory
+            .map_user_range(0, page, (libc::PROT_READ | libc::PROT_WRITE) as u64)
+            .unwrap();
+        memory
+            .map_user_range(page, page, libc::PROT_READ as u64)
+            .unwrap();
+        memory.enable_user_access();
+        assert_eq!(
+            write_poll_fds(&mut memory, poll_address, &output),
+            Err(negative_errno(libc::EFAULT))
+        );
+        let copied: [libc::pollfd; 2] = read_struct(&memory, poll_address);
+        assert_eq!(copied[0].fd, initial[0].fd);
+        assert_eq!(copied[0].events, initial[0].events);
+        assert_eq!(copied[0].revents, output[0].revents);
+        assert_eq!(copied[1].fd, initial[1].fd);
+        assert_eq!(copied[1].events, initial[1].events);
+        assert_eq!(copied[1].revents, initial[1].revents);
+
+        const TIMEOUT: u64 = 0x100;
+        const SIGNAL_MASK: u64 = 0x180;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let ignored_signal = libc::SIGWINCH;
+        let ignored_bit = (ignored_signal - 1) as usize;
+        state.signal_mask[ignored_bit / 8] |= 1 << (ignored_bit % 8);
+        let pid = state.pid;
+        assert_eq!(
+            result_of(kill_signal(
+                &mut state,
+                libc::SYS_kill as u64,
+                &[pid as u64, ignored_signal as u64, 0, 0, 0, 0],
+            )),
+            0
+        );
+        memory.write(SIGNAL_MASK, &[0; KERNEL_SIGSET_SIZE]).unwrap();
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                TIMEOUT,
+                &libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                },
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ppoll,
+                [page, 1, TIMEOUT, SIGNAL_MASK, KERNEL_SIGSET_SIZE as u64, 0,],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert!(
+            state
+                .signalfd_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pending
+                .contains(&ignored_signal)
+        );
+    }
+
     /// A masked `ppoll` must return the ready count when a descriptor is already
     /// readable (the `ppoll_readv` corpus cell), yet fail closed with `ENOSYS`
     /// when it would have to block with the mask applied (the `ppoll_simulation`
@@ -12949,8 +13769,8 @@ mod tests {
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
 
-        // Block SIGUSR1: a realistic non-empty mask. Its value cannot affect a
-        // non-blocking poll, so it only proves the masked path is taken.
+        // Block SIGUSR1 with no pending signals, isolating the masked ready
+        // path from pending-signal handling.
         let mask = 1_u64 << (libc::SIGUSR1 as u64 - 1);
         memory.write(SIGNAL_MASK, &mask.to_ne_bytes()).unwrap();
         memory.write(PAYLOAD, b"x").unwrap();
@@ -13008,6 +13828,11 @@ mod tests {
         );
         let polled: libc::pollfd = read_struct(&memory, POLL_FD);
         assert_eq!(polled.revents & libc::POLLIN, libc::POLLIN);
+        assert_eq!(
+            read_struct::<libc::timespec>(&memory, POLL_TIMEOUT),
+            long_timeout,
+            "the executor must not invent elapsed time; Detcore owns timeout writeback"
+        );
 
         // NEGATIVE CONTROL: an otherwise-serviceable masked ppoll (ready fd,
         // valid timeout, correct sigset size) whose mask pointer is unreadable
@@ -13090,6 +13915,28 @@ mod tests {
         );
         memory.read(READ_BUFFER, &mut byte).unwrap();
         assert_eq!(&byte, b"x");
+        let zero_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        assert_eq!(write_struct(&mut memory, POLL_TIMEOUT, &zero_timeout), 0);
+        assert_eq!(write_struct(&mut memory, POLL_FD, &readable), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ppoll,
+                [
+                    POLL_FD,
+                    1,
+                    POLL_TIMEOUT,
+                    SIGNAL_MASK,
+                    KERNEL_SIGSET_SIZE as u64,
+                    0,
+                ],
+            ),
+            0,
+        );
 
         let short_timeout = libc::timespec {
             tv_sec: 0,
@@ -14398,11 +15245,15 @@ mod tests {
         const READ_BUFFER: u64 = 0x300;
         const READ_SET: u64 = 0x400;
         const TIMEOUT: u64 = 0x500;
+        const PSELECT_TIMEOUT: u64 = 0x520;
+        const PSELECT_SIGNAL_ARGUMENT: u64 = 0x540;
+        const SIGNAL_MASK: u64 = 0x560;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
         memory.write(PAYLOAD, b"ping").unwrap();
+        memory.write(SIGNAL_MASK, &[0; KERNEL_SIGSET_SIZE]).unwrap();
 
         assert_eq!(
             syscall_result(
@@ -14535,6 +15386,90 @@ mod tests {
         );
         assert_eq!(read_struct::<u64>(&memory, READ_SET), read_bit);
         assert_eq!(
+            write_struct(
+                &mut memory,
+                PSELECT_TIMEOUT,
+                &libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                },
+            ),
+            0
+        );
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                PSELECT_SIGNAL_ARGUMENT,
+                &[SIGNAL_MASK, KERNEL_SIGSET_SIZE as u64],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [
+                    pipe_fds[0] as u64 + 1,
+                    READ_SET,
+                    0,
+                    0,
+                    PSELECT_TIMEOUT,
+                    PSELECT_SIGNAL_ARGUMENT
+                ],
+            ),
+            1
+        );
+        // Finite and infinite calls still report readiness before the
+        // fail-closed boundary for a call that would block.
+        let finite_ready_timeout = libc::timespec {
+            tv_sec: 1,
+            tv_nsec: 0,
+        };
+        assert_eq!(
+            write_struct(&mut memory, PSELECT_TIMEOUT, &finite_ready_timeout),
+            0
+        );
+        memory.write(READ_SET, &read_bit.to_ne_bytes()).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [
+                    pipe_fds[0] as u64 + 1,
+                    READ_SET,
+                    0,
+                    0,
+                    PSELECT_TIMEOUT,
+                    PSELECT_SIGNAL_ARGUMENT,
+                ],
+            ),
+            1
+        );
+        assert_eq!(
+            read_struct::<libc::timespec>(&memory, PSELECT_TIMEOUT),
+            finite_ready_timeout,
+            "the executor must not invent elapsed time; Detcore owns timeout writeback"
+        );
+        memory.write(READ_SET, &read_bit.to_ne_bytes()).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [
+                    pipe_fds[0] as u64 + 1,
+                    READ_SET,
+                    0,
+                    0,
+                    0,
+                    PSELECT_SIGNAL_ARGUMENT,
+                ],
+            ),
+            1
+        );
+        assert_eq!(
             syscall_result(
                 &mut memory,
                 &mut state,
@@ -14556,6 +15491,137 @@ mod tests {
         );
         assert_eq!(read_struct::<u64>(&memory, READ_SET), 0);
         assert_eq!(read_struct::<libc::timeval>(&memory, TIMEOUT).tv_sec, 0);
+
+        memory.write(READ_SET, &read_bit.to_ne_bytes()).unwrap();
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                PSELECT_TIMEOUT,
+                &libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                },
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [
+                    pipe_fds[0] as u64 + 1,
+                    READ_SET,
+                    0,
+                    0,
+                    PSELECT_TIMEOUT,
+                    PSELECT_SIGNAL_ARGUMENT
+                ],
+            ),
+            0
+        );
+        assert_eq!(read_struct::<u64>(&memory, READ_SET), 0);
+        assert_eq!(
+            read_struct::<libc::timespec>(&memory, PSELECT_TIMEOUT),
+            libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            }
+        );
+
+        let invalid_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 1_000_000_000,
+        };
+        assert_eq!(
+            write_struct(&mut memory, PSELECT_TIMEOUT, &invalid_timeout),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [0, 0, 0, 0, PSELECT_TIMEOUT, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        let finite_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 1,
+        };
+        assert_eq!(
+            write_struct(&mut memory, PSELECT_TIMEOUT, &finite_timeout),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [0, 0, 0, 0, PSELECT_TIMEOUT, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            read_struct::<libc::timespec>(&memory, PSELECT_TIMEOUT),
+            libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            },
+            "a raw unmasked pselect6 reports the host kernel's remaining timeout"
+        );
+        let zero_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        assert_eq!(write_struct(&mut memory, PSELECT_TIMEOUT, &zero_timeout), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [1_u64 << 32, 1, 1, 1, PSELECT_TIMEOUT, 0,],
+            ),
+            0,
+            "nfds is a low-32-bit int and effective zero ignores fd-set pointers"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [u64::MAX, 0, 0, 0, PSELECT_TIMEOUT, PAGE_SIZE],
+            ),
+            negative_errno(libc::EFAULT),
+            "the outer signal-mask wrapper is copied before nfds validation"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [u64::MAX, 1, 1, 1, PSELECT_TIMEOUT, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                PSELECT_SIGNAL_ARGUMENT,
+                &[SIGNAL_MASK, (KERNEL_SIGSET_SIZE - 1) as u64],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [0, 0, 0, 0, 0, PSELECT_SIGNAL_ARGUMENT],
+            ),
+            negative_errno(libc::EINVAL)
+        );
 
         let invalid_fd = 9;
         let invalid_bit = 1_u64 << invalid_fd;
@@ -14581,6 +15647,360 @@ mod tests {
             );
         }
         assert!(state.files.is_empty());
+    }
+
+    #[test]
+    fn pselect6_temporary_mask_resolves_pending_after_readiness() {
+        const PIPE_FDS: u64 = 0x100;
+        const PAYLOAD: u64 = 0x180;
+        const READ_SET: u64 = 0x200;
+        const TIMEOUT: u64 = 0x280;
+        const SIGNAL_MASK: u64 = 0x300;
+        const SIGNAL_ARGUMENT: u64 = 0x380;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let zero_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        assert_eq!(write_struct(&mut memory, TIMEOUT, &zero_timeout), 0);
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                SIGNAL_ARGUMENT,
+                &[SIGNAL_MASK, KERNEL_SIGSET_SIZE as u64],
+            ),
+            0
+        );
+
+        let signal = libc::SIGUSR1;
+        let bit = (signal - 1) as usize;
+        state.signal_mask[bit / 8] |= 1 << (bit % 8);
+        state.signal_actions.insert(signal, custom_action(0x4000));
+        let pid = state.pid;
+        assert_eq!(
+            result_of(kill_signal(
+                &mut state,
+                libc::SYS_kill as u64,
+                &[pid as u64, signal as u64, 0, 0, 0, 0],
+            )),
+            0
+        );
+
+        // A temporary mask that keeps the signal blocked leaves it pending and
+        // permits an empty zero-timeout probe to return zero.
+        let blocking_mask = 1_u64 << bit;
+        memory
+            .write(SIGNAL_MASK, &blocking_mask.to_ne_bytes())
+            .unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [0, 0, 0, 0, TIMEOUT, SIGNAL_ARGUMENT],
+            ),
+            0
+        );
+
+        memory.write(PAYLOAD, b"x").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe,
+                [PIPE_FDS, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [pipe_fds[1] as u64, PAYLOAD, 1, 0, 0, 0],
+            ),
+            1
+        );
+        let read_bit = 1_u64 << pipe_fds[0];
+        memory.write(READ_SET, &read_bit.to_ne_bytes()).unwrap();
+        memory.write(SIGNAL_MASK, &[0; KERNEL_SIGSET_SIZE]).unwrap();
+
+        // Linux reports descriptor readiness before an exposed pending signal.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [
+                    pipe_fds[0] as u64 + 1,
+                    READ_SET,
+                    0,
+                    0,
+                    TIMEOUT,
+                    SIGNAL_ARGUMENT,
+                ],
+            ),
+            1
+        );
+        assert_eq!(read_struct::<u64>(&memory, READ_SET), read_bit);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [pipe_fds[0] as u64, PAYLOAD, 1, 0, 0, 0],
+            ),
+            1
+        );
+
+        // With no ready descriptor, KVM cannot execute the installed handler.
+        // It reports ENOSYS, leaves the signal queued, and does not overwrite
+        // the caller's fd set as though the poll had succeeded.
+        memory.write(READ_SET, &read_bit.to_ne_bytes()).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [
+                    pipe_fds[0] as u64 + 1,
+                    READ_SET,
+                    0,
+                    0,
+                    TIMEOUT,
+                    SIGNAL_ARGUMENT,
+                ],
+            ),
+            negative_errno(libc::ENOSYS)
+        );
+        assert_eq!(read_struct::<u64>(&memory, READ_SET), read_bit);
+        assert!(
+            state
+                .signalfd_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pending
+                .contains(&signal)
+        );
+        for fd in pipe_fds {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [fd as u64, 0, 0, 0, 0, 0],
+                ),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn pselect6_applies_pending_signal_dispositions() {
+        const TIMEOUT: u64 = 0x100;
+        const SIGNAL_MASK: u64 = 0x180;
+        const SIGNAL_ARGUMENT: u64 = 0x200;
+
+        let root = TestDir::new();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                TIMEOUT,
+                &libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                },
+            ),
+            0
+        );
+        memory.write(SIGNAL_MASK, &[0; KERNEL_SIGSET_SIZE]).unwrap();
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                SIGNAL_ARGUMENT,
+                &[SIGNAL_MASK, KERNEL_SIGSET_SIZE as u64],
+            ),
+            0
+        );
+
+        let mut ignored = test_state(&root.0);
+        let ignored_signal = libc::SIGWINCH;
+        let ignored_bit = (ignored_signal - 1) as usize;
+        ignored.signal_mask[ignored_bit / 8] |= 1 << (ignored_bit % 8);
+        let ignored_pid = ignored.pid;
+        assert_eq!(
+            result_of(kill_signal(
+                &mut ignored,
+                libc::SYS_kill as u64,
+                &[ignored_pid as u64, ignored_signal as u64, 0, 0, 0, 0],
+            )),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut ignored,
+                libc::SYS_pselect6,
+                [0, 0, 0, 0, TIMEOUT, SIGNAL_ARGUMENT],
+            ),
+            0
+        );
+        assert!(
+            !ignored
+                .signalfd_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pending
+                .contains(&ignored_signal)
+        );
+
+        // Without a temporary mask, an ignored pending signal must not turn a
+        // nonzero wait into a zero-time return. Queue it while blocked, expose
+        // it through the current mask, and require the raw 1ns wait to finish.
+        ignored.signal_mask[ignored_bit / 8] |= 1 << (ignored_bit % 8);
+        assert_eq!(
+            result_of(kill_signal(
+                &mut ignored,
+                libc::SYS_kill as u64,
+                &[ignored_pid as u64, ignored_signal as u64, 0, 0, 0, 0],
+            )),
+            0
+        );
+        ignored.signal_mask[ignored_bit / 8] &= !(1 << (ignored_bit % 8));
+        let finite_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 1,
+        };
+        assert_eq!(write_struct(&mut memory, TIMEOUT, &finite_timeout), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut ignored,
+                libc::SYS_pselect6,
+                [0, 0, 0, 0, TIMEOUT, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            read_struct::<libc::timespec>(&memory, TIMEOUT),
+            libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            }
+        );
+        assert!(
+            !ignored
+                .signalfd_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pending
+                .contains(&ignored_signal)
+        );
+
+        let mut terminating = test_state(&root.0);
+        let terminating_signal = libc::SIGTERM;
+        let terminating_bit = (terminating_signal - 1) as usize;
+        terminating.signal_mask[terminating_bit / 8] |= 1 << (terminating_bit % 8);
+        let terminating_pid = terminating.pid;
+        assert_eq!(
+            result_of(kill_signal(
+                &mut terminating,
+                libc::SYS_kill as u64,
+                &[
+                    terminating_pid as u64,
+                    terminating_signal as u64,
+                    0,
+                    0,
+                    0,
+                    0
+                ],
+            )),
+            0
+        );
+        assert!(matches!(
+            pselect6(
+                &mut memory,
+                &mut terminating,
+                &[0, 0, 0, 0, TIMEOUT, SIGNAL_ARGUMENT],
+            ),
+            SyscallAction::Exit(ExitStatus::Signaled(Signal::SIGTERM, _))
+        ));
+    }
+
+    #[test]
+    fn pselect6_finishes_timeout_after_readonly_output_fault() {
+        const PIPE_FDS: u64 = 0x100;
+        const PAYLOAD: u64 = 0x180;
+        const TIMEOUT: u64 = 0x200;
+        let read_set = PAGE_SIZE;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, (PAGE_SIZE * 2) as usize).unwrap();
+        memory.write(PAYLOAD, b"x").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe,
+                [PIPE_FDS, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [pipe_fds[1] as u64, PAYLOAD, 1, 0, 0, 0],
+            ),
+            1
+        );
+        let read_bit = 1_u64 << pipe_fds[0];
+        memory.write(read_set, &read_bit.to_ne_bytes()).unwrap();
+        let one_second = libc::timespec {
+            tv_sec: 1,
+            tv_nsec: 0,
+        };
+        assert_eq!(write_struct(&mut memory, TIMEOUT, &one_second), 0);
+        memory
+            .map_user_range(0, PAGE_SIZE, (libc::PROT_READ | libc::PROT_WRITE) as u64)
+            .unwrap();
+        memory
+            .map_user_range(read_set, PAGE_SIZE, libc::PROT_READ as u64)
+            .unwrap();
+        memory.enable_user_access();
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [pipe_fds[0] as u64 + 1, read_set, 0, 0, TIMEOUT, 0,],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        let remaining: libc::timespec = read_struct(&memory, TIMEOUT);
+        assert_eq!(remaining.tv_sec, 0);
+        assert!((0..1_000_000_000).contains(&remaining.tv_nsec));
+
+        for fd in pipe_fds {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [fd as u64, 0, 0, 0, 0, 0],
+                ),
+                0
+            );
+        }
     }
 
     #[test]
@@ -15344,11 +16764,14 @@ mod tests {
     fn epoll_waits_are_nonblocking_and_pwait_validates_sigmask() {
         const EVENTS: u64 = 0x100;
         const SIGNAL_MASK: u64 = 0x200;
+        const TIMEOUT: u64 = 0x300;
+        const EVENT_VALUE: u64 = 0x380;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
         memory.write(SIGNAL_MASK, &[0; KERNEL_SIGSET_SIZE]).unwrap();
+        memory.write(EVENT_VALUE, &1_u64.to_ne_bytes()).unwrap();
         let epoll_fd = syscall_result(
             &mut memory,
             &mut state,
@@ -15356,6 +16779,32 @@ mod tests {
             [0, 0, 0, 0, 0, 0],
         );
         assert!(epoll_fd >= 0);
+
+        let early_zero_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        assert_eq!(write_struct(&mut memory, TIMEOUT, &early_zero_timeout), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_pwait2,
+                [epoll_fd as u64, EVENTS, (1_u64 << 32) | 1, TIMEOUT, 0, 0],
+            ),
+            0,
+            "maxevents is a low-32-bit int"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_pwait2,
+                [epoll_fd as u64, u64::MAX, 1, TIMEOUT, 0, 0],
+            ),
+            negative_errno(libc::EFAULT),
+            "an output range outside guest memory is rejected before polling"
+        );
 
         for invalid_output in [0, 1] {
             assert_eq!(
@@ -15396,6 +16845,91 @@ mod tests {
                 ]
             ),
             0
+        );
+        let zero_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        assert_eq!(write_struct(&mut memory, TIMEOUT, &zero_timeout), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_pwait2,
+                [epoll_fd as u64, EVENTS, 1, TIMEOUT, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [event_fd as u64, EVENT_VALUE, 8, 0, 0, 0],
+            ),
+            8
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_pwait2,
+                [epoll_fd as u64, EVENTS, 1, TIMEOUT, 0, 0],
+            ),
+            1
+        );
+        let finite_ready_timeout = libc::timespec {
+            tv_sec: 1,
+            tv_nsec: 0,
+        };
+        assert_eq!(write_struct(&mut memory, TIMEOUT, &finite_ready_timeout), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_pwait2,
+                [epoll_fd as u64, EVENTS, 1, TIMEOUT, 0, 0],
+            ),
+            1,
+            "finite timeout does not hide immediate readiness"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_pwait2,
+                [epoll_fd as u64, EVENTS, 1, 0, 0, 0],
+            ),
+            1,
+            "null timeout does not hide immediate readiness"
+        );
+        let ready_event: libc::epoll_event = read_struct(&memory, EVENTS);
+        let ready_events = ready_event.events;
+        let ready_data = ready_event.u64;
+        assert_eq!(ready_events & libc::EPOLLIN as u32, libc::EPOLLIN as u32);
+        assert_eq!(ready_data, event_fd as u64);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [event_fd as u64, EVENT_VALUE, 8, 0, 0, 0],
+            ),
+            8
+        );
+        let finite_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 1_000_000,
+        };
+        assert_eq!(write_struct(&mut memory, TIMEOUT, &finite_timeout), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_pwait2,
+                [epoll_fd as u64, EVENTS, 1, TIMEOUT, 0, 0],
+            ),
+            negative_errno(libc::ENOSYS)
         );
 
         let event_host_fd = state.files.get(&(event_fd as i32)).unwrap().as_raw_fd();
@@ -15520,6 +17054,384 @@ mod tests {
                 .objects
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn epoll_wait_does_not_consume_oneshot_when_output_is_readonly() {
+        const CONTROL_EVENT: u64 = 0x100;
+        const EVENT_VALUE: u64 = 0x180;
+        const TIMEOUT: u64 = 0x200;
+        let events = PAGE_SIZE;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, (PAGE_SIZE * 2) as usize).unwrap();
+        memory.write(EVENT_VALUE, &1_u64.to_ne_bytes()).unwrap();
+        let zero_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        assert_eq!(write_struct(&mut memory, TIMEOUT, &zero_timeout), 0);
+        let epoll_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_epoll_create1,
+            [0, 0, 0, 0, 0, 0],
+        );
+        let event_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_eventfd2,
+            [0, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0],
+        );
+        assert!(epoll_fd >= 0 && event_fd >= 0);
+        let registration = libc::epoll_event {
+            events: (libc::EPOLLIN | libc::EPOLLONESHOT) as u32,
+            u64: 0x1234_5678,
+        };
+        let registration_data = registration.u64;
+        assert_eq!(write_struct(&mut memory, CONTROL_EVENT, &registration), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_ctl,
+                [
+                    epoll_fd as u64,
+                    libc::EPOLL_CTL_ADD as u64,
+                    event_fd as u64,
+                    CONTROL_EVENT,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        memory
+            .map_user_range(0, PAGE_SIZE, (libc::PROT_READ | libc::PROT_WRITE) as u64)
+            .unwrap();
+        memory
+            .map_user_range(events, PAGE_SIZE, libc::PROT_READ as u64)
+            .unwrap();
+        memory.enable_user_access();
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_pwait2,
+                [epoll_fd as u64, events, 1, TIMEOUT, 0, 0],
+            ),
+            0,
+            "no ready event does not touch the read-only output"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [event_fd as u64, EVENT_VALUE, 8, 0, 0, 0],
+            ),
+            8
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_pwait2,
+                [epoll_fd as u64, events, 1, TIMEOUT, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        memory
+            .map_user_range(
+                events,
+                PAGE_SIZE,
+                (libc::PROT_READ | libc::PROT_WRITE) as u64,
+            )
+            .unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_pwait2,
+                [epoll_fd as u64, events, 1, TIMEOUT, 0, 0],
+            ),
+            1
+        );
+        let delivered: libc::epoll_event = read_struct(&memory, events);
+        let delivered_events = delivered.events;
+        let delivered_data = delivered.u64;
+        assert_eq!(
+            delivered_events & libc::EPOLLIN as u32,
+            libc::EPOLLIN as u32
+        );
+        assert_eq!(delivered_data, registration_data);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_pwait2,
+                [epoll_fd as u64, events, 1, TIMEOUT, 0, 0],
+            ),
+            0,
+            "the one-shot event is delivered exactly once"
+        );
+    }
+
+    #[test]
+    fn epoll_wait_preserves_edge_trigger_and_rejects_wrong_descriptor_type() {
+        const CONTROL_EVENT: u64 = 0x100;
+        const EVENT_VALUE: u64 = 0x180;
+        let events = PAGE_SIZE;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, (PAGE_SIZE * 2) as usize).unwrap();
+        memory.write(EVENT_VALUE, &1_u64.to_ne_bytes()).unwrap();
+        let event_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_eventfd2,
+            [0, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0],
+        );
+        assert!(event_fd >= 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_wait,
+                [event_fd as u64, u64::MAX, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT),
+            "an invalid output range is rejected before descriptor type"
+        );
+
+        memory
+            .map_user_range(0, PAGE_SIZE, (libc::PROT_READ | libc::PROT_WRITE) as u64)
+            .unwrap();
+        memory
+            .map_user_range(events, PAGE_SIZE, libc::PROT_READ as u64)
+            .unwrap();
+        memory.enable_user_access();
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_wait,
+                [event_fd as u64, events, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL),
+            "an empty non-epoll descriptor is rejected before output access"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [event_fd as u64, EVENT_VALUE, 8, 0, 0, 0],
+            ),
+            8
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_wait,
+                [event_fd as u64, events, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL),
+            "a ready non-epoll descriptor is rejected before output access"
+        );
+
+        let epoll_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_epoll_create1,
+            [0, 0, 0, 0, 0, 0],
+        );
+        assert!(epoll_fd >= 0);
+        let registration = libc::epoll_event {
+            events: (libc::EPOLLIN | libc::EPOLLET) as u32,
+            u64: 0x1234_5678,
+        };
+        let registration_data = registration.u64;
+        assert_eq!(write_struct(&mut memory, CONTROL_EVENT, &registration), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_ctl,
+                [
+                    epoll_fd as u64,
+                    libc::EPOLL_CTL_ADD as u64,
+                    event_fd as u64,
+                    CONTROL_EVENT,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_wait,
+                [epoll_fd as u64, events, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        memory
+            .map_user_range(
+                events,
+                PAGE_SIZE,
+                (libc::PROT_READ | libc::PROT_WRITE) as u64,
+            )
+            .unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_wait,
+                [epoll_fd as u64, events, 1, 0, 0, 0],
+            ),
+            1
+        );
+        let delivered: libc::epoll_event = read_struct(&memory, events);
+        let delivered_data = delivered.u64;
+        assert_eq!(delivered_data, registration_data);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_wait,
+                [epoll_fd as u64, events, 1, 0, 0, 0],
+            ),
+            0,
+            "the retained edge-triggered event is delivered only once"
+        );
+    }
+
+    #[test]
+    fn epoll_wait_limits_consumption_to_complete_writable_records() {
+        const FIRST_CONTROL: u64 = 0x100;
+        const SECOND_CONTROL: u64 = 0x120;
+        const EVENT_VALUE: u64 = 0x180;
+        let event_size = std::mem::size_of::<libc::epoll_event>() as u64;
+        let events = PAGE_SIZE - event_size;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, (PAGE_SIZE * 2) as usize).unwrap();
+        memory.write(EVENT_VALUE, &1_u64.to_ne_bytes()).unwrap();
+        let epoll_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_epoll_create1,
+            [0, 0, 0, 0, 0, 0],
+        );
+        let mut event_fds = Vec::new();
+        for (index, control_address) in [FIRST_CONTROL, SECOND_CONTROL].into_iter().enumerate() {
+            let event_fd = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_eventfd2,
+                [0, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0],
+            );
+            let registration = libc::epoll_event {
+                events: (libc::EPOLLIN | libc::EPOLLONESHOT) as u32,
+                u64: index as u64 + 1,
+            };
+            assert_eq!(write_struct(&mut memory, control_address, &registration), 0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_epoll_ctl,
+                    [
+                        epoll_fd as u64,
+                        libc::EPOLL_CTL_ADD as u64,
+                        event_fd as u64,
+                        control_address,
+                        0,
+                        0,
+                    ],
+                ),
+                0
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_write,
+                    [event_fd as u64, EVENT_VALUE, 8, 0, 0, 0],
+                ),
+                8
+            );
+            event_fds.push(event_fd);
+        }
+        memory
+            .map_user_range(0, PAGE_SIZE, (libc::PROT_READ | libc::PROT_WRITE) as u64)
+            .unwrap();
+        memory
+            .map_user_range(PAGE_SIZE, PAGE_SIZE, libc::PROT_READ as u64)
+            .unwrap();
+        memory.enable_user_access();
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_wait,
+                [epoll_fd as u64, events, 2, 0, 0, 0],
+            ),
+            1
+        );
+        let first: libc::epoll_event = read_struct(&memory, events);
+        memory
+            .map_user_range(
+                PAGE_SIZE,
+                PAGE_SIZE,
+                (libc::PROT_READ | libc::PROT_WRITE) as u64,
+            )
+            .unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_wait,
+                [epoll_fd as u64, events + event_size, 1, 0, 0, 0],
+            ),
+            1
+        );
+        let second: libc::epoll_event = read_struct(&memory, events + event_size);
+        let observed = BTreeSet::from([first.u64, second.u64]);
+        assert_eq!(observed, BTreeSet::from([1, 2]));
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_wait,
+                [epoll_fd as u64, events, 2, 0, 0, 0],
+            ),
+            0,
+            "both ready one-shot events were delivered"
+        );
+
+        for fd in event_fds.into_iter().chain([epoll_fd]) {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [fd as u64, 0, 0, 0, 0, 0],
+                ),
+                0
+            );
+        }
     }
 
     #[test]
@@ -16945,8 +18857,12 @@ mod tests {
         let mut state = test_state(&root.0);
         state.files.insert(3, std::fs::File::open(&root.0).unwrap());
         let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
-        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
-        memory.map_user_range(PAGE_SIZE, PAGE_SIZE, true).unwrap();
+        memory
+            .map_user_range(0, PAGE_SIZE, (libc::PROT_READ | libc::PROT_WRITE) as u64)
+            .unwrap();
+        memory
+            .map_user_range(PAGE_SIZE, PAGE_SIZE, libc::PROT_NONE as u64)
+            .unwrap();
         memory.enable_user_access();
 
         assert_eq!(
@@ -17463,8 +19379,12 @@ mod tests {
         state.files.insert(3, std::fs::File::open(&path).unwrap());
         state.files.insert(4, std::fs::File::open(&path).unwrap());
         let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
-        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
-        memory.map_user_range(PAGE_SIZE, PAGE_SIZE, true).unwrap();
+        memory
+            .map_user_range(0, PAGE_SIZE, (libc::PROT_READ | libc::PROT_WRITE) as u64)
+            .unwrap();
+        memory
+            .map_user_range(PAGE_SIZE, PAGE_SIZE, libc::PROT_NONE as u64)
+            .unwrap();
         memory.enable_user_access();
 
         assert_eq!(
@@ -20649,9 +22569,19 @@ mod tests {
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, (5 * PAGE_SIZE) as usize).unwrap();
         memory
-            .map_user_range(PAGE_SIZE, 2 * PAGE_SIZE, false)
+            .map_user_range(
+                PAGE_SIZE,
+                2 * PAGE_SIZE,
+                (libc::PROT_READ | libc::PROT_WRITE) as u64,
+            )
             .unwrap();
-        memory.map_user_range(VECTOR, PAGE_SIZE, false).unwrap();
+        memory
+            .map_user_range(
+                VECTOR,
+                PAGE_SIZE,
+                (libc::PROT_READ | libc::PROT_WRITE) as u64,
+            )
+            .unwrap();
         assert_eq!(
             syscall_result(
                 &mut memory,
