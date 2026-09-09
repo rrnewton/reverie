@@ -2589,7 +2589,7 @@ fn tool_receives_post_exec_after_root_execve() {
 }
 
 #[test]
-fn self_exec_proc_aliases_preserve_image_argv_and_envp() {
+fn self_exec_proc_aliases_use_loaded_image_after_unlink_or_replacement() {
     match Kvm::new() {
         Ok(_) => {}
         Err(error) if kvm_is_unavailable(&error) => {
@@ -2606,12 +2606,15 @@ fn self_exec_proc_aliases_preserve_image_argv_and_envp() {
     const IMAGE_MARKER: &str = "same-image\n";
     let expected = format!("{IMAGE_MARKER}{ARGV0}\n{ARGV1}\n{ENVP0}\n");
 
-    for (name, path, execveat) in [
+    for (case, (name, path, execveat)) in [
         ("self-exec-proc-self-execve", "/proc/self/exe", false),
         ("self-exec-proc-pid-execve", "/proc/37/exe", false),
         ("self-exec-proc-self-execveat", "/proc/self/exe", true),
         ("self-exec-proc-pid-execveat", "/proc/37/exe", true),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let exec = if execveat {
             // execveat(AT_FDCWD, path, argv, envp, 0)
             r#"
@@ -2720,22 +2723,168 @@ fn self_exec_proc_aliases_preserve_image_argv_and_envp() {
         let root = TestDirectory::new();
         let executable = compile_assembly_program(&root.0, name, &source);
         let image = std::fs::read(&executable).unwrap();
-        let executable = executable.to_str().unwrap();
+        let executable_name = executable.to_str().unwrap().to_owned();
         let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
         backend.set_root_pid(ROOT_PID).unwrap();
         backend
-            .install_static_elf_with_context(&image, &[executable], &["INITIAL=1"], &root.0)
+            .install_static_elf_with_context(
+                &image,
+                &[executable_name.as_str()],
+                &["INITIAL=1"],
+                &root.0,
+            )
             .unwrap();
+        let mutation = if case.is_multiple_of(2) {
+            std::fs::remove_file(&executable).unwrap();
+            "unlinked"
+        } else {
+            let replacement = root.0.join(format!("{name}-replacement"));
+            std::fs::write(
+                &replacement,
+                static_elf(&[
+                    0xbf, 0x63, 0x00, 0x00, 0x00, // mov edi, 99
+                    0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+                    0x0f, 0x05, // syscall
+                    0x0f, 0x0b, // ud2
+                ]),
+            )
+            .unwrap();
+            std::fs::rename(replacement, &executable).unwrap();
+            "replaced"
+        };
 
         let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
-        assert_eq!(code, 0, "path={path} execveat={execveat}");
+        assert_eq!(code, 0, "path={path} execveat={execveat} {mutation}");
         assert_eq!(
             stdout,
             expected.as_bytes(),
-            "path={path} execveat={execveat}"
+            "path={path} execveat={execveat} {mutation}"
         );
-        assert!(stderr.is_empty(), "path={path} execveat={execveat}");
+        assert!(
+            stderr.is_empty(),
+            "path={path} execveat={execveat} {mutation}"
+        );
     }
+}
+
+#[test]
+fn exec_through_symlink_reports_the_opened_executable_and_preserves_argv0() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM symlink-exec test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    const ARGV0: &str = "not-the-path";
+    let root = TestDirectory::new();
+    let target_source = format!(
+        r#"
+            .global _start
+            .text
+        _start:
+            lea self_path(%rip), %rdi
+            lea link_buffer(%rip), %rsi
+            mov $4096, %edx
+            mov $89, %eax
+            syscall
+            test %rax, %rax
+            js exit_with_errno
+
+            mov %eax, %edx
+            mov $1, %edi
+            lea link_buffer(%rip), %rsi
+            mov $1, %eax
+            syscall
+            call write_newline
+
+            mov $1, %edi
+            mov 8(%rsp), %rsi
+            mov ${argv0_len}, %edx
+            mov $1, %eax
+            syscall
+            call write_newline
+
+            xor %edi, %edi
+            mov $231, %eax
+            syscall
+
+        write_newline:
+            mov $1, %edi
+            lea newline(%rip), %rsi
+            mov $1, %edx
+            mov $1, %eax
+            syscall
+            ret
+
+        exit_with_errno:
+            neg %eax
+            mov %eax, %edi
+            mov $231, %eax
+            syscall
+
+            .section .rodata
+        self_path:
+            .asciz "/proc/self/exe"
+        newline:
+            .ascii "\n"
+
+            .section .bss
+            .align 8
+        link_buffer:
+            .skip 4096
+        "#,
+        argv0_len = ARGV0.len(),
+    );
+    let target = compile_assembly_program(&root.0, "actual-target", &target_source);
+    std::fs::create_dir(root.0.join("components")).unwrap();
+    let alias = root.0.join("exec-alias");
+    std::os::unix::fs::symlink("components/../actual-target", &alias).unwrap();
+
+    let root_source = format!(
+        r#"
+            .global _start
+            .text
+        _start:
+            lea exec_path(%rip), %rdi
+            lea replacement_argv(%rip), %rsi
+            xor %edx, %edx
+            mov $59, %eax
+            syscall
+            neg %eax
+            mov %eax, %edi
+            mov $231, %eax
+            syscall
+
+            .section .rodata
+        exec_path:
+            .asciz "{alias}"
+        replacement_argv0:
+            .asciz "{argv0}"
+
+            .section .data
+            .align 8
+        replacement_argv:
+            .quad replacement_argv0, 0
+        "#,
+        alias = alias.display(),
+        argv0 = ARGV0,
+    );
+    let launcher = compile_assembly_program(&root.0, "symlink-exec-launcher", &root_source);
+    let launcher_image = std::fs::read(&launcher).unwrap();
+    let launcher = launcher.to_str().unwrap();
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf_with_context(&launcher_image, &[launcher], &[], &root.0)
+        .unwrap();
+
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    let expected = format!("{}\n{ARGV0}\n", target.canonicalize().unwrap().display());
+    assert_eq!(code, 0);
+    assert_eq!(stdout, expected.as_bytes());
+    assert!(stderr.is_empty());
 }
 
 #[test]
