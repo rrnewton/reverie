@@ -144,19 +144,58 @@ pub(crate) struct PendingInotifyRight {
 }
 
 #[derive(Debug)]
-pub(crate) struct PendingInotifyTransfer {
+pub(crate) struct PendingSocketMessage {
+    // Per-receiving-socket identity used to roll back exactly one failed send.
+    pub id: u64,
+    // Datagram records are atomic; stream records consume this many bytes.
+    pub remaining: usize,
+    // SCM_RIGHTS belongs to the first byte of a stream record.
+    pub at_start: bool,
     pub rights: Vec<Option<PendingInotifyRight>>,
 }
 
-// SCM_RIGHTS metadata is queued on the receiving socket description. Closing
-// every alias of that endpoint therefore drops unreceived transfers together
-// with the kernel socket queue, while dup/fork preserve the same queue.
 #[derive(Debug, Default)]
+pub(crate) struct PendingSocketMessages {
+    pub next_id: u64,
+    pub messages: std::collections::VecDeque<PendingSocketMessage>,
+}
+
+impl std::ops::Deref for PendingSocketMessages {
+    type Target = std::collections::VecDeque<PendingSocketMessage>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.messages
+    }
+}
+
+impl std::ops::DerefMut for PendingSocketMessages {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.messages
+    }
+}
+
+// Message boundaries and SCM_RIGHTS metadata are queued on the receiving
+// socket description. Plain-message entries disambiguate MSG_CTRUNC caused by
+// unrelated control data, while byte progress identifies stream control
+// boundaries. Closing every endpoint alias drops unreceived state together
+// with the kernel socket queue; dup/fork preserve that state.
+#[derive(Debug)]
 pub(crate) struct SocketDescriptionState {
+    pub message_oriented: bool,
     pub peer: std::sync::Mutex<Option<std::sync::Weak<SocketDescriptionState>>>,
-    pub pending_inotify_rights:
-        std::sync::Mutex<std::collections::VecDeque<std::sync::Arc<PendingInotifyTransfer>>>,
+    pub pending_inotify_rights: std::sync::Mutex<PendingSocketMessages>,
     pub send_lock: std::sync::Mutex<()>,
+}
+
+impl SocketDescriptionState {
+    pub fn new(socket_type: libc::c_int) -> Self {
+        Self {
+            message_oriented: socket_type != libc::SOCK_STREAM,
+            peer: std::sync::Mutex::new(None),
+            pending_inotify_rights: std::sync::Mutex::new(PendingSocketMessages::default()),
+            send_lock: std::sync::Mutex::new(()),
+        }
+    }
 }
 
 /// Process-tree-wide state whose lifetime follows a guest task rather than an
