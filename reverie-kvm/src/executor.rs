@@ -383,6 +383,22 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_timerfd_gettime as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         timerfd_gettime(memory, state, args)
+    } else if number == libc::SYS_inotify_init as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-540): Review host-backed KVM inotify lifecycle semantics.
+        inotify_init1(state, 0)
+    } else if number == libc::SYS_inotify_init1 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-540): Review host-backed KVM inotify lifecycle semantics.
+        inotify_init1(state, args[0])
+    } else if number == libc::SYS_inotify_add_watch as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-540): Review KVM inotify path and errno translation.
+        inotify_add_watch(memory, state, args)
+    } else if number == libc::SYS_inotify_rm_watch as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-540): Review KVM inotify watch removal.
+        inotify_rm_watch(state, args)
     } else if number == libc::SYS_pidfd_open as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-235): Review self-only virtual pidfd translation.
@@ -1119,6 +1135,10 @@ fn mutates_file_table(number: u64) -> bool {
             // AUTONOMOUS-BOT-IMPLEMENTED
             // TODO-HUMAN-REVIEW(PR-235): Review timerfd descriptor-table serialization.
             || number == libc::SYS_timerfd_create as u64
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-540): Review inotify descriptor-table serialization.
+            || number == libc::SYS_inotify_init as u64
+            || number == libc::SYS_inotify_init1 as u64
             // AUTONOMOUS-BOT-IMPLEMENTED
             // TODO-HUMAN-REVIEW(PR-235): Review pidfd descriptor-table serialization.
             || number == libc::SYS_pidfd_open as u64
@@ -3383,19 +3403,38 @@ fn synthetic_cpu_frequency_content(
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 // TODO-HUMAN-REVIEW(PR-114): Review /proc/thread-self/fd guest descriptor resolution.
 // TODO-HUMAN-REVIEW(PR-136): Review numeric guest-pid descriptor aliases.
-fn guest_fd_path(state: &LoadedStaticElf, path: &[u8]) -> Option<libc::c_int> {
+fn guest_fd_path_parts<'a>(
+    state: &LoadedStaticElf,
+    path: &'a [u8],
+) -> Option<(&'a [u8], &'a [u8])> {
     let numeric_prefix = format!("/proc/{}/fd/", state.pid).into_bytes();
     let suffix = path
         .strip_prefix(b"/dev/fd/")
         .or_else(|| path.strip_prefix(b"/proc/self/fd/"))
         .or_else(|| path.strip_prefix(b"/proc/thread-self/fd/"))
         .or_else(|| path.strip_prefix(numeric_prefix.as_slice()))?;
-    if suffix.is_empty() || !suffix.iter().all(u8::is_ascii_digit) {
+    let descriptor_length = suffix
+        .iter()
+        .position(|byte| *byte == b'/')
+        .unwrap_or(suffix.len());
+    Some(suffix.split_at(descriptor_length))
+}
+
+fn parse_guest_fd(bytes: &[u8]) -> Option<libc::c_int> {
+    if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
         return None;
     }
-    suffix.iter().try_fold(0_i32, |value, digit| {
+    bytes.iter().try_fold(0_i32, |value, digit| {
         value.checked_mul(10)?.checked_add(i32::from(*digit - b'0'))
     })
+}
+
+fn guest_fd_path(state: &LoadedStaticElf, path: &[u8]) -> Option<libc::c_int> {
+    let (descriptor, remainder) = guest_fd_path_parts(state, path)?;
+    remainder
+        .is_empty()
+        .then(|| parse_guest_fd(descriptor))
+        .flatten()
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review guest-fd metadata translation.
@@ -4431,6 +4470,120 @@ fn eventfd2(state: &mut LoadedStaticElf, initial: u64, raw_flags: u64) -> i64 {
     // SAFETY: eventfd returned a new owned descriptor.
     let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
     insert_file_with_flags(state, file, flags & libc::EFD_CLOEXEC != 0, None)
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-540): Review host-backed KVM inotify semantics and errno ordering.
+fn inotify_init1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 {
+    let flags = raw_flags as libc::c_int;
+    let allowed = libc::IN_CLOEXEC | libc::IN_NONBLOCK;
+    if flags & !allowed != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+
+    // Keep the supervisor descriptor private across a supervisor exec even
+    // when the guest did not request CLOEXEC. The guest-visible descriptor bit
+    // remains modeled separately in `cloexec_fds`.
+    let host_fd = unsafe { libc::inotify_init1(flags | libc::IN_CLOEXEC) };
+    if host_fd < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: inotify_init1 returned a new owned descriptor.
+    let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
+    insert_file_with_flags(state, file, flags & libc::IN_CLOEXEC != 0, None)
+}
+
+const ALL_INOTIFY_BITS: u32 = libc::IN_ALL_EVENTS
+    | libc::IN_UNMOUNT
+    | libc::IN_Q_OVERFLOW
+    | libc::IN_IGNORED
+    | libc::IN_ONLYDIR
+    | libc::IN_DONT_FOLLOW
+    | libc::IN_EXCL_UNLINK
+    | libc::IN_MASK_ADD
+    | libc::IN_MASK_CREATE
+    | libc::IN_ISDIR
+    | libc::IN_ONESHOT;
+
+fn inotify_host_path(state: &LoadedStaticElf, path: &[u8]) -> Result<CString, i64> {
+    if let Some((descriptor, remainder)) = guest_fd_path_parts(state, path) {
+        let guest_fd = parse_guest_fd(descriptor).ok_or_else(|| negative_errno(libc::ENOENT))?;
+        let Some(host_fd) = host_fd(state, guest_fd) else {
+            return Err(negative_errno(libc::ENOENT));
+        };
+        let mut host_path = format!("/proc/self/fd/{host_fd}").into_bytes();
+        host_path.extend_from_slice(remainder);
+        return CString::new(host_path).map_err(|_| negative_errno(libc::EINVAL));
+    }
+    if path.starts_with(b"/") {
+        return CString::new(path).map_err(|_| negative_errno(libc::EINVAL));
+    }
+
+    // inotify_add_watch has no dirfd argument. Resolve guest-relative names
+    // through the stable directory descriptor which also backs openat(AT_FDCWD),
+    // rather than through the supervisor's process-wide current directory.
+    let mut host_path = format!("/proc/self/fd/{}/", state.cwd_fd.as_raw_fd()).into_bytes();
+    host_path.extend_from_slice(path);
+    CString::new(host_path).map_err(|_| negative_errno(libc::EINVAL))
+}
+
+fn inotify_add_watch(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let mask = args[2] as u32;
+    // Linux rejects a zero mask or any unknown mask bits
+    // before it looks up the descriptor or copies the pathname.
+    if mask == 0 || mask & !ALL_INOTIFY_BITS != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+
+    let guest_fd = args[0] as libc::c_int;
+    let Some(host_fd) = host_fd(state, guest_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+
+    // Ask the host kernel to validate the descriptor type and mask before
+    // reading guest memory. A valid request reaches pathname copying and
+    // therefore returns EFAULT for this null pointer without adding a watch.
+    let probe = unsafe { libc::inotify_add_watch(host_fd, std::ptr::null(), mask) };
+    if probe >= 0 {
+        // A null pathname cannot succeed, but do not leak a watch if a future
+        // kernel ever accepts it.
+        let _ = unsafe { libc::inotify_rm_watch(host_fd, probe) };
+        return negative_errno(libc::EIO);
+    }
+    let probe_error = std::io::Error::last_os_error();
+    if probe_error.raw_os_error() != Some(libc::EFAULT) {
+        return io_error(probe_error);
+    }
+    if args[1] == 0 {
+        return negative_errno(libc::EFAULT);
+    }
+
+    let path = match read_c_string(memory, args[1], 4096) {
+        Ok(path) => path,
+        Err(error) => return read_c_string_errno(error),
+    };
+    if path.is_empty() {
+        return negative_errno(libc::ENOENT);
+    }
+    let path = match inotify_host_path(state, &path) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    let result = unsafe { libc::inotify_add_watch(host_fd, path.as_ptr(), mask) };
+    if result < 0 {
+        io_error(std::io::Error::last_os_error())
+    } else {
+        i64::from(result)
+    }
+}
+
+fn inotify_rm_watch(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let guest_fd = args[0] as libc::c_int;
+    let Some(host_fd) = host_fd(state, guest_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let watch_descriptor = args[1] as libc::c_int;
+    zero_or_errno(unsafe { libc::inotify_rm_watch(host_fd, watch_descriptor) })
 }
 
 fn signal_mask_contains(mask: &[u8; KERNEL_SIGSET_SIZE], signal: libc::c_int) -> bool {
@@ -17592,6 +17745,594 @@ mod tests {
     }
 
     #[test]
+    fn inotify_validates_flags_errno_order_and_guest_paths() {
+        const PATH: u64 = 0x100;
+        const EVENT_BUFFER: u64 = 0x500;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        assert!(mutates_file_table(libc::SYS_inotify_init as u64));
+        assert!(mutates_file_table(libc::SYS_inotify_init1 as u64));
+        assert!(!mutates_file_table(libc::SYS_inotify_add_watch as u64));
+        assert!(!mutates_file_table(libc::SYS_inotify_rm_watch as u64));
+
+        let legacy_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_inotify_init,
+            [0, 0, 0, 0, 0, 0],
+        );
+        assert_eq!(legacy_fd, 3);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [legacy_fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [legacy_fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+            ) & i64::from(libc::O_NONBLOCK),
+            0
+        );
+
+        let inotify_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_inotify_init1,
+            [(libc::IN_CLOEXEC | libc::IN_NONBLOCK) as u64, 0, 0, 0, 0, 0],
+        );
+        assert_eq!(inotify_fd, 4);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [inotify_fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0],
+            ),
+            i64::from(libc::FD_CLOEXEC)
+        );
+        assert_ne!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [inotify_fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+            ) & i64::from(libc::O_NONBLOCK),
+            0
+        );
+        let files_before = state.files.len();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_init1,
+                [libc::O_APPEND as u64, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(state.files.len(), files_before);
+
+        let nested = root.0.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let directory = std::fs::File::open(&root.0).unwrap();
+        // Force host and guest descriptor numbers apart so descriptor-path
+        // translation cannot pass by numeric coincidence.
+        let high_host_fd =
+            unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 100) };
+        assert!(high_host_fd >= 100);
+        drop(directory);
+        let directory_fd = insert_file_with_flags(
+            &mut state,
+            unsafe { std::fs::File::from_raw_fd(high_host_fd) },
+            false,
+            None,
+        );
+        assert_eq!(directory_fd, 5);
+
+        // Linux validates masks before descriptors, descriptors before paths,
+        // and the mutually exclusive update flags before copying the path.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [99, PAGE_SIZE, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [99, PAGE_SIZE, 0x0080_0000, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [
+                    99,
+                    PAGE_SIZE,
+                    (libc::IN_CREATE | 0x0080_0000) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [99, PAGE_SIZE, libc::IN_CREATE as u64, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [
+                    directory_fd as u64,
+                    PAGE_SIZE,
+                    libc::IN_CREATE as u64,
+                    0,
+                    0,
+                    0
+                ],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [
+                    inotify_fd as u64,
+                    PAGE_SIZE,
+                    (libc::IN_CREATE | libc::IN_MASK_ADD | libc::IN_MASK_CREATE) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [inotify_fd as u64, 0, libc::IN_CREATE as u64, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [
+                    inotify_fd as u64,
+                    PAGE_SIZE,
+                    libc::IN_CREATE as u64,
+                    0,
+                    0,
+                    0
+                ],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        write_c_string(&mut memory, PATH, "");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [inotify_fd as u64, PATH, libc::IN_CREATE as u64, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOENT)
+        );
+
+        write_c_string(&mut memory, PATH, ".");
+        let watch = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_inotify_add_watch,
+            [inotify_fd as u64, PATH, libc::IN_CREATE as u64, 0, 0, 0],
+        );
+        assert!(watch >= 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [
+                    inotify_fd as u64,
+                    PATH,
+                    (libc::IN_MODIFY | libc::IN_MASK_CREATE) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EEXIST)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [inotify_fd as u64, PATH, libc::IN_MODIFY as u64, 0, 0, 0],
+            ),
+            watch
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [
+                    inotify_fd as u64,
+                    PATH,
+                    (libc::IN_DELETE | libc::IN_MASK_ADD) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            watch
+        );
+        let replaced_path = root.0.join("mask-replaced");
+        std::fs::write(&replaced_path, b"payload").unwrap();
+        let modified_bytes = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_read,
+            [inotify_fd as u64, EVENT_BUFFER, 512, 0, 0, 0],
+        );
+        assert!(modified_bytes >= std::mem::size_of::<libc::inotify_event>() as i64);
+        let modified: libc::inotify_event = read_struct(&memory, EVENT_BUFFER);
+        assert_ne!(modified.mask & libc::IN_MODIFY, 0);
+        assert_eq!(
+            modified.mask & libc::IN_CREATE,
+            0,
+            "replacing IN_CREATE with IN_MODIFY must remove create events"
+        );
+        std::fs::remove_file(replaced_path).unwrap();
+        let event_bytes = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_read,
+            [inotify_fd as u64, EVENT_BUFFER, 512, 0, 0, 0],
+        );
+        assert!(event_bytes >= std::mem::size_of::<libc::inotify_event>() as i64);
+        let event: libc::inotify_event = read_struct(&memory, EVENT_BUFFER);
+        assert_eq!(event.wd, watch as libc::c_int);
+        assert_ne!(event.mask & libc::IN_DELETE, 0);
+        assert_eq!(event.mask & libc::IN_CREATE, 0);
+
+        write_c_string(&mut memory, PATH, root.0.to_str().unwrap());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [inotify_fd as u64, PATH, libc::IN_CREATE as u64, 0, 0, 0],
+            ),
+            watch
+        );
+        write_c_string(&mut memory, PATH, &format!("/proc/self/fd/{directory_fd}"));
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [inotify_fd as u64, PATH, libc::IN_CREATE as u64, 0, 0, 0],
+            ),
+            watch
+        );
+
+        let prefixes = [
+            "/dev/fd/".to_owned(),
+            "/proc/self/fd/".to_owned(),
+            "/proc/thread-self/fd/".to_owned(),
+            format!("/proc/{}/fd/", state.pid),
+        ];
+        let mut nested_watch = None;
+        for prefix in prefixes {
+            write_c_string(&mut memory, PATH, &format!("{prefix}{directory_fd}/nested"));
+            let result = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [inotify_fd as u64, PATH, libc::IN_CREATE as u64, 0, 0, 0],
+            );
+            assert!(result >= 0);
+            assert_eq!(*nested_watch.get_or_insert(result), result);
+        }
+        let nested_watch = nested_watch.unwrap();
+        for path in [
+            "/proc/self/fd/not-a-descriptor/nested".to_owned(),
+            "/proc/self/fd/99/nested".to_owned(),
+        ] {
+            write_c_string(&mut memory, PATH, &path);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_inotify_add_watch,
+                    [inotify_fd as u64, PATH, libc::IN_CREATE as u64, 0, 0, 0],
+                ),
+                negative_errno(libc::ENOENT)
+            );
+        }
+        std::fs::write(nested.join("descendant"), b"payload").unwrap();
+        let descendant_bytes = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_read,
+            [inotify_fd as u64, EVENT_BUFFER, 512, 0, 0, 0],
+        );
+        assert!(descendant_bytes >= std::mem::size_of::<libc::inotify_event>() as i64);
+        let descendant: libc::inotify_event = read_struct(&memory, EVENT_BUFFER);
+        assert_eq!(descendant.wd, nested_watch as libc::c_int);
+        assert_ne!(descendant.mask & libc::IN_CREATE, 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_rm_watch,
+                [inotify_fd as u64, nested_watch as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_rm_watch,
+                [inotify_fd as u64, watch as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_rm_watch,
+                [inotify_fd as u64, watch as u64, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+    }
+
+    #[test]
+    fn inotify_events_use_readiness_and_survive_descriptor_lifecycle() {
+        const PATH: u64 = 0x100;
+        const POLL_FD: u64 = 0x200;
+        const EPOLL_EVENT: u64 = 0x240;
+        const EVENT_BUFFER: u64 = 0x300;
+        const EVENT_BUFFER_SIZE: u64 = 512;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let inotify_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_inotify_init1,
+            [(libc::IN_CLOEXEC | libc::IN_NONBLOCK) as u64, 0, 0, 0, 0, 0],
+        );
+        assert_eq!(inotify_fd, 3);
+        write_c_string(&mut memory, PATH, ".");
+        let watch = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_inotify_add_watch,
+            [inotify_fd as u64, PATH, libc::IN_CREATE as u64, 0, 0, 0],
+        );
+        assert!(watch >= 0);
+
+        let duplicate = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [inotify_fd as u64, 0, 0, 0, 0, 0],
+        );
+        assert_eq!(duplicate, 4);
+        let fcntl_duplicate = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_fcntl,
+            [inotify_fd as u64, libc::F_DUPFD as u64, 10, 0, 0, 0],
+        );
+        assert_eq!(fcntl_duplicate, 10);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [inotify_fd as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+
+        let epoll_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_epoll_create1,
+            [0, 0, 0, 0, 0, 0],
+        );
+        assert_eq!(epoll_fd, 3);
+        let epoll_event = libc::epoll_event {
+            events: libc::EPOLLIN as u32,
+            u64: 0x01a0_71f1,
+        };
+        assert_eq!(write_struct(&mut memory, EPOLL_EVENT, &epoll_event), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_ctl,
+                [
+                    epoll_fd as u64,
+                    libc::EPOLL_CTL_ADD as u64,
+                    duplicate as u64,
+                    EPOLL_EVENT,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+
+        std::fs::write(root.0.join("first"), b"first").unwrap();
+        let poll_fd = libc::pollfd {
+            fd: duplicate as libc::c_int,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(write_struct(&mut memory, POLL_FD, &poll_fd), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_poll,
+                [POLL_FD, 1, 0, 0, 0, 0],
+            ),
+            1
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_wait,
+                [epoll_fd as u64, EPOLL_EVENT, 1, 0, 0, 0],
+            ),
+            1
+        );
+        let ready: libc::epoll_event = read_struct(&memory, EPOLL_EVENT);
+        let ready_data = ready.u64;
+        assert_eq!(ready_data, 0x01a0_71f1);
+
+        let bytes = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_read,
+            [
+                fcntl_duplicate as u64,
+                EVENT_BUFFER,
+                EVENT_BUFFER_SIZE,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert!(bytes >= std::mem::size_of::<libc::inotify_event>() as i64);
+        let event: libc::inotify_event = read_struct(&memory, EVENT_BUFFER);
+        assert_eq!(event.wd, watch as libc::c_int);
+        assert_ne!(event.mask & libc::IN_CREATE, 0);
+        let mut name = vec![0; event.len as usize];
+        memory
+            .read(
+                EVENT_BUFFER + std::mem::size_of::<libc::inotify_event>() as u64,
+                &mut name,
+            )
+            .unwrap();
+        assert_eq!(name.split(|byte| *byte == 0).next().unwrap(), b"first");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [duplicate as u64, EVENT_BUFFER, EVENT_BUFFER_SIZE, 0, 0, 0],
+            ),
+            negative_errno(libc::EAGAIN)
+        );
+
+        let mut child = state.try_clone_for_fork(2).unwrap();
+        std::fs::write(root.0.join("second"), b"second").unwrap();
+        let child_bytes = syscall_result(
+            &mut memory,
+            &mut child,
+            libc::SYS_read,
+            [duplicate as u64, EVENT_BUFFER, EVENT_BUFFER_SIZE, 0, 0, 0],
+        );
+        assert!(child_bytes >= std::mem::size_of::<libc::inotify_event>() as i64);
+        let child_event: libc::inotify_event = read_struct(&memory, EVENT_BUFFER);
+        assert_eq!(child_event.wd, watch as libc::c_int);
+        assert_ne!(child_event.mask & libc::IN_CREATE, 0);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_rm_watch,
+                [duplicate as u64, watch as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let ignored_bytes = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_read,
+            [
+                fcntl_duplicate as u64,
+                EVENT_BUFFER,
+                EVENT_BUFFER_SIZE,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert!(ignored_bytes >= std::mem::size_of::<libc::inotify_event>() as i64);
+        let ignored: libc::inotify_event = read_struct(&memory, EVENT_BUFFER);
+        assert_eq!(ignored.wd, watch as libc::c_int);
+        assert_ne!(ignored.mask & libc::IN_IGNORED, 0);
+
+        let cloexec = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_inotify_init1,
+            [libc::IN_CLOEXEC as u64, 0, 0, 0, 0, 0],
+        ) as libc::c_int;
+        let persistent = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_inotify_init,
+            [0, 0, 0, 0, 0, 0],
+        ) as libc::c_int;
+        let mut replacement = test_state(&root.0);
+        replacement.inherit_process_state(state);
+        assert!(!replacement.files.contains_key(&cloexec));
+        assert!(replacement.files.contains_key(&persistent));
+        assert!(replacement.files.contains_key(&(duplicate as libc::c_int)));
+        assert!(
+            replacement
+                .files
+                .contains_key(&(fcntl_duplicate as libc::c_int))
+        );
+    }
+
+    #[test]
     fn pidfd_open_self_is_cloexec_and_not_ready() {
         const POLL_FD: u64 = 0x100;
 
@@ -18767,6 +19508,48 @@ mod tests {
         let mut bytes = [0; 3];
         memory.read(0x200, &mut bytes).unwrap();
         assert_eq!(&bytes, b"new");
+    }
+
+    #[test]
+    fn thread_executors_share_inotify_descriptors() {
+        const PATH: u64 = 0x100;
+        const EVENT_BUFFER: u64 = 0x200;
+
+        let root = TestDir::new();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut parent = ElfExecutor::new(test_state(&root.0), false);
+        let mut child = parent.thread_child(2).unwrap();
+        write_c_string(&mut memory, PATH, ".");
+
+        let inotify_fd = parent.execute(
+            &SyscallRequest::new(
+                libc::SYS_inotify_init1 as u64,
+                [libc::IN_NONBLOCK as u64, 0, 0, 0, 0, 0],
+            ),
+            &memory,
+        );
+        assert_eq!(inotify_fd, 3);
+        let watch = child.execute(
+            &SyscallRequest::new(
+                libc::SYS_inotify_add_watch as u64,
+                [inotify_fd as u64, PATH, libc::IN_CREATE as u64, 0, 0, 0],
+            ),
+            &memory,
+        );
+        assert!(watch >= 0);
+
+        std::fs::write(root.0.join("shared-table-event"), b"event").unwrap();
+        let bytes = parent.execute(
+            &SyscallRequest::new(
+                libc::SYS_read as u64,
+                [inotify_fd as u64, EVENT_BUFFER, 512, 0, 0, 0],
+            ),
+            &memory,
+        );
+        assert!(bytes >= std::mem::size_of::<libc::inotify_event>() as i64);
+        let event: libc::inotify_event = read_struct(&memory, EVENT_BUFFER);
+        assert_eq!(event.wd, watch as libc::c_int);
+        assert_ne!(event.mask & libc::IN_CREATE, 0);
     }
 
     #[test]
