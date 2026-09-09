@@ -5451,15 +5451,6 @@ fn sendto(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
 
 // TODO-HUMAN-REVIEW(PR-218): Review bounded recvfrom buffer and peer-address copyback semantics.
 fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = libc::c_int::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
-    let Some(host_fd) = host_fd(state, fd) else {
-        return negative_errno(libc::EBADF);
-    };
-    let Ok(flags) = libc::c_int::try_from(args[3]) else {
-        return negative_errno(libc::EINVAL);
-    };
     let Ok(requested_length) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
@@ -5474,6 +5465,15 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
         return negative_errno(libc::EFAULT);
     }
     let mut bytes = vec![0; writable];
+    let Ok(fd) = libc::c_int::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Some(host_fd) = host_fd(state, fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Ok(flags) = libc::c_int::try_from(args[3]) else {
+        return negative_errno(libc::EINVAL);
+    };
 
     // SAFETY: a zeroed sockaddr_storage is valid scratch space for recvfrom.
     let mut address =
@@ -14817,8 +14817,9 @@ mod tests {
             ],
         );
         assert_eq!(empty_socket, 4);
+        let invalid_fd = 99;
 
-        for fd in [regular_file, empty_socket] {
+        for fd in [invalid_fd, regular_file, empty_socket] {
             assert_eq!(
                 syscall_result(
                     &mut memory,
@@ -14833,6 +14834,7 @@ mod tests {
 
         memory.write(PAYLOAD, b"?").unwrap();
         for (fd, error) in [
+            (invalid_fd, negative_errno(libc::EBADF)),
             (regular_file, negative_errno(libc::ENOTSOCK)),
             (empty_socket, negative_errno(libc::EAGAIN)),
         ] {
