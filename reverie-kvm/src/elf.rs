@@ -59,9 +59,13 @@ const AT_UID: u64 = 11;
 const AT_EUID: u64 = 12;
 const AT_GID: u64 = 13;
 const AT_EGID: u64 = 14;
+const AT_CLKTCK: u64 = 17;
 const AT_SECURE: u64 = 23;
 const AT_RANDOM: u64 = 25;
 const AT_EXECFN: u64 = 31;
+// Linux x86-64 reports USER_HZ through AT_CLKTCK. This ABI value is
+// independent of the kernel's internal CONFIG_HZ scheduler frequency.
+const CLOCK_TICKS_PER_SECOND: u64 = 100;
 // Points at the base of the in-guest vDSO ELF image. glibc's dynamic linker
 // reads the vDSO's kernel-version ELF note through this entry during startup
 // (`_dl_discover_osversion`); without it glibc falls back to a `uname(2)`
@@ -1062,6 +1066,7 @@ fn build_initial_stack(
         (AT_EUID, 0),
         (AT_GID, 0),
         (AT_EGID, 0),
+        (AT_CLKTCK, CLOCK_TICKS_PER_SECOND),
         (AT_SECURE, 0),
         (AT_RANDOM, random_address),
         (AT_EXECFN, argv0_address),
@@ -1139,6 +1144,97 @@ fn interpreter_load_bias(main_end: u64) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_MEMORY_SIZE: usize = 16 * 1024 * 1024;
+    const TEST_LOAD_ADDRESS: u64 = 0x20_0000;
+    const TEST_CODE_OFFSET: usize = 0x1000;
+
+    fn test_static_elf(code: &[u8]) -> Vec<u8> {
+        let mut image = vec![0; TEST_CODE_OFFSET + code.len()];
+
+        image[..4].copy_from_slice(b"\x7fELF");
+        image[4] = ELFCLASS64;
+        image[5] = ELFDATA2LSB;
+        image[6] = 1;
+        image[16..18].copy_from_slice(&ET_EXEC.to_le_bytes());
+        image[18..20].copy_from_slice(&EM_X86_64.to_le_bytes());
+        image[20..24].copy_from_slice(&1_u32.to_le_bytes());
+        image[24..32].copy_from_slice(&TEST_LOAD_ADDRESS.to_le_bytes());
+        image[32..40].copy_from_slice(&64_u64.to_le_bytes());
+        image[52..54].copy_from_slice(&64_u16.to_le_bytes());
+        image[54..56].copy_from_slice(&56_u16.to_le_bytes());
+        image[56..58].copy_from_slice(&1_u16.to_le_bytes());
+
+        image[64..68].copy_from_slice(&PT_LOAD.to_le_bytes());
+        image[68..72].copy_from_slice(&(PF_X | 4).to_le_bytes());
+        image[72..80].copy_from_slice(&(TEST_CODE_OFFSET as u64).to_le_bytes());
+        image[80..88].copy_from_slice(&TEST_LOAD_ADDRESS.to_le_bytes());
+        image[88..96].copy_from_slice(&TEST_LOAD_ADDRESS.to_le_bytes());
+        image[96..104].copy_from_slice(&(code.len() as u64).to_le_bytes());
+        image[104..112].copy_from_slice(&0x2000_u64.to_le_bytes());
+        image[112..120].copy_from_slice(&0x1000_u64.to_le_bytes());
+        image[TEST_CODE_OFFSET..].copy_from_slice(code);
+        image
+    }
+
+    fn clock_tick_entries(auxv: &[(libc::c_ulong, libc::c_ulong)]) -> Vec<(u64, u64)> {
+        auxv.iter()
+            .filter(|(key, _)| *key == AT_CLKTCK)
+            .map(|&(key, value)| (key, value))
+            .collect()
+    }
+
+    #[test]
+    fn auxiliary_vector_reports_linux_clock_tick_rate_once() {
+        let mut memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let image = test_static_elf(&[0x0f, 0x0b]);
+        let loaded = load_static_elf(
+            &mut memory,
+            &image,
+            &["initial"],
+            &[],
+            &std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            clock_tick_entries(&loaded.auxv),
+            vec![(AT_CLKTCK, CLOCK_TICKS_PER_SECOND)]
+        );
+    }
+
+    #[test]
+    fn auxiliary_vector_reload_preserves_linux_clock_tick_rate() {
+        let mut memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let first_image = test_static_elf(&[0x90, 0x0f, 0x0b]);
+        let second_image = test_static_elf(&[0x90, 0x90, 0x0f, 0x0b]);
+        let cwd = std::env::current_dir().unwrap();
+
+        let first = load_static_elf(&mut memory, &first_image, &["first"], &[], &cwd).unwrap();
+        let second = load_static_elf(&mut memory, &second_image, &["second"], &[], &cwd).unwrap();
+
+        assert_ne!(first.entry_point, 0);
+        assert_ne!(second.entry_point, 0);
+        let first_execfn = first
+            .auxv
+            .iter()
+            .find(|(key, _)| *key == AT_EXECFN)
+            .map(|(_, value)| *value);
+        let second_execfn = second
+            .auxv
+            .iter()
+            .find(|(key, _)| *key == AT_EXECFN)
+            .map(|(_, value)| *value);
+        assert_ne!(first_execfn, second_execfn);
+        assert_eq!(
+            clock_tick_entries(&first.auxv),
+            vec![(AT_CLKTCK, CLOCK_TICKS_PER_SECOND)]
+        );
+        assert_eq!(
+            clock_tick_entries(&second.auxv),
+            vec![(AT_CLKTCK, CLOCK_TICKS_PER_SECOND)]
+        );
+    }
 
     #[test]
     fn small_pie_keeps_fixed_interpreter_base() {
