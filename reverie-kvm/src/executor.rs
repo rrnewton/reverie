@@ -329,6 +329,10 @@ fn execute_basic_syscall_with_output(
         sync_file(state, args[0], false)
     } else if number == libc::SYS_fdatasync as u64 {
         sync_file(state, args[0], true)
+    } else if number == libc::SYS_syncfs as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-pending): Review translated host syncfs semantics.
+        sync_filesystem(state, args[0])
     } else if number == libc::SYS_readahead as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-227): Review translated host readahead semantics.
@@ -3072,6 +3076,25 @@ fn sync_file(state: &LoadedStaticElf, raw_fd: u64, data_only: bool) -> i64 {
             libc::fsync(host_fd)
         }
     };
+    if result == 0 {
+        0
+    } else {
+        io_error(std::io::Error::last_os_error())
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-pending): Review translated host syncfs semantics.
+fn sync_filesystem(state: &LoadedStaticElf, raw_fd: u64) -> i64 {
+    let Ok(fd) = i32::try_from(raw_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Some(host_fd) = host_fd(state, fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    // SAFETY: host_fd names the guest's live translated descriptor. syncfs has
+    // no guest pointers, and the host kernel validates the descriptor type.
+    let result = unsafe { libc::syncfs(host_fd) };
     if result == 0 {
         0
     } else {
@@ -18060,6 +18083,78 @@ mod tests {
                     &mut state,
                     libc::SYS_write,
                     [libc::STDIN_FILENO as u64, u64::MAX, length, 0, 0, 0],
+                ),
+                negative_errno(libc::EBADF)
+            );
+        }
+    }
+
+    #[test]
+    fn syncfs_uses_translated_descriptors_and_preserves_host_results() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        let regular = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(root.0.join("syncfs-file"))
+            .unwrap();
+        let regular_fd = insert_file_with_flags(&mut state, regular, true, None);
+        assert!(regular_fd >= 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_syncfs,
+                [regular_fd as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+
+        let mut pipe_fds = [-1; 2];
+        // SAFETY: pipe_fds has room for the two descriptors returned by pipe2.
+        assert_eq!(
+            unsafe { libc::pipe2(pipe_fds.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        // SAFETY: pipe2 returned two new owned descriptors.
+        let pipe_read = unsafe { std::fs::File::from_raw_fd(pipe_fds[0]) };
+        let _pipe_write = unsafe { std::fs::File::from_raw_fd(pipe_fds[1]) };
+        let pipe_fd = insert_file_with_flags(&mut state, pipe_read, true, None);
+        assert!(pipe_fd >= 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_syncfs,
+                [pipe_fd as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+
+        let proc_file = std::fs::File::open("/proc/self/status").unwrap();
+        let proc_fd = insert_file_with_flags(&mut state, proc_file, true, None);
+        assert!(proc_fd >= 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_syncfs,
+                [proc_fd as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+
+        for invalid_fd in [GUEST_NOFILE_LIMIT as u64, u64::MAX] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_syncfs,
+                    [invalid_fd, 0, 0, 0, 0, 0],
                 ),
                 negative_errno(libc::EBADF)
             );
