@@ -41,6 +41,7 @@ use reverie::syscalls::Syscall;
 use reverie::syscalls::Sysno;
 use reverie_kvm::CounterTool;
 use reverie_kvm::Error;
+use reverie_kvm::GuestMemory;
 use reverie_kvm::HierarchicalCounterTool;
 use reverie_kvm::HierarchicalTotals;
 use reverie_kvm::KvmBackend;
@@ -53,6 +54,10 @@ const LOAD_ADDRESS: u64 = 0x20_0000;
 const CODE_OFFSET: usize = 0x1000;
 const POST_EXEC_RANDOM: [u8; 16] = *b"kvm-post-exec-ok";
 static POST_EXEC_FAILURE_EXITED: AtomicBool = AtomicBool::new(false);
+const EXIT_ORDER_CHILD_TID: u64 = LOAD_ADDRESS + 0x1800;
+const EXIT_ORDER_AFTER_CALLBACK: i32 = 0x1234_5678;
+static EXIT_ORDER_MEMORY: Mutex<Option<GuestMemory>> = Mutex::new(None);
+static EXIT_ORDER_OBSERVED_TID: AtomicU64 = AtomicU64::new(u64::MAX);
 
 static NEXT_TEST_EXECUTABLE: AtomicU64 = AtomicU64::new(0);
 
@@ -461,6 +466,58 @@ impl Tool for FailingPostExecTool {
         _status: ExitStatus,
     ) -> Result<(), reverie::Error> {
         POST_EXEC_FAILURE_EXITED.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ExitOrderTool {
+    process: i32,
+}
+
+#[reverie::tool]
+impl Tool for ExitOrderTool {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    fn new(pid: Pid, _config: &()) -> Self {
+        Self {
+            process: pid.as_raw(),
+        }
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        Ok(guest.inject(syscall).await?)
+    }
+
+    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+        &self,
+        tid: Pid,
+        _global: &G,
+        _thread_state: Self::ThreadState,
+        _status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        if tid.as_raw() != self.process {
+            let mut bytes = [0; std::mem::size_of::<i32>()];
+            let mut memory = EXIT_ORDER_MEMORY
+                .lock()
+                .expect("exit-order memory lock poisoned");
+            let memory = memory.as_mut().expect("exit-order memory not installed");
+            memory
+                .read(EXIT_ORDER_CHILD_TID, &mut bytes)
+                .expect("child TID word must remain readable at thread exit");
+            EXIT_ORDER_OBSERVED_TID.store(i32::from_le_bytes(bytes) as u64, Ordering::SeqCst);
+            memory
+                .write(
+                    EXIT_ORDER_CHILD_TID,
+                    &EXIT_ORDER_AFTER_CALLBACK.to_le_bytes(),
+                )
+                .expect("callback sentinel must remain writable at thread exit");
+        }
         Ok(())
     }
 }
@@ -2070,7 +2127,7 @@ fn stats_fork_program() -> Vec<u8> {
     code
 }
 
-fn stats_clone_thread_program() -> Vec<u8> {
+fn clone_thread_program(parent_wait_value: i32) -> Vec<u8> {
     const CHILD_TID: u64 = LOAD_ADDRESS + 0x1800;
     const CHILD_STACK: u64 = LOAD_ADDRESS + 0x1900;
     const CHILD_STACK_SIZE: u64 = 0x600;
@@ -2104,8 +2161,9 @@ fn stats_clone_thread_program() -> Vec<u8> {
     code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_tid
     code.extend_from_slice(&CHILD_TID.to_le_bytes());
     let wait = code.len();
+    code.extend_from_slice(&[0x81, 0x39]); // cmp dword ptr [rcx], imm32
+    code.extend_from_slice(&parent_wait_value.to_le_bytes());
     code.extend_from_slice(&[
-        0x83, 0x39, 0x00, // cmp dword ptr [rcx], 0
         0x0f, 0x85, 0, 0, 0, 0, // jne wait
     ]);
     let wait_jump = code.len() - 4;
@@ -2133,6 +2191,58 @@ fn stats_clone_thread_program() -> Vec<u8> {
     clone_args[48..56].copy_from_slice(&CHILD_STACK_SIZE.to_le_bytes());
     code.extend_from_slice(&clone_args);
     code
+}
+
+fn stats_clone_thread_program() -> Vec<u8> {
+    clone_thread_program(0)
+}
+
+#[test]
+fn tool_observes_child_tid_clear_before_thread_exit_callback() {
+    if !kvm_available("tool_observes_child_tid_clear_before_thread_exit_callback") {
+        return;
+    }
+
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf(
+            &static_elf(&clone_thread_program(EXIT_ORDER_AFTER_CALLBACK)),
+            "/bin/kvm-child-tid-exit-order",
+        )
+        .unwrap();
+    EXIT_ORDER_OBSERVED_TID.store(u64::MAX, Ordering::SeqCst);
+    *EXIT_ORDER_MEMORY
+        .lock()
+        .expect("exit-order memory lock poisoned") = Some(backend.memory().clone());
+
+    let result =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<ExitOrderTool>((), true));
+    let mut final_bytes = [0; std::mem::size_of::<i32>()];
+    EXIT_ORDER_MEMORY
+        .lock()
+        .expect("exit-order memory lock poisoned")
+        .as_ref()
+        .expect("exit-order memory not installed")
+        .read(EXIT_ORDER_CHILD_TID, &mut final_bytes)
+        .expect("child TID word must remain readable after thread exit");
+    *EXIT_ORDER_MEMORY
+        .lock()
+        .expect("exit-order memory lock poisoned") = None;
+    let (_, code, stdout, stderr) = result.unwrap();
+
+    assert_eq!(code, 0);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    assert_eq!(
+        EXIT_ORDER_OBSERVED_TID.load(Ordering::SeqCst),
+        0,
+        "the CHILD_CLEARTID zero store must precede the Tool exit callback"
+    );
+    assert_eq!(
+        i32::from_le_bytes(final_bytes),
+        EXIT_ORDER_AFTER_CALLBACK,
+        "the worker wrapper must not clear the CHILD_CLEARTID word again after the callback"
+    );
 }
 
 fn assert_exact_stats(snapshot: &KvmBackendStats, hypercalls: u64, halts: u64) {
