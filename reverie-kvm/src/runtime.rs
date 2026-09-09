@@ -50,6 +50,7 @@ use crate::bootstrap::set_user_segment_base;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
 use crate::executor::conventional_exit_code;
+use crate::vm::clear_tid;
 
 const STACK_CAPACITY: usize = 4096;
 const TOOL_STACK_BOTTOM: u64 = TOOL_STACK_TOP - STACK_CAPACITY as u64;
@@ -985,6 +986,13 @@ where
     }
 }
 
+fn clear_tid_before_tool_exit(memory: &mut GuestMemory, executor: &ElfExecutor) {
+    // The store must precede a Tool's logical wake. Keep the address installed
+    // so the worker wrapper can still issue the host wake for Tools that leave
+    // futex handling to the backend.
+    let _ = clear_tid(memory, executor.clear_child_tid());
+}
+
 async fn notify_tool_exit<T: Tool>(
     tool: T,
     pid: Pid,
@@ -1322,6 +1330,7 @@ impl KvmBackend {
                 self.request_guest_thread_group_exit(exit.status);
             }
             self.cancel_guest_threads();
+            clear_tid_before_tool_exit(&mut memory, executor);
             notify_tool_exit(
                 tool,
                 pid,
@@ -1364,6 +1373,7 @@ impl KvmBackend {
                         self.request_guest_thread_group_exit(exit.status);
                     }
                     self.cancel_guest_threads();
+                    clear_tid_before_tool_exit(&mut memory, executor);
                     notify_tool_exit(
                         tool,
                         pid,
@@ -1394,6 +1404,7 @@ impl KvmBackend {
             .await
             .err();
             if let Some(error) = post_exec_error {
+                clear_tid_before_tool_exit(&mut memory, executor);
                 notify_tool_exit(
                     tool,
                     pid,
@@ -1416,6 +1427,7 @@ impl KvmBackend {
                 self.request_guest_thread_group_exit(exit.status);
             }
             self.cancel_guest_threads();
+            clear_tid_before_tool_exit(&mut memory, executor);
             notify_tool_exit(
                 tool,
                 pid,
@@ -1436,6 +1448,7 @@ impl KvmBackend {
         loop {
             if let Some(status) = self.guest_thread_group_exit_status() {
                 self.cancel_guest_threads();
+                clear_tid_before_tool_exit(&mut memory, executor);
                 notify_tool_exit(
                     tool,
                     pid,
@@ -1633,6 +1646,7 @@ impl KvmBackend {
                 .await
                 .err();
                 if let Some(error) = post_exec_error {
+                    clear_tid_before_tool_exit(&mut memory, executor);
                     notify_tool_exit(
                         tool,
                         pid,
@@ -1656,6 +1670,7 @@ impl KvmBackend {
                     self.request_guest_thread_group_exit(exit.status);
                 }
                 self.cancel_guest_threads();
+                clear_tid_before_tool_exit(&mut memory, executor);
                 notify_tool_exit(
                     tool,
                     pid,

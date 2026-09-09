@@ -1884,6 +1884,10 @@ impl ElfExecutor {
         }
     }
 
+    pub(crate) fn clear_child_tid(&self) -> Option<u64> {
+        self.clear_child_tid
+    }
+
     pub(crate) fn take_clear_child_tid(&mut self) -> Option<u64> {
         self.clear_child_tid.take()
     }
@@ -20479,6 +20483,7 @@ mod tests {
         let request =
             SyscallRequest::new(libc::SYS_set_tid_address as u64, [CLEAR_TID, 0, 0, 0, 0, 0]);
         assert_eq!(executor.execute_process_action(&request, &memory), Some(1));
+        assert_eq!(executor.clear_child_tid(), Some(CLEAR_TID));
         assert_eq!(executor.take_clear_child_tid(), Some(CLEAR_TID));
 
         let request = SyscallRequest::new(libc::SYS_set_tid_address as u64, [0; 6]);
