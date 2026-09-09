@@ -219,7 +219,12 @@ pub(crate) struct LoadedStaticElf {
     /// Host path of the image loaded for this guest. This is independent of
     /// the guest-controlled `argv[0]` and backs `/proc/self/exe`.
     pub executable_path: PathBuf,
-    /// The guest-provided `argv[0]`, used for `/proc/self/cmdline` and `comm`.
+    /// Stable bytes of the current executable image.
+    ///
+    /// A self-exec through `/proc/self/exe` must keep using the image that is
+    /// already running even if its directory entry is unlinked or replaced.
+    pub executable_image: std::sync::Arc<[u8]>,
+    /// The guest-provided `argv[0]`, used for `/proc/self/cmdline`.
     pub argv0: Vec<u8>,
     pub cwd: PathBuf,
     pub cwd_fd: std::fs::File,
@@ -336,6 +341,7 @@ impl LoadedStaticElf {
             mmap_next: self.mmap_next,
             mmap_limit: self.mmap_limit,
             executable_path: self.executable_path.clone(),
+            executable_image: self.executable_image.clone(),
             argv0: self.argv0.clone(),
             cwd: self.cwd.clone(),
             cwd_fd: self.cwd_fd.try_clone()?,
@@ -714,6 +720,7 @@ fn load_executable(
         mmap_next,
         mmap_limit,
         executable_path,
+        executable_image: std::sync::Arc::from(image),
         argv0: argv0.as_bytes().to_vec(),
         cwd: cwd.to_owned(),
         cwd_fd,

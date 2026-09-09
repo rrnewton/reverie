@@ -631,7 +631,7 @@ impl KvmBackend {
     ///
     /// `argv` must be non-empty; `argv[0]` remains the guest-visible program
     /// name on the initial stack, in `AT_EXECFN`, and on the synthetic cmdline
-    /// and process-name surfaces. The independently retained resolved path is
+    /// surface. The independently retained resolved path is
     /// returned by `readlink("/proc/self/exe")`.
     /// The guest observes a standard System V initial stack: `argc`, the `argv`
     /// pointer array, a NULL terminator, the `envp` pointer array, a NULL

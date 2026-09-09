@@ -8,6 +8,7 @@
 
 use std::ffi::CStr;
 use std::ffi::CString;
+use std::io::Read;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
@@ -195,6 +196,14 @@ impl CapturedOutput {
         destination.extend_from_slice(bytes);
         true
     }
+}
+
+fn read_executable_file(path: &std::path::Path) -> Result<(std::path::PathBuf, Vec<u8>), i64> {
+    let mut file = std::fs::File::open(path).map_err(io_error)?;
+    let executable_path = canonical_fd_path(file.as_raw_fd())?;
+    let mut image = Vec::new();
+    file.read_to_end(&mut image).map_err(io_error)?;
+    Ok((executable_path, image))
 }
 
 pub(crate) enum ProcessAction {
@@ -1458,13 +1467,9 @@ impl ElfExecutor {
             Ok(envp) => envp,
             Err(error) => return error,
         };
-        let path = match resolve_guest_exec_path(&self.state, path, &envp) {
-            Ok(path) => path,
+        let (path, image) = match resolve_guest_exec_image(&self.state, path, &envp) {
+            Ok(executable) => executable,
             Err(error) => return error,
-        };
-        let image = match std::fs::read(&path) {
-            Ok(image) => image,
-            Err(error) => return io_error(error),
         };
         let argv = if argv.is_empty() {
             vec![path.to_string_lossy().into_owned()]
@@ -2181,23 +2186,33 @@ fn ensure_readable(file: &std::fs::File) -> Result<(), i64> {
     Ok(())
 }
 
-/// Resolve the file whose image an in-guest exec replaces the current image with.
+/// Resolve and read the file whose image an in-guest exec installs.
 ///
-/// `/proc/self/exe` and the equivalent numeric spelling name the current guest
-/// image, not the host executor. Resolve those aliases to the executable path
-/// retained by the loaded guest before performing any host file-system read.
-/// All other paths retain execve's existing absolute, cwd-relative, and PATH
-/// search behavior.
+/// `/proc/self/exe` and the equivalent numeric spelling use the stable bytes
+/// retained with the current image. Other paths are opened once; both the bytes
+/// and the identity reported by `/proc/self/exe` come from that open file.
+fn resolve_guest_exec_image(
+    state: &LoadedStaticElf,
+    path: Vec<u8>,
+    envp: &[String],
+) -> Result<(std::path::PathBuf, Vec<u8>), i64> {
+    if normalize_proc_path(state, &path).as_deref() == Some(b"/proc/self/exe") {
+        return Ok((
+            state.executable_path.clone(),
+            state.executable_image.to_vec(),
+        ));
+    }
+    let path = resolve_guest_exec_path(state, path, envp)?;
+    read_executable_file(&path)
+}
+
+/// Resolve an ordinary exec path using execve's existing absolute,
+/// cwd-relative, and PATH-search behavior.
 fn resolve_guest_exec_path(
     state: &LoadedStaticElf,
     path: Vec<u8>,
     envp: &[String],
 ) -> Result<std::path::PathBuf, i64> {
-    let path = if normalize_proc_path(state, &path).as_deref() == Some(b"/proc/self/exe") {
-        state.executable_path.as_os_str().as_bytes().to_vec()
-    } else {
-        path
-    };
     let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(path));
 
     // AUTONOMOUS-BOT-IMPLEMENTED
@@ -2305,8 +2320,7 @@ fn resolve_exec_shebang(
         }
         argv = rewritten;
 
-        path = interpreter;
-        image = std::fs::read(&path).map_err(io_error)?;
+        (path, image) = read_executable_file(&interpreter)?;
     }
     Ok((path, image, argv))
 }
@@ -7957,10 +7971,10 @@ fn proc_locks_content(state: &LoadedStaticElf) -> Vec<u8> {
 /// The kernel's `comm`: the program basename, capped at 15 bytes.
 fn proc_comm(state: &LoadedStaticElf) -> String {
     let base = state
-        .argv0
-        .rsplit(|byte| *byte == b'/')
-        .next()
-        .unwrap_or(&state.argv0);
+        .executable_path
+        .file_name()
+        .unwrap_or_else(|| state.executable_path.as_os_str())
+        .as_bytes();
     String::from_utf8_lossy(&base.iter().copied().take(15).collect::<Vec<u8>>()).into_owned()
 }
 
@@ -10812,6 +10826,7 @@ mod tests {
             mmap_next: BOOT_RESERVED_END + PAGE_SIZE,
             mmap_limit: BOOT_RESERVED_END + 2 * PAGE_SIZE,
             executable_path: cwd.join("test"),
+            executable_image: Arc::from(b"test image".as_slice()),
             argv0: b"test".to_vec(),
             cwd: cwd.to_owned(),
             cwd_fd: std::fs::File::open(cwd).unwrap(),
@@ -22567,21 +22582,32 @@ mod tests {
     }
 
     #[test]
-    fn resolve_guest_exec_path_maps_self_aliases_and_preserves_other_resolution() {
+    fn resolve_guest_exec_image_is_stable_and_uses_open_file_identity() {
         let dir = TestDir::new();
         let executable = dir.0.join("current-image");
         std::fs::write(&executable, b"image").unwrap();
         let mut state = test_state(&dir.0);
         state.pid = 37;
         state.executable_path = executable.clone();
+        state.executable_image = Arc::from(b"loaded image".as_slice());
         let envp = Vec::new();
 
+        std::fs::write(&executable, b"replacement image").unwrap();
         for alias in [b"/proc/self/exe".as_slice(), b"/proc/37/exe".as_slice()] {
-            assert_eq!(
-                resolve_guest_exec_path(&state, alias.to_vec(), &envp).unwrap(),
-                executable,
-            );
+            let (path, image) = resolve_guest_exec_image(&state, alias.to_vec(), &envp).unwrap();
+            assert_eq!(path, executable);
+            assert_eq!(image, b"loaded image");
         }
+        std::fs::remove_file(&executable).unwrap();
+        let (path, image) =
+            resolve_guest_exec_image(&state, b"/proc/self/exe".to_vec(), &envp).unwrap();
+        assert_eq!(path, executable);
+        assert_eq!(image, b"loaded image");
+        let child = state.try_clone_for_fork(2).unwrap();
+        let (path, image) =
+            resolve_guest_exec_image(&child, b"/proc/2/exe".to_vec(), &envp).unwrap();
+        assert_eq!(path, executable);
+        assert_eq!(image, b"loaded image");
         assert_eq!(
             resolve_guest_exec_path(&state, b"/proc/38/exe".to_vec(), &envp).unwrap(),
             Path::new("/proc/38/exe"),
@@ -22600,9 +22626,32 @@ mod tests {
         let searched = bin.join("searched-program");
         std::fs::write(&searched, b"image").unwrap();
         let envp = vec![format!("PATH={}", bin.display())];
+        let (path, image) =
+            resolve_guest_exec_image(&state, b"searched-program".to_vec(), &envp).unwrap();
+        assert_eq!(path, searched.canonicalize().unwrap());
+        assert_eq!(image, b"image");
+
+        let target = dir.0.join("target-program");
+        std::fs::write(&target, b"target image").unwrap();
+        let alias = dir.0.join("program-link");
+        std::os::unix::fs::symlink(&target, &alias).unwrap();
+        let (path, image) =
+            resolve_guest_exec_image(&state, alias.as_os_str().as_bytes().to_vec(), &envp).unwrap();
+        assert_eq!(path, target.canonicalize().unwrap());
+        assert_eq!(image, b"target image");
+    }
+
+    #[test]
+    fn proc_comm_uses_executable_name_not_guest_argv0() {
+        let dir = TestDir::new();
+        let mut state = test_state(&dir.0);
+        state.executable_path = dir.0.join("actual-executable-name");
+        state.argv0 = b"chosen/argv-zero".to_vec();
+
+        assert_eq!(proc_comm(&state), "actual-executab");
         assert_eq!(
-            resolve_guest_exec_path(&state, b"searched-program".to_vec(), &envp).unwrap(),
-            searched.canonicalize().unwrap(),
+            proc_self_cmdline_content(&state),
+            b"chosen/argv-zero\0".to_vec()
         );
     }
 
