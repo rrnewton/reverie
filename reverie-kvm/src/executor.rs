@@ -406,6 +406,9 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_getsockname as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         getsockname(memory, state, args)
+    } else if number == libc::SYS_getpeername as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        getpeername(memory, state, args)
     } else if number == libc::SYS_socketpair as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         socketpair(memory, state, args)
@@ -4995,7 +4998,19 @@ fn getsockopt(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
         return write_struct(memory, args[4], &length);
     }
 
-    if args[2] as libc::c_int != libc::SO_TYPE {
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-pending): Review bounded stable SOL_SOCKET option copyback.
+    let option = args[2] as libc::c_int;
+    if !matches!(
+        option,
+        libc::SO_TYPE
+            | libc::SO_DOMAIN
+            | libc::SO_ACCEPTCONN
+            | libc::SO_REUSEADDR
+            | libc::SO_KEEPALIVE
+            | libc::SO_BROADCAST
+            | libc::SO_ERROR
+    ) {
         return negative_errno(libc::ENOPROTOOPT);
     }
 
@@ -5011,7 +5026,7 @@ fn getsockopt(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
         libc::getsockopt(
             host_fd,
             libc::SOL_SOCKET,
-            libc::SO_TYPE,
+            option,
             value_pointer,
             &mut length,
         )
@@ -5078,8 +5093,18 @@ fn listen(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     zero_or_errno(unsafe { libc::listen(host_fd, args[1] as libc::c_int) })
 }
 
-// TODO-HUMAN-REVIEW(PR-213): Review bounded getsockname copyback semantics.
-fn getsockname(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+#[derive(Clone, Copy)]
+enum SocketNameQuery {
+    Local,
+    Peer,
+}
+
+fn socket_name(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    query: SocketNameQuery,
+) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
     };
@@ -5096,14 +5121,21 @@ fn getsockname(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6
     let mut address = vec![0; capacity];
     // SAFETY: address is writable for capacity bytes and length describes that
     // allocation. host_fd belongs to the guest descriptor table.
-    if unsafe {
-        libc::getsockname(
-            host_fd,
-            address.as_mut_ptr().cast::<libc::sockaddr>(),
-            &mut length,
-        )
-    } != 0
-    {
+    let result = unsafe {
+        match query {
+            SocketNameQuery::Local => libc::getsockname(
+                host_fd,
+                address.as_mut_ptr().cast::<libc::sockaddr>(),
+                &mut length,
+            ),
+            SocketNameQuery::Peer => libc::getpeername(
+                host_fd,
+                address.as_mut_ptr().cast::<libc::sockaddr>(),
+                &mut length,
+            ),
+        }
+    };
+    if result != 0 {
         return io_error(std::io::Error::last_os_error());
     }
     let copy_length = capacity.min(length as usize);
@@ -5111,6 +5143,16 @@ fn getsockname(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6
         return negative_errno(libc::EFAULT);
     }
     write_struct(memory, args[2], &length)
+}
+
+// TODO-HUMAN-REVIEW(PR-213): Review bounded getsockname copyback semantics.
+fn getsockname(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    socket_name(memory, state, args, SocketNameQuery::Local)
+}
+
+// TODO-HUMAN-REVIEW(PR-pending): Review bounded getpeername copyback semantics.
+fn getpeername(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    socket_name(memory, state, args, SocketNameQuery::Peer)
 }
 
 // TODO-HUMAN-REVIEW(PR-218): Review blocking accept outside the shared descriptor-table lock.
@@ -14060,6 +14102,266 @@ mod tests {
                 ],
             ),
             negative_errno(libc::EFAULT)
+        );
+    }
+
+    #[test]
+    fn getsockopt_stable_sol_socket_allowlist_and_rejects_other_options() {
+        const PAIR_FDS: u64 = 0x100;
+        const OPTION_VALUE: u64 = 0x200;
+        const RESULT: u64 = 0x300;
+        const RESULT_LENGTH: u64 = 0x400;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_STREAM as u64,
+                    0,
+                    PAIR_FDS,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+        let socket_fd = socket_fds[0];
+        let full_length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+
+        for (option, expected) in [
+            (libc::SO_DOMAIN, libc::AF_UNIX),
+            (libc::SO_ACCEPTCONN, 0),
+            (libc::SO_ERROR, 0),
+        ] {
+            assert_eq!(write_struct(&mut memory, RESULT, &-1_i32), 0);
+            assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &full_length), 0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_getsockopt,
+                    [
+                        socket_fd as u64,
+                        libc::SOL_SOCKET as u64,
+                        option as u64,
+                        RESULT,
+                        RESULT_LENGTH,
+                        0,
+                    ],
+                ),
+                0,
+                "getsockopt failed for option {option}"
+            );
+            assert_eq!(
+                read_struct::<libc::socklen_t>(&memory, RESULT_LENGTH),
+                full_length
+            );
+            assert_eq!(read_struct::<libc::c_int>(&memory, RESULT), expected);
+        }
+
+        for option in [libc::SO_REUSEADDR, libc::SO_KEEPALIVE, libc::SO_BROADCAST] {
+            assert_eq!(write_struct(&mut memory, OPTION_VALUE, &1_i32), 0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_setsockopt,
+                    [
+                        socket_fd as u64,
+                        libc::SOL_SOCKET as u64,
+                        option as u64,
+                        OPTION_VALUE,
+                        std::mem::size_of::<libc::c_int>() as u64,
+                        0,
+                    ],
+                ),
+                0,
+                "setsockopt failed for option {option}"
+            );
+            assert_eq!(write_struct(&mut memory, RESULT, &-1_i32), 0);
+            assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &full_length), 0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_getsockopt,
+                    [
+                        socket_fd as u64,
+                        libc::SOL_SOCKET as u64,
+                        option as u64,
+                        RESULT,
+                        RESULT_LENGTH,
+                        0,
+                    ],
+                ),
+                0,
+                "getsockopt failed for option {option}"
+            );
+            assert_eq!(
+                read_struct::<libc::socklen_t>(&memory, RESULT_LENGTH),
+                full_length
+            );
+            assert_eq!(read_struct::<libc::c_int>(&memory, RESULT), 1);
+        }
+
+        assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &full_length), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getsockopt,
+                [
+                    socket_fd as u64,
+                    libc::SOL_SOCKET as u64,
+                    libc::SO_SNDBUF as u64,
+                    RESULT,
+                    RESULT_LENGTH,
+                    0,
+                ],
+            ),
+            negative_errno(libc::ENOPROTOOPT)
+        );
+    }
+
+    #[test]
+    fn getpeername_copies_unnamed_unix_peer_and_reports_linux_errors() {
+        const PAIR_FDS: u64 = 0x100;
+        const RESULT: u64 = 0x200;
+        const RESULT_LENGTH: u64 = 0x300;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_STREAM as u64,
+                    0,
+                    PAIR_FDS,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+        let socket_fd = socket_fds[0];
+        let family_length = std::mem::size_of::<libc::sa_family_t>() as libc::socklen_t;
+
+        let full_length = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+        assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &full_length), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getpeername,
+                [socket_fd as u64, RESULT, RESULT_LENGTH, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            read_struct::<libc::socklen_t>(&memory, RESULT_LENGTH),
+            family_length
+        );
+        let address: libc::sockaddr_un = read_struct(&memory, RESULT);
+        assert_eq!(address.sun_family, libc::AF_UNIX as libc::sa_family_t);
+
+        let sentinel = [0xa5_u8; 4];
+        memory.write(RESULT, &sentinel).unwrap();
+        assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &1_u32), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getpeername,
+                [socket_fd as u64, RESULT, RESULT_LENGTH, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            read_struct::<libc::socklen_t>(&memory, RESULT_LENGTH),
+            family_length
+        );
+        let mut truncated = [0; 4];
+        memory.read(RESULT, &mut truncated).unwrap();
+        assert_eq!(truncated[0], libc::AF_UNIX as u8);
+        assert_eq!(&truncated[1..], &sentinel[1..]);
+
+        memory.write(RESULT, &sentinel).unwrap();
+        assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &0_u32), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getpeername,
+                [socket_fd as u64, RESULT, RESULT_LENGTH, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            read_struct::<libc::socklen_t>(&memory, RESULT_LENGTH),
+            family_length
+        );
+        let mut zero_capacity = [0; 4];
+        memory.read(RESULT, &mut zero_capacity).unwrap();
+        assert_eq!(zero_capacity, sentinel);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getpeername,
+                [socket_fd as u64, 0, RESULT_LENGTH, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getpeername,
+                [socket_fd as u64, RESULT, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getpeername,
+                [socket_fd as u64, RESULT, u64::MAX, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(write_struct(&mut memory, RESULT_LENGTH, &full_length), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getpeername,
+                [socket_fd as u64, u64::MAX, RESULT_LENGTH, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getpeername,
+                [u64::MAX, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
         );
     }
 
