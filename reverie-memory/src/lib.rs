@@ -89,6 +89,26 @@ pub trait MemoryAccess {
         }
     }
 
+    /// Reads exactly the number of bytes wanted by `buf`, while respecting the
+    /// target process's userspace memory protections.
+    ///
+    /// This performs one read rather than retrying a partial transfer. A short
+    /// read therefore reports `EFAULT`, matching the all-or-error behavior of
+    /// Linux helpers such as `copy_from_user`.
+    fn read_exact_with_user_access<'a, A>(&self, addr: A, buf: &mut [u8]) -> Result<(), Errno>
+    where
+        A: Into<Addr<'a, u8>>,
+    {
+        let addr = addr.into();
+        addr.as_raw().checked_add(buf.len()).ok_or(Errno::EFAULT)?;
+
+        if self.read(addr, buf)? == buf.len() {
+            Ok(())
+        } else {
+            Err(Errno::EFAULT)
+        }
+    }
+
     /// Reads exactly the number of bytes wanted by `buf`.
     fn write_exact(&mut self, mut addr: AddrMut<u8>, mut buf: &[u8]) -> Result<(), Errno> {
         while !buf.is_empty() {
