@@ -113,6 +113,34 @@ pub(crate) struct SignalFdState {
     pub pending: std::collections::BTreeSet<i32>,
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-540): Review per-open-file-description inotify cookie state.
+#[derive(Debug)]
+pub(crate) struct InotifyDescriptionState {
+    pub next_cookie: u64,
+    pub cookies: std::collections::BTreeMap<u32, u32>,
+}
+
+impl Default for InotifyDescriptionState {
+    fn default() -> Self {
+        Self {
+            // Linux reserves zero for events without a related event. Start
+            // canonical move pairs at one.
+            next_cookie: 1,
+            cookies: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+// Metadata that follows an inotify open file description while SCM_RIGHTS
+// carries it between guest descriptor tables. The retained duplicate is used
+// only to identify the received open file description with KCMP_FILE.
+#[derive(Debug)]
+pub(crate) struct PendingInotifyRight {
+    pub file: std::fs::File,
+    pub description: std::sync::Arc<std::sync::Mutex<InotifyDescriptionState>>,
+}
+
 /// Process-tree-wide state whose lifetime follows a guest task rather than an
 /// individual [`LoadedStaticElf`] snapshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -272,6 +300,12 @@ pub(crate) struct LoadedStaticElf {
     pub signal_mask: [u8; 8],
     pub signal_alt_stack: Option<Vec<u8>>,
     pub signalfd_state: std::sync::Arc<std::sync::Mutex<SignalFdState>>,
+    // Each map value follows one inotify open file description, so dup and
+    // fork share cookie numbering while separate inotify instances do not.
+    pub inotify_fds:
+        std::collections::BTreeMap<i32, std::sync::Arc<std::sync::Mutex<InotifyDescriptionState>>>,
+    pub pending_inotify_rights: std::sync::Arc<std::sync::Mutex<Vec<PendingInotifyRight>>>,
+
     // One process-tree-wide membership table distinguishes a live task with no
     // robust-list registration from an unknown/dead tid. Entries are created
     // with each executor, reset across exec, and removed when that executor is
@@ -381,6 +415,8 @@ impl LoadedStaticElf {
                 masks: signalfd_masks,
                 pending: std::collections::BTreeSet::new(),
             })),
+            inotify_fds: self.inotify_fds.clone(),
+            pending_inotify_rights: self.pending_inotify_rights.clone(),
             task_lifecycle: self.task_lifecycle.clone(),
             files,
             random_device_fds: self.random_device_fds.clone(),
@@ -442,6 +478,12 @@ impl LoadedStaticElf {
                 .collect(),
             pending: previous_signalfd_state.pending,
         };
+        let inotify_fds = previous
+            .inotify_fds
+            .into_iter()
+            .filter(|(fd, _)| files.contains_key(fd))
+            .collect();
+        let pending_inotify_rights = previous.pending_inotify_rights.clone();
         let task_lifecycle = previous.task_lifecycle.clone();
         let file_identity_table = previous.file_identity_table.clone();
         {
@@ -506,6 +548,8 @@ impl LoadedStaticElf {
         self.signal_actions = signal_actions;
         self.signal_mask = previous.signal_mask;
         self.signalfd_state = std::sync::Arc::new(std::sync::Mutex::new(signalfd_state));
+        self.inotify_fds = inotify_fds;
+        self.pending_inotify_rights = pending_inotify_rights;
         self.task_lifecycle = task_lifecycle;
         self.task_lifecycle
             .lock()
@@ -743,6 +787,9 @@ fn load_executable(
         signal_mask: [0; 8],
         signal_alt_stack: None,
         signalfd_state: std::sync::Arc::new(std::sync::Mutex::new(SignalFdState::default())),
+        inotify_fds: std::collections::BTreeMap::new(),
+        pending_inotify_rights: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+
         task_lifecycle: std::sync::Arc::new(std::sync::Mutex::new(TaskLifecycleTable::with_root(
             1, 1, true,
         ))),

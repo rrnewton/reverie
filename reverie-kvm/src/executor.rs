@@ -31,7 +31,9 @@ use crate::bootstrap::SegmentBase;
 use crate::elf::GUEST_CAPABILITY_MASK;
 use crate::elf::GuestFileIdentity;
 use crate::elf::GuestFileIdentityEntry;
+use crate::elf::InotifyDescriptionState;
 use crate::elf::LoadedStaticElf;
+use crate::elf::PendingInotifyRight;
 use crate::elf::STACK_LIMIT;
 use crate::elf::load_static_elf;
 use crate::elf::resolve_executable_path;
@@ -999,7 +1001,10 @@ pub(crate) struct ElfExecutor {
     state: LoadedStaticElf,
     task_generation: u64,
     address_space: Arc<std::sync::Mutex<AddressSpaceState>>,
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-540): Review CLONE_FILES host-descriptor lifetime handling.
     file_table: Arc<std::sync::Mutex<FileTableState>>,
+    file_table_is_shared: bool,
     output: Option<CapturedOutput>,
     owns_output: bool,
     next_pid: Arc<AtomicI32>,
@@ -1056,6 +1061,7 @@ struct FileTableState {
     closed_standard_fds: std::collections::BTreeSet<i32>,
     proc_files: std::collections::BTreeMap<i32, u64>,
     fd_object_inodes: std::collections::BTreeMap<i32, Arc<GuestFileIdentity>>,
+    inotify_fds: std::collections::BTreeMap<i32, Arc<std::sync::Mutex<InotifyDescriptionState>>>,
 }
 
 impl FileTableState {
@@ -1078,6 +1084,7 @@ impl FileTableState {
             closed_standard_fds: state.closed_standard_fds.clone(),
             proc_files: state.proc_files.clone(),
             fd_object_inodes: state.fd_object_inodes.clone(),
+            inotify_fds: state.inotify_fds.clone(),
         })
     }
 
@@ -1116,6 +1123,7 @@ impl FileTableState {
             .clone_from(&self.closed_standard_fds);
         state.proc_files.clone_from(&self.proc_files);
         state.fd_object_inodes.clone_from(&self.fd_object_inodes);
+        state.inotify_fds.clone_from(&self.inotify_fds);
         Ok(())
     }
 }
@@ -1178,6 +1186,21 @@ fn mutates_file_table(number: u64) -> bool {
     )
 }
 
+fn request_mutates_file_table(request: &SyscallRequest) -> bool {
+    let number = request.number();
+    let command = request.args()[1] as libc::c_int;
+    if number == libc::SYS_fcntl as u64 {
+        return matches!(
+            command,
+            libc::F_DUPFD | libc::F_DUPFD_CLOEXEC | libc::F_SETFD
+        );
+    }
+    if number == libc::SYS_ioctl as u64 {
+        return matches!(command as libc::c_ulong, libc::FIOCLEX | libc::FIONCLEX);
+    }
+    mutates_file_table(number)
+}
+
 fn accept_flags(request: &SyscallRequest) -> Option<Result<libc::c_int, i64>> {
     match request.number() {
         // AUTONOMOUS-BOT-IMPLEMENTED
@@ -1228,6 +1251,7 @@ impl ElfExecutor {
             task_generation,
             address_space,
             file_table,
+            file_table_is_shared: false,
             output: capture_output.then(CapturedOutput::default),
             owns_output: true,
             next_pid: Arc::new(AtomicI32::new(next_pid)),
@@ -1250,34 +1274,40 @@ impl ElfExecutor {
             Ok(flags) => flags,
             Err(error) => return Some(error),
         };
-        let file_table = self.file_table.clone();
-        {
+        let result = {
+            let file_table = self.file_table.clone();
             let shared_files = file_table.lock().expect("KVM file-table lock poisoned");
             if let Err(error) = shared_files.install(&mut self.state) {
-                return Some(io_error(error));
+                io_error(error)
+            } else {
+                self.retain_file_table_snapshot(&[request.args()[0] as libc::c_int]);
+                drop(shared_files);
+                let mut memory = memory.clone();
+                match accept_socket(&mut memory, &self.state, request.args(), flags) {
+                    Err(error) => error,
+                    Ok(accepted) => {
+                        let mut shared_files =
+                            file_table.lock().expect("KVM file-table lock poisoned");
+                        if let Err(error) = shared_files.install(&mut self.state) {
+                            io_error(error)
+                        } else {
+                            let result = insert_file_with_flags(
+                                &mut self.state,
+                                accepted,
+                                flags & libc::SOCK_CLOEXEC != 0,
+                                None,
+                            );
+                            if result >= 0 {
+                                *shared_files = FileTableState::try_from_elf(&self.state)
+                                    .expect("clone updated KVM file table");
+                            }
+                            result
+                        }
+                    }
+                }
             }
-        }
-
-        let mut memory = memory.clone();
-        let accepted = match accept_socket(&mut memory, &self.state, request.args(), flags) {
-            Ok(file) => file,
-            Err(error) => return Some(error),
         };
-
-        let mut shared_files = file_table.lock().expect("KVM file-table lock poisoned");
-        if let Err(error) = shared_files.install(&mut self.state) {
-            return Some(io_error(error));
-        }
-        let result = insert_file_with_flags(
-            &mut self.state,
-            accepted,
-            flags & libc::SOCK_CLOEXEC != 0,
-            None,
-        );
-        if result >= 0 {
-            *shared_files =
-                FileTableState::try_from_elf(&self.state).expect("clone updated KVM file table");
-        }
+        self.release_file_table_snapshot();
         Some(result)
     }
 
@@ -1547,6 +1577,10 @@ impl ElfExecutor {
 
     pub(crate) fn fork_child(&self, child_pid: i32, clear_sighand: bool) -> crate::Result<Self> {
         let mut state = self.state.try_clone_for_fork(child_pid)?;
+        self.file_table
+            .lock()
+            .expect("KVM file-table lock poisoned")
+            .install(&mut state)?;
         state.dumpable = self.current_dumpable();
         if clear_sighand {
             state.signal_actions.retain(|_, action| {
@@ -1572,6 +1606,7 @@ impl ElfExecutor {
             task_generation,
             address_space,
             file_table,
+            file_table_is_shared: false,
             output: self.output.clone(),
             owns_output: false,
             next_pid: self.next_pid.clone(),
@@ -1590,8 +1625,12 @@ impl ElfExecutor {
     }
 
     // TODO-HUMAN-REVIEW(PR-172): Review shared address-space and output ownership.
-    pub(crate) fn thread_child(&self, child_tid: i32) -> crate::Result<Self> {
+    pub(crate) fn thread_child(&mut self, child_tid: i32) -> crate::Result<Self> {
         let mut state = self.state.try_clone_for_fork(child_tid)?;
+        self.file_table
+            .lock()
+            .expect("KVM file-table lock poisoned")
+            .install(&mut state)?;
         state.pid = self.state.pid;
         state.ppid = self.state.ppid;
         // A CLONE_THREAD worker stays inside the same process, so it inherits the
@@ -1610,6 +1649,7 @@ impl ElfExecutor {
             task_generation,
             address_space: self.address_space.clone(),
             file_table: self.file_table.clone(),
+            file_table_is_shared: true,
             output: self.output.clone(),
             owns_output: false,
             next_pid: self.next_pid.clone(),
@@ -1624,7 +1664,44 @@ impl ElfExecutor {
             exit_group: false,
             clear_child_tid: None,
         };
+        self.file_table_is_shared = true;
+        self.release_file_table_snapshot();
+        let mut child = child;
+        child.release_file_table_snapshot();
         Ok(child)
+    }
+    // Keep only descriptors used by a host operation that may wait. This drops
+    // unrelated private duplicates before the host call can block, so a sibling
+    // close observes the same last-close point as a shared Linux file table.
+    fn retain_file_table_snapshot(&mut self, retained: &[libc::c_int]) {
+        if !self.file_table_is_shared {
+            return;
+        }
+        if !retained.contains(&libc::STDIN_FILENO) {
+            self.state.stdin = None;
+        }
+        self.state.files.retain(|fd, _| retained.contains(fd));
+    }
+
+    fn release_unrelated_snapshot_before_wait(
+        &mut self,
+        request: &SyscallRequest,
+        memory: &GuestMemory,
+    ) {
+        if let Some(retained) = blocking_syscall_guest_fds(request, memory, &self.state) {
+            self.retain_file_table_snapshot(&retained);
+        }
+    }
+
+    // A CLONE_FILES executor installs a short-lived duplicate of each host
+    // descriptor only while it handles one syscall. Keeping those duplicates
+    // while the worker is idle would postpone Linux last-close effects after a
+    // sibling closes the shared guest descriptor.
+    fn release_file_table_snapshot(&mut self) {
+        if self.file_table_is_shared {
+            self.state.stdin = None;
+            self.state.files.clear();
+        }
     }
 
     fn current_dumpable(&self) -> bool {
@@ -1918,7 +1995,14 @@ impl ElfExecutor {
     }
 
     pub(crate) fn replace_after_exec(&mut self, state: LoadedStaticElf) {
-        let previous = std::mem::replace(&mut self.state, state);
+        let mut previous = std::mem::replace(&mut self.state, state);
+        if self.file_table_is_shared {
+            self.file_table
+                .lock()
+                .expect("KVM file-table lock poisoned")
+                .install(&mut previous)
+                .expect("install pre-exec KVM file table");
+        }
         self.state.inherit_process_state(previous);
         self.task_generation = self
             .state
@@ -1943,6 +2027,7 @@ impl ElfExecutor {
         self.exit_status = None;
         self.exit_group = false;
         self.clear_child_tid = None;
+        self.release_file_table_snapshot();
     }
 
     pub(crate) fn append_output(&mut self, stdout: Vec<u8>, stderr: Vec<u8>) {
@@ -1975,7 +2060,9 @@ impl ElfExecutor {
             request.number(),
             number if number == libc::SYS_read as u64 || number == libc::SYS_readv as u64
         ) && self
-            .state
+            .file_table
+            .lock()
+            .expect("KVM file-table lock poisoned")
             .random_device_fds
             .contains(&(request.args()[0] as libc::c_int))
     }
@@ -2000,10 +2087,18 @@ impl ElfExecutor {
             return false;
         }
         let fd = request.args()[0] as libc::c_int;
-        if is_open_standard(&self.state, fd) {
+        let files = self
+            .file_table
+            .lock()
+            .expect("KVM file-table lock poisoned");
+        if (0..=2).contains(&fd)
+            && (fd != libc::STDIN_FILENO || files.stdin.is_some())
+            && !files.closed_standard_fds.contains(&fd)
+            && !files.files.contains_key(&fd)
+        {
             return true;
         }
-        self.state
+        files
             .files
             .get(&fd)
             .and_then(|file| file.metadata().ok())
@@ -2097,14 +2192,20 @@ impl SyscallExecutor for ElfExecutor {
             .expect("file-table guard disappeared")
             .install(&mut self.state)
         {
-            return io_error(error);
+            let result = io_error(error);
+            self.release_file_table_snapshot();
+            return result;
         }
-        let mutating_file_table = mutates_file_table(request.number());
+        let mutating_file_table = request_mutates_file_table(request);
         if !mutating_file_table {
             shared_files.take();
         }
         if let Some(result) = self.execute_process_action(request, memory) {
+            self.release_file_table_snapshot();
             return result;
+        }
+        if !mutating_file_table {
+            self.release_unrelated_snapshot_before_wait(request, memory);
         }
         // Clones share the underlying MAP_SHARED mapping, so writes through this
         // handle reach the guest; `execute_basic_syscall` needs `&mut` access.
@@ -2158,6 +2259,7 @@ impl SyscallExecutor for ElfExecutor {
             *shared_files =
                 FileTableState::try_from_elf(&self.state).expect("clone updated KVM file table");
         }
+        self.release_file_table_snapshot();
         match action {
             SyscallAction::Continue { result, segment } => {
                 if segment.is_some() {
@@ -2172,6 +2274,176 @@ impl SyscallExecutor for ElfExecutor {
             }
         }
     }
+}
+fn blocking_syscall_guest_fds(
+    request: &SyscallRequest,
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+) -> Option<Vec<libc::c_int>> {
+    let number = request.number();
+    let args = request.args();
+    if number == libc::SYS_inotify_add_watch as u64 {
+        let mut retained = vec![args[0] as libc::c_int];
+        if args[1] == 0 {
+            return Some(retained);
+        }
+        let path = read_c_string(memory, args[1], 4096).ok()?;
+        if let Some((descriptor, _)) = guest_fd_path_parts(state, &path)
+            && let Some(fd) = parse_guest_fd(descriptor)
+        {
+            retained.push(fd);
+        }
+        return Some(retained);
+    }
+
+    if number == libc::SYS_sendmsg as u64 {
+        let mut retained = vec![args[0] as libc::c_int];
+        if args[1] == 0 {
+            return Some(retained);
+        }
+        let message = read_guest_struct::<libc::msghdr>(memory, args[1]).ok()?;
+        if message.msg_controllen == 0 {
+            return Some(retained);
+        }
+        if message.msg_controllen > MAX_HOST_IO || message.msg_control.is_null() {
+            return None;
+        }
+        let mut control = vec![0; message.msg_controllen];
+        memory
+            .read(message.msg_control as usize as u64, &mut control)
+            .ok()?;
+        for message in control_messages(&control).ok()? {
+            if message.level != libc::SOL_SOCKET || message.kind != libc::SCM_RIGHTS {
+                continue;
+            }
+            let data_length = message.end.checked_sub(message.data_offset)?;
+            if data_length == 0 || data_length % std::mem::size_of::<libc::c_int>() != 0 {
+                return None;
+            }
+            for offset in
+                (message.data_offset..message.end).step_by(std::mem::size_of::<libc::c_int>())
+            {
+                retained.push(read_control_fd(&control, offset).ok()?);
+            }
+        }
+        return Some(retained);
+    }
+
+    let one_fd = number == libc::SYS_read as u64
+        || number == libc::SYS_write as u64
+        || number == libc::SYS_readv as u64
+        || number == libc::SYS_writev as u64
+        || number == libc::SYS_pread64 as u64
+        || number == libc::SYS_pwrite64 as u64
+        || number == libc::SYS_lseek as u64
+        || number == libc::SYS_ftruncate as u64
+        || number == libc::SYS_fallocate as u64
+        || number == libc::SYS_fsync as u64
+        || number == libc::SYS_fdatasync as u64
+        || number == libc::SYS_readahead as u64
+        || number == libc::SYS_sync_file_range as u64
+        || number == libc::SYS_epoll_wait as u64
+        || number == libc::SYS_epoll_pwait as u64
+        || number == libc::SYS_timerfd_settime as u64
+        || number == libc::SYS_timerfd_gettime as u64
+        || number == libc::SYS_inotify_add_watch as u64
+        || number == libc::SYS_inotify_rm_watch as u64
+        || number == libc::SYS_setsockopt as u64
+        || number == libc::SYS_getsockopt as u64
+        || number == libc::SYS_bind as u64
+        || number == libc::SYS_listen as u64
+        || number == libc::SYS_getsockname as u64
+        || number == libc::SYS_connect as u64
+        || number == libc::SYS_shutdown as u64
+        || number == libc::SYS_sendto as u64
+        || number == libc::SYS_recvfrom as u64
+        || number == libc::SYS_sendmsg as u64
+        || number == libc::SYS_fstat as u64
+        || number == libc::SYS_fstatfs as u64
+        || number == libc::SYS_fchdir as u64
+        || number == libc::SYS_getdents64 as u64
+        || number == libc::SYS_flock as u64
+        || number == libc::SYS_fcntl as u64
+        || number == libc::SYS_ioctl as u64
+        || number == libc::SYS_fchown as u64
+        || number == libc::SYS_flistxattr as u64
+        || number == libc::SYS_fchmod as u64
+        || number == libc::SYS_fgetxattr as u64
+        || number == libc::SYS_fsetxattr as u64
+        || number == libc::SYS_fremovexattr as u64;
+    if one_fd {
+        return Some(vec![args[0] as libc::c_int]);
+    }
+    if number == libc::SYS_sendfile as u64 {
+        return Some(vec![args[0] as libc::c_int, args[1] as libc::c_int]);
+    }
+    if number == libc::SYS_epoll_ctl as u64 {
+        return Some(vec![args[0] as libc::c_int, args[2] as libc::c_int]);
+    }
+    if number == libc::SYS_nanosleep as u64 || number == libc::SYS_clock_nanosleep as u64 {
+        return Some(Vec::new());
+    }
+    if number == libc::SYS_poll as u64 || number == libc::SYS_ppoll as u64 {
+        let count = usize::try_from(args[1]).ok()?;
+        if count > GUEST_NOFILE_LIMIT as usize {
+            return None;
+        }
+        let byte_length = count.checked_mul(std::mem::size_of::<libc::pollfd>())?;
+        if byte_length > MAX_HOST_IO {
+            return None;
+        }
+        let mut poll_fds = vec![
+            libc::pollfd {
+                fd: -1,
+                events: 0,
+                revents: 0,
+            };
+            count
+        ];
+        if byte_length != 0 {
+            // SAFETY: poll_fds is initialized plain ABI data and this byte view
+            // has exactly the vector's allocation length.
+            let bytes = unsafe {
+                std::slice::from_raw_parts_mut(poll_fds.as_mut_ptr().cast::<u8>(), byte_length)
+            };
+            memory.read(args[0], bytes).ok()?;
+        }
+        return Some(
+            poll_fds
+                .into_iter()
+                .filter_map(|entry| (entry.fd >= 0).then_some(entry.fd))
+                .collect(),
+        );
+    }
+    if number == libc::SYS_select as u64 {
+        let nfds = libc::c_int::try_from(args[0]).ok()?;
+        if !(0..=GUEST_NOFILE_LIMIT).contains(&nfds) {
+            return None;
+        }
+        let word_count = (nfds as usize).div_ceil(u64::BITS as usize);
+        let byte_length = word_count.checked_mul(std::mem::size_of::<u64>())?;
+        if byte_length > MAX_HOST_IO {
+            return None;
+        }
+        let mut sets = [Vec::new(), Vec::new(), Vec::new()];
+        for (set, address) in sets.iter_mut().zip(&args[1..4]) {
+            *set = vec![0_u64; word_count];
+            if *address != 0 && byte_length != 0 {
+                // SAFETY: the vector contains initialized u64 words and this
+                // byte view has exactly the vector's allocation length.
+                let bytes = unsafe {
+                    std::slice::from_raw_parts_mut(set.as_mut_ptr().cast::<u8>(), byte_length)
+                };
+                memory.read(*address, bytes).ok()?;
+            }
+        }
+        return Some(
+            (0..nfds)
+                .filter(|fd| sets.iter().any(|set| fd_set_contains(set, *fd)))
+                .collect(),
+        );
+    }
+    None
 }
 
 fn fd_status_flags(fd: RawFd) -> Result<libc::c_int, i64> {
@@ -2589,6 +2861,16 @@ fn host_write(fd: RawFd, bytes: &[u8]) -> i64 {
 }
 
 fn host_read(memory: &mut GuestMemory, fd: RawFd, address: u64, length: usize) -> i64 {
+    host_read_with_transform(memory, fd, address, length, |_| Ok(()))
+}
+
+fn host_read_with_transform(
+    memory: &mut GuestMemory,
+    fd: RawFd,
+    address: u64,
+    length: usize,
+    transform: impl FnOnce(&mut [u8]) -> Result<(), i64>,
+) -> i64 {
     if !range_is_valid(memory, address, length as u64) {
         return negative_errno(libc::EFAULT);
     }
@@ -2608,10 +2890,77 @@ fn host_read(memory: &mut GuestMemory, fd: RawFd, address: u64, length: usize) -
     if count == 0 {
         return 0;
     }
+    if let Err(error) = transform(&mut bytes[..count]) {
+        return error;
+    }
     match memory.write(address, &bytes[..count]) {
         Ok(()) => count as i64,
         Err(_) => negative_errno(libc::EFAULT),
     }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-540): Review deterministic inotify move-cookie rewriting.
+fn canonicalize_inotify_cookies(
+    bytes: &mut [u8],
+    description: &Arc<std::sync::Mutex<InotifyDescriptionState>>,
+) -> Result<(), i64> {
+    const HEADER_SIZE: usize = std::mem::size_of::<libc::inotify_event>();
+    const COOKIE_OFFSET: usize = 8;
+    const NAME_LENGTH_OFFSET: usize = 12;
+
+    let mut state = description
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        let Some(header_end) = offset.checked_add(HEADER_SIZE) else {
+            return Err(negative_errno(libc::EIO));
+        };
+        if header_end > bytes.len() {
+            return Err(negative_errno(libc::EIO));
+        }
+        let name_length = u32::from_ne_bytes(
+            bytes[offset + NAME_LENGTH_OFFSET..offset + NAME_LENGTH_OFFSET + 4]
+                .try_into()
+                .expect("inotify length field has fixed width"),
+        ) as usize;
+        let Some(record_end) = header_end.checked_add(name_length) else {
+            return Err(negative_errno(libc::EIO));
+        };
+        if record_end > bytes.len() {
+            return Err(negative_errno(libc::EIO));
+        }
+
+        let cookie_range = offset + COOKIE_OFFSET..offset + COOKIE_OFFSET + 4;
+        let host_cookie = u32::from_ne_bytes(
+            bytes[cookie_range.clone()]
+                .try_into()
+                .expect("inotify cookie field has fixed width"),
+        );
+        if host_cookie != 0 {
+            let canonical = if let Some(canonical) = state.cookies.remove(&host_cookie) {
+                canonical
+            } else {
+                let canonical = u32::try_from(state.next_cookie)
+                    .map_err(|_| negative_errno(libc::EOVERFLOW))?;
+                state.next_cookie = state
+                    .next_cookie
+                    .checked_add(1)
+                    .ok_or_else(|| negative_errno(libc::EOVERFLOW))?;
+                state.cookies.insert(host_cookie, canonical);
+                canonical
+            };
+            bytes[cookie_range].copy_from_slice(&canonical.to_ne_bytes());
+        }
+        offset = record_end;
+    }
+    Ok(())
+}
+
+fn host_fd_is_inotify(fd: RawFd) -> bool {
+    std::fs::read_link(format!("/proc/self/fd/{fd}"))
+        .is_ok_and(|target| target.as_os_str().as_bytes() == b"anon_inode:inotify")
 }
 
 fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -2655,6 +3004,17 @@ fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
     }
     if requested_length == 0 {
         return 0;
+    }
+    if let Some(description) = state.inotify_fds.get(&fd).cloned() {
+        return host_read_with_transform(memory, host_fd, args[1], length, |bytes| {
+            canonicalize_inotify_cookies(bytes, &description)
+        });
+    }
+    // A host inotify descriptor received without the per-open-description
+    // state cannot safely expose its host-global move cookies. Refuse the read
+    // instead of returning values that vary with unrelated host activity.
+    if host_fd_is_inotify(host_fd) {
+        return negative_errno(libc::EOPNOTSUPP);
     }
     host_read(memory, host_fd, args[1], length)
 }
@@ -3408,11 +3768,17 @@ fn guest_fd_path_parts<'a>(
     path: &'a [u8],
 ) -> Option<(&'a [u8], &'a [u8])> {
     let numeric_prefix = format!("/proc/{}/fd/", state.pid).into_bytes();
+    let thread_numeric_prefix = format!("/proc/{}/fd/", state.tid).into_bytes();
+    let task_prefix = format!("/proc/{}/task/{}/fd/", state.pid, state.tid).into_bytes();
+    let self_task_prefix = format!("/proc/self/task/{}/fd/", state.tid).into_bytes();
     let suffix = path
         .strip_prefix(b"/dev/fd/")
         .or_else(|| path.strip_prefix(b"/proc/self/fd/"))
         .or_else(|| path.strip_prefix(b"/proc/thread-self/fd/"))
-        .or_else(|| path.strip_prefix(numeric_prefix.as_slice()))?;
+        .or_else(|| path.strip_prefix(numeric_prefix.as_slice()))
+        .or_else(|| path.strip_prefix(thread_numeric_prefix.as_slice()))
+        .or_else(|| path.strip_prefix(task_prefix.as_slice()))
+        .or_else(|| path.strip_prefix(self_task_prefix.as_slice()))?;
     let descriptor_length = suffix
         .iter()
         .position(|byte| *byte == b'/')
@@ -3832,6 +4198,7 @@ struct DuplicateFdSource {
     object_inode: Arc<GuestFileIdentity>,
     is_random: bool,
     signalfd_mask: Option<[u8; KERNEL_SIGSET_SIZE]>,
+    inotify: Option<Arc<std::sync::Mutex<InotifyDescriptionState>>>,
 }
 
 fn signalfd_mask(state: &LoadedStaticElf, fd: libc::c_int) -> Option<[u8; KERNEL_SIGSET_SIZE]> {
@@ -3857,6 +4224,18 @@ fn replace_signalfd_mask(
         signalfd_state.masks.insert(fd, mask);
     } else {
         signalfd_state.masks.remove(&fd);
+    }
+}
+
+fn replace_inotify_description(
+    state: &mut LoadedStaticElf,
+    fd: libc::c_int,
+    description: Option<Arc<std::sync::Mutex<InotifyDescriptionState>>>,
+) {
+    if let Some(description) = description {
+        state.inotify_fds.insert(fd, description);
+    } else {
+        state.inotify_fds.remove(&fd);
     }
 }
 
@@ -3891,6 +4270,7 @@ fn duplicate_fd_at_or_above(
         state.random_device_fds.insert(fd);
     }
     replace_signalfd_mask(state, fd, source.signalfd_mask);
+    replace_inotify_description(state, fd, source.inotify);
     if close_on_exec {
         state.cloexec_fds.insert(fd);
     } else {
@@ -3928,6 +4308,7 @@ fn duplicate_fd(
     let source_proc_inode = state.proc_files.get(&old_fd).copied();
     let source_is_random = state.random_device_fds.contains(&old_fd);
     let source_signalfd_mask = signalfd_mask(state, old_fd);
+    let source_inotify = state.inotify_fds.get(&old_fd).cloned();
     let Some(old_host_fd) = host_fd(state, old_fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -3969,6 +4350,7 @@ fn duplicate_fd(
             state.random_device_fds.remove(&new_fd);
         }
         replace_signalfd_mask(state, new_fd, source_signalfd_mask);
+        replace_inotify_description(state, new_fd, source_inotify);
         cleanup_fd_object_inodes(state);
         if close_on_exec {
             state.cloexec_fds.insert(new_fd);
@@ -3997,6 +4379,7 @@ fn duplicate_fd(
                 state.random_device_fds.insert(new_fd as libc::c_int);
             }
             replace_signalfd_mask(state, new_fd as libc::c_int, source_signalfd_mask);
+            replace_inotify_description(state, new_fd as libc::c_int, source_inotify);
         }
         if new_fd >= 0
             && let Some(inode) = source_proc_inode
@@ -4490,7 +4873,14 @@ fn inotify_init1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 {
     }
     // SAFETY: inotify_init1 returned a new owned descriptor.
     let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
-    insert_file_with_flags(state, file, flags & libc::IN_CLOEXEC != 0, None)
+    let fd = insert_file_with_flags(state, file, flags & libc::IN_CLOEXEC != 0, None);
+    if fd >= 0 {
+        state.inotify_fds.insert(
+            fd as libc::c_int,
+            Arc::new(std::sync::Mutex::new(InotifyDescriptionState::default())),
+        );
+    }
+    fd
 }
 
 const ALL_INOTIFY_BITS: u32 = libc::IN_ALL_EVENTS
@@ -4505,26 +4895,51 @@ const ALL_INOTIFY_BITS: u32 = libc::IN_ALL_EVENTS
     | libc::IN_ISDIR
     | libc::IN_ONESHOT;
 
-fn inotify_host_path(state: &LoadedStaticElf, path: &[u8]) -> Result<CString, i64> {
+fn inotify_host_path(state: &LoadedStaticElf, path: &[u8], nofollow: bool) -> Result<CString, i64> {
     if let Some((descriptor, remainder)) = guest_fd_path_parts(state, path) {
+        // Guest descriptor aliases are synthesized procfs links. There is no
+        // corresponding guest-owned link inode for IN_DONT_FOLLOW to watch;
+        // passing the flag through would instead watch the supervisor's
+        // /proc/self/fd link. Refuse that unsupported operation before forming
+        // the host bridge path.
+        if nofollow {
+            return Err(negative_errno(libc::ELOOP));
+        }
         let guest_fd = parse_guest_fd(descriptor).ok_or_else(|| negative_errno(libc::ENOENT))?;
         let Some(host_fd) = host_fd(state, guest_fd) else {
             return Err(negative_errno(libc::ENOENT));
         };
+        if remainder.is_empty() {
+            ensure_fd_not_procfs(host_fd)?;
+        } else {
+            let relative =
+                CString::new(&remainder[1..]).map_err(|_| negative_errno(libc::EINVAL))?;
+            let _target = open_host_metadata_path(host_fd, &relative, nofollow)?;
+        }
         let mut host_path = format!("/proc/self/fd/{host_fd}").into_bytes();
         host_path.extend_from_slice(remainder);
         return CString::new(host_path).map_err(|_| negative_errno(libc::EINVAL));
     }
+
+    // Direct access to supervisor procfs is never a guest filesystem lookup.
+    // The supported guest /proc surface is synthesized by open_file; inotify
+    // cannot attach a meaningful watch to that generated snapshot.
+    if normalize_proc_path(state, path).is_some() {
+        return Err(negative_errno(libc::EACCES));
+    }
+
+    let (host_dirfd, host_path) = host_dirfd_and_path(state, libc::AT_FDCWD, path)?;
+    let _target = open_host_metadata_path(host_dirfd, &host_path, nofollow)?;
     if path.starts_with(b"/") {
-        return CString::new(path).map_err(|_| negative_errno(libc::EINVAL));
+        return Ok(host_path);
     }
 
     // inotify_add_watch has no dirfd argument. Resolve guest-relative names
     // through the stable directory descriptor which also backs openat(AT_FDCWD),
     // rather than through the supervisor's process-wide current directory.
-    let mut host_path = format!("/proc/self/fd/{}/", state.cwd_fd.as_raw_fd()).into_bytes();
-    host_path.extend_from_slice(path);
-    CString::new(host_path).map_err(|_| negative_errno(libc::EINVAL))
+    let mut relative = format!("/proc/self/fd/{}/", state.cwd_fd.as_raw_fd()).into_bytes();
+    relative.extend_from_slice(path);
+    CString::new(relative).map_err(|_| negative_errno(libc::EINVAL))
 }
 
 fn inotify_add_watch(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -4565,7 +4980,7 @@ fn inotify_add_watch(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64;
     if path.is_empty() {
         return negative_errno(libc::ENOENT);
     }
-    let path = match inotify_host_path(state, &path) {
+    let path = match inotify_host_path(state, &path, mask & libc::IN_DONT_FOLLOW != 0) {
         Ok(path) => path,
         Err(error) => return error,
     };
@@ -5714,7 +6129,23 @@ fn is_socket_timestamp_cmsg(message: ControlMessage) -> bool {
         )
 }
 
-fn translate_outgoing_control(control: &mut [u8], state: &LoadedStaticElf) -> Result<(), i64> {
+const KCMP_FILE: libc::c_int = 0;
+
+fn duplicate_host_fd(fd: RawFd) -> Result<std::fs::File, i64> {
+    // SAFETY: fd is live and F_DUPFD_CLOEXEC returns a new owned descriptor.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicate < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: fcntl returned a new owned descriptor.
+    Ok(unsafe { std::fs::File::from_raw_fd(duplicate) })
+}
+
+fn translate_outgoing_control(
+    control: &mut [u8],
+    state: &LoadedStaticElf,
+) -> Result<Vec<PendingInotifyRight>, i64> {
+    let mut pending_inotify = Vec::new();
     for message in control_messages(control)? {
         // SCM_RIGHTS is the only ancillary input whose payload is meaningful in
         // the guest descriptor namespace. Other control inputs (credentials,
@@ -5732,15 +6163,65 @@ fn translate_outgoing_control(control: &mut [u8], state: &LoadedStaticElf) -> Re
         {
             let guest_fd = read_control_fd(control, offset)?;
             let host_fd = host_fd(state, guest_fd).ok_or_else(|| negative_errno(libc::EBADF))?;
+            if let Some(description) = state.inotify_fds.get(&guest_fd) {
+                pending_inotify.push(PendingInotifyRight {
+                    file: duplicate_host_fd(host_fd)?,
+                    description: description.clone(),
+                });
+            }
             write_control_fd(control, offset, host_fd)?;
         }
     }
-    Ok(())
+    Ok(pending_inotify)
 }
 
 struct PendingReceivedRight {
     control_offset: usize,
     file: std::fs::File,
+    inotify: Option<Arc<std::sync::Mutex<InotifyDescriptionState>>>,
+}
+
+fn attach_received_inotify_state(
+    state: &LoadedStaticElf,
+    rights: &mut [PendingReceivedRight],
+) -> Result<(), i64> {
+    let mut pending = state
+        .pending_inotify_rights
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for right in rights {
+        if !host_fd_is_inotify(right.file.as_raw_fd()) {
+            continue;
+        }
+        let mut matched = None;
+        for (index, sent) in pending.iter().enumerate() {
+            // KCMP_FILE compares the underlying open file descriptions rather
+            // than recyclable descriptor numbers. Both descriptors belong to
+            // this supervisor process.
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_kcmp,
+                    libc::getpid(),
+                    libc::getpid(),
+                    KCMP_FILE,
+                    right.file.as_raw_fd(),
+                    sent.file.as_raw_fd(),
+                )
+            };
+            if result < 0 {
+                return Err(negative_errno(libc::EOPNOTSUPP));
+            }
+            if result == 0 {
+                matched = Some(index);
+                break;
+            }
+        }
+        let Some(index) = matched else {
+            return Err(negative_errno(libc::EOPNOTSUPP));
+        };
+        right.inotify = Some(pending.remove(index).description);
+    }
+    Ok(())
 }
 
 struct SanitizedReceivedControl {
@@ -5850,6 +6331,7 @@ fn sanitize_received_control(control: &[u8]) -> Result<SanitizedReceivedControl,
         let file = unsafe { std::fs::File::from_raw_fd(raw_fd) };
         if let ReceivedRawFdKind::Right { control_offset } = kind {
             rights.push(PendingReceivedRight {
+                inotify: None,
                 control_offset,
                 file,
             });
@@ -5897,6 +6379,7 @@ fn install_received_rights(
     let mut installed = Vec::with_capacity(rights.len());
 
     for (right, guest_fd) in rights.into_iter().zip(guest_fds) {
+        let inotify = right.inotify;
         let object_inode = match allocate_fd_object_inode(state, &right.file) {
             Ok(object_inode) => object_inode,
             Err(error) => {
@@ -5906,6 +6389,7 @@ fn install_received_rights(
         };
         state.files.insert(guest_fd, right.file);
         state.fd_object_inodes.insert(guest_fd, object_inode);
+        replace_inotify_description(state, guest_fd, inotify);
         if close_on_exec {
             state.cloexec_fds.insert(guest_fd);
         } else {
@@ -6008,9 +6492,10 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
     {
         return negative_errno(libc::EFAULT);
     }
-    if let Err(error) = translate_outgoing_control(&mut control, state) {
-        return error;
-    }
+    let pending_inotify = match translate_outgoing_control(&mut control, state) {
+        Ok(pending) => pending,
+        Err(error) => return error,
+    };
 
     let mut host_iov = libc::iovec {
         iov_base: payload.as_mut_ptr().cast(),
@@ -6034,6 +6519,21 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
         msg_flags: 0,
     };
     let flags = args[2] as libc::c_int;
+    // Publish before sendmsg: another executor can receive as soon as the
+    // kernel accepts the message. Do not hold this process-tree lock across a
+    // potentially blocking host call. On failure no receiver can have consumed
+    // these entries, so remove exactly the duplicates installed for this call.
+    let pending_fds = pending_inotify
+        .iter()
+        .map(|pending| pending.file.as_raw_fd())
+        .collect::<std::collections::BTreeSet<_>>();
+    if !pending_inotify.is_empty() {
+        state
+            .pending_inotify_rights
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .extend(pending_inotify);
+    }
     // SAFETY: payload/name/control are readable host buffers matching the
     // header's declared lengths, and host_fd belongs to the guest descriptor
     // table. The supervisor cannot safely accept a guest SIGPIPE, so KVM's
@@ -6047,7 +6547,15 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
         )
     };
     if result < 0 {
-        io_error(std::io::Error::last_os_error())
+        let error = std::io::Error::last_os_error();
+        if !pending_fds.is_empty() {
+            state
+                .pending_inotify_rights
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .retain(|pending| !pending_fds.contains(&pending.file.as_raw_fd()));
+        }
+        io_error(error)
     } else {
         result as i64
     }
@@ -6186,12 +6694,15 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
     let used_control = host_header.msg_controllen.min(control.len());
     let SanitizedReceivedControl {
         bytes: mut control_bytes,
-        rights,
+        mut rights,
         stripped_unsupported,
     } = match sanitize_received_control(&control[..used_control]) {
         Ok(control) => control,
         Err(error) => return error,
     };
+    if let Err(error) = attach_received_inotify_state(state, &mut rights) {
+        return error;
+    }
 
     let copied_length = (received as usize).min(payload.len());
     let mut copied = 0usize;
@@ -6438,7 +6949,7 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
         let used_control = host_header.msg_controllen.min(control.len());
         let SanitizedReceivedControl {
             bytes: mut control_bytes,
-            rights,
+            mut rights,
             stripped_unsupported,
         } = match sanitize_received_control(&control[..used_control]) {
             Ok(control) => control,
@@ -6450,6 +6961,13 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
                 };
             }
         };
+        if let Err(error) = attach_received_inotify_state(state, &mut rights) {
+            return if delivered == 0 {
+                error
+            } else {
+                delivered as i64
+            };
+        }
 
         let copied_length = (received as usize).min(payload.len());
         let mut copied = 0usize;
@@ -8443,6 +8961,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
     let source_proc_inode = state.proc_files.get(&guest_fd).copied();
     let source_is_random = state.random_device_fds.contains(&guest_fd);
     let source_signalfd_mask = signalfd_mask(state, guest_fd);
+    let source_inotify = state.inotify_fds.get(&guest_fd).cloned();
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -8459,6 +8978,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 object_inode: source_object_inode,
                 is_random: source_is_random,
                 signalfd_mask: source_signalfd_mask,
+                inotify: source_inotify.clone(),
             },
         ),
         libc::F_DUPFD_CLOEXEC => duplicate_fd_at_or_above(
@@ -8472,6 +8992,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 object_inode: source_object_inode,
                 is_random: source_is_random,
                 signalfd_mask: source_signalfd_mask,
+                inotify: source_inotify,
             },
         ),
         libc::F_GETFL => match fd_status_flags(host_fd) {
@@ -8598,6 +9119,7 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
         state.cloexec_fds.remove(&fd);
         state.random_device_fds.remove(&fd);
         replace_signalfd_mask(state, fd, None);
+        state.inotify_fds.remove(&fd);
         state.proc_files.remove(&fd);
         state.fd_object_inodes.remove(&fd);
         cleanup_fd_object_inodes(state);
@@ -8612,6 +9134,7 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
         state.cloexec_fds.remove(&fd);
         state.random_device_fds.remove(&fd);
         replace_signalfd_mask(state, fd, None);
+        state.inotify_fds.remove(&fd);
         state.fd_object_inodes.remove(&fd);
         cleanup_fd_object_inodes(state);
         set_output_alias(state, fd, None);
@@ -10966,6 +11489,8 @@ mod tests {
             signal_mask: [0; KERNEL_SIGSET_SIZE],
             signal_alt_stack: None,
             signalfd_state: Arc::new(std::sync::Mutex::new(crate::elf::SignalFdState::default())),
+            pending_inotify_rights: Arc::new(std::sync::Mutex::new(Vec::new())),
+            inotify_fds: BTreeMap::new(),
             task_lifecycle: Arc::new(std::sync::Mutex::new(
                 crate::elf::TaskLifecycleTable::with_root(1, 1, true),
             )),
@@ -15266,6 +15791,7 @@ mod tests {
             &mut state,
             &mut [0; std::mem::size_of::<libc::c_int>()],
             vec![PendingReceivedRight {
+                inotify: None,
                 control_offset: std::mem::size_of::<libc::c_int>(),
                 file,
             }],
@@ -17751,6 +18277,7 @@ mod tests {
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
+        state.tid = 7;
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
 
         assert!(mutates_file_table(libc::SYS_inotify_init as u64));
@@ -17823,6 +18350,8 @@ mod tests {
 
         let nested = root.0.join("nested");
         std::fs::create_dir(&nested).unwrap();
+        let proc_link = root.0.join("host-proc-link");
+        std::os::unix::fs::symlink("/proc/self/status", &proc_link).unwrap();
         let directory = std::fs::File::open(&root.0).unwrap();
         // Force host and guest descriptor numbers apart so descriptor-path
         // translation cannot pass by numeric coincidence.
@@ -18011,6 +18540,7 @@ mod tests {
         assert!(modified_bytes >= std::mem::size_of::<libc::inotify_event>() as i64);
         let modified: libc::inotify_event = read_struct(&memory, EVENT_BUFFER);
         assert_ne!(modified.mask & libc::IN_MODIFY, 0);
+        assert_eq!(modified.cookie, 0);
         assert_eq!(
             modified.mask & libc::IN_CREATE,
             0,
@@ -18055,9 +18585,12 @@ mod tests {
             "/proc/self/fd/".to_owned(),
             "/proc/thread-self/fd/".to_owned(),
             format!("/proc/{}/fd/", state.pid),
+            format!("/proc/{}/fd/", state.tid),
+            format!("/proc/{}/task/{}/fd/", state.pid, state.tid),
+            format!("/proc/self/task/{}/fd/", state.tid),
         ];
         let mut nested_watch = None;
-        for prefix in prefixes {
+        for prefix in &prefixes {
             write_c_string(&mut memory, PATH, &format!("{prefix}{directory_fd}/nested"));
             let result = syscall_result(
                 &mut memory,
@@ -18067,6 +18600,26 @@ mod tests {
             );
             assert!(result >= 0);
             assert_eq!(*nested_watch.get_or_insert(result), result);
+        }
+        for prefix in prefixes {
+            write_c_string(&mut memory, PATH, &format!("{prefix}{directory_fd}"));
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_inotify_add_watch,
+                    [
+                        inotify_fd as u64,
+                        PATH,
+                        (libc::IN_MODIFY | libc::IN_DONT_FOLLOW) as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                ),
+                negative_errno(libc::ELOOP),
+                "IN_DONT_FOLLOW must not watch the supervisor procfs link for {prefix}",
+            );
         }
         let nested_watch = nested_watch.unwrap();
         for path in [
@@ -18084,6 +18637,35 @@ mod tests {
                 negative_errno(libc::ENOENT)
             );
         }
+        for path in [
+            "/proc/self/status".to_owned(),
+            "/proc/thread-self/status".to_owned(),
+            format!("/proc/{}/status", state.pid),
+            format!("/proc/{}/status", state.tid),
+        ] {
+            write_c_string(&mut memory, PATH, &path);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_inotify_add_watch,
+                    [inotify_fd as u64, PATH, libc::IN_MODIFY as u64, 0, 0, 0],
+                ),
+                negative_errno(libc::EACCES),
+                "inotify must not expose supervisor procfs through {path}",
+            );
+        }
+        write_c_string(&mut memory, PATH, "host-proc-link");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [inotify_fd as u64, PATH, libc::IN_MODIFY as u64, 0, 0, 0],
+            ),
+            negative_errno(libc::EACCES),
+            "an ordinary path must not redirect a watch into supervisor procfs",
+        );
         std::fs::write(nested.join("descendant"), b"payload").unwrap();
         let descendant_bytes = syscall_result(
             &mut memory,
@@ -18329,6 +18911,314 @@ mod tests {
             replacement
                 .files
                 .contains_key(&(fcntl_duplicate as libc::c_int))
+        );
+    }
+
+    #[test]
+    fn inotify_move_cookies_are_stable_across_readv_dup_and_fork() {
+        const PATH: u64 = 0x100;
+        const EVENT_BUFFER: u64 = 0x300;
+        const IOVEC: u64 = 0x800;
+
+        fn move_cookies(memory: &GuestMemory, address: u64, bytes: usize) -> Vec<u32> {
+            let mut result = Vec::new();
+            let mut offset = 0usize;
+            while offset < bytes {
+                let event: libc::inotify_event = read_struct(memory, address + offset as u64);
+                if event.mask & (libc::IN_MOVED_FROM | libc::IN_MOVED_TO) != 0 {
+                    result.push(event.cookie);
+                }
+                offset += std::mem::size_of::<libc::inotify_event>() + event.len as usize;
+            }
+            result
+        }
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let inotify_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_inotify_init1,
+            [libc::IN_NONBLOCK as u64, 0, 0, 0, 0, 0],
+        );
+        write_c_string(&mut memory, PATH, ".");
+        assert!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [
+                    inotify_fd as u64,
+                    PATH,
+                    (libc::IN_MOVED_FROM | libc::IN_MOVED_TO) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ) >= 0
+        );
+        let duplicate = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [inotify_fd as u64, 0, 0, 0, 0, 0],
+        );
+        let fcntl_duplicate = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_fcntl,
+            [inotify_fd as u64, libc::F_DUPFD as u64, 20, 0, 0, 0],
+        );
+        assert!(Arc::ptr_eq(
+            state.inotify_fds.get(&(duplicate as i32)).unwrap(),
+            state.inotify_fds.get(&(fcntl_duplicate as i32)).unwrap(),
+        ));
+
+        std::fs::write(root.0.join("move-a"), b"payload").unwrap();
+        std::fs::rename(root.0.join("move-a"), root.0.join("move-b")).unwrap();
+        let bytes = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_read,
+            [duplicate as u64, EVENT_BUFFER, 512, 0, 0, 0],
+        );
+        assert!(bytes > 0);
+        assert_eq!(move_cookies(&memory, EVENT_BUFFER, bytes as usize), [1, 1]);
+
+        let mut child = state.try_clone_for_fork(2).unwrap();
+        assert!(Arc::ptr_eq(
+            state.inotify_fds.get(&(duplicate as i32)).unwrap(),
+            child.inotify_fds.get(&(fcntl_duplicate as i32)).unwrap(),
+        ));
+        std::fs::rename(root.0.join("move-b"), root.0.join("move-c")).unwrap();
+        assert_eq!(write_u64(&mut memory, IOVEC, EVENT_BUFFER), 0);
+        assert_eq!(write_u64(&mut memory, IOVEC + 8, 32), 0);
+        assert_eq!(write_u64(&mut memory, IOVEC + 16, EVENT_BUFFER + 32), 0);
+        assert_eq!(write_u64(&mut memory, IOVEC + 24, 32), 0);
+        let bytes = syscall_result(
+            &mut memory,
+            &mut child,
+            libc::SYS_readv,
+            [fcntl_duplicate as u64, IOVEC, 2, 0, 0, 0],
+        );
+        assert!(bytes > 0);
+        assert_eq!(move_cookies(&memory, EVENT_BUFFER, bytes as usize), [2, 2]);
+    }
+
+    #[test]
+    fn inotify_cookie_state_survives_scm_rights_after_sender_close() {
+        const PATH: u64 = 0x100;
+        const EVENT_BUFFER: u64 = 0x400;
+        const SEND_BYTE: u64 = 0x800;
+        const SEND_IOV: u64 = 0x900;
+        const SEND_CONTROL: u64 = 0xa00;
+        const SEND_MSG: u64 = 0xb00;
+        const RECV_BUFFER: u64 = 0xc00;
+        const RECV_IOV: u64 = 0xd00;
+        const RECV_CONTROL: u64 = 0xe00;
+        const RECV_MSG: u64 = 0xf00;
+
+        fn move_cookies(memory: &GuestMemory, address: u64, bytes: usize) -> Vec<u32> {
+            let mut result = Vec::new();
+            let mut offset = 0usize;
+            while offset < bytes {
+                let event: libc::inotify_event = read_struct(memory, address + offset as u64);
+                if event.mask & (libc::IN_MOVED_FROM | libc::IN_MOVED_TO) != 0 {
+                    result.push(event.cookie);
+                }
+                offset += std::mem::size_of::<libc::inotify_event>() + event.len as usize;
+            }
+            result
+        }
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [libc::AF_UNIX as u64, libc::SOCK_DGRAM as u64, 0, PATH, 0, 0,],
+            ),
+            0
+        );
+        let socket_fds: [libc::c_int; 2] = read_struct(&memory, PATH);
+        let inotify_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_inotify_init1,
+            [libc::IN_NONBLOCK as u64, 0, 0, 0, 0, 0],
+        );
+        assert_eq!(inotify_fd, 5);
+        write_c_string(&mut memory, PATH, ".");
+        assert!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [
+                    inotify_fd as u64,
+                    PATH,
+                    (libc::IN_MOVED_FROM | libc::IN_MOVED_TO) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ) >= 0
+        );
+        let description = state.inotify_fds.get(&(inotify_fd as i32)).unwrap().clone();
+
+        std::fs::write(root.0.join("first-a"), b"payload").unwrap();
+        std::fs::rename(root.0.join("first-a"), root.0.join("first-b")).unwrap();
+        let bytes = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_read,
+            [inotify_fd as u64, EVENT_BUFFER, 512, 0, 0, 0],
+        );
+        assert!(bytes > 0);
+        assert_eq!(move_cookies(&memory, EVENT_BUFFER, bytes as usize), [1, 1]);
+
+        memory.write(SEND_BYTE, b"x").unwrap();
+        let send_iov = libc::iovec {
+            iov_base: SEND_BYTE as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(write_struct(&mut memory, SEND_IOV, &send_iov), 0);
+        let send_control = rights_control(&[inotify_fd as libc::c_int]);
+        memory.write(SEND_CONTROL, &send_control).unwrap();
+        let mut send_message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        send_message.msg_iov = SEND_IOV as usize as *mut libc::iovec;
+        send_message.msg_iovlen = 1;
+        send_message.msg_control = SEND_CONTROL as usize as *mut libc::c_void;
+        send_message.msg_controllen = send_control.len();
+        assert_eq!(write_struct(&mut memory, SEND_MSG, &send_message), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendmsg,
+                [socket_fds[0] as u64, SEND_MSG, 0, 0, 0, 0],
+            ),
+            1
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [inotify_fd as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+
+        let recv_iov = libc::iovec {
+            iov_base: RECV_BUFFER as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(write_struct(&mut memory, RECV_IOV, &recv_iov), 0);
+        memory.write(RECV_CONTROL, &[0u8; 64]).unwrap();
+        let mut recv_message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        recv_message.msg_iov = RECV_IOV as usize as *mut libc::iovec;
+        recv_message.msg_iovlen = 1;
+        recv_message.msg_control = RECV_CONTROL as usize as *mut libc::c_void;
+        recv_message.msg_controllen = 64;
+        assert_eq!(write_struct(&mut memory, RECV_MSG, &recv_message), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmsg,
+                [socket_fds[1] as u64, RECV_MSG, 0, 0, 0, 0],
+            ),
+            1
+        );
+        let received: libc::msghdr = read_struct(&memory, RECV_MSG);
+        let mut received_control = vec![0; received.msg_controllen];
+        memory.read(RECV_CONTROL, &mut received_control).unwrap();
+        let received_fds = control_rights(&received_control);
+        assert_eq!(received_fds, [5]);
+        assert!(Arc::ptr_eq(
+            &description,
+            state.inotify_fds.get(&received_fds[0]).unwrap(),
+        ));
+        assert!(state.pending_inotify_rights.lock().unwrap().is_empty());
+
+        std::fs::write(root.0.join("second-a"), b"payload").unwrap();
+        std::fs::rename(root.0.join("second-a"), root.0.join("second-b")).unwrap();
+        let bytes = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_read,
+            [received_fds[0] as u64, EVENT_BUFFER, 512, 0, 0, 0],
+        );
+        assert!(bytes > 0);
+        assert_eq!(move_cookies(&memory, EVENT_BUFFER, bytes as usize), [2, 2]);
+
+        let failed_control = rights_control(&[received_fds[0]]);
+        memory.write(SEND_CONTROL, &failed_control).unwrap();
+        send_message.msg_control = SEND_CONTROL as usize as *mut libc::c_void;
+        send_message.msg_controllen = failed_control.len();
+        assert_eq!(write_struct(&mut memory, SEND_MSG, &send_message), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [socket_fds[1] as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let result = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_sendmsg,
+            [socket_fds[0] as u64, SEND_MSG, 0, 0, 0, 0],
+        );
+        assert!(result < 0);
+        assert!(state.pending_inotify_rights.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn host_inotify_descriptor_without_cookie_state_fails_closed() {
+        const EVENT_BUFFER: u64 = 0x100;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        // This represents an inotify descriptor received through a path such
+        // as SCM_RIGHTS, where the receiver cannot recover the sender's
+        // per-open-file-description cookie numbering state.
+        let host_fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        assert!(host_fd >= 0);
+        let path = CString::new(root.0.as_os_str().as_bytes()).unwrap();
+        assert!(
+            unsafe {
+                libc::inotify_add_watch(
+                    host_fd,
+                    path.as_ptr(),
+                    libc::IN_MOVED_FROM | libc::IN_MOVED_TO,
+                )
+            } >= 0
+        );
+        // SAFETY: inotify_init1 returned a new owned descriptor.
+        state
+            .files
+            .insert(3, unsafe { std::fs::File::from_raw_fd(host_fd) });
+        std::fs::write(root.0.join("move-a"), b"payload").unwrap();
+        std::fs::rename(root.0.join("move-a"), root.0.join("move-b")).unwrap();
+
+        assert!(host_fd_is_inotify(host_fd));
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [3, EVENT_BUFFER, 512, 0, 0, 0],
+            ),
+            negative_errno(libc::EOPNOTSUPP),
         );
     }
 
@@ -19550,6 +20440,316 @@ mod tests {
         let event: libc::inotify_event = read_struct(&memory, EVENT_BUFFER);
         assert_eq!(event.wd, watch as libc::c_int);
         assert_ne!(event.mask & libc::IN_CREATE, 0);
+    }
+
+    #[test]
+    fn shared_file_table_lock_covers_only_descriptor_table_mutations() {
+        let request = |number: libc::c_long, command: libc::c_int| {
+            SyscallRequest::new(number as u64, [3, command as u64, 0, 0, 0, 0])
+        };
+        for command in [libc::F_DUPFD, libc::F_DUPFD_CLOEXEC, libc::F_SETFD] {
+            assert!(request_mutates_file_table(&request(
+                libc::SYS_fcntl,
+                command
+            )));
+        }
+        for command in [
+            libc::F_GETFD,
+            libc::F_GETFL,
+            libc::F_SETFL,
+            libc::F_SETLK,
+            libc::F_SETLKW,
+            libc::F_OFD_SETLK,
+            libc::F_OFD_SETLKW,
+            libc::F_GETPIPE_SZ,
+            libc::F_SETPIPE_SZ,
+        ] {
+            assert!(!request_mutates_file_table(&request(
+                libc::SYS_fcntl,
+                command
+            )));
+        }
+        for command in [libc::FIOCLEX, libc::FIONCLEX] {
+            assert!(request_mutates_file_table(&request(
+                libc::SYS_ioctl,
+                command as libc::c_int
+            )));
+        }
+        for command in [libc::TCGETS, libc::TIOCGWINSZ, libc::TIOCGPGRP] {
+            assert!(!request_mutates_file_table(&request(
+                libc::SYS_ioctl,
+                command as libc::c_int
+            )));
+        }
+    }
+
+    #[test]
+    fn shared_file_table_close_releases_worker_host_descriptors() {
+        const PATH: u64 = 0x100;
+        const EVENT_BUFFER: u64 = 0x200;
+
+        let root = TestDir::new();
+        let watched = root.0.join("watched");
+        std::fs::write(&watched, b"payload").unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(
+            3,
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&watched)
+                .unwrap(),
+        );
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut parent = ElfExecutor::new(state, false);
+        let mut child = parent.thread_child(2).unwrap();
+
+        let inotify_fd = parent.execute(
+            &SyscallRequest::new(
+                libc::SYS_inotify_init1 as u64,
+                [libc::IN_NONBLOCK as u64, 0, 0, 0, 0, 0],
+            ),
+            &memory,
+        );
+        assert_eq!(inotify_fd, 4);
+        write_c_string(&mut memory, PATH, watched.to_str().unwrap());
+        assert!(
+            parent.execute(
+                &SyscallRequest::new(
+                    libc::SYS_inotify_add_watch as u64,
+                    [
+                        inotify_fd as u64,
+                        PATH,
+                        libc::IN_CLOSE_WRITE as u64,
+                        0,
+                        0,
+                        0
+                    ],
+                ),
+                &memory,
+            ) >= 0
+        );
+
+        // Install the shared table in the worker once. The completed syscall
+        // must release that private host descriptor before its sibling closes
+        // the corresponding logical descriptor.
+        assert!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_fcntl as u64,
+                    [3, libc::F_GETFL as u64, 0, 0, 0, 0],
+                ),
+                &memory,
+            ) >= 0
+        );
+        assert_eq!(
+            parent.execute(
+                &SyscallRequest::new(libc::SYS_close as u64, [3, 0, 0, 0, 0, 0]),
+                &memory,
+            ),
+            0
+        );
+        let bytes = parent.execute(
+            &SyscallRequest::new(
+                libc::SYS_read as u64,
+                [inotify_fd as u64, EVENT_BUFFER, 512, 0, 0, 0],
+            ),
+            &memory,
+        );
+        assert!(bytes >= std::mem::size_of::<libc::inotify_event>() as i64);
+        let event: libc::inotify_event = read_struct(&memory, EVENT_BUFFER);
+        assert_ne!(event.mask & libc::IN_CLOSE_WRITE, 0);
+    }
+
+    #[test]
+    fn blocked_shared_file_table_call_does_not_retain_unrelated_descriptor() {
+        const PATH: u64 = 0x100;
+        const EVENT_BUFFER: u64 = 0x200;
+        const PIPE_BUFFER: u64 = 0x400;
+
+        let root = TestDir::new();
+        let watched = root.0.join("watched-blocked");
+        std::fs::write(&watched, b"payload").unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(
+            3,
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&watched)
+                .unwrap(),
+        );
+        let mut pipe_fds = [-1; 2];
+        // SAFETY: pipe_fds points at two writable integers and flags are valid.
+        assert_eq!(
+            unsafe { libc::pipe2(pipe_fds.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        // SAFETY: pipe2 returned two new owned descriptors.
+        state
+            .files
+            .insert(4, unsafe { std::fs::File::from_raw_fd(pipe_fds[0]) });
+        state
+            .files
+            .insert(5, unsafe { std::fs::File::from_raw_fd(pipe_fds[1]) });
+
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut parent = ElfExecutor::new(state, false);
+        let child = parent.thread_child(2).unwrap();
+        let inotify_fd = parent.execute(
+            &SyscallRequest::new(
+                libc::SYS_inotify_init1 as u64,
+                [libc::IN_NONBLOCK as u64, 0, 0, 0, 0, 0],
+            ),
+            &memory,
+        );
+        assert_eq!(inotify_fd, 6);
+        write_c_string(&mut memory, PATH, watched.to_str().unwrap());
+        assert!(
+            parent.execute(
+                &SyscallRequest::new(
+                    libc::SYS_inotify_add_watch as u64,
+                    [
+                        inotify_fd as u64,
+                        PATH,
+                        libc::IN_CLOSE_WRITE as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ) >= 0
+        );
+
+        let child_memory = memory.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let blocked = scope.spawn(move || {
+                let mut child = child;
+                started_tx.send(()).unwrap();
+                child.execute(
+                    &SyscallRequest::new(libc::SYS_read as u64, [4, PIPE_BUFFER, 1, 0, 0, 0]),
+                    &child_memory,
+                )
+            });
+            started_rx.recv().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
+            assert_eq!(
+                parent.execute(
+                    &SyscallRequest::new(libc::SYS_close as u64, [3, 0, 0, 0, 0, 0]),
+                    &memory,
+                ),
+                0
+            );
+            let event_bytes = parent.execute(
+                &SyscallRequest::new(
+                    libc::SYS_read as u64,
+                    [inotify_fd as u64, EVENT_BUFFER, 512, 0, 0, 0],
+                ),
+                &memory,
+            );
+            memory.write(PIPE_BUFFER, b"x").unwrap();
+            assert_eq!(
+                parent.execute(
+                    &SyscallRequest::new(libc::SYS_write as u64, [5, PIPE_BUFFER, 1, 0, 0, 0]),
+                    &memory,
+                ),
+                1
+            );
+            assert_eq!(blocked.join().unwrap(), 1);
+            assert!(event_bytes >= std::mem::size_of::<libc::inotify_event>() as i64);
+            let event: libc::inotify_event = read_struct(&memory, EVENT_BUFFER);
+            assert_ne!(event.mask & libc::IN_CLOSE_WRITE, 0);
+        });
+    }
+
+    #[test]
+    fn blocked_shared_file_table_accept_does_not_retain_unrelated_descriptor() {
+        const PATH: u64 = 0x100;
+        const EVENT_BUFFER: u64 = 0x200;
+
+        let root = TestDir::new();
+        let watched = root.0.join("watched-accept");
+        let socket_path = root.0.join("accept.sock");
+        std::fs::write(&watched, b"payload").unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(
+            3,
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&watched)
+                .unwrap(),
+        );
+        // SAFETY: into_raw_fd transfers the listener's sole ownership.
+        state.files.insert(4, unsafe {
+            std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(listener))
+        });
+
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut parent = ElfExecutor::new(state, false);
+        let child = parent.thread_child(2).unwrap();
+        let inotify_fd = parent.execute(
+            &SyscallRequest::new(
+                libc::SYS_inotify_init1 as u64,
+                [libc::IN_NONBLOCK as u64, 0, 0, 0, 0, 0],
+            ),
+            &memory,
+        );
+        assert_eq!(inotify_fd, 5);
+        write_c_string(&mut memory, PATH, watched.to_str().unwrap());
+        assert!(
+            parent.execute(
+                &SyscallRequest::new(
+                    libc::SYS_inotify_add_watch as u64,
+                    [
+                        inotify_fd as u64,
+                        PATH,
+                        libc::IN_CLOSE_WRITE as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ) >= 0
+        );
+
+        let child_memory = memory.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let blocked = scope.spawn(move || {
+                let mut child = child;
+                started_tx.send(()).unwrap();
+                child.execute(
+                    &SyscallRequest::new(libc::SYS_accept as u64, [4, 0, 0, 0, 0, 0]),
+                    &child_memory,
+                )
+            });
+            started_rx.recv().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
+            assert_eq!(
+                parent.execute(
+                    &SyscallRequest::new(libc::SYS_close as u64, [3, 0, 0, 0, 0, 0]),
+                    &memory,
+                ),
+                0
+            );
+            let event_bytes = parent.execute(
+                &SyscallRequest::new(
+                    libc::SYS_read as u64,
+                    [inotify_fd as u64, EVENT_BUFFER, 512, 0, 0, 0],
+                ),
+                &memory,
+            );
+            let connection = UnixStream::connect(&socket_path).unwrap();
+            assert_eq!(blocked.join().unwrap(), 3);
+            drop(connection);
+            assert!(event_bytes >= std::mem::size_of::<libc::inotify_event>() as i64);
+            let event: libc::inotify_event = read_struct(&memory, EVENT_BUFFER);
+            assert_ne!(event.mask & libc::IN_CLOSE_WRITE, 0);
+        });
     }
 
     #[test]
@@ -23045,7 +24245,7 @@ mod tests {
     /// such thread exists rather than ENOSYS because it exists and is not
     /// deliverable. Holding it alive keeps the two outcomes distinguishable.
     fn worker_state(dir: &TestDir, worker_tid: i32) -> (ElfExecutor, ElfExecutor, i32) {
-        let leader = ElfExecutor::new(test_state(&dir.0), false);
+        let mut leader = ElfExecutor::new(test_state(&dir.0), false);
         let leader_tid = leader.state.tid;
         let worker = leader.thread_child(worker_tid).expect("thread_child");
         (worker, leader, leader_tid)

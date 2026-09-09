@@ -1389,6 +1389,118 @@ int main(void) {
 }
 
 #[test]
+fn dynamic_inotify_move_cookies_repeat_across_fresh_kvm_runs() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM inotify cookie test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "inotify-cookies",
+        r#"
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <stdio.h>
+#include <sys/inotify.h>
+#include <sys/uio.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static int collect_move_cookies(char *buffer, ssize_t bytes,
+                                unsigned int cookies[2]) {
+  size_t offset = 0;
+  int count = 0;
+  while (offset < (size_t)bytes) {
+    if ((size_t)bytes - offset < sizeof(struct inotify_event)) {
+      return -1;
+    }
+    struct inotify_event *event = (struct inotify_event *)(buffer + offset);
+    size_t record = sizeof(*event) + event->len;
+    if (record > (size_t)bytes - offset) {
+      return -1;
+    }
+    if ((event->mask & (IN_MOVED_FROM | IN_MOVED_TO)) != 0) {
+      if (count == 2) {
+        return -1;
+      }
+      cookies[count++] = event->cookie;
+    }
+    offset += record;
+  }
+  return count == 2 ? 0 : -1;
+}
+
+static int rename_and_read(int fd, const char *from, const char *to,
+                           unsigned int cookies[2], int vector) {
+  int file = open(from, O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, 0600);
+  if (file < 0 || close(file) != 0 || rename(from, to) != 0) {
+    return -1;
+  }
+  char buffer[512] __attribute__((aligned(__alignof__(struct inotify_event))));
+  ssize_t bytes;
+  if (vector) {
+    struct iovec iov[2] = {
+      {.iov_base = buffer, .iov_len = 32},
+      {.iov_base = buffer + 32, .iov_len = 32},
+    };
+    bytes = readv(fd, iov, 2);
+  } else {
+    bytes = read(fd, buffer, sizeof(buffer));
+  }
+  return bytes > 0 ? collect_move_cookies(buffer, bytes, cookies) : -1;
+}
+
+int main(void) {
+  int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+  if (fd < 0 || inotify_add_watch(fd, ".", IN_MOVED_FROM | IN_MOVED_TO) < 0) {
+    return 10;
+  }
+  int duplicate = dup(fd);
+  int fork_duplicate = fcntl(fd, F_DUPFD, 20);
+  if (duplicate < 0 || fork_duplicate < 20 || close(fd) != 0) {
+    return 11;
+  }
+  unsigned int first[2] = {0, 0};
+  unsigned int second[2] = {0, 0};
+  if (rename_and_read(duplicate, "move-a", "move-b", first, 0) != 0) {
+    return 12;
+  }
+  pid_t child = fork();
+  if (child < 0) {
+    return 13;
+  }
+  if (child == 0) {
+    if (rename_and_read(fork_duplicate, "move-b", "move-c", second, 1) != 0 ||
+        printf("%u %u %u %u\n", first[0], first[1], second[0], second[1]) < 0 ||
+        unlink("move-c") != 0) {
+      return 14;
+    }
+    return 0;
+  }
+  int status = 0;
+  if (waitpid(child, &status, 0) != child || !WIFEXITED(status)) {
+    return 15;
+  }
+  return WEXITSTATUS(status);
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let first = run_host_program_captured(executable, &[executable], &directory.0);
+    let second = run_host_program_captured(executable, &[executable], &directory.0);
+    assert_eq!(first.1, Vec::<u8>::new());
+    assert_eq!(second.1, Vec::<u8>::new());
+    assert_eq!(first.0, b"1 1 2 2\n");
+    assert_eq!(second.0, first.0);
+}
+
+#[test]
 fn real_glibc_get_robust_list_tracks_fork_and_thread_lifecycles() {
     match Kvm::new() {
         Ok(_) => {}
