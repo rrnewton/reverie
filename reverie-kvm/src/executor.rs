@@ -7964,6 +7964,24 @@ fn proc_comm(state: &LoadedStaticElf) -> Vec<u8> {
     name[..length].to_vec()
 }
 
+/// Format the thread-group leader's name for `/proc/self/status`.
+///
+/// Linux renders newline and backslash as two-byte escape sequences in the
+/// `Name` field. `/proc/self/stat` intentionally continues to use the raw
+/// bytes returned by [`proc_comm`].
+fn proc_status_comm(state: &LoadedStaticElf) -> Vec<u8> {
+    let raw = proc_comm(state);
+    let mut formatted = Vec::with_capacity(raw.len());
+    for byte in raw {
+        match byte {
+            b'\n' => formatted.extend_from_slice(b"\\n"),
+            b'\\' => formatted.extend_from_slice(b"\\\\"),
+            _ => formatted.push(byte),
+        }
+    }
+    formatted
+}
+
 fn proc_self_cmdline_content(state: &LoadedStaticElf) -> Vec<u8> {
     // Minimal: argv[0] followed by a NUL. reverie-kvm does not retain the full
     // guest argv here, so consumers needing the complete command line get only
@@ -7998,7 +8016,7 @@ fn proc_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
 
 fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
     let mut content = b"Name:\t".to_vec();
-    content.extend_from_slice(&proc_comm(state));
+    content.extend_from_slice(&proc_status_comm(state));
     content.push(b'\n');
     content.extend_from_slice(
         format!(
@@ -23026,7 +23044,7 @@ mod tests {
             &sibling.state.thread_group_leader_name,
         ));
 
-        memory.write(INPUT, &[0xff, 0x80, b'L', 0]).unwrap();
+        memory.write(INPUT, &[0xff, b'\n', b'\\', b'L', 0]).unwrap();
         assert_eq!(
             super::prctl(
                 &mut memory,
@@ -23036,11 +23054,11 @@ mod tests {
             0,
         );
         assert_eq!(sibling.state.thread_name, child_name);
-        assert_eq!(proc_comm(&sibling.state), [0xff, 0x80, b'L']);
+        assert_eq!(proc_comm(&sibling.state), [0xff, b'\n', b'\\', b'L']);
         let stat = proc_self_stat_content(&sibling.state);
-        assert!(stat.starts_with(b"1 (\xff\x80L) R 0 "), "{stat:?}");
+        assert!(stat.starts_with(b"1 (\xff\n\\L) R 0 "), "{stat:?}");
         let status = proc_self_status_content(&sibling.state);
-        assert!(status.starts_with(b"Name:\t\xff\x80L\n"), "{status:?}");
+        assert!(status.starts_with(b"Name:\t\xff\\n\\\\L\n"), "{status:?}");
         assert_eq!(proc_comm(&replacement), b"new-program");
         assert_eq!(proc_comm(&worker_fork), b"child");
     }

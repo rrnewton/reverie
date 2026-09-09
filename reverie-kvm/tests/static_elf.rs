@@ -3063,16 +3063,7 @@ fn put_u64(image: &mut [u8], offset: usize, value: u64) {
 }
 
 #[test]
-fn real_pthread_prctl_names_keep_worker_local_and_procfs_leader_bytes() {
-    match Kvm::new() {
-        Ok(_) => {}
-        Err(error) if kvm_is_unavailable(&error) => {
-            eprintln!("skipping KVM thread-name test: cannot open /dev/kvm: {error}");
-            return;
-        }
-        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
-    }
-
+fn native_and_kvm_prctl_names_keep_worker_local_and_format_procfs_leader_bytes() {
     let directory = TestDirectory::new();
     let executable = compile_c_program(
         &directory.0,
@@ -3085,10 +3076,10 @@ fn real_pthread_prctl_names_keep_worker_local_and_procfs_leader_bytes() {
 #include <sys/prctl.h>
 #include <unistd.h>
 
-static const unsigned char leader_name[4] = {0xff, 0x80, 'L', 0};
-static const unsigned char stat_name[5] = {'(', 0xff, 0x80, 'L', ')'};
-static const unsigned char status_name[10] = {
-    'N', 'a', 'm', 'e', ':', '\t', 0xff, 0x80, 'L', '\n'
+static const unsigned char leader_name[5] = {0xff, '\n', '\\', 'L', 0};
+static const unsigned char stat_name[6] = {'(', 0xff, '\n', '\\', 'L', ')'};
+static const unsigned char status_name[13] = {
+    'N', 'a', 'm', 'e', ':', '\t', 0xff, '\\', 'n', '\\', '\\', 'L', '\n'
 };
 
 static const unsigned char *find_bytes(const unsigned char *haystack, size_t haystack_len,
@@ -3152,18 +3143,38 @@ int main(void) {
 }
 "#,
     );
-    let executable = executable.to_str().unwrap();
-    let (stdout, stderr) = run_host_program_captured(executable, &[executable], &directory.0);
-
     let mut expected = b"worker".to_vec();
     expected.resize(16, 0);
-    expected.extend_from_slice(&[b'(', 0xff, 0x80, b'L', b')']);
-    expected.extend_from_slice(b"Name:\t");
-    expected.extend_from_slice(&[0xff, 0x80, b'L', b'\n']);
-    expected.extend_from_slice(&[0xff, 0x80, b'L']);
-    expected.resize(47, 0);
-    assert_eq!(stdout, expected);
-    assert!(stderr.is_empty());
+    expected.extend_from_slice(&[b'(', 0xff, b'\n', b'\\', b'L', b')']);
+    expected.extend_from_slice(b"Name:\t\xff\\n\\\\L\n");
+    expected.extend_from_slice(&[0xff, b'\n', b'\\', b'L']);
+    expected.resize(51, 0);
+
+    let native = std::process::Command::new(&executable)
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "native task-name fixture failed: {native:?}"
+    );
+    assert_eq!(native.stdout, expected, "native Linux format changed");
+    assert!(native.stderr.is_empty());
+
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM thread-name test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let executable = executable.to_str().unwrap();
+    let (kvm_stdout, kvm_stderr) =
+        run_host_program_captured(executable, &[executable], &directory.0);
+    assert_eq!(kvm_stdout, native.stdout, "KVM must match native Linux");
+    assert!(kvm_stderr.is_empty());
 }
 
 /// A LIVE pthread worker exercises the `pid != tid` path end to end.
