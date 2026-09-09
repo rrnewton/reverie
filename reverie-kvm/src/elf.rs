@@ -136,19 +136,27 @@ impl Default for InotifyDescriptionState {
 
 // Metadata that follows an inotify open file description while SCM_RIGHTS
 // carries it between guest descriptor tables. The retained duplicate provides
-// exact open-description identity through KCMP_FILE; the process-tree queue is
-// bounded and fails a send before it can exceed that bound.
+// exact open-description identity through KCMP_FILE.
 #[derive(Debug)]
 pub(crate) struct PendingInotifyRight {
-    pub transfer: u64,
     pub file: std::fs::File,
     pub description: std::sync::Arc<std::sync::Mutex<InotifyDescriptionState>>,
 }
 
+#[derive(Debug)]
+pub(crate) struct PendingInotifyTransfer {
+    pub rights: Vec<Option<PendingInotifyRight>>,
+}
+
+// SCM_RIGHTS metadata is queued on the receiving socket description. Closing
+// every alias of that endpoint therefore drops unreceived transfers together
+// with the kernel socket queue, while dup/fork preserve the same queue.
 #[derive(Debug, Default)]
-pub(crate) struct PendingInotifyRights {
-    pub next_transfer: u64,
-    pub rights: Vec<PendingInotifyRight>,
+pub(crate) struct SocketDescriptionState {
+    pub peer: std::sync::Mutex<Option<std::sync::Weak<SocketDescriptionState>>>,
+    pub pending_inotify_rights:
+        std::sync::Mutex<std::collections::VecDeque<std::sync::Arc<PendingInotifyTransfer>>>,
+    pub send_lock: std::sync::Mutex<()>,
 }
 
 /// Process-tree-wide state whose lifetime follows a guest task rather than an
@@ -314,7 +322,7 @@ pub(crate) struct LoadedStaticElf {
     // fork share cookie numbering while separate inotify instances do not.
     pub inotify_fds:
         std::collections::BTreeMap<i32, std::sync::Arc<std::sync::Mutex<InotifyDescriptionState>>>,
-    pub pending_inotify_rights: std::sync::Arc<std::sync::Mutex<PendingInotifyRights>>,
+    pub socket_fds: std::collections::BTreeMap<i32, std::sync::Arc<SocketDescriptionState>>,
 
     // One process-tree-wide membership table distinguishes a live task with no
     // robust-list registration from an unknown/dead tid. Entries are created
@@ -430,7 +438,7 @@ impl LoadedStaticElf {
                 pending: std::collections::BTreeSet::new(),
             })),
             inotify_fds: self.inotify_fds.clone(),
-            pending_inotify_rights: self.pending_inotify_rights.clone(),
+            socket_fds: self.socket_fds.clone(),
             task_lifecycle: self.task_lifecycle.clone(),
             files,
             transient_unavailable_fds: std::collections::BTreeSet::new(),
@@ -498,7 +506,11 @@ impl LoadedStaticElf {
             .into_iter()
             .filter(|(fd, _)| files.contains_key(fd))
             .collect();
-        let pending_inotify_rights = previous.pending_inotify_rights.clone();
+        let socket_fds = previous
+            .socket_fds
+            .into_iter()
+            .filter(|(fd, _)| files.contains_key(fd))
+            .collect();
         let task_lifecycle = previous.task_lifecycle.clone();
         let file_identity_table = previous.file_identity_table.clone();
         {
@@ -564,7 +576,7 @@ impl LoadedStaticElf {
         self.signal_mask = previous.signal_mask;
         self.signalfd_state = std::sync::Arc::new(std::sync::Mutex::new(signalfd_state));
         self.inotify_fds = inotify_fds;
-        self.pending_inotify_rights = pending_inotify_rights;
+        self.socket_fds = socket_fds;
         self.task_lifecycle = task_lifecycle;
         self.task_lifecycle
             .lock()
@@ -804,9 +816,7 @@ fn load_executable(
         signal_alt_stack: None,
         signalfd_state: std::sync::Arc::new(std::sync::Mutex::new(SignalFdState::default())),
         inotify_fds: std::collections::BTreeMap::new(),
-        pending_inotify_rights: std::sync::Arc::new(std::sync::Mutex::new(
-            PendingInotifyRights::default(),
-        )),
+        socket_fds: std::collections::BTreeMap::new(),
 
         task_lifecycle: std::sync::Arc::new(std::sync::Mutex::new(TaskLifecycleTable::with_root(
             1, 1, true,
