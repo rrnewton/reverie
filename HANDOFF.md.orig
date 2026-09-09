@@ -1,0 +1,175 @@
+# KVM self-exec handoff
+
+Repository: `/home/newton/work/dev-hermit/worktrees/slots/kvm-self-exec`
+
+Branch: `codex/kvm-self-exec`
+
+Base: `9ad1999bc7385610e3f423ea5050ef7789702e6a`
+
+Remote pull-request head: `b5061b436742bef90e6f340584223e01e4167a03`
+
+Local commit: `8c173b6b3f0fbd9e99872722f774371310b828b3`
+
+Exact patch hash (`git diff 9ad1999b 8c173b6b | git hash-object --stdin`):
+`2f2e52b549e3bb2e8b4b20ccb75e51d5520df5da`
+
+## Result
+
+- Preserved the prior uncommitted fixes: process-wide child-wait state across
+  worker exec, visible ENOTSUP for unsupported Tool-owned worker exec, the full
+  proc-exe alias cross-product, and Linux-width comm truncation.
+- Added mutex-backed CLONE_FS state (`cwd`, `cwd_fd`, `umask`) and
+  CLONE_SIGHAND state shared by KVM thread executors. Fork children receive
+  private snapshots. Exec refreshes the latest process-wide state, applies
+  Linux signal-disposition reset rules, and republishes the post-exec state.
+- Added a leader-exec admission check ordered by the same mutex as synchronous
+  process-child entry. A leader now receives ENOTSUP before image mutation when
+  a worker is running a child whose separate GuestThreadGroup cannot be
+  cancelled. Process-action plumbing reports whether replacement actually
+  occurred, avoiding a false Tool post-exec event on refusal.
+- Extended that plumbing to report the effective raw syscall result as well as
+  image replacement. A Tool-intercepted leader exec refusal now propagates
+  ENOTSUP through `complete_injection`, `KvmGuest::inject`, and `tail_inject`
+  instead of letting the handler's earlier prepared `Ok(0)` overwrite it.
+- Added end-to-end coverage for post-clone cwd/umask/SIGUSR1-ignore inheritance
+  through worker exec and for the Tool-intercepted inverse
+  leader-exec/worker-child deadlock. The latter uses `ThreadOwnership::Host`
+  with `PostExecTool`, asserts exactly one post-exec call, and has a five-second
+  host-side fuse so a regression fails instead of hanging indefinitely. Added
+  a focused coordination unit test as well.
+
+## Verification
+
+- `cargo test -p reverie-kvm --test static_elf nonleader_exec_observes_post_clone_fs_and_sighand_updates -- --exact --nocapture --test-threads=1` — pass (1/1, 0.14s final focused run).
+- `cargo test -p reverie-kvm --test static_elf leader_exec_fails_visibly_while_a_worker_runs_a_direct_fork_child -- --exact --nocapture` — pass (1/1, 0.50s final focused run).
+- `cargo test -p reverie-kvm -- --test-threads=1` — pass: 273 tests total (209 unit, 64 integration); static_elf 50/50 in 12.48s, 16.39s wall clock including build and doc tests.
+- `cargo clippy -p reverie-kvm --all-targets -- -D warnings` — pass (2.12s).
+- `cargo fmt --all -- --check` — pass.
+- `git diff --check` — pass before the amended commit.
+
+## Mutation evidence
+
+- Removed only cwd/cwd_fd propagation: shared-state E2E failed with guest exit 40.
+- Removed only umask propagation: shared-state E2E failed with guest exit 42.
+- Detached only signal-disposition sharing: shared-state E2E failed with guest exit 43.
+- Disabled only leader-exec admission: inverse E2E hit its five-second deadlock
+  fuse and failed. All mutations were reverted before final gates and commit.
+- Discarded only the process action's effective result in `KvmGuest::inject`:
+  the Tool-owned inverse E2E failed with guest exit 12 instead of 0, after its
+  one-post-exec-call assertion passed. The mutation was restored before gates.
+
+## Residual limitation
+
+Leader exec is deliberately refused with ENOTSUP while any sibling is in the
+synchronous direct process-child path; the backend still does not propagate
+cancellation into that nested child's separate GuestThreadGroup. Tool-driven
+non-leader exec remains explicitly unsupported and returns ENOTSUP, as before.
+
+## Publication
+
+- Pre-push `ls-remote` confirmed the branch at the expected old SHA
+  `9ad1999bc7385610e3f423ea5050ef7789702e6a`.
+- The explicit expected-SHA leased push completed with status 0 and advanced
+  `codex/kvm-self-exec` to `b5061b436742bef90e6f340584223e01e4167a03`.
+- Post-push `ls-remote` and fetch returned that exact commit; fetched content
+  matched the then-current local commit. The open pull request
+  `https://github.com/rrnewton/reverie/pull/539` still reports that head SHA.
+
+No merge was performed. The exact-head approval for `b5061b43` is stale after
+the local repair. `HANDOFF.md` remains untracked.
+
+## Exact-head review repairs at 8c173b6b
+
+### Changes
+
+- Child-process joining now runs only when the exiting executor is the thread
+  group leader. A normal CLONE_THREAD worker neither joins the shared process
+  children nor cancels its siblings. All five normal Tool exit paths use the
+  same guarded helper: exit from thread start, exit from initial exec handling,
+  exit from initial post-exec handling, an observed exit-group request, and
+  exit from the main syscall loop.
+- Synthetic `/proc/self/stat` and `/proc/self/status` now append the first 15
+  `comm` bytes directly. No UTF-8 decoding or replacement can expand or alter
+  those bytes.
+
+### Verification
+
+- `cargo test -p reverie-kvm executor::tests:: --lib -- --test-threads=1`:
+  162/162 passed.
+- `cargo test -p reverie-kvm runtime::tests:: --lib -- --test-threads=1`:
+  9/9 passed.
+- `cargo test -p reverie-kvm --test static_elf
+  tool_worker_exit_does_not_wait_for_process_child -- --exact --nocapture
+  --test-threads=1`: 1/1 passed in 0.17 seconds; a restored confirmation passed
+  in 0.32 seconds.
+- `cargo test --workspace --all-features --no-run`: passed.
+- `cargo clippy -p reverie-kvm --all-targets -- -D warnings`: passed.
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+
+### Mutation evidence
+
+- Replacing only the guarded process-exit join in the main Tool loop with the
+  former unconditional join made the real KVM test hit its five-second bound
+  and fail in 5.16 seconds. Restoring the guard returned it to 1/1 passing.
+- Removing the same guard inside the non-KVM child-wait test made that test
+  hit its one-second bound and fail. Restoring it returned the test to passing.
+- Reintroducing lossy UTF-8 conversion in both synthetic proc consumers made
+  `proc_comm_preserves_raw_bytes_and_linux_width` fail on the 15-byte name
+  ending in byte ff. Restoring direct byte insertion returned it to passing.
+
+### Publication state
+
+The repaired local head `8c173b6b3f0fbd9e99872722f774371310b828b3`
+has not been pushed or merged. The pull request remains at
+`b5061b436742bef90e6f340584223e01e4167a03`.
+
+## Process-exit callback repair at 8c173b6b
+
+### Change
+
+- `notify_tool_exit` always delivers `Tool::on_exit_thread`, but it now delivers
+  `Tool::on_exit_process` only when the exiting executor is the thread-group
+  leader. A normal CLONE_THREAD worker therefore cannot consume the process-wide
+  Tool state or report process exit while its leader continues.
+- The existing real worker-exit test now calls `getpid` after joining its worker
+  and before releasing its process child. The Tool asserts that the root process
+  has received zero process-exit callbacks at that point, then the final result
+  asserts exactly one callback for the root and one for the fork child.
+
+### Exit-path enumeration
+
+- The shared helper has seven callers: five normal termination paths (exit from
+  thread start, initial exec handling, initial post-exec handling, an observed
+  thread-group exit, and the main syscall loop) plus two post-exec error paths.
+- The separate single-root `run_with_tool` HLT path calls the thread and process
+  callbacks directly. It cannot host a CLONE_THREAD worker and is unchanged.
+
+### Callback-consumer enumeration
+
+- Interface/default: `reverie/src/tool.rs`.
+- KVM: `reverie-kvm/src/runtime.rs`, `reverie-kvm/src/tools.rs`, and
+  `reverie-kvm/tests/static_elf.rs`.
+- ptrace: `reverie-ptrace/src/task.rs` and `reverie-ptrace/src/tracer.rs`.
+- DBT: `reverie-dbt/src/lib.rs` and `reverie-dbt/src/tools.rs`.
+- LiteInst: `reverie-liteinst/src/tool_host.rs`,
+  `reverie-liteinst/src/bin/rpc_tool_guest.rs`, and
+  `reverie-liteinst/tests/hybrid.rs`.
+- SaBRe and e9patch: `experimental/reverie-sabre/src/reverie_adapter.rs` and
+  `reverie-e9patch/src/tool_host.rs`.
+- Examples and common tests: `reverie-examples/strace/tool.rs`,
+  `reverie-examples/counter2_tool.rs`, `tests/state.rs`, `tests/exit.rs`, and
+  `tests/busywait.rs`.
+
+### Evidence
+
+- The focused KVM test passed 1/1 in 0.33 seconds; after restoration from the
+  mutation it passed 1/1 in 0.22 seconds.
+- Restoring the old unconditional process callback made the test fail in 0.34
+  seconds at the leader-continuation assertion: the observed root callback count
+  was one rather than zero. The mutation was removed before the final gates.
+- Executor unit tests passed 162/162; runtime unit tests passed 9/9; workspace
+  all-feature compilation, clippy with warnings denied, formatting, and diff
+  checks passed.
+- No assertion, timeout, comparator, skip, label, or gate was weakened.
+
+No push or merge was performed. `HANDOFF.md` remains untracked.
