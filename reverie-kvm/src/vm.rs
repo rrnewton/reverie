@@ -10,9 +10,11 @@ use std::fs::File;
 use std::os::fd::FromRawFd;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use kvm_bindings::CpuId;
@@ -58,10 +60,12 @@ use crate::bootstrap::exception_pushes_error_code;
 use crate::bootstrap::set_syscall_return_park;
 use crate::bootstrap::set_user_segment_base;
 use crate::elf::LoadedStaticElf;
+use crate::elf::TaskLifecycleTable;
 use crate::elf::load_static_elf;
 use crate::executor::ChildCompletion;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
+use crate::executor::ResolvedExecutable;
 use crate::executor::conventional_exit_code;
 use crate::runtime::SyscallExecutor;
 use crate::runtime::ToolContext;
@@ -138,6 +142,48 @@ fn set_guest_interrupt_signal_mask(how: libc::c_int) -> Result<bool> {
     }
 }
 
+type GuestWorkerResult = Result<(ExitStatus, Vec<u8>, Vec<u8>)>;
+
+struct GuestWorkerHandle {
+    tid: i32,
+    handle: std::thread::JoinHandle<GuestWorkerResult>,
+}
+
+struct ExecSuccessorState {
+    tid: i32,
+    pthread: libc::pthread_t,
+    ready: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExecSuccessorRequest {
+    Selected,
+    LostRace,
+    LeaderBlocked,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProcessActionOutcome {
+    pub(crate) image_replaced: bool,
+    pub(crate) syscall_result: i64,
+}
+
+impl ProcessActionOutcome {
+    fn returned(syscall_result: i64) -> Self {
+        Self {
+            image_replaced: false,
+            syscall_result,
+        }
+    }
+
+    pub(crate) fn replaced() -> Self {
+        Self {
+            image_replaced: true,
+            syscall_result: 0,
+        }
+    }
+}
+
 #[derive(Default)]
 // TODO-HUMAN-REVIEW(PR-172): Review process-wide KVM worker cancellation state.
 struct GuestThreadGroup {
@@ -149,8 +195,16 @@ struct GuestThreadGroup {
     workers: Mutex<Vec<libc::pthread_t>>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Join cancelled KVM workers before root teardown returns.
     // TODO-HUMAN-REVIEW(PR-178): Review KVM worker join ordering.
-    worker_handles: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    worker_handles: Mutex<Vec<GuestWorkerHandle>>,
+    worker_handle_ready: Condvar,
     transport_slots: Mutex<Vec<bool>>,
+    /// A non-leader exec keeps running on its existing host worker while the
+    /// displaced leader waits for the worker's eventual process result.
+    exec_successor: Mutex<Option<ExecSuccessorState>>,
+    exec_successor_ready: Condvar,
+    /// Number of threads synchronously running a process child. Such a thread
+    /// cannot participate in the stop-the-world worker-exec handoff.
+    blocking_process_children: AtomicUsize,
 }
 
 impl GuestThreadGroup {
@@ -183,11 +237,12 @@ impl GuestThreadGroup {
         }
     }
 
-    fn add_worker_handle(&self, handle: std::thread::JoinHandle<()>) {
+    fn add_worker_handle(&self, tid: i32, handle: std::thread::JoinHandle<GuestWorkerResult>) {
         self.worker_handles
             .lock()
             .expect("KVM guest worker-handle lock poisoned")
-            .push(handle);
+            .push(GuestWorkerHandle { tid, handle });
+        self.worker_handle_ready.notify_all();
     }
 
     fn join_workers(&self) {
@@ -202,8 +257,8 @@ impl GuestThreadGroup {
             if handles.is_empty() {
                 return;
             }
-            for handle in handles {
-                if handle.join().is_err() {
+            for worker in handles {
+                if worker.handle.join().is_err() {
                     eprintln!("reverie-kvm guest thread panicked during teardown");
                 }
             }
@@ -219,6 +274,212 @@ impl GuestThreadGroup {
                 libc::pthread_kill(worker, worker_interrupt_signal());
             }
         }
+    }
+
+    /// Elect the calling worker as the successor for a non-leader exec and
+    /// interrupt every other vCPU. The worker waits until the displaced leader
+    /// has joined all sibling host threads, so none can touch shared memory
+    /// while the new image is installed.
+    fn request_exec_successor(&self, tid: i32) -> ExecSuccessorRequest {
+        // SAFETY: pthread_self returns the live calling thread's identifier.
+        let pthread = unsafe { libc::pthread_self() };
+        {
+            let mut successor = self
+                .exec_successor
+                .lock()
+                .expect("KVM exec-successor lock poisoned");
+            // Leader teardown publishes cancellation before taking this lock,
+            // then removes any request that won the preceding race.
+            if self.cancelled.load(Ordering::Acquire) {
+                return ExecSuccessorRequest::LostRace;
+            }
+            if self.blocking_process_children.load(Ordering::Relaxed) != 0 {
+                return ExecSuccessorRequest::LeaderBlocked;
+            }
+            match successor.as_ref() {
+                Some(existing) => {
+                    return if existing.pthread == pthread {
+                        ExecSuccessorRequest::Selected
+                    } else {
+                        ExecSuccessorRequest::LostRace
+                    };
+                }
+                None => {
+                    *successor = Some(ExecSuccessorState {
+                        tid,
+                        pthread,
+                        ready: false,
+                    });
+                    // Publish cancellation while holding the coordination lock.
+                    // A thread beginning a synchronous process child therefore
+                    // cannot pass us and become unavailable after this point.
+                    self.cancelled.store(true, Ordering::Release);
+                }
+            }
+        }
+
+        if let Some(root) = *self.root.lock().expect("KVM guest root lock poisoned")
+            && root != pthread
+        {
+            // SAFETY: root is registered for the lifetime of its run loop.
+            unsafe {
+                libc::pthread_kill(root, worker_interrupt_signal());
+            }
+        }
+        let workers = self.workers.lock().expect("KVM guest worker lock poisoned");
+        for &worker in workers.iter().filter(|&&worker| worker != pthread) {
+            // SAFETY: the registry lock keeps each pthread ID live for this call.
+            unsafe {
+                libc::pthread_kill(worker, worker_interrupt_signal());
+            }
+        }
+        drop(workers);
+
+        let mut successor = self
+            .exec_successor
+            .lock()
+            .expect("KVM exec-successor lock poisoned");
+        while successor.as_ref().is_some_and(|state| !state.ready) {
+            successor = self
+                .exec_successor_ready
+                .wait(successor)
+                .expect("KVM exec-successor lock poisoned while waiting");
+        }
+        if successor
+            .as_ref()
+            .is_some_and(|state| state.pthread == pthread)
+        {
+            ExecSuccessorRequest::Selected
+        } else {
+            ExecSuccessorRequest::LostRace
+        }
+    }
+
+    /// Claim a synchronous process-child section unless a worker exec already
+    /// won. All updates are ordered by the exec-successor mutex.
+    fn begin_blocking_process_child(&self) -> bool {
+        let successor = self
+            .exec_successor
+            .lock()
+            .expect("KVM exec-successor lock poisoned");
+        if successor.is_some() || self.cancelled.load(Ordering::Acquire) {
+            return false;
+        }
+        self.blocking_process_children
+            .fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    fn finish_blocking_process_child(&self) {
+        let _successor = self
+            .exec_successor
+            .lock()
+            .expect("KVM exec-successor lock poisoned");
+        let previous = self
+            .blocking_process_children
+            .fetch_sub(1, Ordering::Relaxed);
+        assert_ne!(previous, 0, "KVM blocking-child count underflow");
+    }
+
+    /// Reserve a leader exec unless a sibling is synchronously running a
+    /// process child. Publishing cancellation under the same mutex that guards
+    /// child entry prevents either side from passing the other unnoticed.
+    fn begin_leader_exec(&self) -> bool {
+        let _successor = self
+            .exec_successor
+            .lock()
+            .expect("KVM exec-successor lock poisoned");
+        if self.blocking_process_children.load(Ordering::Relaxed) != 0 {
+            return false;
+        }
+        self.cancelled.store(true, Ordering::Release);
+        true
+    }
+
+    fn pending_exec_successor(&self) -> Option<i32> {
+        // SAFETY: pthread_self returns the live calling thread's identifier.
+        let pthread = unsafe { libc::pthread_self() };
+        self.exec_successor
+            .lock()
+            .expect("KVM exec-successor lock poisoned")
+            .as_ref()
+            .filter(|state| state.pthread != pthread)
+            .map(|state| state.tid)
+    }
+
+    /// Abandon a pending worker exec when the current leader is itself
+    /// terminating or replacing the process. Waking the worker before joining
+    /// it prevents the cancellation path from waiting on its exec barrier.
+    fn cancel_exec_successor(&self) {
+        let removed = self
+            .exec_successor
+            .lock()
+            .expect("KVM exec-successor lock poisoned")
+            .take()
+            .is_some();
+        if removed {
+            self.exec_successor_ready.notify_all();
+        }
+    }
+
+    fn take_worker_handle(&self, tid: i32) -> std::thread::JoinHandle<GuestWorkerResult> {
+        let mut handles = self
+            .worker_handles
+            .lock()
+            .expect("KVM guest worker-handle lock poisoned");
+        loop {
+            if let Some(index) = handles.iter().position(|worker| worker.tid == tid) {
+                return handles.swap_remove(index).handle;
+            }
+            // A nested child can begin executing before its creator publishes
+            // the JoinHandle. The child has already elected itself here, so a
+            // matching handle must be forthcoming unless its creator panics.
+            handles = self
+                .worker_handle_ready
+                .wait(handles)
+                .expect("KVM guest worker-handle lock poisoned while waiting");
+        }
+    }
+
+    fn allow_exec_successor(&self, tid: i32) {
+        let mut successor = self
+            .exec_successor
+            .lock()
+            .expect("KVM exec-successor lock poisoned");
+        let state = successor
+            .as_mut()
+            .expect("missing KVM exec successor while releasing barrier");
+        assert_eq!(state.tid, tid, "wrong KVM exec successor released");
+        state.ready = true;
+        self.exec_successor_ready.notify_all();
+    }
+
+    fn promote_current_worker(&self) {
+        // SAFETY: pthread_self returns the live calling thread's identifier.
+        let pthread = unsafe { libc::pthread_self() };
+        let successor = self
+            .exec_successor
+            .lock()
+            .expect("KVM exec-successor lock poisoned")
+            .take()
+            .expect("missing KVM exec successor during promotion");
+        assert_eq!(
+            successor.pthread, pthread,
+            "non-successor KVM worker attempted exec promotion"
+        );
+        self.workers
+            .lock()
+            .expect("KVM guest worker lock poisoned")
+            .retain(|worker| *worker != pthread);
+        let previous = self
+            .root
+            .lock()
+            .expect("KVM guest root lock poisoned")
+            .replace(pthread);
+        assert!(
+            previous.is_none(),
+            "displaced KVM leader is still registered"
+        );
     }
 
     // TODO-HUMAN-REVIEW(PR-211): Review KVM exec sibling cancellation ordering.
@@ -262,22 +523,20 @@ impl GuestThreadGroup {
 pub(crate) struct GuestThreadRegistration {
     group: Arc<GuestThreadGroup>,
     pthread: libc::pthread_t,
-    root: bool,
     restore_blocked_signal: bool,
 }
 
 impl Drop for GuestThreadRegistration {
     fn drop(&mut self) {
-        if self.root {
-            let mut root = self
-                .group
-                .root
-                .lock()
-                .expect("KVM guest root lock poisoned");
-            if *root == Some(self.pthread) {
-                *root = None;
-            }
+        let mut root = self
+            .group
+            .root
+            .lock()
+            .expect("KVM guest root lock poisoned");
+        if *root == Some(self.pthread) {
+            *root = None;
         } else {
+            drop(root);
             self.group
                 .workers
                 .lock()
@@ -584,6 +843,11 @@ impl KvmBackend {
             loaded.pid = pid;
             loaded.tid = pid;
             loaded.ppid = root_parent_pid(pid);
+            loaded.task_lifecycle = Arc::new(Mutex::new(TaskLifecycleTable::with_root(
+                pid,
+                pid,
+                loaded.dumpable,
+            )));
         }
         Ok(())
     }
@@ -658,6 +922,11 @@ impl KvmBackend {
         loaded.pid = self.root_pid;
         loaded.tid = self.root_pid;
         loaded.ppid = root_parent_pid(self.root_pid);
+        loaded.task_lifecycle = Arc::new(Mutex::new(TaskLifecycleTable::with_root(
+            self.root_pid,
+            self.root_pid,
+            loaded.dumpable,
+        )));
         loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
         configure_long_mode(
             &mut self.memory,
@@ -752,8 +1021,8 @@ impl KvmBackend {
     pub(crate) fn exec_process(
         &mut self,
         executor: &mut ElfExecutor,
-        executable_path: &Path,
-        image: &[u8],
+        executable: &ResolvedExecutable,
+        comm: &[u8],
         argv: &[String],
         envp: &[String],
     ) -> Result<()> {
@@ -763,8 +1032,16 @@ impl KvmBackend {
 
         let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
         let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
-        let mut loaded = load_static_elf(&mut self.memory, image, &argv, &envp, executor.cwd())?;
-        loaded.executable_path = executable_path.to_owned();
+        let mut loaded = load_static_elf(
+            &mut self.memory,
+            &executable.image,
+            &argv,
+            &envp,
+            executor.cwd(),
+        )?;
+        loaded.executable_path = executable.path.clone();
+        loaded.executable_file = executable.file.clone();
+        loaded.comm = comm.to_vec();
         loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
         configure_long_mode(
             &mut self.memory,
@@ -876,8 +1153,8 @@ impl KvmBackend {
         executor: &mut ElfExecutor,
         action: ProcessAction,
         park_syscall_return: bool,
-    ) -> Result<()> {
-        match action {
+    ) -> Result<ProcessActionOutcome> {
+        let outcome = match action {
             ProcessAction::Fork {
                 child_pid,
                 child_stack,
@@ -886,19 +1163,31 @@ impl KvmBackend {
                 clear_child_tid,
                 clear_sighand,
             } => {
-                let mut child = self.prepare_forked_process(
-                    executor,
-                    child_pid,
-                    child_stack,
-                    parent_tid,
-                    child_tid,
-                    clear_child_tid,
-                    clear_sighand,
-                    park_syscall_return,
-                )?;
-                let (code, stdout, stderr) =
-                    child.backend.run_static_elf_process(&mut child.executor)?;
-                self.finish_forked_process(executor, child, code, stdout, stderr)?;
+                if !self.thread_group.begin_blocking_process_child() {
+                    // A worker exec already owns the group transition. This
+                    // thread will observe cancellation before returning to the
+                    // old guest image, so the unstarted fork action is discarded.
+                    return Ok(ProcessActionOutcome::returned(i64::from(child_pid)));
+                }
+                let child_result: Result<()> = (|| {
+                    let mut child = self.prepare_forked_process(
+                        executor,
+                        child_pid,
+                        child_stack,
+                        parent_tid,
+                        child_tid,
+                        clear_child_tid,
+                        clear_sighand,
+                        park_syscall_return,
+                    )?;
+                    let (code, stdout, stderr) =
+                        child.backend.run_static_elf_process(&mut child.executor)?;
+                    self.finish_forked_process(executor, child, code, stdout, stderr)?;
+                    Ok(())
+                })();
+                self.thread_group.finish_blocking_process_child();
+                child_result?;
+                ProcessActionOutcome::returned(i64::from(child_pid))
             }
             // TODO-HUMAN-REVIEW(PR-172): Review concurrent CLONE_THREAD lifecycle semantics.
             ProcessAction::Thread {
@@ -995,17 +1284,19 @@ impl KvmBackend {
                             child_executor.take_clear_child_tid(),
                         );
                         let cancelled = child.thread_group.cancelled.load(Ordering::Acquire);
-                        if let Err(error) = result
+                        if let Err(error) = &result
                             && !cancelled
                         {
                             eprintln!("reverie-kvm guest thread {child_tid} failed: {error}");
                         }
+                        result
                     })?;
-                self.thread_group.add_worker_handle(handle);
+                self.thread_group.add_worker_handle(child_tid, handle);
+                ProcessActionOutcome::returned(i64::from(child_tid))
             }
             ProcessAction::Exec {
-                executable_path,
-                image,
+                executable,
+                comm,
                 argv,
                 envp,
             } => {
@@ -1034,21 +1325,56 @@ impl KvmBackend {
                     )?;
                     parked?;
                 }
-                // A successful exec terminates every sibling thread before the
-                // new address space becomes visible. Leaving a sibling vCPU
-                // alive lets it execute stale instructions in the replacement
-                // image and can turn an otherwise successful exec into a fault.
-                if !self.is_guest_thread {
+                if !self.is_guest_thread && !self.thread_group.begin_leader_exec() {
+                    // This backend executes a process child synchronously on
+                    // its calling worker. Refuse before cancelling that worker
+                    // or replacing memory; its child's thread group is separate.
+                    configure_process_syscall_return(
+                        &self.memory,
+                        &self.vcpu,
+                        self.syscall_frame_address,
+                        -i64::from(libc::ENOTSUP),
+                        None,
+                    )?;
+                    return Ok(ProcessActionOutcome::returned(-i64::from(libc::ENOTSUP)));
+                }
+                // A successful exec terminates every sibling before exposing
+                // the replacement image. A non-leader first hands coordination
+                // to the displaced leader, which joins those siblings and then
+                // releases this worker to assume the leader identity.
+                if self.is_guest_thread {
+                    let (_, tid) = executor.thread_identity();
+                    match self.thread_group.request_exec_successor(tid) {
+                        ExecSuccessorRequest::Selected => {
+                            self.promote_after_thread_exec(executor);
+                        }
+                        ExecSuccessorRequest::LostRace => {
+                            return Ok(ProcessActionOutcome::returned(0));
+                        }
+                        ExecSuccessorRequest::LeaderBlocked => {
+                            // The old image remains intact. Resume this syscall
+                            // with a visible error instead of waiting forever for
+                            // a leader synchronously executing a process child.
+                            configure_process_syscall_return(
+                                &self.memory,
+                                &self.vcpu,
+                                self.syscall_frame_address,
+                                -i64::from(libc::ENOTSUP),
+                                None,
+                            )?;
+                            return Ok(ProcessActionOutcome::returned(-i64::from(libc::ENOTSUP)));
+                        }
+                    }
+                } else {
                     self.cancel_guest_threads();
                 }
-                let result = self.exec_process(executor, &executable_path, &image, &argv, &envp);
-                if !self.is_guest_thread {
-                    self.thread_group.rearm_after_exec();
-                }
+                let result = self.exec_process(executor, &executable, &comm, &argv, &envp);
+                self.thread_group.rearm_after_exec();
                 result?;
+                ProcessActionOutcome::replaced()
             }
-        }
-        Ok(())
+        };
+        Ok(outcome)
     }
 
     // TODO-HUMAN-REVIEW(PR-192): Review tool lifecycle for KVM fork children.
@@ -1059,7 +1385,7 @@ impl KvmBackend {
         action: ProcessAction,
         park_syscall_return: bool,
         context: ToolContext<'_, T>,
-    ) -> Result<()>
+    ) -> Result<ProcessActionOutcome>
     where
         T: Tool + 'static,
         T::ThreadState: 'static,
@@ -1179,7 +1505,8 @@ impl KvmBackend {
                     self.syscall_frame_address,
                     i64::from(raw_child_pid),
                     None,
-                )
+                )?;
+                Ok(ProcessActionOutcome::returned(i64::from(raw_child_pid)))
             }
             // `ThreadOwnership::Host`: CLONE_THREAD workers run uninstrumented on
             // the direct backend personality with host-backed synchronization,
@@ -1192,7 +1519,13 @@ impl KvmBackend {
             // never reaches the host waiter — is unrepresentable now that one
             // enum drives both decisions.)
             ProcessAction::Thread { .. } if self.thread_ownership.executes_on_host() => {
-                self.run_process_action(executor, action, park_syscall_return)
+                // This worker has no Tool/global state to carry across a
+                // leadership-changing exec. Refuse that later syscall with
+                // ENOTSUP instead of silently continuing without Tool hooks.
+                let previous = executor.replace_nonleader_exec_support(false);
+                let result = self.run_process_action(executor, action, park_syscall_return);
+                executor.replace_nonleader_exec_support(previous);
+                result
             }
             // `ThreadOwnership::Tool`: a CLONE_THREAD worker runs its own vCPU on
             // a fresh OS thread but shares the guest address space, file table,
@@ -1251,6 +1584,10 @@ impl KvmBackend {
                 let mut child_executor = executor.thread_child(child_tid)?;
                 child_executor.set_thread_context(child_tid, child_fs, parent_gs);
                 child_executor.set_clear_child_tid(clear_child_tid);
+                // A Tool-driven process cannot yet transfer its async Tool and
+                // scheduler state when a worker replaces the leader. Refuse a
+                // later worker exec instead of silently dropping that state.
+                child_executor.replace_nonleader_exec_support(false);
                 let child_stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
                 let mut child = Self::from_thread_state(
                     self.memory.clone(),
@@ -1338,11 +1675,42 @@ impl KvmBackend {
                                 "reverie-kvm guest thread {child_tid} tool loop failed: {error}"
                             );
                         }
+                        result
                     })?;
-                self.thread_group.add_worker_handle(handle);
-                Ok(())
+                self.thread_group.add_worker_handle(child_tid, handle);
+                Ok(ProcessActionOutcome::returned(i64::from(child_tid)))
             }
             other => self.run_process_action(executor, other, park_syscall_return),
+        }
+    }
+
+    fn promote_after_thread_exec(&mut self, executor: &mut ElfExecutor) {
+        debug_assert!(self.is_guest_thread);
+        self.thread_group.promote_current_worker();
+        if let Some(slot) = self.thread_slot.take() {
+            self.thread_group.release_transport_slot(slot);
+        }
+        self.is_guest_thread = false;
+        self.syscall_trampoline_address = SYSCALL_TRAMPOLINE_ADDRESS;
+        self.syscall_frame_address = SYSCALL_FRAME_ADDRESS;
+        self.root_pid = executor.promote_after_thread_exec();
+    }
+
+    pub(crate) fn await_exec_successor(&self, tid: i32) -> Result<ExitStatus> {
+        let handle = self.thread_group.take_worker_handle(tid);
+        // The successor is still behind its barrier, so this joins exactly the
+        // old sibling set and all of their post-run cleanup before memory reuse.
+        self.thread_group.join_workers();
+        self.thread_group.allow_exec_successor(tid);
+        let result = handle.join();
+        // The successor may have created a fresh thread group after exec.
+        self.thread_group.join_workers();
+        match result {
+            Err(_) => Err(Error::UnexpectedVcpuExit(format!(
+                "KVM exec successor {tid} panicked"
+            ))),
+            Ok(Ok((status, _, _))) => Ok(status),
+            Ok(Err(error)) => Err(error),
         }
     }
 
@@ -1434,8 +1802,16 @@ impl KvmBackend {
         &mut self,
         executor: &mut ElfExecutor,
     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
-        let _registration = self.register_guest_thread()?;
+        let registration = self.register_guest_thread()?;
         loop {
+            if !self.is_guest_thread
+                && let Some(tid) = self.thread_group.pending_exec_successor()
+            {
+                drop(registration);
+                let status = self.await_exec_successor(tid)?;
+                let (stdout, stderr) = executor.take_output();
+                return Ok((status, stdout, stderr));
+            }
             if let Some(status) = self.guest_thread_group_exit_status() {
                 if !self.is_guest_thread {
                     self.cancel_guest_threads();
@@ -1525,7 +1901,6 @@ impl KvmBackend {
         Ok(GuestThreadRegistration {
             group: self.thread_group.clone(),
             pthread,
-            root: !self.is_guest_thread,
             restore_blocked_signal,
         })
     }
@@ -1540,8 +1915,12 @@ impl KvmBackend {
 
     // TODO-HUMAN-REVIEW(PR-172): Review signal-driven KVM worker cancellation.
     pub(crate) fn cancel_guest_threads(&self) {
+        // Publish cancellation before taking the successor lock. A worker that
+        // races this path then either declines its request or gets removed and
+        // awakened by `cancel_exec_successor` before the leader joins it.
         self.thread_group.cancel_workers();
         if !self.is_guest_thread {
+            self.thread_group.cancel_exec_successor();
             self.thread_group.join_workers();
         }
     }
@@ -1771,12 +2150,20 @@ mod tests {
         let worker_group = group.clone();
         let worker_finished = outer_finished.clone();
         let child_finished = nested_finished.clone();
-        group.add_worker_handle(std::thread::spawn(move || {
-            worker_group.add_worker_handle(std::thread::spawn(move || {
-                child_finished.store(true, Ordering::Release);
-            }));
-            worker_finished.store(true, Ordering::Release);
-        }));
+        group.add_worker_handle(
+            2,
+            std::thread::spawn(move || {
+                worker_group.add_worker_handle(
+                    3,
+                    std::thread::spawn(move || {
+                        child_finished.store(true, Ordering::Release);
+                        Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
+                    }),
+                );
+                worker_finished.store(true, Ordering::Release);
+                Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
+            }),
+        );
 
         group.join_workers();
 
@@ -1791,12 +2178,16 @@ mod tests {
         let worker_group = group.clone();
         let worker_finished = Arc::new(AtomicBool::new(false));
         let finished = worker_finished.clone();
-        group.add_worker_handle(std::thread::spawn(move || {
-            while !worker_group.cancelled.load(Ordering::Acquire) {
-                std::thread::yield_now();
-            }
-            finished.store(true, Ordering::Release);
-        }));
+        group.add_worker_handle(
+            2,
+            std::thread::spawn(move || {
+                while !worker_group.cancelled.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+                finished.store(true, Ordering::Release);
+                Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
+            }),
+        );
         *group.exit_status.lock().unwrap() = Some(ExitStatus::Exited(127));
 
         group.cancel_workers();
@@ -1807,6 +2198,64 @@ mod tests {
         assert!(group.worker_handles.lock().unwrap().is_empty());
         assert_eq!(group.exit_status(), None);
         assert!(!group.cancelled.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn leader_cancellation_releases_a_pending_worker_exec() {
+        let group = Arc::new(GuestThreadGroup::default());
+        let worker_group = group.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        group.add_worker_handle(
+            2,
+            std::thread::spawn(move || {
+                sender.send(worker_group.request_exec_successor(2)).unwrap();
+                Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
+            }),
+        );
+
+        while group.exec_successor.lock().unwrap().is_none() {
+            std::thread::yield_now();
+        }
+        group.cancel_exec_successor();
+        group.cancel_workers();
+        group.join_workers();
+
+        assert_eq!(receiver.recv().unwrap(), ExecSuccessorRequest::LostRace);
+        assert!(group.exec_successor.lock().unwrap().is_none());
+        assert!(group.cancelled.load(Ordering::Acquire));
+        assert_eq!(
+            group.request_exec_successor(3),
+            ExecSuccessorRequest::LostRace
+        );
+        assert!(group.exec_successor.lock().unwrap().is_none());
+
+        group.rearm_after_exec();
+        assert!(group.begin_blocking_process_child());
+        assert_eq!(
+            group.request_exec_successor(3),
+            ExecSuccessorRequest::LeaderBlocked
+        );
+        group.finish_blocking_process_child();
+        assert_eq!(group.blocking_process_children.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn leader_exec_refuses_a_blocking_worker_child_before_cancellation() {
+        let group = GuestThreadGroup::default();
+        assert!(group.begin_blocking_process_child());
+
+        assert!(
+            !group.begin_leader_exec(),
+            "leader exec must not strand a worker's separate child thread group"
+        );
+        assert!(
+            !group.cancelled.load(Ordering::Acquire),
+            "a refused exec must leave the old process runnable"
+        );
+
+        group.finish_blocking_process_child();
+        assert!(group.begin_leader_exec());
+        assert!(group.cancelled.load(Ordering::Acquire));
     }
 
     #[test]
