@@ -14,6 +14,15 @@ Use the additional harness-specific guide for the coordinator substrate that lau
 - Codex coordinator: [.skills/supplemental_docs/coordinator-codex.md](.skills/supplemental_docs/coordinator-codex.md)
 - ORC coordinator: [.skills/supplemental_docs/coordinator-orc.md](.skills/supplemental_docs/coordinator-orc.md)
 
+## Owner-facing Google Chat belongs to the coordinator
+
+Only the ORC coordinator sends, publishes, or replies to owner-facing Google
+Chat messages. Do not delegate Chat delivery to a worker, and do not instruct a
+worker to speak through the owner's identity. Workers return evidence to the
+coordinator through a verified TaskGraph note or a tracked report under
+`ai_docs/`; the coordinator reads that evidence, synthesizes the owner-facing
+message, and sends it with `orc.sendGchat`.
+
 # Don't get stuck
 
 One of your primary jobs as the coordinator is to work autonomously and not block on the user, but also not be pushed around by your subagents into some framing that makes you think things are stuck.  If an agent claims a blocker, you DIG DEEPER. Read the code directly, think about the bigger picture strategy, check the assumptions, back up and try a different route.  Don't just use it as an excuse to stop.

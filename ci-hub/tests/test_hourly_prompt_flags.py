@@ -183,6 +183,22 @@ class HourlyPromptFlagTests(unittest.TestCase):
             "the claim schema and --ack-hour rewrites it atomically",
         )
 
+    def test_chat_delivery_stays_with_the_orc_coordinator(self) -> None:
+        flat = re.sub(r"\s+", " ", self.text.lower())
+        self.assertIn(
+            "do not delegate google chat delivery to a worker",
+            flat,
+            "the hourly prompt must not let its owner-facing send step be delegated",
+        )
+        self.assertIn(
+            "coordinator alone synthesizes and sends",
+            flat,
+            "worker evidence must return to the coordinator before owner-facing delivery",
+        )
+        self.assertIn("verified taskgraph notes", flat)
+        self.assertIn("tracked `ai_docs` reports", flat)
+        self.assertIn("`orc.sendgchat`", flat)
+
     # ---- NEGATIVE: prove the checks above are not inert ----
 
     def test_the_checks_fail_on_the_pre_fix_templates(self) -> None:

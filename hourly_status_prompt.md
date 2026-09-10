@@ -14,6 +14,11 @@ deduplication.
 
 HOURLY OWNER STATUS IS DUE.
 
+This prompt is for the ORC coordinator. Do not delegate Google Chat delivery to
+a worker. Workers return evidence through verified TaskGraph notes or tracked
+`ai_docs` reports; the coordinator alone synthesizes and sends the owner-facing
+message with `orc.sendGchat`.
+
 Do all four steps, in order. Steps 3 and 4 are the ones that have silently
 failed before, so do not stop after sending.
 
