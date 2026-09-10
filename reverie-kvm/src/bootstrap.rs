@@ -289,6 +289,47 @@ pub(crate) fn configure_user_segments(vcpu: &VcpuFd) -> Result<()> {
     Ok(())
 }
 
+/// Reconstructs the userspace register file stopped at a syscall boundary.
+///
+/// The live vCPU is executing the ring-zero VMCALL trampoline, which has
+/// overwritten RAX/RBX/RCX/RDX/RSI. The transport frame is authoritative for
+/// those registers and for the userspace return RIP and RFLAGS.
+pub(crate) fn process_syscall_return_registers(
+    memory: &GuestMemory,
+    mut registers: kvm_bindings::kvm_regs,
+    syscall_frame_address: u64,
+    result: i64,
+    stack_pointer: Option<u64>,
+) -> Result<kvm_bindings::kvm_regs> {
+    let return_rip = read_u64(
+        memory,
+        frame_word_address_u64(syscall_frame_address, RETURN_RIP_WORD),
+    )?;
+    let return_flags = read_u64(
+        memory,
+        frame_word_address_u64(syscall_frame_address, RETURN_FLAGS_WORD),
+    )?;
+    registers.rax = result as u64;
+    registers.rdi = read_u64(memory, frame_word_address_u64(syscall_frame_address, 1))?;
+    registers.rsi = read_u64(memory, frame_word_address_u64(syscall_frame_address, 2))?;
+    registers.rdx = read_u64(memory, frame_word_address_u64(syscall_frame_address, 3))?;
+    registers.r10 = read_u64(memory, frame_word_address_u64(syscall_frame_address, 4))?;
+    registers.r8 = read_u64(memory, frame_word_address_u64(syscall_frame_address, 5))?;
+    registers.r9 = read_u64(memory, frame_word_address_u64(syscall_frame_address, 6))?;
+    registers.rbx = read_u64(
+        memory,
+        frame_word_address_u64(syscall_frame_address, SAVED_RBX_WORD),
+    )?;
+    registers.rcx = return_rip;
+    registers.r11 = return_flags;
+    registers.rip = return_rip;
+    registers.rflags = return_flags;
+    if let Some(stack_pointer) = stack_pointer {
+        registers.rsp = stack_pointer;
+    }
+    Ok(registers)
+}
+
 // TODO-HUMAN-REVIEW(PR-172): Review syscall-frame selection for concurrent vCPUs.
 pub(crate) fn configure_process_syscall_return(
     memory: &GuestMemory,
@@ -298,36 +339,70 @@ pub(crate) fn configure_process_syscall_return(
     stack_pointer: Option<u64>,
 ) -> Result<()> {
     configure_user_segments(vcpu)?;
-
-    let return_rip = read_u64(
+    let regs = process_syscall_return_registers(
         memory,
-        frame_word_address_u64(syscall_frame_address, RETURN_RIP_WORD),
+        vcpu.get_regs()?,
+        syscall_frame_address,
+        result,
+        stack_pointer,
     )?;
-    let return_flags = read_u64(
-        memory,
-        frame_word_address_u64(syscall_frame_address, RETURN_FLAGS_WORD),
-    )?;
-    let mut regs = vcpu.get_regs()?;
-    regs.rax = result as u64;
-    regs.rdi = read_u64(memory, frame_word_address_u64(syscall_frame_address, 1))?;
-    regs.rsi = read_u64(memory, frame_word_address_u64(syscall_frame_address, 2))?;
-    regs.rdx = read_u64(memory, frame_word_address_u64(syscall_frame_address, 3))?;
-    regs.r10 = read_u64(memory, frame_word_address_u64(syscall_frame_address, 4))?;
-    regs.r8 = read_u64(memory, frame_word_address_u64(syscall_frame_address, 5))?;
-    regs.r9 = read_u64(memory, frame_word_address_u64(syscall_frame_address, 6))?;
-    regs.rbx = read_u64(
-        memory,
-        frame_word_address_u64(syscall_frame_address, SAVED_RBX_WORD),
-    )?;
-    regs.rcx = return_rip;
-    regs.r11 = return_flags;
-    regs.rip = return_rip;
-    regs.rflags = return_flags;
-    if let Some(stack_pointer) = stack_pointer {
-        regs.rsp = stack_pointer;
-    }
     vcpu.set_regs(&regs)?;
     Ok(())
+}
+
+/// Stages a userspace register file for the trampoline that is currently
+/// stopped at its VMCALL. KVM completes that instruction before observing a
+/// register write, so changing CS/RIP here would resume the remaining ring-zero
+/// trampoline under user segments. Instead, put every trampoline-restored
+/// register in its transport word and change only the registers it preserves.
+pub(crate) fn stage_process_syscall_return(
+    memory: &mut GuestMemory,
+    vcpu: &VcpuFd,
+    syscall_frame_address: u64,
+    registers: kvm_bindings::kvm_regs,
+) -> Result<()> {
+    for (word, value) in [
+        (RESULT_WORD, registers.rax),
+        (1, registers.rdi),
+        (2, registers.rsi),
+        (3, registers.rdx),
+        (4, registers.r10),
+        (5, registers.r8),
+        (6, registers.r9),
+        (RETURN_RIP_WORD, registers.rip),
+        (RETURN_FLAGS_WORD, registers.rflags),
+        (SAVED_RBX_WORD, registers.rbx),
+    ] {
+        write_u64(
+            memory,
+            frame_word_address_u64(syscall_frame_address, word),
+            value,
+        )?;
+    }
+    let mut live = vcpu.get_regs()?;
+    live.rbp = registers.rbp;
+    live.rsp = registers.rsp;
+    live.r12 = registers.r12;
+    live.r13 = registers.r13;
+    live.r14 = registers.r14;
+    live.r15 = registers.r15;
+    vcpu.set_regs(&live)?;
+    Ok(())
+}
+
+pub(crate) fn syscall_hypercall_address(
+    hypercall_instruction: [u8; 3],
+    syscall_trampoline_address: u64,
+    syscall_frame_address: u64,
+) -> u64 {
+    let trampoline = syscall_trampoline(hypercall_instruction, syscall_frame_address);
+    let offset = trampoline
+        .windows(hypercall_instruction.len())
+        .position(|window| window == hypercall_instruction)
+        .expect("syscall trampoline must contain its hypercall");
+    syscall_trampoline_address
+        .checked_add(offset as u64)
+        .expect("syscall hypercall address must not overflow")
 }
 
 // TODO-HUMAN-REVIEW(PR-172): Review per-thread trampoline park/unpark updates.
@@ -339,10 +414,11 @@ pub(crate) fn set_syscall_return_park(
     park: bool,
 ) -> Result<()> {
     let trampoline = syscall_trampoline(hypercall_instruction, syscall_frame_address);
-    let return_offset = trampoline
-        .windows(hypercall_instruction.len())
-        .position(|window| window == hypercall_instruction)
-        .expect("syscall trampoline must contain its hypercall")
+    let return_offset = (syscall_hypercall_address(
+        hypercall_instruction,
+        syscall_trampoline_address,
+        syscall_frame_address,
+    ) - syscall_trampoline_address) as usize
         + hypercall_instruction.len();
     let byte = if park {
         0xf4
@@ -731,6 +807,7 @@ fn frame_word_address_u64(syscall_frame_address: u64, word: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SyscallRequest;
 
     #[test]
     fn trampoline_preserves_syscall_return_state() {
@@ -739,6 +816,58 @@ mod tests {
         assert!(code.windows(3).any(|window| window == [0x0f, 0x01, 0xc1]));
         assert_eq!(&code[code.len() - 3..], &[0x48, 0x0f, 0x07]);
         assert!(code.len() < THREAD_TSS_OFFSET as usize);
+    }
+
+    #[test]
+    fn signal_context_uses_transport_frame_not_poisoned_trampoline_registers() {
+        const FRAME: u64 = 0x1000;
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let request =
+            SyscallRequest::new(libc::SYS_kill as u64, [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        request.write_to(&mut memory, FRAME).unwrap();
+        memory
+            .write_raw(
+                frame_word_address_u64(FRAME, RETURN_RIP_WORD),
+                &0x1234_5678_u64.to_le_bytes(),
+            )
+            .unwrap();
+        memory
+            .write_raw(
+                frame_word_address_u64(FRAME, RETURN_FLAGS_WORD),
+                &0x202_u64.to_le_bytes(),
+            )
+            .unwrap();
+        memory
+            .write_raw(
+                frame_word_address_u64(FRAME, SAVED_RBX_WORD),
+                &0x7777_u64.to_le_bytes(),
+            )
+            .unwrap();
+        let live = kvm_bindings::kvm_regs {
+            rax: u64::MAX,
+            rbx: u64::MAX,
+            rcx: u64::MAX,
+            rdx: u64::MAX,
+            rsi: u64::MAX,
+            r12: 0x1212,
+            rsp: 0x7fff_f000,
+            ..Default::default()
+        };
+        let restored = process_syscall_return_registers(&memory, live, FRAME, 0, None).unwrap();
+        let context = crate::signal::Sigcontext::from_kvm(
+            restored,
+            0x7fff_e000,
+            crate::signal::KernelSigset::default(),
+        );
+        assert_eq!(
+            (context.rax, context.rdi, context.rsi, context.rdx),
+            (0, 0x11, 0x22, 0x33)
+        );
+        assert_eq!((context.r10, context.r8, context.r9), (0x44, 0x55, 0x66));
+        assert_eq!(
+            (context.rbx, context.rip, context.rflags),
+            (0x7777, 0x1234_5678, 0x202)
+        );
     }
 
     #[test]

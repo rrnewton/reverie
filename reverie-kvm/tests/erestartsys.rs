@@ -46,6 +46,9 @@ fn kvm_available(test: &str) -> bool {
     match Kvm::new() {
         Ok(_) => true,
         Err(error) if kvm_is_unavailable(&error) => {
+            if std::env::var_os("REVERIE_REQUIRE_KVM").is_some() {
+                panic!("{test} requires usable /dev/kvm: {error}");
+            }
             eprintln!("skipping {test}: cannot open /dev/kvm: {error}");
             false
         }
