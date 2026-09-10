@@ -321,12 +321,14 @@ impl<K: Ord> CounterSnapshot<K> {
     }
 
     /// Returns the count for one named key, or zero when it was not observed.
+    ///
+    /// Duplicate entries are summed as in [`Self::new`], independent of entry order.
     pub fn count(&self, key: &K) -> u64 {
         self.counts
-            .binary_search_by(|(candidate, _)| candidate.cmp(key))
-            .ok()
-            .map(|index| self.counts[index].1)
-            .unwrap_or(0)
+            .iter()
+            .filter(|(candidate, _)| candidate == key)
+            .map(|(_, count)| count)
+            .sum()
     }
 
     /// Returns the sum of all counters.
