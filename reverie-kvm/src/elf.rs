@@ -143,6 +143,30 @@ pub(crate) struct PendingDescriptorRight {
     pub file: std::fs::File,
     pub inotify: Option<std::sync::Arc<std::sync::Mutex<InotifyDescriptionState>>>,
     pub socket: Option<PendingSocketRight>,
+    // Set only while a strong socket right is queued. Its Drop implementation
+    // removes exactly one reverse edge, including rollback and owner teardown.
+    pub socket_owner: Option<std::sync::Weak<SocketDescriptionState>>,
+}
+
+impl Drop for PendingDescriptorRight {
+    fn drop(&mut self) {
+        let (Some(PendingSocketRight::Strong(socket)), Some(owner)) =
+            (&self.socket, &self.socket_owner)
+        else {
+            return;
+        };
+        let owner = owner.as_ptr();
+        let mut owners = socket
+            .strong_owners
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(index) = owners
+            .iter()
+            .rposition(|candidate| candidate.as_ptr() == owner)
+        {
+            owners.swap_remove(index);
+        }
+    }
 }
 
 // Queued socket rights normally own their description until receipt. A socket
@@ -197,6 +221,9 @@ pub(crate) struct SocketDescriptionState {
     pub peer: std::sync::Mutex<Option<std::sync::Weak<SocketDescriptionState>>>,
     pub pending_rights: std::sync::Mutex<PendingSocketMessages>,
     pub send_lock: std::sync::Mutex<()>,
+    // One weak entry per live queued strong edge. Multiplicity matters: a
+    // receiver can own the same child through several rights or messages.
+    pub strong_owners: std::sync::Mutex<Vec<std::sync::Weak<SocketDescriptionState>>>,
 }
 
 impl SocketDescriptionState {
@@ -206,6 +233,7 @@ impl SocketDescriptionState {
             peer: std::sync::Mutex::new(None),
             pending_rights: std::sync::Mutex::new(PendingSocketMessages::default()),
             send_lock: std::sync::Mutex::new(()),
+            strong_owners: std::sync::Mutex::new(Vec::new()),
         }
     }
 }

@@ -48,6 +48,15 @@ const PAGE_SIZE: u64 = 4096;
 const GUEST_NOFILE_LIMIT: libc::c_int = 1 << 20;
 const SCM_MAX_FD: usize = 253;
 const MAX_PENDING_INOTIFY_COOKIES: usize = 4096;
+// Queued SCM_RIGHTS state owns socket descriptions through Arc. A bounded
+// strong path also bounds the call-stack depth when the last root is closed.
+const MAX_SOCKET_TRANSFER_DEPTH: usize = 64;
+// Cycle and depth validation is performed before the host send. Bound the
+// number of distinct descriptions inspected by one insertion as well.
+const MAX_SOCKET_TRANSFER_GRAPH_NODES: usize = 4096;
+// Count every strong edge examined or proposed, including duplicates, so a
+// shallow graph with many queued rights cannot make validation unbounded.
+const MAX_SOCKET_TRANSFER_GRAPH_EDGES: usize = 4096;
 // Serializes every mutation/traversal of pending socket-transfer ownership so
 // two simultaneous sends cannot independently close a strong reference cycle.
 static SOCKET_TRANSFER_GRAPH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -2973,7 +2982,24 @@ fn write(
         },
         None => None,
     };
-    let result = write_without_sigpipe(host_fd, &bytes);
+    let result = if sender.is_some() {
+        // The graph transaction remains locked until finish/rollback. Force
+        // socket writes nonblocking even when the guest descriptor is
+        // blocking; Detcore owns the scheduler-visible EAGAIN retry.
+        let written = unsafe {
+            libc::send(
+                host_fd,
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+            )
+        };
+        (written < 0)
+            .then(std::io::Error::last_os_error)
+            .map_or(written as i64, io_error)
+    } else {
+        write_without_sigpipe(host_fd, &bytes)
+    };
     if result < 0 {
         rollback_socket_message(published.as_ref());
     } else {
@@ -6565,7 +6591,7 @@ fn sendto(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
             host_fd,
             bytes.as_ptr().cast::<libc::c_void>(),
             bytes.len(),
-            flags | libc::MSG_NOSIGNAL,
+            flags | libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
             address_pointer,
             address_length,
         )
@@ -6846,6 +6872,7 @@ fn translate_outgoing_control(
                     file: duplicate_host_fd(host_fd)?,
                     inotify,
                     socket,
+                    socket_owner: None,
                 })
             } else {
                 None
@@ -6860,6 +6887,7 @@ struct PublishedSocketMessage {
     receiver: Arc<SocketDescriptionState>,
     id: u64,
     expected_length: usize,
+    _graph_guard: std::sync::MutexGuard<'static, ()>,
 }
 
 fn pending_socket_description(socket: &PendingSocketRight) -> Option<Arc<SocketDescriptionState>> {
@@ -6869,32 +6897,122 @@ fn pending_socket_description(socket: &PendingSocketRight) -> Option<Arc<SocketD
     }
 }
 
-fn socket_reaches(
-    start: &Arc<SocketDescriptionState>,
-    target: &Arc<SocketDescriptionState>,
-    visited: &mut std::collections::BTreeSet<usize>,
-) -> bool {
-    if Arc::ptr_eq(start, target) {
-        return true;
+fn inspect_socket_graph_node(
+    nodes: &mut std::collections::BTreeSet<usize>,
+    socket: &Arc<SocketDescriptionState>,
+) -> Result<(), i64> {
+    let key = Arc::as_ptr(socket) as usize;
+    if !nodes.contains(&key) && nodes.len() >= MAX_SOCKET_TRANSFER_GRAPH_NODES {
+        return Err(negative_errno(libc::EOPNOTSUPP));
     }
-    if !visited.insert(Arc::as_ptr(start) as usize) {
-        return false;
-    }
-    let targets = start
-        .pending_rights
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .messages
-        .iter()
-        .flat_map(|message| message.rights.iter().flatten())
-        .filter_map(|right| right.socket.as_ref())
-        .filter_map(pending_socket_description)
-        .collect::<Vec<_>>();
-    targets
-        .iter()
-        .any(|socket| socket_reaches(socket, target, visited))
+    nodes.insert(key);
+    Ok(())
 }
 
+fn inspect_socket_graph_edge(edges: &mut usize) -> Result<(), i64> {
+    if *edges >= MAX_SOCKET_TRANSFER_GRAPH_EDGES {
+        return Err(negative_errno(libc::EOPNOTSUPP));
+    }
+    *edges += 1;
+    Ok(())
+}
+
+fn maximum_socket_owner_depth(
+    receiver: &Arc<SocketDescriptionState>,
+    nodes: &mut std::collections::BTreeSet<usize>,
+    edges: &mut usize,
+) -> Result<usize, i64> {
+    let mut work = std::collections::VecDeque::from([(receiver.clone(), 0usize)]);
+    let mut depths = std::collections::BTreeMap::new();
+    let mut maximum = 0usize;
+    while let Some((socket, depth)) = work.pop_front() {
+        if depth > MAX_SOCKET_TRANSFER_DEPTH {
+            return Err(negative_errno(libc::EOPNOTSUPP));
+        }
+        let key = Arc::as_ptr(&socket) as usize;
+        if depths.get(&key).is_some_and(|seen| *seen >= depth) {
+            continue;
+        }
+        inspect_socket_graph_node(nodes, &socket)?;
+        depths.insert(key, depth);
+        maximum = maximum.max(depth);
+        let owners = socket
+            .strong_owners
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        for owner in owners {
+            inspect_socket_graph_edge(edges)?;
+            if let Some(owner) = owner.upgrade() {
+                work.push_back((owner, depth + 1));
+            }
+        }
+    }
+    Ok(maximum)
+}
+
+fn validate_socket_transfer_graph(
+    receiver: &Arc<SocketDescriptionState>,
+    rights: &[Option<PendingDescriptorRight>],
+) -> Result<(), i64> {
+    let proposed = rights
+        .iter()
+        .flatten()
+        .filter_map(|right| match right.socket.as_ref() {
+            Some(PendingSocketRight::Strong(socket)) if !Arc::ptr_eq(socket, receiver) => {
+                Some(socket.clone())
+            }
+            Some(PendingSocketRight::Strong(_)) | Some(PendingSocketRight::Weak(_)) | None => None,
+        })
+        .collect::<Vec<_>>();
+    if proposed.is_empty() {
+        return Ok(());
+    }
+
+    let mut nodes = std::collections::BTreeSet::new();
+    let mut edges = 0usize;
+    let owner_depth = maximum_socket_owner_depth(receiver, &mut nodes, &mut edges)?;
+    let mut work = std::collections::VecDeque::new();
+    for socket in proposed {
+        inspect_socket_graph_edge(&mut edges)?;
+        work.push_back((socket, owner_depth + 1));
+    }
+
+    let mut depths = std::collections::BTreeMap::new();
+    while let Some((socket, depth)) = work.pop_front() {
+        if Arc::ptr_eq(&socket, receiver) || depth > MAX_SOCKET_TRANSFER_DEPTH {
+            return Err(negative_errno(libc::EOPNOTSUPP));
+        }
+        let key = Arc::as_ptr(&socket) as usize;
+        if depths.get(&key).is_some_and(|seen| *seen >= depth) {
+            continue;
+        }
+        inspect_socket_graph_node(&mut nodes, &socket)?;
+        depths.insert(key, depth);
+
+        let children = socket
+            .pending_rights
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .messages
+            .iter()
+            .flat_map(|message| message.rights.iter().flatten())
+            .filter_map(|right| match right.socket.as_ref() {
+                Some(PendingSocketRight::Strong(socket)) => Some(socket.clone()),
+                Some(PendingSocketRight::Weak(_)) | None => None,
+            })
+            .collect::<Vec<_>>();
+        for child in children {
+            inspect_socket_graph_edge(&mut edges)?;
+            work.push_back((child, depth + 1));
+        }
+    }
+    Ok(())
+}
+
+// `write` and `sendto` call this with an empty rights vector to record byte or
+// datagram boundaries. `sendmsg` is the only caller that can publish nonempty
+// descriptor state.
 fn publish_socket_message(
     sender: &Arc<SocketDescriptionState>,
     mut rights: Vec<Option<PendingDescriptorRight>>,
@@ -6917,35 +7035,42 @@ fn publish_socket_message(
         // message. Let the host send report its native closed-peer errno.
         return Ok(None);
     };
-    let _graph = SOCKET_TRANSFER_GRAPH_LOCK
+    let graph_guard = SOCKET_TRANSFER_GRAPH_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    for right in rights.iter().flatten() {
-        let Some(socket) = right.socket.as_ref().and_then(pending_socket_description) else {
-            continue;
-        };
-        if !Arc::ptr_eq(&socket, &receiver)
-            && socket_reaches(&socket, &receiver, &mut std::collections::BTreeSet::new())
-        {
-            return Err(negative_errno(libc::EOPNOTSUPP));
-        }
-    }
+    validate_socket_transfer_graph(&receiver, &rights)?;
+    let (id, next_id) = {
+        let pending = receiver
+            .pending_rights
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let id = pending.next_id;
+        let next_id = id
+            .checked_add(1)
+            .ok_or_else(|| negative_errno(libc::EOVERFLOW))?;
+        (id, next_id)
+    };
     for right in rights.iter_mut().flatten() {
         let Some(PendingSocketRight::Strong(socket)) = right.socket.as_ref() else {
             continue;
         };
         if Arc::ptr_eq(socket, &receiver) {
             right.socket = Some(PendingSocketRight::Weak(Arc::downgrade(socket)));
+        } else {
+            let owner = Arc::downgrade(&receiver);
+            socket
+                .strong_owners
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(owner.clone());
+            right.socket_owner = Some(owner);
         }
     }
     let mut pending = receiver
         .pending_rights
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let id = pending.next_id;
-    pending.next_id = id
-        .checked_add(1)
-        .ok_or_else(|| negative_errno(libc::EOVERFLOW))?;
+    pending.next_id = next_id;
     pending.messages.push_back(PendingSocketMessage {
         id,
         remaining: payload_length,
@@ -6957,14 +7082,12 @@ fn publish_socket_message(
         receiver,
         id,
         expected_length: payload_length,
+        _graph_guard: graph_guard,
     }))
 }
 
 fn rollback_socket_message(published: Option<&PublishedSocketMessage>) {
     if let Some(published) = published {
-        let _graph = SOCKET_TRANSFER_GRAPH_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         published
             .receiver
             .pending_rights
@@ -6979,9 +7102,6 @@ fn finish_socket_send(published: Option<&PublishedSocketMessage>, sent: usize) {
     let Some(published) = published else {
         return;
     };
-    let _graph = SOCKET_TRANSFER_GRAPH_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if published.receiver.message_oriented {
         return;
     }
@@ -7022,6 +7142,7 @@ fn expected_socket_rights(
     messages: &std::collections::VecDeque<PendingSocketMessage>,
     message_oriented: bool,
     received_length: usize,
+    control_observed: bool,
 ) -> (bool, Vec<&Option<PendingDescriptorRight>>) {
     if message_oriented {
         return messages
@@ -7030,7 +7151,15 @@ fn expected_socket_rights(
             .unwrap_or_default();
     }
     if received_length == 0 {
-        return (false, Vec::new());
+        return if control_observed {
+            messages
+                .front()
+                .filter(|message| message.at_start)
+                .map(|message| (true, message.rights.iter().collect()))
+                .unwrap_or_default()
+        } else {
+            (false, Vec::new())
+        };
     }
     let mut remaining = received_length;
     let mut tracked = false;
@@ -7056,10 +7185,25 @@ fn consume_socket_messages(
     messages: &mut std::collections::VecDeque<PendingSocketMessage>,
     message_oriented: bool,
     received_length: usize,
+    consume_control_boundary: bool,
 ) {
     if message_oriented {
         messages.pop_front();
         return;
+    }
+    if consume_control_boundary {
+        while messages
+            .front()
+            .is_some_and(|message| message.remaining == 0)
+        {
+            messages.pop_front();
+        }
+        if let Some(message) = messages.front_mut()
+            && message.at_start
+        {
+            message.rights.clear();
+            message.at_start = false;
+        }
     }
     let mut remaining = received_length;
     while remaining != 0 {
@@ -7118,8 +7262,12 @@ fn attach_received_descriptor_state(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let (tracked, validation) = {
-        let (tracked, expected) =
-            expected_socket_rights(&pending.messages, socket.message_oriented, received_length);
+        let (tracked, expected) = expected_socket_rights(
+            &pending.messages,
+            socket.message_oriented,
+            received_length,
+            !rights.is_empty() || control_truncated,
+        );
         if !tracked {
             let valid = rights.iter().all(|right| {
                 !host_fd_is_inotify(right.file.as_raw_fd())
@@ -7201,6 +7349,7 @@ fn attach_received_descriptor_state(
             &mut pending.messages,
             socket.message_oriented,
             received_length,
+            tracked,
         );
     }
     validation
@@ -7235,6 +7384,7 @@ fn discard_received_socket_message(
         &mut pending.messages,
         socket.message_oriented,
         received_length,
+        false,
     );
 }
 
@@ -7577,7 +7727,7 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
         libc::sendmsg(
             host_fd,
             std::ptr::from_ref(&host_header),
-            flags | libc::MSG_NOSIGNAL,
+            flags | libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
         )
     };
     if result < 0 {
@@ -12728,6 +12878,110 @@ mod tests {
         (result, received.msg_flags, rights)
     }
 
+    fn receive_rights_message_with_empty_iov(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        socket_fd: libc::c_int,
+        control_capacity: usize,
+        flags: libc::c_int,
+    ) -> (i64, libc::c_int, Vec<libc::c_int>) {
+        const IOV: u64 = 0x980;
+        const CONTROL: u64 = 0xa00;
+        const MESSAGE: u64 = 0xf00;
+        let iov = libc::iovec {
+            iov_base: std::ptr::null_mut(),
+            iov_len: 0,
+        };
+        assert_eq!(write_struct(memory, IOV, &iov), 0);
+        if control_capacity != 0 {
+            memory.write(CONTROL, &vec![0; control_capacity]).unwrap();
+        }
+        let mut message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        message.msg_iov = IOV as usize as *mut libc::iovec;
+        message.msg_iovlen = 1;
+        if control_capacity != 0 {
+            message.msg_control = CONTROL as usize as *mut libc::c_void;
+            message.msg_controllen = control_capacity;
+        }
+        assert_eq!(write_struct(memory, MESSAGE, &message), 0);
+        let result = syscall_result(
+            memory,
+            state,
+            libc::SYS_recvmsg,
+            [socket_fd as u64, MESSAGE, flags as u64, 0, 0, 0],
+        );
+        let received: libc::msghdr = read_struct(memory, MESSAGE);
+        let mut control = vec![0; received.msg_controllen];
+        if !control.is_empty() {
+            memory.read(CONTROL, &mut control).unwrap();
+        }
+        let rights = if result < 0 {
+            Vec::new()
+        } else {
+            control_rights(&control)
+        };
+        (result, received.msg_flags, rights)
+    }
+
+    fn receive_two_rights_messages_with_empty_iov(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        socket_fd: libc::c_int,
+        control_capacity: usize,
+        flags: libc::c_int,
+    ) -> (i64, Vec<(libc::c_int, Vec<libc::c_int>)>) {
+        const MESSAGES: u64 = 0x300;
+        const IOVS: [u64; 2] = [0x400, 0x420];
+        const CONTROLS: [u64; 2] = [0x500, 0x600];
+        for index in 0..2 {
+            let iov = libc::iovec {
+                iov_base: std::ptr::null_mut(),
+                iov_len: 0,
+            };
+            assert_eq!(write_struct(memory, IOVS[index], &iov), 0);
+            if control_capacity != 0 {
+                memory
+                    .write(CONTROLS[index], &vec![0; control_capacity])
+                    .unwrap();
+            }
+            let mut message = unsafe { std::mem::zeroed::<libc::mmsghdr>() };
+            message.msg_hdr.msg_iov = IOVS[index] as usize as *mut libc::iovec;
+            message.msg_hdr.msg_iovlen = 1;
+            if control_capacity != 0 {
+                message.msg_hdr.msg_control = CONTROLS[index] as usize as *mut libc::c_void;
+                message.msg_hdr.msg_controllen = control_capacity;
+            }
+            assert_eq!(
+                write_struct(
+                    memory,
+                    MESSAGES + (index * std::mem::size_of::<libc::mmsghdr>()) as u64,
+                    &message,
+                ),
+                0
+            );
+        }
+        let result = syscall_result(
+            memory,
+            state,
+            libc::SYS_recvmmsg,
+            [socket_fd as u64, MESSAGES, 2, flags as u64, 0, 0],
+        );
+        let observations = (0..2)
+            .map(|index| {
+                let message: libc::mmsghdr = read_struct(
+                    memory,
+                    MESSAGES + (index * std::mem::size_of::<libc::mmsghdr>()) as u64,
+                );
+                let mut control = vec![0; message.msg_hdr.msg_controllen];
+                if !control.is_empty() {
+                    memory.read(CONTROLS[index], &mut control).unwrap();
+                }
+                (message.msg_hdr.msg_flags, control_rights(&control))
+            })
+            .collect();
+        (result, observations)
+    }
+
     fn assert_stream_peer_closed(peer: &UnixStream) {
         let mut byte = 0_u8;
         // SAFETY: peer owns a live socket and byte is writable for one byte.
@@ -12743,6 +12997,50 @@ mod tests {
             received,
             0,
             "owned socket endpoint remains open: {:?}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    fn synthetic_socket_right(
+        socket: Arc<SocketDescriptionState>,
+    ) -> Option<PendingDescriptorRight> {
+        Some(PendingDescriptorRight {
+            file: std::fs::File::open("/dev/null").unwrap(),
+            inotify: None,
+            socket: Some(PendingSocketRight::Strong(socket)),
+            socket_owner: None,
+        })
+    }
+
+    fn publish_synthetic_socket_edge(
+        receiver: &Arc<SocketDescriptionState>,
+        child: Arc<SocketDescriptionState>,
+    ) -> Result<(), i64> {
+        let sender = Arc::new(SocketDescriptionState::new(libc::SOCK_DGRAM));
+        *sender
+            .peer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::downgrade(receiver));
+        assert!(publish_socket_message(&sender, vec![synthetic_socket_right(child)], 1)?.is_some());
+        Ok(())
+    }
+
+    fn assert_guest_socket_has_no_payload(state: &LoadedStaticElf, fd: libc::c_int) {
+        let mut byte = 0_u8;
+        // SAFETY: byte is writable and the mapped host descriptor is live.
+        let result = unsafe {
+            libc::recv(
+                host_fd(state, fd).unwrap(),
+                std::ptr::from_mut(&mut byte).cast(),
+                1,
+                libc::MSG_DONTWAIT,
+            )
+        };
+        assert_eq!(result, -1);
+        let error = std::io::Error::last_os_error().raw_os_error();
+        assert!(
+            error == Some(libc::EAGAIN) || error == Some(libc::EWOULDBLOCK),
+            "unexpected empty-socket result: {:?}",
             std::io::Error::last_os_error()
         );
     }
@@ -20754,6 +21052,188 @@ mod tests {
     }
 
     #[test]
+    fn empty_stream_recvmsg_consumes_control_without_consuming_payload() {
+        for (control_capacity, peek) in [(64, false), (0, false), (64, true), (0, true)] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_STREAM, 0x40);
+            let donated = guest_socketpair(&mut memory, &mut state, libc::SOCK_STREAM, 0x60);
+            let donated_description = state.socket_fds.get(&donated[0]).unwrap().clone();
+            let donated_weak = Arc::downgrade(&donated_description);
+            let receiver = state.socket_fds.get(&transport[1]).unwrap().clone();
+            assert_eq!(
+                send_rights_message(&mut memory, &mut state, transport[0], &[donated[0]]),
+                1,
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [donated[0] as u64, 0, 0, 0, 0, 0],
+                ),
+                0,
+            );
+
+            let flags = if peek { libc::MSG_PEEK } else { 0 };
+            let (received, message_flags, first_rights) = receive_rights_message_with_empty_iov(
+                &mut memory,
+                &mut state,
+                transport[1],
+                control_capacity,
+                flags,
+            );
+            assert_eq!(received, 0);
+            assert_eq!(message_flags & libc::MSG_CTRUNC != 0, control_capacity == 0,);
+            assert_eq!(first_rights.len(), usize::from(control_capacity != 0));
+            for fd in first_rights {
+                assert!(Arc::ptr_eq(
+                    state.socket_fds.get(&fd).unwrap(),
+                    &donated_weak.upgrade().unwrap(),
+                ));
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_close,
+                        [fd as u64, 0, 0, 0, 0, 0],
+                    ),
+                    0,
+                );
+            }
+            {
+                let pending = receiver.pending_rights.lock().unwrap();
+                assert_eq!(pending.len(), 1);
+                assert_eq!(pending.front().unwrap().remaining, 1);
+                assert_eq!(pending.front().unwrap().at_start, peek);
+                assert_eq!(pending.front().unwrap().rights.is_empty(), !peek);
+            }
+            assert_eq!(
+                donated_description.strong_owners.lock().unwrap().len(),
+                usize::from(peek),
+            );
+
+            let (received, message_flags, final_rights) =
+                receive_rights_message(&mut memory, &mut state, transport[1], 64, 0);
+            assert_eq!(received, 1);
+            assert_eq!(message_flags & libc::MSG_CTRUNC, 0);
+            assert_eq!(final_rights.len(), usize::from(peek));
+            for fd in final_rights {
+                assert!(Arc::ptr_eq(
+                    state.socket_fds.get(&fd).unwrap(),
+                    &donated_weak.upgrade().unwrap(),
+                ));
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_close,
+                        [fd as u64, 0, 0, 0, 0, 0],
+                    ),
+                    0,
+                );
+            }
+            assert!(receiver.pending_rights.lock().unwrap().is_empty());
+            drop(donated_description);
+            assert!(donated_weak.upgrade().is_none());
+        }
+    }
+
+    #[test]
+    fn empty_stream_recvmmsg_tracks_each_full_truncated_and_peek_element() {
+        for (control_capacity, peek) in [(64, false), (0, false), (64, true), (0, true)] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_STREAM, 0x40);
+            let donated = guest_socketpair(&mut memory, &mut state, libc::SOCK_STREAM, 0x60);
+            let donated_description = state.socket_fds.get(&donated[0]).unwrap().clone();
+            let donated_weak = Arc::downgrade(&donated_description);
+            let receiver = state.socket_fds.get(&transport[1]).unwrap().clone();
+            assert_eq!(
+                send_rights_message(&mut memory, &mut state, transport[0], &[donated[0]]),
+                1,
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [donated[0] as u64, 0, 0, 0, 0, 0],
+                ),
+                0,
+            );
+
+            let flags = if peek { libc::MSG_PEEK } else { 0 };
+            let (received, observations) = receive_two_rights_messages_with_empty_iov(
+                &mut memory,
+                &mut state,
+                transport[1],
+                control_capacity,
+                flags,
+            );
+            assert_eq!(received, 2);
+            for (index, (message_flags, rights)) in observations.into_iter().enumerate() {
+                let control_present = peek || index == 0;
+                assert_eq!(
+                    message_flags & libc::MSG_CTRUNC != 0,
+                    control_present && control_capacity == 0,
+                );
+                assert_eq!(
+                    rights.len(),
+                    usize::from(control_present && control_capacity != 0),
+                );
+                for fd in rights {
+                    assert!(Arc::ptr_eq(
+                        state.socket_fds.get(&fd).unwrap(),
+                        &donated_weak.upgrade().unwrap(),
+                    ));
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_close,
+                            [fd as u64, 0, 0, 0, 0, 0],
+                        ),
+                        0,
+                    );
+                }
+            }
+            {
+                let pending = receiver.pending_rights.lock().unwrap();
+                assert_eq!(pending.len(), 1);
+                assert_eq!(pending.front().unwrap().remaining, 1);
+                assert_eq!(pending.front().unwrap().at_start, peek);
+                assert_eq!(pending.front().unwrap().rights.is_empty(), !peek);
+            }
+            assert_eq!(
+                donated_description.strong_owners.lock().unwrap().len(),
+                usize::from(peek),
+            );
+
+            let (received, _, final_rights) =
+                receive_rights_message(&mut memory, &mut state, transport[1], 64, 0);
+            assert_eq!(received, 1);
+            assert_eq!(final_rights.len(), usize::from(peek));
+            for fd in final_rights {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_close,
+                        [fd as u64, 0, 0, 0, 0, 0],
+                    ),
+                    0,
+                );
+            }
+            assert!(receiver.pending_rights.lock().unwrap().is_empty());
+            drop(donated_description);
+            assert!(donated_weak.upgrade().is_none());
+        }
+    }
+
+    #[test]
     fn socket_rights_break_self_cycles_and_refuse_indirect_cycles_before_send() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
@@ -20773,12 +21253,17 @@ mod tests {
 
         let pair_a = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x60);
         let pair_b = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x80);
+        let pair_c = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0xa0);
         assert_eq!(
             send_rights_message(&mut memory, &mut state, pair_b[0], &[pair_a[1]]),
             1
         );
         assert_eq!(
-            send_rights_message(&mut memory, &mut state, pair_a[0], &[pair_b[1]]),
+            send_rights_message(&mut memory, &mut state, pair_c[0], &[pair_b[1]]),
+            1
+        );
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, pair_a[0], &[pair_c[1]]),
             negative_errno(libc::EOPNOTSUPP)
         );
         assert!(
@@ -20791,6 +21276,443 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        assert_eq!(
+            state
+                .socket_fds
+                .get(&pair_b[1])
+                .unwrap()
+                .pending_rights
+                .lock()
+                .unwrap()
+                .len(),
+            1,
+        );
+        assert_eq!(
+            state
+                .socket_fds
+                .get(&pair_c[1])
+                .unwrap()
+                .pending_rights
+                .lock()
+                .unwrap()
+                .len(),
+            1,
+        );
+        assert_guest_socket_has_no_payload(&state, pair_a[1]);
+    }
+
+    #[test]
+    fn socket_rights_refuse_beyond_strong_depth_before_host_send() {
+        let mut graph_root = Arc::new(SocketDescriptionState::new(libc::SOCK_DGRAM));
+        let mut graph_weaks = vec![Arc::downgrade(&graph_root)];
+        for _ in 0..MAX_SOCKET_TRANSFER_DEPTH {
+            let parent = Arc::new(SocketDescriptionState::new(libc::SOCK_DGRAM));
+            publish_synthetic_socket_edge(&parent, graph_root).unwrap();
+            graph_weaks.push(Arc::downgrade(&parent));
+            graph_root = parent;
+        }
+        assert_eq!(
+            graph_weaks[0]
+                .upgrade()
+                .unwrap()
+                .strong_owners
+                .lock()
+                .unwrap()
+                .len(),
+            1,
+        );
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+        let donated = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x60);
+        drop(state.socket_fds.insert(donated[0], graph_root.clone()));
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, transport[0], &[donated[0]]),
+            negative_errno(libc::EOPNOTSUPP),
+        );
+        assert_guest_socket_has_no_payload(&state, transport[1]);
+        assert!(
+            state
+                .socket_fds
+                .get(&transport[1])
+                .unwrap()
+                .pending_rights
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(graph_root.pending_rights.lock().unwrap().len(), 1);
+        assert_eq!(
+            graph_weaks[0]
+                .upgrade()
+                .unwrap()
+                .strong_owners
+                .lock()
+                .unwrap()
+                .len(),
+            1,
+        );
+
+        drop(state);
+        drop(graph_root);
+        assert!(graph_weaks.iter().all(|socket| socket.upgrade().is_none()));
+    }
+
+    #[test]
+    fn socket_rights_refuse_beyond_graph_node_bound_before_host_send() {
+        let graph_root = Arc::new(SocketDescriptionState::new(libc::SOCK_DGRAM));
+        let mut child_weaks = Vec::with_capacity(MAX_SOCKET_TRANSFER_GRAPH_NODES - 1);
+        let mut rights = Vec::with_capacity(MAX_SOCKET_TRANSFER_GRAPH_NODES - 1);
+        for _ in 0..MAX_SOCKET_TRANSFER_GRAPH_NODES - 1 {
+            let child = Arc::new(SocketDescriptionState::new(libc::SOCK_DGRAM));
+            child_weaks.push(Arc::downgrade(&child));
+            rights.push(synthetic_socket_right(child));
+        }
+        graph_root
+            .pending_rights
+            .lock()
+            .unwrap()
+            .messages
+            .push_back(PendingSocketMessage {
+                id: 0,
+                remaining: 1,
+                at_start: true,
+                rights,
+            });
+        let overflow_right = graph_root
+            .pending_rights
+            .lock()
+            .unwrap()
+            .messages
+            .front_mut()
+            .unwrap()
+            .rights
+            .pop()
+            .unwrap();
+        let boundary_receiver = Arc::new(SocketDescriptionState::new(libc::SOCK_DGRAM));
+        let boundary_rights = vec![synthetic_socket_right(graph_root.clone())];
+        validate_socket_transfer_graph(&boundary_receiver, &boundary_rights)
+            .expect("exact graph-node boundary must remain accepted");
+        graph_root
+            .pending_rights
+            .lock()
+            .unwrap()
+            .messages
+            .front_mut()
+            .unwrap()
+            .rights
+            .push(overflow_right);
+        drop(boundary_rights);
+        drop(boundary_receiver);
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+        let donated = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x60);
+        drop(state.socket_fds.insert(donated[0], graph_root.clone()));
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, transport[0], &[donated[0]]),
+            negative_errno(libc::EOPNOTSUPP),
+        );
+        assert_guest_socket_has_no_payload(&state, transport[1]);
+        assert!(
+            state
+                .socket_fds
+                .get(&transport[1])
+                .unwrap()
+                .pending_rights
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+        let pending = graph_root.pending_rights.lock().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending.front().unwrap().rights.len(),
+            MAX_SOCKET_TRANSFER_GRAPH_NODES - 1,
+        );
+        drop(pending);
+        assert!(child_weaks.iter().all(|socket| socket.upgrade().is_some()));
+
+        drop(state);
+        drop(graph_root);
+        assert!(child_weaks.iter().all(|socket| socket.upgrade().is_none()));
+    }
+
+    #[test]
+    fn socket_rights_refuse_beyond_graph_edge_bound_before_host_send() {
+        let graph_root = Arc::new(SocketDescriptionState::new(libc::SOCK_DGRAM));
+        let child = Arc::new(SocketDescriptionState::new(libc::SOCK_DGRAM));
+        let child_weak = Arc::downgrade(&child);
+        let rights = (0..MAX_SOCKET_TRANSFER_GRAPH_EDGES)
+            .map(|_| synthetic_socket_right(child.clone()))
+            .collect();
+        graph_root
+            .pending_rights
+            .lock()
+            .unwrap()
+            .messages
+            .push_back(PendingSocketMessage {
+                id: 0,
+                remaining: 1,
+                at_start: true,
+                rights,
+            });
+        drop(child);
+        let overflow_right = graph_root
+            .pending_rights
+            .lock()
+            .unwrap()
+            .messages
+            .front_mut()
+            .unwrap()
+            .rights
+            .pop()
+            .unwrap();
+        let boundary_receiver = Arc::new(SocketDescriptionState::new(libc::SOCK_DGRAM));
+        let boundary_rights = vec![synthetic_socket_right(graph_root.clone())];
+        validate_socket_transfer_graph(&boundary_receiver, &boundary_rights)
+            .expect("exact graph-edge boundary must remain accepted");
+        graph_root
+            .pending_rights
+            .lock()
+            .unwrap()
+            .messages
+            .front_mut()
+            .unwrap()
+            .rights
+            .push(overflow_right);
+        drop(boundary_rights);
+        drop(boundary_receiver);
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+        let donated = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x60);
+        drop(state.socket_fds.insert(donated[0], graph_root.clone()));
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, transport[0], &[donated[0]]),
+            negative_errno(libc::EOPNOTSUPP),
+        );
+        assert_guest_socket_has_no_payload(&state, transport[1]);
+        assert!(
+            state
+                .socket_fds
+                .get(&transport[1])
+                .unwrap()
+                .pending_rights
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            graph_root
+                .pending_rights
+                .lock()
+                .unwrap()
+                .front()
+                .unwrap()
+                .rights
+                .len(),
+            MAX_SOCKET_TRANSFER_GRAPH_EDGES,
+        );
+
+        drop(state);
+        drop(graph_root);
+        assert!(child_weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn duplicate_socket_owner_edges_survive_one_packet_removal() {
+        for control_capacity in [64, 0] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+            let payload = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x60);
+            let payload_description = state.socket_fds.get(&payload[1]).unwrap().clone();
+            for _ in 0..2 {
+                assert_eq!(
+                    send_rights_message(&mut memory, &mut state, transport[0], &[payload[1]]),
+                    1,
+                );
+            }
+            assert_eq!(payload_description.strong_owners.lock().unwrap().len(), 2);
+
+            let (received, flags, rights) =
+                receive_rights_message(&mut memory, &mut state, transport[1], control_capacity, 0);
+            assert_eq!(received, 1);
+            assert_eq!(flags & libc::MSG_CTRUNC != 0, control_capacity == 0);
+            assert_eq!(rights.len(), usize::from(control_capacity != 0));
+            for fd in rights {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_close,
+                        [fd as u64, 0, 0, 0, 0, 0],
+                    ),
+                    0,
+                );
+            }
+            assert_eq!(payload_description.strong_owners.lock().unwrap().len(), 1);
+            assert_eq!(
+                send_rights_message(&mut memory, &mut state, payload[0], &[transport[1]]),
+                negative_errno(libc::EOPNOTSUPP),
+            );
+            assert_guest_socket_has_no_payload(&state, payload[1]);
+
+            let (received, flags, rights) =
+                receive_rights_message(&mut memory, &mut state, transport[1], control_capacity, 0);
+            assert_eq!(received, 1);
+            assert_eq!(flags & libc::MSG_CTRUNC != 0, control_capacity == 0);
+            for fd in rights {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_close,
+                        [fd as u64, 0, 0, 0, 0, 0],
+                    ),
+                    0,
+                );
+            }
+            assert!(payload_description.strong_owners.lock().unwrap().is_empty());
+            assert_eq!(
+                send_rights_message(&mut memory, &mut state, payload[0], &[transport[1]]),
+                1,
+            );
+            let (received, flags, rights) =
+                receive_rights_message(&mut memory, &mut state, payload[1], 0, 0);
+            assert_eq!(received, 1);
+            assert_ne!(flags & libc::MSG_CTRUNC, 0);
+            assert!(rights.is_empty());
+        }
+    }
+
+    #[test]
+    fn duplicate_socket_owner_edges_retire_on_stream_bytes_and_receiver_drop() {
+        // A plain stream read discards ancillary control with the byte. One
+        // of two messages must leave one reverse edge and its cycle guard.
+        {
+            const BYTE: u64 = 0x300;
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_STREAM, 0x40);
+            let payload = guest_socketpair(&mut memory, &mut state, libc::SOCK_STREAM, 0x60);
+            let payload_description = state.socket_fds.get(&payload[1]).unwrap().clone();
+            for _ in 0..2 {
+                assert_eq!(
+                    send_rights_message(&mut memory, &mut state, transport[0], &[payload[1]]),
+                    1,
+                );
+            }
+            assert_eq!(payload_description.strong_owners.lock().unwrap().len(), 2);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_read,
+                    [transport[1] as u64, BYTE, 1, 0, 0, 0],
+                ),
+                1,
+            );
+            assert_eq!(payload_description.strong_owners.lock().unwrap().len(), 1);
+            assert_eq!(
+                send_rights_message(&mut memory, &mut state, payload[0], &[transport[1]]),
+                negative_errno(libc::EOPNOTSUPP),
+            );
+            assert_guest_socket_has_no_payload(&state, payload[1]);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_read,
+                    [transport[1] as u64, BYTE, 1, 0, 0, 0],
+                ),
+                1,
+            );
+            assert!(payload_description.strong_owners.lock().unwrap().is_empty());
+        }
+
+        // Closing the final receiver root drops every queued right through
+        // the same unregister path, including duplicate edges.
+        {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+            let payload = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x60);
+            let payload_description = state.socket_fds.get(&payload[1]).unwrap().clone();
+            for _ in 0..2 {
+                assert_eq!(
+                    send_rights_message(&mut memory, &mut state, transport[0], &[payload[1]]),
+                    1,
+                );
+            }
+            assert_eq!(payload_description.strong_owners.lock().unwrap().len(), 2);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [transport[1] as u64, 0, 0, 0, 0, 0],
+                ),
+                0,
+            );
+            assert!(payload_description.strong_owners.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn failed_nonblocking_socket_rights_send_rolls_back_graph_state() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_STREAM, 0x40);
+        let payload = guest_socketpair(&mut memory, &mut state, libc::SOCK_STREAM, 0x60);
+        let receiver = state.socket_fds.get(&transport[1]).unwrap().clone();
+        let payload_description = state.socket_fds.get(&payload[1]).unwrap().clone();
+        let sender = host_fd(&state, transport[0]).unwrap();
+        // Keep the host descriptor blocking: the production sendmsg path must
+        // itself force nonblocking behavior while it holds the graph guard.
+        // SAFETY: sender is a live host descriptor and F_GETFL takes no pointer.
+        let current = unsafe { libc::fcntl(sender, libc::F_GETFL) };
+        assert!(current >= 0);
+        assert_eq!(current & libc::O_NONBLOCK, 0);
+        let bytes = [0_u8; 4096];
+        let mut sends = 0usize;
+        loop {
+            // SAFETY: bytes is readable and sender is a live stream socket.
+            let result = unsafe {
+                libc::send(
+                    sender,
+                    bytes.as_ptr().cast(),
+                    bytes.len(),
+                    libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+                )
+            };
+            if result < 0 {
+                let error = std::io::Error::last_os_error().raw_os_error();
+                assert!(error == Some(libc::EAGAIN) || error == Some(libc::EWOULDBLOCK));
+                break;
+            }
+            sends += 1;
+            assert!(sends < 10_000, "nonblocking socket did not reach EAGAIN");
+        }
+        assert!(receiver.pending_rights.lock().unwrap().is_empty());
+        assert!(payload_description.strong_owners.lock().unwrap().is_empty());
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, transport[0], &[payload[1]]),
+            negative_errno(libc::EAGAIN),
+        );
+        assert!(receiver.pending_rights.lock().unwrap().is_empty());
+        assert!(payload_description.strong_owners.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -21812,6 +22734,7 @@ mod tests {
             file: source_file.try_clone().unwrap(),
             inotify: Some(description.clone()),
             socket: None,
+            socket_owner: None,
         };
         let transfer = publish_socket_message(
             &sender,
@@ -21820,6 +22743,8 @@ mod tests {
         )
         .unwrap();
         assert!(transfer.is_some());
+        finish_socket_send(transfer.as_ref(), 1);
+        drop(transfer);
         let received_file = state.files.get(&inotify_fd).unwrap().try_clone().unwrap();
         let mut peeked = [PendingReceivedRight {
             control_offset: 0,
