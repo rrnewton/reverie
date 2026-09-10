@@ -60,7 +60,8 @@ hard-coded one. See [The Backend Contract](#the-backend-contract) below.
 
 Reverie provides several backends: the production `ptrace` backend, the
 in-progress KVM and DBT (dynamic binary instrumentation) backends, and the
-experimental SaBRe, e9patch, and LiteInst rewriting backends. With the
+experimental SaBRe and e9patch rewriting paths. LiteInst provides an
+experimental caller-owned in-process instrumentation path. With the
 *backend* role now in hand, see [Backend architecture](BACKENDS.md) for how each
 one hooks, traps, and routes a guest's events, and for the shared RPC, ptracer,
 and trapping components they build on.
@@ -92,13 +93,22 @@ source; `scripts/backend-submodule.sh` remains available for focused activation.
 See [Backend sources](docs/BACKEND_SOURCES.md) for revisions, build commands,
 and license notes.
 
+The LiteInst crates pin public, fetchable `liteinst2` revision
+`95ee5e6917fa33191eb41c3f1606ea8b03c1b78c`. Crates.io also publishes
+`liteinst2` 0.1.0; the manifests retain the exact Git revision used by this
+tree.
+
 ## Usage
 
-`reverie-ptrace` is the reference runtime. `reverie-e9patch` and
-`reverie-liteinst` also implement the generic `Backend` contract, with the
-current hybrid and in-guest boundaries documented in
-[Backend architecture](BACKENDS.md). KVM, DBT, and SaBRe currently expose
-specialized runners or adapters rather than that generic launch contract.
+`reverie-ptrace` is the reference runtime. `reverie-e9patch` implements the
+generic `Backend` launch contract. `reverie-liteinst` has a `Backend`
+implementation, but its three generic run methods return an `Unsupported`
+error because a bare `Command` cannot retain the caller-owned launch resources
+for the required lifetime. Its runnable API instead accepts a
+`reverie_liteinst::PreparedCommand`; that path keeps the caller's owner alive
+through pidfd-based child termination and reap. KVM, DBT, and SaBRe currently
+expose specialized runners or adapters rather than the generic launch contract.
+See [Backend architecture](BACKENDS.md) for the current boundaries.
 
 Copy one of the example tools to a new Rust project (e.g. `cargo init`). You’ll
 see that it depends both on the general `reverie` crate for the API and on the

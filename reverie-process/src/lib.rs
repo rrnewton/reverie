@@ -27,7 +27,9 @@ mod mount;
 mod namespace;
 mod net;
 mod pid;
+mod pre_exec;
 mod pty;
+pub mod sealed;
 pub mod seccomp;
 mod spawn;
 mod stdio;
@@ -51,6 +53,7 @@ pub use namespace::Namespace;
 // Re-export Signal since it is used by `Child::signal`.
 pub use nix::sys::signal::Signal;
 pub use pid::Pid;
+pub use pre_exec::report_pre_exec_failure;
 pub use pty::Pty;
 pub use pty::PtyChild;
 pub use stdio::ChildStderr;

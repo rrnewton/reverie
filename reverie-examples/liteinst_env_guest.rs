@@ -12,7 +12,6 @@ fn main() {
     match std::env::args().nth(1).as_deref() {
         None => check_environment(),
         Some("check-fd-198") => check_inherited_descriptor(),
-        Some("check-coordinator-environment") => check_coordinator_environment(),
         // TODO-HUMAN-REVIEW(PR-148): Review the allocator-reentry test guest mode.
         Some("exercise-allocator") => exercise_allocator(),
         // TODO-HUMAN-REVIEW(PR-157): Review the chaos short-read test guest mode.
@@ -41,21 +40,9 @@ fn check_environment() {
             .all(|entry| !entry.is_empty()),
         "environment contains empty entries"
     );
-    for control in [
-        b"REVERIE_LITEINST_COORDINATOR=".as_slice(),
-        b"REVERIE_LITEINST_EXAMPLE_TOOL=".as_slice(),
-    ] {
-        assert!(!data.windows(control.len()).any(|window| window == control));
-    }
+    let control = b"REVERIE_LITEINST_EXAMPLE_TOOL=".as_slice();
+    assert!(!data.windows(control.len()).any(|window| window == control));
     println!("raw-environment-ok");
-}
-
-fn check_coordinator_environment() {
-    assert_eq!(
-        std::env::var("REVERIE_LITEINST_COORDINATOR").unwrap(),
-        "guest-value"
-    );
-    println!("coordinator-environment-preserved");
 }
 
 fn check_inherited_descriptor() {

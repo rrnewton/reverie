@@ -345,6 +345,31 @@ run_test_check() {
         "$LIBTEST_COUNTS_TOOL" run "$counts_file" -- "$@"
 }
 
+inventory_owned_public_instruction() {
+    local inventory_file test_count host_control_count native_count
+    inventory_file=$(mktemp "${TMPDIR:-/tmp}/owned-public-inventory.XXXXXX")
+    if ! cargo test -p reverie-liteinst-runtime --test owned_public_instruction -- --list \
+        >"$inventory_file"; then
+        cat "$inventory_file"
+        rm -f "$inventory_file"
+        return 1
+    fi
+    cat "$inventory_file"
+    test_count=$(awk '/: test$/ { count += 1 } END { print count + 0 }' "$inventory_file")
+    host_control_count=$(awk '/^hostcontrol_.*: test$/ { count += 1 } END { print count + 0 }' \
+        "$inventory_file")
+    native_count=$(awk \
+        '/^public_owned_native_routes_cpuid_and_rdtsc_to_the_shared_tool: test$/ { count += 1 } END { print count + 0 }' \
+        "$inventory_file")
+    rm -f "$inventory_file"
+    if [[ $test_count != 17 || $host_control_count != 16 || $native_count != 1 ]]; then
+        printf 'owned public instruction inventory mismatch: total=%s controls=%s native=%s\n' \
+            "$test_count" "$host_control_count" "$native_count" >&2
+        return 1
+    fi
+    printf 'owned public instruction inventory: 17 total, 16 controls, 1 native\n'
+}
+
 if ((SELF_TEST_GATE_COUNTS == 1)); then
     set -e
     fixed_output='test result: ok. 999 passed; 0 failed; 0 ignored; 0 measured; 999 filtered out;'
@@ -480,6 +505,11 @@ run_check "Cross-client skill discovery" "$ROOT_DIR/scripts/check-skill-discover
 run_check "Build workspace" cargo build --workspace --all-features
 run_check "DBT virtual identity and pidfd_open policy" \
     "$ROOT_DIR/reverie-dbt/scripts/test-identity-policy.sh"
+run_check "Compile owned public instruction target" cargo test \
+    -p reverie-liteinst-runtime --test owned_public_instruction --no-run
+run_check "Inventory owned public instruction target" inventory_owned_public_instruction
+run_test_check "Test all owned public instruction cases" cargo test \
+    -p reverie-liteinst-runtime --test owned_public_instruction -- --test-threads=1
 run_test_check "Test regular workspace cases" cargo test --workspace --all-features \
     -- --test-threads=1 "${REGULAR_TEST_SKIP_ARGS[@]}"
 run_test_check "Documentation tests" cargo test --workspace --doc

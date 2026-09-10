@@ -10,6 +10,470 @@ use reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV;
 const INSTRUCTION_CONTROL_UNAVAILABLE_STATUS: i32 = 77;
 const TEST_STRADDLER_STALENESS_TICKS: &str = "20000";
 
+#[cfg(feature = "test-owned-cpuid")]
+#[test]
+fn sud_owned_syscalls_unarmed_qualify_native_result_and_once_only_pipe_read() {
+    let output = sud_guest("sud-owned-cpuid-syscall-unarmed");
+    check_owned_syscalls(output, false);
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+#[test]
+fn sud_owned_syscalls_armed_cancel_and_replace_with_exact_timer_positions() {
+    check_owned_syscalls(sud_guest("sud-owned-cpuid-syscall-unarmed"), false);
+    for work in [0, 20000] {
+        for repeat in 0..3 {
+            println!("owned-syscall work={work} repeat={repeat}");
+            check_owned_syscalls(
+                sud_guest(&format!("sud-owned-cpuid-syscall-armed-{work}")),
+                true,
+            );
+        }
+    }
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+fn check_owned_syscalls(output: Output, armed: bool) {
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let text = String::from_utf8(output.stdout).unwrap();
+    print!("{text}");
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.starts_with("syscall-result:"))
+            .count(),
+        3
+    );
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.starts_with("syscall-timer-position:"))
+            .count(),
+        if armed { 2 } else { 0 }
+    );
+    if armed {
+        assert!(text.contains("event=1 generation=1 sequence=8"), "{text}");
+        assert!(text.contains("event=4 generation=3 sequence=1"), "{text}");
+        assert!(
+            text.contains(
+                "callbacks=5 rpc=5 injections=3 timers=2 completed=10 clocks=[0, 3, 3, 3, 3, 6]"
+            ),
+            "{text}"
+        );
+    } else {
+        assert!(
+            text.contains(
+                "callbacks=3 rpc=3 injections=3 timers=0 completed=0 clocks=[0, 3, 3, 6]"
+            ),
+            "{text}"
+        );
+    }
+    assert!(
+        text.contains("pipe=first-and-second-preserved state=preserved patches=0"),
+        "{text}"
+    );
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+#[test]
+fn sud_owned_precise_timers_deliver_crossing_suffix_and_cancel_before_cpuid() {
+    for work in [0, 20000] {
+        for repeat in 0..3 {
+            let output = sud_guest(&format!("sud-owned-cpuid-timer-{work}"));
+            assert!(
+                output.status.success(),
+                "work={work} repeat={repeat} {output:?}"
+            );
+            assert!(output.stderr.is_empty(), "{output:?}");
+            let text = String::from_utf8(output.stdout).unwrap();
+            print!("work={work} repeat={repeat} {text}");
+            assert_eq!(
+                text.lines()
+                    .filter(|line| line.starts_with("timer-position:"))
+                    .count(),
+                3
+            );
+            assert!(text.contains("event=1 generation=1 sequence=7"), "{text}");
+            assert!(text.contains("event=2 generation=2 sequence=2"), "{text}");
+            assert!(text.contains("event=4 generation=5 sequence=1"), "{text}");
+            assert!(
+                text.contains(
+                    "callbacks=6 rpc=6 timers=3 completed=11 clocks=[0, 3, 3, 3, 3, 3, 6]"
+                ),
+                "{text}"
+            );
+            assert!(text.contains("state=preserved patches=0"), "{text}");
+        }
+    }
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+#[test]
+fn sud_owned_nop_steps_preserve_state_without_timer_delivery() {
+    let output = sud_guest("sud-owned-cpuid-step");
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let inventory = match std::fs::metadata("/proc/self/timers") {
+        Ok(_) => "Empty",
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "Unavailable",
+        Err(error) => panic!("cannot inspect POSIX timer inventory: {error}"),
+    };
+    assert_eq!(output.stdout, format!("owned-step: callbacks=2 rpc=2 completed=2 clocks=[0,0,3] state=preserved patches=0 timers=unsupported posix_inventory={inventory} fp_profile=seeded-hi16-zmm\n").as_bytes());
+}
+
+#[test]
+fn sud_public_cpuid_install_refuses_before_activation() {
+    let output = sud_guest("sud-cpuid-public");
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        output.stdout,
+        b"sud-cpuid-public: refused before activation mask=preserved\n"
+    );
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+#[test]
+fn sud_owned_cpuid_blocked_sigsegv_refuses_before_activation() {
+    let output = sud_guest("sud-owned-cpuid-blocked");
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        output.stdout,
+        b"owned-cpuid-blocked: refused before activation mask=preserved callbacks=0\n"
+    );
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+#[test]
+fn sud_owned_clocked_installer_failure_exits_without_entering_probe() {
+    let output = sud_guest("sud-owned-cpuid-clock-install-failure");
+    assert_eq!(output.status.code(), Some(127), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(
+        output.stderr,
+        b"owned-clock: installer refused Unsupported; probe not entered\n"
+    );
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+#[test]
+fn sud_owned_clocked_instructions_preserve_full_guest_rcb_trajectory() {
+    let inventory = match std::fs::metadata("/proc/self/timers") {
+        Ok(_) => "Empty",
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "Unavailable",
+        Err(error) => panic!("cannot inspect POSIX timer inventory availability: {error}"),
+    };
+    for work in [0, 20_000] {
+        for repeat in 0..3 {
+            let output = sud_guest(&format!("sud-owned-cpuid-clock-{work}"));
+            assert!(
+                output.status.success(),
+                "work={work} repeat={repeat}: {output:?}"
+            );
+            assert!(output.stderr.is_empty(), "{output:?}");
+            assert_eq!(output.stdout, format!("owned-clock: samples=[7, 8, 9, 10, 17, 18, 19, 19, 21, 24] deltas=[1, 1, 1, 7, 1, 1, 0, 2, 3] callbacks=9 rpc=9 work={work} state=preserved patches=0 timers=unsupported posix_inventory={inventory} fp_profile=seeded-hi16-zmm\n").as_bytes());
+        }
+    }
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+#[test]
+fn sud_owned_mixed_instructions_use_consecutive_tool_rpc_callbacks_without_patching() {
+    let inventory = match std::fs::metadata("/proc/self/timers") {
+        Ok(_) => "Empty",
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "Unavailable",
+        Err(error) => panic!("cannot inspect POSIX timer inventory availability: {error}"),
+    };
+    let output = sud_guest("sud-owned-cpuid-mixed");
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(output.stdout, format!("owned-instructions: cpuid=3 rdtsc=3 rdtscp=3 consecutive=9 rpc=9 state=preserved bytes=unchanged patches=0 posix_inventory={inventory} fp_profile=seeded-hi16-zmm\n").as_bytes());
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+#[test]
+fn sud_owned_cpuid_zero_hi16_xsave_baseline() {
+    check_xsave_control("sud-owned-cpuid-xsave-zero-baseline");
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+#[test]
+fn sud_owned_cpuid_zero_hi16_ordinary_signal_return() {
+    check_xsave_control("sud-owned-cpuid-xsave-zero-signal");
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+#[test]
+fn sud_owned_cpuid_unseeded_xsave_baseline() {
+    check_xsave_control("sud-owned-cpuid-xsave-baseline");
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+#[test]
+fn sud_owned_cpuid_unseeded_ordinary_signal_return() {
+    check_xsave_control("sud-owned-cpuid-xsave-signal");
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+fn check_xsave_control(mode: &str) {
+    let output = sud_guest(mode);
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert!(
+        [false, true].into_iter().any(|cleared| output.stdout.ends_with(
+            format!("xsave-control: payload_bytes=preserved other_header_fields=preserved initialized_hi16_zmm_bit_cleared={cleared} callbacks=0\n").as_bytes()
+        )),
+        "{output:?}"
+    );
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+#[test]
+fn sud_owned_cpuid_unseeded_uses_consecutive_tool_rpc_callbacks_without_patching() {
+    check_owned_cpuid_profile("sud-owned-cpuid", "unseeded");
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+#[test]
+fn sud_owned_cpuid_seeded_hi16_zmm_uses_consecutive_tool_rpc_callbacks_without_patching() {
+    check_owned_cpuid_profile("sud-owned-cpuid-seeded", "seeded-hi16-zmm");
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+fn check_owned_cpuid_profile(mode: &str, profile: &str) {
+    let inventory = match std::fs::metadata("/proc/self/timers") {
+        Ok(_) => "Empty",
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "Unavailable",
+        Err(error) => panic!("cannot inspect POSIX timer inventory availability: {error}"),
+    };
+    let output = sud_guest(mode);
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        output.stdout,
+        format!("owned-cpuid: consecutive=6 rpc=6 state=preserved bytes=unchanged patches=0 posix_inventory={inventory} fp_profile={profile}\n").as_bytes()
+    );
+}
+
+#[cfg(feature = "test-owned-cpuid")]
+#[test]
+fn sud_owned_cpuid_refuses_unadmitted_sources_controls_and_timers() {
+    for mode in ["sud-owned-cpuid-source", "sud-owned-cpuid-control"] {
+        let output = sud_guest(mode);
+        assert_eq!(output.status.code(), Some(126), "{mode}: {output:?}");
+        assert!(output.stdout.is_empty(), "{mode}: {output:?}");
+        assert_eq!(
+            output.stderr,
+            b"liteinst terminal126: operation=owned-context detail=predicate value=none site=reverie-liteinst-runtime/src/owned_context.rs:1176:9\n",
+            "{mode}: {output:?}"
+        );
+    }
+    let output = sud_guest("sud-owned-cpuid-timer");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        output.stdout,
+        b"owned-cpuid-timer: refused before callbacks\n"
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+#[test]
+fn sud_only_typed_mask_queries_errors_and_tail_restoration() {
+    let output = sud_guest("sud-masks");
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        output.stdout,
+        b"sud-masks: inject/tail/query/error/restore callbacks=7 patches=0\n"
+    );
+}
+
+#[test]
+fn sud_runtime_source_admission_preserves_masks_and_refuses_unknown_sources() {
+    for mode in [
+        "sud-policy-blocked",
+        "sud-policy-ignored",
+        "sud-policy-ordinary",
+    ] {
+        let output = sud_guest(mode);
+        assert!(output.status.success(), "{mode}: {output:?}");
+        assert!(output.stderr.is_empty(), "{mode}: {output:?}");
+        assert_eq!(
+            output.stdout,
+            format!("{mode}: refused, original mask/disposition preserved\n").as_bytes()
+        );
+    }
+    let output = sud_guest("sud-policy-unknown");
+    assert_eq!(output.status.code(), Some(126), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(
+        output.stderr,
+        concat!(
+            "liteinst terminal126: operation=runtime-signal/validate detail=signal value=12 ",
+            "site=reverie-preload/src/signal/runtime_owned.rs:188:18\n"
+        )
+        .as_bytes(),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn sud_only_shared_tool_without_guest_patching() {
+    let output = sud_guest("sud-only");
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let text = std::str::from_utf8(&output.stdout).unwrap();
+    assert!(
+        text.starts_with("sud-only: guest_probes=15 rpc=16 bytes=unchanged abi=preserved "),
+        "{text}"
+    );
+    println!("{text}");
+}
+
+#[test]
+fn bootstrap_installers_preserve_environment_and_forward_modes() {
+    let output = sud_guest("sud-bootstrap-only");
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let text = std::str::from_utf8(&output.stdout).unwrap();
+    assert!(
+        text.starts_with(
+            "sud-bootstrap-only: guest_probes=15 rpc=16 bytes=unchanged abi=preserved "
+        ),
+        "{text}"
+    );
+
+    let output = sud_guest("bootstrap-guest");
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let text = std::str::from_utf8(&output.stdout).unwrap();
+    assert!(
+        text.starts_with("calls=32 traps=1 hooks=32 rpc_delta=34 "),
+        "{text}"
+    );
+}
+
+#[test]
+fn sud_only_abi_signal_and_subscription_refusals() {
+    use std::os::unix::process::ExitStatusExt;
+    for mode in ["sud-x32", "sud-compat"] {
+        let output = sud_guest(mode);
+        assert_eq!(output.status.code(), Some(126), "{mode}: {output:?}");
+    }
+    for mode in ["sud-handler", "sud-instructions", "sud-vdso", "sud-clock"] {
+        let output = sud_guest(mode);
+        assert!(output.status.success(), "{mode}: {output:?}");
+        assert_eq!(output.stdout, format!("{mode}: refused\n").as_bytes());
+        assert!(output.stderr.is_empty(), "{mode}: {output:?}");
+    }
+    for mode in [
+        "bootstrap-sud-handler",
+        "bootstrap-sud-instructions",
+        "bootstrap-sud-vdso",
+        "bootstrap-sud-clock",
+    ] {
+        let output = sud_guest(mode);
+        assert!(output.status.success(), "{mode}: {output:?}");
+        assert_eq!(output.stdout, format!("{mode}: refused\n").as_bytes());
+        assert!(output.stderr.is_empty(), "{mode}: {output:?}");
+    }
+    let output = sud_guest("sud-ptrace-control");
+    assert_eq!(output.status.signal(), Some(libc::SIGSYS), "{output:?}");
+}
+
+fn sud_guest(mode: &str) -> Output {
+    let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("coordinator.sock");
+    let mut coordinator = Command::new(binary)
+        .arg("coordinator")
+        .arg(&socket)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let mut command = Command::new(binary);
+    command.arg(mode).arg(&socket);
+    let output = socket.exists().then(|| {
+        if mode.starts_with("sud-owned-cpuid-syscall-") {
+            owned_syscall_output(command)
+        } else {
+            output_with_timeout(command, Duration::from_secs(20))
+        }
+    });
+    let _ = coordinator.kill();
+    let _ = coordinator.wait();
+    let output = output.expect("coordinator socket was not created");
+    println!("{mode}: {output:?}");
+    output
+}
+
+fn owned_syscall_output(mut command: Command) -> Output {
+    let directory = tempfile::Builder::new()
+        .prefix("sud")
+        .tempdir()
+        .unwrap()
+        .keep();
+    let stdout = directory.join("stdout");
+    let stderr = directory.join("stderr");
+    command.env("REVERIE_OWNED_SYSCALL_EVIDENCE", directory.join("frames"));
+    command.stdout(std::fs::File::create(&stdout).unwrap());
+    command.stderr(std::fs::File::create(&stderr).unwrap());
+    let mut child = command.spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            break child.wait().unwrap();
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    println!("owned syscall raw streams/evidence: {directory:?} status={status}");
+    Output {
+        status,
+        stdout: std::fs::read(stdout).unwrap(),
+        stderr: std::fs::read(stderr).unwrap(),
+    }
+}
+
+#[test]
+fn unpatchable_syscall_dispatches_tool_after_signal_return() {
+    let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("coordinator.sock");
+    let mut coordinator = Command::new(binary)
+        .arg("coordinator")
+        .arg(&socket)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let ready = socket.exists();
+    let mut command = Command::new(binary);
+    command.arg("syscall-fallback").arg(&socket);
+    let output = ready.then(|| output_with_timeout(command, Duration::from_secs(20)));
+    let _ = coordinator.kill();
+    let _ = coordinator.wait();
+    let output = output.expect("coordinator socket was not created");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        output.stdout,
+        b"fallback: calls=6 rpc=7 hooks=0 bytes=unchanged abi=preserved\n"
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
 fn output_with_timeout(mut command: Command, timeout: Duration) -> Output {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().unwrap();

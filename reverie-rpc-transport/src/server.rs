@@ -19,6 +19,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -31,7 +32,7 @@ use tokio::sync::Notify;
 use crate::codec::DEFAULT_MAX_FRAME_LEN;
 use crate::codec::decode;
 use crate::codec::encode;
-use crate::codec::read_message;
+use crate::codec::read_message_with_eof_policy;
 use crate::codec::write_message;
 use crate::envelope::RequestEnvelope;
 use crate::error::RpcError;
@@ -46,6 +47,142 @@ pub struct RpcServer<G: GlobalTool> {
     readiness: Option<Arc<AtomicBool>>,
     connection_readiness: Option<Arc<AtomicBool>>,
     connections: ConnectionMonitor,
+    issues: Option<RpcIssueMonitor>,
+}
+
+/// Actual connection failures, retained independently of the serving task.
+#[derive(Clone, Debug)]
+pub enum ConnectionFailure {
+    Transport(Arc<RpcError>),
+    Panicked(Arc<PanicPayload>),
+    UnresolvedPanic,
+    Interrupted,
+}
+
+pub struct PanicPayload(pub Mutex<Box<dyn std::any::Any + Send>>);
+impl std::fmt::Debug for PanicPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let payload = self.0.lock().unwrap();
+        if let Some(message) = payload.downcast_ref::<String>() {
+            message.fmt(formatter)
+        } else if let Some(message) = payload.downcast_ref::<&str>() {
+            message.fmt(formatter)
+        } else {
+            formatter.write_str("non-string panic payload retained")
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ConnectionIssue {
+    pub connection: usize,
+    pub failure: ConnectionFailure,
+}
+
+#[derive(Clone, Default)]
+pub struct RpcIssueMonitor {
+    issues: Arc<Mutex<Vec<ConnectionIssue>>>,
+    changed: Arc<Notify>,
+    planned: Arc<AtomicBool>,
+    reserved: Arc<AtomicUsize>,
+}
+
+impl RpcIssueMonitor {
+    fn reserve(&self) -> Result<(), RpcError> {
+        self.reserved
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < 64).then_some(count + 1)
+            })
+            .map(|_| ())
+            .map_err(|_| {
+                std::io::Error::other(
+                    "retained RPC issue capacity exhausted before connection dispatch",
+                )
+                .into()
+            })
+    }
+    pub fn snapshot(&self) -> Vec<ConnectionIssue> {
+        self.issues.lock().unwrap().clone()
+    }
+    pub fn planned_shutdown(&self) {
+        self.planned.store(true, Ordering::Release);
+    }
+    pub async fn failed(&self) {
+        loop {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !self.issues.lock().unwrap().is_empty() {
+                return;
+            }
+            notified.await;
+        }
+    }
+    fn record(&self, connection: usize, failure: ConnectionFailure) {
+        self.issues.lock().unwrap().push(ConnectionIssue {
+            connection,
+            failure,
+        });
+        self.changed.notify_waiters();
+    }
+}
+
+struct IssueGuard {
+    monitor: Option<RpcIssueMonitor>,
+    connection: usize,
+    completed: bool,
+}
+
+impl IssueGuard {
+    fn panic(&mut self, payload: Box<dyn std::any::Any + Send>) {
+        self.completed = true;
+        if let Some(monitor) = &self.monitor {
+            monitor.record(
+                self.connection,
+                ConnectionFailure::Panicked(Arc::new(PanicPayload(Mutex::new(payload)))),
+            );
+        }
+    }
+    fn complete(&mut self, result: Result<(), RpcError>) {
+        self.completed = true;
+        if let Err(error) = result {
+            if !matches!(error, RpcError::Closed) {
+                if let Some(monitor) = &self.monitor {
+                    monitor.record(
+                        self.connection,
+                        ConnectionFailure::Transport(Arc::new(error)),
+                    );
+                    return;
+                } else {
+                    tracing_disconnect(&error);
+                }
+            }
+        }
+        if let Some(monitor) = &self.monitor {
+            monitor.reserved.fetch_sub(1, Ordering::Release);
+        }
+    }
+}
+
+impl Drop for IssueGuard {
+    fn drop(&mut self) {
+        if let Some(monitor) = &self.monitor {
+            if !self.completed
+                && (!monitor.planned.load(Ordering::Acquire) || std::thread::panicking())
+            {
+                monitor.record(
+                    self.connection,
+                    if std::thread::panicking() {
+                        ConnectionFailure::UnresolvedPanic
+                    } else {
+                        ConnectionFailure::Interrupted
+                    },
+                );
+            } else if !self.completed {
+                monitor.reserved.fetch_sub(1, Ordering::Release);
+            }
+        }
+    }
 }
 
 /// A live, waitable view of a coordinator's accepted connections.
@@ -159,6 +296,7 @@ where
             readiness,
             connection_readiness,
             connections: ConnectionMonitor::new(),
+            issues: None,
         })
     }
 
@@ -189,6 +327,15 @@ where
         self.connections.clone()
     }
 
+    /// Opt-in for `serve`: reserves evidence before dispatch (64 outstanding or
+    /// failed connections). Clean completion releases capacity; failures retain
+    /// their original cause. Exhaustion ends serving rather than losing an issue.
+    pub fn retain_connection_issues(&mut self) -> RpcIssueMonitor {
+        self.issues
+            .get_or_insert_with(RpcIssueMonitor::default)
+            .clone()
+    }
+
     /// Accept connections forever, spawning one task per connection. Returns
     /// only if the listener itself fails.
     ///
@@ -198,23 +345,59 @@ where
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-170): Review connection cancellation on server shutdown.
         let mut connections = tokio::task::JoinSet::new();
+        let mut connection = 0usize;
         loop {
-            let (stream, _addr) = self.listener.accept().await?;
+            let (stream, _addr) = tokio::select! {
+                result = self.listener.accept() => result?,
+                _ = connections.join_next(), if !connections.is_empty() => continue,
+            };
+            connection = connection
+                .checked_add(1)
+                .ok_or_else(|| std::io::Error::other("RPC connection identity exhausted"))?;
             let global = self.global.clone();
             let config = self.config.clone();
             let readiness = self.readiness.clone();
             let connection_readiness = self.connection_readiness.clone();
             let connection_guard = self.connections.connected();
+            if let Some(issues) = &self.issues {
+                issues.reserve()?;
+            }
+            let mut issue_guard = IssueGuard {
+                monitor: self.issues.clone(),
+                connection,
+                completed: false,
+            };
+            let retain_partial_header = self.issues.is_some();
             connections.spawn(async move {
                 let _connection_guard = connection_guard;
-                if let Err(e) =
-                    serve_connection_inner(global, config, stream, readiness, connection_readiness)
-                        .await
-                {
-                    // A clean close is the normal way a guest connection ends.
-                    if !matches!(e, RpcError::Closed) {
-                        tracing_disconnect(&e);
+                let future = serve_connection_inner(
+                    global,
+                    config,
+                    stream,
+                    readiness,
+                    connection_readiness,
+                    retain_partial_header,
+                );
+                if retain_partial_header {
+                    let mut future = std::pin::pin!(future);
+                    let result = std::future::poll_fn(|context| {
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            std::future::Future::poll(future.as_mut(), context)
+                        })) {
+                            Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
+                            Ok(std::task::Poll::Ready(result)) => {
+                                std::task::Poll::Ready(Ok(result))
+                            }
+                            Err(payload) => std::task::Poll::Ready(Err(payload)),
+                        }
+                    })
+                    .await;
+                    match result {
+                        Ok(result) => issue_guard.complete(result),
+                        Err(payload) => issue_guard.panic(payload),
                     }
+                } else {
+                    issue_guard.complete(future.await);
                 }
             });
         }
@@ -231,6 +414,7 @@ where
             stream,
             self.readiness.clone(),
             self.connection_readiness.clone(),
+            self.issues.is_some(),
         )
         .await
     }
@@ -265,7 +449,7 @@ pub async fn serve_connection<G>(
 where
     G: GlobalTool,
 {
-    serve_connection_inner(global, config, stream, None, None).await
+    serve_connection_inner(global, config, stream, None, None, false).await
 }
 
 async fn serve_connection_inner<G>(
@@ -274,6 +458,7 @@ async fn serve_connection_inner<G>(
     mut stream: UnixStream,
     readiness: Option<Arc<AtomicBool>>,
     connection_readiness: Option<Arc<AtomicBool>>,
+    retain_partial_header: bool,
 ) -> Result<(), RpcError>
 where
     G: GlobalTool,
@@ -292,7 +477,13 @@ where
     }
 
     loop {
-        let request_bytes = match read_message(&mut stream, DEFAULT_MAX_FRAME_LEN).await {
+        let request_bytes = match read_message_with_eof_policy(
+            &mut stream,
+            DEFAULT_MAX_FRAME_LEN,
+            retain_partial_header,
+        )
+        .await
+        {
             Ok(bytes) => bytes,
             Err(RpcError::Closed) => return Ok(()),
             Err(e) => return Err(e),

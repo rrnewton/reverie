@@ -1,0 +1,41 @@
+[package]
+name = "reverie-liteinst-runtime"
+version = "0.2.0"
+authors = ["Meta Platforms"]
+edition = "2024"
+repository = "https://github.com/facebookexperimental/reverie"
+license = "BSD-2-Clause"
+description = "Experimental in-process syscall instrumentation for Reverie"
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = ["preload-constructor"]
+preload-constructor = []
+private-crt = []
+test-owned-cpuid = []
+test-guest-log = ["reverie-rpc-transport/test-guest-log"]
+# Default-off host-test seam. Installs a Tool as the process handler and drives
+# it from a synthetic HookContext, with no SUD, no patching and no owned setup.
+# Non-owned dispatch only; not a backend capability and not a production route.
+test-tool-host-dispatch = []
+
+
+[dependencies]
+iced-x86 = { version = "=1.21.0", default-features = false, features = ["std", "decoder", "instr_info"] }
+bincode = { version = "2", features = ["serde"] }
+libc = "0.2.186"
+liteinst2 = { version = "0.1.0", git = "https://github.com/rrnewton/liteinst2", rev = "95ee5e6917fa33191eb41c3f1606ea8b03c1b78c" }
+reverie = { version = "0.2.0", path = "../reverie", package = "reverie-core", features = ["pmu"] }
+reverie-preload = { version = "0.2.0", path = "../reverie-preload", default-features = false, features = ["coordinator-rpc"] }
+reverie-rpc-transport = { version = "0.2.0", path = "../reverie-rpc-transport" }
+serde = { version = "1.0.219", features = ["derive"] }
+tokio = { version = "1.52.4", features = ["io-util", "macros", "net", "process", "rt", "time"] }
+tempfile = "3.27.0"
+tracing = "0.1.41"
+
+[dev-dependencies]
+tokio = { version = "1.52.4", features = ["test-util"] }
+tracing-subscriber = "0.3.23"
+

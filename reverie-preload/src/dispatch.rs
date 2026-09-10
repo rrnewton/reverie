@@ -14,7 +14,6 @@
 //! result, or route to a coordinator over RPC.
 
 use crate::signal;
-use crate::trap;
 
 // TODO-HUMAN-REVIEW(PR-264): Review the public dispatch-origin contract used by
 // direct binary-rewriter trampolines.
@@ -23,8 +22,10 @@ use crate::trap;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum SyscallEventSource {
-    /// The seccomp filter delivered the syscall through the `SIGSYS` handler.
+    /// Seccomp delivered a validated `SIGSYS` event.
     SignalTrap,
+    /// Syscall user dispatch delivered a validated native x86-64 `SIGSYS` event.
+    UserDispatch,
     /// An instrumentation trampoline called the dispatcher in ordinary context.
     DirectInstrumentation,
 }
@@ -42,9 +43,20 @@ pub struct SyscallEvent {
     source: SyscallEventSource,
     result: Option<i64>,
     resume_address: Option<u64>,
+    clock_witness: u64,
+    return_mask: Option<u64>,
 }
 
 impl SyscallEvent {
+    pub(crate) fn user_dispatch(number: i64, args: [u64; 6], instruction_pointer: u64) -> Self {
+        Self::with_source(
+            number,
+            args,
+            instruction_pointer,
+            SyscallEventSource::UserDispatch,
+        )
+    }
+
     pub(crate) fn new(number: i64, args: [u64; 6], instruction_pointer: u64) -> Self {
         Self::with_source(
             number,
@@ -76,6 +88,8 @@ impl SyscallEvent {
             source,
             result: None,
             resume_address: None,
+            clock_witness: 0,
+            return_mask: None,
         }
     }
 
@@ -132,14 +146,40 @@ impl SyscallEvent {
         self.resume_address
     }
 
+    /// Defer while transferring clock ownership to a validated callback entry.
+    pub fn defer_to_clocked(&mut self, address: u64, witness: u64) {
+        self.defer_to(address);
+        self.clock_witness = witness;
+    }
+
+    /// Defer with a copied kernel mask for the original frame's sigreturn.
+    /// The backend must retain the guest mask as an owned scalar and restore
+    /// it at the final trusted tail, after ordinary dispatch cleanup.
+    pub fn defer_to_clocked_with_mask(&mut self, address: u64, witness: u64, mask: u64) {
+        self.defer_to_clocked(address, witness);
+        self.return_mask = Some(mask);
+    }
+
+    pub(crate) fn return_mask(&self) -> Option<u64> {
+        self.return_mask
+    }
+
+    pub(crate) fn clock_witness(&self) -> u64 {
+        self.clock_witness
+    }
+
     /// Execute the real syscall through the trusted gate and record its result.
     ///
     /// This is the async-signal-safe way for a dispatcher to forward a syscall:
     /// the gate's instruction pointer is whitelisted in the seccomp filter, so
     /// it does not re-trap.
+    /// Under SUD, forwarding suspends dispatcher exclusion and reinstates the
+    /// interrupted guest's signal mask for the kernel call. A guest handler
+    /// delivered there may make intercepted syscalls with its own activation.
+    /// Runtime-internal gate calls do not open this guest-delivery scope.
     pub fn forward(&mut self) -> i64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        let result = unsafe { trap::raw_syscall6(self.number, self.args) };
+        let result = unsafe { crate::user_dispatch::forward_syscall(self.number, self.args) };
         self.result = Some(result);
         result
     }
@@ -157,6 +197,11 @@ impl SyscallEvent {
 /// allocate, take locks that guest threads may hold, or make syscalls except
 /// through [`SyscallEvent::forward`] / [`crate::trap::raw_syscall6`]. Any other
 /// direct syscall would re-trap and recurse.
+///
+/// SUD excludes ordinary signal delivery while dispatcher code executes. A
+/// forwarded syscall temporarily suspends that activation: a guest signal
+/// handler may invoke this dispatcher again before the outer forward returns.
+/// Do not retain a lock or exclusive shared-state borrow across forwarding.
 pub trait SyscallDispatcher: Send + Sync {
     /// Handle one trapped syscall, setting `event`'s result.
     fn dispatch(&self, event: &mut SyscallEvent);

@@ -31,6 +31,93 @@ use crate::seccomp::TrustedGate;
 use crate::signal;
 const SYS_SECCOMP_CODE: libc::c_int = 1;
 
+/// Optional owned-frame handoff after SUD provenance validation, before scalar
+/// dispatch or RAX normalization. Returning None retains the standard path.
+pub struct OwnedUserDispatch {
+    pub capture: unsafe fn(
+        i32,
+        *mut libc::siginfo_t,
+        *mut libc::c_void,
+        usize,
+    ) -> Option<crate::clock_boundary::Continuation>,
+}
+
+static OWNED_USER_DISPATCH: AtomicPtr<OwnedUserDispatch> = AtomicPtr::new(ptr::null_mut());
+
+/// # Safety
+/// Register before interception and guest threads. The process-lifetime callback
+/// must be allocation-free, non-unwinding and authenticate frame/owner/lifetime
+/// independently. It may claim only guest-owned SUD events, never runtime calls.
+pub unsafe fn register_owned_user_dispatch(hooks: &'static OwnedUserDispatch) -> io::Result<()> {
+    OWNED_USER_DISPATCH
+        .compare_exchange(
+            ptr::null_mut(),
+            (hooks as *const OwnedUserDispatch).cast_mut(),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .map(|_| ())
+        .map_err(|_| io::Error::other("owned SUD capture already registered"))
+}
+
+pub struct RuntimeEntryHooks {
+    pub enter: unsafe extern "C" fn(),
+    pub leave: unsafe extern "C" fn(),
+}
+
+unsafe extern "C" fn no_runtime_entry() {}
+
+static DEFAULT_RUNTIME_ENTRY_HOOKS: RuntimeEntryHooks = RuntimeEntryHooks {
+    enter: no_runtime_entry,
+    leave: no_runtime_entry,
+};
+
+static RUNTIME_ENTRY_HOOKS: AtomicPtr<RuntimeEntryHooks> =
+    AtomicPtr::new((&raw const DEFAULT_RUNTIME_ENTRY_HOOKS).cast_mut());
+
+/// Register process-lifetime, allocation-free ownership hooks before interception.
+/// Each activation retains its matching leave hook until ordinary scope exit.
+///
+/// # Safety
+/// Hooks must be nonblocking, nonpanicking, signal-safe and reentrant. They must
+/// remain loaded for the process lifetime and cannot retain a signal-frame borrow.
+pub unsafe fn register_runtime_entry_hooks(hooks: &'static RuntimeEntryHooks) -> io::Result<()> {
+    let hooks = (hooks as *const RuntimeEntryHooks).cast_mut();
+    match RUNTIME_ENTRY_HOOKS.compare_exchange(
+        (&raw const DEFAULT_RUNTIME_ENTRY_HOOKS).cast_mut(),
+        hooks,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => Ok(()),
+        Err(current) if current == hooks => Ok(()),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "runtime entry hooks already registered",
+        )),
+    }
+}
+
+struct RuntimeEntryGuard {
+    leave: unsafe extern "C" fn(),
+}
+
+impl RuntimeEntryGuard {
+    fn enter() -> Self {
+        let hooks = RUNTIME_ENTRY_HOOKS.load(Ordering::Acquire);
+        unsafe { ((*hooks).enter)() };
+        Self {
+            leave: unsafe { (*hooks).leave },
+        }
+    }
+}
+
+impl Drop for RuntimeEntryGuard {
+    fn drop(&mut self) {
+        unsafe { (self.leave)() };
+    }
+}
+
 core::arch::global_asm!(
     r#"
     .text
@@ -54,7 +141,17 @@ reverie_preload_trusted_syscall_ip:
     .hidden reverie_preload_trusted_syscall_return_ip
 reverie_preload_trusted_syscall_return_ip:
     ret
+    .global reverie_preload_user_dispatch_end
+    .hidden reverie_preload_user_dispatch_end
+reverie_preload_user_dispatch_end:
     .size reverie_preload_trusted_syscall, .-reverie_preload_trusted_syscall
+    .global reverie_preload_trusted_sigreturn_restorer
+    .hidden reverie_preload_trusted_sigreturn_restorer
+    .type reverie_preload_trusted_sigreturn_restorer,@function
+reverie_preload_trusted_sigreturn_restorer:
+    mov rax, 15
+    jmp reverie_preload_trusted_syscall_ip
+    .size reverie_preload_trusted_sigreturn_restorer, .-reverie_preload_trusted_sigreturn_restorer
 "#
 );
 
@@ -70,6 +167,22 @@ unsafe extern "C" {
     ) -> i64;
     static reverie_preload_trusted_syscall_ip: u8;
     static reverie_preload_trusted_syscall_return_ip: u8;
+    /// Kernel SA_RESTORER entry, also usable as a tail-jump target by a wrapper.
+    /// Sets RAX to rt_sigreturn and jumps to the existing trusted SYSCALL site.
+    /// No stack adjustment, TLS lookup, allocation, or fabricated frame occurs.
+    ///
+    /// # Safety
+    /// Enter only with the kernel's signal-restorer RSP and intact live signal
+    /// frame. Never call as an ordinary Rust/C function: CALL would corrupt the
+    /// kernel-expected RSP. Wrappers must restore that RSP before tail-jumping.
+    #[link_name = "reverie_preload_trusted_sigreturn_restorer"]
+    pub fn trusted_sigreturn_restorer() -> !;
+    static reverie_preload_user_dispatch_end: u8;
+}
+
+pub(crate) fn user_dispatch_range() -> std::ops::Range<usize> {
+    ptr::addr_of!(reverie_preload_trusted_syscall_ip) as usize
+        ..ptr::addr_of!(reverie_preload_user_dispatch_end) as usize
 }
 
 /// The registered dispatcher, as a leaked thin pointer to a boxed trait object.
@@ -154,6 +267,7 @@ fn dispatch_event(event: &mut SyscallEvent) {
 /// [`SyscallEvent::defer_to`]. A dispatcher that requests deferred signal-frame
 /// resumption is rejected with `-ENOTSUP` because no signal frame exists here.
 pub fn dispatch_direct(number: i64, args: [u64; 6], instruction_pointer: u64) -> i64 {
+    let _runtime = RuntimeEntryGuard::enter();
     let mut event = SyscallEvent::direct(number, args, instruction_pointer);
     dispatch_event(&mut event);
     if event.resume_address().is_some() {
@@ -163,8 +277,101 @@ pub fn dispatch_direct(number: i64, args: [u64; 6], instruction_pointer: u64) ->
     }
 }
 
-unsafe fn exit_now(code: i32) -> ! {
+#[track_caller]
+pub(crate) unsafe fn exit_now(code: i32) -> ! {
+    if code == 126 {
+        unsafe { terminal126("sigsys-admission", "predicate", None) }
+    }
     let _ = unsafe { raw_syscall6(libc::SYS_exit_group, [code as u64, 0, 0, 0, 0, 0]) };
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+struct Terminal126Line {
+    bytes: [u8; 768],
+    used: usize,
+}
+
+impl Terminal126Line {
+    fn push(&mut self, bytes: &[u8]) {
+        let count = bytes.len().min(self.bytes.len() - 1 - self.used);
+        self.bytes[self.used..self.used + count].copy_from_slice(&bytes[..count]);
+        self.used += count;
+    }
+
+    fn number(&mut self, value: i64) {
+        if value < 0 {
+            self.push(b"-");
+        }
+        let mut value = value.unsigned_abs();
+        let mut digits = [0u8; 20];
+        let mut cursor = digits.len();
+        loop {
+            cursor -= 1;
+            digits[cursor] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        self.push(&digits[cursor..]);
+    }
+
+    fn new(
+        site: &core::panic::Location<'_>,
+        operation: &str,
+        detail: &str,
+        value: Option<i64>,
+    ) -> Self {
+        let mut line = Self {
+            bytes: [0; 768],
+            used: 0,
+        };
+        line.push(b"liteinst terminal126: operation=");
+        line.push(operation.as_bytes());
+        line.push(b" detail=");
+        line.push(detail.as_bytes());
+        line.push(b" value=");
+        match value {
+            Some(value) => line.number(value),
+            None => line.push(b"none"),
+        }
+        line.push(b" site=");
+        line.push(site.file().as_bytes());
+        line.push(b":");
+        line.number(i64::from(site.line()));
+        line.push(b":");
+        line.number(i64::from(site.column()));
+        line.bytes[line.used] = b'\n';
+        line.used += 1;
+        line
+    }
+}
+
+/// Failure-only, allocation-free diagnostic through the existing trusted gate.
+/// One best-effort write: no retries, TLS, formatting callbacks or signal-policy
+/// changes. A write can block or raise SIGPIPE under the inherited policy; lack
+/// of a record cannot exclude this branch. Values are tagged, not inferred errno.
+#[doc(hidden)]
+#[track_caller]
+pub fn report_terminal126(operation: &str, detail: &str, value: Option<i64>) {
+    let line = Terminal126Line::new(core::panic::Location::caller(), operation, detail, value);
+    let _ = unsafe {
+        raw_syscall6(
+            libc::SYS_write,
+            [2, line.bytes.as_ptr() as u64, line.used as u64, 0, 0, 0],
+        )
+    };
+}
+
+/// # Safety
+/// Only call at an already-terminal refusal; this never returns or repairs state.
+#[doc(hidden)]
+#[track_caller]
+pub unsafe fn terminal126(operation: &str, detail: &str, value: Option<i64>) -> ! {
+    report_terminal126(operation, detail, value);
+    let _ = unsafe { raw_syscall6(libc::SYS_exit_group, [126, 0, 0, 0, 0, 0]) };
     loop {
         core::hint::spin_loop();
     }
@@ -175,31 +382,131 @@ unsafe fn exit_now(code: i32) -> ! {
 /// # Safety
 ///
 /// Only the kernel calls this, on a real `SIGSYS`.
-pub(crate) unsafe extern "C" fn sigsys_handler(
+unsafe extern "C" fn sigsys_body(
     signal_number: libc::c_int,
     info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
-) {
+) -> crate::clock_boundary::Continuation {
+    let _runtime = RuntimeEntryGuard::enter();
+    unsafe { dispatch_signal(signal_number, info, context, SYS_SECCOMP_CODE, None) }
+}
+
+crate::clocked_signal!(sigsys_handler, sigsys_body);
+
+unsafe extern "C" fn user_dispatch_body(
+    signal_number: libc::c_int,
+    info: *mut libc::siginfo_t,
+    context: *mut libc::c_void,
+    _scope_token: u64,
+    entry_sp: usize,
+) -> crate::clock_boundary::Continuation {
+    let _runtime = RuntimeEntryGuard::enter();
+    unsafe {
+        dispatch_signal(
+            signal_number,
+            info,
+            context,
+            crate::user_dispatch::SYS_USER_DISPATCH_CODE,
+            Some(entry_sp),
+        )
+    }
+}
+
+crate::clocked_signal!(user_dispatch_handler, user_dispatch_body, frame_entry);
+
+unsafe fn dispatch_signal(
+    signal_number: libc::c_int,
+    info: *mut libc::siginfo_t,
+    context: *mut libc::c_void,
+    expected_code: i32,
+    entry_sp: Option<usize>,
+) -> crate::clock_boundary::Continuation {
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-133): Review fail-closed SIGSYS provenance validation.
     if signal_number != libc::SIGSYS
         || info.is_null()
         || context.is_null()
-        || unsafe { (*info).si_code } != SYS_SECCOMP_CODE
+        || unsafe { (*info).si_code } != expected_code
     {
         unsafe { exit_now(126) };
     }
 
-    // Reentrancy guard: a trapped syscall inside the handler is a bug (the
-    // dispatcher must use the trusted gate). Fail closed rather than recurse.
-    if IN_HANDLER.get() {
+    let previous_handler = IN_HANDLER.get();
+    if previous_handler
+        && !(expected_code == crate::user_dispatch::SYS_USER_DISPATCH_CODE
+            && crate::user_dispatch::may_enter_dispatch())
+    {
         unsafe { exit_now(125) };
     }
     IN_HANDLER.set(true);
 
     let context = unsafe { &mut *context.cast::<libc::ucontext_t>() };
     let registers = &mut context.uc_mcontext.gregs;
-    let mut event = SyscallEvent::new(
+    if expected_code == crate::user_dispatch::SYS_USER_DISPATCH_CODE {
+        let syscall_info = unsafe { &*info.cast::<SyscallSignalInfo>() };
+        if syscall_info.arch != 0xc000003e
+            || (syscall_info.number >= 0 && syscall_info.number as u32 & 0x4000_0000 != 0)
+            || syscall_info.call_address != registers[libc::REG_RIP as usize] as usize
+        {
+            unsafe { exit_now(126) };
+        }
+        if syscall_info.number == libc::SYS_rt_sigreturn as i32 {
+            registers[libc::REG_RAX as usize] = i64::from(syscall_info.number);
+            registers[libc::REG_RIP as usize] = trusted_sigreturn_restorer as *const () as i64;
+            IN_HANDLER.set(previous_handler);
+            return crate::clock_boundary::Continuation::GUEST;
+        }
+        let hooks = OWNED_USER_DISPATCH.load(Ordering::Acquire);
+        if let Some(entry_sp) = entry_sp
+            && !hooks.is_null()
+            && let Some(continuation) = unsafe {
+                ((*hooks).capture)(
+                    signal_number,
+                    info,
+                    (context as *mut libc::ucontext_t).cast(),
+                    entry_sp,
+                )
+            }
+        {
+            IN_HANDLER.set(previous_handler);
+            return continuation;
+        }
+        context.uc_mcontext.gregs[libc::REG_RAX as usize] = i64::from(syscall_info.number);
+    }
+    let mut return_mask = None;
+    let continuation = if expected_code == crate::user_dispatch::SYS_USER_DISPATCH_CODE {
+        crate::user_dispatch::with_dispatch_mask(&mut context.uc_sigmask, || {
+            dispatch_registers(
+                &mut context.uc_mcontext.gregs,
+                expected_code,
+                &mut return_mask,
+            )
+        })
+    } else {
+        dispatch_registers(
+            &mut context.uc_mcontext.gregs,
+            expected_code,
+            &mut return_mask,
+        )
+    };
+    if let Some(mask) = return_mask {
+        unsafe { (&raw mut context.uc_sigmask).cast::<u64>().write(mask) };
+    }
+    IN_HANDLER.set(previous_handler);
+    continuation
+}
+
+fn dispatch_registers(
+    registers: &mut [libc::greg_t],
+    expected_code: i32,
+    return_mask: &mut Option<u64>,
+) -> crate::clock_boundary::Continuation {
+    let constructor = if expected_code == crate::user_dispatch::SYS_USER_DISPATCH_CODE {
+        SyscallEvent::user_dispatch
+    } else {
+        SyscallEvent::new
+    };
+    let mut event = constructor(
         registers[libc::REG_RAX as usize],
         [
             registers[libc::REG_RDI as usize] as u64,
@@ -212,7 +519,13 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
         registers[libc::REG_RIP as usize] as u64,
     );
 
-    dispatch_event(&mut event);
+    if expected_code == crate::user_dispatch::SYS_USER_DISPATCH_CODE
+        && is_user_dispatch_reconfiguration(&event)
+    {
+        event.fail(libc::EPERM);
+    } else {
+        dispatch_event(&mut event);
+    }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
     if let Some(resume_address) = event.resume_address() {
@@ -222,7 +535,18 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
     } else {
         registers[libc::REG_RAX as usize] = event.resolved_result();
     }
-    IN_HANDLER.set(false);
+    if event.resume_address().is_some() {
+        *return_mask = event.return_mask();
+        crate::clock_boundary::Continuation::hook(event.clock_witness())
+    } else {
+        crate::clock_boundary::Continuation::GUEST
+    }
+}
+
+fn is_user_dispatch_reconfiguration(event: &SyscallEvent) -> bool {
+    event.number() == libc::SYS_prctl
+        && event.args()[0] as libc::c_int
+            == crate::user_dispatch::PR_SET_SYSCALL_USER_DISPATCH as libc::c_int
 }
 
 /// Install the SIGSYS handler (and, optionally, an alternate signal stack).
@@ -237,9 +561,111 @@ pub unsafe fn install_handler(use_alt_stack: bool) -> io::Result<()> {
     unsafe { signal::install_sigsys_handler(sigsys_handler, use_alt_stack) }
 }
 
+/// Linux x86-64 UAPI siginfo prefix followed by the `_sigsys` union member.
+#[repr(C)]
+struct SyscallSignalInfo {
+    signal: i32,
+    errno: i32,
+    code: i32,
+    padding: i32,
+    call_address: usize,
+    number: i32,
+    arch: u32,
+}
+
+const _: () = assert!(core::mem::offset_of!(SyscallSignalInfo, call_address) == 16);
+const _: () =
+    assert!(core::mem::size_of::<SyscallSignalInfo>() <= core::mem::size_of::<libc::siginfo_t>());
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal126_label_value_and_site_are_preserved() {
+        let site = core::panic::Location::caller();
+        for value in [None, Some(0), Some(-22), Some(i64::MIN), Some(i64::MAX)] {
+            let line = Terminal126Line::new(site, "restore-mask", "raw-result", value);
+            let value = value
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".into());
+            assert_eq!(
+                std::str::from_utf8(&line.bytes[..line.used]).unwrap(),
+                format!(
+                    "liteinst terminal126: operation=restore-mask detail=raw-result value={value} site={}:{}:{}\n",
+                    site.file(),
+                    site.line(),
+                    site.column()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn terminal126_truncation_is_bounded_and_terminated() {
+        let line = Terminal126Line::new(
+            core::panic::Location::caller(),
+            &"x".repeat(2000),
+            "predicate",
+            None,
+        );
+        assert_eq!(line.used, line.bytes.len());
+        assert_eq!(line.bytes[line.used - 1], b'\n');
+    }
+
+    #[test]
+    fn terminal126_ordinary_child_keeps_status_and_raw_result() {
+        const CHILD: &str = "REVERIE_TERMINAL126_HOST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            unsafe { terminal126("host-control", "raw-result", Some(-22)) }
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "trap::tests::terminal126_ordinary_child_keeps_status_and_raw_result",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(126));
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            stderr.contains("operation=host-control detail=raw-result value=-22 site="),
+            "{stderr}"
+        );
+        let full = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "trap::tests::terminal126_ordinary_child_keeps_status_and_raw_result",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(full)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(126));
+    }
+
+    #[test]
+    fn user_dispatch_option_uses_linux_int_width() {
+        let option = crate::user_dispatch::PR_SET_SYSCALL_USER_DISPATCH;
+        for upper in [0, 1u64 << 32, u64::MAX << 32] {
+            let event = SyscallEvent::new(libc::SYS_prctl, [upper | option, 0, 0, 0, 0, 0], 0);
+            assert!(is_user_dispatch_reconfiguration(&event));
+            for other in [0, libc::PR_GET_DUMPABLE as u64, u32::MAX as u64] {
+                let event = SyscallEvent::new(libc::SYS_prctl, [upper | other, 0, 0, 0, 0, 0], 0);
+                assert!(!is_user_dispatch_reconfiguration(&event));
+            }
+            let event = SyscallEvent::new(libc::SYS_getpid, [upper | option, 0, 0, 0, 0, 0], 0);
+            assert!(!is_user_dispatch_reconfiguration(&event));
+        }
+    }
 
     #[test]
     fn trusted_gate_addresses_are_populated_and_ordered() {

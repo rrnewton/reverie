@@ -25,7 +25,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex as StdMutex;
+#[cfg(test)]
 use std::sync::OnceLock as StdOnceLock;
+#[cfg(test)]
 use std::sync::atomic::AtomicBool;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
@@ -2020,7 +2022,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     /// creation. It still fails closed on a vfork child and on an exec after
     /// start, neither of which can preserve the preload runtime.
     // TODO-HUMAN-REVIEW(PR-270): Review dynamic LiteInst provenance API.
-    pub fn liteinst_runtime(
+    #[cfg(test)]
+    pub(crate) fn liteinst_runtime(
         self,
         preload: impl Into<PathBuf>,
         begin_marker: u64,
@@ -2039,7 +2042,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     }
 
     /// Enables the dynamic LiteInst runtime and optionally collects patch statistics.
-    pub fn liteinst_runtime_with_stats(
+    #[cfg(test)]
+    pub(crate) fn liteinst_runtime_with_stats(
         mut self,
         preload: impl Into<PathBuf>,
         begin_marker: u64,

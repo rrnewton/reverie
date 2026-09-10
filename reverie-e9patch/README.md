@@ -56,24 +56,21 @@ malformed output.
 
 ## Shared With LiteInst Versus Different
 
-e9patch is deliberately kept a close sibling of the LiteInst backend
-(`reverie-liteinst`). Both are **ld-preload backends** that share the
-`reverie-preload` runtime and fall back to the ptrace lifecycle owner for full
-`Guest` semantics. The convergence is deliberate: correctness-critical code is
-written and reviewed exactly once, in `reverie-preload`, and both backends reuse
-it.
+e9patch and the LiteInst in-process instrumentation package both use
+`reverie-preload`. E9patch retains a ptrace lifecycle owner for its generic
+`Backend` path; LiteInst does not. Shared correctness-critical code remains in
+`reverie-preload`.
 
 **Shared (identical code, from `reverie-preload`):**
 
 - **ld-preload injection substrate.** The crate is now built as a `cdylib`
   (`libreverie_e9patch.so`) plus `rlib`, with a `preload-constructor` feature
-  that installs a `.init_array` entry (`reverie_e9patch_initialize`) — exactly
-  the shape LiteInst uses. `configure_command` prepends the cdylib to
-  `LD_PRELOAD` and selects the shared pass-through built-in via
-  `REVERIE_E9PATCH_TOOL`, mirroring LiteInst's
-  `preload_library_path`/`configure_command`.
+  that installs a `.init_array` entry (`reverie_e9patch_initialize`).
+  `configure_command` prepends the cdylib to `LD_PRELOAD` and selects the shared
+  pass-through built-in via `REVERIE_E9PATCH_TOOL`. LiteInst has no corresponding
+  ambient launcher.
 - **Fallback ptracer.** `E9patchBackend` runs the guest under Reverie's ptrace
-  lifecycle controller, the same correctness-first owner LiteInst falls back to.
+  lifecycle controller. LiteInst has no ptrace fallback.
 - **The same Reverie hooks.** `E9patchDispatcher` plugs into the shared
   `reverie_preload::dispatch::SyscallDispatcher` seam and reuses LiteInst's
   `PassthroughDispatcher` **verbatim**, so the SIGSYS handler, seccomp filter,
@@ -94,9 +91,7 @@ it.
 - **The same shared built-in tools.** e9patch's in-guest runtime can install
   reverie-preload's shared `BuiltinTool`s (`passthrough`, `spoof-getpid`)
   **verbatim** via the shared `reverie_preload::install_builtin`, selected by
-  `REVERIE_E9PATCH_TOOL`. This is the analog of LiteInst's built-in
-  `strace`/`compat` selection (`configure_command(cmd, PreloadTool)`), except the
-  tool — including the *mutating* `spoof-getpid` demo that returns
+  `REVERIE_E9PATCH_TOOL`. The tool — including the *mutating* `spoof-getpid` demo that returns
   `reverie_preload::SPOOF_PID` from `getpid` — is shared-crate code reviewed
   once, not backend-private. Only the env-var spelling is e9patch's. This proves
   the e9patch direct AOT path can *mutate* a syscall result, while residual
@@ -106,8 +101,8 @@ it.
   `fork::ForkHook` through `PassthroughDispatcher::with_fork_hook`, so each
   `fork`/`clone` child re-establishes its per-process runtime state in the child
   immediately after the fork-like syscall returns `0`. This is the *same* seam,
-  and the same reviewed-once mechanism, that LiteInst uses for per-process reset
-  (there, a fresh coordinator connection). e9patch's per-process state is the
+  and the same reviewed-once mechanism used elsewhere in `reverie-preload`.
+  E9patch's per-process state is the
   fallback observability below: the counters are process-global statics, so a
   child would otherwise copy-on-write inherit — and mis-report as its own — the
   parent's accumulated residual surface. What each backend re-establishes in the

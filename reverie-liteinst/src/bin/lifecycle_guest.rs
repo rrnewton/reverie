@@ -147,10 +147,13 @@ impl Tool for LifecycleTool {
 }
 
 fn install_tool() {
-    let coordinator = std::env::var_os(reverie_liteinst::COORDINATOR_ENV)
-        .expect("lifecycle fixture requires a LiteInst coordinator");
+    let bootstrap = unsafe { reverie_liteinst::take_preload_bootstrap() }
+        .unwrap()
+        .expect("lifecycle fixture requires a sealed LiteInst bootstrap");
+    assert!(bootstrap.tool_data.is_empty());
     // SAFETY: main starts before application-created threads and installs once.
-    unsafe { reverie_liteinst::install_tool_quiescent::<LifecycleTool>(coordinator) }.unwrap();
+    unsafe { reverie_liteinst::install_tool_quiescent::<LifecycleTool>(bootstrap.coordinator) }
+        .unwrap();
 }
 
 fn fork_or_panic() -> libc::pid_t {

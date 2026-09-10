@@ -55,8 +55,7 @@ const PRELOAD_BOOTSTRAP_MAX_BYTES: usize = 4096;
 
 /// Environment variable naming a tool-specific DSO for [`E9patchBackend::run_direct`].
 ///
-/// The DSO must embed the same concrete `T` and install it from a constructor,
-/// matching LiteInst's `REVERIE_LITEINST_TOOL_PRELOAD` contract.
+/// The DSO must embed the same concrete `T` and install it from a constructor.
 pub const TOOL_PRELOAD_ENV: &str = "REVERIE_E9PATCH_TOOL_PRELOAD";
 
 /// Coordinator path and opaque tool-specific bytes consumed by an e9patch

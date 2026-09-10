@@ -6,14 +6,13 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Run the production Reverie example tools with the LiteInst backend.
+//! Retains the Reverie example-tool selector surface while generic LiteInst
+//! launch refuses before starting a guest.
 
-use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::bail;
 use clap::Parser;
-use reverie::ExitStatus;
 use reverie::process::Command;
 #[path = "src/host.rs"]
 mod example_tools;
@@ -69,7 +68,7 @@ struct Args {
     #[clap(long = "trace")]
     filters: Vec<String>,
 
-    /// Port for the ptrace-assisted debug selector.
+    /// Reserved debug port.
     #[clap(long)]
     port: Option<u16>,
 
@@ -103,48 +102,9 @@ async fn main() -> anyhow::Result<()> {
     }
     let chaos_options = args.chaos_options.into_config();
 
-    let preload = match (args.tool, args.preload) {
-        (_, Some(path)) => path,
-        (example_tools::ToolKind::Debug, None) => PathBuf::new(),
-        (_, None) => example_tools::default_preload_path()?,
-    };
+    let _ = args.preload;
     let mut command = Command::new(&args.command[0]);
     command.args(&args.command[1..]);
-    let result = example_tools::run(
-        args.tool,
-        command,
-        args.filters,
-        chaos_options,
-        args.port.unwrap_or(1234),
-        preload,
-    )
-    .await?;
-
-    std::io::stdout().write_all(&result.output.stdout)?;
-    std::io::stderr().write_all(&result.output.stderr)?;
-    if let Some(path) = args.out {
-        let trace = result
-            .chrome_trace
-            .as_deref()
-            .expect("ChromeTrace run did not return its trace artifact");
-        std::fs::write(path, trace)?;
-    }
-    match result.counter_summary {
-        Some(example_tools::CounterSummary::Counter1 { total_syscalls }) => {
-            eprintln!(" [counter tool] Total system calls in process tree: {total_syscalls}");
-        }
-        Some(example_tools::CounterSummary::Counter2 {
-            total_syscalls,
-            processes,
-            threads,
-        }) => {
-            eprintln!(
-                " [counter tool] Total system calls in process tree: {total_syscalls}, from {processes} processes, {threads} thread(s)."
-            );
-        }
-        None => {}
-    }
-
-    let status: ExitStatus = result.output.status.into();
-    status.raise_or_exit()
+    example_tools::run(args.tool, command, args.filters, chaos_options).await?;
+    Ok(())
 }

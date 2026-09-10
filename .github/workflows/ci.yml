@@ -36,6 +36,15 @@ jobs:
         key: dynamorio-${{ runner.os }}-${{ hashFiles('reverie-dbt/vendor/dynamorio/**', 'reverie-dbt/build.rs') }}
     - name: Build
       run: cargo build --workspace --all-features
+    - name: Compile, inventory, and test owned public instruction target
+      run: |
+        cargo test -p reverie-liteinst-runtime --test owned_public_instruction --no-run
+        inventory=$(cargo test -p reverie-liteinst-runtime --test owned_public_instruction -- --list)
+        printf '%s\n' "$inventory"
+        test "$(printf '%s\n' "$inventory" | awk '/: test$/ { count += 1 } END { print count + 0 }')" -eq 17
+        test "$(printf '%s\n' "$inventory" | awk '/^hostcontrol_.*: test$/ { count += 1 } END { print count + 0 }')" -eq 16
+        test "$(printf '%s\n' "$inventory" | awk '/^public_owned_native_routes_cpuid_and_rdtsc_to_the_shared_tool: test$/ { count += 1 } END { print count + 0 }')" -eq 1
+        cargo test -p reverie-liteinst-runtime --test owned_public_instruction -- --test-threads=1
     - name: DBT virtual identity and pidfd_open policy
       run: reverie-dbt/scripts/test-identity-policy.sh
     - name: Test regular workspace cases

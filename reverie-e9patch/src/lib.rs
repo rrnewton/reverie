@@ -121,14 +121,13 @@ pub const COORDINATOR_ENV: &str = "REVERIE_E9PATCH_COORDINATOR";
 
 /// Environment variable overriding the located e9patch preload library path.
 ///
-/// Mirrors LiteInst's `REVERIE_LITEINST_PRELOAD` and `reverie-preload`'s
-/// `REVERIE_PRELOAD_LIB` contract.
+/// Mirrors `reverie-preload`'s `REVERIE_PRELOAD_LIB` contract.
 pub const PRELOAD_LIB_ENV: &str = "REVERIE_E9PATCH_PRELOAD";
 
 /// Locates the e9patch preload cdylib produced beside the current executable.
 ///
-/// The search order mirrors LiteInst's `preload_library_path` exactly so the
-/// two ld-preload backends resolve their runtime `.so` identically.
+/// The search order checks the executable directory, its `deps` directory, and
+/// the parent directory.
 pub fn preload_library_path() -> io::Result<PathBuf> {
     if let Some(path) = env::var_os(PRELOAD_LIB_ENV) {
         let path = PathBuf::from(path);
@@ -198,13 +197,11 @@ pub fn configure_command(command: &mut Command) -> io::Result<()> {
 /// Arms a `reverie::process::Command` guest with the shared e9patch preload
 /// runtime under the requested [`RuntimeMode`].
 ///
-/// This is the launcher-side half of the shared ld-preload injection — the
-/// analog of LiteInst's `configure_command`/`launch` env wiring, but for the
+/// This is the launcher-side half of the shared ld-preload injection for the
 /// `reverie::process::Command` the [`E9patchBackend`] spawns. It prepends the
 /// located cdylib to any `LD_PRELOAD` already on the command (falling back to
 /// the launcher's own environment) and selects the controller via
-/// [`RuntimeMode::env_value`]. Injection is *the same mechanism* LiteInst uses;
-/// only the AOT-vs-runtime patch timing and trampoline placement differ.
+/// [`RuntimeMode::env_value`].
 pub fn configure_guest_command(
     command: &mut reverie::process::Command,
     mode: RuntimeMode,
@@ -222,10 +219,9 @@ pub fn configure_guest_command(
 
 /// Arms a `reverie::process::Command` guest with a **shared** [`BuiltinTool`].
 ///
-/// This is the launcher-side half of built-in-tool selection — the direct analog
-/// of LiteInst's `configure_command(command, PreloadTool)`, differing only in
-/// that the tool is one of reverie-preload's shared built-ins (installed via the
-/// shared `install_builtin`) rather than a backend-private one. It prepends the
+/// This is the launcher-side half of built-in-tool selection. The tool is one
+/// of reverie-preload's shared built-ins, installed via the shared
+/// `install_builtin`. It prepends the
 /// located cdylib to any inherited `LD_PRELOAD` and sets [`TOOL_ENV`], which the
 /// in-guest constructor reads with priority over the controller-mode
 /// [`RUNTIME_ENV`]. Built-in tools run under the shared isolated in-process

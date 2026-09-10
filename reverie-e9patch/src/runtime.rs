@@ -38,8 +38,7 @@ use crate::dispatch::E9patchDispatcher;
 ///
 /// When unset the preload constructor is inert, so an unrelated process that
 /// merely has the `.so` on `LD_PRELOAD` is unaffected. This matches
-/// `reverie-preload`'s `REVERIE_PRELOAD_TOOL` and LiteInst's
-/// `REVERIE_LITEINST_TOOL` opt-in contract.
+/// `reverie-preload`'s `REVERIE_PRELOAD_TOOL` opt-in contract.
 pub const RUNTIME_ENV: &str = "REVERIE_E9PATCH_RUNTIME";
 
 /// [`RUNTIME_ENV`] value selecting the in-process residual controller.
@@ -62,11 +61,9 @@ pub const RUNTIME_HYBRID: &str = "hybrid";
 /// Environment variable selecting a **shared** built-in tool for the in-guest
 /// runtime.
 ///
-/// This is the direct analog of LiteInst's `REVERIE_LITEINST_TOOL` and
-/// reverie-preload's [`TOOL_ENV`](reverie_preload::TOOL_ENV). The difference is
-/// where the tool lives: LiteInst's built-ins (`strace`/`compat`) are
-/// LiteInst-private, whereas e9patch selects reverie-preload's
-/// [`BuiltinTool`]s **verbatim** — so the dispatcher code (including the
+/// This is the e9patch spelling of reverie-preload's
+/// [`TOOL_ENV`](reverie_preload::TOOL_ENV). E9patch selects reverie-preload's
+/// [`BuiltinTool`]s verbatim, so the dispatcher code (including the
 /// *mutating* `SpoofGetpid` demo) is written and reviewed exactly once in the
 /// shared crate. Only the env-var spelling is e9patch's.
 ///
@@ -269,9 +266,7 @@ pub unsafe fn install_hybrid_runtime() -> io::Result<()> {
 /// This forwards directly to [`reverie_preload::install_builtin`], so the
 /// dispatcher (including the *mutating* [`BuiltinTool::SpoofGetpid`]), the
 /// seccomp filter, the `SIGSYS` handler, and the trusted gate are the exact
-/// shared code both ld-preload backends rely on. It is the e9patch analog of
-/// LiteInst's built-in `strace`/`compat` selection, differing only in that the
-/// tool itself is shared rather than backend-private.
+/// shared code used by the direct e9patch path.
 ///
 /// Built-in tools run under [`InProcessSeccomp`] (the isolated demo/testing
 /// path, matching reverie-preload's standalone cdylib), not the ptrace-hosted
