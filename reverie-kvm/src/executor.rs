@@ -658,6 +658,16 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_fchmodat as u64 {
         // SYS_fchmodat has three arguments; r10 is unspecified guest state.
         fchmodat(memory, state, args[0] as libc::c_int, args[1], args[2], 0)
+    } else if number == libc::SYS_fchmodat2 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        fchmodat(
+            memory,
+            state,
+            args[0] as libc::c_int,
+            args[1],
+            args[2],
+            args[3],
+        )
     } else if number == libc::SYS_mknod as u64 {
         mknod_at(memory, state, libc::AT_FDCWD, args[0], args[1], args[2])
     } else if number == libc::SYS_mknodat as u64 {
@@ -7349,28 +7359,51 @@ fn fchmodat(
     raw_mode: u64,
     raw_flags: u64,
 ) -> i64 {
-    if raw_flags != 0 {
-        return negative_errno(libc::ENOTSUP);
+    // TODO-HUMAN-REVIEW(PR-532): Review fchmodat2 flag handling, guest path
+    // translation, and held-target mutation against Linux semantics.
+    let flags = raw_flags as libc::c_int;
+    let allowed_flags = libc::AT_SYMLINK_NOFOLLOW | libc::AT_EMPTY_PATH;
+    if flags & !allowed_flags != 0 {
+        return negative_errno(libc::EINVAL);
     }
-    let (host_dirfd, path) = match read_path_at(memory, state, guest_dirfd, path_address, false) {
-        Ok(path) => path,
-        Err(error) => return error,
+    let allow_empty = flags & libc::AT_EMPTY_PATH != 0;
+    let (host_dirfd, path) =
+        match read_path_at(memory, state, guest_dirfd, path_address, allow_empty) {
+            Ok(path) => path,
+            Err(error) => return error,
+        };
+    let nofollow = flags & libc::AT_SYMLINK_NOFOLLOW != 0;
+    let opened_file = if path.to_bytes().is_empty() {
+        if state.proc_files.contains_key(&guest_dirfd) {
+            return negative_errno(libc::EACCES);
+        }
+        if let Err(error) = ensure_fd_not_procfs(host_dirfd) {
+            return error;
+        }
+        None
+    } else {
+        match open_host_metadata_path(host_dirfd, &path, nofollow) {
+            Ok(file) => Some(file),
+            Err(error) => return error,
+        }
     };
-    let file = match open_host_metadata_path(host_dirfd, &path, false) {
-        Ok(file) => file,
-        Err(error) => return error,
+    let target_fd = match opened_file.as_ref() {
+        Some(file) => file.as_raw_fd(),
+        None => host_dirfd,
     };
     let mode = raw_mode as libc::mode_t & 0o7777;
     let empty_path = b"\0";
+    let host_flags = libc::AT_EMPTY_PATH | (flags & libc::AT_SYMLINK_NOFOLLOW);
     // Mutate the checked inode rather than re-resolving the guest pathname.
-    // SAFETY: file owns a live O_PATH descriptor and empty_path is terminated.
+    // SAFETY: target_fd is live through opened_file or guest descriptor state,
+    // and empty_path is terminated.
     let mut result = unsafe {
         libc::syscall(
             libc::SYS_fchmodat2,
-            file.as_raw_fd(),
+            target_fd,
             empty_path.as_ptr(),
             mode,
-            libc::AT_EMPTY_PATH,
+            host_flags,
         )
     };
     if result < 0
@@ -7379,12 +7412,21 @@ fn fchmodat(
             Some(libc::ENOSYS | libc::EINVAL)
         )
     {
-        // fchmodat2(AT_EMPTY_PATH) was added after openat2. On older kernels,
-        // a supervisor-generated procfs path to our held descriptor preserves
-        // inode identity without re-resolving guest-controlled path components.
-        let proc_path = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+        // SAFETY: target_fd is live and stat is writable.
+        if unsafe { libc::fstat(target_fd, stat.as_mut_ptr()) } != 0 {
+            return io_error(std::io::Error::last_os_error());
+        }
+        // SAFETY: fstat initialized stat on success.
+        if unsafe { stat.assume_init() }.st_mode & libc::S_IFMT == libc::S_IFLNK {
+            return negative_errno(libc::EOPNOTSUPP);
+        }
+        // Hosts before fchmodat2 can still mutate the held, checked inode
+        // through a supervisor-generated descriptor path. This never
+        // re-resolves guest-controlled path components.
+        let proc_path = CString::new(format!("/proc/self/fd/{target_fd}"))
             .expect("supervisor fd path has no NUL");
-        // SAFETY: proc_path identifies the checked descriptor held by file.
+        // SAFETY: proc_path identifies the descriptor held above.
         result = unsafe { libc::fchmodat(libc::AT_FDCWD, proc_path.as_ptr(), mode, 0) } as _;
     }
     zero_or_errno(result as libc::c_int)
@@ -19457,6 +19499,313 @@ mod tests {
             ),
             negative_errno(libc::EBADF)
         );
+    }
+
+    #[test]
+    fn fchmodat2_matches_linux_flags_empty_path_and_error_ordering() {
+        const FILE: u64 = 0x100;
+        const LINK: u64 = 0x200;
+        const MISSING: u64 = 0x300;
+        const EMPTY: u64 = 0x400;
+        const PROTECTED: u64 = 0x500;
+        const SYNTHETIC_PROC: u64 = 0x600;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        for (address, value) in [
+            (FILE, "file"),
+            (LINK, "link"),
+            (MISSING, "missing"),
+            (EMPTY, ""),
+            (SYNTHETIC_PROC, "/proc/version"),
+        ] {
+            write_c_string(&mut memory, address, value);
+        }
+        std::fs::write(root.0.join("file"), b"payload").unwrap();
+        std::fs::set_permissions(root.0.join("file"), std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        std::os::unix::fs::symlink("file", root.0.join("link")).unwrap();
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmodat2,
+                [
+                    libc::AT_FDCWD as u64,
+                    FILE,
+                    0o640,
+                    0,
+                    0xdead_beef,
+                    0xcafe_babe,
+                ],
+            ),
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(root.0.join("file")).unwrap().mode() & 0o7777,
+            0o640
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmodat2,
+                [
+                    libc::AT_FDCWD as u64,
+                    FILE,
+                    0o600,
+                    libc::AT_SYMLINK_NOFOLLOW as u64,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmodat2,
+                [libc::AT_FDCWD as u64, LINK, 0o644, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(root.0.join("file")).unwrap().mode() & 0o7777,
+            0o644
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmodat2,
+                [
+                    libc::AT_FDCWD as u64,
+                    LINK,
+                    0o600,
+                    libc::AT_SYMLINK_NOFOLLOW as u64,
+                    0,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EOPNOTSUPP)
+        );
+        assert_eq!(
+            std::fs::metadata(root.0.join("file")).unwrap().mode() & 0o7777,
+            0o644
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmodat2,
+                [libc::AT_FDCWD as u64, MISSING, 0o600, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOENT)
+        );
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmodat2,
+                [99, u64::MAX, 0o600, 0xffff, 0, 0],
+            ),
+            negative_errno(libc::EINVAL),
+            "invalid flags precede pathname and dirfd checks"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmodat2,
+                [99, u64::MAX, 0o600, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT),
+            "pathname access precedes a relative-path dirfd check"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmodat2,
+                [99, EMPTY, 0o600, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOENT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmodat2,
+                [99, EMPTY, 0o600, libc::AT_EMPTY_PATH as u64, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+
+        let file_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [libc::AT_FDCWD as u64, FILE, libc::O_PATH as u64, 0, 0, 0],
+        );
+        assert_eq!(file_fd, 3);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmodat2,
+                [
+                    file_fd as u64,
+                    EMPTY,
+                    !0o7777_u64 | 0o640,
+                    libc::AT_EMPTY_PATH as u64,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(root.0.join("file")).unwrap().mode() & 0o7777,
+            0o640
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmodat2,
+                [
+                    file_fd as u64,
+                    EMPTY,
+                    0o600,
+                    (libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW) as u64,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(root.0.join("file")).unwrap().mode() & 0o7777,
+            0o600
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [file_fd as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+
+        let link_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                LINK,
+                (libc::O_PATH | libc::O_NOFOLLOW) as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert_eq!(link_fd, 3);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmodat2,
+                [
+                    link_fd as u64,
+                    EMPTY,
+                    0o600,
+                    (libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW) as u64,
+                    0,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EOPNOTSUPP)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [link_fd as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+
+        let synthetic_proc_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                SYNTHETIC_PROC,
+                libc::O_RDONLY as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert_eq!(synthetic_proc_fd, 3);
+        assert!(
+            state
+                .proc_files
+                .contains_key(&(synthetic_proc_fd as libc::c_int))
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmodat2,
+                [
+                    synthetic_proc_fd as u64,
+                    EMPTY,
+                    0o777,
+                    libc::AT_EMPTY_PATH as u64,
+                    0,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EACCES)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [synthetic_proc_fd as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+
+        let protected = root.0.join("protected");
+        std::fs::write(&protected, b"payload").unwrap();
+        std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let protected_file = std::fs::File::open(&protected).unwrap();
+        write_c_string(
+            &mut memory,
+            PROTECTED,
+            &format!("/proc/self/fd/{}", protected_file.as_raw_fd()),
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmodat2,
+                [libc::AT_FDCWD as u64, PROTECTED, 0o777, 0, 0, 0],
+            ),
+            negative_errno(libc::EACCES)
+        );
+        assert_eq!(std::fs::metadata(protected).unwrap().mode() & 0o7777, 0o600);
     }
 
     #[test]
