@@ -624,6 +624,77 @@ mod tests {
         assert_eq!(decoded.paths.count(&LiteinstDispatchPath::DirectHook), 8);
     }
 
+    fn deserialize_dispatch_paths(
+        entries: &[(LiteinstDispatchPath, u64)],
+    ) -> CounterSnapshot<LiteinstDispatchPath> {
+        #[derive(Serialize)]
+        struct RawSnapshot<'a> {
+            counts: &'a [(LiteinstDispatchPath, u64)],
+        }
+
+        let bytes = bincode::serde::encode_to_vec(
+            RawSnapshot { counts: entries },
+            bincode::config::legacy(),
+        )
+        .unwrap();
+        let (snapshot, consumed): (CounterSnapshot<LiteinstDispatchPath>, usize) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy()).unwrap();
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(snapshot.counts(), entries);
+        snapshot
+    }
+
+    #[test]
+    fn deserialized_dispatch_paths_count_out_of_order_entries() {
+        let snapshot = deserialize_dispatch_paths(&[
+            (LiteinstDispatchPath::DirectHook, 8),
+            (LiteinstDispatchPath::InGuestSigsys, 2),
+        ]);
+
+        assert_eq!(snapshot.count(&LiteinstDispatchPath::DirectHook), 8);
+        assert_eq!(snapshot.count(&LiteinstDispatchPath::InGuestSigsys), 2);
+        assert_eq!(snapshot.total(), 10);
+    }
+
+    #[test]
+    fn deserialized_dispatch_paths_sum_duplicates_like_constructor() {
+        for entries in [
+            [
+                (LiteinstDispatchPath::InGuestSigsys, 2),
+                (LiteinstDispatchPath::DirectHook, 3),
+                (LiteinstDispatchPath::DirectHook, 5),
+            ],
+            [
+                (LiteinstDispatchPath::DirectHook, 3),
+                (LiteinstDispatchPath::InGuestSigsys, 2),
+                (LiteinstDispatchPath::DirectHook, 5),
+            ],
+        ] {
+            let snapshot = deserialize_dispatch_paths(&entries);
+            let normalized = CounterSnapshot::new(entries);
+
+            assert_eq!(snapshot.count(&LiteinstDispatchPath::DirectHook), 8);
+            assert_eq!(snapshot.count(&LiteinstDispatchPath::InGuestSigsys), 2);
+            assert_eq!(snapshot.total(), 10);
+            for path in LiteinstDispatchPath::ALL {
+                assert_eq!(snapshot.count(path), normalized.count(path), "{path}");
+            }
+        }
+    }
+
+    #[test]
+    fn deserialized_dispatch_paths_return_zero_for_missing_keys() {
+        let snapshot = deserialize_dispatch_paths(&[(LiteinstDispatchPath::DirectHook, 8)]);
+        assert_eq!(snapshot.count(&LiteinstDispatchPath::InGuestSigsys), 0);
+        assert_eq!(snapshot.count(&LiteinstDispatchPath::DirectHook), 8);
+
+        let empty = deserialize_dispatch_paths(&[]);
+        for path in LiteinstDispatchPath::ALL {
+            assert_eq!(empty.count(path), 0, "{path}");
+        }
+        assert_eq!(empty.total(), 0);
+    }
+
     #[test]
     fn disabled_hooks_do_not_enter_enabled_stats_code() {
         let probes = ENABLED_STATS_PROBES.load(Ordering::Relaxed);
