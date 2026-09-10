@@ -796,9 +796,13 @@ impl KvmBackend {
         if self.is_guest_thread {
             return Err(Error::GuestThreadExecUnsupported);
         }
+        // ElfExecutor preflights the image before scheduling this action. From
+        // this reset onward, any exceptional loader or KVM failure is fatal to
+        // the backend and is never reported back to the old guest image. This
+        // is the same point-of-no-return behavior as the prior zero_raw reset.
         let user_length = usize::try_from(self.memory.guest_end() - BOOT_RESERVED_END)
             .expect("guest memory length must fit usize");
-        self.memory.zero_raw(BOOT_RESERVED_END, user_length)?;
+        self.memory.discard_pages(BOOT_RESERVED_END, user_length)?;
 
         let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
         let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
@@ -2077,6 +2081,144 @@ mod tests {
         assert!(group.worker_handles.lock().unwrap().is_empty());
         assert_eq!(group.exit_status(), None);
         assert!(!group.cancelled.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn post_preflight_interpreter_failure_is_fatal_after_image_reset() {
+        use std::io::Write;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::ffi::OsStringExt;
+
+        const MEMORY_SIZE: usize = 64 * 1024 * 1024;
+        let mut backend = match KvmBackend::new(MEMORY_SIZE) {
+            Ok(backend) => backend,
+            Err(Error::Kvm(error))
+                if matches!(error.errno(), libc::ENOENT | libc::EACCES | libc::EPERM) =>
+            {
+                if std::env::var_os("REVERIE_REQUIRE_KVM").is_some() {
+                    panic!("post-preflight exec test requires usable /dev/kvm: {error}");
+                }
+                return;
+            }
+            Err(error) => panic!("failed to create KVM backend: {error}"),
+        };
+
+        let mut image = std::fs::read("/usr/bin/true").unwrap();
+        backend
+            .install_static_elf_with_args(&image, &["true"], &[])
+            .unwrap();
+        let elf = goblin::elf::Elf::parse(&image).unwrap();
+        let interpreter = elf.interpreter.unwrap().to_owned();
+        let header = elf
+            .program_headers
+            .iter()
+            .find(|header| header.p_type == goblin::elf::program_header::PT_INTERP)
+            .unwrap();
+        let interpreter_offset = usize::try_from(header.p_offset).unwrap();
+        let interpreter_capacity = usize::try_from(header.p_filesz).unwrap();
+        drop(elf);
+
+        let suffix = std::process::id();
+        let mut interpreter_path = format!("/tmp/kvmld-{suffix}").into_bytes();
+        assert!(interpreter_path.len() < interpreter_capacity);
+        interpreter_path.resize(interpreter_capacity - 1, b'x');
+        let interpreter_copy =
+            std::path::PathBuf::from(std::ffi::OsString::from_vec(interpreter_path));
+        let executable = std::env::temp_dir().join(format!("kvmexec-{suffix}"));
+        struct Cleanup(Vec<std::path::PathBuf>);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                for path in &self.0 {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+        let mut cleanup = Cleanup(Vec::new());
+        let mut interpreter_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&interpreter_copy)
+            .unwrap();
+        cleanup.0.push(interpreter_copy.clone());
+        interpreter_file
+            .write_all(&std::fs::read(interpreter).unwrap())
+            .unwrap();
+        drop(interpreter_file);
+        let interpreter_path = interpreter_copy.as_os_str().as_bytes();
+        assert_eq!(interpreter_path.len(), interpreter_capacity - 1);
+        image[interpreter_offset..interpreter_offset + interpreter_capacity].fill(0);
+        image[interpreter_offset..interpreter_offset + interpreter_path.len()]
+            .copy_from_slice(interpreter_path);
+        let mut executable_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&executable)
+            .unwrap();
+        cleanup.0.push(executable.clone());
+        executable_file.write_all(&image).unwrap();
+        drop(executable_file);
+
+        let stack_bottom = backend.memory.guest_end() - crate::elf::STACK_LIMIT;
+        let path_address = stack_bottom;
+        let path = executable.as_os_str().as_bytes();
+        backend.memory.write(path_address, path).unwrap();
+        backend
+            .memory
+            .write(path_address + path.len() as u64, &[0])
+            .unwrap();
+        let argv_address = stack_bottom + 0x100;
+        backend
+            .memory
+            .write(argv_address, &path_address.to_ne_bytes())
+            .unwrap();
+        backend
+            .memory
+            .write(argv_address + 8, &0_u64.to_ne_bytes())
+            .unwrap();
+        let envp_address = argv_address + 16;
+        backend
+            .memory
+            .write(envp_address, &0_u64.to_ne_bytes())
+            .unwrap();
+
+        let loaded = backend.static_elf.take().unwrap();
+        let mut executor = ElfExecutor::new(loaded, false);
+        let request = SyscallRequest::new(
+            libc::SYS_execve as u64,
+            [path_address, argv_address, envp_address, 0, 0, 0],
+        );
+        assert_eq!(executor.execute(&request, &backend.memory), 0);
+        let action = executor
+            .take_process_action()
+            .expect("successful preflight must schedule exec");
+
+        // Removing the interpreter after the executor's successful preflight
+        // forces a rare failure beyond exec's point of no return. The backend
+        // must fail instead of resuming the now-reset old image, matching Linux
+        // semantics when exec fails after tearing down the old address space.
+        std::fs::remove_file(&interpreter_copy).unwrap();
+        let sentinel_address = stack_bottom + PAGE_SIZE;
+        const SENTINEL: [u8; 16] = *b"old-image-state!";
+        backend.memory.write(sentinel_address, &SENTINEL).unwrap();
+        let retained = backend.memory.clone();
+        let error = backend
+            .run_process_action(&mut executor, action, false)
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                Error::UnsupportedElf(message) if message.contains("interpreter")
+            ),
+            "unexpected exec error: {error:?}"
+        );
+        let mut observed = [0; SENTINEL.len()];
+        assert!(
+            !backend
+                .memory
+                .user_range_is_mapped(sentinel_address, SENTINEL.len() as u64)
+        );
+        retained.read_raw(sentinel_address, &mut observed).unwrap();
+        assert_eq!(observed, [0; SENTINEL.len()]);
     }
 
     #[test]
