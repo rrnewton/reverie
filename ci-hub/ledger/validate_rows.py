@@ -44,6 +44,101 @@ ACCEPTANCE_FIXTURE_PRODUCERS = frozenset({"ledger-live-sync-acceptance"})
 RUN_NUMBER_ENV = "CI_HUB_VALIDATE_RUN_NUMBER"
 BRANCH_ENV = "CI_HUB_VALIDATE_BRANCH"
 
+# The initial legacy migration treated one mixed HistoryRow file as a Hermit
+# shard.  Nineteen schema-3 Reverie rows therefore have a Hermit envelope in
+# both the primary shard and its immutable recovery copy.  Keep this exception
+# closed over the exact canonical event content already in history: producer
+# attributes, result, timestamps, paths, and every nested row field are all
+# covered by the digest.
+# A producer name, id prefix, date range, or commit alone would also admit a new
+# mismatched event and would weaken the source-binding check this compatibility
+# exists alongside.
+HISTORICAL_REPOSITORY_MISMATCH_SHARDS = (
+    Path("ledger/hermit/devbig014/2026-08.jsonl"),
+    Path(
+        "ledger-recovery/hermit/devbig014/2026-08/"
+        "4b681068b432ff230051fd7e105a60c0ae849a1b.jsonl"
+    ),
+)
+HISTORICAL_REPOSITORY_MISMATCHES = {
+    "legacy-000246-000": (
+        "088fc5d216bd38e58939c04afa10f97865e26b06",
+        "d1354fa83910e8af1a767d45e619a5cf9f5d7959339340e1032af2fa3a65a44b",
+    ),
+    "legacy-000256-000": (
+        "f9f11510dfd499282f8cef581d07dd2c0882bfc0",
+        "34cc95fd55df112d4737ed3d7b0ff8e81957ef9ed497a3afdf94b8bc587d9b6e",
+    ),
+    "legacy-000288-000": (
+        "74f8ecee97a1f73af831c59ae15519b5e18af373",
+        "68ef4b86e7ad1c8d0b11e9cdc962895423023a9c46b13ac1476fa4408f7281d5",
+    ),
+    "legacy-000289-000": (
+        "6aa371ea9de07454f63a2fd425c1dd4a040f9a80",
+        "0c9fc801c865e4647e73ba4380caca1e91f2b1fb4b302a296498fcbf3c5a7b48",
+    ),
+    "legacy-000290-000": (
+        "d4dbcd4377e4a32d2fa65969fee5ceed25db9603",
+        "11b262d53fc68d4eb607e7ac73c4f9380c2cb44c0864eacf6de0e233c8215b24",
+    ),
+    "legacy-000291-000": (
+        "f1aa47e1a268e51127dc5209acba05c97c8d32ea",
+        "c1b4827beb65f3f4a1f3cc91d2ea5a3f66c84c5931ce525a322711728589b8b5",
+    ),
+    "legacy-000369-000": (
+        "975c9fa8c432fefb6c7ae88b27ef97685fd94f50",
+        "ea40271c3858bbea2ddbb22f1819d55858e1d1c36cbcfbe14b837585ae8480fc",
+    ),
+    "legacy-000403-000": (
+        "fb7672aacdd3d13db64be16fe55c3e5f8157b3a1",
+        "7a88195ec6510475d9cb3dcfef89eaa1696d3f27ade0b14382eb1578fac202ce",
+    ),
+    "legacy-000419-000": (
+        "bff3cd32100fac09114d8048721986a80dda5db2",
+        "1f18c1a0b360ea9f31241c2da44e8154cf53c208acbb59a922c3b85fbb2b9c1a",
+    ),
+    "legacy-000420-000": (
+        "156c623994d9bf4fa98978b712febb56d3a2176f",
+        "17d621c26ac667159757aed762fb5de8f5f6dfa06d15674f3910a3ba02346606",
+    ),
+    "legacy-000421-000": (
+        "a14934271a780c9ab352fdd65c1f183a63d6564a",
+        "adb314a37e3ba415fedfe173af28d2e95b60a40e31db199a78c6e9e8b4a29ba4",
+    ),
+    "legacy-000422-000": (
+        "a14934271a780c9ab352fdd65c1f183a63d6564a",
+        "ca51a2025840a5d6ad8ca2f760c90e5710c3fd152187bf3ede4dbec1991ed7d1",
+    ),
+    "legacy-000425-000": (
+        "22781c51a9caa065218dbadcdca0b03d34abbbe7",
+        "d5c128e417ee984ae94edc371c32fb215a02755e996a64506c07c633ec3b378e",
+    ),
+    "legacy-000449-000": (
+        "8fa44eda6f751820b86e5e2a671b211bd2525eee",
+        "4156fac41dce0439b159ef98dbab3d404e482ab13aa8efc733c46aeff0e53493",
+    ),
+    "legacy-000541-000": (
+        "ad1b845c5d0a454d51c5d4d44f3bb655ab59241c",
+        "8b1a68875969f7ae99b8e44a666dc1d9e62462fddeb48850f8ebb49fa220a048",
+    ),
+    "legacy-000542-000": (
+        "e33d3b742faf49087ee3845bca9836ce1466ae08",
+        "5cd0aae23562ba6d846e283ca30fcf4fa9b84df0f354be2a01f9a829afc9b7b3",
+    ),
+    "legacy-000543-000": (
+        "bf8ee2dd8ebcf61c18e742c943851823bc4904f4",
+        "44c0a59eeaea76360055d79433414e226c01effd13352cf72fb1af6cb6a50df6",
+    ),
+    "legacy-000608-000": (
+        "5d6242fc2b6af5f8e841ae3badccf939c66e5327",
+        "3c0eb81afa43604755ae6c8d75f8a459e73bbd11182d4ec49bf8fa1099fe88de",
+    ),
+    "legacy-000609-000": (
+        "5d6242fc2b6af5f8e841ae3badccf939c66e5327",
+        "3ee5d5a8780426dbbd2d9799a19be468a5c087fa4a31b5e4f15abeeb2bd5437b",
+    ),
+}
+
 
 def _producer_tool(value: object) -> str:
     if isinstance(value, dict):
@@ -62,6 +157,66 @@ def _is_acceptance_fixture_event(event: dict) -> bool:
     return _producer_tool(event.get("producer")) in ACCEPTANCE_FIXTURE_PRODUCERS or (
         _is_acceptance_fixture_row(event.get("legacy_row"))
     )
+
+
+def _canonical_event_sha256(event: dict) -> str:
+    body = json.dumps(event, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(body).hexdigest()
+
+
+def _historical_repository_mismatch_digest(event: dict) -> str | None:
+    """Return the digest only for one exact, known mixed-corpus import event."""
+    event_id = event.get("event_id")
+    if not isinstance(event_id, str):
+        return None
+    expected = HISTORICAL_REPOSITORY_MISMATCHES.get(event_id)
+    if expected is None:
+        return None
+    expected_commit, expected_digest = expected
+    producer = event.get("producer")
+    row = event.get("legacy_row")
+    if not (
+        event.get("schema") == "validate-ledger/v1"
+        and event.get("event_type") == "run.result"
+        and event.get("team") == "hermit"
+        and event.get("host") == "devbig014"
+        and producer
+        == {
+            "source": "imported",
+            "tool": "ci-hub/ledger/migrate_legacy",
+            "tool_version": "1",
+        }
+        and isinstance(row, dict)
+        and row.get("schema_version") == 3
+        and row.get("repo") == "reverie"
+        and event.get("commit") == expected_commit
+        and row.get("commit") == expected_commit
+    ):
+        return None
+    digest = _canonical_event_sha256(event)
+    return digest if digest == expected_digest else None
+
+
+def _historical_repository_mismatch_source_digests(root: Path) -> frozenset[str]:
+    """Require every exception to exist in both immutable, named source shards."""
+    copies: list[dict[str, str]] = []
+    for relative in HISTORICAL_REPOSITORY_MISMATCH_SHARDS:
+        path = root / relative
+        if not path.is_file():
+            return frozenset()
+        source: dict[str, str] = {}
+        for event in read_shard(path):
+            digest = _historical_repository_mismatch_digest(event)
+            if digest is not None:
+                source[str(event["event_id"])] = digest
+        copies.append(source)
+
+    admitted = {
+        digest
+        for event_id, (_commit, digest) in HISTORICAL_REPOSITORY_MISMATCHES.items()
+        if all(source.get(event_id) == digest for source in copies)
+    }
+    return frozenset(admitted)
 
 
 def repository_root() -> Path:
@@ -194,7 +349,11 @@ def _ledger_team(repo: object) -> str:
     return value
 
 
-def _legacy_row_repo(event: dict) -> str | None:
+def _legacy_row_repo(
+    event: dict,
+    *,
+    historical_source_digests: frozenset[str] = frozenset(),
+) -> str | None:
     """Validate and resolve repository identity embedded in a record event.
 
     ``team`` is the path-safe outer identity while ``legacy_row.repo`` is the
@@ -207,6 +366,16 @@ def _legacy_row_repo(event: dict) -> str | None:
     ledger event. A correction without an object row is rejected separately by
     the correction projector.
     """
+    event_id = event.get("event_id")
+    if event_id in HISTORICAL_REPOSITORY_MISMATCHES:
+        digest = _historical_repository_mismatch_digest(event)
+        if digest is not None and digest in historical_source_digests:
+            return "reverie"
+        raise ValueError(
+            f"historical repository-mismatch event {event_id!r} differs from "
+            "its immutable source record"
+        )
+
     if event.get("event_type") not in {"run.result", "run.enrich", "run.correct"}:
         return None
     row = event.get("legacy_row")
@@ -826,9 +995,10 @@ def current_validation_run_rows(items: Iterable[dict]) -> list[dict]:
     return [row for index, row in enumerate(rows) if index not in superseded]
 
 
-def _validated_events(*, root: Path) -> list[dict]:
+def _validated_events(*, root: Path) -> tuple[list[dict], frozenset[str]]:
     """Read the event union once and refuse every malformed member."""
     items = events(root=root)
+    historical_source_digests = _historical_repository_mismatch_source_digests(root)
     for index, codes in enumerate(validate_events(items), 1):
         event = items[index - 1]
         if codes:
@@ -839,7 +1009,10 @@ def _validated_events(*, root: Path) -> list[dict]:
                 )
             raise ValueError(f"validation event {index} violates {codes}")
         try:
-            _legacy_row_repo(event)
+            _legacy_row_repo(
+                event,
+                historical_source_digests=historical_source_digests,
+            )
         except ValueError as error:
             if event.get("event_type") == "run.correct":
                 raise ValueError(
@@ -850,7 +1023,7 @@ def _validated_events(*, root: Path) -> list[dict]:
                 f"validation event {index} ({event.get('event_id')!r}) is invalid: "
                 f"{error}"
             ) from error
-    return items
+    return items, historical_source_digests
 
 
 def _rows_from_events(items: list[dict], *, root: Path) -> list[dict]:
@@ -881,7 +1054,11 @@ def _rows_from_events(items: list[dict], *, root: Path) -> list[dict]:
     return out
 
 
-def _record_identities(items: list[dict]) -> list[dict]:
+def _record_identities(
+    items: list[dict],
+    *,
+    historical_source_digests: frozenset[str] = frozenset(),
+) -> list[dict]:
     """Identify raw result/correction records before compatibility projection.
 
     The compact identity keeps the one-read status response bounded even when a
@@ -917,7 +1094,10 @@ def _record_identities(items: list[dict]) -> list[dict]:
             raise ValueError(
                 f"validation record {event.get('event_id')!r} has no exact lowercase commit"
             )
-        repo = _legacy_row_repo(event)
+        repo = _legacy_row_repo(
+            event,
+            historical_source_digests=historical_source_digests,
+        )
         if repo is None:
             repo = {"hermit": "hermit", "reverie": "reverie"}.get(
                 str(event.get("team") or "")
@@ -941,19 +1121,23 @@ def _record_identities(items: list[dict]) -> list[dict]:
 def status_input(*, root: Path | None = None) -> dict:
     """One-read input for status: projected rows plus every raw record identity."""
     root = (root or repository_root()).resolve()
-    items = _validated_events(root=root)
+    items, historical_source_digests = _validated_events(root=root)
     projected = _rows_from_events(items, root=root)
     return {
         "schema_version": 1,
         "rows": projected,
-        "records": _record_identities(items),
+        "records": _record_identities(
+            items,
+            historical_source_digests=historical_source_digests,
+        ),
     }
 
 
 def rows(*, root: Path | None = None) -> list[dict]:
     """HistoryRow compatibility view of the one canonical event union."""
     root = (root or repository_root()).resolve()
-    return _rows_from_events(_validated_events(root=root), root=root)
+    items, _historical_source_digests = _validated_events(root=root)
+    return _rows_from_events(items, root=root)
 
 
 def emit_jsonl(items: Iterable[dict]) -> None:

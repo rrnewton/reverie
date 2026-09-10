@@ -73,6 +73,24 @@ def write_events(root: Path, *events: dict) -> Path:
     return path
 
 
+def production_historical_repository_mismatch(event_id: str) -> dict:
+    root = HERE.parents[2]
+    primary = root / validate_rows.HISTORICAL_REPOSITORY_MISMATCH_SHARDS[0]
+    return next(
+        event
+        for event in ledger.read_shard(primary)
+        if event.get("event_id") == event_id
+    )
+
+
+def write_historical_repository_mismatch_copies(root: Path, event: dict) -> None:
+    text = json.dumps(event, sort_keys=True) + "\n"
+    for relative in validate_rows.HISTORICAL_REPOSITORY_MISMATCH_SHARDS:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
 def event_with_null_failed_substeps(root: Path) -> dict:
     source = row(root, record_id="historical-null")
     source.update(
@@ -546,8 +564,9 @@ def test_reverie_record_without_repo_is_refused(
         validate_rows.status_input(root=tmp_path)
 
 
-def test_historical_reverie_row_in_hermit_team_is_refused(tmp_path: Path):
-    """The 19 imported events of this shape cannot cross repository authority."""
+def test_allowlisted_id_does_not_admit_a_similar_repository_mismatch(
+    tmp_path: Path,
+):
     items, candidate = record_event_for_team(tmp_path, "run.result", "hermit")
     candidate.update(
         event_id="legacy-000246-000",
@@ -560,6 +579,246 @@ def test_historical_reverie_row_in_hermit_team_is_refused(tmp_path: Path):
     )
     candidate["legacy_row"]["repo"] = "reverie"
     write_events(tmp_path, *items)
+
+    with pytest.raises(ValueError, match="differs from its immutable source record"):
+        validate_rows.status_input(root=tmp_path)
+
+
+def test_exact_historical_repository_mismatch_population_is_auditable():
+    root = HERE.parents[2]
+    expected = validate_rows.HISTORICAL_REPOSITORY_MISMATCHES
+    assert len(expected) == 19
+
+    copies = []
+    for relative in validate_rows.HISTORICAL_REPOSITORY_MISMATCH_SHARDS:
+        selected = {
+            event["event_id"]: event
+            for event in ledger.read_shard(root / relative)
+            if event.get("event_id") in expected
+        }
+        assert set(selected) == set(expected)
+        copies.append(selected)
+    assert copies[0] == copies[1]
+
+    source_digests = validate_rows._historical_repository_mismatch_source_digests(
+        root
+    )
+    assert len(source_digests) == 19
+    for event_id, event in copies[0].items():
+        commit, digest = expected[event_id]
+        row = event["legacy_row"]
+        assert event["schema"] == "validate-ledger/v1"
+        assert event["event_type"] == "run.result"
+        assert event["team"] == "hermit"
+        assert event["host"] == "devbig014"
+        assert event["producer"] == {
+            "source": "imported",
+            "tool": "ci-hub/ledger/migrate_legacy",
+            "tool_version": "1",
+        }
+        assert row["schema_version"] == 3
+        assert row["repo"] == "reverie"
+        assert event["commit"] == row["commit"] == commit
+        assert "reason" not in row
+        assert validate_rows._canonical_event_sha256(event) == digest
+        assert (
+            validate_rows._legacy_row_repo(
+                event,
+                historical_source_digests=source_digests,
+            )
+            == "reverie"
+        )
+
+
+def test_tracked_production_union_is_readable_without_count_loss(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    root = HERE.parents[2]
+    gathered = []
+    for path in validate_rows.shard_paths(root):
+        gathered.extend(ledger.read_shard(path))
+    items = [
+        event
+        for event in ledger.union_events(gathered)
+        if not validate_rows._is_acceptance_fixture_event(event)
+    ]
+    monkeypatch.setattr(validate_rows, "events", lambda **_kwargs: items)
+
+    validated, _historical_source_digests = validate_rows._validated_events(
+        root=root
+    )
+    status = validate_rows.status_input(root=root)
+
+    assert validated == items
+    assert len(status["rows"]) == len(
+        validate_rows._rows_from_events(items, root=root)
+    )
+    expected_record_ids = [
+        event["event_id"]
+        for event in items
+        if event.get("event_type") == "run.result"
+        or (
+            event.get("event_type") == "run.correct"
+            and isinstance(event.get("legacy_row"), dict)
+        )
+    ]
+    assert [record["event_id"] for record in status["records"]] == expected_record_ids
+    assert set(validate_rows.HISTORICAL_REPOSITORY_MISMATCHES) <= set(
+        expected_record_ids
+    )
+
+
+def test_exact_historical_repository_mismatch_is_readable(tmp_path: Path):
+    event = production_historical_repository_mismatch("legacy-000246-000")
+    write_historical_repository_mismatch_copies(tmp_path, event)
+
+    status = validate_rows.status_input(root=tmp_path)
+
+    assert len(status["rows"]) == 1
+    assert status["rows"][0]["repo"] == "reverie"
+    assert status["rows"][0]["commit"] == event["commit"]
+    assert status["records"] == [
+        {
+            "event_id": event["event_id"],
+            "event_type": "run.result",
+            "run_id": event["run_id"],
+            "repo": "reverie",
+            "commit": event["commit"],
+        }
+    ]
+
+
+def test_moved_historical_repository_mismatch_is_refused(tmp_path: Path):
+    event = production_historical_repository_mismatch("legacy-000246-000")
+    moved = tmp_path / "ledger/reverie/devbig014/2026-08.jsonl"
+    moved.parent.mkdir(parents=True)
+    moved.write_text(json.dumps(event, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="differs from its immutable source record"):
+        validate_rows.status_input(root=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "event-id",
+        "event-type",
+        "run-id",
+        "emitted-at",
+        "team",
+        "team-matches-row",
+        "host",
+        "producer-source",
+        "producer-tool",
+        "producer-version",
+        "outcome",
+        "event-commit",
+        "row-commit",
+        "row-repo",
+        "row-missing",
+        "row-repo-missing",
+        "row-repo-null",
+        "row-schema",
+        "row-reason",
+    ],
+)
+def test_altered_historical_repository_mismatch_is_refused(
+    tmp_path: Path, case: str
+):
+    event = copy.deepcopy(
+        production_historical_repository_mismatch("legacy-000246-000")
+    )
+    if case == "event-id":
+        event["event_id"] += "-new"
+    elif case == "event-type":
+        event["event_type"] = "run.enrich"
+        event["enriches"] = "some-earlier-event"
+    elif case == "run-id":
+        event["run_id"] += "-new"
+    elif case == "emitted-at":
+        event["emitted_at"] = "2026-08-04T09:52:23Z"
+    elif case == "team":
+        event["team"] = "other"
+    elif case == "team-matches-row":
+        event["team"] = "reverie"
+    elif case == "host":
+        event["host"] = "other-host"
+    elif case == "producer-source":
+        event["producer"]["source"] = "observed"
+    elif case == "producer-tool":
+        event["producer"]["tool"] = "other-tool"
+    elif case == "producer-version":
+        event["producer"]["tool_version"] = "2"
+    elif case == "outcome":
+        event["outcome"] = "pass" if event["outcome"] != "pass" else "fail"
+    elif case == "event-commit":
+        event["commit"] = "0" * 40
+    elif case == "row-commit":
+        event["legacy_row"]["commit"] = "0" * 40
+    elif case == "row-repo":
+        event["legacy_row"]["repo"] = "hermit"
+    elif case == "row-missing":
+        event.pop("legacy_row")
+    elif case == "row-repo-missing":
+        event["legacy_row"].pop("repo")
+    elif case == "row-repo-null":
+        event["legacy_row"]["repo"] = None
+    elif case == "row-schema":
+        event["legacy_row"]["schema_version"] = 4
+    elif case == "row-reason":
+        event["legacy_row"]["reason"] = "fabricated"
+    write_historical_repository_mismatch_copies(tmp_path, event)
+
+    message = (
+        "conflicts with legacy_row.repo"
+        if case == "event-id"
+        else "differs from its immutable source record"
+    )
+    with pytest.raises(ValueError, match=message):
+        validate_rows.status_input(root=tmp_path)
+
+
+def test_historical_repository_exception_preserves_corrections_and_counts(
+    tmp_path: Path,
+):
+    historical = production_historical_repository_mismatch("legacy-000246-000")
+    write_historical_repository_mismatch_copies(tmp_path, historical)
+    original = event_with_null_failed_substeps(tmp_path)
+    correction = correction_for(original)
+    write_events(tmp_path, original, correction)
+
+    status = validate_rows.status_input(root=tmp_path)
+
+    assert len(status["rows"]) == 2
+    assert len(status["records"]) == 3
+    assert status["rows"][0]["repo"] == "reverie"
+    assert status["rows"][1]["gates"][0]["failed_substeps"] == []
+    assert [record["event_type"] for record in status["records"]] == [
+        "run.result",
+        "run.result",
+        "run.correct",
+    ]
+
+
+@pytest.mark.parametrize("event_type", ["run.enrich", "run.correct"])
+def test_new_event_for_historical_repository_mismatch_is_refused(
+    tmp_path: Path, event_type: str
+):
+    historical = production_historical_repository_mismatch("legacy-000246-000")
+    write_historical_repository_mismatch_copies(tmp_path, historical)
+    candidate = {
+        **{key: historical[key] for key in ledger.ENVELOPE_KEYS},
+        "event_id": f"{historical['event_id']}-{event_type}",
+        "event_type": event_type,
+        "emitted_at": "2026-08-10T02:00:00Z",
+        "legacy_row": copy.deepcopy(historical["legacy_row"]),
+    }
+    if event_type == "run.enrich":
+        candidate["enriches"] = historical["event_id"]
+    else:
+        candidate["supersedes"] = historical["event_id"]
+        candidate["reason"] = "fixture correction"
+    write_events(tmp_path, historical, candidate)
 
     with pytest.raises(ValueError, match="conflicts with legacy_row.repo"):
         validate_rows.status_input(root=tmp_path)
