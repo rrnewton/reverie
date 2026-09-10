@@ -1444,13 +1444,6 @@ impl ElfExecutor {
         if flags != 0 || dirfd != libc::AT_FDCWD {
             return negative_errno(libc::ENOTSUP);
         }
-        // Linux makes a non-leader caller the new thread-group leader while it
-        // tears down every sibling. The KVM backend does not yet implement that
-        // promotion. Refuse the syscall before reading the image or publishing
-        // a ProcessAction, so a worker cannot clear the shared address space.
-        if self.state.tid != self.state.pid {
-            return negative_errno(libc::ENOSYS);
-        }
         let path = match read_c_string(memory, path_address, 4096) {
             Ok(path) if !path.is_empty() => path,
             Ok(_) => return negative_errno(libc::ENOENT),
@@ -1527,6 +1520,13 @@ impl ElfExecutor {
         .is_err()
         {
             return negative_errno(libc::ENOEXEC);
+        }
+        // Linux makes a non-leader caller the new thread-group leader while it
+        // tears down every sibling. The KVM backend does not yet implement that
+        // promotion. Refuse after safe preflight but before publishing a
+        // ProcessAction, so a worker cannot clear the shared address space.
+        if self.state.tid != self.state.pid {
+            return negative_errno(libc::ENOSYS);
         }
         self.process_action = Some(ProcessAction::Exec { image, argv, envp });
         0
@@ -20188,41 +20188,103 @@ mod tests {
     }
 
     #[test]
-    fn worker_exec_is_refused_before_reading_guest_pointers() {
-        const SENTINEL_ADDRESS: u64 = 0x100;
+    fn worker_exec_preserves_preflight_errors_without_publishing_action() {
+        const SENTINEL_ADDRESS: u64 = 0x30_0000;
         const SENTINEL: [u8; 8] = *b"still-ok";
+        const PATH_ADDRESS: u64 = 0x200;
+        const ARGV_ADDRESS: u64 = 0x400;
+        const ENVP_ADDRESS: u64 = 0x500;
 
         let root = TestDir::new();
-        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let valid_path = root.0.join("valid");
+        let malformed_path = root.0.join("malformed");
+        let missing_path = root.0.join("missing");
+        let mut image = vec![0; 0x1002];
+        image[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+        for (offset, value) in [(16, 2_u16), (18, 62), (52, 64), (54, 56), (56, 1)] {
+            image[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        for (offset, value) in [(20, 1_u32), (64, 1), (68, 5)] {
+            image[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        for (offset, value) in [
+            (24, 0x20_0000_u64),
+            (32, 64),
+            (72, 0x1000),
+            (80, 0x20_0000),
+            (88, 0x20_0000),
+            (96, 2),
+            (104, 0x1000),
+            (112, 0x1000),
+        ] {
+            image[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        image[0x1000..].copy_from_slice(&[0x0f, 0x0b]);
+        std::fs::write(&valid_path, &image).unwrap();
+        std::fs::write(&malformed_path, b"not an ELF image").unwrap();
+        assert!(!missing_path.exists());
+        let mut memory = GuestMemory::new(0, 16 * 1024 * 1024).unwrap();
         memory.write(SENTINEL_ADDRESS, &SENTINEL).unwrap();
-        let leader = ElfExecutor::new(test_state(&root.0), false);
+        memory
+            .write(ARGV_ADDRESS, &PATH_ADDRESS.to_le_bytes())
+            .unwrap();
+        memory
+            .write(ARGV_ADDRESS + 8, &0_u64.to_le_bytes())
+            .unwrap();
+        memory.write(ENVP_ADDRESS, &0_u64.to_le_bytes()).unwrap();
+        let mut leader = ElfExecutor::new(test_state(&root.0), false);
         let mut worker = leader.thread_child(7).unwrap();
         assert_ne!(worker.state.pid, worker.state.tid);
+        let identity = (worker.state.pid, worker.state.tid);
         let invalid = memory.guest_end() + PAGE_SIZE;
-        let requests = [
-            SyscallRequest::new(
-                libc::SYS_execve as u64,
-                [invalid, invalid, invalid, 0, 0, 0],
-            ),
-            SyscallRequest::new(
-                libc::SYS_execveat as u64,
-                [libc::AT_FDCWD as u64, invalid, invalid, invalid, 0, 0],
-            ),
-        ];
-
-        for request in requests {
-            assert_eq!(
-                worker.execute_process_action(&request, &memory),
-                Some(negative_errno(libc::ENOSYS))
-            );
-            assert!(
-                worker.take_process_action().is_none(),
-                "worker exec published a process-image replacement"
-            );
-            let mut observed = [0; SENTINEL.len()];
-            memory.read(SENTINEL_ADDRESS, &mut observed).unwrap();
-            assert_eq!(observed, SENTINEL);
+        let mut results = Vec::new();
+        let mut expected_results = Vec::new();
+        for number in [libc::SYS_execve, libc::SYS_execveat] {
+            for (case, path, invalid_argument, errno) in [
+                ("path", &valid_path, Some(0), libc::EFAULT),
+                ("argv", &valid_path, Some(1), libc::EFAULT),
+                ("envp", &valid_path, Some(2), libc::EFAULT),
+                ("missing", &missing_path, None, libc::ENOENT),
+                ("malformed", &malformed_path, None, libc::ENOEXEC),
+                ("valid", &valid_path, None, libc::ENOSYS),
+            ] {
+                let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+                memory
+                    .write(PATH_ADDRESS, path.as_bytes_with_nul())
+                    .unwrap();
+                let mut pointers = [PATH_ADDRESS, ARGV_ADDRESS, ENVP_ADDRESS];
+                if let Some(index) = invalid_argument {
+                    pointers[index] = invalid;
+                }
+                let [path, argv, envp] = pointers;
+                let args = if number == libc::SYS_execve {
+                    [path, argv, envp, 0, 0, 0]
+                } else {
+                    [libc::AT_FDCWD as u64, path, argv, envp, 0, 0]
+                };
+                let request = SyscallRequest::new(number as u64, args);
+                if case == "valid" {
+                    assert_eq!(leader.execute_process_action(&request, &memory), Some(0));
+                    assert!(matches!(
+                        leader.take_process_action(),
+                        Some(ProcessAction::Exec { .. })
+                    ));
+                }
+                let result = worker.execute_process_action(&request, &memory);
+                eprintln!("syscall={number} case={case} result={result:?} expected=-{errno}");
+                results.push(result);
+                expected_results.push(Some(negative_errno(errno)));
+                assert!(
+                    worker.take_process_action().is_none(),
+                    "worker exec published a process-image replacement"
+                );
+                let mut observed = [0; SENTINEL.len()];
+                memory.read(SENTINEL_ADDRESS, &mut observed).unwrap();
+                assert_eq!(observed, SENTINEL);
+                assert_eq!((worker.state.pid, worker.state.tid), identity);
+            }
         }
+        assert_eq!(results, expected_results);
     }
 
     #[test]

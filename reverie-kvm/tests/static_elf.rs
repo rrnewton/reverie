@@ -522,7 +522,7 @@ impl WorkerExecOverlapLog {
 impl GlobalTool for WorkerExecOverlapLog {
     type Request = (u8, i64);
     type Response = i64;
-    type Config = (usize, usize, usize);
+    type Config = (usize, usize, usize, bool, i32);
 
     async fn receive_rpc(&self, _from: Pid, (operation, value): (u8, i64)) -> i64 {
         match operation {
@@ -577,7 +577,7 @@ impl Tool for WorkerExecOverlapTool {
     type GlobalState = WorkerExecOverlapLog;
     type ThreadState = ();
 
-    fn subscriptions(_config: &(usize, usize, usize)) -> Subscription {
+    fn subscriptions(_config: &(usize, usize, usize, bool, i32)) -> Subscription {
         let mut subscriptions = Subscription::none();
         subscriptions.syscall(Sysno::getppid);
         subscriptions
@@ -598,22 +598,26 @@ impl Tool for WorkerExecOverlapTool {
         if guest.is_main_thread() {
             let worker_errno = guest.send_rpc((2, 0)).await;
             let observed = guest.memory().read_value(address)?;
-            let preserved =
-                worker_errno == i64::from(Errno::ENOSYS.into_raw()) && observed == expected;
+            let preserved = worker_errno == i64::from(guest.config().4) && observed == expected;
             guest.send_rpc((3, i64::from(preserved))).await;
             if !preserved {
                 guest.tail_inject(ExitGroup::new().with_status(92)).await
             }
         } else {
-            let (path, argv, envp) = *guest.config();
+            assert_ne!(guest.tid(), guest.pid());
+            let (path, argv, envp, execveat, _) = *guest.config();
             let request = Execve::new()
                 .with_path(PathPtr::from_ptr(path as *const libc::c_char))
                 .with_argv(Option::<CArrayPtr<CStrPtr>>::from_raw(argv))
                 .with_envp(Option::<CArrayPtr<CStrPtr>>::from_raw(envp));
-            let error = guest
-                .inject(request)
-                .await
-                .expect_err("worker image replacement unexpectedly succeeded");
+            let result = if execveat {
+                guest
+                    .inject(reverie::syscalls::Execveat::from(request))
+                    .await
+            } else {
+                guest.inject(request).await
+            };
+            let error = result.expect_err("worker image replacement unexpectedly succeeded");
             guest.send_rpc((1, i64::from(error.into_raw()))).await;
         }
 
@@ -2483,7 +2487,45 @@ fn worker_exec_is_refused_without_replacing_shared_memory() {
         0x0f, 0x0b, // ud2
     ];
     let executable = TestExecutable::new(&static_elf(&target));
-    let path = executable.0.to_str().unwrap().as_bytes();
+    for execveat in [false, true] {
+        check_worker_exec_preserves_shared_memory(&executable.0, None, execveat, libc::ENOSYS);
+    }
+}
+
+#[test]
+fn worker_exec_preflight_errors_preserve_shared_memory() {
+    if !kvm_available("worker_exec_preflight_errors_preserve_shared_memory") {
+        return;
+    }
+
+    let executable = TestExecutable::new(&static_elf(&[0x0f, 0x0b]));
+    let malformed = TestExecutable::new(b"not an ELF image");
+    let missing = executable.0.with_extension("missing");
+    assert!(!missing.exists());
+    for execveat in [false, true] {
+        for index in 0..3 {
+            check_worker_exec_preserves_shared_memory(
+                &executable.0,
+                Some(index),
+                execveat,
+                libc::EFAULT,
+            );
+        }
+        check_worker_exec_preserves_shared_memory(&missing, None, execveat, libc::ENOENT);
+        check_worker_exec_preserves_shared_memory(&malformed.0, None, execveat, libc::ENOEXEC);
+    }
+}
+
+fn check_worker_exec_preserves_shared_memory(
+    path: &std::path::Path,
+    invalid_argument: Option<usize>,
+    execveat: bool,
+    expected_errno: i32,
+) {
+    eprintln!(
+        "execveat={execveat} invalid_argument={invalid_argument:?} expected_errno={expected_errno}"
+    );
+    let path = path.to_str().unwrap().as_bytes();
 
     let mut code = clone_thread_program(true);
     let path_address = LOAD_ADDRESS + code.len() as u64;
@@ -2505,20 +2547,29 @@ fn worker_exec_is_refused_without_replacing_shared_memory() {
             "/bin/worker-exec-preserves-shared-memory",
         )
         .unwrap();
-    let config = (
+    let mut pointers = [
         path_address as usize,
         argv_address as usize,
         envp_address as usize,
-    );
+    ];
+    if let Some(index) = invalid_argument {
+        pointers[index] = MEMORY_SIZE + 0x1000;
+    }
+    let [path, argv, envp] = pointers;
+    let config = (path, argv, envp, execveat, expected_errno);
     let (log, exit_code, stdout, stderr) = futures::executor::block_on(
         backend.run_static_elf_with_tool::<WorkerExecOverlapTool>(config, true),
     )
     .unwrap();
 
+    eprintln!(
+        "worker_errno={:?} exit_code={exit_code}",
+        log.worker_errno()
+    );
     assert_eq!(exit_code, 0);
     assert!(stdout.is_empty());
     assert!(stderr.is_empty());
-    assert_eq!(log.worker_errno(), Some(Errno::ENOSYS.into_raw()));
+    assert_eq!(log.worker_errno(), Some(expected_errno));
     assert!(log.root_value_preserved());
 }
 
