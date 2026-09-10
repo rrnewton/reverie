@@ -89,6 +89,7 @@ class PageWording:
     landing_lead: str
     cell_table_caption: str
     cells_lead: str
+    landing_introduction: bool = False
     disclosure_summary: str | None = None
     disclosure: tuple[ProvenanceFact, ...] = ()
 
@@ -323,7 +324,10 @@ def _historical_wording(provenance: Mapping[str, Any]) -> PageWording:
             "No external network resources are used."
         ),
         provenance_heading="Historical snapshot provenance",
-        landing_lead="A navigable snapshot of recorded compatibility evidence.",
+        landing_lead=(
+            "The Hermit container enables deterministic execution of guest Linux "
+            "programs."
+        ),
         cell_table_caption=(
             "Green and red result rows in the separately identified manifest source."
         ),
@@ -331,6 +335,7 @@ def _historical_wording(provenance: Mapping[str, Any]) -> PageWording:
             "Rendered cells from the separately identified manifest source, with "
             "links to admitted canonical series rows in this snapshot."
         ),
+        landing_introduction=True,
         disclosure_summary=f"Full snapshot provenance ({finished_at_label})",
         disclosure=disclosure,
     )
@@ -1834,10 +1839,20 @@ def _provenance(model: SiteModel, page: str = "index.html") -> str:
     </section>"""
 
 
+def _landing_introduction() -> str:
+    return """
+    <div class="scorecard-introduction">
+      <p>For more context, see the <a href="https://github.com/rrnewton/hermit/blob/main/README.md">README</a> and the high-level <a href="https://developers.facebook.com/blog/post/2022/11/22/hermit-deterministic-linux-testing/">introduction in the blog post</a>.</p>
+      <p>Hermit testing centers on a suite of test programs, each identified by a test ID. The central compatibility matrix is indexed by <strong>test ID × mode × backend</strong>. A mode selects deterministic execution, record/replay, or chaos concurrency testing. A backend identifies the Reverie implementation and the way it instruments the guest program.</p>
+      <p>This page reports the compatibility evidence recorded in the displayed snapshot; it is not a live status view.</p>
+    </div>"""
+
+
 def _landing_page(model: SiteModel) -> bytes:
     page = "index.html"
     content = (
-        _overview(model, page)
+        (_landing_introduction() if model.wording.landing_introduction else "")
+        + _overview(model, page)
         + _test_listing(model, page)
         + ("" if model.wording.disclosure else _provenance(model))
     )

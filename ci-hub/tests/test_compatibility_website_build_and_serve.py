@@ -618,11 +618,32 @@ def test_historical_compose_is_self_validating_and_discloses_every_page(
                     path,
                     label,
                 )
+    landing = historical_pages["index.html"]
+    assert "A navigable snapshot of recorded compatibility evidence." not in landing
     assert (
-        historical_pages["index.html"].count(
-            "A navigable snapshot of recorded compatibility evidence."
-        )
-        == 1
+        "The Hermit container enables deterministic execution of guest Linux "
+        "programs."
+        in landing
+    )
+    assert (
+        'href="https://github.com/rrnewton/hermit/blob/main/README.md">README</a>'
+        in landing
+    )
+    assert (
+        'href="https://developers.facebook.com/blog/post/2022/11/22/'
+        'hermit-deterministic-linux-testing/">introduction in the blog post</a>'
+        in landing
+    )
+    for explanation in (
+        "each identified by a test ID",
+        "test ID × mode × backend",
+        "deterministic execution, record/replay, or chaos concurrency testing",
+        "A backend identifies the Reverie implementation",
+        "evidence recorded in the displayed snapshot; it is not a live status view",
+    ):
+        assert explanation in landing
+    assert landing.index("The Hermit container enables") < landing.index(
+        '<section id="overview">'
     )
     assert all(
         "A navigable snapshot of recorded compatibility evidence." not in text
