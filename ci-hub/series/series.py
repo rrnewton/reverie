@@ -967,10 +967,33 @@ def _cell_outcome(row: dict) -> str:
     # remain independently validated so malformed evidence cannot hide behind
     # a well-formed terminal classification, but an outer reader must not
     # reconstruct a competing verdict from attempt order.
-    [
+    dispositions = [
         _typed_comparison_attempt(attempt, mode=mode, index=index)
         for index, attempt in enumerate(attempts, 1)
     ]
+    # Two framework classifications intentionally project to ``errored`` but
+    # arise at different layers.  A crash-error is a product failure before a
+    # comparison verdict exists, so its canonical attempt is ``no_result``;
+    # only an understood infrastructure failure carries ``errored`` attempt
+    # evidence.  Key this obligation by the full classification rather than
+    # collapsing it through the outward projection.
+    supporting_dispositions = {
+        ("pass", None): {"matched"},
+        ("determinism-failure", "product_failure"): {"diverged"},
+        ("parity-failure", "product_failure"): {"diverged"},
+        ("replay-failure", "product_failure"): {"diverged"},
+        ("crash-error", "product_failure"): {"no_result"},
+        ("timeout", "no_result"): {"timeout"},
+        ("oom", "no_result"): {"no_result", "timeout"},
+        (None, "understood_infrastructure_failure"): {"errored"},
+        (None, "understood_prerequisite_failure"): {"no_result", "timeout"},
+        (None, "no_result"): {"no_result", "timeout"},
+    }[classification]
+    if not supporting_dispositions.intersection(dispositions):
+        raise MalformedRow(
+            "framework result has no supporting canonical typed attempt: "
+            f"projected={projected!r} dispositions={dispositions!r}"
+        )
     return projected
 
 

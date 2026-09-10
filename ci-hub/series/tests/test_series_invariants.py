@@ -1652,7 +1652,7 @@ class CellResultProjection(unittest.TestCase):
         contradictory["failure_class"] = "product_failure"
         with self.assertRaisesRegex(
             series.MalformedRow,
-            "timed-out attempt disposition contradicts result",
+            "no supporting canonical typed attempt",
         ):
             series.rows_from_cell_results(
                 [contradictory],
@@ -1893,6 +1893,30 @@ class CellResultProjection(unittest.TestCase):
         ).hexdigest()
         self.assertEqual(self._project([replay])[0]["series"]["outcome"], "passed")
 
+        for mode, field, value in (
+            ("replay", "virtualize_time", True),
+            ("verify", "virtualize_time", False),
+            ("chaos", "virtualize_time", False),
+            ("verify", "display_name", "weakened-display"),
+        ):
+            with self.subTest(mode=mode, field=field, value=value):
+                noncanonical_pass = self._cell(0, outcome="PASS")
+                noncanonical_pass["mode"] = mode
+                report = json.loads(
+                    noncanonical_pass["attempts"][0]["verification_report"]
+                )
+                report["comparison"][field] = value
+                raw = json.dumps(report, sort_keys=True, separators=(",", ":"))
+                noncanonical_pass["attempts"][0]["verification_report"] = raw
+                noncanonical_pass["attempts"][0][
+                    "verification_report_sha256"
+                ] = hashlib.sha256(raw.encode()).hexdigest()
+                with self.assertRaisesRegex(
+                    series.MalformedRow,
+                    "no supporting canonical typed attempt",
+                ):
+                    self._project([noncanonical_pass])
+
         chaos_nonzero = self._cell(0, outcome="PASS")
         chaos_nonzero["mode"] = "chaos"
         chaos_nonzero["attempts"][0]["status"] = 7
@@ -1916,9 +1940,18 @@ class CellResultProjection(unittest.TestCase):
         all_match_fail["failure_class"] = "product_failure"
         with self.assertRaisesRegex(
             series.MalformedRow,
-            "must carry no_verdict_evidence",
+            "no supporting canonical typed attempt",
         ):
             self._project([all_match_fail])
+
+        crash_before_comparison = self._cell(0, outcome="FAIL")
+        crash_before_comparison["attempts"] = [self._attempt("no_result")]
+        crash_before_comparison["result"] = "crash-error"
+        crash_before_comparison["failure_class"] = "product_failure"
+        self.assertEqual(
+            self._project([crash_before_comparison])[0]["series"]["outcome"],
+            "errored",
+        )
 
         mixed_no_result = self._cell(0, outcome="ERROR")
         mixed_no_result["attempts"] = [matched, self._attempt("no_result")]
@@ -2053,10 +2086,11 @@ class CellResultProjection(unittest.TestCase):
         fixed_attempts["failure_class"] = "product_failure"
         with self.assertRaisesRegex(
             series.MalformedRow,
-            "must carry no_verdict_evidence",
+            "no supporting canonical typed attempt",
         ):
             self._project([fixed_attempts])
         fixed_attempts["result"] = "determinism-failure"
+        fixed_attempts["attempts"] = [self._attempt("diverged")]
         self.assertEqual(
             self._project([fixed_attempts])[0]["series"]["outcome"],
             "diverged",
