@@ -1811,17 +1811,35 @@ class CellResultProjection(unittest.TestCase):
             cell["result"] = result
             cell["failure_class"] = failure_class
             cases.append((cell, projected))
-        for cell, projected in cases:
-            cell["mode"] = "naked"
-            cell["backend"] = None
-            rows = self._project([cell])
-            self.assertEqual(rows[0]["series"]["outcome"], projected)
+        for mode in ("naked", "custom"):
+            for cell, projected in cases:
+                with self.subTest(mode=mode, outcome=cell["outcome"]):
+                    cell = dict(cell)
+                    cell["mode"] = mode
+                    if mode == "naked":
+                        cell["backend"] = None
+                    rows = self._project([cell])
+                    self.assertEqual(rows[0]["series"]["outcome"], projected)
         self.assertEqual(
             self._project([self._cell(0, outcome="HOST-INAPPLICABLE")]),
             [],
         )
         with self.assertRaises(series.MalformedRow):
             self._project([self._cell(0, outcome="SOMETHING_NEW")])
+
+    def test_cell_outcome_refuses_unknown_or_missing_mode(self):
+        for mode in ("unknown", None):
+            for outcome in ("PASS", "FAIL"):
+                with self.subTest(mode=mode, outcome=outcome):
+                    cell = self._cell(0, outcome=outcome)
+                    if mode is None:
+                        del cell["mode"]
+                    else:
+                        cell["mode"] = mode
+                    with self.assertRaisesRegex(series.MalformedRow, "mode"):
+                        series._cell_outcome(cell)
+                    with self.assertRaisesRegex(series.MalformedRow, "mode"):
+                        self._project([cell])
 
     def test_comparison_cell_outcome_validates_all_attempts_and_uses_framework_result(self):
         matched = self._attempt("matched")
@@ -1863,6 +1881,17 @@ class CellResultProjection(unittest.TestCase):
 
         passing = self._cell(0, outcome="PASS")
         self.assertEqual(self._project([passing])[0]["series"]["outcome"], "passed")
+
+        replay = self._cell(0, outcome="PASS")
+        replay["mode"] = "replay"
+        report = json.loads(replay["attempts"][0]["verification_report"])
+        report["comparison"]["virtualize_time"] = False
+        raw = json.dumps(report, sort_keys=True, separators=(",", ":"))
+        replay["attempts"][0]["verification_report"] = raw
+        replay["attempts"][0]["verification_report_sha256"] = hashlib.sha256(
+            raw.encode()
+        ).hexdigest()
+        self.assertEqual(self._project([replay])[0]["series"]["outcome"], "passed")
 
         chaos_nonzero = self._cell(0, outcome="PASS")
         chaos_nonzero["mode"] = "chaos"

@@ -647,6 +647,16 @@ def source_depths(
 
 
 _COMPARISON_MODES = frozenset({"verify", "replay", "chaos"})
+_KNOWN_CELL_MODES = _COMPARISON_MODES | {"naked", "custom"}
+
+
+def _cell_mode(row: dict) -> str:
+    mode = row.get("mode")
+    if not isinstance(mode, str) or not mode:
+        raise MalformedRow("cell result has no nonempty mode")
+    if mode not in _KNOWN_CELL_MODES:
+        raise MalformedRow(f"cell result has unknown mode {mode!r}")
+    return mode
 
 
 def _has_nonzero_process_disposition(attempt: dict) -> bool:
@@ -917,6 +927,7 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
 
 def _cell_outcome(row: dict) -> str:
     """Project the framework's exact result without reconstructing it."""
+    mode = _cell_mode(row)
     result = row.get("result")
     failure_class = row.get("failure_class")
     classification = (result, failure_class)
@@ -946,7 +957,6 @@ def _cell_outcome(row: dict) -> str:
             "cell result outcome disagrees with its recorded classification: "
             f"outcome={outcome!r} result={result!r} failure_class={failure_class!r}"
         )
-    mode = row.get("mode")
     if mode not in _COMPARISON_MODES:
         return projected
 
@@ -1242,14 +1252,13 @@ def _no_verdict_evidence(row: dict, projected_outcome: str) -> dict | None:
 
 
 def _cell_name(row: dict) -> str:
-    parts = []
-    for key in ("test", "mode"):
-        value = row.get(key)
-        if not isinstance(value, str) or not value:
-            raise MalformedRow(f"cell result has no nonempty {key}")
-        parts.append(value)
+    test = row.get("test")
+    if not isinstance(test, str) or not test:
+        raise MalformedRow("cell result has no nonempty test")
+    mode = _cell_mode(row)
+    parts = [test, mode]
     backend = row.get("backend")
-    if backend is None and row.get("mode") == "naked":
+    if backend is None and mode == "naked":
         backend = "native"
     if not isinstance(backend, str) or not backend:
         raise MalformedRow("cell result has no nonempty backend")
