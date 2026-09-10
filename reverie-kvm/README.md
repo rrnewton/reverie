@@ -10,6 +10,13 @@ and `utimensat(AT_EMPTY_PATH)` (Linux 5.8 or newer) for full filesystem
 metadata compatibility. Hosts before `fchmodat2` use a held-descriptor procfs
 fallback rather than re-resolving guest paths.
 
+Guest-memory allocation also requires kernel support for `memfd_create` and
+permission to call it under the host's seccomp or container policy. Allocation
+errors propagate as `Error::MemoryMapping`. Retrying `EINVAL` without
+`MFD_NOEXEC_SEAL` supports kernels that reject that newer flag; it does not
+provide an anonymous-mapping fallback when `memfd_create` is unavailable or
+denied.
+
 The guest places the syscall number and six arguments in a fixed-size frame in
 guest memory. The hypercall passes the frame address to the host. `run` exposes
 the original raw callback, while `run_with_tool` converts the frame to

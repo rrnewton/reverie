@@ -550,6 +550,9 @@ fn create_memory_backing() -> io::Result<OwnedFd> {
 
 /// Copies every data extent from one equal-sized sparse file to another.
 ///
+/// The destination must initially be entirely zero-filled; source holes are
+/// neither written nor cleared in the destination.
+///
 /// A filesystem may conservatively report holes as data, which only makes
 /// this slower. It must not report stored data as a hole. The caller falls
 /// back to a byte-for-byte mapping copy on every error or incomplete extent.
@@ -877,9 +880,9 @@ mod tests {
 
         let snapshot = parent
             .snapshot_with_sparse_copy(|source, destination, _| {
-                let mut source_offset: libc::loff_t = 0;
+                let mut source_offset = (PAGE_SIZE * 3) as libc::loff_t;
                 let mut destination_offset: libc::loff_t = 0;
-                while source_offset < PAGE_SIZE as libc::loff_t {
+                while destination_offset < PAGE_SIZE as libc::loff_t {
                     // SAFETY: snapshot_with_sparse_copy supplies two live,
                     // equal-sized backing descriptors and valid offset pointers.
                     let copied = unsafe {
@@ -888,12 +891,14 @@ mod tests {
                             &mut source_offset,
                             destination,
                             &mut destination_offset,
-                            PAGE_SIZE - source_offset as usize,
+                            PAGE_SIZE - destination_offset as usize,
                             0,
                         )
                     };
                     assert!(copied > 0);
                 }
+                assert_eq!(source_offset, (PAGE_SIZE * 4) as libc::loff_t);
+                assert_eq!(destination_offset, PAGE_SIZE as libc::loff_t);
                 Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP))
             })
             .unwrap();
@@ -903,6 +908,51 @@ mod tests {
         assert_eq!(&bytes[..PAGE_SIZE], &[0x11; PAGE_SIZE]);
         assert_eq!(&bytes[PAGE_SIZE..PAGE_SIZE * 3], &[0; PAGE_SIZE * 2]);
         assert_eq!(&bytes[PAGE_SIZE * 3..], &[0x44; PAGE_SIZE]);
+        let mut parent_bytes = vec![0; PAGE_SIZE * 4];
+        parent.read(0, &mut parent_bytes).unwrap();
+        assert_eq!(parent_bytes, bytes);
+    }
+
+    #[test]
+    fn untouched_snapshot_is_zero_filled_and_independent() {
+        let mut parent = GuestMemory::new(0, PAGE_SIZE * 4).unwrap();
+        let mut snapshot = parent
+            .snapshot_with_sparse_copy(|source, destination, length| {
+                let data = unsafe { libc::lseek(source, 0, libc::SEEK_DATA) };
+                let error = (data < 0).then(io::Error::last_os_error);
+                let initial_enxio = error
+                    .as_ref()
+                    .is_some_and(|error| error.raw_os_error() == Some(libc::ENXIO));
+                let result = copy_sparse_file(source, destination, length);
+                eprintln!(
+                    "untouched snapshot: SEEK_DATA(0)={data}, error={error:?}, initial_enxio={initial_enxio}, sparse_copy={result:?}"
+                );
+                if initial_enxio {
+                    assert!(result.is_ok());
+                }
+                result
+            })
+            .unwrap();
+
+        let mut parent_bytes = vec![0xff; PAGE_SIZE * 4];
+        let mut snapshot_bytes = vec![0xff; PAGE_SIZE * 4];
+        parent.read(0, &mut parent_bytes).unwrap();
+        snapshot.read(0, &mut snapshot_bytes).unwrap();
+        assert_eq!(parent_bytes, vec![0; PAGE_SIZE * 4]);
+        assert_eq!(snapshot_bytes, vec![0; PAGE_SIZE * 4]);
+
+        snapshot.write(0, &[0x22; PAGE_SIZE]).unwrap();
+        parent
+            .write((PAGE_SIZE * 3) as u64, &[0x44; PAGE_SIZE])
+            .unwrap();
+        parent.read(0, &mut parent_bytes).unwrap();
+        snapshot.read(0, &mut snapshot_bytes).unwrap();
+        let mut expected_parent = vec![0; PAGE_SIZE * 4];
+        expected_parent[PAGE_SIZE * 3..].fill(0x44);
+        let mut expected_snapshot = vec![0; PAGE_SIZE * 4];
+        expected_snapshot[..PAGE_SIZE].fill(0x22);
+        assert_eq!(parent_bytes, expected_parent);
+        assert_eq!(snapshot_bytes, expected_snapshot);
     }
 
     #[test]
