@@ -11,3 +11,6 @@ license = "BSD-2-Clause"
 
 [dependencies]
 syscalls = { version = "0.6.18", features = ["serde"] }
+
+[dev-dependencies]
+libc = "0.2.186"

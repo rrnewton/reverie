@@ -140,6 +140,49 @@ mod tests {
     }
 
     #[test]
+    fn read_exact_with_user_access_rejects_prot_none() {
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        assert!(page_size > 0);
+        let page_size = page_size as usize;
+        let mapping = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                page_size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        assert_eq!(
+            unsafe { libc::mprotect(mapping, page_size, libc::PROT_NONE) },
+            0
+        );
+
+        let m = LocalMemory::new();
+        let addr = Addr::from_raw(mapping as usize).unwrap();
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            m.read_exact_with_user_access(addr, &mut buf),
+            Err(Errno::EFAULT)
+        );
+
+        assert_eq!(unsafe { libc::munmap(mapping, page_size) }, 0);
+    }
+
+    #[test]
+    fn read_exact_with_user_access_rejects_address_overflow() {
+        let m = LocalMemory::new();
+        let addr = Addr::from_raw(usize::MAX - 3).unwrap();
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            m.read_exact_with_user_access(addr, &mut buf),
+            Err(Errno::EFAULT)
+        );
+    }
+
+    #[test]
     fn read_cstring() {
         use std::ffi::CStr;
 
