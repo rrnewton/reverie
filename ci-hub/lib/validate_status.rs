@@ -273,6 +273,8 @@ pub enum NoResultReason {
     SubsecondCollapse { gates: Vec<String> },
     #[serde(rename = "no named failing gate and no failure count")]
     NoNamedFailingGateOrFailureCount,
+    #[serde(rename = "interruption_signal")]
+    InterruptionSignal { signal: String },
 }
 
 impl NoResultReason {
@@ -344,6 +346,9 @@ impl NoResultReason {
             }
             Self::NoNamedFailingGateOrFailureCount => {
                 "no named failing gate and no failure count".into()
+            }
+            Self::InterruptionSignal { signal } => {
+                format!("interruption_signal={signal}")
             }
         }
     }
@@ -473,6 +478,37 @@ fn env_fault_reasons(
     reasons
 }
 
+/// Preserve the producer-owned causes carried by an explicit no-result row.
+///
+/// Current producers put `result=no_result` on the outer row and also retain
+/// the exact typed gate detail or interruption signal that caused it. The outer
+/// value decides the verdict; these nested fields explain it and must not be
+/// discarded merely because classification is already settled.
+fn explicit_no_result_reasons(row: &HistoryRow) -> Vec<NoResultReason> {
+    let mut reasons = Vec::new();
+    for gate in row.gates.iter().filter(|gate| {
+        gate_is_red(gate) || matches!(gate.result.as_deref(), Some("no-result" | "no_result"))
+    }) {
+        if let Ok(Some(failure_class)) = gate.failure_class() {
+            if let Some(reason) = NoResultReason::from_gate(gate, failure_class) {
+                reasons.push(reason);
+            }
+        }
+    }
+    if let Some(signal) = field_str(row, "interruption_signal")
+        .map(str::trim)
+        .filter(|signal| !signal.is_empty())
+    {
+        reasons.push(NoResultReason::InterruptionSignal {
+            signal: signal.to_string(),
+        });
+    }
+    if reasons.is_empty() {
+        reasons.push(NoResultReason::ResultNoResult);
+    }
+    reasons
+}
+
 /// Interpret one non-qualifying ledger row using the conditions carried with it.
 ///
 /// A bare `result=fail` is deliberately insufficient. Durable FAILED requires
@@ -488,7 +524,7 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
         Some("truncated") => return FailureDisposition::Truncated,
         Some("needs-rerun" | "needs_rerun") => return FailureDisposition::NeedsRerun,
         Some("no-result" | "no_result") => {
-            return FailureDisposition::NoResult(vec![NoResultReason::ResultNoResult])
+            return FailureDisposition::NoResult(explicit_no_result_reasons(row))
         }
         _ => {}
     }
@@ -1100,6 +1136,37 @@ mod tests {
         assert_eq!(
             failure_disposition(&r, PASS_SHA),
             FailureDisposition::NoResult(vec![NoResultReason::ResultNoResult])
+        );
+    }
+
+    #[test]
+    fn explicit_no_result_preserves_the_typed_gate_detail() {
+        let r = row(r#"{
+                "result":"no_result",
+                "gates":[{
+                    "name":"verify.strict",
+                    "result":"no_result",
+                    "failure_class":"no_result",
+                    "failure_detail":"verifier produced no comparison"
+                }]
+            }"#);
+        assert_eq!(
+            failure_disposition(&r, PASS_SHA),
+            FailureDisposition::NoResult(vec![NoResultReason::GateNoResult {
+                gate: "verify.strict".into(),
+                failure_detail: Some("verifier produced no comparison".into()),
+            }])
+        );
+    }
+
+    #[test]
+    fn explicit_no_result_preserves_the_interruption_signal() {
+        let r = row(r#"{"result":"no_result","exit_code":130,"interruption_signal":"TERM"}"#);
+        assert_eq!(
+            failure_disposition(&r, PASS_SHA),
+            FailureDisposition::NoResult(vec![NoResultReason::InterruptionSignal {
+                signal: "TERM".into(),
+            }])
         );
     }
 

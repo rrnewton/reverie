@@ -6004,6 +6004,57 @@ fn exact_no_result_record_summary(record: &validate_status::RowNoResultReasons) 
     lines.join("\n")
 }
 
+fn exact_no_result_text_lines(assessment: &CanonicalReceiptAssessment) -> Vec<String> {
+    let mut lines = Vec::new();
+    if assessment.verdict == validate_status::Verdict::NoResult {
+        lines.push(exact_no_result_verdict_summary(&assessment.sha));
+    }
+    lines.extend(
+        assessment
+            .no_result_records
+            .iter()
+            .map(exact_no_result_record_summary),
+    );
+    lines
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exact_validate_status_json_report(
+    repo: &str,
+    assessment: &CanonicalReceiptAssessment,
+    main_match: &str,
+    main_sha: Option<&str>,
+    main_match_detail: Option<&str>,
+    reported_verdict: &str,
+    freshness_json: serde_json::Value,
+    terminations: &[ValidateStatusEntry],
+    ledger: &Path,
+) -> serde_json::Value {
+    let qualifying_receipts: Vec<_> = assessment.qualifying.iter().map(describe_receipt).collect();
+    let newest = newest_canonical_receipt(&assessment.qualifying);
+    serde_json::json!({
+        "schema_version": 3,
+        "repo": repo,
+        "sha": assessment.sha,
+        "main_match": main_match,
+        "main_sha": main_sha,
+        "main_match_detail": main_match_detail,
+        "verdict": reported_verdict,
+        "exit_code": assessment.verdict.exit_code(),
+        "ledger_freshness": freshness_json,
+        "qualifying_count": assessment.qualifying.len(),
+        "disqualified_count": assessment.disqualified.len(),
+        "failed_record_count": assessment.failed_records,
+        "withheld_nonpass_record_count": assessment.withheld_nonpass_records,
+        "unresolved_failure_obligations": assessment.unresolved_failure_obligations,
+        "newest_qualifying": newest.map(describe_receipt),
+        "qualifying_receipts": qualifying_receipts,
+        "no_result_records": assessment.no_result_records,
+        "terminations": terminations,
+        "ledger": ledger.display().to_string(),
+    })
+}
+
 fn recent_row_summary(
     row: &HistoryRow,
     verdict: &str,
@@ -8674,34 +8725,17 @@ fn run_validate_status(
     };
 
     if args.json {
-        let qualifying_receipts: Vec<_> =
-            assessment.qualifying.iter().map(describe_receipt).collect();
-        let report = serde_json::json!({
-            "schema_version": 3,
-            "repo": repo,
-            "sha": assessment.sha,
-            "main_match": main_match,
-            "main_sha": main_sha,
-            "main_match_detail": main_match_detail,
-            "verdict": reported_verdict,
-            "exit_code": assessment.verdict.exit_code(),
-            // Present only on the pure-absence path. `local_absence_is_authoritative`
-            // is the field a consumer must read before treating a missing record
-            // as "never tested".
-            "ledger_freshness": freshness_json,
-            "qualifying_count": assessment.qualifying.len(),
-            "disqualified_count": assessment.disqualified.len(),
-            // Genuine clean full-coverage FAILs on this same commit. Any
-            // positive count prevents VALIDATED; the count explains the latch.
-            "failed_record_count": assessment.failed_records,
-            "withheld_nonpass_record_count": assessment.withheld_nonpass_records,
-            "unresolved_failure_obligations": assessment.unresolved_failure_obligations,
-            "newest_qualifying": newest.map(describe_receipt),
-            "qualifying_receipts": qualifying_receipts,
-            "no_result_records": assessment.no_result_records,
-            "terminations": terminations,
-            "ledger": path.display().to_string(),
-        });
+        let report = exact_validate_status_json_report(
+            repo,
+            &assessment,
+            &main_match,
+            main_sha.as_deref(),
+            main_match_detail.as_deref(),
+            reported_verdict,
+            freshness_json,
+            &terminations,
+            &path,
+        );
         println!(
             "{}",
             serde_json::to_string_pretty(&report).expect("serialize report")
@@ -8802,7 +8836,8 @@ fn run_validate_status(
                 }
             }
             validate_status::Verdict::NoResult => {
-                println!("{}", exact_no_result_verdict_summary(&assessment.sha));
+                // Printed with its row-bound causes below, through the same
+                // helper the failure-sensitive output tests exercise.
             }
             validate_status::Verdict::NotValidated if !terminations.is_empty() => {
                 println!(
@@ -8855,8 +8890,8 @@ fn run_validate_status(
                 }
             },
         }
-        for record in &assessment.no_result_records {
-            println!("{}", exact_no_result_record_summary(record));
+        for line in exact_no_result_text_lines(&assessment) {
+            println!("{line}");
         }
     }
     Ok(assessment.verdict.exit_code())
@@ -12785,6 +12820,13 @@ mod tests {
         explicit["run_id"] = serde_json::json!("run-explicit");
         explicit["result"] = serde_json::json!("no_result");
         explicit["raw_result"] = serde_json::json!("no_result");
+        let no_result_assessment = assess_canonical_receipts(
+            Path::new("."),
+            &[history_row(explicit.clone())],
+            RECEIPT_SHA,
+            CANONICAL_VALIDATE_REPO,
+        )
+        .unwrap();
         let assessment = assess_canonical_receipts(
             Path::new("."),
             &[history_row(explicit), history_row(schema4_receipt_value())],
@@ -12795,23 +12837,37 @@ mod tests {
 
         assert_eq!(assessment.verdict, validate_status::Verdict::Validated);
         assert_eq!(assessment.no_result_records.len(), 1);
-        let header = exact_no_result_verdict_summary(RECEIPT_SHA);
+        let output_lines = exact_no_result_text_lines(&no_result_assessment);
+        assert_eq!(output_lines.len(), 2);
+        let header = &output_lines[0];
         assert_eq!(
-            header,
+            header.as_str(),
             format!(
                 "# validate NO-RESULT {RECEIPT_SHA} -- no product verdict; row-bound reasons follow; re-dispatch required"
             )
         );
         assert!(!header.contains("environment"));
-        let line = exact_no_result_record_summary(&assessment.no_result_records[0]);
+        let line = &output_lines[1];
         assert_eq!(
-            line,
+            line.as_str(),
             format!(
                 "# validate NO-RESULT-RECORD record_id=record-explicit run_id=run-explicit commit={RECEIPT_SHA}\n#   row started_at=2026-08-01T12:00:00Z finished_at=2026-08-01T12:01:00Z host=validation-host slot=lander\n#   reason: result=no_result"
             )
         );
         assert!(!line.contains("environment"));
-        let json = serde_json::to_value(&assessment.no_result_records).unwrap();
+        let report = exact_validate_status_json_report(
+            CANONICAL_VALIDATE_REPO,
+            &no_result_assessment,
+            "no-match",
+            None,
+            None,
+            "NO-RESULT",
+            serde_json::Value::Null,
+            &[],
+            Path::new("ledger"),
+        );
+        assert_eq!(report["schema_version"], 3);
+        let json = report["no_result_records"].clone();
         assert_eq!(
             json,
             serde_json::json!([{
