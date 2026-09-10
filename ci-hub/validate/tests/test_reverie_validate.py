@@ -68,11 +68,17 @@ class ReverieValidateTest(unittest.TestCase):
         checkout: Path,
         *,
         validate_exit: int,
+        legacy_v3: bool = False,
+        regular_executed: int = 12,
+        aggregate_executed: int | None = None,
+        expect_record: bool = True,
     ) -> tuple[int, str, dict]:
         target = "b" * 40
         log = root / "reverie.log"
         status_file = root / "final-status"
         log.write_text(
+            "== Test all owned public instruction cases ==\n"
+            "test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n"
             "== Test regular workspace cases ==\n"
             "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n"
             "== Documentation tests ==\n"
@@ -88,18 +94,29 @@ class ReverieValidateTest(unittest.TestCase):
                 return "c" * 40
             raise AssertionError(f"unexpected git call: {args!r}")
 
+        expected_gates = (
+            reverie_node.V3_GATES if legacy_v3 else reverie_node.EXPECTED_GATES
+        )
         gates = []
-        for name in reverie_node.EXPECTED_GATES:
+        for name in expected_gates:
             gate = {"name": name}
-            if name == "Test regular workspace cases":
-                gate.update({"executed_tests": 12, "filtered_tests": 3})
+            if name == "Test all owned public instruction cases":
+                gate.update({"executed_tests": 17, "filtered_tests": 0})
+            elif name == "Test regular workspace cases":
+                gate.update(
+                    {"executed_tests": regular_executed, "filtered_tests": 3}
+                )
             elif name == "Documentation tests":
                 gate.update({"executed_tests": 5, "filtered_tests": 1})
             gates.append(gate)
         source = {
             "result": "pass" if validate_exit == 0 else "fail",
-            "checks": len(reverie_node.EXPECTED_GATES),
-            "executed_tests": 17,
+            "checks": len(expected_gates),
+            "executed_tests": (
+                aggregate_executed
+                if aggregate_executed is not None
+                else regular_executed + 5 + (0 if legacy_v3 else 17)
+            ),
             "filtered_tests": 4,
             "gates": gates,
         }
@@ -142,8 +159,13 @@ class ReverieValidateTest(unittest.TestCase):
                     str(status_file),
                 ]
             )
-        assert len(recorded) == 1
-        return rc, status_file.read_text(), recorded[0]
+        if expect_record:
+            assert len(recorded) == 1
+            row = recorded[0]
+        else:
+            assert recorded == []
+            row = {}
+        return rc, status_file.read_text(), row
 
     def test_systemd_child_is_safe_ci_wrapper_without_unboxed_flags(self) -> None:
         root = Path("/workspace/dev-hermit")
@@ -334,12 +356,69 @@ class ReverieValidateTest(unittest.TestCase):
                     )
                 self.assertEqual(rc, expected_rc)
                 self.assertEqual(status, expected_status)
-                self.assertEqual(row["executed_tests"], 17)
+                self.assertEqual(row["executed_tests"], 34)
                 self.assertEqual(row["filtered_tests"], 4)
                 self.assertEqual(
-                    row["reverie_validation_policy"], "reverie-local-validation/v3"
+                    row["reverie_validation_policy"], "reverie-local-validation/v4"
+                )
+                self.assertEqual(
+                    row["coverage"],
+                    {
+                        "planned_test_nodes": 3,
+                        "executed_test_nodes": 3,
+                        "zero_executed_nodes": [],
+                        "absent_nodes": [],
+                    },
                 )
                 self.assertEqual(row["safe_ci"]["step"], reverie_node.SAFE_CI_STEP)
+
+    def test_reverie_node_preserves_the_v3_source_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            checkout = root / "reverie"
+            checkout.mkdir()
+            rc, status, row = self.run_reverie_node(
+                root, checkout, validate_exit=0, legacy_v3=True
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(status, "FINAL_VALIDATE_STATUS: PASSED\n")
+        self.assertEqual(
+            row["reverie_validation_policy"], "reverie-local-validation/v3"
+        )
+        self.assertEqual(row["gates_expected"], 7)
+        self.assertEqual(row["executed_tests"], 17)
+        self.assertEqual(row["coverage"]["planned_test_nodes"], 2)
+        self.assertEqual(row["coverage"]["executed_test_nodes"], 2)
+
+    def test_reverie_node_refuses_v4_count_and_coverage_gaps(self) -> None:
+        for label, options, detail in (
+            (
+                "aggregate mismatch",
+                {"aggregate_executed": 33},
+                "aggregate test counts disagree",
+            ),
+            (
+                "two of three test gates",
+                {"regular_executed": 0},
+                "requires all three counted test gates",
+            ),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                checkout = root / "reverie"
+                checkout.mkdir()
+                stderr = StringIO()
+                with redirect_stderr(stderr):
+                    rc, status, _row = self.run_reverie_node(
+                        root,
+                        checkout,
+                        validate_exit=0,
+                        expect_record=False,
+                        **options,
+                    )
+                self.assertEqual(rc, 75)
+                self.assertEqual(status, "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n")
+                self.assertIn(detail, stderr.getvalue())
 
     def test_reverie_node_refusal_publishes_could_not_run(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -385,16 +464,23 @@ class ReverieValidateTest(unittest.TestCase):
             ]
         }
         self.assertEqual(
-            reverie_node.recorded_gate_coverage(complete), (14, 3, [], [])
+            reverie_node.recorded_gate_coverage(
+                complete, reverie_node.V3_TEST_GATES
+            ),
+            (14, 3, [], []),
         )
         complete["gates"][1]["executed_tests"] = 0
         self.assertEqual(
-            reverie_node.recorded_gate_coverage(complete),
+            reverie_node.recorded_gate_coverage(
+                complete, reverie_node.V3_TEST_GATES
+            ),
             (10, 3, ["Documentation tests"], []),
         )
         missing = {"gates": complete["gates"][:1]}
         self.assertEqual(
-            reverie_node.recorded_gate_coverage(missing),
+            reverie_node.recorded_gate_coverage(
+                missing, reverie_node.V3_TEST_GATES
+            ),
             (10, 3, [], ["Documentation tests"]),
         )
 
@@ -412,7 +498,42 @@ class ReverieValidateTest(unittest.TestCase):
         with self.assertRaisesRegex(
             reverie_node.Refusal, "Documentation tests.*executed_tests"
         ):
-            reverie_node.recorded_gate_coverage(source)
+            reverie_node.recorded_gate_coverage(
+                source, reverie_node.V3_TEST_GATES
+            )
+
+    def test_v4_owned_public_gate_requires_exact_counts(self) -> None:
+        def source(executed: int, filtered: int) -> dict:
+            return {
+                "gates": [
+                    {
+                        "name": "Test all owned public instruction cases",
+                        "executed_tests": executed,
+                        "filtered_tests": filtered,
+                    },
+                    {
+                        "name": "Test regular workspace cases",
+                        "executed_tests": 12,
+                        "filtered_tests": 3,
+                    },
+                    {
+                        "name": "Documentation tests",
+                        "executed_tests": 5,
+                        "filtered_tests": 1,
+                    },
+                ]
+            }
+
+        self.assertEqual(
+            reverie_node.recorded_gate_coverage(source(17, 0)),
+            (34, 4, [], []),
+        )
+        for executed, filtered in ((16, 0), (18, 0), (17, 1), (0, 0)):
+            with self.subTest(executed=executed, filtered=filtered):
+                with self.assertRaisesRegex(
+                    reverie_node.Refusal, "must record exactly executed_tests=17"
+                ):
+                    reverie_node.recorded_gate_coverage(source(executed, filtered))
 
     def test_aggregate_counts_come_from_the_framework_row(self) -> None:
         self.assertEqual(
@@ -431,13 +552,16 @@ class ReverieValidateTest(unittest.TestCase):
             with self.assertRaisesRegex(reverie_node.Refusal, field):
                 reverie_node.recorded_test_counts(row)
 
-    def test_current_gate_contract_refuses_retired_merge_gate(self) -> None:
+    def test_versioned_gate_contracts_are_exact(self) -> None:
         self.assertEqual(
             reverie_node.EXPECTED_GATES,
             (
                 "Cross-client skill discovery",
                 "Build workspace",
                 "DBT virtual identity and pidfd_open policy",
+                "Compile owned public instruction target",
+                "Inventory owned public instruction target",
+                "Test all owned public instruction cases",
                 "Test regular workspace cases",
                 "Documentation tests",
                 "Clippy",
@@ -445,17 +569,37 @@ class ReverieValidateTest(unittest.TestCase):
             ),
         )
         current = [{"name": name} for name in reverie_node.EXPECTED_GATES]
-        reverie_node.require_expected_gate_set(current)
+        policy, gates, test_gates = reverie_node.require_expected_gate_set(current)
+        self.assertEqual(policy, "reverie-local-validation/v4")
+        self.assertEqual(gates, reverie_node.V4_GATES)
+        self.assertEqual(test_gates, reverie_node.V4_TEST_GATES)
+        old = [{"name": name} for name in reverie_node.V3_GATES]
+        self.assertEqual(
+            reverie_node.require_expected_gate_set(old),
+            (
+                "reverie-local-validation/v3",
+                reverie_node.V3_GATES,
+                reverie_node.V3_TEST_GATES,
+            ),
+        )
         invalid_sets = {
-            "retired seventh gate": current[:1]
+            "retired merge gate": current[:1]
             + [{"name": "Merge-gate policy"}]
             + current[1:],
-            "mixed old and current names": current[:1]
-            + [{"name": "Merge-gate policy"}]
-            + current[2:],
             "missing gate": current[:-1],
             "reordered gates": [current[1], current[0], *current[2:]],
+            "v3 plus one v4 gate": old[:3] + current[3:4] + old[3:],
         }
+        for index in range(3, 6):
+            invalid_sets[f"missing added gate {index}"] = (
+                current[:index] + current[index + 1 :]
+            )
+            reordered = list(current)
+            reordered[index - 1], reordered[index] = (
+                reordered[index],
+                reordered[index - 1],
+            )
+            invalid_sets[f"reordered added gate {index}"] = reordered
         for case, gates in invalid_sets.items():
             with self.subTest(case=case):
                 with self.assertRaisesRegex(reverie_node.Refusal, "gate set drifted"):

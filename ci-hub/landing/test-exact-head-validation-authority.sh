@@ -30,14 +30,24 @@ if [[ $command == validate-status ]]; then
         green)
             qualifying_count=${LOCAL_COUNT:-1}
             if [[ $repo == rrnewton/reverie ]]; then
-                planned=2
-                executed_nodes=2
-                reverie_policy=${REVERIE_POLICY:-reverie-local-validation/v3}
-                if [[ $reverie_policy == reverie-local-validation/v2 ]]; then
-                    gates='[{"name":"Cross-client skill discovery","result":"pass"},{"name":"Build workspace","result":"pass"},{"name":"Test regular workspace cases","result":"pass"},{"name":"Documentation tests","result":"pass"},{"name":"Clippy","result":"pass"},{"name":"Rustfmt","result":"pass"}]'
-                else
-                    gates='[{"name":"Cross-client skill discovery","result":"pass"},{"name":"Build workspace","result":"pass"},{"name":"DBT virtual identity and pidfd_open policy","result":"pass"},{"name":"Test regular workspace cases","result":"pass"},{"name":"Documentation tests","result":"pass"},{"name":"Clippy","result":"pass"},{"name":"Rustfmt","result":"pass"}]'
-                fi
+                reverie_policy=${REVERIE_POLICY:-reverie-local-validation/v4}
+                case $reverie_policy in
+                    reverie-local-validation/v2)
+                        planned=2
+                        executed_nodes=2
+                        gates='[{"name":"Cross-client skill discovery","result":"pass"},{"name":"Build workspace","result":"pass"},{"name":"Test regular workspace cases","result":"pass"},{"name":"Documentation tests","result":"pass"},{"name":"Clippy","result":"pass"},{"name":"Rustfmt","result":"pass"}]'
+                        ;;
+                    reverie-local-validation/v4)
+                        planned=3
+                        executed_nodes=3
+                        gates='[{"name":"Cross-client skill discovery","result":"pass"},{"name":"Build workspace","result":"pass"},{"name":"DBT virtual identity and pidfd_open policy","result":"pass"},{"name":"Compile owned public instruction target","result":"pass"},{"name":"Inventory owned public instruction target","result":"pass"},{"name":"Test all owned public instruction cases","result":"pass"},{"name":"Test regular workspace cases","result":"pass"},{"name":"Documentation tests","result":"pass"},{"name":"Clippy","result":"pass"},{"name":"Rustfmt","result":"pass"}]'
+                        ;;
+                    *)
+                        planned=2
+                        executed_nodes=2
+                        gates='[{"name":"Cross-client skill discovery","result":"pass"},{"name":"Build workspace","result":"pass"},{"name":"DBT virtual identity and pidfd_open policy","result":"pass"},{"name":"Test regular workspace cases","result":"pass"},{"name":"Documentation tests","result":"pass"},{"name":"Clippy","result":"pass"},{"name":"Rustfmt","result":"pass"}]'
+                        ;;
+                esac
             else
                 planned=19
                 executed_nodes=19
@@ -250,12 +260,19 @@ env CI_HUB_BIN="$tmp/ci-hub" VERIFY_RECEIPT_BIN="$tmp/verify-receipt" \
 
 # Reverie's centralized full-profile row is likewise the exact-head landing
 # authority. Hosted state is diagnostic and never a fallback or veto here.
-run_reverie_local_only_case 0 "Reverie local-only admits qualifying seven-gate v3 row" \
+run_reverie_local_only_case 0 "Reverie local-only admits qualifying ten-gate v4 row" \
     env LOCAL_STATE=green HOSTED_STATE=red
+[[ $last_output == *"AUTHORITY=local "* && \
+   $last_output == *"LOCAL_COVERAGE=full-ten-gate-v4"* && \
+   $last_output == *"HOSTED=not_consulted"* ]] || {
+    echo "FAIL: Reverie local-only green did not select its ten-gate v4 authority" >&2; exit 1;
+}
+run_reverie_local_only_case 0 "Reverie local-only preserves qualifying seven-gate v3 authority" \
+    env LOCAL_STATE=green HOSTED_STATE=red REVERIE_POLICY=reverie-local-validation/v3
 [[ $last_output == *"AUTHORITY=local "* && \
    $last_output == *"LOCAL_COVERAGE=full-seven-gate-v3"* && \
    $last_output == *"HOSTED=not_consulted"* ]] || {
-    echo "FAIL: Reverie local-only green did not select its seven-gate v3 authority" >&2; exit 1;
+    echo "FAIL: Reverie local-only green did not preserve its seven-gate v3 authority" >&2; exit 1;
 }
 run_reverie_local_only_case 0 "Reverie local-only preserves qualifying six-gate v2 authority" \
     env LOCAL_STATE=green HOSTED_STATE=red REVERIE_POLICY=reverie-local-validation/v2
@@ -263,6 +280,13 @@ run_reverie_local_only_case 0 "Reverie local-only preserves qualifying six-gate 
    $last_output == *"LOCAL_COVERAGE=full-six-gate-v2"* && \
    $last_output == *"HOSTED=not_consulted"* ]] || {
     echo "FAIL: Reverie local-only green did not preserve its six-gate v2 authority" >&2; exit 1;
+}
+run_reverie_local_only_case 0 "Reverie local-only preserves qualifying seven-gate v1 authority" \
+    env LOCAL_STATE=green HOSTED_STATE=red REVERIE_POLICY=reverie-local-validation/v1
+[[ $last_output == *"AUTHORITY=local "* && \
+   $last_output == *"LOCAL_COVERAGE=full-seven-gate-v1"* && \
+   $last_output == *"HOSTED=not_consulted"* ]] || {
+    echo "FAIL: Reverie local-only green did not preserve its seven-gate v1 authority" >&2; exit 1;
 }
 run_reverie_local_only_case 4 "Reverie local-only refuses an unknown receipt policy" \
     env LOCAL_STATE=green HOSTED_STATE=red REVERIE_POLICY=reverie-local-validation/v999
@@ -292,4 +316,4 @@ env CI_HUB_BIN="$tmp/ci-hub" VERIFY_RECEIPT_BIN="$tmp/verify-receipt" \
     >/dev/null 2>&1 || rc=$?
 [[ $rc -eq 2 ]] || { echo "FAIL: mutually exclusive authority selectors were accepted" >&2; exit 1; }
 
-echo "PASS: historical local/hosted OR positives=5; Hermit local-only positive=1 negatives=3; Reverie local-only positives=2 negatives=3; hosted-only positive=1 negatives=4; cancellation no-results=2; red/partial/stale/unbound/count/coverage/policy negatives=14"
+echo "PASS: historical local/hosted OR positives=5; Hermit local-only positive=1 negatives=3; Reverie local-only positives=4 negatives=3; hosted-only positive=1 negatives=4; cancellation no-results=2; red/partial/stale/unbound/count/coverage/policy negatives=14"

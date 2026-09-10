@@ -245,6 +245,10 @@ if [[ $local_only -eq 1 ]]; then
                     local_coverage=full-seven-gate-v3
                     required_coverage=local:full-seven-gate-v3
                     ;;
+                reverie-local-validation/v4)
+                    local_coverage=full-ten-gate-v4
+                    required_coverage=local:full-ten-gate-v4
+                    ;;
                 *)
                     local_coverage=none
                     required_coverage=local:versioned-full-profile

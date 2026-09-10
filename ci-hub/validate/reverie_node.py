@@ -24,9 +24,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import bounded_capture  # noqa: E402
 
 
-# Local-validation v3 follows Reverie's seven-gate producer after hosted
-# merge-gate policy enforcement was retired from validate.sh.
-EXPECTED_GATES = (
+# Keep each published contract immutable.  The central producer accepts either
+# exact list so deploying parent support does not invalidate a still-current v3
+# checkout; it emits the version selected by the source row's ordered gates.
+V3_GATES = (
     "Cross-client skill discovery",
     "Build workspace",
     "DBT virtual identity and pidfd_open policy",
@@ -35,9 +36,37 @@ EXPECTED_GATES = (
     "Clippy",
     "Rustfmt",
 )
-TEST_GATES = (
+V3_TEST_GATES = (
     "Test regular workspace cases",
     "Documentation tests",
+)
+V4_GATES = (
+    "Cross-client skill discovery",
+    "Build workspace",
+    "DBT virtual identity and pidfd_open policy",
+    "Compile owned public instruction target",
+    "Inventory owned public instruction target",
+    "Test all owned public instruction cases",
+    "Test regular workspace cases",
+    "Documentation tests",
+    "Clippy",
+    "Rustfmt",
+)
+V4_TEST_GATES = (
+    "Test all owned public instruction cases",
+    "Test regular workspace cases",
+    "Documentation tests",
+)
+V4_OWNED_PUBLIC_GATE = "Test all owned public instruction cases"
+V4_OWNED_PUBLIC_COUNTS = (17, 0)
+
+# The unqualified names remain the current producer contract for callers and
+# tests which construct a source row, not an alias that changes historical v3.
+EXPECTED_GATES = V4_GATES
+TEST_GATES = V4_TEST_GATES
+GATE_CONTRACTS = (
+    ("reverie-local-validation/v4", V4_GATES, V4_TEST_GATES),
+    ("reverie-local-validation/v3", V3_GATES, V3_TEST_GATES),
 )
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SAFE_CI_STEP = "validate.reverie-full"
@@ -220,17 +249,19 @@ def load_source_row(root: Path, target: str, checkout: Path, log: Path, started:
     return candidates[0]
 
 
-def recorded_gate_coverage(source: dict[str, Any]) -> tuple[int, int, list[str], list[str]]:
+def recorded_gate_coverage(
+    source: dict[str, Any], test_gates: tuple[str, ...] = TEST_GATES
+) -> tuple[int, int, list[str], list[str]]:
     """Read the counts each test gate wrote at the gate boundary."""
     gates = source.get("gates")
     if not isinstance(gates, list) or not all(isinstance(gate, dict) for gate in gates):
         raise Refusal("Reverie source row gates must be a list of objects")
     by_name = {gate.get("name"): gate for gate in gates}
-    absent = [gate for gate in TEST_GATES if gate not in by_name]
+    absent = [gate for gate in test_gates if gate not in by_name]
     zero: list[str] = []
     executed = 0
     filtered = 0
-    for name in TEST_GATES:
+    for name in test_gates:
         gate = by_name.get(name)
         if gate is None:
             continue
@@ -243,6 +274,13 @@ def recorded_gate_coverage(source: dict[str, Any]) -> tuple[int, int, list[str],
                     f"nonnegative integer, got {value!r}"
                 )
             values.append(value)
+        if name == V4_OWNED_PUBLIC_GATE and tuple(values) != V4_OWNED_PUBLIC_COUNTS:
+            raise Refusal(
+                f"Reverie source row gate {name!r} must record exactly "
+                f"executed_tests={V4_OWNED_PUBLIC_COUNTS[0]} and "
+                f"filtered_tests={V4_OWNED_PUBLIC_COUNTS[1]}, got "
+                f"executed_tests={values[0]} and filtered_tests={values[1]}"
+            )
         executed += values[0]
         filtered += values[1]
         if values[0] == 0:
@@ -263,14 +301,18 @@ def recorded_test_counts(source: dict[str, Any]) -> tuple[int, int]:
     return values[0], values[1]
 
 
-def require_expected_gate_set(gates: object) -> None:
+def require_expected_gate_set(
+    gates: object,
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
     gate_names = (
         [gate.get("name") for gate in gates]
         if isinstance(gates, list) and all(isinstance(gate, dict) for gate in gates)
         else []
     )
-    if gate_names != list(EXPECTED_GATES):
-        raise Refusal(f"Reverie gate set drifted: {gate_names!r}")
+    for policy, expected, test_gates in GATE_CONTRACTS:
+        if gate_names == list(expected):
+            return policy, expected, test_gates
+    raise Refusal(f"Reverie gate set drifted: {gate_names!r}")
 
 
 def record(root: Path, row: dict[str, Any]) -> None:
@@ -342,14 +384,21 @@ def main(argv: list[str] | None = None) -> int:
             check=False,
         )
         source = load_source_row(root, args.target, checkout, log, started)
-        executed, filtered = recorded_test_counts(source)
         gates = source.get("gates")
-        require_expected_gate_set(gates)
-        gate_executed, gate_filtered, zero, absent = recorded_gate_coverage(source)
+        policy, expected_gates, test_gates = require_expected_gate_set(gates)
+        executed, filtered = recorded_test_counts(source)
+        gate_executed, gate_filtered, zero, absent = recorded_gate_coverage(
+            source, test_gates
+        )
         if (gate_executed, gate_filtered) != (executed, filtered):
             raise Refusal(
                 "Reverie aggregate test counts disagree with per-gate records: "
                 f"aggregate={(executed, filtered)!r} per_gate={(gate_executed, gate_filtered)!r}"
+            )
+        if policy == "reverie-local-validation/v4" and (zero or absent):
+            raise Refusal(
+                "Reverie v4 requires all three counted test gates to execute: "
+                f"zero={zero!r} absent={absent!r}"
             )
         canonical = dict(source)
         canonical.update(
@@ -360,12 +409,12 @@ def main(argv: list[str] | None = None) -> int:
                 "tree": tree,
                 "raw_result": source.get("result"),
                 "gates_run": source.get("checks"),
-                "gates_expected": len(EXPECTED_GATES),
+                "gates_expected": len(expected_gates),
                 "executed_tests": executed,
                 "filtered_tests": filtered,
                 "coverage": {
-                    "planned_test_nodes": len(TEST_GATES),
-                    "executed_test_nodes": len(TEST_GATES) - len(zero) - len(absent),
+                    "planned_test_nodes": len(test_gates),
+                    "executed_test_nodes": len(test_gates) - len(zero) - len(absent),
                     "zero_executed_nodes": zero,
                     "absent_nodes": absent,
                 },
@@ -380,7 +429,7 @@ def main(argv: list[str] | None = None) -> int:
                     "fallback_allowed": False,
                 },
                 "validate_lock_authority": authority,
-                "reverie_validation_policy": "reverie-local-validation/v3",
+                "reverie_validation_policy": policy,
             }
         )
         # The canonical row records even a product red. Shape failures are not
