@@ -84,11 +84,17 @@ def production_historical_repository_mismatch(event_id: str) -> dict:
 
 
 def write_historical_repository_mismatch_copies(root: Path, event: dict) -> None:
+    if not (root / ".git").exists():
+        repository(root)
     text = json.dumps(event, sort_keys=True) + "\n"
+    paths = []
     for relative in validate_rows.HISTORICAL_REPOSITORY_MISMATCH_SHARDS:
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+        paths.append(relative.as_posix())
+    git(root, "add", *paths)
+    git(root, "commit", "-qm", "track historical source copies")
 
 
 def event_with_null_failed_substeps(root: Path) -> dict:
@@ -686,6 +692,55 @@ def test_exact_historical_repository_mismatch_is_readable(tmp_path: Path):
             "commit": event["commit"],
         }
     ]
+
+
+@pytest.mark.parametrize("provenance", ["non-git", "untracked", "foreign-root"])
+def test_historical_repository_mismatch_requires_tracked_source_provenance(
+    tmp_path: Path, provenance: str
+):
+    authority = tmp_path
+    if provenance in {"untracked", "foreign-root"}:
+        repository(tmp_path)
+    if provenance == "foreign-root":
+        authority = tmp_path / "foreign"
+    event = production_historical_repository_mismatch("legacy-000246-000")
+    text = json.dumps(event, sort_keys=True) + "\n"
+    for relative in validate_rows.HISTORICAL_REPOSITORY_MISMATCH_SHARDS:
+        path = authority / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="historical repository-mismatch event"):
+        validate_rows.status_input(root=authority)
+
+
+def test_historical_repository_mismatch_requires_both_current_source_copies(
+    tmp_path: Path,
+):
+    event = production_historical_repository_mismatch("legacy-000246-000")
+    write_historical_repository_mismatch_copies(tmp_path, event)
+    (tmp_path / validate_rows.HISTORICAL_REPOSITORY_MISMATCH_SHARDS[0]).write_text(
+        "", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="historical repository-mismatch event"):
+        validate_rows.status_input(root=tmp_path)
+
+
+def test_historical_repository_mismatch_refuses_symlinked_source_ancestors(
+    tmp_path: Path,
+):
+    event = production_historical_repository_mismatch("legacy-000246-000")
+    write_historical_repository_mismatch_copies(tmp_path, event)
+    relocated = tmp_path / "relocated"
+    relocated.mkdir()
+    for directory in ("ledger", "ledger-recovery"):
+        destination = relocated / directory
+        shutil.move(str(tmp_path / directory), destination)
+        (tmp_path / directory).symlink_to(destination, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="historical repository-mismatch event"):
+        validate_rows.status_input(root=tmp_path)
 
 
 def test_moved_historical_repository_mismatch_is_refused(tmp_path: Path):

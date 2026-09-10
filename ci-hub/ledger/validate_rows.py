@@ -197,19 +197,90 @@ def _historical_repository_mismatch_digest(event: dict) -> str | None:
     return digest if digest == expected_digest else None
 
 
+def _git_environment() -> dict[str, str]:
+    environment = {
+        name: value for name, value in os.environ.items() if not name.startswith("GIT_")
+    }
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    return environment
+
+
+def _tracked_historical_shard(root: Path, relative: Path) -> list[dict] | None:
+    """Read one named regular-file shard from the selected worktree's HEAD."""
+    path = root / relative
+    component = root
+    for part in relative.parts:
+        component /= part
+        if component.is_symlink():
+            return None
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return None
+    if not path.is_file():
+        return None
+    arguments = ["git", "--no-replace-objects", "-C", str(root)]
+    environment = _git_environment()
+    try:
+        top = subprocess.run(
+            [*arguments, "rev-parse", "--path-format=absolute", "--show-toplevel"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=environment,
+        )
+        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != root.resolve():
+            return None
+        entry = subprocess.run(
+            [*arguments, "ls-tree", "-z", "HEAD", "--", relative.as_posix()],
+            check=False,
+            capture_output=True,
+            timeout=10,
+            env=environment,
+        )
+        expected_suffix = b"\t" + os.fsencode(relative.as_posix()) + b"\0"
+        if (
+            entry.returncode != 0
+            or not entry.stdout.startswith(b"100644 blob ")
+            or not entry.stdout.endswith(expected_suffix)
+            or entry.stdout.count(b"\0") != 1
+        ):
+            return None
+        contents = subprocess.run(
+            [*arguments, "show", f"HEAD:{relative.as_posix()}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired, UnicodeError):
+        return None
+    if contents.returncode != 0:
+        return None
+    try:
+        return [json.loads(line) for line in contents.stdout.splitlines() if line]
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
 def _historical_repository_mismatch_source_digests(root: Path) -> frozenset[str]:
-    """Require every exception to exist in both immutable, named source shards."""
+    """Require each exception in both current and HEAD-tracked named shards."""
     copies: list[dict[str, str]] = []
     for relative in HISTORICAL_REPOSITORY_MISMATCH_SHARDS:
         path = root / relative
-        if not path.is_file():
+        tracked_events = _tracked_historical_shard(root, relative)
+        if tracked_events is None:
             return frozenset()
-        source: dict[str, str] = {}
-        for event in read_shard(path):
-            digest = _historical_repository_mismatch_digest(event)
-            if digest is not None:
-                source[str(event["event_id"])] = digest
-        copies.append(source)
+        for events_in_source in (read_shard(path), tracked_events):
+            source: dict[str, str] = {}
+            for event in events_in_source:
+                digest = _historical_repository_mismatch_digest(event)
+                if digest is not None:
+                    source[str(event["event_id"])] = digest
+            copies.append(source)
 
     admitted = {
         digest
