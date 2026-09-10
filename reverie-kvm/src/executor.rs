@@ -33,8 +33,9 @@ use crate::elf::GuestFileIdentity;
 use crate::elf::GuestFileIdentityEntry;
 use crate::elf::InotifyDescriptionState;
 use crate::elf::LoadedStaticElf;
-use crate::elf::PendingInotifyRight;
+use crate::elf::PendingDescriptorRight;
 use crate::elf::PendingSocketMessage;
+use crate::elf::PendingSocketRight;
 use crate::elf::STACK_LIMIT;
 use crate::elf::SocketDescriptionState;
 use crate::elf::load_static_elf;
@@ -47,6 +48,9 @@ const PAGE_SIZE: u64 = 4096;
 const GUEST_NOFILE_LIMIT: libc::c_int = 1 << 20;
 const SCM_MAX_FD: usize = 253;
 const MAX_PENDING_INOTIFY_COOKIES: usize = 4096;
+// Serializes every mutation/traversal of pending socket-transfer ownership so
+// two simultaneous sends cannot independently close a strong reference cycle.
+static SOCKET_TRANSFER_GRAPH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-235): Review the single virtual network namespace identity.
 const GUEST_NETNS_COOKIE: u64 = 1;
@@ -3327,6 +3331,17 @@ fn host_fd_is_inotify(fd: RawFd) -> bool {
         .is_ok_and(|target| target.as_os_str().as_bytes() == b"anon_inode:inotify")
 }
 
+fn host_fd_is_socket(fd: RawFd) -> bool {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: stat points to writable storage and fd is live for this probe.
+    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    // SAFETY: fstat initialized stat on success.
+    let stat = unsafe { stat.assume_init() };
+    stat.st_mode & libc::S_IFMT == libc::S_IFSOCK
+}
+
 fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
@@ -4187,7 +4202,8 @@ fn split_descriptor_suffix(suffix: &[u8]) -> (&[u8], &[u8]) {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GuestFdAliasView {
     Process,
-    Task,
+    CurrentTask,
+    UnsupportedTask,
 }
 
 fn guest_fd_path_parts<'a>(
@@ -4203,7 +4219,7 @@ fn guest_fd_path_parts<'a>(
     }
     if let Some(suffix) = path.strip_prefix(b"/proc/thread-self/fd/") {
         let (descriptor, remainder) = split_descriptor_suffix(suffix);
-        return Some((descriptor, remainder, GuestFdAliasView::Task));
+        return Some((descriptor, remainder, GuestFdAliasView::CurrentTask));
     }
 
     let proc_path = path.strip_prefix(b"/proc/")?;
@@ -4213,7 +4229,7 @@ fn guest_fd_path_parts<'a>(
         let view = if owner == b"self" || parse_guest_fd(owner) == Some(state.pid) {
             GuestFdAliasView::Process
         } else {
-            GuestFdAliasView::Task
+            GuestFdAliasView::UnsupportedTask
         };
         return owner_is_live.then(|| {
             let (descriptor, remainder) = split_descriptor_suffix(suffix);
@@ -4224,8 +4240,14 @@ fn guest_fd_path_parts<'a>(
     let (task, rest) = split_path_component(task_path)?;
     let suffix = rest.strip_prefix(b"fd/")?;
     (owner_is_live && live_same_thread_group(state, task)).then(|| {
+        let canonical_owner = owner == b"self" || parse_guest_fd(owner) == Some(state.pid);
+        let view = if canonical_owner && parse_guest_fd(task) == Some(state.tid) {
+            GuestFdAliasView::CurrentTask
+        } else {
+            GuestFdAliasView::UnsupportedTask
+        };
         let (descriptor, remainder) = split_descriptor_suffix(suffix);
-        (descriptor, remainder, GuestFdAliasView::Task)
+        (descriptor, remainder, view)
     })
 }
 
@@ -5454,20 +5476,42 @@ fn inotify_host_path(state: &LoadedStaticElf, path: &[u8], nofollow: bool) -> Re
         let Some(host_fd) = host_fd(state, guest_fd) else {
             return Err(negative_errno(libc::ENOENT));
         };
-        if remainder.is_empty() {
-            ensure_fd_not_procfs(host_fd)?;
-        } else {
-            let relative =
-                CString::new(&remainder[1..]).map_err(|_| negative_errno(libc::EINVAL))?;
-            let _target = open_host_metadata_path(host_fd, &relative, nofollow)?;
+        let final_alias = remainder.is_empty();
+        if nofollow && final_alias && view == GuestFdAliasView::UnsupportedTask {
+            // Native procfs gives nonleader /proc/<tid>/fd and cross-owner
+            // task directories distinct magic-link inodes. The supervisor
+            // has no equivalent namespace. Refuse instead of collapsing an
+            // unsupported identity into the process or current-task bucket.
+            return Err(negative_errno(libc::ENOENT));
         }
-        let host_prefix = if nofollow && remainder.is_empty() && view == GuestFdAliasView::Task {
-            "/proc/thread-self/fd/"
+        let normalized_remainder = if final_alias {
+            Vec::new()
         } else {
-            "/proc/self/fd/"
+            let relative = remainder
+                .iter()
+                .skip_while(|byte| **byte == b'/')
+                .copied()
+                .collect::<Vec<_>>();
+            if relative.is_empty() {
+                let _target = open_host_metadata_path(host_fd, c".", false)?;
+            } else {
+                let relative_path =
+                    CString::new(relative.as_slice()).map_err(|_| negative_errno(libc::EINVAL))?;
+                let _target = open_host_metadata_path(host_fd, &relative_path, nofollow)?;
+            }
+            let mut normalized = vec![b'/'];
+            normalized.extend_from_slice(&relative);
+            normalized
+        };
+        if final_alias {
+            ensure_fd_not_procfs(host_fd)?;
+        }
+        let host_prefix = match (nofollow && final_alias, view) {
+            (true, GuestFdAliasView::CurrentTask) => "/proc/thread-self/fd/",
+            _ => "/proc/self/fd/",
         };
         let mut host_path = format!("{host_prefix}{host_fd}").into_bytes();
-        host_path.extend_from_slice(remainder);
+        host_path.extend_from_slice(&normalized_remainder);
         return CString::new(host_path).map_err(|_| negative_errno(libc::EINVAL));
     }
     if looks_like_guest_fd_path(path) {
@@ -6748,7 +6792,7 @@ fn duplicate_host_fd(fd: RawFd) -> Result<std::fs::File, i64> {
 fn translate_outgoing_control(
     control: &mut [u8],
     state: &LoadedStaticElf,
-) -> Result<Vec<Option<PendingInotifyRight>>, i64> {
+) -> Result<Vec<Option<PendingDescriptorRight>>, i64> {
     let messages = control_messages(control)?;
     let mut rights_count = 0usize;
     for message in &messages {
@@ -6773,7 +6817,7 @@ fn translate_outgoing_control(
         return Err(negative_errno(libc::EINVAL));
     }
 
-    let mut pending_inotify = Vec::with_capacity(rights_count);
+    let mut pending_rights = Vec::with_capacity(rights_count);
     for message in messages {
         // SCM_RIGHTS is the only ancillary input whose payload is meaningful in
         // the guest descriptor namespace. Other control inputs (credentials,
@@ -6791,20 +6835,25 @@ fn translate_outgoing_control(
         {
             let guest_fd = read_control_fd(control, offset)?;
             let host_fd = host_fd(state, guest_fd).ok_or_else(|| negative_errno(libc::EBADF))?;
-            pending_inotify.push(
-                if let Some(description) = state.inotify_fds.get(&guest_fd) {
-                    Some(PendingInotifyRight {
-                        file: duplicate_host_fd(host_fd)?,
-                        description: description.clone(),
-                    })
-                } else {
-                    None
-                },
-            );
+            let inotify = state.inotify_fds.get(&guest_fd).cloned();
+            let socket = state
+                .socket_fds
+                .get(&guest_fd)
+                .cloned()
+                .map(PendingSocketRight::Strong);
+            pending_rights.push(if inotify.is_some() || socket.is_some() {
+                Some(PendingDescriptorRight {
+                    file: duplicate_host_fd(host_fd)?,
+                    inotify,
+                    socket,
+                })
+            } else {
+                None
+            });
             write_control_fd(control, offset, host_fd)?;
         }
     }
-    Ok(pending_inotify)
+    Ok(pending_rights)
 }
 
 struct PublishedSocketMessage {
@@ -6813,9 +6862,42 @@ struct PublishedSocketMessage {
     expected_length: usize,
 }
 
+fn pending_socket_description(socket: &PendingSocketRight) -> Option<Arc<SocketDescriptionState>> {
+    match socket {
+        PendingSocketRight::Strong(socket) => Some(socket.clone()),
+        PendingSocketRight::Weak(socket) => socket.upgrade(),
+    }
+}
+
+fn socket_reaches(
+    start: &Arc<SocketDescriptionState>,
+    target: &Arc<SocketDescriptionState>,
+    visited: &mut std::collections::BTreeSet<usize>,
+) -> bool {
+    if Arc::ptr_eq(start, target) {
+        return true;
+    }
+    if !visited.insert(Arc::as_ptr(start) as usize) {
+        return false;
+    }
+    let targets = start
+        .pending_rights
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .messages
+        .iter()
+        .flat_map(|message| message.rights.iter().flatten())
+        .filter_map(|right| right.socket.as_ref())
+        .filter_map(pending_socket_description)
+        .collect::<Vec<_>>();
+    targets
+        .iter()
+        .any(|socket| socket_reaches(socket, target, visited))
+}
+
 fn publish_socket_message(
     sender: &Arc<SocketDescriptionState>,
-    rights: Vec<Option<PendingInotifyRight>>,
+    mut rights: Vec<Option<PendingDescriptorRight>>,
     payload_length: usize,
 ) -> Result<Option<PublishedSocketMessage>, i64> {
     let peer = sender
@@ -6835,8 +6917,29 @@ fn publish_socket_message(
         // message. Let the host send report its native closed-peer errno.
         return Ok(None);
     };
+    let _graph = SOCKET_TRANSFER_GRAPH_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for right in rights.iter().flatten() {
+        let Some(socket) = right.socket.as_ref().and_then(pending_socket_description) else {
+            continue;
+        };
+        if !Arc::ptr_eq(&socket, &receiver)
+            && socket_reaches(&socket, &receiver, &mut std::collections::BTreeSet::new())
+        {
+            return Err(negative_errno(libc::EOPNOTSUPP));
+        }
+    }
+    for right in rights.iter_mut().flatten() {
+        let Some(PendingSocketRight::Strong(socket)) = right.socket.as_ref() else {
+            continue;
+        };
+        if Arc::ptr_eq(socket, &receiver) {
+            right.socket = Some(PendingSocketRight::Weak(Arc::downgrade(socket)));
+        }
+    }
     let mut pending = receiver
-        .pending_inotify_rights
+        .pending_rights
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let id = pending.next_id;
@@ -6859,9 +6962,12 @@ fn publish_socket_message(
 
 fn rollback_socket_message(published: Option<&PublishedSocketMessage>) {
     if let Some(published) = published {
+        let _graph = SOCKET_TRANSFER_GRAPH_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         published
             .receiver
-            .pending_inotify_rights
+            .pending_rights
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .messages
@@ -6873,11 +6979,20 @@ fn finish_socket_send(published: Option<&PublishedSocketMessage>, sent: usize) {
     let Some(published) = published else {
         return;
     };
+    let _graph = SOCKET_TRANSFER_GRAPH_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if published.receiver.message_oriented {
         return;
     }
     if sent == 0 {
-        rollback_socket_message(Some(published));
+        published
+            .receiver
+            .pending_rights
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .messages
+            .retain(|message| message.id != published.id);
         return;
     }
     if sent >= published.expected_length {
@@ -6885,7 +7000,7 @@ fn finish_socket_send(published: Option<&PublishedSocketMessage>, sent: usize) {
     }
     let mut pending = published
         .receiver
-        .pending_inotify_rights
+        .pending_rights
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(index) = pending
@@ -6907,7 +7022,7 @@ fn expected_socket_rights(
     messages: &std::collections::VecDeque<PendingSocketMessage>,
     message_oriented: bool,
     received_length: usize,
-) -> (bool, Vec<&Option<PendingInotifyRight>>) {
+) -> (bool, Vec<&Option<PendingDescriptorRight>>) {
     if message_oriented {
         return messages
             .front()
@@ -6974,9 +7089,10 @@ struct PendingReceivedRight {
     control_offset: usize,
     file: std::fs::File,
     inotify: Option<Arc<std::sync::Mutex<InotifyDescriptionState>>>,
+    socket: Option<Arc<SocketDescriptionState>>,
 }
 
-fn attach_received_inotify_state(
+fn attach_received_descriptor_state(
     state: &LoadedStaticElf,
     receiving_fd: libc::c_int,
     rights: &mut [PendingReceivedRight],
@@ -6985,26 +7101,30 @@ fn attach_received_inotify_state(
     consume: bool,
 ) -> Result<(), i64> {
     let Some(socket) = state.socket_fds.get(&receiving_fd) else {
-        return if rights
-            .iter()
-            .all(|right| !host_fd_is_inotify(right.file.as_raw_fd()))
-        {
+        return if rights.iter().all(|right| {
+            !host_fd_is_inotify(right.file.as_raw_fd())
+                && !host_fd_is_socket(right.file.as_raw_fd())
+        }) {
             Ok(())
         } else {
             Err(negative_errno(libc::EOPNOTSUPP))
         };
     };
+    let _graph = SOCKET_TRANSFER_GRAPH_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut pending = socket
-        .pending_inotify_rights
+        .pending_rights
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let (tracked, validation) = {
         let (tracked, expected) =
             expected_socket_rights(&pending.messages, socket.message_oriented, received_length);
         if !tracked {
-            let valid = rights
-                .iter()
-                .all(|right| !host_fd_is_inotify(right.file.as_raw_fd()));
+            let valid = rights.iter().all(|right| {
+                !host_fd_is_inotify(right.file.as_raw_fd())
+                    && !host_fd_is_socket(right.file.as_raw_fd())
+            });
             (
                 tracked,
                 valid
@@ -7020,14 +7140,19 @@ fn attach_received_inotify_state(
                     break;
                 };
                 let received_is_inotify = host_fd_is_inotify(right.file.as_raw_fd());
+                let received_is_socket = host_fd_is_socket(right.file.as_raw_fd());
                 let Some(sent) = sent else {
-                    if received_is_inotify {
+                    if received_is_inotify || received_is_socket {
                         result = Err(negative_errno(libc::EOPNOTSUPP));
                         break;
                     }
                     continue;
                 };
-                if !received_is_inotify {
+                let sent_socket = sent.socket.as_ref().and_then(pending_socket_description);
+                if received_is_inotify != sent.inotify.is_some()
+                    || received_is_socket != sent.socket.is_some()
+                    || sent.socket.is_some() && sent_socket.is_none()
+                {
                     result = Err(negative_errno(libc::EOPNOTSUPP));
                     break;
                 }
@@ -7045,20 +7170,27 @@ fn attach_received_inotify_state(
                     result = Err(negative_errno(libc::EOPNOTSUPP));
                     break;
                 }
-                right.inotify = Some(sent.description.clone());
+                right.inotify.clone_from(&sent.inotify);
+                right.socket = sent_socket;
             }
             if result.is_ok() && !control_truncated && expected.next().is_some() {
                 result = Err(negative_errno(libc::EOPNOTSUPP));
             }
-            if result.is_err()
-                && rights
-                    .iter()
-                    .all(|right| !host_fd_is_inotify(right.file.as_raw_fd()))
-            {
-                // A regular SCM_RIGHTS message may come from an external host
-                // sender and precede the modeled guest queue. It needs no
-                // inotify state, and it must not consume a later guest marker.
-                (false, Ok(()))
+            if result.is_err() {
+                let ordinary_external = rights.iter().all(|right| {
+                    !host_fd_is_inotify(right.file.as_raw_fd())
+                        && !host_fd_is_socket(right.file.as_raw_fd())
+                });
+                // A message from an external host sender may precede the
+                // modeled guest queue. A regular right needs no typed state;
+                // inotify/socket rights fail closed. Neither message belongs
+                // to the modeled marker, so preserve that marker for the next
+                // receive rather than shifting the FIFO.
+                if ordinary_external {
+                    (false, Ok(()))
+                } else {
+                    (false, result)
+                }
             } else {
                 (tracked, result)
             }
@@ -7083,6 +7215,9 @@ fn discard_received_socket_message(
     if peek {
         return;
     }
+    let _graph = SOCKET_TRANSFER_GRAPH_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(socket) = state.socket_fds.get(&receiving_fd) else {
         return;
     };
@@ -7090,7 +7225,7 @@ fn discard_received_socket_message(
         return;
     }
     let mut pending = socket
-        .pending_inotify_rights
+        .pending_rights
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if pending.messages.is_empty() {
@@ -7211,6 +7346,7 @@ fn sanitize_received_control(control: &[u8]) -> Result<SanitizedReceivedControl,
         if let ReceivedRawFdKind::Right { control_offset } = kind {
             rights.push(PendingReceivedRight {
                 inotify: None,
+                socket: None,
                 control_offset,
                 file,
             });
@@ -7262,24 +7398,30 @@ fn install_received_rights(
     let mut installed = Vec::with_capacity(rights.len());
 
     for (right, guest_fd) in rights.into_iter().zip(guest_fds) {
-        let inotify = right.inotify;
-        let object_inode = match allocate_fd_object_inode(state, &right.file) {
+        let PendingReceivedRight {
+            control_offset,
+            file,
+            inotify,
+            socket,
+        } = right;
+        let object_inode = match allocate_fd_object_inode(state, &file) {
             Ok(object_inode) => object_inode,
             Err(error) => {
                 rollback_received_rights(state, &installed);
                 return Err(error);
             }
         };
-        state.files.insert(guest_fd, right.file);
+        state.files.insert(guest_fd, file);
         state.fd_object_inodes.insert(guest_fd, object_inode);
         replace_inotify_description(state, guest_fd, inotify);
+        replace_socket_description(state, guest_fd, socket);
         if close_on_exec {
             state.cloexec_fds.insert(guest_fd);
         } else {
             state.cloexec_fds.remove(&guest_fd);
         }
         set_output_alias(state, guest_fd, None);
-        if let Err(error) = write_control_fd(control, right.control_offset, guest_fd) {
+        if let Err(error) = write_control_fd(control, control_offset, guest_fd) {
             installed.push(guest_fd);
             rollback_received_rights(state, &installed);
             return Err(error);
@@ -7375,7 +7517,7 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
     {
         return negative_errno(libc::EFAULT);
     }
-    let pending_inotify = match translate_outgoing_control(&mut control, state) {
+    let pending_rights = match translate_outgoing_control(&mut control, state) {
         Ok(pending) => pending,
         Err(error) => return error,
     };
@@ -7402,9 +7544,9 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
         msg_flags: 0,
     };
     let flags = args[2] as libc::c_int;
-    let contains_inotify = pending_inotify.iter().any(Option::is_some);
+    let requires_transfer_state = pending_rights.iter().any(Option::is_some);
     let sender = state.socket_fds.get(&(args[0] as libc::c_int)).cloned();
-    if contains_inotify && sender.is_none() {
+    if requires_transfer_state && sender.is_none() {
         return negative_errno(libc::EOPNOTSUPP);
     }
     // Serialize sends that share one open socket description so the metadata
@@ -7419,7 +7561,7 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
     // kernel accepts the message. Exact open-description identity requires an
     // owned duplicate. Its lifetime follows the receiving socket queue.
     let transfer = match sender.as_ref() {
-        Some(sender) => publish_socket_message(sender, pending_inotify, payload.len()),
+        Some(sender) => publish_socket_message(sender, pending_rights, payload.len()),
         None => Ok(None),
     };
     let transfer = match transfer {
@@ -7587,7 +7729,7 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
         Ok(control) => control,
         Err(error) => return error,
     };
-    if let Err(error) = attach_received_inotify_state(
+    if let Err(error) = attach_received_descriptor_state(
         state,
         args[0] as libc::c_int,
         &mut rights,
@@ -7855,7 +7997,7 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
                 };
             }
         };
-        if let Err(error) = attach_received_inotify_state(
+        if let Err(error) = attach_received_descriptor_state(
             state,
             args[0] as libc::c_int,
             &mut rights,
@@ -12468,6 +12610,24 @@ mod tests {
         control
     }
 
+    fn guest_socketpair(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        socket_type: libc::c_int,
+        address: u64,
+    ) -> [libc::c_int; 2] {
+        assert_eq!(
+            syscall_result(
+                memory,
+                state,
+                libc::SYS_socketpair,
+                [libc::AF_UNIX as u64, socket_type as u64, 0, address, 0, 0,],
+            ),
+            0
+        );
+        read_struct(memory, address)
+    }
+
     fn rights_control(fds: &[libc::c_int]) -> Vec<u8> {
         let bytes = fds
             .iter()
@@ -12560,7 +12720,12 @@ mod tests {
         if !control.is_empty() {
             memory.read(CONTROL, &mut control).unwrap();
         }
-        (result, received.msg_flags, control_rights(&control))
+        let rights = if result < 0 {
+            Vec::new()
+        } else {
+            control_rights(&control)
+        };
+        (result, received.msg_flags, rights)
     }
 
     fn assert_stream_peer_closed(peer: &UnixStream) {
@@ -12594,6 +12759,26 @@ mod tests {
                     .collect::<Vec<_>>()
             })
             .collect()
+    }
+
+    fn count_host_open_description_aliases(fd: RawFd) -> usize {
+        std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().to_str()?.parse::<RawFd>().ok())
+            .filter(|candidate| {
+                (unsafe {
+                    libc::syscall(
+                        libc::SYS_kcmp,
+                        libc::getpid(),
+                        libc::getpid(),
+                        KCMP_FILE,
+                        fd,
+                        *candidate,
+                    )
+                }) == 0
+            })
+            .count()
     }
 
     fn write_c_string(memory: &mut GuestMemory, address: u64, value: &str) {
@@ -16786,6 +16971,7 @@ mod tests {
             &mut [0; std::mem::size_of::<libc::c_int>()],
             vec![PendingReceivedRight {
                 inotify: None,
+                socket: None,
                 control_offset: std::mem::size_of::<libc::c_int>(),
                 file,
             }],
@@ -19265,6 +19451,123 @@ mod tests {
     }
 
     #[test]
+    fn native_proc_fd_nofollow_has_distinct_real_thread_alias_classes() {
+        let root = TestDir::new();
+        std::fs::create_dir(root.0.join("nested")).unwrap();
+        let directory = std::fs::File::open(&root.0).unwrap();
+        let directory_fd = directory.as_raw_fd();
+        let process_id = std::process::id();
+        let current_tid = unsafe { libc::syscall(libc::SYS_gettid) } as libc::pid_t;
+        let (tid_sender, tid_receiver) = std::sync::mpsc::sync_channel(0);
+        let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(0);
+        let sibling = std::thread::spawn(move || {
+            let tid = unsafe { libc::syscall(libc::SYS_gettid) } as libc::pid_t;
+            tid_sender.send(tid).unwrap();
+            release_receiver.recv().unwrap();
+        });
+        let sibling_tid = tid_receiver.recv().unwrap();
+
+        let inotify = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
+        assert!(inotify >= 0, "{}", std::io::Error::last_os_error());
+        let inotify = unsafe { std::fs::File::from_raw_fd(inotify) };
+        let add_watch_with_mask = |path: String, mask: u32| {
+            let path = CString::new(path.clone()).unwrap();
+            let watch =
+                unsafe { libc::inotify_add_watch(inotify.as_raw_fd(), path.as_ptr(), mask) };
+            assert!(
+                watch >= 0,
+                "native inotify_add_watch failed for {path:?}: {}",
+                std::io::Error::last_os_error()
+            );
+            watch
+        };
+        let add_watch = |path| add_watch_with_mask(path, libc::IN_MODIFY | libc::IN_DONT_FOLLOW);
+
+        let process_watch = add_watch(format!("/proc/self/fd/{directory_fd}"));
+        let dev_watch = add_watch(format!("/dev/fd/{directory_fd}"));
+        let numeric_process_watch = add_watch(format!("/proc/{process_id}/fd/{directory_fd}"));
+        let current_task_watch = add_watch(format!("/proc/thread-self/fd/{directory_fd}"));
+        let self_current_task_watch =
+            add_watch(format!("/proc/self/task/{current_tid}/fd/{directory_fd}"));
+        let numeric_current_task_watch = add_watch(format!(
+            "/proc/{process_id}/task/{current_tid}/fd/{directory_fd}"
+        ));
+        let direct_current_watch = add_watch(format!("/proc/{current_tid}/fd/{directory_fd}"));
+        let direct_sibling_watch = add_watch(format!("/proc/{sibling_tid}/fd/{directory_fd}"));
+        let sibling_task_watch =
+            add_watch(format!("/proc/self/task/{sibling_tid}/fd/{directory_fd}"));
+        let numeric_sibling_task_watch = add_watch(format!(
+            "/proc/{process_id}/task/{sibling_tid}/fd/{directory_fd}"
+        ));
+        let cross_owner_watch = add_watch(format!(
+            "/proc/{sibling_tid}/task/{current_tid}/fd/{directory_fd}"
+        ));
+        let target_watch =
+            add_watch_with_mask(root.0.to_string_lossy().into_owned(), libc::IN_MODIFY);
+        let nested_watch = add_watch_with_mask(
+            root.0.join("nested").to_string_lossy().into_owned(),
+            libc::IN_MODIFY,
+        );
+        for prefix in [
+            "/dev/fd/".to_owned(),
+            "/proc/self/fd/".to_owned(),
+            format!("/proc/{process_id}/fd/"),
+            "/proc/thread-self/fd/".to_owned(),
+            format!("/proc/self/task/{current_tid}/fd/"),
+            format!("/proc/{process_id}/task/{current_tid}/fd/"),
+        ] {
+            for nofollow in [0, libc::IN_DONT_FOLLOW] {
+                assert_eq!(
+                    add_watch_with_mask(
+                        format!("{prefix}{directory_fd}/"),
+                        libc::IN_MODIFY | nofollow,
+                    ),
+                    target_watch,
+                );
+                assert_eq!(
+                    add_watch_with_mask(
+                        format!("{prefix}{directory_fd}//nested"),
+                        libc::IN_MODIFY | nofollow,
+                    ),
+                    nested_watch,
+                );
+            }
+        }
+
+        release_sender.send(()).unwrap();
+        sibling.join().unwrap();
+
+        assert_eq!(dev_watch, process_watch);
+        assert_eq!(numeric_process_watch, process_watch);
+        assert_ne!(current_task_watch, process_watch);
+        assert_eq!(self_current_task_watch, current_task_watch);
+        assert_eq!(numeric_current_task_watch, current_task_watch);
+        for distinct in [direct_current_watch, direct_sibling_watch] {
+            assert_ne!(distinct, process_watch);
+            assert_ne!(distinct, current_task_watch);
+        }
+        assert_ne!(direct_current_watch, direct_sibling_watch);
+        assert_eq!(numeric_sibling_task_watch, sibling_task_watch);
+        for existing in [
+            process_watch,
+            current_task_watch,
+            direct_current_watch,
+            direct_sibling_watch,
+        ] {
+            assert_ne!(sibling_task_watch, existing);
+        }
+        for existing in [
+            process_watch,
+            current_task_watch,
+            direct_current_watch,
+            direct_sibling_watch,
+            sibling_task_watch,
+        ] {
+            assert_ne!(cross_owner_watch, existing);
+        }
+    }
+
+    #[test]
     fn inotify_validates_flags_errno_order_and_guest_paths() {
         const PATH: u64 = 0x100;
         const EVENT_BUFFER: u64 = 0x500;
@@ -19580,31 +19883,41 @@ mod tests {
             watch
         );
 
-        let prefixes = [
+        let supported_aliases = [
             ("/dev/fd/".to_owned(), GuestFdAliasView::Process),
             ("/proc/self/fd/".to_owned(), GuestFdAliasView::Process),
-            ("/proc/thread-self/fd/".to_owned(), GuestFdAliasView::Task),
+            (
+                "/proc/thread-self/fd/".to_owned(),
+                GuestFdAliasView::CurrentTask,
+            ),
             (
                 format!("/proc/{}/fd/", state.pid),
                 GuestFdAliasView::Process,
             ),
-            (format!("/proc/{}/fd/", state.tid), GuestFdAliasView::Task),
-            ("/proc/8/fd/".to_owned(), GuestFdAliasView::Task),
             (
                 format!("/proc/{}/task/{}/fd/", state.pid, state.tid),
-                GuestFdAliasView::Task,
+                GuestFdAliasView::CurrentTask,
             ),
             (
                 format!("/proc/self/task/{}/fd/", state.tid),
-                GuestFdAliasView::Task,
+                GuestFdAliasView::CurrentTask,
             ),
-            ("/proc/self/task/8/fd/".to_owned(), GuestFdAliasView::Task),
-            ("/proc/1/task/8/fd/".to_owned(), GuestFdAliasView::Task),
-            ("/proc/7/task/8/fd/".to_owned(), GuestFdAliasView::Task),
-            ("/proc/8/task/7/fd/".to_owned(), GuestFdAliasView::Task),
         ];
+        let unsupported_aliases = [
+            format!("/proc/{}/fd/", state.tid),
+            "/proc/8/fd/".to_owned(),
+            "/proc/self/task/8/fd/".to_owned(),
+            "/proc/1/task/8/fd/".to_owned(),
+            "/proc/7/task/7/fd/".to_owned(),
+            "/proc/7/task/8/fd/".to_owned(),
+            "/proc/8/task/7/fd/".to_owned(),
+        ];
+        let all_aliases = supported_aliases
+            .iter()
+            .map(|(prefix, _)| prefix)
+            .chain(unsupported_aliases.iter());
         let mut nested_watch = None;
-        for (prefix, _) in &prefixes {
+        for prefix in all_aliases {
             write_c_string(&mut memory, PATH, &format!("{prefix}{directory_fd}/nested"));
             let result = syscall_result(
                 &mut memory,
@@ -19678,7 +19991,7 @@ mod tests {
             ),
             negative_errno(libc::EEXIST),
         );
-        for (prefix, view) in prefixes {
+        for (prefix, view) in &supported_aliases {
             write_c_string(&mut memory, PATH, &format!("{prefix}{directory_fd}"));
             let result = syscall_result(
                 &mut memory,
@@ -19699,12 +20012,86 @@ mod tests {
             );
             assert_eq!(
                 result,
-                if view == GuestFdAliasView::Process {
+                if *view == GuestFdAliasView::Process {
                     process_alias_watch
                 } else {
                     task_alias_watch
                 },
             );
+        }
+        for prefix in &unsupported_aliases {
+            let path = format!("{prefix}{directory_fd}");
+            write_c_string(&mut memory, PATH, &path);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_inotify_add_watch,
+                    [inotify_fd as u64, PATH, libc::IN_MODIFY as u64, 0, 0, 0],
+                ),
+                watch,
+                "following the unsupported final alias must still resolve {path}",
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_inotify_add_watch,
+                    [
+                        inotify_fd as u64,
+                        PATH,
+                        (libc::IN_MODIFY | libc::IN_DONT_FOLLOW) as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                ),
+                negative_errno(libc::ENOENT),
+                "unsupported final alias identity must be refused for {path}",
+            );
+        }
+        let nested_watch = nested_watch.unwrap();
+        for (prefix, _) in &supported_aliases {
+            for nofollow in [0, libc::IN_DONT_FOLLOW] {
+                let trailing = format!("{prefix}{directory_fd}/");
+                write_c_string(&mut memory, PATH, &trailing);
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_inotify_add_watch,
+                        [
+                            inotify_fd as u64,
+                            PATH,
+                            (libc::IN_MODIFY | nofollow) as u64,
+                            0,
+                            0,
+                            0,
+                        ],
+                    ),
+                    watch,
+                    "trailing slash must follow the alias for {trailing}",
+                );
+                let repeated = format!("{prefix}{directory_fd}//nested");
+                write_c_string(&mut memory, PATH, &repeated);
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_inotify_add_watch,
+                        [
+                            inotify_fd as u64,
+                            PATH,
+                            (libc::IN_CREATE | nofollow) as u64,
+                            0,
+                            0,
+                            0,
+                        ],
+                    ),
+                    nested_watch,
+                    "repeated separators must stay descriptor-relative for {repeated}",
+                );
+            }
         }
         for path in [
             "/proc/self/fd/not-a-descriptor".to_owned(),
@@ -19734,7 +20121,6 @@ mod tests {
                 "invalid final alias must stay hidden for {path}",
             );
         }
-        let nested_watch = nested_watch.unwrap();
         for path in [
             "/proc/self/fd/not-a-descriptor/nested".to_owned(),
             "/proc/self/fd/99/nested".to_owned(),
@@ -20231,6 +20617,283 @@ mod tests {
     }
 
     #[test]
+    fn socket_rights_survive_close_peek_dup_fork_and_exec_for_stream_and_datagram() {
+        const TRANSPORT: u64 = 0x40;
+        const PAYLOAD_PAIR: u64 = 0x60;
+        const BYTE: u64 = 0x80;
+        const RESULT: u64 = 0x90;
+
+        for socket_type in [libc::SOCK_STREAM, libc::SOCK_DGRAM] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            let transport = guest_socketpair(&mut memory, &mut state, socket_type, TRANSPORT);
+            let payload = guest_socketpair(&mut memory, &mut state, socket_type, PAYLOAD_PAIR);
+            let payload_description = state.socket_fds.get(&payload[0]).unwrap().clone();
+            let payload_weak = Arc::downgrade(&payload_description);
+            let receiving_transport = state.socket_fds.get(&transport[1]).unwrap().clone();
+
+            assert_eq!(
+                send_rights_message(&mut memory, &mut state, transport[0], &[payload[0]]),
+                1
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [payload[0] as u64, 0, 0, 0, 0, 0],
+                ),
+                0
+            );
+            drop(payload_description);
+            assert!(payload_weak.upgrade().is_some());
+
+            let (received, flags, peeked) =
+                receive_rights_message(&mut memory, &mut state, transport[1], 64, libc::MSG_PEEK);
+            assert_eq!(received, 1);
+            assert_eq!(flags & libc::MSG_CTRUNC, 0);
+            assert_eq!(peeked.len(), 1);
+            assert!(Arc::ptr_eq(
+                state.socket_fds.get(&peeked[0]).unwrap(),
+                &payload_weak.upgrade().unwrap(),
+            ));
+            assert_eq!(receiving_transport.pending_rights.lock().unwrap().len(), 1);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [peeked[0] as u64, 0, 0, 0, 0, 0],
+                ),
+                0
+            );
+
+            let (received, flags, received_fds) =
+                receive_rights_message(&mut memory, &mut state, transport[1], 64, 0);
+            assert_eq!(received, 1);
+            assert_eq!(flags & libc::MSG_CTRUNC, 0);
+            assert_eq!(received_fds.len(), 1);
+            let received_fd = received_fds[0];
+            assert!(Arc::ptr_eq(
+                state.socket_fds.get(&received_fd).unwrap(),
+                &payload_weak.upgrade().unwrap(),
+            ));
+            assert!(
+                receiving_transport
+                    .pending_rights
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+            );
+
+            memory.write(BYTE, b"q").unwrap();
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_write,
+                    [received_fd as u64, BYTE, 1, 0, 0, 0],
+                ),
+                1
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_read,
+                    [payload[1] as u64, RESULT, 1, 0, 0, 0],
+                ),
+                1
+            );
+            assert_eq!(read_guest_bytes::<1>(&memory, RESULT).unwrap(), *b"q");
+
+            let duplicate = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_dup,
+                [received_fd as u64, 0, 0, 0, 0, 0],
+            ) as libc::c_int;
+            let close_on_exec = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [
+                    received_fd as u64,
+                    libc::F_DUPFD_CLOEXEC as u64,
+                    100,
+                    0,
+                    0,
+                    0,
+                ],
+            ) as libc::c_int;
+            for alias in [received_fd, duplicate, close_on_exec] {
+                assert!(Arc::ptr_eq(
+                    state.socket_fds.get(&alias).unwrap(),
+                    &payload_weak.upgrade().unwrap(),
+                ));
+            }
+            let forked = state.try_clone_for_fork(2).unwrap();
+            for alias in [received_fd, duplicate, close_on_exec] {
+                assert!(Arc::ptr_eq(
+                    forked.socket_fds.get(&alias).unwrap(),
+                    &payload_weak.upgrade().unwrap(),
+                ));
+            }
+            let mut replacement = test_state(&root.0);
+            replacement.inherit_process_state(state);
+            for alias in [received_fd, duplicate] {
+                assert!(Arc::ptr_eq(
+                    replacement.socket_fds.get(&alias).unwrap(),
+                    &payload_weak.upgrade().unwrap(),
+                ));
+            }
+            assert!(!replacement.files.contains_key(&close_on_exec));
+            assert!(!replacement.socket_fds.contains_key(&close_on_exec));
+        }
+    }
+
+    #[test]
+    fn socket_rights_break_self_cycles_and_refuse_indirect_cycles_before_send() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let self_pair = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, self_pair[0], &[self_pair[1]]),
+            1
+        );
+        let self_receiver = state.socket_fds.get(&self_pair[1]).unwrap().clone();
+        let pending = self_receiver.pending_rights.lock().unwrap();
+        assert!(matches!(
+            pending.front().unwrap().rights[0].as_ref().unwrap().socket,
+            Some(PendingSocketRight::Weak(_))
+        ));
+        drop(pending);
+
+        let pair_a = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x60);
+        let pair_b = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x80);
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, pair_b[0], &[pair_a[1]]),
+            1
+        );
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, pair_a[0], &[pair_b[1]]),
+            negative_errno(libc::EOPNOTSUPP)
+        );
+        assert!(
+            state
+                .socket_fds
+                .get(&pair_a[1])
+                .unwrap()
+                .pending_rights
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn recvmmsg_restores_socket_state_for_every_rights_element() {
+        const MESSAGES: u64 = 0x300;
+        const FIRST_IOV: u64 = 0x400;
+        const SECOND_IOV: u64 = 0x420;
+        const FIRST_BUFFER: u64 = 0x500;
+        const SECOND_BUFFER: u64 = 0x520;
+        const FIRST_CONTROL: u64 = 0x600;
+        const SECOND_CONTROL: u64 = 0x680;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+        let first_payload = guest_socketpair(&mut memory, &mut state, libc::SOCK_STREAM, 0x60);
+        let second_payload = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x80);
+        let first_weak = Arc::downgrade(state.socket_fds.get(&first_payload[0]).unwrap());
+        let second_weak = Arc::downgrade(state.socket_fds.get(&second_payload[0]).unwrap());
+        let receiver = state.socket_fds.get(&transport[1]).unwrap().clone();
+
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, transport[0], &[first_payload[0]],),
+            1
+        );
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, transport[0], &[second_payload[0]],),
+            1
+        );
+        for fd in [first_payload[0], second_payload[0]] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [fd as u64, 0, 0, 0, 0, 0],
+                ),
+                0
+            );
+        }
+        assert!(first_weak.upgrade().is_some());
+        assert!(second_weak.upgrade().is_some());
+
+        for (index, (iov_address, buffer_address, control_address)) in [
+            (FIRST_IOV, FIRST_BUFFER, FIRST_CONTROL),
+            (SECOND_IOV, SECOND_BUFFER, SECOND_CONTROL),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let iov = libc::iovec {
+                iov_base: buffer_address as usize as *mut libc::c_void,
+                iov_len: 1,
+            };
+            assert_eq!(write_struct(&mut memory, iov_address, &iov), 0);
+            memory.write(control_address, &[0; 64]).unwrap();
+            let mut message = unsafe { std::mem::zeroed::<libc::mmsghdr>() };
+            message.msg_hdr.msg_iov = iov_address as usize as *mut libc::iovec;
+            message.msg_hdr.msg_iovlen = 1;
+            message.msg_hdr.msg_control = control_address as usize as *mut libc::c_void;
+            message.msg_hdr.msg_controllen = 64;
+            assert_eq!(
+                write_struct(
+                    &mut memory,
+                    MESSAGES + (index * std::mem::size_of::<libc::mmsghdr>()) as u64,
+                    &message,
+                ),
+                0
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmmsg,
+                [transport[1] as u64, MESSAGES, 2, 0, 0, 0],
+            ),
+            2
+        );
+        for (index, (control_address, expected)) in
+            [(FIRST_CONTROL, &first_weak), (SECOND_CONTROL, &second_weak)]
+                .into_iter()
+                .enumerate()
+        {
+            let message: libc::mmsghdr = read_struct(
+                &memory,
+                MESSAGES + (index * std::mem::size_of::<libc::mmsghdr>()) as u64,
+            );
+            assert_eq!(message.msg_len, 1);
+            let mut control = vec![0; message.msg_hdr.msg_controllen];
+            memory.read(control_address, &mut control).unwrap();
+            let rights = control_rights(&control);
+            assert_eq!(rights.len(), 1);
+            assert!(Arc::ptr_eq(
+                state.socket_fds.get(&rights[0]).unwrap(),
+                &expected.upgrade().unwrap(),
+            ));
+        }
+        assert!(receiver.pending_rights.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn inotify_cookie_state_survives_scm_rights_after_sender_close() {
         const PATH: u64 = 0x100;
         const EVENT_BUFFER: u64 = 0x400;
@@ -20377,10 +21040,7 @@ mod tests {
             &description,
             state.inotify_fds.get(&peeked_fds[0]).unwrap(),
         ));
-        assert_eq!(
-            receiver_socket.pending_inotify_rights.lock().unwrap().len(),
-            1
-        );
+        assert_eq!(receiver_socket.pending_rights.lock().unwrap().len(), 1);
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -20411,13 +21071,7 @@ mod tests {
             &description,
             state.inotify_fds.get(&received_fds[0]).unwrap(),
         ));
-        assert!(
-            receiver_socket
-                .pending_inotify_rights
-                .lock()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(receiver_socket.pending_rights.lock().unwrap().is_empty());
 
         std::fs::write(root.0.join("second-a"), b"payload").unwrap();
         std::fs::rename(root.0.join("second-a"), root.0.join("second-b")).unwrap();
@@ -20451,13 +21105,7 @@ mod tests {
             [socket_fds[0] as u64, SEND_MSG, 0, 0, 0, 0],
         );
         assert!(result < 0);
-        assert!(
-            receiver_socket
-                .pending_inotify_rights
-                .lock()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(receiver_socket.pending_rights.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -20491,33 +21139,34 @@ mod tests {
             [libc::IN_NONBLOCK as u64, 0, 0, 0, 0, 0],
         ) as libc::c_int;
         let receiver = state.socket_fds.get(&sockets[1]).unwrap().clone();
-        let host_fds_before_pending = std::fs::read_dir("/proc/self/fd").unwrap().count();
+        let inotify_host_fd = host_fd(&state, inotify_fd).unwrap();
+        let aliases_before_pending = count_host_open_description_aliases(inotify_host_fd);
 
         assert_eq!(
             send_rights_message(&mut memory, &mut state, sockets[0], &[inotify_fd]),
             1
         );
-        assert_eq!(receiver.pending_inotify_rights.lock().unwrap().len(), 1);
+        assert_eq!(receiver.pending_rights.lock().unwrap().len(), 1);
         assert_eq!(
-            std::fs::read_dir("/proc/self/fd").unwrap().count(),
-            host_fds_before_pending + 1,
+            count_host_open_description_aliases(inotify_host_fd),
+            aliases_before_pending + 1,
         );
         let (received, flags, fds) =
             receive_rights_message(&mut memory, &mut state, sockets[1], 0, 0);
         assert_eq!(received, 1);
         assert_ne!(flags & libc::MSG_CTRUNC, 0);
         assert!(fds.is_empty());
-        assert!(receiver.pending_inotify_rights.lock().unwrap().is_empty());
+        assert!(receiver.pending_rights.lock().unwrap().is_empty());
         assert_eq!(
-            std::fs::read_dir("/proc/self/fd").unwrap().count(),
-            host_fds_before_pending,
+            count_host_open_description_aliases(inotify_host_fd),
+            aliases_before_pending,
         );
 
         assert_eq!(
             send_rights_message(&mut memory, &mut state, sockets[0], &[inotify_fd]),
             1
         );
-        assert_eq!(receiver.pending_inotify_rights.lock().unwrap().len(), 1);
+        assert_eq!(receiver.pending_rights.lock().unwrap().len(), 1);
         let receiver_weak = Arc::downgrade(&receiver);
         drop(receiver);
         assert_eq!(
@@ -20531,9 +21180,176 @@ mod tests {
         );
         assert!(receiver_weak.upgrade().is_none());
         assert_eq!(
-            std::fs::read_dir("/proc/self/fd").unwrap().count(),
-            host_fds_before_pending - 1,
+            count_host_open_description_aliases(inotify_host_fd),
+            aliases_before_pending,
         );
+    }
+
+    #[test]
+    fn socket_right_state_retires_on_truncation_receiver_drop_and_fd_limit() {
+        // A consuming receive with no ancillary capacity makes the kernel
+        // close the donated descriptor and must release its modeled state.
+        {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+            let donated = guest_socketpair(&mut memory, &mut state, libc::SOCK_STREAM, 0x60);
+            let weak = Arc::downgrade(state.socket_fds.get(&donated[0]).unwrap());
+            assert_eq!(
+                send_rights_message(&mut memory, &mut state, transport[0], &[donated[0]]),
+                1
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [donated[0] as u64, 0, 0, 0, 0, 0],
+                ),
+                0
+            );
+            assert!(weak.upgrade().is_some());
+            let (received, flags, rights) =
+                receive_rights_message(&mut memory, &mut state, transport[1], 0, 0);
+            assert_eq!(received, 1);
+            assert_ne!(flags & libc::MSG_CTRUNC, 0);
+            assert!(rights.is_empty());
+            assert!(weak.upgrade().is_none());
+        }
+
+        // Dropping the last receiver alias drops the message metadata and its
+        // only remaining strong socket-description reference.
+        {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+            let donated = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x60);
+            let weak = Arc::downgrade(state.socket_fds.get(&donated[0]).unwrap());
+            let receiver = state.socket_fds.get(&transport[1]).unwrap().clone();
+            assert_eq!(
+                send_rights_message(&mut memory, &mut state, transport[0], &[donated[0]]),
+                1
+            );
+            for fd in [donated[0], transport[1]] {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_close,
+                        [fd as u64, 0, 0, 0, 0, 0],
+                    ),
+                    0
+                );
+            }
+            assert!(weak.upgrade().is_some());
+            drop(receiver);
+            assert!(weak.upgrade().is_none());
+        }
+
+        // The host has consumed the message before guest descriptor
+        // allocation. EMFILE therefore also retires the exact metadata.
+        {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+            let donated = guest_socketpair(&mut memory, &mut state, libc::SOCK_STREAM, 0x60);
+            let weak = Arc::downgrade(state.socket_fds.get(&donated[0]).unwrap());
+            let receiver = state.socket_fds.get(&transport[1]).unwrap().clone();
+            assert_eq!(
+                send_rights_message(&mut memory, &mut state, transport[0], &[donated[0]]),
+                1
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [donated[0] as u64, 0, 0, 0, 0, 0],
+                ),
+                0
+            );
+            state
+                .transient_unavailable_fds
+                .extend(0..GUEST_NOFILE_LIMIT);
+            let (received, _, rights) =
+                receive_rights_message(&mut memory, &mut state, transport[1], 64, 0);
+            assert_eq!(received, negative_errno(libc::EMFILE));
+            assert!(rights.is_empty());
+            assert!(receiver.pending_rights.lock().unwrap().is_empty());
+            assert!(weak.upgrade().is_none());
+        }
+    }
+
+    #[test]
+    fn external_socket_right_without_description_state_fails_closed() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+        let donated = guest_socketpair(&mut memory, &mut state, libc::SOCK_STREAM, 0x60);
+        let donated_weak = Arc::downgrade(state.socket_fds.get(&donated[0]).unwrap());
+        let receiver = state.socket_fds.get(&transport[1]).unwrap().clone();
+        let (external, external_peer) = UnixStream::pair().unwrap();
+        let mut payload = *b"x";
+        let mut iov = libc::iovec {
+            iov_base: payload.as_mut_ptr().cast(),
+            iov_len: payload.len(),
+        };
+        let mut control = rights_control(&[external.as_raw_fd()]);
+        let message = libc::msghdr {
+            msg_name: std::ptr::null_mut(),
+            msg_namelen: 0,
+            msg_iov: std::ptr::from_mut(&mut iov),
+            msg_iovlen: 1,
+            msg_control: control.as_mut_ptr().cast(),
+            msg_controllen: control.len(),
+            msg_flags: 0,
+        };
+        assert_eq!(
+            unsafe {
+                libc::sendmsg(
+                    host_fd(&state, transport[0]).unwrap(),
+                    std::ptr::from_ref(&message),
+                    libc::MSG_NOSIGNAL,
+                )
+            },
+            1
+        );
+        drop(external);
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, transport[0], &[donated[0]]),
+            1
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [donated[0] as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert!(donated_weak.upgrade().is_some());
+        assert_eq!(receiver.pending_rights.lock().unwrap().len(), 1);
+        let (received, _, rights) =
+            receive_rights_message(&mut memory, &mut state, transport[1], 64, 0);
+        assert_eq!(received, negative_errno(libc::EOPNOTSUPP));
+        assert!(rights.is_empty());
+        assert_stream_peer_closed(&external_peer);
+        assert_eq!(receiver.pending_rights.lock().unwrap().len(), 1);
+        let (received, flags, rights) =
+            receive_rights_message(&mut memory, &mut state, transport[1], 64, 0);
+        assert_eq!(received, 1);
+        assert_eq!(flags & libc::MSG_CTRUNC, 0);
+        assert_eq!(rights.len(), 1);
+        assert!(Arc::ptr_eq(
+            state.socket_fds.get(&rights[0]).unwrap(),
+            &donated_weak.upgrade().unwrap(),
+        ));
+        assert!(receiver.pending_rights.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -20560,6 +21376,8 @@ mod tests {
             0
         );
         let sockets: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+        let donated = guest_socketpair(&mut memory, &mut state, libc::SOCK_STREAM, 0xa0);
+        let donated_weak = Arc::downgrade(state.socket_fds.get(&donated[0]).unwrap());
         let inotify_fd = syscall_result(
             &mut memory,
             &mut state,
@@ -20574,23 +21392,28 @@ mod tests {
             None,
         ) as libc::c_int;
         let receiver = state.socket_fds.get(&sockets[1]).unwrap().clone();
-        let host_fds = std::fs::read_dir("/proc/self/fd").unwrap().count();
 
         assert_eq!(
             send_rights_message_with_payload(
                 &mut memory,
                 &mut state,
                 sockets[0],
-                &[inotify_fd],
+                &[donated[0]],
                 &[],
             ),
             0,
         );
-        assert!(receiver.pending_inotify_rights.lock().unwrap().is_empty());
+        assert!(receiver.pending_rights.lock().unwrap().is_empty());
         assert_eq!(
-            std::fs::read_dir("/proc/self/fd").unwrap().count(),
-            host_fds
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [donated[0] as u64, 0, 0, 0, 0, 0],
+            ),
+            0
         );
+        assert!(donated_weak.upgrade().is_none());
 
         assert_eq!(
             send_rights_message(&mut memory, &mut state, sockets[0], &[regular_fd]),
@@ -20600,7 +21423,7 @@ mod tests {
             send_rights_message(&mut memory, &mut state, sockets[0], &[inotify_fd]),
             1,
         );
-        assert_eq!(receiver.pending_inotify_rights.lock().unwrap().len(), 2);
+        assert_eq!(receiver.pending_rights.lock().unwrap().len(), 2);
         let (received, flags, ordinary) =
             receive_rights_message(&mut memory, &mut state, sockets[1], 64, 0);
         assert_eq!(received, 1);
@@ -20625,7 +21448,7 @@ mod tests {
             state.inotify_fds.get(&inotify[0]).unwrap(),
             &description,
         ));
-        assert!(receiver.pending_inotify_rights.lock().unwrap().is_empty());
+        assert!(receiver.pending_rights.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -20653,12 +21476,8 @@ mod tests {
                 0
             );
             let sockets: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
-            let inotify_fd = syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_inotify_init1,
-                [libc::IN_NONBLOCK as u64, 0, 0, 0, 0, 0],
-            ) as libc::c_int;
+            let donated = guest_socketpair(&mut memory, &mut state, socket_type, 0xa0);
+            let donated_weak = Arc::downgrade(state.socket_fds.get(&donated[0]).unwrap());
             let later_inotify_fd = syscall_result(
                 &mut memory,
                 &mut state,
@@ -20667,20 +21486,25 @@ mod tests {
             ) as libc::c_int;
             let later_description = state.inotify_fds.get(&later_inotify_fd).unwrap().clone();
             let receiver = state.socket_fds.get(&sockets[1]).unwrap().clone();
-            let host_fds = std::fs::read_dir("/proc/self/fd").unwrap().count();
             assert_eq!(
-                send_rights_message(&mut memory, &mut state, sockets[0], &[inotify_fd]),
+                send_rights_message(&mut memory, &mut state, sockets[0], &[donated[0]]),
                 1,
             );
             assert_eq!(
                 send_rights_message(&mut memory, &mut state, sockets[0], &[later_inotify_fd]),
                 1,
             );
-            assert_eq!(receiver.pending_inotify_rights.lock().unwrap().len(), 2);
             assert_eq!(
-                std::fs::read_dir("/proc/self/fd").unwrap().count(),
-                host_fds + 2,
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [donated[0] as u64, 0, 0, 0, 0, 0],
+                ),
+                0
             );
+            assert!(donated_weak.upgrade().is_some());
+            assert_eq!(receiver.pending_rights.lock().unwrap().len(), 2);
 
             let args = if receive_syscall == libc::SYS_readv {
                 let iov = libc::iovec {
@@ -20696,11 +21520,8 @@ mod tests {
                 syscall_result(&mut memory, &mut state, receive_syscall, args),
                 1,
             );
-            assert_eq!(receiver.pending_inotify_rights.lock().unwrap().len(), 1);
-            assert_eq!(
-                std::fs::read_dir("/proc/self/fd").unwrap().count(),
-                host_fds + 1
-            );
+            assert_eq!(receiver.pending_rights.lock().unwrap().len(), 1);
+            assert!(donated_weak.upgrade().is_none());
 
             let (received, flags, rights) =
                 receive_rights_message(&mut memory, &mut state, sockets[1], 64, 0);
@@ -20711,7 +21532,7 @@ mod tests {
                 state.inotify_fds.get(&rights[0]).unwrap(),
                 &later_description,
             ));
-            assert!(receiver.pending_inotify_rights.lock().unwrap().is_empty());
+            assert!(receiver.pending_rights.lock().unwrap().is_empty());
         }
     }
 
@@ -20781,14 +21602,14 @@ mod tests {
             send_rights_message(&mut memory, &mut state, sockets[0], &[inotify_fd]),
             1,
         );
-        assert_eq!(receiver.pending_inotify_rights.lock().unwrap().len(), 2);
+        assert_eq!(receiver.pending_rights.lock().unwrap().len(), 2);
 
         let (received, flags, rights) =
             receive_rights_message(&mut memory, &mut state, sockets[1], 0, 0);
         assert_eq!(received, 1);
         assert_ne!(flags & libc::MSG_CTRUNC, 0);
         assert!(rights.is_empty());
-        let pending = receiver.pending_inotify_rights.lock().unwrap();
+        let pending = receiver.pending_rights.lock().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending.front().unwrap().rights.len(), 1);
         drop(pending);
@@ -20802,7 +21623,7 @@ mod tests {
             state.inotify_fds.get(&rights[0]).unwrap(),
             &description,
         ));
-        assert!(receiver.pending_inotify_rights.lock().unwrap().is_empty());
+        assert!(receiver.pending_rights.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -20858,8 +21679,8 @@ mod tests {
             send_rights_message(&mut memory, &mut state, pair_b[0], &[x]),
             1
         );
-        assert_eq!(a_receiver.pending_inotify_rights.lock().unwrap().len(), 1);
-        assert_eq!(b_receiver.pending_inotify_rights.lock().unwrap().len(), 1);
+        assert_eq!(a_receiver.pending_rights.lock().unwrap().len(), 1);
+        assert_eq!(b_receiver.pending_rights.lock().unwrap().len(), 1);
 
         let (received, flags, b_fds) =
             receive_rights_message(&mut memory, &mut state, pair_b[1], 64, 0);
@@ -20870,8 +21691,8 @@ mod tests {
             state.inotify_fds.get(&b_fds[0]).unwrap(),
             &x_description,
         ));
-        assert!(b_receiver.pending_inotify_rights.lock().unwrap().is_empty());
-        assert_eq!(a_receiver.pending_inotify_rights.lock().unwrap().len(), 1);
+        assert!(b_receiver.pending_rights.lock().unwrap().is_empty());
+        assert_eq!(a_receiver.pending_rights.lock().unwrap().len(), 1);
 
         let (received, flags, a_fds) =
             receive_rights_message(&mut memory, &mut state, pair_a[1], 64, 0);
@@ -20886,7 +21707,7 @@ mod tests {
             state.inotify_fds.get(&a_fds[1]).unwrap(),
             &y_description,
         ));
-        assert!(a_receiver.pending_inotify_rights.lock().unwrap().is_empty());
+        assert!(a_receiver.pending_rights.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -20920,17 +21741,18 @@ mod tests {
             [libc::IN_NONBLOCK as u64, 0, 0, 0, 0, 0],
         ) as libc::c_int;
         let receiver = state.socket_fds.get(&sockets[1]).unwrap().clone();
-        let host_fds = std::fs::read_dir("/proc/self/fd").unwrap().count();
+        let inotify_host_fd = host_fd(&state, inotify_fd).unwrap();
+        let aliases = count_host_open_description_aliases(inotify_host_fd);
 
         assert_eq!(
             send_rights_message(&mut memory, &mut state, sockets[0], &vec![999_999; 254]),
             negative_errno(libc::EINVAL),
         );
         assert_eq!(
-            std::fs::read_dir("/proc/self/fd").unwrap().count(),
-            host_fds
+            count_host_open_description_aliases(inotify_host_fd),
+            aliases
         );
-        assert!(receiver.pending_inotify_rights.lock().unwrap().is_empty());
+        assert!(receiver.pending_rights.lock().unwrap().is_empty());
 
         assert_eq!(
             send_rights_message(
@@ -20941,16 +21763,24 @@ mod tests {
             ),
             1
         );
-        let pending = receiver.pending_inotify_rights.lock().unwrap();
+        let pending = receiver.pending_rights.lock().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending.front().unwrap().rights.len(), SCM_MAX_FD);
         drop(pending);
+        assert_eq!(
+            count_host_open_description_aliases(inotify_host_fd),
+            aliases + SCM_MAX_FD,
+        );
         let (received, flags, fds) =
             receive_rights_message(&mut memory, &mut state, sockets[1], 0, 0);
         assert_eq!(received, 1);
         assert_ne!(flags & libc::MSG_CTRUNC, 0);
         assert!(fds.is_empty());
-        assert!(receiver.pending_inotify_rights.lock().unwrap().is_empty());
+        assert!(receiver.pending_rights.lock().unwrap().is_empty());
+        assert_eq!(
+            count_host_open_description_aliases(inotify_host_fd),
+            aliases,
+        );
     }
 
     #[test]
@@ -20978,9 +21808,10 @@ mod tests {
         ) as libc::c_int;
         let description = state.inotify_fds.get(&inotify_fd).unwrap().clone();
         let source_file = state.files.get(&inotify_fd).unwrap().try_clone().unwrap();
-        let pending_right = || PendingInotifyRight {
+        let pending_right = || PendingDescriptorRight {
             file: source_file.try_clone().unwrap(),
-            description: description.clone(),
+            inotify: Some(description.clone()),
+            socket: None,
         };
         let transfer = publish_socket_message(
             &sender,
@@ -20994,13 +21825,14 @@ mod tests {
             control_offset: 0,
             file: received_file,
             inotify: None,
+            socket: None,
         }];
-        attach_received_inotify_state(&state, sockets[1], &mut peeked, 1, true, false).unwrap();
+        attach_received_descriptor_state(&state, sockets[1], &mut peeked, 1, true, false).unwrap();
         assert!(Arc::ptr_eq(
             peeked[0].inotify.as_ref().unwrap(),
             &description,
         ));
-        assert_eq!(receiver.pending_inotify_rights.lock().unwrap().len(), 1);
+        assert_eq!(receiver.pending_rights.lock().unwrap().len(), 1);
 
         // Model a consuming recvmsg whose control buffer exposed only one of
         // the two rights. The whole transfer is retired, including the host-
@@ -21010,9 +21842,10 @@ mod tests {
             control_offset: 0,
             file: received_file,
             inotify: None,
+            socket: None,
         }];
-        attach_received_inotify_state(&state, sockets[1], &mut received, 1, true, true).unwrap();
-        assert!(receiver.pending_inotify_rights.lock().unwrap().is_empty());
+        attach_received_descriptor_state(&state, sockets[1], &mut received, 1, true, true).unwrap();
+        assert!(receiver.pending_rights.lock().unwrap().is_empty());
     }
 
     #[test]

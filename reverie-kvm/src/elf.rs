@@ -134,13 +134,25 @@ impl Default for InotifyDescriptionState {
     }
 }
 
-// Metadata that follows an inotify open file description while SCM_RIGHTS
+// Metadata that follows a stateful open file description while SCM_RIGHTS
 // carries it between guest descriptor tables. The retained duplicate provides
-// exact open-description identity through KCMP_FILE.
+// exact host open-description identity through KCMP_FILE; the typed state is
+// reattached only after that identity and descriptor kind both match.
 #[derive(Debug)]
-pub(crate) struct PendingInotifyRight {
+pub(crate) struct PendingDescriptorRight {
     pub file: std::fs::File,
-    pub description: std::sync::Arc<std::sync::Mutex<InotifyDescriptionState>>,
+    pub inotify: Option<std::sync::Arc<std::sync::Mutex<InotifyDescriptionState>>>,
+    pub socket: Option<PendingSocketRight>,
+}
+
+// Queued socket rights normally own their description until receipt. A socket
+// sent to its own receive queue uses a weak edge instead; the live receiving
+// descriptor is the required owner, so this preserves receipt without making
+// the socket own itself.
+#[derive(Debug)]
+pub(crate) enum PendingSocketRight {
+    Strong(std::sync::Arc<SocketDescriptionState>),
+    Weak(std::sync::Weak<SocketDescriptionState>),
 }
 
 #[derive(Debug)]
@@ -151,7 +163,7 @@ pub(crate) struct PendingSocketMessage {
     pub remaining: usize,
     // SCM_RIGHTS belongs to the first byte of a stream record.
     pub at_start: bool,
-    pub rights: Vec<Option<PendingInotifyRight>>,
+    pub rights: Vec<Option<PendingDescriptorRight>>,
 }
 
 #[derive(Debug, Default)]
@@ -183,7 +195,7 @@ impl std::ops::DerefMut for PendingSocketMessages {
 pub(crate) struct SocketDescriptionState {
     pub message_oriented: bool,
     pub peer: std::sync::Mutex<Option<std::sync::Weak<SocketDescriptionState>>>,
-    pub pending_inotify_rights: std::sync::Mutex<PendingSocketMessages>,
+    pub pending_rights: std::sync::Mutex<PendingSocketMessages>,
     pub send_lock: std::sync::Mutex<()>,
 }
 
@@ -192,7 +204,7 @@ impl SocketDescriptionState {
         Self {
             message_oriented: socket_type != libc::SOCK_STREAM,
             peer: std::sync::Mutex::new(None),
-            pending_inotify_rights: std::sync::Mutex::new(PendingSocketMessages::default()),
+            pending_rights: std::sync::Mutex::new(PendingSocketMessages::default()),
             send_lock: std::sync::Mutex::new(()),
         }
     }
