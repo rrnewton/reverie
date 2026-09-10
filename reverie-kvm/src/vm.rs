@@ -55,16 +55,29 @@ use crate::bootstrap::configure_process_syscall_return;
 use crate::bootstrap::configure_user_segments;
 use crate::bootstrap::exception_from_halt;
 use crate::bootstrap::exception_pushes_error_code;
+use crate::bootstrap::process_syscall_return_registers;
 use crate::bootstrap::set_syscall_return_park;
 use crate::bootstrap::set_user_segment_base;
+use crate::bootstrap::stage_process_syscall_return;
 use crate::elf::LoadedStaticElf;
+use crate::elf::TaskLifecycleTable;
 use crate::elf::load_static_elf;
 use crate::executor::ChildCompletion;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
+use crate::executor::SignalDisposition;
 use crate::executor::conventional_exit_code;
 use crate::runtime::SyscallExecutor;
 use crate::runtime::ToolContext;
+use crate::signal::LEGACY_FPSTATE_SIZE;
+use crate::signal::RT_SIGFRAME_SIZE;
+use crate::signal::RtSigframe;
+use crate::signal::SA_RESTORER;
+use crate::signal::SIGNAL_UCONTEXT_FLAGS;
+use crate::signal::Sigcontext;
+use crate::signal::SignalFrameLayout;
+use crate::signal::Ucontext;
+use crate::signal::XsaveImage;
 use crate::stats::KvmBackendStats;
 use crate::stats::KvmExitCollector;
 use crate::syscall::FRAME_SIZE;
@@ -582,8 +595,15 @@ impl KvmBackend {
         self.root_pid = pid;
         if let Some(loaded) = self.static_elf.as_mut() {
             loaded.pid = pid;
+            loaded.pgid = pid;
             loaded.tid = pid;
             loaded.ppid = root_parent_pid(pid);
+            loaded.task_lifecycle = Arc::new(Mutex::new(TaskLifecycleTable::with_root(
+                pid,
+                pid,
+                pid,
+                loaded.dumpable,
+            )));
         }
         Ok(())
     }
@@ -654,8 +674,15 @@ impl KvmBackend {
     ) -> Result<()> {
         let mut loaded = load_static_elf(&mut self.memory, image, argv, envp, cwd)?;
         loaded.pid = self.root_pid;
+        loaded.pgid = self.root_pid;
         loaded.tid = self.root_pid;
         loaded.ppid = root_parent_pid(self.root_pid);
+        loaded.task_lifecycle = Arc::new(Mutex::new(TaskLifecycleTable::with_root(
+            self.root_pid,
+            self.root_pid,
+            self.root_pid,
+            loaded.dumpable,
+        )));
         loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
         configure_long_mode(
             &mut self.memory,
@@ -1405,6 +1432,228 @@ impl KvmBackend {
         ))
     }
 
+    pub(crate) fn deliver_pending_signal_at_syscall_boundary(
+        &mut self,
+        executor: &mut ElfExecutor,
+        syscall_frame_address: u64,
+        result: i64,
+    ) -> Result<bool> {
+        let interrupted = process_syscall_return_registers(
+            &self.memory,
+            self.vcpu.get_regs()?,
+            syscall_frame_address,
+            result,
+            None,
+        )?;
+        self.deliver_pending_signal_from_registers(executor, syscall_frame_address, interrupted)
+    }
+
+    pub(crate) fn deliver_pending_signal_from_registers(
+        &mut self,
+        executor: &mut ElfExecutor,
+        syscall_frame_address: u64,
+        interrupted: kvm_bindings::kvm_regs,
+    ) -> Result<bool> {
+        loop {
+            let Some(pending) = executor
+                .take_pending_signal_for_delivery()
+                .map_err(|errno| Error::Reverie(errno.into()))?
+            else {
+                return Ok(false);
+            };
+
+            if executor.signal_disposition(pending.event.signal()) == SignalDisposition::Ignore {
+                continue;
+            }
+            return self.deliver_selected_signal_from_registers(
+                executor,
+                syscall_frame_address,
+                interrupted,
+                pending,
+            );
+        }
+    }
+
+    pub(crate) fn deliver_selected_signal_from_registers(
+        &mut self,
+        executor: &mut ElfExecutor,
+        syscall_frame_address: u64,
+        interrupted: kvm_bindings::kvm_regs,
+        pending: crate::executor::PendingSignal,
+    ) -> Result<bool> {
+        let signal = pending.event.signal();
+        match executor.signal_disposition(signal) {
+            SignalDisposition::Ignore => return Ok(false),
+            SignalDisposition::Terminate => {
+                executor.force_signal_exit(signal);
+                return Ok(false);
+            }
+            SignalDisposition::Stop => {
+                return Err(Error::UnexpectedVcpuExit(format!(
+                    "stopped-state delivery for signal {signal} is unsupported"
+                )));
+            }
+            SignalDisposition::Handled => {}
+        }
+
+        let action = executor.signal_action(signal);
+        if action.flags & SA_RESTORER == 0
+            || action.handler == 0
+            || action.handler >= (1_u64 << 47)
+            || action.restorer == 0
+            || action.restorer >= (1_u64 << 47)
+        {
+            executor.force_signal_exit(libc::SIGSEGV);
+            return Ok(false);
+        }
+        let altstack = executor.signal_altstack(interrupted.rsp);
+        let (stack_top, lower_bound, reserve_red_zone, autodisarm) =
+            match executor.signal_stack_top(action, interrupted.rsp) {
+                Ok(stack) => stack,
+                Err(_) => {
+                    executor.force_signal_exit(libc::SIGSEGV);
+                    return Ok(false);
+                }
+            };
+        let layout = match SignalFrameLayout::below(stack_top, reserve_red_zone) {
+            Ok(layout) => layout,
+            Err(_) => {
+                executor.force_signal_exit(libc::SIGSEGV);
+                return Ok(false);
+            }
+        };
+        if lower_bound.is_some_and(|lower_bound| !layout.fits_above(lower_bound)) {
+            executor.force_signal_exit(libc::SIGSEGV);
+            return Ok(false);
+        }
+        let xsave = XsaveImage::from_kvm(&self.vcpu.get_xsave()?);
+        let frame = RtSigframe {
+            pretcode: action.restorer,
+            ucontext: Ucontext {
+                flags: SIGNAL_UCONTEXT_FLAGS,
+                link: 0,
+                stack: altstack,
+                mcontext: Sigcontext::from_kvm(
+                    interrupted,
+                    layout.xsave_address,
+                    executor.signal_mask(),
+                ),
+                sigmask: executor.signal_mask(),
+            },
+            siginfo: pending.event.siginfo(),
+        };
+        if self
+            .memory
+            .write(layout.frame_address, &frame.encode())
+            .is_err()
+            || self
+                .memory
+                .write(layout.xsave_address, xsave.bytes())
+                .is_err()
+        {
+            executor.force_signal_exit(libc::SIGSEGV);
+            return Ok(false);
+        }
+
+        let mut handler = interrupted;
+        handler.rax = 0;
+        handler.rdi = signal as u64;
+        handler.rsi = layout.frame_address + 312;
+        handler.rdx = layout.frame_address + 8;
+        handler.rip = action.handler;
+        handler.rsp = layout.frame_address;
+        handler.rflags &= !((1 << 8) | (1 << 10) | (1 << 16));
+        stage_process_syscall_return(&mut self.memory, &self.vcpu, syscall_frame_address, handler)?;
+        executor.enter_signal_handler(pending, action, autodisarm);
+        Ok(true)
+    }
+
+    pub(crate) fn restore_rt_sigreturn(
+        &mut self,
+        executor: &mut ElfExecutor,
+        syscall_frame_address: u64,
+    ) -> Result<Option<kvm_bindings::kvm_regs>> {
+        let current = process_syscall_return_registers(
+            &self.memory,
+            self.vcpu.get_regs()?,
+            syscall_frame_address,
+            0,
+            None,
+        )?;
+        let Some(frame_address) = current.rsp.checked_sub(8) else {
+            executor.force_signal_exit(libc::SIGSEGV);
+            return Ok(None);
+        };
+        let mut frame_bytes = [0; RT_SIGFRAME_SIZE];
+        if self.memory.read(frame_address, &mut frame_bytes).is_err() {
+            executor.force_signal_exit(libc::SIGSEGV);
+            return Ok(None);
+        }
+        let frame = RtSigframe::decode(frame_bytes);
+        if frame.ucontext.mcontext.validate_for_restore().is_err() {
+            executor.force_signal_exit(libc::SIGSEGV);
+            return Ok(None);
+        }
+        let fpstate = frame.ucontext.mcontext.fpstate;
+        let xsave = if fpstate == 0 {
+            XsaveImage::initialized_kvm()
+        } else {
+            let mut prefix = [0; LEGACY_FPSTATE_SIZE];
+            if self.memory.read(fpstate, &mut prefix).is_err() {
+                executor.force_signal_exit(libc::SIGSEGV);
+                return Ok(None);
+            }
+            let size = match XsaveImage::restore_size(&prefix) {
+                Ok(size) => size,
+                Err(_) => {
+                    executor.force_signal_exit(libc::SIGSEGV);
+                    return Ok(None);
+                }
+            };
+            let required_alignment = if size == LEGACY_FPSTATE_SIZE {
+                16
+            } else {
+                crate::signal::XSAVE_ALIGNMENT
+            };
+            if !fpstate.is_multiple_of(required_alignment) {
+                executor.force_signal_exit(libc::SIGSEGV);
+                return Ok(None);
+            }
+            let mut bytes = vec![0; size];
+            bytes[..LEGACY_FPSTATE_SIZE].copy_from_slice(&prefix);
+            if size > LEGACY_FPSTATE_SIZE
+                && self
+                    .memory
+                    .read(
+                        fpstate + LEGACY_FPSTATE_SIZE as u64,
+                        &mut bytes[LEGACY_FPSTATE_SIZE..],
+                    )
+                    .is_err()
+            {
+                executor.force_signal_exit(libc::SIGSEGV);
+                return Ok(None);
+            }
+            match XsaveImage::restore_from_signal(&bytes) {
+                Ok(xsave) => xsave,
+                Err(_) => {
+                    executor.force_signal_exit(libc::SIGSEGV);
+                    return Ok(None);
+                }
+            }
+        };
+        executor.restore_signal_thread_state(
+            frame.ucontext.sigmask,
+            frame.ucontext.stack,
+            current.rsp,
+        );
+        let mut restored = current;
+        frame.ucontext.mcontext.restore_kvm(&mut restored);
+        // SAFETY: the fixed KVM CPUID policy exposes exactly the feature subset
+        // accepted by XsaveImage::restore_from_signal above.
+        unsafe { self.vcpu.set_xsave(&xsave)? };
+        Ok(Some(restored))
+    }
+
     /// Runs the installed static ELF and its forked children until the root exits.
     pub fn run_static_elf(&mut self) -> Result<i32> {
         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
@@ -1443,7 +1692,7 @@ impl KvmBackend {
                 Err(error) => return Err(error.into()),
             };
             Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
-            let (segment_update, process_action) = match vcpu_exit {
+            let (segment_update, process_action, signal_boundary) = match vcpu_exit {
                 VcpuExit::Hypercall(exit) => {
                     if exit.nr != VMCALL_SYSCALL_TRANSPORT {
                         return Err(Error::UnexpectedHypercall(exit.nr));
@@ -1456,13 +1705,46 @@ impl KvmBackend {
                     }
                     let return_slot = std::ptr::from_mut(exit.ret) as usize;
                     let request = SyscallRequest::read_from(&self.memory, frame_address)?;
-                    let result = executor.execute(&request, &self.memory);
-                    SyscallRequest::write_result(&mut self.memory, frame_address, result)?;
                     // SAFETY: return_slot points into this stopped vCPU's stable KVM_RUN mapping.
                     unsafe {
                         (return_slot as *mut u64).write(0);
                     }
-                    (executor.take_segment(), executor.take_process_action())
+                    if request.number() == libc::SYS_rt_sigreturn as u64 {
+                        if let Some(restored) =
+                            self.restore_rt_sigreturn(executor, frame_address)?
+                        {
+                            let delivered = self.deliver_pending_signal_from_registers(
+                                executor,
+                                frame_address,
+                                restored,
+                            )?;
+                            if !delivered {
+                                stage_process_syscall_return(
+                                    &mut self.memory,
+                                    &self.vcpu,
+                                    frame_address,
+                                    restored,
+                                )?;
+                            }
+                        }
+                        (None, None, None)
+                    } else {
+                        let userspace = process_syscall_return_registers(
+                            &self.memory,
+                            self.vcpu.get_regs()?,
+                            frame_address,
+                            0,
+                            None,
+                        )?;
+                        executor.set_current_user_stack_pointer(userspace.rsp);
+                        let result = executor.execute(&request, &self.memory);
+                        SyscallRequest::write_result(&mut self.memory, frame_address, result)?;
+                        (
+                            executor.take_segment(),
+                            executor.take_process_action(),
+                            Some((frame_address, result)),
+                        )
+                    }
                 }
                 VcpuExit::Hlt => {
                     if self.try_resume_vmware_backdoor_probe()? {
@@ -1477,11 +1759,31 @@ impl KvmBackend {
                 set_user_segment_base(&self.vcpu, segment, address)?;
             }
 
+            let returns_to_original_image =
+                !matches!(&process_action, Some(ProcessAction::Exec { .. }));
+            if !returns_to_original_image && executor.has_eligible_pending_signal() {
+                return Err(Error::UnexpectedVcpuExit(
+                    "KVM exec with an eligible deferred signal is unsupported; \
+                     delivery requires a syscall return frame"
+                        .to_owned(),
+                ));
+            }
             if let Some(action) = process_action {
                 self.run_process_action(executor, action, true)?;
             }
 
-            if let Some(exit) = executor.take_exit() {
+            // exit/exit_group never return to userspace, so pending delivery
+            // cannot replace an exit already selected by the syscall.
+            let mut pending_exit = executor.take_exit();
+            if returns_to_original_image
+                && pending_exit.is_none()
+                && let Some((frame_address, result)) = signal_boundary
+            {
+                self.deliver_pending_signal_at_syscall_boundary(executor, frame_address, result)?;
+            }
+
+            pending_exit = pending_exit.or_else(|| executor.take_exit());
+            if let Some(exit) = pending_exit {
                 if exit.group {
                     self.request_guest_thread_group_exit(exit.status);
                 }
@@ -1655,7 +1957,7 @@ fn write_tid_best_effort(memory: &mut GuestMemory, address: Option<u64>, tid: i3
 }
 
 // TODO-HUMAN-REVIEW(PR-172): Review CHILD_CLEARTID store and shared futex wake ordering.
-fn clear_tid_and_wake(memory: &mut GuestMemory, address: Option<u64>) {
+pub(crate) fn clear_tid_and_wake(memory: &mut GuestMemory, address: Option<u64>) {
     let Some(address) = address else {
         return;
     };
