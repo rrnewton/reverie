@@ -26,15 +26,19 @@ use reverie::GlobalRPC;
 use reverie::GlobalTool;
 use reverie::Guest;
 use reverie::Pid;
+use reverie::SignalEvent;
+use reverie::SignalTarget;
 use reverie::Subscription;
 use reverie::ThreadOwnership;
 use reverie::Tool;
+use reverie::syscalls::AddrMut;
 use reverie::syscalls::CArrayPtr;
 use reverie::syscalls::CStrPtr;
 use reverie::syscalls::Errno;
 use reverie::syscalls::Execve;
 use reverie::syscalls::Fork;
 use reverie::syscalls::FromToRaw;
+use reverie::syscalls::Kill;
 use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::PathPtr;
 use reverie::syscalls::Syscall;
@@ -248,6 +252,92 @@ impl Tool for PostExecTool {
         // This lifecycle hook runs before the ELF entry point, matching execve.
         let address = unsafe { address.into_mut() };
         guest.memory().write_value(address, &POST_EXEC_RANDOM)
+    }
+}
+
+#[derive(Default)]
+struct LifecycleSignalLog {
+    callbacks: Mutex<Vec<u8>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for LifecycleSignalLog {
+    type Request = u8;
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Pid, callback: u8) {
+        self.callbacks
+            .lock()
+            .expect("lifecycle signal log lock poisoned")
+            .push(callback);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct LifecycleSignalTool;
+
+fn lifecycle_signal(pid: Pid, tid: Pid) -> SignalEvent {
+    let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+    info[0..4].copy_from_slice(&libc::SIGUSR1.to_ne_bytes());
+    info[8..12].copy_from_slice(&libc::SI_TKILL.to_ne_bytes());
+    SignalEvent::new(libc::SIGUSR1, info, SignalTarget::Thread { pid, tid }).unwrap()
+}
+
+#[reverie::tool]
+impl Tool for LifecycleSignalTool {
+    type GlobalState = LifecycleSignalLog;
+    type ThreadState = ();
+
+    async fn handle_thread_start<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+    ) -> Result<(), reverie::Error> {
+        let error = guest
+            .defer_signal_delivery(lifecycle_signal(guest.pid(), guest.tid()))
+            .await
+            .expect_err("thread-start delivery without a syscall frame must fail");
+        let errno = error.into_errno()?;
+        if errno != Errno::ENOSYS {
+            return Err(errno.into());
+        }
+        let error = guest
+            .inject(
+                Kill::new()
+                    .with_pid(guest.pid().as_raw())
+                    .with_sig(libc::SIGUSR1),
+            )
+            .await
+            .expect_err("thread-start self-signal without a syscall frame must fail");
+        if error != Errno::ENOSYS {
+            return Err(error.into());
+        }
+        guest.send_rpc(1).await;
+        Ok(())
+    }
+
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+        let error = guest
+            .defer_signal_delivery(lifecycle_signal(guest.pid(), guest.tid()))
+            .await
+            .expect_err("post-exec delivery without a syscall frame must fail");
+        let errno = error.into_errno().map_err(|_| Errno::EIO)?;
+        if errno != Errno::ENOSYS {
+            return Err(errno);
+        }
+        let error = guest
+            .inject(
+                Kill::new()
+                    .with_pid(guest.pid().as_raw())
+                    .with_sig(libc::SIGUSR1),
+            )
+            .await
+            .expect_err("post-exec self-signal without a syscall frame must fail");
+        if error != Errno::ENOSYS {
+            return Err(error);
+        }
+        guest.send_rpc(2).await;
+        Ok(())
     }
 }
 
@@ -836,6 +926,235 @@ fn static_elf_self_abort_terminates_instead_of_faulting() {
     assert!(stderr.is_empty());
 }
 
+/// Exercises the kernel-visible frame, handler ABI, mask transition, libc
+/// restorer, and backend-owned rt_sigreturn path on a real vCPU.
+#[test]
+fn static_elf_caught_signal_returns_through_rt_sigreturn() {
+    if !kvm_available("signal-frame test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "caught-signal-rt-return",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <signal.h>
+#include <stdint.h>
+#include <sys/ucontext.h>
+#include <unistd.h>
+
+static volatile sig_atomic_t observed;
+static unsigned char alternate_stack[65536];
+static unsigned char replacement_stack[65536];
+
+static void handler(int signo, siginfo_t *info, void *raw_context) {
+  ucontext_t *context = (ucontext_t *)raw_context;
+  sigset_t current;
+  if (signo != SIGUSR1) {
+    observed = 10;
+    return;
+  }
+  if (info == 0 || info->si_signo != SIGUSR1 || info->si_code != SI_USER) {
+    observed = 11;
+    return;
+  }
+  if (context == 0 || (long)context->uc_mcontext.gregs[REG_RAX] != 0) {
+    observed = 12;
+    return;
+  }
+  if (sigprocmask(SIG_SETMASK, 0, &current) != 0 ||
+      sigismember(&current, SIGUSR1) != 1 ||
+      sigismember(&current, SIGUSR2) != 1) {
+    observed = 13;
+    return;
+  }
+  stack_t current_stack;
+  uintptr_t handler_sp = (uintptr_t)&current_stack;
+  if (handler_sp < (uintptr_t)alternate_stack ||
+      handler_sp >= (uintptr_t)alternate_stack + sizeof(alternate_stack)) {
+    observed = 14;
+    return;
+  }
+  if (sigaltstack(0, &current_stack) != 0 ||
+      (current_stack.ss_flags & SS_ONSTACK) == 0) {
+    observed = 15;
+    return;
+  }
+  stack_t replacement = {
+    .ss_sp = replacement_stack, .ss_size = sizeof(replacement_stack), .ss_flags = 0
+  };
+  errno = 0;
+  if (sigaltstack(&replacement, 0) != -1 || errno != EPERM) {
+    observed = 16;
+    return;
+  }
+  context->uc_mcontext.gregs[REG_RAX] = 0x5a;
+  __asm__ volatile("pxor %%xmm15, %%xmm15" ::: "xmm15");
+  observed = 1;
+}
+
+int main(void) {
+  stack_t configured = {
+    .ss_sp = alternate_stack, .ss_size = sizeof(alternate_stack), .ss_flags = 0
+  };
+  if (sigaltstack(&configured, 0) != 0) return 19;
+  struct sigaction action = {0};
+  action.sa_sigaction = handler;
+  action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sigemptyset(&action.sa_mask);
+  sigaddset(&action.sa_mask, SIGUSR2);
+  const uint64_t expected_xmm = UINT64_C(0x123456789abcdef0);
+  uint64_t restored_xmm = 0;
+  __asm__ volatile("movq %0, %%xmm15" :: "r"(expected_xmm) : "xmm15");
+  if (sigaction(SIGUSR1, &action, 0) != 0) return 20;
+  int kill_result = kill(getpid(), SIGUSR1);
+  __asm__ volatile("movq %%xmm15, %0" : "=r"(restored_xmm));
+  if (kill_result != 0x5a) return 21;
+  if (observed != 1) return observed == 0 ? 22 : observed;
+  if (restored_xmm != expected_xmm) return 25;
+
+  sigset_t restored;
+  if (sigprocmask(SIG_SETMASK, 0, &restored) != 0) return 23;
+  if (sigismember(&restored, SIGUSR1) != 0 ||
+      sigismember(&restored, SIGUSR2) != 0) return 24;
+  stack_t restored_stack;
+  if (sigaltstack(0, &restored_stack) != 0) return 26;
+  if ((restored_stack.ss_flags & SS_ONSTACK) != 0) return 27;
+  if (restored_stack.ss_sp != alternate_stack ||
+      restored_stack.ss_size != sizeof(alternate_stack)) return 28;
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!(
+        code,
+        0,
+        "signal guest failed with code {code}; stdout={}; stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr),
+    );
+}
+
+#[test]
+fn static_elf_rt_sigreturn_accepts_null_and_redirected_fpstate() {
+    if !kvm_available("rt_sigreturn fpstate-pointer test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "rt-sigreturn-fpstate",
+        include_str!("fixtures/rt_sigreturn_fpregs.c"),
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    for (mode, expected_code) in [
+        ("null", 0),
+        ("alternate", 0),
+        ("invalid", 128 + libc::SIGSEGV),
+    ] {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable, mode],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        assert_eq!(code, expected_code, "mode={mode}");
+        assert!(stdout.is_empty(), "mode={mode}");
+        assert!(stderr.is_empty(), "mode={mode}");
+    }
+}
+
+#[test]
+fn static_elf_chains_pending_after_sigreturn_before_user_code() {
+    if !kvm_available("pending-signal boundary test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "pending-signal-boundaries",
+        r#"
+#define _GNU_SOURCE
+#include <signal.h>
+#include <unistd.h>
+
+static volatile sig_atomic_t phase;
+static volatile sig_atomic_t between;
+static volatile sig_atomic_t failure;
+
+static void first_handler(int signal) {
+  if (signal != SIGUSR1 || phase != 0 || between != 0) failure = 10;
+  phase = 1;
+}
+
+static void second_handler(int signal) {
+  if (signal != SIGUSR2 || phase != 1 || between != 0) failure = 11;
+  phase = 2;
+}
+
+static int install(int signal, void (*handler)(int)) {
+  struct sigaction action = {0};
+  action.sa_handler = handler;
+  sigemptyset(&action.sa_mask);
+  return sigaction(signal, &action, 0);
+}
+
+int main(void) {
+  if (install(SIGUSR1, first_handler) != 0) return 20;
+  if (install(SIGUSR2, second_handler) != 0) return 21;
+  sigset_t pair;
+  sigemptyset(&pair);
+  sigaddset(&pair, SIGUSR1);
+  sigaddset(&pair, SIGUSR2);
+  if (sigprocmask(SIG_BLOCK, &pair, 0) != 0) return 22;
+  if (kill(getpid(), SIGUSR1) != 0) return 23;
+  if (kill(getpid(), SIGUSR2) != 0) return 24;
+  if (sigprocmask(SIG_UNBLOCK, &pair, 0) != 0) return 25;
+  between = 1;
+  if (failure != 0) return failure;
+  return phase == 2 ? 0 : 26;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let code = backend.run_static_elf().unwrap();
+    assert_eq!(
+        code, 0,
+        "pending-signal boundary guest failed with code {code}"
+    );
+}
 #[test]
 fn static_elf_clone_tid_side_effects_reach_guest_memory() {
     match Kvm::new() {
@@ -2455,6 +2774,62 @@ fn tool_receives_post_exec_with_guest_auxv() {
 }
 
 #[test]
+fn lifecycle_callbacks_refuse_deferred_signal_without_a_syscall_frame() {
+    if !kvm_available("lifecycle signal-boundary test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "lifecycle-signal-boundaries",
+        r#"
+#include <pthread.h>
+
+static void *worker(void *argument) {
+  return argument;
+}
+
+int main(void) {
+  pthread_t thread;
+  if (pthread_create(&thread, 0, worker, 0) != 0) return 10;
+  if (pthread_join(thread, 0) != 0) return 11;
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    backend.set_thread_ownership(ThreadOwnership::Tool);
+
+    let (log, exit_code, stdout, stderr) = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<LifecycleSignalTool>((), true),
+    )
+    .unwrap();
+
+    assert_eq!(exit_code, 0);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    assert_eq!(
+        *log.callbacks
+            .lock()
+            .expect("lifecycle signal log lock poisoned"),
+        vec![1, 2, 1],
+        "root start, initial post-exec, and clone child start refuse both structured deferral and \
+         injected self-signals without a return frame",
+    );
+}
+
+#[test]
 fn canonical_initial_execveat_does_not_reload_installed_image() {
     match Kvm::new() {
         Ok(_) => {}
@@ -3325,4 +3700,505 @@ int main(void) {
         ],
         "the backend callback must describe every real terminal waitability transition",
     );
+}
+
+const SIGNAL_HOOK_MARKER: usize = 0x0800_0000;
+
+#[derive(Default)]
+struct SignalHookLog {
+    signals: Mutex<Vec<i32>>,
+}
+
+impl SignalHookLog {
+    fn signals(&self) -> Vec<i32> {
+        self.signals
+            .lock()
+            .expect("signal hook log lock poisoned")
+            .clone()
+    }
+}
+
+#[reverie::global_tool]
+impl GlobalTool for SignalHookLog {
+    type Request = i32;
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Pid, signal: i32) {
+        self.signals
+            .lock()
+            .expect("signal hook log lock poisoned")
+            .push(signal);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SignalHookTool;
+
+#[reverie::tool]
+impl Tool for SignalHookTool {
+    type GlobalState = SignalHookLog;
+    type ThreadState = u64;
+
+    async fn handle_structured_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        event: SignalEvent,
+    ) -> Result<Option<SignalEvent>, Errno> {
+        let ordinal = {
+            let calls = guest.thread_state_mut();
+            *calls += 1;
+            *calls
+        };
+        guest.send_rpc(event.signal()).await;
+        match ordinal {
+            1 => {
+                let mut info = event.siginfo();
+                info[0..4].copy_from_slice(&libc::SIGUSR2.to_ne_bytes());
+                Ok(Some(SignalEvent::new(libc::SIGUSR2, info, event.target())?))
+            }
+            2 => {
+                let marker = AddrMut::from_raw(SIGNAL_HOOK_MARKER)
+                    .expect("the signal-hook marker address is non-null");
+                guest.memory().write_value(marker, &0x5a_u8)?;
+                Ok(None)
+            }
+            3 => Ok(Some(event)),
+            4 => {
+                let marker = AddrMut::from_raw(SIGNAL_HOOK_MARKER + 1)
+                    .expect("the second signal-hook marker address is non-null");
+                guest.memory().write_value(marker, &0xa5_u8)?;
+                Ok(None)
+            }
+            5 => {
+                let mut info = event.siginfo();
+                info[0..4].copy_from_slice(&libc::SIGWINCH.to_ne_bytes());
+                Ok(Some(SignalEvent::new(
+                    libc::SIGWINCH,
+                    info,
+                    event.target(),
+                )?))
+            }
+            6 => Ok(Some(event)),
+            7 => {
+                let mut info = event.siginfo();
+                info[0..4].copy_from_slice(&libc::SIGTERM.to_ne_bytes());
+                Ok(Some(SignalEvent::new(libc::SIGTERM, info, event.target())?))
+            }
+            8..=10 => Ok(Some(event)),
+            _ => {
+                panic!("signal hook called more than once at one of ten delivery selections")
+            }
+        }
+    }
+}
+
+#[test]
+fn structured_tool_replaces_then_suppresses_at_consecutive_return_boundaries() {
+    if !kvm_available("structured signal Tool hook test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "structured-signal-tool",
+        r#"
+#define _GNU_SOURCE
+#include <signal.h>
+#include <stdint.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+#define HOOK_MARKER ((volatile unsigned char *)UINT64_C(0x08000000))
+
+static volatile sig_atomic_t usr1_calls;
+static volatile sig_atomic_t usr2_calls;
+static volatile sig_atomic_t urg_calls;
+static volatile sig_atomic_t handler_failure;
+
+static void usr1_handler(int signo, siginfo_t *info, void *context) {
+  (void)info;
+  (void)context;
+  ++usr1_calls;
+  if (signo != SIGUSR1) handler_failure = 10;
+}
+
+static void usr2_handler(int signo, siginfo_t *info, void *context) {
+  (void)context;
+  ++usr2_calls;
+  if (signo != SIGUSR2 || info == 0 || info->si_signo != SIGUSR2 ||
+      info->si_code != SI_USER) {
+    handler_failure = 11;
+    return;
+  }
+  sigset_t current;
+  if (sigprocmask(SIG_SETMASK, 0, &current) != 0 ||
+      sigismember(&current, SIGUSR2) != 1 ||
+      sigismember(&current, SIGTERM) != 1 ||
+      sigismember(&current, SIGURG) != 1 ||
+      sigismember(&current, SIGUSR1) != 0 ||
+      sigismember(&current, SIGWINCH) != 0) {
+    handler_failure = 12;
+  }
+}
+
+static void urg_handler(int signo) {
+  ++urg_calls;
+  if (signo != SIGURG) handler_failure = 13;
+}
+
+static int install(int signo, void (*handler)(int, siginfo_t *, void *),
+                   int masked) {
+  struct sigaction action = {0};
+  action.sa_sigaction = handler;
+  action.sa_flags = SA_SIGINFO;
+  sigemptyset(&action.sa_mask);
+  if (masked != 0) sigaddset(&action.sa_mask, masked);
+  if (signo == SIGUSR2) sigaddset(&action.sa_mask, SIGURG);
+  return sigaction(signo, &action, 0);
+}
+
+int main(void) {
+  void *mapping = mmap((void *)HOOK_MARKER, 4096, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+  if (mapping != (void *)HOOK_MARKER) return 20;
+  if (install(SIGUSR1, usr1_handler, SIGWINCH) != 0) return 21;
+  if (install(SIGUSR2, usr2_handler, SIGTERM) != 0) return 22;
+  if (signal(SIGURG, urg_handler) == SIG_ERR) return 23;
+
+  sigset_t pending;
+  sigemptyset(&pending);
+  sigaddset(&pending, SIGUSR1);
+  sigaddset(&pending, SIGTERM);
+  sigaddset(&pending, SIGURG);
+  if (sigprocmask(SIG_BLOCK, &pending, 0) != 0) return 24;
+  if (kill(getpid(), SIGUSR1) != 0) return 25;
+  if (kill(getpid(), SIGTERM) != 0) return 26;
+  if (kill(getpid(), SIGURG) != 0) return 33;
+  if (sigprocmask(SIG_UNBLOCK, &pending, 0) != 0) return 27;
+
+  // The second Tool callback runs on the first handler's rt_sigreturn
+  // continuation and writes this byte while suppressing SIGTERM. No later
+  // syscall is needed to make the marker visible.
+  if (*HOOK_MARKER != 0x5a) return 28;
+  if (handler_failure != 0) return handler_failure;
+  if (usr1_calls != 0) return 29;
+  if (usr2_calls != 1) return 30;
+  if (urg_calls != 1) return 34;
+  // An unblocked default-fatal self-signal must reach the Tool before its
+  // disposition is applied, so the Tool can suppress it at this boundary.
+  if (kill(getpid(), SIGINT) != 0) return 31;
+  if (*(HOOK_MARKER + 1) != 0xa5) return 32;
+
+  // Replacing the first event with a default-ignored signal must not let user
+  // code run before the next caught event at the same return boundary.
+  sigemptyset(&pending);
+  sigaddset(&pending, SIGINT);
+  sigaddset(&pending, SIGUSR1);
+  if (sigprocmask(SIG_BLOCK, &pending, 0) != 0) return 35;
+  if (kill(getpid(), SIGINT) != 0) return 36;
+  if (kill(getpid(), SIGUSR1) != 0) return 37;
+  if (sigprocmask(SIG_UNBLOCK, &pending, 0) != 0) return 38;
+  if (usr1_calls != 1) return 39;
+
+  // A replacement that is blocked under its new number stays pending, while
+  // the next eligible caught event is selected before user code resumes.
+  sigemptyset(&pending);
+  sigaddset(&pending, SIGINT);
+  sigaddset(&pending, SIGUSR1);
+  sigaddset(&pending, SIGTERM);
+  if (sigprocmask(SIG_BLOCK, &pending, 0) != 0) return 40;
+  if (kill(getpid(), SIGINT) != 0) return 41;
+  if (kill(getpid(), SIGUSR1) != 0) return 42;
+  sigdelset(&pending, SIGTERM);
+  if (sigprocmask(SIG_UNBLOCK, &pending, 0) != 0) return 43;
+  if (usr1_calls != 2) return 44;
+  sigset_t still_pending;
+  if (sigpending(&still_pending) != 0 ||
+      sigismember(&still_pending, SIGTERM) != 1) return 45;
+
+  // Like ptrace, the virtual Tool observes an explicit SIG_IGN and a
+  // default-ignored signal exactly once before disposition discards them.
+  if (signal(SIGUSR2, SIG_IGN) == SIG_ERR) return 46;
+  if (kill(getpid(), SIGUSR2) != 0) return 47;
+  if (usr2_calls != 1) return 48;
+  if (kill(getpid(), SIGWINCH) != 0) return 49;
+  if (usr1_calls != 2 || usr2_calls != 1 || urg_calls != 1) return 50;
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (log, code, stdout, stderr) =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<SignalHookTool>((), true))
+            .unwrap();
+    let signals = log.signals();
+    assert_eq!(
+        code,
+        0,
+        "structured signal Tool guest failed with code {code}; signals={signals:?}; stdout={}; stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr),
+    );
+    assert_eq!(
+        signals,
+        vec![
+            libc::SIGUSR1,
+            libc::SIGTERM,
+            libc::SIGURG,
+            libc::SIGINT,
+            libc::SIGINT,
+            libc::SIGUSR1,
+            libc::SIGINT,
+            libc::SIGUSR1,
+            libc::SIGUSR2,
+            libc::SIGWINCH,
+        ]
+    );
+}
+
+#[derive(Default)]
+struct RestartSignalLog {
+    callbacks: Mutex<Vec<u8>>,
+}
+
+impl RestartSignalLog {
+    fn callbacks(&self) -> Vec<u8> {
+        self.callbacks
+            .lock()
+            .expect("restart signal log lock poisoned")
+            .clone()
+    }
+}
+
+#[reverie::global_tool]
+impl GlobalTool for RestartSignalLog {
+    type Request = u8;
+    type Response = ();
+    type Config = u8;
+
+    async fn receive_rpc(&self, _from: Pid, callback: u8) {
+        self.callbacks
+            .lock()
+            .expect("restart signal log lock poisoned")
+            .push(callback);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RestartSignalTool;
+
+#[reverie::tool]
+impl Tool for RestartSignalTool {
+    type GlobalState = RestartSignalLog;
+    type ThreadState = (u64, u64);
+
+    fn subscriptions(_config: &u8) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscall(Sysno::getpid);
+        subscriptions
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        assert!(matches!(syscall, Syscall::Getpid(_)));
+        let ordinal = {
+            let calls = guest.thread_state_mut();
+            calls.0 += 1;
+            calls.0
+        };
+        guest.send_rpc(0).await;
+        if ordinal == 1 {
+            let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+            info[0..4].copy_from_slice(&libc::SIGUSR1.to_ne_bytes());
+            info[8..12].copy_from_slice(&libc::SI_TKILL.to_ne_bytes());
+            let event = SignalEvent::new(
+                libc::SIGUSR1,
+                info,
+                SignalTarget::Thread {
+                    pid: guest.pid(),
+                    tid: guest.tid(),
+                },
+            )?;
+            guest.defer_signal_delivery(event).await?;
+            if *guest.config() >= 9 {
+                let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+                info[0..4].copy_from_slice(&libc::SIGUSR2.to_ne_bytes());
+                info[8..12].copy_from_slice(&libc::SI_TKILL.to_ne_bytes());
+                let event = SignalEvent::new(
+                    libc::SIGUSR2,
+                    info,
+                    SignalTarget::Thread {
+                        pid: guest.pid(),
+                        tid: guest.tid(),
+                    },
+                )?;
+                guest.defer_signal_delivery(event).await?;
+            }
+            if *guest.config() == 8 {
+                return Ok(3);
+            }
+            return Err(Errno::ERESTARTSYS.into());
+        }
+        assert_eq!(ordinal, 2, "a syscall restarted more than once");
+        Ok(77)
+    }
+
+    async fn handle_structured_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        event: SignalEvent,
+    ) -> Result<Option<SignalEvent>, Errno> {
+        guest.send_rpc(1).await;
+        let signal_ordinal = {
+            let calls = guest.thread_state_mut();
+            calls.1 += 1;
+            calls.1
+        };
+        let replacement = match *guest.config() {
+            3 => return Ok(None),
+            4 => libc::SIGWINCH,
+            5..=7 => libc::SIGUSR2,
+            9 | 12 if signal_ordinal == 1 => return Ok(None),
+            10 if signal_ordinal == 1 => libc::SIGWINCH,
+            11 if signal_ordinal == 1 => libc::SIGTERM,
+            _ => return Ok(Some(event)),
+        };
+        let mut info = event.siginfo();
+        info[0..4].copy_from_slice(&replacement.to_ne_bytes());
+        Ok(Some(SignalEvent::new(replacement, info, event.target())?))
+    }
+}
+
+#[test]
+fn pending_signal_applies_linux_erestartsys_policy_after_the_tool_hook() {
+    if !kvm_available("signal-aware ERESTARTSYS test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "signal-aware-erestartsys",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+static volatile sig_atomic_t usr1_calls;
+static volatile sig_atomic_t usr2_calls;
+
+static void usr1_handler(int signo) {
+  if (signo == SIGUSR1) ++usr1_calls;
+}
+
+static void usr2_handler(int signo) {
+  if (signo == SIGUSR2) ++usr2_calls;
+}
+
+static int install(int signo, void (*handler)(int), int flags) {
+  struct sigaction action = {0};
+  action.sa_handler = handler;
+  action.sa_flags = flags;
+  sigemptyset(&action.sa_mask);
+  return sigaction(signo, &action, 0);
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2) return 20;
+  int mode = atoi(argv[1]);
+  int usr1_flags = (mode == 2 || mode == 6) ? SA_RESTART : 0;
+  int usr2_flags = (mode == 7 || mode == 12) ? SA_RESTART : 0;
+  if (install(SIGUSR1, usr1_handler, usr1_flags) != 0) return 21;
+  if (install(SIGUSR2, usr2_handler, usr2_flags) != 0) return 22;
+  if (mode == 5 || mode == 11) {
+    sigset_t blocked;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, mode == 5 ? SIGUSR2 : SIGTERM);
+    if (sigprocmask(SIG_BLOCK, &blocked, 0) != 0) return 23;
+  }
+
+  errno = 0;
+  long result = syscall(SYS_getpid);
+  int saved_errno = errno;
+  if (mode == 1 || mode == 6 || (mode >= 9 && mode <= 11)) {
+    if (result != -1 || saved_errno != EINTR) return 24;
+  } else if (mode == 8) {
+    if (result != 3) return 25;
+  } else if (result != 77) {
+    return 26;
+  }
+
+  if (mode == 1 || mode == 2 || mode == 8) {
+    if (usr1_calls != 1 || usr2_calls != 0) return 27;
+  } else if (mode == 6 || mode == 7 || (mode >= 9 && mode <= 12)) {
+    if (usr1_calls != 0 || usr2_calls != 1) return 28;
+  } else if (usr1_calls != 0 || usr2_calls != 0) {
+    return 29;
+  }
+  if (mode == 5 || mode == 11) {
+    sigset_t pending;
+    int expected = mode == 5 ? SIGUSR2 : SIGTERM;
+    if (sigpending(&pending) != 0 || sigismember(&pending, expected) != 1) return 30;
+  }
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    for (mode, expected_callbacks) in [
+        (1_u8, vec![0, 1]),
+        (2, vec![0, 1, 0]),
+        (3, vec![0, 1, 0]),
+        (4, vec![0, 1, 0]),
+        (5, vec![0, 1, 0]),
+        (6, vec![0, 1]),
+        (7, vec![0, 1, 0]),
+        (8, vec![0, 1]),
+        (9, vec![0, 1, 1]),
+        (10, vec![0, 1, 1]),
+        (11, vec![0, 1, 1]),
+        (12, vec![0, 1, 1, 0]),
+    ] {
+        let argument = mode.to_string();
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable, &argument],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (log, code, stdout, stderr) = futures::executor::block_on(
+            backend.run_static_elf_with_tool::<RestartSignalTool>(mode, true),
+        )
+        .unwrap();
+        assert_eq!(
+            code,
+            0,
+            "signal-aware ERESTARTSYS mode {mode} failed; stdout={}; stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr),
+        );
+        assert_eq!(log.callbacks(), expected_callbacks, "mode {mode}");
+    }
 }
