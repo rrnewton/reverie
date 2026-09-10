@@ -1287,6 +1287,177 @@ int main(void) {
 }
 
 #[test]
+fn ordinary_vectored_endpoints_match_native_linux() {
+    if !kvm_available("KVM ordinary vectored endpoint test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "ordinary-vectored-endpoints",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/eventfd.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
+#include <unistd.h>
+
+static int check_socket(int type, int base) {
+  int fds[2];
+  if (socketpair(AF_UNIX, type | SOCK_CLOEXEC, 0, fds) != 0) {
+    return base;
+  }
+  char first[4] = "ABC";
+  char second[6] = "DEFGH";
+  struct iovec output[2] = {
+      {.iov_base = first, .iov_len = 3},
+      {.iov_base = second, .iov_len = 5},
+  };
+  if (writev(fds[0], output, 2) != 8) {
+    return base + 1;
+  }
+  memset(first, 0, sizeof(first));
+  memset(second, 0, sizeof(second));
+  struct iovec input[2] = {
+      {.iov_base = first, .iov_len = 3},
+      {.iov_base = second, .iov_len = 5},
+  };
+  if (readv(fds[1], input, 2) != 8 ||
+      memcmp(first, "ABC", 3) != 0 || memcmp(second, "DEFGH", 5) != 0) {
+    return base + 2;
+  }
+  close(fds[0]);
+  close(fds[1]);
+  return 0;
+}
+
+int main(void) {
+  int event = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+  if (event < 0) {
+    return 10;
+  }
+  uint64_t event_value = 7;
+  if (write(event, &event_value, sizeof(event_value)) !=
+      (ssize_t)sizeof(event_value)) {
+    return 11;
+  }
+  uint32_t event_low = 0;
+  uint32_t event_high = 0;
+  struct iovec event_input[2] = {
+      {.iov_base = &event_low, .iov_len = sizeof(event_low)},
+      {.iov_base = &event_high, .iov_len = sizeof(event_high)},
+  };
+  if (readv(event, event_input, 2) != (ssize_t)sizeof(event_value)) {
+    return 12;
+  }
+  uint64_t event_result = 0;
+  memcpy(&event_result, &event_low, sizeof(event_low));
+  memcpy((char *)&event_result + sizeof(event_low), &event_high,
+         sizeof(event_high));
+  if (event_result != event_value) {
+    return 13;
+  }
+
+  event_low = 9;
+  event_high = 0;
+  struct iovec event_output[2] = {
+      {.iov_base = &event_low, .iov_len = sizeof(event_low)},
+      {.iov_base = &event_high, .iov_len = sizeof(event_high)},
+  };
+  errno = 0;
+  if (writev(event, event_output, 2) != -1 || errno != EINVAL) {
+    return 14;
+  }
+  errno = 0;
+  if (read(event, &event_result, sizeof(event_result)) != -1 ||
+      errno != EAGAIN) {
+    return 15;
+  }
+  close(event);
+
+  int pipe_fds[2];
+  if (pipe2(pipe_fds, O_CLOEXEC) != 0) {
+    return 20;
+  }
+  char pipe_first[4] = "pip";
+  char pipe_second[6] = "e-data";
+  struct iovec pipe_output[2] = {
+      {.iov_base = pipe_first, .iov_len = 3},
+      {.iov_base = pipe_second, .iov_len = 5},
+  };
+  if (writev(pipe_fds[1], pipe_output, 2) != 8) {
+    return 21;
+  }
+  memset(pipe_first, 0, sizeof(pipe_first));
+  memset(pipe_second, 0, sizeof(pipe_second));
+  struct iovec pipe_input[2] = {
+      {.iov_base = pipe_first, .iov_len = 3},
+      {.iov_base = pipe_second, .iov_len = 5},
+  };
+  if (readv(pipe_fds[0], pipe_input, 2) != 8 ||
+      memcmp(pipe_first, "pip", 3) != 0 ||
+      memcmp(pipe_second, "e-data", 5) != 0) {
+    return 22;
+  }
+  close(pipe_fds[0]);
+  close(pipe_fds[1]);
+
+  int result = check_socket(SOCK_STREAM, 30);
+  if (result != 0) {
+    return result;
+  }
+  result = check_socket(SOCK_DGRAM, 40);
+  if (result != 0) {
+    return result;
+  }
+
+  puts("ordinary-vectored-endpoints-ok");
+  return 0;
+}
+"#,
+    );
+
+    let native = std::process::Command::new(&executable).output().unwrap();
+    assert!(
+        native.status.success(),
+        "native fixture exited {:?}; stdout={}; stderr={}",
+        native.status.code(),
+        String::from_utf8_lossy(&native.stdout),
+        String::from_utf8_lossy(&native.stderr),
+    );
+    assert_eq!(native.stdout, b"ordinary-vectored-endpoints-ok\n");
+    assert!(native.stderr.is_empty());
+
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!(
+        code,
+        0,
+        "KVM fixture exited {code}; stdout={}; stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr),
+    );
+    assert_eq!(stdout, native.stdout);
+    assert_eq!(stderr, native.stderr);
+}
+
+#[test]
 fn real_glibc_get_robust_list_tracks_fork_and_thread_lifecycles() {
     match Kvm::new() {
         Ok(_) => {}
