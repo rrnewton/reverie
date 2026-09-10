@@ -7032,5 +7032,63 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
 
 
+class RunCommandCheckKwarg(unittest.TestCase):
+    """`run_command` must HONOUR `check`, not forward it into `Popen`.
+
+    ⚠️ THIS IS THE TEST THAT WAS MISSING WHEN THE FLEET WENT DOWN. Commit
+    42d27103 moved `run_command` from `subprocess.run` to `subprocess.Popen` to
+    wait on the child rather than on EOF -- a correct fix -- but kept passing
+    `**kwargs` straight through. `check` is a `subprocess.run` parameter and
+    `Popen` rejects it, so every one of the eight call sites that passes it
+    raised `TypeError: Popen.__init__() got an unexpected keyword argument
+    'check'`. `checked_output` is on the path of every launch, so
+    `ci-hub validate-run` could not start a validation AT ALL, and the symptom
+    was a bare TypeError with no diagnosis.
+
+    Measured 2026-08-26: still reproducing on origin/main 15 hours after the fix
+    was written, because the fix (dev-hermit#186) sat unmerged and nothing in the
+    suite would have caught a reintroduction.
+
+    Both directions, because a fix that only tests the happy path does not defend
+    the load-bearing case: check=True in `create_fresh_checkout` must RAISE when
+    `git worktree add` fails, rather than yield an empty tree that then validates
+    fast and green.
+    """
+
+    def test_check_absent_returns_completed_process(self):
+        result = start_unit.run_command(["true"])
+        self.assertEqual(0, result.returncode)
+
+    def test_check_false_does_not_reach_popen(self):
+        """The exact crash: `check=False` must not be forwarded to Popen."""
+        result = start_unit.run_command(["false"], check=False)
+        self.assertEqual(1, result.returncode)
+
+    def test_check_true_returns_on_success(self):
+        result = start_unit.run_command(["true"], check=True)
+        self.assertEqual(0, result.returncode)
+
+    def test_check_true_raises_on_failure(self):
+        """LOAD-BEARING: create_fresh_checkout relies on this raising."""
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            start_unit.run_command(["false"], check=True)
+        self.assertEqual(1, caught.exception.returncode)
+
+    def test_output_is_still_captured_with_check(self):
+        """Honouring `check` must not cost the captured output."""
+        result = start_unit.run_command(
+            ["sh", "-c", "printf out; printf err >&2"], check=True
+        )
+        self.assertEqual("out", result.stdout)
+        self.assertEqual("err", result.stderr)
+
+    def test_checked_output_reaches_the_command(self):
+        """`checked_output` passes check=False; it is on every launch path."""
+        text = start_unit.checked_output(
+            ["printf", "hello"], run=start_unit.run_command, purpose="probe"
+        )
+        self.assertEqual("hello", text)
+
+
 if __name__ == "__main__":
     unittest.main()
