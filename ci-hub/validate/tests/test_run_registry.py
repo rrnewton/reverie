@@ -79,6 +79,42 @@ class RunRegistryContractTests(unittest.TestCase):
         self.assertIsNone(handle.admission_result)
         self.assertIsNone(run_registry.projection(handle.raw)["branch"])
 
+    def test_run_handle_schema_is_an_exact_integer_at_every_boundary(self) -> None:
+        missing = object()
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for label, schema_version in (
+                ("missing", missing),
+                ("boolean", True),
+                ("floating", 1.0),
+            ):
+                with self.subTest(label=label):
+                    value = validation_handle()
+                    if schema_version is missing:
+                        value.pop("schema_version")
+                    else:
+                        value["schema_version"] = schema_version
+
+                    self.assertFalse(
+                        run_registry.is_current_schema_version(
+                            value.get("schema_version")
+                        )
+                    )
+                    with self.assertRaisesRegex(RuntimeError, "schema"):
+                        run_registry.parse_current_record(value)
+                    with self.assertRaisesRegex(RuntimeError, "schema"):
+                        run_registry.projection(value)
+
+                    input_path = directory / f"{label}-input.json"
+                    input_path.write_text(json.dumps(value))
+                    with self.assertRaisesRegex(RuntimeError, "unsupported schema"):
+                        run_registry.read_record(input_path)
+
+                    output_path = directory / f"{label}-output.json"
+                    with self.assertRaisesRegex(RuntimeError, "unsupported schema"):
+                        run_registry.write_record(output_path, value)
+                    self.assertFalse(output_path.exists())
+
     def test_validation_branch_provenance_is_optional_and_typed(self) -> None:
         current = validation_handle(branch="codex/validate-branch-provenance")
         handle = run_registry.parse_current_record(current)

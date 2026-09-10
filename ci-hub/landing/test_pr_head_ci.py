@@ -86,6 +86,16 @@ def validation_event(
         "commit_status_publication": {"state": "published"},
     }
     if scorecard_writeback_failed:
+        row.update(
+            service_result_schema=P.service_result.TEST_COUNTS_SCHEMA_VERSION,
+            exit_code=75,
+            executed_tests=1,
+            passed_tests=1,
+            scorecard_writeback={
+                "status": "failed",
+                "error": "fixture scorecard write-back failure",
+            },
+        )
         row["commit_status_publication"] = {
             "state": "not-attempted",
             "reason": "scorecard write-back did not complete",
@@ -727,21 +737,82 @@ lander_restore_owned_checkout "$checkout" main 0 "$entry" "$fence" "$token" 1
         self.assertNotIn("PR-HEAD-CI FAILED", stdout.getvalue())
 
     def test_passed_validation_with_failed_writeback_is_not_called_could_not_run(self):
-        run = FakeRun(
-            heads=[OLD, OLD],
-            verdicts=["NOT-VALIDATED", "VALIDATED"],
-            validation_rc=75,
-            validation_stdout=validation_event(scorecard_writeback_failed=True),
-            validation_stderr="validate-run: scorecard write-back did not complete\n",
+        for version in P.service_result.AUTHORITATIVE_SCHEMA_VERSIONS:
+            with self.subTest(version=version):
+                event = json.loads(
+                    validation_event(scorecard_writeback_failed=True)
+                )
+                event["service_result_schema"] = version
+                if version == P.service_result.SCHEMA_VERSION:
+                    event["detail"] = None
+                run = FakeRun(
+                    heads=[OLD, OLD],
+                    verdicts=["NOT-VALIDATED", "VALIDATED"],
+                    validation_rc=75,
+                    validation_stdout=json.dumps(event) + "\n",
+                    validation_stderr=(
+                        "validate-run: scorecard write-back did not complete\n"
+                    ),
+                )
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    rc = self.main(self.args("--execute"), run=run)
+                self.assertEqual(0, rc)
+                self.assertIn("PR-HEAD-CI VALIDATED", stdout.getvalue())
+                self.assertIn(
+                    "scorecard write-back did not complete", stdout.getvalue()
+                )
+                self.assertIn(
+                    "scorecard write-back did not complete", stderr.getvalue()
+                )
+
+    def test_concurrent_green_cannot_promote_malformed_rc75_evidence(self):
+        missing = object()
+        cases = (
+            ("missing inner exit", "exit_code", missing),
+            ("boolean inner exit", "exit_code", True),
+            ("floating inner exit", "exit_code", 75.0),
+            ("wrong inner exit", "exit_code", 0),
+            ("missing service schema", "service_result_schema", missing),
+            ("boolean service schema", "service_result_schema", True),
+            ("floating service schema", "service_result_schema", 4.0),
+            (
+                "historical service schema",
+                "service_result_schema",
+                P.service_result.SELECTION_SCHEMA_VERSION,
+            ),
+            ("missing writeback", "scorecard_writeback", missing),
+            ("null writeback", "scorecard_writeback", None),
+            ("non-object writeback", "scorecard_writeback", "failed"),
+            ("missing writeback error", "scorecard_writeback", {"status": "failed"}),
+            (
+                "empty writeback error",
+                "scorecard_writeback",
+                {"status": "failed", "error": " "},
+            ),
         )
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-        with redirect_stdout(stdout), redirect_stderr(stderr):
-            rc = self.main(self.args("--execute"), run=run)
-        self.assertEqual(0, rc)
-        self.assertIn("PR-HEAD-CI VALIDATED", stdout.getvalue())
-        self.assertIn("scorecard write-back did not complete", stdout.getvalue())
-        self.assertIn("scorecard write-back did not complete", stderr.getvalue())
+        for label, field, malformed in cases:
+            with self.subTest(label=label):
+                event = json.loads(
+                    validation_event(scorecard_writeback_failed=True)
+                )
+                if malformed is missing:
+                    event.pop(field)
+                else:
+                    event[field] = malformed
+                run = FakeRun(
+                    heads=[OLD, OLD],
+                    verdicts=["NOT-VALIDATED", "VALIDATED"],
+                    validation_rc=75,
+                    validation_stdout=json.dumps(event) + "\n",
+                )
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    rc = self.main(self.args("--execute"), run=run)
+                self.assertEqual(4, rc)
+                self.assertIn("PR-HEAD-CI NO_RESULT", stdout.getvalue())
+                self.assertNotIn("PR-HEAD-CI VALIDATED", stdout.getvalue())
 
     def test_concurrent_green_does_not_replace_a_missing_terminal_event(self):
         run = FakeRun(

@@ -795,6 +795,9 @@ def is_evidenced_terminal(record: Mapping[str, Any]) -> bool:
     status = record.get("final_validate_status")
     if not isinstance(status, str):
         return False
+    exit_code = record.get("exit_code")
+    if type(exit_code) is not int:
+        return False
     schema_version = record.get("service_result_schema")
     if schema_version is not None and not is_supported_schema_version(schema_version):
         return False
@@ -825,6 +828,6 @@ def is_evidenced_terminal(record: Mapping[str, Any]) -> bool:
         except RuntimeError:
             return False
         expected = current_command_exit(status, writeback)
-        return record.get("exit_code") == expected
+        return exit_code == expected
     expected = FINAL_VALIDATE_STATUS_EXIT_CODES.get(status)
-    return expected is not None and record.get("exit_code") == expected
+    return expected is not None and exit_code == expected

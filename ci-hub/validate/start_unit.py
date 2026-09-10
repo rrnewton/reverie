@@ -2483,7 +2483,7 @@ def read_cleanup_record_object(path: Path) -> dict[str, Any]:
 def read_cleanup_record(path: Path) -> dict[str, Any]:
     """Read cleanup fields without applying the evolving verdict schema."""
     value = read_cleanup_record_object(path)
-    if value.get("schema_version") != run_registry.SCHEMA_VERSION:
+    if not run_registry.is_current_schema_version(value.get("schema_version")):
         raise RuntimeError(f"validation handle {path} has an unsupported schema")
     return value
 
@@ -2561,7 +2561,7 @@ def discover_cleanup_groups(
             continue
         discovery_counts["run_handle_candidates"] += 1
         checkout = cleanup_checkout_reference(root, raw)
-        if raw.get("schema_version") != run_registry.SCHEMA_VERSION:
+        if not run_registry.is_current_schema_version(raw.get("schema_version")):
             error = RuntimeError(f"validation handle {path} has an unsupported schema")
             retained.append({"checkout": str(path), "reason": str(error)})
             if checkout is not None:

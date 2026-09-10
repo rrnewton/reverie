@@ -24,6 +24,11 @@ PRODUCER = "ci-hub/validate/run_registry.py"
 OWNER_WATCH_CORRECTION_TRANSACTION = "owner-watch-handle-correction.transaction"
 
 
+def is_current_schema_version(value: object) -> bool:
+    """Accept only the exact JSON integer run-handle schema marker."""
+    return type(value) is int and value == SCHEMA_VERSION
+
+
 class RunKind(str, Enum):
     """The existing validate-lock kinds, recorded on every current handle."""
 
@@ -643,7 +648,7 @@ def _termination_requests(value: Mapping[str, Any]) -> tuple[TerminationRequest,
 
 
 def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
-    if value.get("schema_version") != SCHEMA_VERSION:
+    if not is_current_schema_version(value.get("schema_version")):
         raise _error(
             "schema_version",
             f"expected {SCHEMA_VERSION}, got {value.get('schema_version')!r}",
@@ -1035,7 +1040,7 @@ def read_record(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"validation handle {path} is not an object")
     schema = value.get("schema_version")
-    if schema != SCHEMA_VERSION:
+    if not is_current_schema_version(schema):
         raise RuntimeError(f"validation handle {path} has an unsupported schema")
     if value.get("producer") == PRODUCER:
         parse_current_record(value)
@@ -1112,7 +1117,7 @@ def exclusive_record(path: Path, *, blocking: bool = True):
 
 
 def _write_unlocked(path: Path, value: Mapping[str, Any]) -> None:
-    if value.get("schema_version") != SCHEMA_VERSION:
+    if not is_current_schema_version(value.get("schema_version")):
         raise RuntimeError(f"validation handle {path} has an unsupported schema")
     if value.get("producer") == PRODUCER:
         parse_current_record(value)
@@ -1360,7 +1365,7 @@ def _legacy_projection(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def projection(value: Mapping[str, Any]) -> dict[str, Any]:
-    if value.get("schema_version") != SCHEMA_VERSION:
+    if not is_current_schema_version(value.get("schema_version")):
         raise _error(
             "schema_version", f"unsupported value {value.get('schema_version')!r}"
         )

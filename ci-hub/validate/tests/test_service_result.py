@@ -860,5 +860,44 @@ class ServiceResultTest(unittest.TestCase):
         self.assertEqual(75, result["exit_code"])
         self.assertTrue(service_result.is_evidenced_terminal(result))
 
+    def test_evidenced_terminal_requires_an_exact_integer_exit_code(self) -> None:
+        schema_four = {
+            "state": "completed",
+            "result": "success",
+            "final_validate_status": "PASSED",
+            "service_result_schema": service_result.TEST_COUNTS_SCHEMA_VERSION,
+            "exit_code": 0,
+            "executed_tests": 1,
+            "passed_tests": 1,
+            "scorecard_writeback": None,
+        }
+        schema_five = {
+            **schema_four,
+            "service_result_schema": service_result.SCHEMA_VERSION,
+            "detail": None,
+        }
+        legacy = {
+            "state": "completed",
+            "result": "success",
+            "final_validate_status": "PASSED",
+            "exit_code": 0,
+        }
+
+        missing = object()
+        for label, valid in (
+            ("schema 4", schema_four),
+            ("schema 5", schema_five),
+            ("legacy no marker", legacy),
+        ):
+            self.assertTrue(service_result.is_evidenced_terminal(valid), label)
+            for malformed in (missing, False, 0.0):
+                with self.subTest(label=label, exit_code=malformed):
+                    record = dict(valid)
+                    if malformed is missing:
+                        record.pop("exit_code")
+                    else:
+                        record["exit_code"] = malformed
+                    self.assertFalse(service_result.is_evidenced_terminal(record))
+
 if __name__ == "__main__":
     unittest.main()

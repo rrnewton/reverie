@@ -3536,6 +3536,100 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertTrue(fresh.exists())
 
+    def test_sweep_retains_noninteger_or_missing_run_handle_schema(self) -> None:
+        missing = object()
+        checkouts: list[Path] = []
+        for label, schema_version in (
+            ("missing", missing),
+            ("boolean", True),
+            ("floating", 1.0),
+        ):
+            fresh, record_path = self.managed_cleanup_record(f"schema-{label}")
+            record = json.loads(record_path.read_text())
+            if schema_version is missing:
+                record.pop("schema_version")
+            else:
+                record["schema_version"] = schema_version
+            record_path.write_text(json.dumps(record))
+            with self.assertRaisesRegex(RuntimeError, "unsupported schema"):
+                start_unit.read_cleanup_record(record_path)
+            checkouts.append(fresh)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertGreaterEqual(
+            sum(
+                "unsupported schema" in row["reason"]
+                for row in report["retained"]
+            ),
+            3,
+        )
+        self.assertFalse(
+            any(
+                wrkslots_action(command, "remove-validate-batch")
+                for command in self.fake.commands
+            )
+        )
+        self.assertTrue(all(checkout.exists() for checkout in checkouts))
+
+    def test_sweep_retains_untyped_terminal_exit_codes(self) -> None:
+        self.fake.collected_unit = True
+        missing = object()
+        checkouts: list[Path] = []
+        for schema_label, schema_version in (
+            ("schema-4", start_unit.service_result.TEST_COUNTS_SCHEMA_VERSION),
+            ("schema-5", start_unit.service_result.SCHEMA_VERSION),
+            ("legacy", None),
+        ):
+            for exit_label, exit_code in (
+                ("missing", missing),
+                ("boolean", False),
+                ("floating", 0.0),
+            ):
+                suffix = f"{schema_label}-{exit_label}-exit"
+                fresh, record_path = self.managed_cleanup_record(suffix)
+                record = json.loads(record_path.read_text())
+                record["result"] = "success"
+                if schema_version is not None:
+                    record.update(
+                        service_result_schema=schema_version,
+                        selection_mode="full",
+                        executed_tests=1,
+                        passed_tests=1,
+                        scorecard_writeback=None,
+                    )
+                    if schema_version == start_unit.service_result.SCHEMA_VERSION:
+                        record["detail"] = None
+                if exit_code is missing:
+                    record.pop("exit_code")
+                else:
+                    record["exit_code"] = exit_code
+                record_path.write_text(json.dumps(record))
+                checkouts.append(fresh)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(
+            all(
+                "not terminal" in row["reason"]
+                for row in report["retained"]
+            ),
+            report["retained"],
+        )
+        self.assertFalse(
+            any(
+                wrkslots_action(command, "remove-validate-batch")
+                for command in self.fake.commands
+            )
+        )
+        self.assertTrue(all(checkout.exists() for checkout in checkouts))
+
     def test_deferred_malformed_group_still_reports_failure(self) -> None:
         for index in range(8):
             self.managed_cleanup_record(f"schema-earlier-{index}")

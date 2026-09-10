@@ -17,8 +17,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validate"))
 import bounded_capture  # noqa: E402
 import git_env  # noqa: E402
+import service_result  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -320,8 +322,24 @@ def is_passed_validation_with_failed_scorecard_writeback(
 ) -> bool:
     """Recognize exit 75 as bookkeeping only from this invocation's final row."""
     publication = event.get("commit_status_publication")
+    schema_version = event.get("service_result_schema")
+    exit_code = event.get("exit_code")
+    raw_writeback = event.get("scorecard_writeback")
+    if not isinstance(raw_writeback, dict):
+        return False
+    try:
+        writeback = service_result.read_scorecard_writeback_value(raw_writeback)
+    except RuntimeError:
+        return False
     return (
         is_passed_validation_event(event, canonical_verdict=canonical_verdict)
+        and service_result.is_supported_schema_version(schema_version)
+        and schema_version in service_result.AUTHORITATIVE_SCHEMA_VERSIONS
+        and type(exit_code) is int
+        and exit_code == 75
+        and writeback is not None
+        and writeback.get("status") == "failed"
+        and service_result.is_evidenced_terminal(event)
         and isinstance(publication, Mapping)
         and publication.get("state") == "not-attempted"
         and publication.get("reason") == "scorecard write-back did not complete"
