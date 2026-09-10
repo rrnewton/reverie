@@ -84,7 +84,7 @@ class Authorities:
                 for _ in range(self.records)
             ]
             report = {
-                "schema_version": 2,
+                "schema_version": driver.EXACT_VALIDATE_STATUS_SCHEMA_VERSION,
                 "repo": driver.REPO,
                 "sha": SHA,
                 "verdict": verdict,

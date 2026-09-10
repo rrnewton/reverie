@@ -721,7 +721,7 @@ SUPPORTED_REPOS = {
     "reverie": "rrnewton/reverie",
     "rrnewton/reverie": "rrnewton/reverie",
 }
-SCORECARD_PATHS = ("SCORECARD.md", "ci/compat-envelope/cells.json")
+SCORECARD_PATHS = run_registry.SCORECARD_WRITEBACK_PATHS
 SCORECARD_HANDOFF_SCHEMA_VERSION = 1
 
 
@@ -2727,6 +2727,8 @@ def sweep_completed_checkouts(
                 row.record,
                 Path(str(row.record.get("checkout", ""))),
                 row.unit,
+                run=run,
+                tool_root=tool_root,
             )
             if handoff is not None:
                 row.scorecard_handoff = str(handoff)
@@ -2795,7 +2797,13 @@ def sweep_completed_checkouts(
         for row in group.rows:
             try:
                 handoff = publish_recorded_scorecard_handoff(
-                    root, row.path, row.record, group.checkout, row.unit or row.path.stem
+                    root,
+                    row.path,
+                    row.record,
+                    group.checkout,
+                    row.unit or row.path.stem,
+                    run=run,
+                    tool_root=tool_root,
                 )
                 if handoff is not None:
                     row.scorecard_handoff = str(handoff)
@@ -4074,22 +4082,22 @@ def write_scorecard_from_results(
     *,
     run: Runner,
     json_output: bool,
-) -> bool:
-    """Run the locked writer after the validation verdict is established."""
+) -> list[dict[str, object]] | None:
+    """Run the locked writer and capture the exact generated file identities."""
     source_checkout = source_checkout.resolve()
     review_command = shlex.join(
         ["git", "-C", str(source_checkout), "diff", "--", *SCORECARD_PATHS]
     )
     output = sys.stderr if json_output else sys.stdout
 
-    def failed(reason: str) -> bool:
+    def failed(reason: str) -> None:
         print(
             "validate-run: compatibility scorecard NOT UPDATED: "
             f"{reason}. The established validate verdict is unchanged.",
             file=sys.stderr,
         )
         print(f"validate-run: review with: {review_command}", file=sys.stderr)
-        return False
+        return None
 
     try:
         head = checked_output(
@@ -4121,8 +4129,9 @@ def write_scorecard_from_results(
             )
         if result.returncode != 0:
             return failed(f"observe-results exited {result.returncode}")
+        identities, _files = _scorecard_source_files(source_checkout)
         print(f"validate-run: review with: {review_command}", file=output)
-        return True
+        return identities
     except Exception as error:
         # The verdict exists already. Even an unexpected local filesystem or
         # process-launch error must leave that result as the caller's exit code.
@@ -4148,16 +4157,14 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _scorecard_handoff_payload(
+def _scorecard_source_files(
     checkout: Path,
-    *,
-    target: str,
-    unit: str,
-    writeback_completed: bool,
-) -> tuple[dict[str, Any], dict[str, bytes]]:
+) -> tuple[list[dict[str, object]], dict[str, bytes]]:
+    """Read the generated pair once and return its canonical byte identities."""
+
     checkout = checkout.resolve()
     files: dict[str, bytes] = {}
-    manifest_files: list[dict[str, Any]] = []
+    identities: list[dict[str, object]] = []
     for relative in SCORECARD_PATHS:
         source = checkout / relative
         if source.is_symlink() or not source.is_file():
@@ -4168,12 +4175,36 @@ def _scorecard_handoff_payload(
             raise RuntimeError(f"scorecard handoff source escapes checkout: {source}") from error
         payload = source.read_bytes()
         files[relative] = payload
-        manifest_files.append(
+        identities.append(
             {
                 "path": relative,
                 "sha256": hashlib.sha256(payload).hexdigest(),
                 "size": len(payload),
             }
+        )
+    return identities, files
+
+
+def scorecard_writeback_files(checkout: Path) -> list[dict[str, object]]:
+    """Capture the generated pair immediately after the scorecard writer exits."""
+
+    identities, _files = _scorecard_source_files(checkout)
+    return identities
+
+
+def _scorecard_handoff_payload(
+    checkout: Path,
+    *,
+    target: str,
+    unit: str,
+    writeback_completed: bool,
+    expected_files: object,
+) -> tuple[dict[str, Any], dict[str, bytes]]:
+    recorded = run_registry.read_scorecard_writeback_files(expected_files)
+    manifest_files, files = _scorecard_source_files(checkout)
+    if manifest_files != recorded:
+        raise RuntimeError(
+            "scorecard handoff source bytes differ from the writer-recorded identities"
         )
     return (
         {
@@ -4185,6 +4216,80 @@ def _scorecard_handoff_payload(
         },
         files,
     )
+
+
+def require_live_scorecard_checkout(
+    root: Path,
+    checkout: Path,
+    target: str,
+    wrkslots: WrkslotsIdentity,
+    *,
+    run: Runner,
+    tool_root: Path,
+) -> None:
+    """Prove the handoff source is still the exact registered validation checkout."""
+
+    checkout = checkout.resolve()
+    head = checked_output(
+        ["git", "--no-replace-objects", "-C", str(checkout), "rev-parse", "HEAD^{commit}"],
+        run=run,
+        purpose="cannot resolve scorecard handoff checkout HEAD",
+    )
+    if head != target:
+        raise RuntimeError(
+            f"scorecard handoff checkout HEAD is {head}, expected validated target {target}"
+        )
+    result = run(
+        [
+            str(tool_root / "ci-hub/bin/wrkslots"),
+            "--project-root",
+            str(root.resolve()),
+            "--allow-existing-unregistered-worktrees",
+            "status",
+            "--slot",
+            wrkslots.slot,
+            "--format",
+            "json",
+        ],
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        raise RuntimeError(f"cannot verify live wrkslots registration: {detail}")
+    try:
+        status = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"wrkslots status emitted invalid JSON: {error}") from error
+    active = status.get("active") if isinstance(status, dict) else None
+    row = active[0] if isinstance(active, list) and len(active) == 1 else None
+    checkouts = row.get("checkouts") if isinstance(row, dict) else None
+    registered = checkouts[0] if isinstance(checkouts, list) and len(checkouts) == 1 else None
+    raw_path = registered.get("path") if isinstance(registered, dict) else None
+    valid_path = False
+    if isinstance(raw_path, str) and raw_path:
+        candidate = Path(raw_path)
+        if not candidate.is_absolute() and ".." not in candidate.parts:
+            valid_path = (root.resolve() / candidate).resolve() == checkout
+    valid = (
+        isinstance(status, dict)
+        and status.get("schema") == 2
+        and status.get("project_root") == str(root.resolve())
+        and isinstance(row, dict)
+        and row.get("slot") == wrkslots.slot
+        and row.get("slot_type") == "validate"
+        and type(row.get("generation")) is int
+        and row.get("generation") == wrkslots.generation
+        and row.get("storage_inconsistencies") == []
+        and isinstance(registered, dict)
+        and registered.get("name") == "checkout"
+        and registered.get("head") == target
+        and valid_path
+    )
+    if not valid:
+        raise RuntimeError(
+            "scorecard handoff checkout no longer matches its recorded live wrkslots "
+            f"slot {wrkslots.slot} generation {wrkslots.generation}"
+        )
 
 
 def _verify_scorecard_handoff(
@@ -4295,6 +4400,10 @@ def publish_scorecard_handoff(
     unit: str,
     *,
     writeback_completed: bool,
+    expected_files: object,
+    wrkslots: WrkslotsIdentity,
+    run: Runner,
+    tool_root: Path,
 ) -> Path:
     """Atomically publish generated scorecard files outside a disposable checkout."""
     if SHA_RE.fullmatch(target) is None:
@@ -4305,11 +4414,20 @@ def publish_scorecard_handoff(
     parent.mkdir(parents=True, exist_ok=True)
     if parent.is_symlink() or parent.resolve() != parent:
         raise RuntimeError(f"scorecard handoff parent is not canonical: {parent}")
+    require_live_scorecard_checkout(
+        root,
+        checkout,
+        target,
+        wrkslots,
+        run=run,
+        tool_root=tool_root,
+    )
     manifest, files = _scorecard_handoff_payload(
         checkout,
         target=target,
         unit=unit,
         writeback_completed=writeback_completed,
+        expected_files=expected_files,
     )
     if destination.exists() or destination.is_symlink():
         _verify_scorecard_handoff(destination, manifest, files)
@@ -4352,6 +4470,9 @@ def publish_recorded_scorecard_handoff(
     record: Mapping[str, Any],
     checkout: Path,
     unit: str,
+    *,
+    run: Runner,
+    tool_root: Path,
 ) -> Path | None:
     """Preserve or verify a materialized Hermit scorecard before cleanup.
 
@@ -4465,12 +4586,19 @@ def publish_recorded_scorecard_handoff(
             "the waiter can consume a current service result before cleanup; "
             "historical results require an already-published verified handoff"
         )
+    wrkslots = recorded_wrkslots_identity(record, checkout)
+    if wrkslots is None:
+        raise RuntimeError("materialized scorecard handoff has no exact wrkslots identity")
     return publish_scorecard_handoff(
         root,
         checkout,
         target,
         unit,
         writeback_completed=True,
+        expected_files=record.get("scorecard_writeback_files"),
+        wrkslots=wrkslots,
+        run=run,
+        tool_root=tool_root,
     )
 
 
@@ -4699,15 +4827,25 @@ def handoff_scorecard_after_writeback(
     unit: str,
     *,
     writeback_completed: bool,
+    expected_files: object,
+    wrkslots: WrkslotsIdentity | None,
+    run: Runner,
+    tool_root: Path,
 ) -> Path | None:
     """Publish scorecard output before a materialized checkout is retired."""
     try:
+        if wrkslots is None:
+            raise RuntimeError("materialized scorecard handoff has no exact wrkslots identity")
         handoff = publish_scorecard_handoff(
             root,
             checkout,
             target,
             unit,
             writeback_completed=writeback_completed,
+            expected_files=expected_files,
+            wrkslots=wrkslots,
+            run=run,
+            tool_root=tool_root,
         )
     except (OSError, RuntimeError, ValueError) as error:
         print(
@@ -4919,6 +5057,7 @@ def attach(
             print(f"  state:  {describe_outcome(canonical_exit)}")
     materialized_target = record.get("materialized_target") is True
     scorecard_handoff: Path | None = None
+    scorecard_files: list[dict[str, object]] | None = None
     handoff_required = materialized_target and repo == "rrnewton/hermit"
     scorecard_updated = repo != "rrnewton/hermit"
     recorded_handoff = updated.get("scorecard_handoff")
@@ -4938,6 +5077,8 @@ def attach(
                     updated,
                     Path(str(updated["checkout"])),
                     unit,
+                    run=run,
+                    tool_root=tool_root,
                 )
                 scorecard_updated = scorecard_handoff is not None
             else:
@@ -4964,13 +5105,27 @@ def attach(
         )
     else:
         try:
-            scorecard_updated = repo != "rrnewton/hermit" or write_scorecard_from_results(
-                Path(updated["checkout"] if materialized_target else updated["source_checkout"]),
-                target,
-                Path(updated["e2e_result_root"]),
-                run=run,
-                json_output=json_output,
-            )
+            if repo != "rrnewton/hermit":
+                scorecard_updated = True
+            else:
+                scorecard_files = write_scorecard_from_results(
+                    Path(
+                        updated["checkout"]
+                        if materialized_target
+                        else updated["source_checkout"]
+                    ),
+                    target,
+                    Path(updated["e2e_result_root"]),
+                    run=run,
+                    json_output=json_output,
+                )
+                scorecard_updated = scorecard_files is not None
+                if materialized_target and scorecard_files is not None:
+                    updated = bookkeep_record(
+                        record_path,
+                        base_record=updated,
+                        scorecard_writeback_files=scorecard_files,
+                    )
         except KeyError:
             print(
                 "validate-run: compatibility scorecard NOT UPDATED: the run record is "
@@ -4985,6 +5140,7 @@ def attach(
         and not handoff_recorded
         and not historical_result
     ):
+        wrkslots = recorded_wrkslots_identity(updated, Path(updated["checkout"]))
         scorecard_handoff = handoff_scorecard_after_writeback(
             root,
             record_path,
@@ -4992,6 +5148,10 @@ def attach(
             target,
             unit,
             writeback_completed=scorecard_updated,
+            expected_files=scorecard_files,
+            wrkslots=wrkslots,
+            run=run,
+            tool_root=tool_root,
         )
         scorecard_updated = scorecard_updated and scorecard_handoff is not None
     updated = finalize_commit_status_publication(
@@ -6058,16 +6218,26 @@ def main(
             f"verdict={canonical_verdict} exit={canonical_exit}"
         )
         print(f"  {row[:160]}")
-    scorecard_updated = repo != "rrnewton/hermit" or (
-        source_checkout is not None
-        and write_scorecard_from_results(
+    scorecard_files: list[dict[str, object]] | None = None
+    if repo != "rrnewton/hermit":
+        scorecard_updated = True
+    elif source_checkout is not None:
+        scorecard_files = write_scorecard_from_results(
             checkout if args.materialize_target else source_checkout,
             args.target,
             e2e_result_root,
             run=run,
             json_output=args.json,
         )
-    )
+        scorecard_updated = scorecard_files is not None
+        if args.materialize_target and scorecard_files is not None:
+            updated = bookkeep_record(
+                record_path,
+                base_record=updated,
+                scorecard_writeback_files=scorecard_files,
+            )
+    else:
+        scorecard_updated = False
     scorecard_handoff: Path | None = None
     handoff_required = (
         args.materialize_target
@@ -6082,6 +6252,10 @@ def main(
             args.target,
             unit,
             writeback_completed=scorecard_updated,
+            expected_files=scorecard_files,
+            wrkslots=fresh_wrkslots,
+            run=run,
+            tool_root=tool_root,
         )
         scorecard_updated = scorecard_updated and scorecard_handoff is not None
     updated = finalize_commit_status_publication(

@@ -194,6 +194,45 @@ def _ledger_team(repo: object) -> str:
     return value
 
 
+def _legacy_row_repo(event: dict) -> str | None:
+    """Validate and resolve repository identity embedded in a record event.
+
+    ``team`` is the path-safe outer identity while ``legacy_row.repo`` is the
+    repository identity consumed by the HistoryRow and raw-record views. They
+    must describe the same repository. The only missing-repository
+    compatibility is the measured historical Hermit population, whose rows
+    predate ``repo``; Reverie has no such historical population.
+
+    A result without an embedded compatibility row remains a valid generic
+    ledger event. A correction without an object row is rejected separately by
+    the correction projector.
+    """
+    if event.get("event_type") not in {"run.result", "run.enrich", "run.correct"}:
+        return None
+    row = event.get("legacy_row")
+    if not isinstance(row, dict):
+        return None
+
+    team = str(event.get("team") or "")
+    repo = row.get("repo")
+    if repo is None:
+        if team == "hermit":
+            return "hermit"
+        raise ValueError(
+            "legacy_row.repo is absent or null outside the historical Hermit "
+            "compatibility population"
+        )
+    if not isinstance(repo, str) or not repo.strip():
+        raise ValueError("legacy_row.repo is not a non-empty string")
+    row_team = _ledger_team(repo)
+    if row_team != team:
+        raise ValueError(
+            f"event team {team!r} conflicts with legacy_row.repo {repo!r} "
+            f"(maps to team {row_team!r})"
+        )
+    return repo
+
+
 def _require_local_commit(row: dict) -> Path:
     """Refuse before classification unless ``commit`` is real in ``cwd``.
 
@@ -791,14 +830,26 @@ def _validated_events(*, root: Path) -> list[dict]:
     """Read the event union once and refuse every malformed member."""
     items = events(root=root)
     for index, codes in enumerate(validate_events(items), 1):
+        event = items[index - 1]
         if codes:
-            event = items[index - 1]
             if event.get("event_type") == "run.correct":
                 raise ValueError(
                     f"HistoryRow correction {event.get('event_id')!r} is invalid: "
                     f"event violates {codes}"
                 )
             raise ValueError(f"validation event {index} violates {codes}")
+        try:
+            _legacy_row_repo(event)
+        except ValueError as error:
+            if event.get("event_type") == "run.correct":
+                raise ValueError(
+                    f"HistoryRow correction {event.get('event_id')!r} is invalid: "
+                    f"{error}"
+                ) from error
+            raise ValueError(
+                f"validation event {index} ({event.get('event_id')!r}) is invalid: "
+                f"{error}"
+            ) from error
     return items
 
 
@@ -866,7 +917,7 @@ def _record_identities(items: list[dict]) -> list[dict]:
             raise ValueError(
                 f"validation record {event.get('event_id')!r} has no exact lowercase commit"
             )
-        repo = row.get("repo") if isinstance(row, dict) else None
+        repo = _legacy_row_repo(event)
         if repo is None:
             repo = {"hermit": "hermit", "reverie": "reverie"}.get(
                 str(event.get("team") or "")

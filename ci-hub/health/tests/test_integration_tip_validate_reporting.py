@@ -50,7 +50,7 @@ def status_report(
     records = [] if exact_records is None else exact_records
     handles = [] if run_handles is None else run_handles
     return {
-        "schema_version": 2,
+        "schema_version": driver.EXACT_VALIDATE_STATUS_SCHEMA_VERSION,
         "repo": driver.REPO,
         "sha": SHA,
         "verdict": verdict,
@@ -169,6 +169,26 @@ def test_malformed_exact_record_refuses_without_launch(tmp_path: Path) -> None:
     )
     authorities = Authorities(report)
     with pytest.raises(driver.ObservationUnavailable, match="malformed exact record"):
+        driver.run_tick(
+            configured(tmp_path),
+            fetch=authorities.fetch,
+            run=authorities.run,
+            spawn=authorities.spawn,
+        )
+    assert authorities.launches == 0
+
+
+@pytest.mark.parametrize("schema", [None, 2, True, 3.0])
+def test_exact_status_requires_the_current_exact_integer_schema(
+    tmp_path: Path, schema: object
+) -> None:
+    report = status_report()
+    if schema is None:
+        report.pop("schema_version")
+    else:
+        report["schema_version"] = schema
+    authorities = Authorities(report)
+    with pytest.raises(driver.ObservationUnavailable, match="did not bind"):
         driver.run_tick(
             configured(tmp_path),
             fetch=authorities.fetch,

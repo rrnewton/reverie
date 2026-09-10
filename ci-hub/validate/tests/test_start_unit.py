@@ -212,6 +212,7 @@ class FakeRun:
         self.scorecard_update = False
         self.scorecard_rc = 0
         self.scorecard_stderr = ""
+        self.scorecard_head_after_write: str | None = None
         self.commit_status_action = "published"
         self.commit_status_rc = 0
         self.commit_status_stderr = ""
@@ -220,6 +221,10 @@ class FakeRun:
         self.wrkslots_generation = 7
         self.wrkslots_create_output: str | None = None
         self.wrkslots_create_path: str | None = None
+        self.wrkslots_status_generation: int | None = None
+        self.wrkslots_status_path: str | None = None
+        self.wrkslots_status_head: str | None = None
+        self.scorecard_tamper_on_status: str | None = None
         self.validate_batch_retained: dict[str, str] = {}
         self.validate_batch_output: str | None = None
         self.validate_batch_zero_census = False
@@ -315,6 +320,44 @@ class FakeRun:
                         "retained_storage_inconsistencies": [],
                         "slot": slot,
                         "slot_type": "validate",
+                    }
+                ),
+            )
+        if command[0].endswith("ci-hub/bin/wrkslots") and "status" in command:
+            project_root = Path(command[command.index("--project-root") + 1])
+            slot = command[command.index("--slot") + 1]
+            status_checkout = project_root / "worktrees/validate" / slot
+            if self.scorecard_tamper_on_status is not None:
+                tampered = status_checkout / self.scorecard_tamper_on_status
+                tampered.write_text(tampered.read_text() + "tampered after writeback\n")
+            relative = self.wrkslots_status_path or status_checkout.relative_to(
+                project_root
+            ).as_posix()
+            return completed(
+                command,
+                stdout=json.dumps(
+                    {
+                        "schema": 2,
+                        "project_root": str(project_root.resolve()),
+                        "active": [
+                            {
+                                "slot": slot,
+                                "slot_type": "validate",
+                                "generation": (
+                                    self.wrkslots_generation
+                                    if self.wrkslots_status_generation is None
+                                    else self.wrkslots_status_generation
+                                ),
+                                "storage_inconsistencies": [],
+                                "checkouts": [
+                                    {
+                                        "name": "checkout",
+                                        "path": relative,
+                                        "head": self.wrkslots_status_head or self.target,
+                                    }
+                                ],
+                            }
+                        ],
                     }
                 ),
             )
@@ -570,6 +613,16 @@ class FakeRun:
                     else None
                 ),
             )
+        if (
+            command[:1] == ["git"]
+            and "-C" in command
+            and Path(command[command.index("-C") + 1]).parent
+            == self.checkout.parent / "worktrees/validate"
+            and command[-2:] == ["rev-parse", "HEAD^{commit}"]
+        ):
+            location = Path(command[command.index("-C") + 1])
+            head = self.fresh_head if location == self.fresh else self.target
+            return completed(command, stdout=f"{head}\n")
         if command[:5] == ["git", "-C", str(self.checkout), "remote", "get-url"]:
             return completed(command, stdout="https://github.com/rrnewton/hermit.git\n")
         if (
@@ -731,6 +784,8 @@ class FakeRun:
                 for relative in start_unit.SCORECARD_PATHS:
                     path = scorecard_checkout / relative
                     path.write_text(path.read_text() + "updated\n")
+            if self.scorecard_rc == 0 and self.scorecard_head_after_write is not None:
+                self.fresh_head = self.scorecard_head_after_write
             state = "changed" if self.scorecard_update else "unchanged"
             return completed(
                 command,
@@ -5404,6 +5459,12 @@ class StartUnitTest(unittest.TestCase):
                 SHA,
                 "validate-test",
                 writeback_completed=handoff_writeback_completed,
+                expected_files=start_unit.scorecard_writeback_files(fresh),
+                wrkslots=start_unit.WrkslotsIdentity(
+                    fresh.name, self.fake.wrkslots_generation
+                ),
+                run=self.fake,
+                tool_root=self.root,
             )
             if publish_handoff
             else None
@@ -6471,13 +6532,99 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual([], sweep["removed"])
         self.assertTrue((handoff / "handoff.json").is_file())
 
+    def test_materialized_scorecard_tamper_after_writeback_refuses_and_retains(self) -> None:
+        self.fake.source_head = "d" * 40
+        self.fake.scorecard_update = True
+        self.fake.scorecard_tamper_on_status = "SCORECARD.md"
+
+        rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        exact_checkout = self.fake.fresh
+        self.assertIsNotNone(exact_checkout)
+        assert exact_checkout is not None
+        self.assertTrue(exact_checkout.is_dir())
+        self.assertEqual([], self.fake.removed)
+        self.assertFalse(
+            start_unit.scorecard_handoff_path(self.root, "validate-test").exists()
+        )
+        self.assertIn("differ from the writer-recorded identities", error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual(
+            set(start_unit.SCORECARD_PATHS),
+            {row["path"] for row in record["scorecard_writeback_files"]},
+        )
+
+    def test_materialized_scorecard_reused_generation_refuses_and_retains(self) -> None:
+        self.fake.source_head = "d" * 40
+        self.fake.scorecard_update = True
+        self.fake.wrkslots_status_generation = self.fake.wrkslots_generation + 1
+
+        rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        exact_checkout = self.fake.fresh
+        self.assertIsNotNone(exact_checkout)
+        assert exact_checkout is not None
+        self.assertTrue(exact_checkout.is_dir())
+        self.assertEqual([], self.fake.removed)
+        self.assertFalse(
+            start_unit.scorecard_handoff_path(self.root, "validate-test").exists()
+        )
+        self.assertIn("no longer matches its recorded live wrkslots", error)
+
+    def test_materialized_scorecard_replaced_slot_path_refuses_and_retains(self) -> None:
+        self.fake.source_head = "d" * 40
+        self.fake.scorecard_update = True
+        self.fake.wrkslots_status_path = "worktrees/validate/reused-elsewhere"
+
+        rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        exact_checkout = self.fake.fresh
+        self.assertIsNotNone(exact_checkout)
+        assert exact_checkout is not None
+        self.assertTrue(exact_checkout.is_dir())
+        self.assertEqual([], self.fake.removed)
+        self.assertIn("no longer matches its recorded live wrkslots", error)
+
+    def test_materialized_scorecard_moved_head_refuses_before_publication(self) -> None:
+        self.fake.source_head = "d" * 40
+        self.fake.scorecard_update = True
+        self.fake.scorecard_head_after_write = "e" * 40
+
+        rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        exact_checkout = self.fake.fresh
+        self.assertIsNotNone(exact_checkout)
+        assert exact_checkout is not None
+        self.assertTrue(exact_checkout.is_dir())
+        self.assertEqual([], self.fake.removed)
+        self.assertFalse(
+            any(wrkslots_action(command, "status") for command in self.fake.commands)
+        )
+        self.assertIn("checkout HEAD is", error)
+
     def test_scorecard_handoff_refuses_a_missing_pair_member(self) -> None:
+        fresh, _record = self.managed_cleanup_record("pair")
+        self.fake.fresh = fresh
+        (fresh / "SCORECARD.md").write_text("scorecard\n")
+        cells = fresh / "ci/compat-envelope/cells.json"
+        cells.parent.mkdir(parents=True)
+        cells.write_text("{}\n")
         handoff = start_unit.publish_scorecard_handoff(
             self.root,
-            self.checkout,
+            fresh,
             SHA,
             "validate-pair",
             writeback_completed=True,
+            expected_files=start_unit.scorecard_writeback_files(fresh),
+            wrkslots=start_unit.WrkslotsIdentity(fresh.name, 7),
+            run=self.fake,
+            tool_root=self.root,
         )
         (handoff / "SCORECARD.md").unlink()
 
@@ -6488,12 +6635,22 @@ class StartUnitTest(unittest.TestCase):
 
     def test_scorecard_handoff_refuses_missing_cells_member(self) -> None:
         unit = "validate-pair-cells"
+        fresh, _record = self.managed_cleanup_record("pair-cells")
+        self.fake.fresh = fresh
+        (fresh / "SCORECARD.md").write_text("scorecard\n")
+        cells = fresh / "ci/compat-envelope/cells.json"
+        cells.parent.mkdir(parents=True)
+        cells.write_text("{}\n")
         handoff = start_unit.publish_scorecard_handoff(
             self.root,
-            self.checkout,
+            fresh,
             SHA,
             unit,
             writeback_completed=True,
+            expected_files=start_unit.scorecard_writeback_files(fresh),
+            wrkslots=start_unit.WrkslotsIdentity(fresh.name, 7),
+            run=self.fake,
+            tool_root=self.root,
         )
         (handoff / "ci/compat-envelope/cells.json").unlink()
 
@@ -6528,11 +6685,14 @@ class StartUnitTest(unittest.TestCase):
             materialized_target=True,
             scorecard_writeback={"status": "completed"},
         )
-        start_unit.run_registry.write_record(record_path, record)
         (fresh / "SCORECARD.md").write_text("scorecard\nupdated\n")
         cells = fresh / "ci/compat-envelope/cells.json"
         cells.parent.mkdir(parents=True)
         cells.write_text("{}\nupdated\n")
+        record["scorecard_writeback_files"] = start_unit.scorecard_writeback_files(
+            fresh
+        )
+        start_unit.run_registry.write_record(record_path, record)
 
         report = start_unit.sweep_completed_checkouts(
             self.root, run=self.fake, tool_root=self.root
@@ -6549,8 +6709,12 @@ class StartUnitTest(unittest.TestCase):
         durable = start_unit.run_registry.read_record(record_path)
         self.assertEqual(str(handoff), durable["scorecard_handoff"])
 
-    def test_sweep_retains_materialized_checkout_when_handoff_conflicts(self) -> None:
-        fresh, record_path = self.managed_cleanup_record("materialized-conflict")
+    def test_sweep_retains_materialized_checkout_without_writer_file_identities(
+        self,
+    ) -> None:
+        fresh, record_path = self.managed_cleanup_record(
+            "materialized-no-writer-identities"
+        )
         record = start_unit.run_registry.read_record(record_path)
         record.update(
             target=SHA,
@@ -6562,6 +6726,37 @@ class StartUnitTest(unittest.TestCase):
         cells = fresh / "ci/compat-envelope/cells.json"
         cells.parent.mkdir(parents=True)
         cells.write_text("{}\n")
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(
+            any(
+                "scorecard_writeback_files" in row["reason"]
+                for row in report["retained"]
+            ),
+            report["retained"],
+        )
+
+    def test_sweep_retains_materialized_checkout_when_handoff_conflicts(self) -> None:
+        fresh, record_path = self.managed_cleanup_record("materialized-conflict")
+        record = start_unit.run_registry.read_record(record_path)
+        record.update(
+            target=SHA,
+            materialized_target=True,
+            scorecard_writeback={"status": "completed"},
+        )
+        (fresh / "SCORECARD.md").write_text("updated\n")
+        cells = fresh / "ci/compat-envelope/cells.json"
+        cells.parent.mkdir(parents=True)
+        cells.write_text("{}\n")
+        record["scorecard_writeback_files"] = start_unit.scorecard_writeback_files(
+            fresh
+        )
+        start_unit.run_registry.write_record(record_path, record)
         handoff = start_unit.scorecard_handoff_path(
             self.root, "validate-materialized-conflict"
         )

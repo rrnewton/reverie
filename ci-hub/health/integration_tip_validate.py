@@ -28,6 +28,7 @@ import git_env  # noqa: E402
 REPO = "rrnewton/hermit"
 AGENT = "ops-tick-integration-tip"
 DEFAULT_TOTAL_TIMEOUT_SECONDS = 75.0
+EXACT_VALIDATE_STATUS_SCHEMA_VERSION = 3
 
 
 class ObservationUnavailable(RuntimeError):
@@ -196,7 +197,8 @@ def exact_record_count(
             f"exact validate-status omitted required fields: {error}"
         ) from error
     if (
-        report.get("schema_version") != 2
+        type(report.get("schema_version")) is not int
+        or report.get("schema_version") != EXACT_VALIDATE_STATUS_SCHEMA_VERSION
         or report.get("repo") != REPO
         or reported_sha != target
         or type(reported_exit) is not int

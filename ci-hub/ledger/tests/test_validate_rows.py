@@ -113,6 +113,29 @@ def correction_for(original: dict) -> dict:
     }
 
 
+def record_event_for_team(
+    root: Path, event_type: str, team: str
+) -> tuple[list[dict], dict]:
+    """Return a valid result and the requested legacy-row-bearing event."""
+    original = event_with_null_failed_substeps(root)
+    original["team"] = team
+    original["legacy_row"]["repo"] = team
+    if event_type == "run.result":
+        return [original], original
+    if event_type == "run.enrich":
+        enrichment = {
+            **{key: original[key] for key in ledger.ENVELOPE_KEYS},
+            "event_id": "historical-null-enrichment",
+            "event_type": "run.enrich",
+            "emitted_at": "2026-08-10T01:00:00Z",
+            "enriches": original["event_id"],
+            "legacy_row": copy.deepcopy(original["legacy_row"]),
+        }
+        return [original, enrichment], enrichment
+    correction = correction_for(original)
+    return [original, correction], correction
+
+
 def identity() -> dict:
     return {
         "lane": "strict",
@@ -467,6 +490,79 @@ def test_status_input_cli_reads_the_production_event_adapter_once(tmp_path: Path
         "run.result",
         "run.correct",
     }
+
+
+@pytest.mark.parametrize("event_type", ["run.result", "run.enrich", "run.correct"])
+@pytest.mark.parametrize(
+    ("team", "embedded_repo"),
+    [("hermit", "reverie"), ("reverie", "hermit")],
+)
+def test_record_event_team_must_match_embedded_repo(
+    tmp_path: Path, event_type: str, team: str, embedded_repo: str
+):
+    items, candidate = record_event_for_team(tmp_path, event_type, team)
+    candidate["legacy_row"]["repo"] = embedded_repo
+    write_events(tmp_path, *items)
+
+    for reader in (validate_rows.rows, validate_rows.status_input):
+        with pytest.raises(ValueError, match="conflicts with legacy_row.repo"):
+            reader(root=tmp_path)
+
+
+@pytest.mark.parametrize("event_type", ["run.result", "run.enrich", "run.correct"])
+@pytest.mark.parametrize("representation", ["missing", "null"])
+def test_historical_hermit_record_without_repo_remains_compatible(
+    tmp_path: Path, event_type: str, representation: str
+):
+    items, candidate = record_event_for_team(tmp_path, event_type, "hermit")
+    if representation == "missing":
+        candidate["legacy_row"].pop("repo")
+    else:
+        candidate["legacy_row"]["repo"] = None
+    write_events(tmp_path, *items)
+
+    status = validate_rows.status_input(root=tmp_path)
+
+    assert all(record["repo"] == "hermit" for record in status["records"])
+    if representation == "missing":
+        assert "repo" not in status["rows"][-1]
+    else:
+        assert status["rows"][-1]["repo"] is None
+
+
+@pytest.mark.parametrize("event_type", ["run.result", "run.enrich", "run.correct"])
+@pytest.mark.parametrize("representation", ["missing", "null"])
+def test_reverie_record_without_repo_is_refused(
+    tmp_path: Path, event_type: str, representation: str
+):
+    items, candidate = record_event_for_team(tmp_path, event_type, "reverie")
+    if representation == "missing":
+        candidate["legacy_row"].pop("repo")
+    else:
+        candidate["legacy_row"]["repo"] = None
+    write_events(tmp_path, *items)
+
+    with pytest.raises(ValueError, match="outside the historical Hermit"):
+        validate_rows.status_input(root=tmp_path)
+
+
+def test_historical_reverie_row_in_hermit_team_is_refused(tmp_path: Path):
+    """The 19 imported events of this shape cannot cross repository authority."""
+    items, candidate = record_event_for_team(tmp_path, "run.result", "hermit")
+    candidate.update(
+        event_id="legacy-000246-000",
+        run_id="legacy-000246",
+        producer={
+            "source": "imported",
+            "tool": "ci-hub/ledger/migrate_legacy",
+            "tool_version": "1",
+        },
+    )
+    candidate["legacy_row"]["repo"] = "reverie"
+    write_events(tmp_path, *items)
+
+    with pytest.raises(ValueError, match="conflicts with legacy_row.repo"):
+        validate_rows.status_input(root=tmp_path)
 
 
 @pytest.mark.parametrize(

@@ -86,7 +86,7 @@ def test_newer_reconciled_tip_is_launched_instead_of_consuming_cadence_on_stale_
                 else []
             )
             report = {
-                "schema_version": 2,
+                "schema_version": driver.EXACT_VALIDATE_STATUS_SCHEMA_VERSION,
                 "repo": driver.REPO,
                 "sha": target,
                 "verdict": "VALIDATED" if has_record else "NOT-VALIDATED",

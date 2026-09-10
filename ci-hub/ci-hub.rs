@@ -6302,7 +6302,11 @@ fn recent_row_summary(
 /// Render the most specific human-readable cause retained by one exact-commit
 /// validation row. The periodic-tip driver must not turn a readable red row
 /// back into the generic statement that a record merely exists.
-fn exact_record_detail(row: &HistoryRow, verdict: &str) -> String {
+fn exact_record_detail(
+    row: &HistoryRow,
+    verdict: &str,
+    no_result_reasons: &[validate_status::NoResultReason],
+) -> String {
     let failing = row
         .gates
         .iter()
@@ -6353,7 +6357,7 @@ fn exact_record_detail(row: &HistoryRow, verdict: &str) -> String {
         }
     }
 
-    let mut detail = recent_row_summary(row, verdict);
+    let mut detail = recent_row_summary(row, verdict, no_result_reasons);
     if let Some(result) = row.result.as_deref() {
         detail.push_str(&format!("; result={result}"));
     }
@@ -6364,14 +6368,15 @@ fn exact_record_detail(row: &HistoryRow, verdict: &str) -> String {
 }
 
 fn describe_exact_validation_record(row: &HistoryRow, repo: &str) -> serde_json::Value {
-    let verdict = recent_row_verdict(row, repo);
+    let outcome = recent_row_outcome(row, repo);
+    let verdict = outcome.verdict;
     serde_json::json!({
         "verdict": verdict,
         "result": row.result,
         "exit_code": row.exit_code,
         "started_at": row.started_at,
         "finished_at": row.finished_at,
-        "detail": exact_record_detail(row, verdict),
+        "detail": exact_record_detail(row, verdict, &outcome.no_result_reasons),
     })
 }
 
@@ -13176,7 +13181,7 @@ mod tests {
         assert_eq!(report["exit_code"], 0);
         assert_eq!(
             report["detail"],
-            "validation did not exercise the product; result=pass; exit=0"
+            "zero-test pass (executed_tests=0); result=pass; exit=0"
         );
     }
 

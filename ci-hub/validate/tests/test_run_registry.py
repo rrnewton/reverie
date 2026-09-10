@@ -18,6 +18,14 @@ import run_registry  # noqa: E402
 
 
 SHA = "a" * 40
+SCORECARD_WRITEBACK_FILES = [
+    {"path": "SCORECARD.md", "sha256": "b" * 64, "size": 123},
+    {
+        "path": "ci/compat-envelope/cells.json",
+        "sha256": "c" * 64,
+        "size": 456,
+    },
+]
 
 
 def validation_handle(**updates: object) -> dict[str, object]:
@@ -155,6 +163,18 @@ class RunRegistryContractTests(unittest.TestCase):
             "/state/ignored/validate/scorecard-writebacks/validate-test",
             handed_off.raw["scorecard_handoff"],
         )
+        writer_bound = run_registry.parse_current_record(
+            validation_handle(
+                materialized_target=True,
+                wrkslots_slot="validate-fresh-exact",
+                wrkslots_generation=7,
+                scorecard_writeback_files=SCORECARD_WRITEBACK_FILES,
+            )
+        )
+        self.assertEqual(
+            SCORECARD_WRITEBACK_FILES,
+            writer_bound.raw["scorecard_writeback_files"],
+        )
 
         for value in (None, 0, "true"):
             with self.subTest(value=value):
@@ -208,6 +228,40 @@ class RunRegistryContractTests(unittest.TestCase):
                     RuntimeError, "validation-run-handle-scorecard_handoff"
                 ):
                     run_registry.parse_current_record(validation_handle(**updates))
+
+    def test_scorecard_writeback_files_are_a_closed_two_file_identity(self) -> None:
+        base = {
+            "materialized_target": True,
+            "wrkslots_slot": "validate-fresh-exact",
+            "wrkslots_generation": 7,
+        }
+        with self.assertRaisesRegex(
+            RuntimeError, "validation-run-handle-scorecard_writeback_files"
+        ):
+            run_registry.parse_current_record(
+                validation_handle(scorecard_writeback_files=SCORECARD_WRITEBACK_FILES)
+            )
+        cases = (
+            [],
+            SCORECARD_WRITEBACK_FILES[:1],
+            [SCORECARD_WRITEBACK_FILES[0], SCORECARD_WRITEBACK_FILES[0]],
+            [
+                SCORECARD_WRITEBACK_FILES[0],
+                {**SCORECARD_WRITEBACK_FILES[1], "sha256": "not-a-digest"},
+            ],
+            [
+                SCORECARD_WRITEBACK_FILES[0],
+                {**SCORECARD_WRITEBACK_FILES[1], "size": -1},
+            ],
+        )
+        for value in cases:
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    RuntimeError, "validation-run-handle-scorecard_writeback_files"
+                ):
+                    run_registry.parse_current_record(
+                        validation_handle(**base, scorecard_writeback_files=value)
+                    )
 
     def test_validation_wrkslots_identity_is_paired_positive_and_optional(self) -> None:
         historical = run_registry.parse_current_record(validation_handle())
