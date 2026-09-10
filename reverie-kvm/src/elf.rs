@@ -31,6 +31,8 @@ use crate::Result;
 use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::PROGRAM_HEADERS_ADDRESS;
 use crate::bootstrap::VDSO_ADDRESS;
+use crate::signal::ProcessSignalState;
+use crate::signal::ThreadSignalState;
 
 const PAGE_SIZE: u64 = 4096;
 pub(crate) const STACK_LIMIT: u64 = 8 * 1024 * 1024;
@@ -103,14 +105,6 @@ impl GuestFileIdentityEntry {
 pub(crate) struct GuestFileIdentityTable {
     pub next_inode: u64,
     pub objects: std::collections::BTreeMap<(libc::dev_t, libc::ino_t), GuestFileIdentityEntry>,
-}
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-235): Review process-local virtual signalfd state.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct SignalFdState {
-    pub masks: std::collections::BTreeMap<i32, [u8; 8]>,
-    pub pending: std::collections::BTreeSet<i32>,
 }
 
 /// Process-tree-wide state whose lifetime follows a guest task rather than an
@@ -194,6 +188,21 @@ impl TaskLifecycleTable {
         self.tasks.get(&tid).copied()
     }
 
+    pub(crate) fn has_live_sibling(&self, tid: i32, tgid: i32) -> bool {
+        self.tasks
+            .iter()
+            .any(|(&candidate, task)| candidate != tid && task.tgid == tgid)
+    }
+
+    /// Returns each live virtual process exactly once, including a thread group
+    /// whose leader has exited while another member remains live.
+    pub(crate) fn process_ids(&self) -> impl Iterator<Item = i32> {
+        self.tasks
+            .values()
+            .map(|task| task.tgid)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+    }
     pub(crate) fn set_dumpable(&mut self, tgid: i32, dumpable: bool) -> bool {
         let mut found = false;
         for task in self.tasks.values_mut().filter(|task| task.tgid == tgid) {
@@ -268,10 +277,10 @@ pub(crate) struct LoadedStaticElf {
     pub sched_priority: libc::c_int,
     pub sched_reset_on_fork: bool,
     pub ioprio: libc::c_int,
-    pub signal_actions: std::collections::BTreeMap<i32, [u8; 32]>,
-    pub signal_mask: [u8; 8],
-    pub signal_alt_stack: Option<Vec<u8>>,
-    pub signalfd_state: std::sync::Arc<std::sync::Mutex<SignalFdState>>,
+    /// Dispositions and process-pending signals shared by a thread group.
+    pub process_signals: std::sync::Arc<std::sync::Mutex<ProcessSignalState>>,
+    /// Mask, alternate stack, and pending signals private to this thread.
+    pub thread_signals: ThreadSignalState,
     // One process-tree-wide membership table distinguishes a live task with no
     // robust-list registration from an unknown/dead tid. Entries are created
     // with each executor, reset across exec, and removed when that executor is
@@ -316,12 +325,11 @@ impl LoadedStaticElf {
             .iter()
             .map(|(&fd, file)| Ok((fd, file.try_clone()?)))
             .collect::<Result<_>>()?;
-        let signalfd_masks = self
-            .signalfd_state
+        let process_signals = self
+            .process_signals
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .masks
-            .clone();
+            .for_fork();
         Ok(Self {
             entry_point: self.entry_point,
             stack_pointer: self.stack_pointer,
@@ -374,13 +382,8 @@ impl LoadedStaticElf {
             } else {
                 self.ioprio
             },
-            signal_actions: self.signal_actions.clone(),
-            signal_mask: self.signal_mask,
-            signal_alt_stack: self.signal_alt_stack.clone(),
-            signalfd_state: std::sync::Arc::new(std::sync::Mutex::new(SignalFdState {
-                masks: signalfd_masks,
-                pending: std::collections::BTreeSet::new(),
-            })),
+            process_signals: std::sync::Arc::new(std::sync::Mutex::new(process_signals)),
+            thread_signals: self.thread_signals.for_fork(),
             task_lifecycle: self.task_lifecycle.clone(),
             files,
             random_device_fds: self.random_device_fds.clone(),
@@ -398,11 +401,12 @@ impl LoadedStaticElf {
     // TODO-HUMAN-REVIEW(PR-136): Review live identity filtering across exec.
     pub(crate) fn inherit_process_state(&mut self, previous: Self) {
         let cloexec_fds = previous.cloexec_fds;
-        let previous_signalfd_state = previous
-            .signalfd_state
+        let mut process_signals = previous
+            .process_signals
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
+            .after_exec();
+        let thread_signals = previous.thread_signals.after_exec();
         let mut stdin = previous.stdin;
         let files: std::collections::BTreeMap<_, _> = previous
             .files
@@ -434,14 +438,9 @@ impl LoadedStaticElf {
             .into_iter()
             .filter(|(fd, _)| files.contains_key(fd))
             .collect();
-        let signalfd_state = SignalFdState {
-            masks: previous_signalfd_state
-                .masks
-                .into_iter()
-                .filter(|(fd, _)| files.contains_key(fd))
-                .collect(),
-            pending: previous_signalfd_state.pending,
-        };
+        process_signals
+            .signalfd_masks
+            .retain(|fd, _| files.contains_key(fd));
         let task_lifecycle = previous.task_lifecycle.clone();
         let file_identity_table = previous.file_identity_table.clone();
         {
@@ -460,23 +459,6 @@ impl LoadedStaticElf {
                 closed_standard_fds.insert(fd);
             }
         }
-        let signal_actions = previous
-            .signal_actions
-            .into_iter()
-            .filter_map(|(signal, action)| {
-                let handler = usize::from_ne_bytes(
-                    action[..std::mem::size_of::<usize>()]
-                        .try_into()
-                        .expect("signal handler field size"),
-                );
-                (handler == libc::SIG_IGN).then(|| {
-                    let mut ignored = [0; 32];
-                    ignored[..std::mem::size_of::<usize>()]
-                        .copy_from_slice(&libc::SIG_IGN.to_ne_bytes());
-                    (signal, ignored)
-                })
-            })
-            .collect();
 
         self.cwd = previous.cwd;
         self.cwd_fd = previous.cwd_fd;
@@ -503,9 +485,8 @@ impl LoadedStaticElf {
         self.sched_priority = previous.sched_priority;
         self.sched_reset_on_fork = previous.sched_reset_on_fork;
         self.ioprio = previous.ioprio;
-        self.signal_actions = signal_actions;
-        self.signal_mask = previous.signal_mask;
-        self.signalfd_state = std::sync::Arc::new(std::sync::Mutex::new(signalfd_state));
+        self.process_signals = std::sync::Arc::new(std::sync::Mutex::new(process_signals));
+        self.thread_signals = thread_signals;
         self.task_lifecycle = task_lifecycle;
         self.task_lifecycle
             .lock()
@@ -739,10 +720,8 @@ fn load_executable(
         sched_priority: 0,
         sched_reset_on_fork: false,
         ioprio: 0,
-        signal_actions: std::collections::BTreeMap::new(),
-        signal_mask: [0; 8],
-        signal_alt_stack: None,
-        signalfd_state: std::sync::Arc::new(std::sync::Mutex::new(SignalFdState::default())),
+        process_signals: std::sync::Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
+        thread_signals: ThreadSignalState::default(),
         task_lifecycle: std::sync::Arc::new(std::sync::Mutex::new(TaskLifecycleTable::with_root(
             1, 1, true,
         ))),

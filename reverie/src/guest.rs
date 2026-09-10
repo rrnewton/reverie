@@ -15,6 +15,7 @@ use reverie_syscalls::SyscallInfo;
 
 use crate::Never;
 use crate::Pid;
+use crate::SignalEvent;
 use crate::auxv::Auxv;
 use crate::backtrace::Backtrace;
 use crate::error::Error;
@@ -201,6 +202,22 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// }
     /// ```
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never;
+
+    /// Defers one already-selected signal for delivery by the backend at its
+    /// next safe return-to-userspace boundary.
+    ///
+    /// Backends may return `ENOSYS` when the current callback has no resumable
+    /// userspace register context (for example, a lifecycle callback), when
+    /// signal provenance is unsupported, or when deterministic recipient
+    /// selection is not available. Callers must handle that refusal rather
+    /// than assuming the event was queued.
+    ///
+    /// This is additive to the historical host-signal path. Backends that do
+    /// not own a virtual guest signal frame retain the default explicit
+    /// `ENOSYS`; adding this method does not change ptrace signal delivery.
+    async fn defer_signal_delivery(&mut self, _event: SignalEvent) -> Result<(), Error> {
+        Err(Errno::ENOSYS.into())
+    }
 
     /// Like [`Guest::inject`], but will retry the syscall if `EINTR` or
     /// `ERESTARTSYS` are returned.
@@ -432,6 +449,10 @@ where
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
         #![allow(unreachable_code)]
         self.inner.tail_inject(syscall).await
+    }
+
+    async fn defer_signal_delivery(&mut self, event: SignalEvent) -> Result<(), Error> {
+        self.inner.defer_signal_delivery(event).await
     }
 
     fn set_timer(&mut self, sched: TimerSchedule) -> Result<(), Error> {
