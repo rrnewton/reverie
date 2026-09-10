@@ -92,6 +92,15 @@ No gVisor code is copied. Unlike the gVisor Sentry VFS and `pkg/sentry/fsimpl/` 
 
 ## Current limits
 
+Non-leader `execve` and supported-form `execveat` (`AT_FDCWD`, flags `0`)
+preserve safe preflight errors: `EFAULT` for invalid path/argv/envp pointers,
+`ENOENT` for missing absolute executable paths, and `ENOEXEC` for malformed
+images. Otherwise valid requests return `ENOSYS` without replacing shared
+memory or tearing down siblings: promoting the caller to thread-group leader
+and completing sibling teardown for worker exec are not implemented. Linux
+supports that replacement; this remains a ptrace-versus-KVM capability gap,
+not successful worker-exec parity.
+
 This crate is not a complete Linux execution backend. Each process has one vCPU
 and fixed-address identity mappings; pthread clones run cooperatively rather than
 concurrently, so programs that require parent/child or sibling interleaving can

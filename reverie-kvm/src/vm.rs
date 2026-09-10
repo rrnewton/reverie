@@ -1043,6 +1043,9 @@ impl KvmBackend {
                 self.thread_group.add_worker_handle(handle);
             }
             ProcessAction::Exec { image, argv, envp } => {
+                if self.is_guest_thread {
+                    return Err(Error::GuestThreadExecUnsupported);
+                }
                 if park_syscall_return {
                     set_syscall_return_park(
                         &mut self.memory,
@@ -1927,6 +1930,129 @@ mod tests {
         assert!(outer_finished.load(Ordering::Acquire));
         assert!(nested_finished.load(Ordering::Acquire));
         assert!(group.worker_handles.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn worker_exec_action_preserves_cancelled_group_without_parking() {
+        check_worker_exec_action_preserves_cancelled_group(false);
+    }
+
+    #[test]
+    fn worker_exec_action_preserves_cancelled_group_before_parking() {
+        check_worker_exec_action_preserves_cancelled_group(true);
+    }
+
+    fn check_worker_exec_action_preserves_cancelled_group(park_syscall_return: bool) {
+        match Kvm::new() {
+            Ok(_) => {}
+            Err(error) if matches!(error.errno(), libc::ENOENT | libc::EACCES | libc::EPERM) => {
+                assert!(
+                    std::env::var_os("REVERIE_REQUIRE_KVM").is_none(),
+                    "worker exec action test requires /dev/kvm: {error}"
+                );
+                eprintln!("skipping KVM worker exec action test: cannot open /dev/kvm: {error}");
+                return;
+            }
+            Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+        }
+
+        let mut image = vec![0; 0x1001];
+        image[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+        for (offset, value) in [(16, 2_u16), (18, 62), (52, 64), (54, 56), (56, 1)] {
+            image[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        for (offset, value) in [(20, 1_u32), (64, 1), (68, 5)] {
+            image[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        for (offset, value) in [
+            (24, 0x20_0000_u64),
+            (32, 64),
+            (72, 0x1000),
+            (80, 0x20_0000),
+            (88, 0x20_0000),
+            (96, 1),
+            (104, 0x1000),
+            (112, 0x1000),
+        ] {
+            image[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        image[0x1000] = HLT;
+        let mut parent = KvmBackend::new(16 * 1024 * 1024).unwrap();
+        parent
+            .install_static_elf(&image, "/worker-exec-guard")
+            .unwrap();
+        let leader = ElfExecutor::new(parent.static_elf.take().unwrap(), false);
+        let mut executor = leader.thread_child(7).unwrap();
+        let group = parent.thread_group.clone();
+        let mut worker = KvmBackend::from_thread_state(
+            parent.memory.clone(),
+            parent.vcpu.get_regs().unwrap(),
+            parent.vcpu.get_xsave().unwrap(),
+            None,
+            parent.cpuid_policy,
+            7,
+            group.clone(),
+        )
+        .unwrap();
+        assert!(worker.is_guest_thread);
+        assert!(group.root.lock().unwrap().is_none());
+        assert!(group.workers.lock().unwrap().is_empty());
+        assert!(group.worker_handles.lock().unwrap().is_empty());
+        group.cancelled.store(true, Ordering::Release);
+        *group.exit_status.lock().unwrap() = Some(ExitStatus::Exited(127));
+        let slots = group.transport_slots.lock().unwrap().clone();
+        let thread_slot = worker.thread_slot;
+        worker.set_backend_stats_request(BackendStatsRequest::ENABLED);
+        let stats = worker.backend_stats();
+        let registers = worker.vcpu.get_regs().unwrap();
+        let special_registers = worker.vcpu.get_sregs().unwrap();
+        let xsave = worker.vcpu.get_xsave().unwrap();
+        let mut before = vec![0; worker.memory.len()];
+        worker.memory.read_raw(0, &mut before).unwrap();
+
+        let result = worker.run_process_action(
+            &mut executor,
+            ProcessAction::Exec {
+                image,
+                argv: vec!["/worker-exec-guard".to_owned()],
+                envp: Vec::new(),
+            },
+            park_syscall_return,
+        );
+
+        let mut after = vec![0; worker.memory.len()];
+        worker.memory.read_raw(0, &mut after).unwrap();
+        eprintln!(
+            "park={park_syscall_return} result={result:?} cancelled={} exit_status={:?} registers_unchanged={} memory_unchanged={}",
+            group.cancelled.load(Ordering::Acquire),
+            group.exit_status(),
+            worker.vcpu.get_regs().unwrap() == registers,
+            after == before,
+        );
+        assert!(matches!(result, Err(Error::GuestThreadExecUnsupported)));
+        assert!(group.cancelled.load(Ordering::Acquire));
+        assert_eq!(group.exit_status(), Some(ExitStatus::Exited(127)));
+        assert!(Arc::ptr_eq(&worker.thread_group, &group));
+        assert_eq!(worker.thread_slot, thread_slot);
+        assert_eq!(*group.transport_slots.lock().unwrap(), slots);
+        assert!(group.root.lock().unwrap().is_none());
+        assert!(group.workers.lock().unwrap().is_empty());
+        assert!(group.worker_handles.lock().unwrap().is_empty());
+        assert_eq!(worker.vcpu.get_regs().unwrap(), registers);
+        assert_eq!(worker.vcpu.get_sregs().unwrap(), special_registers);
+        assert_eq!(worker.vcpu.get_xsave().unwrap().region, xsave.region);
+        assert_eq!(worker.backend_stats(), stats);
+        assert!(
+            after == before,
+            "worker exec action altered shared guest memory"
+        );
+        for (number, expected) in [(libc::SYS_getpid, 1), (libc::SYS_gettid, 7)] {
+            assert_eq!(
+                executor.execute(&SyscallRequest::new(number as u64, [0; 6]), &worker.memory),
+                expected,
+            );
+        }
+        assert!(executor.take_process_action().is_none());
     }
 
     #[test]
