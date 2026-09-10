@@ -220,6 +220,11 @@ pub(crate) struct SocketDescriptionState {
     pub message_oriented: bool,
     pub peer: std::sync::Mutex<Option<std::sync::Weak<SocketDescriptionState>>>,
     pub pending_rights: std::sync::Mutex<PendingSocketMessages>,
+    // SO_COOKIE plus a non-owning candidate host fd locates a live socketpair
+    // endpoint without extending its kernel lifetime. The candidate is
+    // revalidated and replaced from /proc/self/fd after aliases close.
+    // Descriptions created outside socketpair have no receive identity.
+    pub receive_identity: std::sync::Mutex<Option<(u64, std::os::fd::RawFd)>>,
     pub send_lock: std::sync::Mutex<()>,
     // One weak entry per live queued strong edge. Multiplicity matters: a
     // receiver can own the same child through several rights or messages.
@@ -232,6 +237,7 @@ impl SocketDescriptionState {
             message_oriented: socket_type != libc::SOCK_STREAM,
             peer: std::sync::Mutex::new(None),
             pending_rights: std::sync::Mutex::new(PendingSocketMessages::default()),
+            receive_identity: std::sync::Mutex::new(None),
             send_lock: std::sync::Mutex::new(()),
             strong_owners: std::sync::Mutex::new(Vec::new()),
         }

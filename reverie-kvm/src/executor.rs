@@ -57,9 +57,24 @@ const MAX_SOCKET_TRANSFER_GRAPH_NODES: usize = 4096;
 // Count every strong edge examined or proposed, including duplicates, so a
 // shallow graph with many queued rights cannot make validation unbounded.
 const MAX_SOCKET_TRANSFER_GRAPH_EDGES: usize = 4096;
+// Component validation walks both directions. Every existing strong edge can
+// therefore contribute one outgoing and one incoming adjacency.
+const MAX_SOCKET_TRANSFER_GRAPH_ADJACENCIES: usize = MAX_SOCKET_TRANSFER_GRAPH_EDGES * 2;
 // Serializes every mutation/traversal of pending socket-transfer ownership so
 // two simultaneous sends cannot independently close a strong reference cycle.
 static SOCKET_TRANSFER_GRAPH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+// A modeled socketpair send and the matching receive form one ordered kernel-
+// queue transaction. This also makes the empty-queue admission check atomic
+// with respect to every receive performed by this executor.
+//
+// The raw endpoints are private to LoadedStaticElf. Guest dup, fork, and
+// received-right aliases retain the same SocketDescriptionState, and exporting
+// an endpoint to an unmodeled destination is refused before sendmsg. Because an
+// anonymous socketpair has no address for another process to reach, every
+// production producer of its queue takes this lock. Tests may use a raw host fd
+// to stage an already-queued message, but such direct host access is not a guest
+// operation and must happen before the empty-queue admission check.
+static SOCKET_MESSAGE_IO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-235): Review the single virtual network namespace identity.
 const GUEST_NETNS_COOKIE: u64 = 1;
@@ -2460,7 +2475,7 @@ fn explicit_syscall_guest_fds(
         }
         let path = read_c_string(memory, args[1], 4096).ok()?;
         if let Some((descriptor, _, _)) = guest_fd_path_parts(state, &path)
-            && let Some(fd) = parse_guest_fd(descriptor)
+            && let Some(fd) = parse_guest_fd(&descriptor)
         {
             retained.push(fd);
         }
@@ -2637,7 +2652,7 @@ fn add_path_value_file_table_inputs(
     path: &[u8],
 ) {
     if let Some((descriptor, _, _)) = guest_fd_path_parts(state, path)
-        && let Some(fd) = parse_guest_fd(descriptor)
+        && let Some(fd) = parse_guest_fd(&descriptor)
     {
         retained.insert(fd);
     }
@@ -2976,7 +2991,12 @@ fn write(
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     });
     let published = match sender.as_ref() {
-        Some(sender) => match publish_socket_message(sender, Vec::new(), bytes.len()) {
+        Some(sender) => match publish_socket_message(
+            sender,
+            Vec::new(),
+            bytes.len(),
+            SocketMessageDestination::ConnectedPeer,
+        ) {
             Ok(published) => published,
             Err(error) => return error,
         },
@@ -3216,6 +3236,37 @@ fn host_read(memory: &mut GuestMemory, fd: RawFd, address: u64, length: usize) -
     host_read_with_transform(memory, fd, address, length, |_| Ok(()))
 }
 
+fn host_socket_read(memory: &mut GuestMemory, fd: RawFd, address: u64, length: usize) -> i64 {
+    if !range_is_valid(memory, address, length as u64) {
+        return negative_errno(libc::EFAULT);
+    }
+    let Ok(writable) = memory.user_accessible_prefix(address, length) else {
+        return negative_errno(libc::EFAULT);
+    };
+    if writable == 0 && length != 0 {
+        return negative_errno(libc::EFAULT);
+    }
+    let mut bytes = vec![0; writable];
+    // The message-ordering lock must never span a blocking host call. Detcore
+    // owns scheduler-visible EAGAIN retries, as it does for recvmsg.
+    let count = unsafe {
+        libc::recv(
+            fd,
+            bytes.as_mut_ptr().cast::<libc::c_void>(),
+            bytes.len(),
+            libc::MSG_DONTWAIT,
+        )
+    };
+    if count < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    let count = count as usize;
+    match memory.write(address, &bytes[..count]) {
+        Ok(()) => count as i64,
+        Err(_) => negative_errno(libc::EFAULT),
+    }
+}
+
 fn host_read_with_transform(
     memory: &mut GuestMemory,
     fd: RawFd,
@@ -3423,7 +3474,17 @@ fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
     if host_fd_is_inotify(host_fd) {
         return negative_errno(libc::EOPNOTSUPP);
     }
-    let result = host_read(memory, host_fd, args[1], length);
+    let socket = state.socket_fds.get(&fd).cloned();
+    let _message_io_guard = socket.as_ref().map(|_| {
+        SOCKET_MESSAGE_IO_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    });
+    let result = if socket.is_some() {
+        host_socket_read(memory, host_fd, args[1], length)
+    } else {
+        host_read(memory, host_fd, args[1], length)
+    };
     if result >= 0 {
         discard_received_socket_message(state, fd, result as usize, false);
     }
@@ -4232,20 +4293,47 @@ enum GuestFdAliasView {
     UnsupportedTask,
 }
 
-fn guest_fd_path_parts<'a>(
+fn normalize_guest_fd_alias_path(path: &[u8]) -> Vec<u8> {
+    let mut normalized = Vec::with_capacity(path.len());
+    let mut previous_was_separator = false;
+    for &byte in path {
+        if byte == b'/' {
+            if !previous_was_separator {
+                normalized.push(byte);
+            }
+            previous_was_separator = true;
+        } else {
+            normalized.push(byte);
+            previous_was_separator = false;
+        }
+    }
+    normalized
+}
+
+fn guest_fd_path_parts(
     state: &LoadedStaticElf,
-    path: &'a [u8],
-) -> Option<(&'a [u8], &'a [u8], GuestFdAliasView)> {
+    path: &[u8],
+) -> Option<(Vec<u8>, Vec<u8>, GuestFdAliasView)> {
+    let normalized = normalize_guest_fd_alias_path(path);
+    let path = normalized.as_slice();
     if let Some(suffix) = path
         .strip_prefix(b"/dev/fd/")
         .or_else(|| path.strip_prefix(b"/proc/self/fd/"))
     {
         let (descriptor, remainder) = split_descriptor_suffix(suffix);
-        return Some((descriptor, remainder, GuestFdAliasView::Process));
+        return Some((
+            descriptor.to_vec(),
+            remainder.to_vec(),
+            GuestFdAliasView::Process,
+        ));
     }
     if let Some(suffix) = path.strip_prefix(b"/proc/thread-self/fd/") {
         let (descriptor, remainder) = split_descriptor_suffix(suffix);
-        return Some((descriptor, remainder, GuestFdAliasView::CurrentTask));
+        return Some((
+            descriptor.to_vec(),
+            remainder.to_vec(),
+            GuestFdAliasView::CurrentTask,
+        ));
     }
 
     let proc_path = path.strip_prefix(b"/proc/")?;
@@ -4259,7 +4347,7 @@ fn guest_fd_path_parts<'a>(
         };
         return owner_is_live.then(|| {
             let (descriptor, remainder) = split_descriptor_suffix(suffix);
-            (descriptor, remainder, view)
+            (descriptor.to_vec(), remainder.to_vec(), view)
         });
     }
     let task_path = rest.strip_prefix(b"task/")?;
@@ -4273,11 +4361,13 @@ fn guest_fd_path_parts<'a>(
             GuestFdAliasView::UnsupportedTask
         };
         let (descriptor, remainder) = split_descriptor_suffix(suffix);
-        (descriptor, remainder, view)
+        (descriptor.to_vec(), remainder.to_vec(), view)
     })
 }
 
 fn looks_like_guest_fd_path(path: &[u8]) -> bool {
+    let normalized = normalize_guest_fd_alias_path(path);
+    let path = normalized.as_slice();
     if path.starts_with(b"/dev/fd/")
         || path.starts_with(b"/proc/self/fd/")
         || path.starts_with(b"/proc/thread-self/fd/")
@@ -4312,7 +4402,7 @@ fn guest_fd_path(state: &LoadedStaticElf, path: &[u8]) -> Option<libc::c_int> {
     let (descriptor, remainder, _) = guest_fd_path_parts(state, path)?;
     remainder
         .is_empty()
-        .then(|| parse_guest_fd(descriptor))
+        .then(|| parse_guest_fd(&descriptor))
         .flatten()
 }
 
@@ -5498,7 +5588,7 @@ fn inotify_host_path(state: &LoadedStaticElf, path: &[u8], nofollow: bool) -> Re
         // link. The translated supervisor link represents that guest alias;
         // descendants still follow the intermediate link and apply no-follow
         // only to their real final component.
-        let guest_fd = parse_guest_fd(descriptor).ok_or_else(|| negative_errno(libc::ENOENT))?;
+        let guest_fd = parse_guest_fd(&descriptor).ok_or_else(|| negative_errno(libc::ENOENT))?;
         let Some(host_fd) = host_fd(state, guest_fd) else {
             return Err(negative_errno(libc::ENOENT));
         };
@@ -6424,6 +6514,14 @@ fn socketpair(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64
     let first = unsafe { std::fs::File::from_raw_fd(host_fds[0]) };
     // SAFETY: socketpair initialized both owned descriptors on success.
     let second = unsafe { std::fs::File::from_raw_fd(host_fds[1]) };
+    let Some(first_cookie) = host_socket_cookie(first.as_raw_fd()) else {
+        return negative_errno(libc::EOPNOTSUPP);
+    };
+    let Some(second_cookie) = host_socket_cookie(second.as_raw_fd()) else {
+        return negative_errno(libc::EOPNOTSUPP);
+    };
+    let first_host_fd = first.as_raw_fd();
+    let second_host_fd = second.as_raw_fd();
     let result = insert_file_pair(
         memory,
         state,
@@ -6446,6 +6544,14 @@ fn socketpair(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64
     let first = Arc::new(SocketDescriptionState::new(base_type));
     let second = Arc::new(SocketDescriptionState::new(base_type));
     *first
+        .receive_identity
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((first_cookie, first_host_fd));
+    *second
+        .receive_identity
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((second_cookie, second_host_fd));
+    *first
         .peer
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::downgrade(&second));
@@ -6462,7 +6568,8 @@ fn socketpair(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64
 // TODO-HUMAN-REVIEW(PR-217): Review filesystem-backed AF_UNIX connect translation.
 // TODO-HUMAN-REVIEW(PR-349): Review host-backed AF_INET/AF_INET6 connect translation.
 fn connect(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
+    let fd = args[0] as libc::c_int;
+    let Some(host_fd) = host_fd(state, fd) else {
         return negative_errno(libc::EBADF);
     };
     let Ok(length) = libc::socklen_t::try_from(args[2]) else {
@@ -6483,7 +6590,7 @@ fn connect(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
             .try_into()
             .expect("family slice has exact size"),
     );
-    match family as libc::c_int {
+    let skip_host_connect = match family as libc::c_int {
         libc::AF_UNIX => {
             // AF_UNIX addresses never exceed sockaddr_un; reject a longer buffer
             // exactly as the kernel would before touching the path.
@@ -6492,9 +6599,7 @@ fn connect(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
             }
             let path = &address[std::mem::size_of::<libc::sa_family_t>()..];
             let path = path.split(|byte| *byte == 0).next().unwrap_or(path);
-            if path == b"/dev/log" {
-                return 0;
-            }
+            path == b"/dev/log"
         }
         // AF_INET / AF_INET6 connect is forwarded to the host exactly like the
         // already-supported bind/listen/getsockname INET paths. Detcore's golden
@@ -6506,15 +6611,38 @@ fn connect(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
         // (detcore/src/syscalls/files.rs:2158) before the peer's connect reaches
         // this executor, so forwarding here introduces no new nondeterministic
         // surface and matches the ptrace backend's forward-to-host errno.
-        libc::AF_INET | libc::AF_INET6 => {}
+        libc::AF_INET | libc::AF_INET6 => false,
         _ => return negative_errno(libc::EAFNOSUPPORT),
-    }
+    };
+    let socket = state.socket_fds.get(&fd).cloned();
+    let _send_guard = socket.as_ref().map(|socket| {
+        socket
+            .send_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    });
     // SAFETY: address is readable for length bytes and host_fd belongs to the
     // guest descriptor table. The host kernel validates the sockaddr for its
     // family.
-    zero_or_errno(unsafe {
-        libc::connect(host_fd, address.as_ptr().cast::<libc::sockaddr>(), length)
-    })
+    let result = if skip_host_connect {
+        0
+    } else {
+        zero_or_errno(unsafe {
+            libc::connect(host_fd, address.as_ptr().cast::<libc::sockaddr>(), length)
+        })
+    };
+    if result == 0
+        && let Some(socket) = socket.as_ref()
+    {
+        // A successful connect can retarget a datagram socket. No address-to-
+        // description registry exists, so stop attributing subsequent sends
+        // to the socketpair peer rather than queueing metadata on a stale peer.
+        *socket
+            .peer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+    result
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -6576,7 +6704,16 @@ fn sendto(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     });
     let published = match sender.as_ref() {
-        Some(sender) => match publish_socket_message(sender, Vec::new(), bytes.len()) {
+        Some(sender) => match publish_socket_message(
+            sender,
+            Vec::new(),
+            bytes.len(),
+            if args[4] == 0 {
+                SocketMessageDestination::ConnectedPeer
+            } else {
+                SocketMessageDestination::Unmodeled
+            },
+        ) {
             Ok(published) => published,
             Err(error) => return error,
         },
@@ -6660,6 +6797,12 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
         std::ptr::from_mut(&mut address_length)
     };
 
+    let socket = state.socket_fds.get(&fd).cloned();
+    let _message_io_guard = socket.as_ref().map(|_| {
+        SOCKET_MESSAGE_IO_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    });
     // SAFETY: bytes is writable for its full length, the optional peer address
     // points to initialized host storage, and host_fd is guest-owned.
     let result = unsafe {
@@ -6667,7 +6810,7 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
             host_fd,
             bytes.as_mut_ptr().cast::<libc::c_void>(),
             bytes.len(),
-            flags,
+            flags | libc::MSG_DONTWAIT,
             address_pointer,
             length_pointer,
         )
@@ -6867,16 +7010,12 @@ fn translate_outgoing_control(
                 .get(&guest_fd)
                 .cloned()
                 .map(PendingSocketRight::Strong);
-            pending_rights.push(if inotify.is_some() || socket.is_some() {
-                Some(PendingDescriptorRight {
-                    file: duplicate_host_fd(host_fd)?,
-                    inotify,
-                    socket,
-                    socket_owner: None,
-                })
-            } else {
-                None
-            });
+            pending_rights.push(Some(PendingDescriptorRight {
+                file: duplicate_host_fd(host_fd)?,
+                inotify,
+                socket,
+                socket_owner: None,
+            }));
             write_control_fd(control, offset, host_fd)?;
         }
     }
@@ -6887,6 +7026,7 @@ struct PublishedSocketMessage {
     receiver: Arc<SocketDescriptionState>,
     id: u64,
     expected_length: usize,
+    _message_io_guard: std::sync::MutexGuard<'static, ()>,
     _graph_guard: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -6917,6 +7057,95 @@ fn inspect_socket_graph_edge(edges: &mut usize) -> Result<(), i64> {
     Ok(())
 }
 
+fn inspect_socket_graph_adjacency(adjacencies: &mut usize) -> Result<(), i64> {
+    if *adjacencies >= MAX_SOCKET_TRANSFER_GRAPH_ADJACENCIES {
+        return Err(negative_errno(libc::EOPNOTSUPP));
+    }
+    *adjacencies += 1;
+    Ok(())
+}
+
+fn validate_socket_transfer_component(
+    receiver: &Arc<SocketDescriptionState>,
+    rights: &[Option<PendingDescriptorRight>],
+) -> Result<(), i64> {
+    let mut proposed_edges = 0usize;
+    let mut proposed_incoming = std::collections::BTreeMap::new();
+    let mut work = std::collections::VecDeque::from([receiver.clone()]);
+    for right in rights.iter().flatten() {
+        let Some(PendingSocketRight::Strong(child)) = right.socket.as_ref() else {
+            continue;
+        };
+        if Arc::ptr_eq(child, receiver) {
+            continue;
+        }
+        inspect_socket_graph_edge(&mut proposed_edges)?;
+        *proposed_incoming
+            .entry(Arc::as_ptr(child) as usize)
+            .or_insert(0usize) += 1;
+        work.push_back(child.clone());
+    }
+    if proposed_edges == 0 {
+        return Ok(());
+    }
+
+    let proposed_outgoing = proposed_edges;
+    let mut nodes = std::collections::BTreeSet::new();
+    let mut edges = proposed_edges;
+    let mut adjacencies = proposed_edges
+        .checked_mul(2)
+        .ok_or_else(|| negative_errno(libc::EOPNOTSUPP))?;
+    if adjacencies > MAX_SOCKET_TRANSFER_GRAPH_ADJACENCIES {
+        return Err(negative_errno(libc::EOPNOTSUPP));
+    }
+
+    while let Some(socket) = work.pop_front() {
+        let key = Arc::as_ptr(&socket) as usize;
+        if nodes.contains(&key) {
+            continue;
+        }
+        inspect_socket_graph_node(&mut nodes, &socket)?;
+
+        let mut outgoing = usize::from(Arc::ptr_eq(&socket, receiver)) * proposed_outgoing;
+        let pending = socket
+            .pending_rights
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for message in pending.messages.iter() {
+            for right in message.rights.iter().flatten() {
+                let Some(PendingSocketRight::Strong(child)) = right.socket.as_ref() else {
+                    continue;
+                };
+                inspect_socket_graph_adjacency(&mut adjacencies)?;
+                outgoing += 1;
+                if outgoing > MAX_SOCKET_TRANSFER_GRAPH_EDGES {
+                    return Err(negative_errno(libc::EOPNOTSUPP));
+                }
+                inspect_socket_graph_edge(&mut edges)?;
+                work.push_back(child.clone());
+            }
+        }
+        drop(pending);
+
+        let mut incoming = proposed_incoming.get(&key).copied().unwrap_or_default();
+        let owners = socket
+            .strong_owners
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for owner in owners.iter() {
+            inspect_socket_graph_adjacency(&mut adjacencies)?;
+            incoming += 1;
+            if incoming > MAX_SOCKET_TRANSFER_GRAPH_EDGES {
+                return Err(negative_errno(libc::EOPNOTSUPP));
+            }
+            if let Some(owner) = owner.upgrade() {
+                work.push_back(owner);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn maximum_socket_owner_depth(
     receiver: &Arc<SocketDescriptionState>,
     nodes: &mut std::collections::BTreeSet<usize>,
@@ -6939,9 +7168,8 @@ fn maximum_socket_owner_depth(
         let owners = socket
             .strong_owners
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        for owner in owners {
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for owner in owners.iter() {
             inspect_socket_graph_edge(edges)?;
             if let Some(owner) = owner.upgrade() {
                 work.push_back((owner, depth + 1));
@@ -6955,27 +7183,28 @@ fn validate_socket_transfer_graph(
     receiver: &Arc<SocketDescriptionState>,
     rights: &[Option<PendingDescriptorRight>],
 ) -> Result<(), i64> {
-    let proposed = rights
+    let has_proposed = rights
         .iter()
         .flatten()
-        .filter_map(|right| match right.socket.as_ref() {
-            Some(PendingSocketRight::Strong(socket)) if !Arc::ptr_eq(socket, receiver) => {
-                Some(socket.clone())
-            }
-            Some(PendingSocketRight::Strong(_)) | Some(PendingSocketRight::Weak(_)) | None => None,
-        })
-        .collect::<Vec<_>>();
-    if proposed.is_empty() {
+        .any(|right| {
+            matches!(right.socket.as_ref(), Some(PendingSocketRight::Strong(socket)) if !Arc::ptr_eq(socket, receiver))
+        });
+    if !has_proposed {
         return Ok(());
     }
+    validate_socket_transfer_component(receiver, rights)?;
 
     let mut nodes = std::collections::BTreeSet::new();
     let mut edges = 0usize;
     let owner_depth = maximum_socket_owner_depth(receiver, &mut nodes, &mut edges)?;
     let mut work = std::collections::VecDeque::new();
-    for socket in proposed {
-        inspect_socket_graph_edge(&mut edges)?;
-        work.push_back((socket, owner_depth + 1));
+    for right in rights.iter().flatten() {
+        if let Some(PendingSocketRight::Strong(socket)) = right.socket.as_ref()
+            && !Arc::ptr_eq(socket, receiver)
+        {
+            inspect_socket_graph_edge(&mut edges)?;
+            work.push_back((socket.clone(), owner_depth + 1));
+        }
     }
 
     let mut depths = std::collections::BTreeMap::new();
@@ -6990,21 +7219,17 @@ fn validate_socket_transfer_graph(
         inspect_socket_graph_node(&mut nodes, &socket)?;
         depths.insert(key, depth);
 
-        let children = socket
+        let pending = socket
             .pending_rights
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .messages
-            .iter()
-            .flat_map(|message| message.rights.iter().flatten())
-            .filter_map(|right| match right.socket.as_ref() {
-                Some(PendingSocketRight::Strong(socket)) => Some(socket.clone()),
-                Some(PendingSocketRight::Weak(_)) | None => None,
-            })
-            .collect::<Vec<_>>();
-        for child in children {
-            inspect_socket_graph_edge(&mut edges)?;
-            work.push_back((child, depth + 1));
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for message in pending.messages.iter() {
+            for right in message.rights.iter().flatten() {
+                if let Some(PendingSocketRight::Strong(child)) = right.socket.as_ref() {
+                    inspect_socket_graph_edge(&mut edges)?;
+                    work.push_back((child.clone(), depth + 1));
+                }
+            }
         }
     }
     Ok(())
@@ -7013,18 +7238,133 @@ fn validate_socket_transfer_graph(
 // `write` and `sendto` call this with an empty rights vector to record byte or
 // datagram boundaries. `sendmsg` is the only caller that can publish nonempty
 // descriptor state.
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SocketMessageDestination {
+    ConnectedPeer,
+    Unmodeled,
+}
+
+fn descriptor_right_requires_state(right: &PendingDescriptorRight) -> bool {
+    right.inotify.is_some() || right.socket.is_some()
+}
+
+fn host_socket_cookie(fd: RawFd) -> Option<u64> {
+    let mut cookie = 0_u64;
+    let mut length = std::mem::size_of::<u64>() as libc::socklen_t;
+    // SAFETY: cookie and length are writable for the sizes supplied, and a
+    // non-socket or concurrently closed candidate is reported as an error.
+    let result = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_COOKIE,
+            std::ptr::from_mut(&mut cookie).cast(),
+            std::ptr::from_mut(&mut length),
+        )
+    };
+    (result == 0 && length as usize == std::mem::size_of::<u64>()).then_some(cookie)
+}
+
+fn duplicate_socket_with_cookie(
+    fd: RawFd,
+    expected_cookie: u64,
+) -> Result<Option<std::fs::File>, i64> {
+    // SAFETY: F_DUPFD_CLOEXEC takes no pointer and either returns a new owned
+    // descriptor or reports that the concurrently observed candidate vanished.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicate < 0 {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(libc::EBADF) {
+            Ok(None)
+        } else {
+            Err(io_error(error))
+        };
+    }
+    // SAFETY: fcntl returned a new owned descriptor.
+    let duplicate = unsafe { std::fs::File::from_raw_fd(duplicate) };
+    Ok((host_socket_cookie(duplicate.as_raw_fd()) == Some(expected_cookie)).then_some(duplicate))
+}
+
+fn live_socket_receive_probe(
+    socket: &SocketDescriptionState,
+) -> Result<Option<std::fs::File>, i64> {
+    let mut identity = socket
+        .receive_identity
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some((cookie, candidate)) = identity.as_mut() else {
+        // Production modeled peers are created by socketpair and always have
+        // an identity. Synthetic graph-only tests deliberately have none.
+        return Ok(None);
+    };
+    if let Some(probe) = duplicate_socket_with_cookie(*candidate, *cookie)? {
+        return Ok(Some(probe));
+    }
+    let entries = std::fs::read_dir("/proc/self/fd").map_err(io_error)?;
+    for entry in entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let Some(fd) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<RawFd>().ok())
+        else {
+            continue;
+        };
+        if let Some(probe) = duplicate_socket_with_cookie(fd, *cookie)? {
+            *candidate = fd;
+            return Ok(Some(probe));
+        }
+    }
+    Ok(None)
+}
+
+fn socket_receive_queue_has_message(socket: &SocketDescriptionState) -> Result<bool, i64> {
+    let Some(probe) = live_socket_receive_probe(socket)? else {
+        // With no live receiving alias, let the host send return its native
+        // closed-peer error; rollback removes the provisional marker.
+        return Ok(false);
+    };
+    let mut descriptor = libc::pollfd {
+        fd: probe.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: descriptor points to one initialized pollfd and timeout zero
+    // cannot block while the socket-message ordering lock is held.
+    let result = unsafe { libc::poll(std::ptr::from_mut(&mut descriptor), 1, 0) };
+    if result < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    if descriptor.revents & libc::POLLNVAL != 0 {
+        return Err(negative_errno(libc::EBADF));
+    }
+    Ok(result != 0 && descriptor.revents & (libc::POLLIN | libc::POLLPRI) != 0)
+}
+
 fn publish_socket_message(
     sender: &Arc<SocketDescriptionState>,
     mut rights: Vec<Option<PendingDescriptorRight>>,
     payload_length: usize,
+    destination: SocketMessageDestination,
 ) -> Result<Option<PublishedSocketMessage>, i64> {
+    let requires_state = rights.iter().flatten().any(descriptor_right_requires_state);
+    if destination == SocketMessageDestination::Unmodeled {
+        return if requires_state {
+            Err(negative_errno(libc::EOPNOTSUPP))
+        } else {
+            Ok(None)
+        };
+    }
     let peer = sender
         .peer
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
     let Some(peer) = peer else {
-        return if rights.iter().any(Option::is_some) {
+        return if requires_state {
             Err(negative_errno(libc::EOPNOTSUPP))
         } else {
             Ok(None)
@@ -7035,9 +7375,22 @@ fn publish_socket_message(
         // message. Let the host send report its native closed-peer errno.
         return Ok(None);
     };
+    let message_io_guard = SOCKET_MESSAGE_IO_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let graph_guard = SOCKET_TRANSFER_GRAPH_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if receiver.message_oriented {
+        let pending_is_empty = receiver
+            .pending_rights
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty();
+        if pending_is_empty && socket_receive_queue_has_message(&receiver)? {
+            return Err(negative_errno(libc::EOPNOTSUPP));
+        }
+    }
     validate_socket_transfer_graph(&receiver, &rights)?;
     let (id, next_id) = {
         let pending = receiver
@@ -7082,6 +7435,7 @@ fn publish_socket_message(
         receiver,
         id,
         expected_length: payload_length,
+        _message_io_guard: message_io_guard,
         _graph_guard: graph_guard,
     }))
 }
@@ -7694,7 +8048,10 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
         msg_flags: 0,
     };
     let flags = args[2] as libc::c_int;
-    let requires_transfer_state = pending_rights.iter().any(Option::is_some);
+    let requires_transfer_state = pending_rights
+        .iter()
+        .flatten()
+        .any(descriptor_right_requires_state);
     let sender = state.socket_fds.get(&(args[0] as libc::c_int)).cloned();
     if requires_transfer_state && sender.is_none() {
         return negative_errno(libc::EOPNOTSUPP);
@@ -7711,7 +8068,16 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
     // kernel accepts the message. Exact open-description identity requires an
     // owned duplicate. Its lifetime follows the receiving socket queue.
     let transfer = match sender.as_ref() {
-        Some(sender) => publish_socket_message(sender, pending_rights, payload.len()),
+        Some(sender) => publish_socket_message(
+            sender,
+            pending_rights,
+            payload.len(),
+            if name.is_empty() {
+                SocketMessageDestination::ConnectedPeer
+            } else {
+                SocketMessageDestination::Unmodeled
+            },
+        ),
         None => Ok(None),
     };
     let transfer = match transfer {
@@ -7855,6 +8221,12 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
         msg_flags: 0,
     };
     let flags = args[2] as libc::c_int;
+    let socket = state.socket_fds.get(&(args[0] as libc::c_int)).cloned();
+    let _message_io_guard = socket.as_ref().map(|_| {
+        SOCKET_MESSAGE_IO_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    });
     // Keep the VM executor cooperative: Detcore's scheduler owns blocking and
     // retries EAGAIN, while already-queued datagrams are returned immediately.
     // Always ask the host for CLOEXEC descriptors so a supervisor exec cannot
@@ -7974,6 +8346,12 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
     if total_header_bytes > MAX_HOST_IO {
         return negative_errno(libc::EINVAL);
     }
+    let socket = state.socket_fds.get(&(args[0] as libc::c_int)).cloned();
+    let _message_io_guard = socket.as_ref().map(|_| {
+        SOCKET_MESSAGE_IO_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    });
 
     let mut delivered = 0usize;
     for index in 0..message_count {
@@ -12613,6 +12991,7 @@ mod tests {
     use std::os::unix::fs::FileTypeExt;
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixDatagram;
     use std::os::unix::net::UnixStream;
     use std::path::Path;
     use std::path::PathBuf;
@@ -13021,8 +13400,64 @@ mod tests {
             .peer
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::downgrade(receiver));
-        assert!(publish_socket_message(&sender, vec![synthetic_socket_right(child)], 1)?.is_some());
+        assert!(
+            publish_socket_message(
+                &sender,
+                vec![synthetic_socket_right(child)],
+                1,
+                SocketMessageDestination::ConnectedPeer,
+            )?
+            .is_some()
+        );
         Ok(())
+    }
+
+    fn install_synthetic_socket_edges_unchecked(
+        owner: &Arc<SocketDescriptionState>,
+        child: &Arc<SocketDescriptionState>,
+        count: usize,
+    ) {
+        let owner_weak = Arc::downgrade(owner);
+        child
+            .strong_owners
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .extend(std::iter::repeat_n(owner_weak.clone(), count));
+        let rights = (0..count)
+            .map(|_| {
+                Some(PendingDescriptorRight {
+                    file: std::fs::File::open("/dev/null").unwrap(),
+                    inotify: None,
+                    socket: Some(PendingSocketRight::Strong(child.clone())),
+                    socket_owner: Some(owner_weak.clone()),
+                })
+            })
+            .collect();
+        owner
+            .pending_rights
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .messages
+            .push_back(PendingSocketMessage {
+                id: 0,
+                remaining: 1,
+                at_start: true,
+                rights,
+            });
+    }
+
+    fn unix_socket_address(path: &Path) -> (libc::sockaddr_un, usize) {
+        let bytes = path.as_os_str().as_bytes();
+        let mut address = libc::sockaddr_un {
+            sun_family: libc::AF_UNIX as libc::sa_family_t,
+            sun_path: [0; 108],
+        };
+        assert!(bytes.len() < address.sun_path.len());
+        for (destination, source) in address.sun_path.iter_mut().zip(bytes) {
+            *destination = *source as libc::c_char;
+        }
+        let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1;
+        (address, length)
     }
 
     fn assert_guest_socket_has_no_payload(state: &LoadedStaticElf, fd: libc::c_int) {
@@ -16772,9 +17207,9 @@ mod tests {
             0
         );
         let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
-        // Queue the first datagram from the host with one real descriptor, then
-        // queue the second through the guest path. recvmmsg must translate the
-        // first control record without affecting ordinary later messages.
+        // Queue the first datagram from the host with one real descriptor,
+        // prove a modeled send cannot be placed behind it, then queue a second
+        // host datagram. recvmmsg must translate both in kernel queue order.
         let mut pipe_fds = [-1; 2];
         // SAFETY: pipe_fds has room for both CLOEXEC descriptors.
         assert_eq!(
@@ -16812,6 +17247,9 @@ mod tests {
             5
         );
         drop(read_end);
+        // A guest send cannot be ordered behind an unmodeled datagram already
+        // in the anonymous socketpair queue, so it is refused before the host
+        // call and no marker is installed.
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -16819,7 +17257,27 @@ mod tests {
                 libc::SYS_write,
                 [socket_fds[0] as u64, SECOND_PAYLOAD, 6, 0, 0, 0],
             ),
-            6
+            negative_errno(libc::EOPNOTSUPP),
+        );
+        assert!(
+            state.socket_fds[&socket_fds[1]]
+                .pending_rights
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+        // SAFETY: the payload is readable for six bytes and the socket is a
+        // live endpoint owned by the test state.
+        assert_eq!(
+            unsafe {
+                libc::send(
+                    host_fd(&state, socket_fds[0]).unwrap(),
+                    b"world!".as_ptr().cast(),
+                    6,
+                    libc::MSG_NOSIGNAL,
+                )
+            },
+            6,
         );
 
         for (index, (iov_address, buffer_address)) in
@@ -17818,6 +18276,74 @@ mod tests {
         assert_eq!(guest_fd_path(&state, b"/proc/thread-self/fd/3"), Some(3));
         assert_eq!(guest_fd_path(&state, b"/proc/1/fd/3"), Some(3));
         assert_eq!(guest_fd_path(&state, b"/dev/fd/not-a-fd"), None);
+    }
+
+    #[test]
+    fn guest_fd_aliases_normalize_repeated_separators_for_clone_files_inputs() {
+        const PATH: u64 = 0x100;
+
+        let root = TestDir::new();
+        let payload = root.0.join("payload");
+        std::fs::write(&payload, b"payload").unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(7, std::fs::File::open(payload).unwrap());
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let inotify_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_inotify_init1,
+            [libc::IN_NONBLOCK as u64, 0, 0, 0, 0, 0],
+        ) as libc::c_int;
+        for path in [
+            "/dev//fd///7",
+            "/proc//self//fd///7",
+            "/proc//thread-self//fd///7",
+            "/proc//1//fd///7",
+        ] {
+            assert_eq!(guest_fd_path(&state, path.as_bytes()), Some(7), "{path}");
+            write_c_string(&mut memory, PATH, path);
+            let retained = syscall_file_table_inputs(
+                &SyscallRequest::new(
+                    libc::SYS_inotify_add_watch as u64,
+                    [inotify_fd as u64, PATH, libc::IN_MODIFY as u64, 0, 0, 0],
+                ),
+                &memory,
+                &state,
+            );
+            assert_eq!(retained, BTreeSet::from([inotify_fd, 7]), "{path}");
+            let watch = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_inotify_add_watch,
+                [inotify_fd as u64, PATH, libc::IN_MODIFY as u64, 0, 0, 0],
+            );
+            assert!(watch >= 0, "{path}: {watch}");
+
+            write_c_string(&mut memory, PATH, &format!("{path}/"));
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_inotify_add_watch,
+                    [inotify_fd as u64, PATH, libc::IN_MODIFY as u64, 0, 0, 0],
+                ),
+                negative_errno(libc::ENOTDIR),
+                "{path}/",
+            );
+        }
+
+        let (descriptor, remainder, view) =
+            guest_fd_path_parts(&state, b"/proc//self//fd///7//nested").unwrap();
+        assert_eq!(descriptor, b"7");
+        assert_eq!(remainder, b"/nested");
+        assert_eq!(view, GuestFdAliasView::Process);
+        assert_eq!(guest_fd_path(&state, b"/proc//self//fd///7/"), None);
+        assert_eq!(
+            guest_fd_path_parts(&state, b"/proc//self//fd///7/")
+                .unwrap()
+                .1,
+            b"/",
+        );
     }
 
     #[test]
@@ -21527,6 +22053,107 @@ mod tests {
     }
 
     #[test]
+    fn socket_rights_component_bound_includes_existing_receiver_descendants() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+        let donated = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x60);
+        let receiver = state.socket_fds.get(&transport[1]).unwrap().clone();
+        let existing_child = Arc::new(SocketDescriptionState::new(libc::SOCK_DGRAM));
+        install_synthetic_socket_edges_unchecked(
+            &receiver,
+            &existing_child,
+            MAX_SOCKET_TRANSFER_GRAPH_EDGES,
+        );
+        let before = receiver
+            .pending_rights
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .front()
+            .unwrap()
+            .rights
+            .len();
+
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, transport[0], &[donated[0]]),
+            negative_errno(libc::EOPNOTSUPP),
+        );
+        assert_guest_socket_has_no_payload(&state, transport[1]);
+        assert_eq!(
+            receiver
+                .pending_rights
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .front()
+                .unwrap()
+                .rights
+                .len(),
+            before,
+        );
+        assert_eq!(
+            existing_child
+                .strong_owners
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            MAX_SOCKET_TRANSFER_GRAPH_EDGES,
+        );
+    }
+
+    #[test]
+    fn socket_rights_component_bound_includes_child_fan_in() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+        let donated = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x60);
+        let child = state.socket_fds.get(&donated[0]).unwrap().clone();
+        let existing_owner = Arc::new(SocketDescriptionState::new(libc::SOCK_DGRAM));
+        install_synthetic_socket_edges_unchecked(
+            &existing_owner,
+            &child,
+            MAX_SOCKET_TRANSFER_GRAPH_EDGES,
+        );
+        let before = existing_owner
+            .pending_rights
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .front()
+            .unwrap()
+            .rights
+            .len();
+
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, transport[0], &[donated[0]]),
+            negative_errno(libc::EOPNOTSUPP),
+        );
+        assert_guest_socket_has_no_payload(&state, transport[1]);
+        assert!(
+            state
+                .socket_fds
+                .get(&transport[1])
+                .unwrap()
+                .pending_rights
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+        );
+        assert_eq!(
+            existing_owner
+                .pending_rights
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .front()
+                .unwrap()
+                .rights
+                .len(),
+            before,
+        );
+        assert_eq!(child.strong_owners.lock().unwrap().len(), before);
+    }
+
+    #[test]
     fn duplicate_socket_owner_edges_survive_one_packet_removal() {
         for control_capacity in [64, 0] {
             let root = TestDir::new();
@@ -22206,14 +22833,54 @@ mod tests {
     }
 
     #[test]
+    fn regular_right_send_on_a_socket_without_description_state_stays_supported() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [0x80, libc::O_CLOEXEC as u64, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, 0x80);
+
+        // An inherited or otherwise unmodeled sending socket has no metadata
+        // destination. Regular descriptors need no KVM-side state and retain
+        // the pre-existing host SCM_RIGHTS behavior.
+        state.socket_fds.remove(&transport[0]);
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, transport[0], &[pipe_fds[0]]),
+            1,
+        );
+        let mut byte = 0_u8;
+        // SAFETY: byte is writable and the receiving endpoint belongs to the
+        // test state. A receive without ancillary capacity closes the donated
+        // host duplicate after consuming the datagram.
+        assert_eq!(
+            unsafe {
+                libc::recv(
+                    host_fd(&state, transport[1]).unwrap(),
+                    std::ptr::from_mut(&mut byte).cast(),
+                    1,
+                    libc::MSG_DONTWAIT,
+                )
+            },
+            1,
+        );
+        assert_eq!(byte, b'x');
+    }
+
+    #[test]
     fn external_socket_right_without_description_state_fails_closed() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
         let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
-        let donated = guest_socketpair(&mut memory, &mut state, libc::SOCK_STREAM, 0x60);
-        let donated_weak = Arc::downgrade(state.socket_fds.get(&donated[0]).unwrap());
-        let receiver = state.socket_fds.get(&transport[1]).unwrap().clone();
         let (external, external_peer) = UnixStream::pair().unwrap();
         let mut payload = *b"x";
         let mut iov = libc::iovec {
@@ -22241,9 +22908,72 @@ mod tests {
             1
         );
         drop(external);
+        let (received, _, rights) =
+            receive_rights_message(&mut memory, &mut state, transport[1], 64, 0);
+        assert_eq!(received, negative_errno(libc::EOPNOTSUPP));
+        assert!(rights.is_empty());
+        assert_stream_peer_closed(&external_peer);
+    }
+
+    #[test]
+    fn external_truncated_datagram_cannot_precede_a_modeled_rights_message() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+        let donated = guest_socketpair(&mut memory, &mut state, libc::SOCK_STREAM, 0x60);
+        let donated_description = state.socket_fds.get(&donated[0]).unwrap().clone();
+        let donated_weak = Arc::downgrade(&donated_description);
+        let receiver = state.socket_fds.get(&transport[1]).unwrap().clone();
+
+        // Queue an unmodeled datagram with the exact payload and the exact open
+        // file description the following modeled send would use. Content
+        // equality therefore cannot establish which message was received.
+        let mut payload = *b"x";
+        let mut iov = libc::iovec {
+            iov_base: payload.as_mut_ptr().cast(),
+            iov_len: payload.len(),
+        };
+        let mut control = rights_control(&[host_fd(&state, donated[0]).unwrap()]);
+        let message = libc::msghdr {
+            msg_name: std::ptr::null_mut(),
+            msg_namelen: 0,
+            msg_iov: std::ptr::from_mut(&mut iov),
+            msg_iovlen: 1,
+            msg_control: control.as_mut_ptr().cast(),
+            msg_controllen: control.len(),
+            msg_flags: 0,
+        };
+        assert_eq!(
+            unsafe {
+                libc::sendmsg(
+                    host_fd(&state, transport[0]).unwrap(),
+                    std::ptr::from_ref(&message),
+                    libc::MSG_NOSIGNAL,
+                )
+            },
+            1,
+        );
+
+        // Refuse before the modeled send reaches the host. With no marker
+        // installed, the fully truncated external right cannot consume one.
         assert_eq!(
             send_rights_message(&mut memory, &mut state, transport[0], &[donated[0]]),
-            1
+            negative_errno(libc::EOPNOTSUPP),
+        );
+        assert!(receiver.pending_rights.lock().unwrap().is_empty());
+        let (received, flags, rights) =
+            receive_rights_message(&mut memory, &mut state, transport[1], 0, 0);
+        assert_eq!(received, 1);
+        assert_ne!(flags & libc::MSG_CTRUNC, 0);
+        assert!(rights.is_empty());
+        assert!(receiver.pending_rights.lock().unwrap().is_empty());
+
+        // Once the unmodeled boundary is drained, the same modeled transfer is
+        // accepted and restores the socket description on receipt.
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, transport[0], &[donated[0]]),
+            1,
         );
         assert_eq!(
             syscall_result(
@@ -22256,12 +22986,6 @@ mod tests {
         );
         assert!(donated_weak.upgrade().is_some());
         assert_eq!(receiver.pending_rights.lock().unwrap().len(), 1);
-        let (received, _, rights) =
-            receive_rights_message(&mut memory, &mut state, transport[1], 64, 0);
-        assert_eq!(received, negative_errno(libc::EOPNOTSUPP));
-        assert!(rights.is_empty());
-        assert_stream_peer_closed(&external_peer);
-        assert_eq!(receiver.pending_rights.lock().unwrap().len(), 1);
         let (received, flags, rights) =
             receive_rights_message(&mut memory, &mut state, transport[1], 64, 0);
         assert_eq!(received, 1);
@@ -22272,6 +22996,281 @@ mod tests {
             &donated_weak.upgrade().unwrap(),
         ));
         assert!(receiver.pending_rights.lock().unwrap().is_empty());
+        for fd in rights {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [fd as u64, 0, 0, 0, 0, 0],
+                ),
+                0,
+            );
+        }
+        drop(donated_description);
+        assert!(donated_weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn socketpair_queue_probe_follows_a_live_receiver_alias() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+        let receiver_alias = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [transport[1] as u64, 0, 0, 0, 0, 0],
+        ) as libc::c_int;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [transport[1] as u64, 0, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        let inotify = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_inotify_init1,
+            [libc::IN_NONBLOCK as u64, 0, 0, 0, 0, 0],
+        ) as libc::c_int;
+        let description = state.inotify_fds.get(&inotify).unwrap().clone();
+
+        // The original candidate fd is closed. A live duplicate must still be
+        // found before admitting a marker behind this unmodeled datagram.
+        assert_eq!(
+            unsafe {
+                libc::send(
+                    host_fd(&state, transport[0]).unwrap(),
+                    b"z".as_ptr().cast(),
+                    1,
+                    libc::MSG_NOSIGNAL,
+                )
+            },
+            1,
+        );
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, transport[0], &[inotify]),
+            negative_errno(libc::EOPNOTSUPP),
+        );
+        let (received, flags, rights) =
+            receive_rights_message(&mut memory, &mut state, receiver_alias, 0, 0);
+        assert_eq!(received, 1);
+        assert_eq!(flags & libc::MSG_CTRUNC, 0);
+        assert!(rights.is_empty());
+
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, transport[0], &[inotify]),
+            1,
+        );
+        let (received, flags, rights) =
+            receive_rights_message(&mut memory, &mut state, receiver_alias, 64, 0);
+        assert_eq!(received, 1);
+        assert_eq!(flags & libc::MSG_CTRUNC, 0);
+        assert_eq!(rights.len(), 1);
+        assert!(Arc::ptr_eq(
+            state.inotify_fds.get(&rights[0]).unwrap(),
+            &description,
+        ));
+    }
+
+    #[test]
+    fn concurrent_socketpair_alias_sends_share_message_ordering() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+        let duplicate = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [transport[0] as u64, 0, 0, 0, 0, 0],
+        ) as libc::c_int;
+        let inotify = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_inotify_init1,
+            [libc::IN_NONBLOCK as u64, 0, 0, 0, 0, 0],
+        ) as libc::c_int;
+        let description = state.inotify_fds.get(&inotify).unwrap().clone();
+        assert!(Arc::ptr_eq(
+            state.socket_fds.get(&transport[0]).unwrap(),
+            state.socket_fds.get(&duplicate).unwrap(),
+        ));
+
+        let mut forked = state.try_clone_for_fork(2).unwrap();
+        let mut forked_memory = memory.clone();
+        assert!(Arc::ptr_eq(
+            state.socket_fds.get(&transport[0]).unwrap(),
+            forked.socket_fds.get(&transport[0]).unwrap(),
+        ));
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        std::thread::scope(|scope| {
+            let first_barrier = barrier.clone();
+            let first_memory = &mut memory;
+            let first_state = &mut state;
+            let first = scope.spawn(move || {
+                first_barrier.wait();
+                send_rights_message(first_memory, first_state, duplicate, &[inotify])
+            });
+            let second_barrier = barrier.clone();
+            let second_memory = &mut forked_memory;
+            let second_state = &mut forked;
+            let second = scope.spawn(move || {
+                second_barrier.wait();
+                send_rights_message(second_memory, second_state, transport[0], &[inotify])
+            });
+            barrier.wait();
+            assert_eq!(first.join().unwrap(), 1);
+            assert_eq!(second.join().unwrap(), 1);
+        });
+
+        let receiver = state.socket_fds.get(&transport[1]).unwrap().clone();
+        assert_eq!(receiver.pending_rights.lock().unwrap().len(), 2);
+        for _ in 0..2 {
+            let (received, flags, rights) =
+                receive_rights_message(&mut memory, &mut state, transport[1], 64, 0);
+            assert_eq!(received, 1);
+            assert_eq!(flags & libc::MSG_CTRUNC, 0);
+            assert_eq!(rights.len(), 1);
+            assert!(Arc::ptr_eq(
+                state.inotify_fds.get(&rights[0]).unwrap(),
+                &description,
+            ));
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [rights[0] as u64, 0, 0, 0, 0, 0],
+                ),
+                0,
+            );
+        }
+        assert!(receiver.pending_rights.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn datagram_publication_follows_explicit_and_connected_destinations() {
+        const ADDRESS: u64 = 0x100;
+        const PAYLOAD: u64 = 0x200;
+        const IOV: u64 = 0x280;
+        const CONTROL: u64 = 0x300;
+        const MESSAGE: u64 = 0x700;
+
+        let root = TestDir::new();
+        let destination_path = root.0.join("destination.sock");
+        let destination = UnixDatagram::bind(&destination_path).unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let (address, address_length) = unix_socket_address(&destination_path);
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(write_struct(&mut memory, ADDRESS, &address), 0);
+        memory.write(PAYLOAD, b"p").unwrap();
+        let transport = guest_socketpair(&mut memory, &mut state, libc::SOCK_DGRAM, 0x40);
+        let stale_receiver = state.socket_fds.get(&transport[1]).unwrap().clone();
+        let inotify = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_inotify_init1,
+            [libc::IN_NONBLOCK as u64, 0, 0, 0, 0, 0],
+        ) as libc::c_int;
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendto,
+                [
+                    transport[0] as u64,
+                    PAYLOAD,
+                    1,
+                    0,
+                    ADDRESS,
+                    address_length as u64,
+                ],
+            ),
+            1,
+        );
+        let mut byte = [0];
+        assert_eq!(destination.recv(&mut byte).unwrap(), 1);
+        assert_eq!(&byte, b"p");
+        assert!(stale_receiver.pending_rights.lock().unwrap().is_empty());
+        assert_guest_socket_has_no_payload(&state, transport[1]);
+
+        let iov = libc::iovec {
+            iov_base: PAYLOAD as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(write_struct(&mut memory, IOV, &iov), 0);
+        let control = rights_control(&[inotify]);
+        memory.write(CONTROL, &control).unwrap();
+        let mut message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        message.msg_name = ADDRESS as usize as *mut libc::c_void;
+        message.msg_namelen = address_length as libc::socklen_t;
+        message.msg_iov = IOV as usize as *mut libc::iovec;
+        message.msg_iovlen = 1;
+        message.msg_control = CONTROL as usize as *mut libc::c_void;
+        message.msg_controllen = control.len();
+        assert_eq!(write_struct(&mut memory, MESSAGE, &message), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendmsg,
+                [transport[0] as u64, MESSAGE, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EOPNOTSUPP),
+        );
+        assert_eq!(
+            destination.recv(&mut byte).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+        );
+        assert!(stale_receiver.pending_rights.lock().unwrap().is_empty());
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_connect,
+                [transport[0] as u64, ADDRESS, address_length as u64, 0, 0, 0,],
+            ),
+            0,
+        );
+        assert!(
+            state
+                .socket_fds
+                .get(&transport[0])
+                .unwrap()
+                .peer
+                .lock()
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [transport[0] as u64, PAYLOAD, 1, 0, 0, 0],
+            ),
+            1,
+        );
+        assert_eq!(destination.recv(&mut byte).unwrap(), 1);
+        assert_guest_socket_has_no_payload(&state, transport[1]);
+        assert!(stale_receiver.pending_rights.lock().unwrap().is_empty());
+        assert_eq!(
+            send_rights_message(&mut memory, &mut state, transport[0], &[inotify]),
+            negative_errno(libc::EOPNOTSUPP),
+        );
+        assert_eq!(
+            destination.recv(&mut byte).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+        );
     }
 
     #[test]
@@ -22740,6 +23739,7 @@ mod tests {
             &sender,
             vec![Some(pending_right()), Some(pending_right())],
             1,
+            SocketMessageDestination::ConnectedPeer,
         )
         .unwrap();
         assert!(transfer.is_some());
