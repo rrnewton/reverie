@@ -163,6 +163,24 @@ impl MemoryAccess for Stopped {
         }
     }
 
+    fn read_exact_with_user_access<'a, A>(&self, addr: A, buf: &mut [u8]) -> Result<(), Errno>
+    where
+        A: Into<Addr<'a, u8>>,
+    {
+        let addr = addr.into();
+        addr.as_raw().checked_add(buf.len()).ok_or(Errno::EFAULT)?;
+
+        let remote = unsafe { AddrSlice::from_raw_parts(addr, buf.len()) };
+        let remote = [unsafe { remote.as_ioslice() }];
+        let mut local = [io::IoSliceMut::new(buf)];
+
+        if self.read_vectored(&remote, &mut local)? == buf.len() {
+            Ok(())
+        } else {
+            Err(Errno::EFAULT)
+        }
+    }
+
     fn write(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
         let size = buf.len();
         if size == 0 {
@@ -321,6 +339,111 @@ mod test {
             },
             |_| {},
         ));
+    }
+
+    fn page_size() -> usize {
+        let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        assert!(size > 0);
+        size as usize
+    }
+
+    fn map_pages(count: usize) -> (*mut u8, usize) {
+        let length = page_size().checked_mul(count).unwrap();
+        let mapping = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                length,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        (mapping.cast(), length)
+    }
+
+    fn unmap_pages(mapping: *mut u8, length: usize) {
+        assert_eq!(unsafe { libc::munmap(mapping.cast(), length) }, 0);
+    }
+
+    #[test]
+    fn remote_read_exact_with_user_access_reads_eight_bytes() {
+        let expected = [1, 2, 3, 4, 5, 6, 7, 8];
+        let (mapping, length) = map_pages(1);
+        unsafe { core::ptr::copy_nonoverlapping(expected.as_ptr(), mapping, expected.len()) };
+
+        let passed = fork_helper(
+            mapping as usize,
+            move |child, address| {
+                let memory = Stopped::new_unchecked(child);
+                let address = Addr::from_raw(address).unwrap();
+                let mut observed = [0; 8];
+                memory
+                    .read_exact_with_user_access(address, &mut observed)
+                    .unwrap();
+                observed == expected
+            },
+            |_| {},
+        );
+
+        unmap_pages(mapping, length);
+        assert!(passed);
+    }
+
+    #[test]
+    fn remote_read_exact_with_user_access_rejects_prot_none() {
+        let (mapping, length) = map_pages(1);
+        let passed = fork_helper(
+            mapping as usize,
+            move |child, address| {
+                let memory = Stopped::new_unchecked(child);
+                let address = Addr::from_raw(address).unwrap();
+                let mut observed = [0; 8];
+                memory.read_exact_with_user_access(address, &mut observed) == Err(Errno::EFAULT)
+            },
+            move |address| {
+                assert_eq!(
+                    unsafe {
+                        libc::mprotect(*address as *mut libc::c_void, length, libc::PROT_NONE)
+                    },
+                    0
+                );
+            },
+        );
+
+        unmap_pages(mapping, length);
+        assert!(passed);
+    }
+
+    #[test]
+    fn remote_read_exact_with_user_access_rejects_cross_page_partial_read() {
+        let page_size = page_size();
+        let (mapping, length) = map_pages(2);
+        let start = unsafe { mapping.add(page_size - 4) };
+        let expected = [1, 2, 3, 4, 5, 6, 7, 8];
+        unsafe { core::ptr::copy_nonoverlapping(expected.as_ptr(), start, expected.len()) };
+
+        let passed = fork_helper(
+            start as usize,
+            move |child, address| {
+                let memory = Stopped::new_unchecked(child);
+                let address = Addr::from_raw(address).unwrap();
+                let mut observed = [0; 8];
+                memory.read_exact_with_user_access(address, &mut observed) == Err(Errno::EFAULT)
+            },
+            move |_| {
+                assert_eq!(
+                    unsafe {
+                        libc::mprotect(mapping.add(page_size).cast(), page_size, libc::PROT_NONE)
+                    },
+                    0
+                );
+            },
+        );
+
+        unmap_pages(mapping, length);
+        assert!(passed);
     }
 
     #[test]
