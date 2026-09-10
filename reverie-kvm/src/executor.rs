@@ -37,6 +37,20 @@ use crate::elf::STACK_LIMIT;
 use crate::elf::load_static_elf;
 use crate::elf::resolve_executable_path;
 use crate::runtime::SyscallExecutor;
+use crate::signal::GuestStack;
+use crate::signal::KERNEL_SIGACTION_SIZE;
+use crate::signal::KERNEL_SIGSET_SIZE;
+use crate::signal::KernelSigaction;
+use crate::signal::KernelSigset;
+#[cfg(test)]
+use crate::signal::ProcessSignalState;
+use crate::signal::SS_AUTODISARM;
+#[cfg(test)]
+use crate::signal::ThreadSignalState;
+use crate::signal::event_for_process;
+use crate::signal::event_for_thread;
+#[cfg(test)]
+use crate::signal::signal_info_user;
 
 const MAX_HOST_IO: usize = 16 * 1024 * 1024;
 const MAX_CAPTURED_OUTPUT: usize = 64 * 1024 * 1024;
@@ -45,8 +59,6 @@ const GUEST_NOFILE_LIMIT: libc::c_int = 1 << 20;
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-235): Review the single virtual network namespace identity.
 const GUEST_NETNS_COOKIE: u64 = 1;
-const KERNEL_SIGACTION_SIZE: usize = 32;
-const KERNEL_SIGSET_SIZE: usize = 8;
 const ROBUST_LIST_HEAD_SIZE: u64 = 3 * std::mem::size_of::<u64>() as u64;
 const MEMBARRIER_SUPPORTED: libc::c_int = 0x1;
 // prctl(2) PR_CAPBSET_READ option; the deterministic container runs the guest as
@@ -139,15 +151,6 @@ struct OpenHow {
     flags: u64,
     mode: u64,
     resolve: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct GuestStack {
-    sp: u64,
-    flags: libc::c_int,
-    _padding: libc::c_uint,
-    size: u64,
 }
 
 pub(crate) enum SyscallAction {
@@ -246,6 +249,27 @@ pub(crate) enum ProcessAction {
     },
 }
 
+impl ProcessAction {
+    pub(crate) fn returns_to_original_image(&self) -> bool {
+        match self {
+            Self::Fork { .. } | Self::Thread { .. } => true,
+            Self::Exec { .. } => false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PendingSignalDomain {
+    Thread,
+    Process,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PendingSignal {
+    pub(crate) event: reverie::SignalEvent,
+    pub(crate) domain: PendingSignalDomain,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessExit {
     pub status: ExitStatus,
@@ -300,13 +324,14 @@ pub(crate) fn execute_basic_syscall(
     state: &mut LoadedStaticElf,
     request: &SyscallRequest,
 ) -> SyscallAction {
-    execute_basic_syscall_with_output(memory, state, request, None)
+    execute_basic_syscall_with_output(memory, state, request, None, None)
 }
 
 fn execute_basic_syscall_with_output(
     memory: &mut GuestMemory,
     state: &mut LoadedStaticElf,
     request: &SyscallRequest,
+    current_user_stack_pointer: Option<u64>,
     output: Option<&mut CapturedOutput>,
 ) -> SyscallAction {
     let args = request.args();
@@ -315,6 +340,9 @@ fn execute_basic_syscall_with_output(
 
     if number == libc::SYS_exit as u64 || number == libc::SYS_exit_group as u64 {
         return SyscallAction::Exit(ExitStatus::Exited((args[0] as i32) & 0xff));
+    }
+    if let Some(error) = virtual_signalfd_write_error(state, number, args) {
+        return continue_with(error);
     }
 
     let result = if number == libc::SYS_write as u64 {
@@ -329,6 +357,10 @@ fn execute_basic_syscall_with_output(
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(#120)
         readv(memory, state, args)
+    } else if number == libc::SYS_preadv as u64 {
+        preadv(memory, state, args, false)
+    } else if number == libc::SYS_preadv2 as u64 {
+        preadv(memory, state, args, true)
     } else if number == libc::SYS_pread64 as u64 {
         pread64(memory, state, args)
     } else if number == libc::SYS_pwrite64 as u64 {
@@ -591,8 +623,8 @@ fn execute_basic_syscall_with_output(
         i64::from(state.ppid)
     } else if number == libc::SYS_getpgrp as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-92): Review fixed guest process-group identity.
-        i64::from(state.pid)
+        // TODO-HUMAN-REVIEW(PR-92): Review virtual process-group identity.
+        i64::from(state.pgid)
     } else if number == libc::SYS_wait4 as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         wait4(memory, state, args)
@@ -811,8 +843,10 @@ fn execute_basic_syscall_with_output(
         rt_sigaction(memory, state, args)
     } else if number == libc::SYS_rt_sigprocmask as u64 {
         rt_sigprocmask(memory, state, args)
+    } else if number == libc::SYS_rt_sigpending as u64 {
+        rt_sigpending(memory, state, args)
     } else if number == libc::SYS_sigaltstack as u64 {
-        sigaltstack(memory, state, args)
+        sigaltstack(memory, state, current_user_stack_pointer, args)
     } else if number == libc::SYS_rt_sigtimedwait as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         rt_sigtimedwait(memory, state, args)
@@ -1009,9 +1043,6 @@ pub(crate) struct ElfExecutor {
     /// `CLONE_FS`, so cwd and umask changes are process-wide rather than
     /// snapshots taken when the worker was created.
     fs_state: Arc<Mutex<FsState>>,
-    /// Accepted thread clones require `CLONE_SIGHAND`; every thread therefore
-    /// observes disposition changes made by its siblings.
-    signal_actions: Arc<Mutex<std::collections::BTreeMap<i32, [u8; 32]>>>,
     output: Option<CapturedOutput>,
     owns_output: bool,
     next_pid: Arc<AtomicI32>,
@@ -1022,6 +1053,7 @@ pub(crate) struct ElfExecutor {
     child_wait: Arc<Mutex<ChildWaitState>>,
     process_action: Option<ProcessAction>,
     pending_segment: Option<(SegmentBase, u64)>,
+    current_user_stack_pointer: Option<u64>,
     exit_status: Option<ExitStatus>,
     exit_group: bool,
     clear_child_tid: Option<u64>,
@@ -1031,8 +1063,88 @@ pub(crate) struct ElfExecutor {
     allow_nonleader_exec: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ChildStartCommand {
+    Start,
+    Cancel,
+}
+
+#[derive(Clone)]
+pub(crate) struct ChildStartGate {
+    state: Arc<Mutex<ChildStartGateState>>,
+}
+
+enum ChildStartGateState {
+    Pending(std::sync::mpsc::Sender<ChildStartCommand>),
+    Started,
+    Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ChildStartCancellation {
+    NewlyCancelled { delivery_failed: bool },
+    AlreadyStarted,
+    AlreadyCancelled,
+}
+
+impl ChildStartGate {
+    pub(crate) fn new(start: std::sync::mpsc::Sender<ChildStartCommand>) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(ChildStartGateState::Pending(start))),
+        }
+    }
+
+    /// Starts the child exactly once. `Ok(false)` means the gate was already
+    /// resolved as Started or Cancelled; a started child may since have been
+    /// completed and collected.
+    pub(crate) fn start(&self) -> std::result::Result<bool, std::sync::mpsc::SendError<()>> {
+        let mut state = self.state.lock().expect("KVM child-start gate poisoned");
+        match &*state {
+            ChildStartGateState::Pending(start) => {
+                start
+                    .send(ChildStartCommand::Start)
+                    .map_err(|_| std::sync::mpsc::SendError(()))?;
+                *state = ChildStartGateState::Started;
+                Ok(true)
+            }
+            ChildStartGateState::Started => Ok(false),
+            ChildStartGateState::Cancelled => Ok(false),
+        }
+    }
+
+    /// Cancels the child exactly once. A failed send is retained in the
+    /// result while the Cancelled state still lets cleanup remove and join the
+    /// exact registered child.
+    pub(crate) fn cancel(&self) -> ChildStartCancellation {
+        let mut state = self.state.lock().expect("KVM child-start gate poisoned");
+        match &*state {
+            ChildStartGateState::Pending(start) => {
+                let delivery_failed = start.send(ChildStartCommand::Cancel).is_err();
+                *state = ChildStartGateState::Cancelled;
+                ChildStartCancellation::NewlyCancelled { delivery_failed }
+            }
+            ChildStartGateState::Started => ChildStartCancellation::AlreadyStarted,
+            ChildStartGateState::Cancelled => ChildStartCancellation::AlreadyCancelled,
+        }
+    }
+
+    pub(crate) fn is_pending(&self) -> bool {
+        matches!(
+            *self.state.lock().expect("KVM child-start gate poisoned"),
+            ChildStartGateState::Pending(_)
+        )
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        matches!(
+            *self.state.lock().expect("KVM child-start gate poisoned"),
+            ChildStartGateState::Cancelled
+        )
+    }
+}
+
 struct PendingProcess {
-    start: Option<std::sync::mpsc::Sender<()>>,
+    start: ChildStartGate,
     completion: Arc<Mutex<Option<ChildCompletion>>>,
     handle: std::thread::JoinHandle<crate::Result<()>>,
 }
@@ -1270,7 +1382,7 @@ impl ElfExecutor {
             .task_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .ensure_registered(state.tid, state.pid, state.dumpable);
+            .ensure_registered(state.tid, state.pid, state.pgid, state.dumpable);
         let next_pid = state.pid.saturating_add(1);
         let sigchld_auto_reap = Arc::new(AtomicBool::new(sigchld_auto_reaps(&state)));
         let address_space = Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state)));
@@ -1280,7 +1392,6 @@ impl ElfExecutor {
         let fs_state = Arc::new(Mutex::new(
             FsState::try_from_elf(&state).expect("clone initial KVM fs state"),
         ));
-        let signal_actions = Arc::new(Mutex::new(state.signal_actions.clone()));
         let child_wait = Arc::new(Mutex::new(ChildWaitState::new(std::mem::take(
             &mut state.children,
         ))));
@@ -1290,7 +1401,6 @@ impl ElfExecutor {
             address_space,
             file_table,
             fs_state,
-            signal_actions,
             output: capture_output.then(CapturedOutput::default),
             owns_output: true,
             next_pid: Arc::new(AtomicI32::new(next_pid)),
@@ -1298,6 +1408,7 @@ impl ElfExecutor {
             child_wait,
             process_action: None,
             pending_segment: None,
+            current_user_stack_pointer: None,
             exit_status: None,
             exit_group: false,
             clear_child_tid: None,
@@ -1465,6 +1576,22 @@ impl ElfExecutor {
         if self.process_action.is_some() {
             return negative_errno(libc::EBUSY);
         }
+        // A process-directed signal queued while this process had one thread
+        // has no selected recipient. Creating a sibling would let host vCPU
+        // timing choose which thread dequeues it. Refuse before allocating a
+        // tid or publishing any child state; Hermit's later scheduler
+        // integration will own deterministic process-signal target selection.
+        if self.has_shared_pending_signal()
+            || !self
+                .state
+                .process_signals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .signalfd_masks
+                .is_empty()
+        {
+            return negative_errno(libc::ENOSYS);
+        }
         let child_tid = self.next_pid.fetch_add(1, Ordering::SeqCst);
         if child_tid <= 0 {
             return negative_errno(libc::EAGAIN);
@@ -1494,6 +1621,20 @@ impl ElfExecutor {
     ) -> i64 {
         if self.process_action.is_some() {
             return negative_errno(libc::EBUSY);
+        }
+        // The host eventfd backing a virtual signalfd is shared by File::try_clone,
+        // but Linux evaluates inherited signalfd readiness against each process's
+        // own pending set. Refuse process creation while one is open rather than
+        // allowing parent-only readiness to wake the child (or vice versa).
+        if !self
+            .state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .signalfd_masks
+            .is_empty()
+        {
+            return negative_errno(libc::ENOSYS);
         }
         let child_pid = self.next_pid.fetch_add(1, Ordering::SeqCst);
         if child_pid <= 0 {
@@ -1589,27 +1730,36 @@ impl ElfExecutor {
     }
 
     pub(crate) fn fork_child(&self, child_pid: i32, clear_sighand: bool) -> crate::Result<Self> {
+        if !self
+            .state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .signalfd_masks
+            .is_empty()
+        {
+            return Err(crate::Error::UnexpectedVcpuExit(
+                "cannot fork a KVM process while a virtual signalfd is open".to_owned(),
+            ));
+        }
         let mut state = self.state.try_clone_for_fork(child_pid)?;
         state.dumpable = self.current_dumpable();
         if clear_sighand {
-            state.signal_actions.retain(|_, action| {
-                let handler = usize::from_ne_bytes(
-                    action[..std::mem::size_of::<usize>()]
-                        .try_into()
-                        .expect("signal handler field size"),
-                );
-                handler == libc::SIG_IGN
-            });
+            state
+                .process_signals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .dispositions
+                .retain(|_, action| action.is_ignored());
         }
         let address_space = Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state)));
         let file_table = Arc::new(std::sync::Mutex::new(FileTableState::try_from_elf(&state)?));
         let fs_state = Arc::new(Mutex::new(FsState::try_from_elf(&state)?));
-        let signal_actions = Arc::new(Mutex::new(state.signal_actions.clone()));
         let task_generation = state
             .task_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .register(state.tid, state.pid, state.dumpable);
+            .register(state.tid, state.pid, state.pgid, state.dumpable);
         let sigchld_auto_reap = sigchld_auto_reaps(&state);
         let child_wait = Arc::new(Mutex::new(ChildWaitState::new(std::mem::take(
             &mut state.children,
@@ -1620,7 +1770,6 @@ impl ElfExecutor {
             address_space,
             file_table,
             fs_state,
-            signal_actions,
             output: self.output.clone(),
             owns_output: false,
             next_pid: self.next_pid.clone(),
@@ -1628,6 +1777,7 @@ impl ElfExecutor {
             child_wait,
             process_action: None,
             pending_segment: None,
+            current_user_stack_pointer: None,
             exit_status: None,
             exit_group: false,
             clear_child_tid: None,
@@ -1638,6 +1788,20 @@ impl ElfExecutor {
 
     // TODO-HUMAN-REVIEW(PR-172): Review shared address-space and output ownership.
     pub(crate) fn thread_child(&self, child_tid: i32) -> crate::Result<Self> {
+        if self.has_shared_pending_signal()
+            || !self
+                .state
+                .process_signals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .signalfd_masks
+                .is_empty()
+        {
+            return Err(crate::Error::UnexpectedVcpuExit(
+                "cannot create a KVM guest thread while a process-directed signal lacks a selected recipient"
+                    .to_owned(),
+            ));
+        }
         let mut state = self.state.try_clone_for_fork(child_tid)?;
         state.pid = self.state.pid;
         state.ppid = self.state.ppid;
@@ -1645,19 +1809,19 @@ impl ElfExecutor {
         // thread group leader's position in the traced process tree.
         state.is_traced_tree_root = self.state.is_traced_tree_root;
         state.dumpable = self.current_dumpable();
-        state.signalfd_state = self.state.signalfd_state.clone();
+        state.process_signals = self.state.process_signals.clone();
+        state.thread_signals = self.state.thread_signals.for_clone_thread();
         let task_generation = state
             .task_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .register(state.tid, state.pid, state.dumpable);
+            .register(state.tid, state.pid, state.pgid, state.dumpable);
         let child = Self {
             state,
             task_generation,
             address_space: self.address_space.clone(),
             file_table: self.file_table.clone(),
             fs_state: self.fs_state.clone(),
-            signal_actions: self.signal_actions.clone(),
             output: self.output.clone(),
             owns_output: false,
             next_pid: self.next_pid.clone(),
@@ -1665,6 +1829,7 @@ impl ElfExecutor {
             child_wait: self.child_wait.clone(),
             process_action: None,
             pending_segment: None,
+            current_user_stack_pointer: None,
             exit_status: None,
             exit_group: false,
             clear_child_tid: None,
@@ -1727,10 +1892,21 @@ impl ElfExecutor {
     }
 
     // TODO-HUMAN-REVIEW(PR-235): Review KVM child registration and join semantics.
+    #[cfg(test)]
     pub(crate) fn register_child_process(
         &mut self,
         pid: i32,
-        start: std::sync::mpsc::Sender<()>,
+        start: std::sync::mpsc::Sender<ChildStartCommand>,
+        completion: Arc<Mutex<Option<ChildCompletion>>>,
+        handle: std::thread::JoinHandle<crate::Result<()>>,
+    ) {
+        self.register_child_process_with_gate(pid, ChildStartGate::new(start), completion, handle);
+    }
+
+    pub(crate) fn register_child_process_with_gate(
+        &mut self,
+        pid: i32,
+        start: ChildStartGate,
         completion: Arc<Mutex<Option<ChildCompletion>>>,
         handle: std::thread::JoinHandle<crate::Result<()>>,
     ) {
@@ -1742,7 +1918,7 @@ impl ElfExecutor {
             .insert(
                 pid,
                 PendingProcess {
-                    start: Some(start),
+                    start,
                     completion,
                     handle,
                 },
@@ -1751,17 +1927,60 @@ impl ElfExecutor {
     }
 
     // TODO-HUMAN-REVIEW(PR-235): Review parent-registration ordering for KVM children.
+    #[cfg(test)]
     pub(crate) fn start_pending_child_processes(&mut self) -> crate::Result<()> {
         let mut child_wait = self
             .child_wait
             .lock()
             .expect("KVM child-wait lock poisoned");
         for process in child_wait.pending_processes.values_mut() {
-            if let Some(start) = process.start.take() {
-                let _ = start.send(());
-            }
+            process.start.start().map_err(|_| {
+                crate::Error::UnexpectedVcpuExit(
+                    "KVM child exited before its parent released the start gate".to_owned(),
+                )
+            })?;
         }
         Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) fn has_pending_child_process(&self, pid: i32) -> bool {
+        self.child_wait
+            .lock()
+            .expect("KVM child-wait lock poisoned")
+            .pending_processes
+            .contains_key(&pid)
+    }
+
+    /// Drops the start gate and joins one child that has not begun guest
+    /// execution. Used when parent boundary restoration fails after the child
+    /// was constructed but before the Tool can register it.
+    pub(crate) fn discard_unstarted_child_process(&mut self, pid: i32) -> crate::Result<bool> {
+        let mut child_wait = self
+            .child_wait
+            .lock()
+            .expect("KVM child-wait lock poisoned");
+        let Some(process) = child_wait.pending_processes.get(&pid) else {
+            return Ok(false);
+        };
+        let delivery_failed = match process.start.cancel() {
+            ChildStartCancellation::NewlyCancelled { delivery_failed } => delivery_failed,
+            ChildStartCancellation::AlreadyCancelled => false,
+            ChildStartCancellation::AlreadyStarted => return Ok(false),
+        };
+        let process = child_wait
+            .pending_processes
+            .remove(&pid)
+            .expect("checked unstarted KVM child disappeared");
+        let child_result = process.handle.join().map_err(|_| {
+            crate::Error::UnexpectedVcpuExit(format!("unstarted KVM child process {pid} panicked"))
+        })?;
+        child_result?;
+        if delivery_failed {
+            return Err(crate::Error::UnexpectedVcpuExit(format!(
+                "unstarted KVM child process {pid} lost its parent start gate"
+            )));
+        }
+        Ok(true)
     }
 
     fn collect_child_process_locked(
@@ -1772,9 +1991,11 @@ impl ElfExecutor {
         let Some(process) = child_wait.pending_processes.get_mut(&pid) else {
             return Ok(true);
         };
-        if let Some(start) = process.start.take() {
-            let _ = start.send(());
-        }
+        process.start.start().map_err(|_| {
+            crate::Error::UnexpectedVcpuExit(format!(
+                "KVM child process {pid} lost its parent start gate"
+            ))
+        })?;
 
         if !block
             && process
@@ -2022,13 +2243,14 @@ impl ElfExecutor {
     /// lifecycle entries disappear, and CLONE_CHILD_CLEARTID is disarmed.
     pub(crate) fn promote_after_thread_exec(&mut self) -> i32 {
         let tgid = self.state.pid;
+        let pgid = self.state.pgid;
         debug_assert_ne!(self.state.tid, tgid);
         self.task_generation = self
             .state
             .task_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .promote_execing_thread(tgid);
+            .promote_execing_thread(tgid, pgid);
         self.state.tid = tgid;
         self.clear_child_tid = None;
         tgid
@@ -2041,19 +2263,9 @@ impl ElfExecutor {
             .expect("KVM fs-state lock poisoned")
             .install(&mut previous)
             .expect("clone pre-exec KVM fs state");
-        previous.signal_actions.clone_from(
-            &self
-                .signal_actions
-                .lock()
-                .expect("KVM signal-actions lock poisoned"),
-        );
         self.state.inherit_process_state(previous);
         *self.fs_state.lock().expect("KVM fs-state lock poisoned") =
             FsState::try_from_elf(&self.state).expect("clone post-exec KVM fs state");
-        self.signal_actions
-            .lock()
-            .expect("KVM signal-actions lock poisoned")
-            .clone_from(&self.state.signal_actions);
         self.task_generation = self
             .state
             .task_lifecycle
@@ -2162,6 +2374,319 @@ impl ElfExecutor {
     }
 
     // TODO-HUMAN-REVIEW(PR-132): Review cooperative KVM thread context updates.
+    /// Queues a backend-neutral event selected for this exact guest task.
+    pub(crate) fn defer_signal_delivery(
+        &mut self,
+        event: reverie::SignalEvent,
+    ) -> Result<(), reverie::syscalls::Errno> {
+        self.validate_deferred_signal_event(event)?;
+        // A Process target records provenance, while this API is called on the
+        // concrete thread already selected by the scheduler. Keep it in that
+        // thread's queue; direct guest kill(2) separately uses shared pending.
+        queue_signal_event(&mut self.state, event, false)
+            .map_err(|raw| reverie::syscalls::Errno::new(i32::try_from(-raw).unwrap_or(libc::EIO)))
+    }
+
+    fn validate_deferred_signal_event(
+        &self,
+        event: reverie::SignalEvent,
+    ) -> Result<(), reverie::syscalls::Errno> {
+        let signal = event.signal();
+        let info = event.siginfo();
+        let code = i32::from_ne_bytes(info[8..12].try_into().expect("siginfo code"));
+        let supported_provenance = match (code, event.target()) {
+            (libc::SI_USER, reverie::SignalTarget::Process { .. })
+            | (libc::SI_TKILL, reverie::SignalTarget::Thread { .. })
+            | (libc::SI_TIMER, reverie::SignalTarget::Process { .. }) => true,
+            (libc::SI_KERNEL, reverie::SignalTarget::Process { .. }) => signal == libc::SIGALRM,
+            _ => false,
+        };
+        if signal > 31
+            || matches!(
+                signal,
+                libc::SIGKILL | libc::SIGSTOP | libc::SIGCHLD | libc::SIGPIPE
+            )
+            || !supported_provenance
+        {
+            return Err(reverie::syscalls::Errno::ENOSYS);
+        }
+        match event.target() {
+            reverie::SignalTarget::Process { pid } => {
+                if pid.as_raw() != self.state.pid {
+                    return Err(reverie::syscalls::Errno::ESRCH);
+                }
+            }
+            reverie::SignalTarget::Thread { pid, tid } => {
+                if pid.as_raw() != self.state.pid {
+                    return Err(reverie::syscalls::Errno::ESRCH);
+                }
+                if tid.as_raw() != self.state.tid {
+                    let sibling = self
+                        .state
+                        .task_lifecycle
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .get(tid.as_raw())
+                        .is_some_and(|task| task.tgid == self.state.pid);
+                    return Err(if sibling {
+                        reverie::syscalls::Errno::ENOSYS
+                    } else {
+                        reverie::syscalls::Errno::ESRCH
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolves the exact event returned by a Tool hook for this boundary.
+    ///
+    /// If the replacement is blocked, preserve it in this selected thread's
+    /// pending set and end the boundary. Otherwise return it directly so the
+    /// delivery path cannot accidentally dequeue a different unfiltered event.
+    pub(crate) fn prepare_filtered_signal_delivery(
+        &mut self,
+        event: reverie::SignalEvent,
+    ) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
+        self.validate_deferred_signal_event(event)?;
+        if signal_is_blocked(&self.state, event.signal()) {
+            queue_signal_event(&mut self.state, event, false).map_err(|raw| {
+                reverie::syscalls::Errno::new(i32::try_from(-raw).unwrap_or(libc::EIO))
+            })?;
+            return Ok(None);
+        }
+        Ok(Some(PendingSignal {
+            event,
+            domain: PendingSignalDomain::Thread,
+        }))
+    }
+
+    /// Removes the next eligible event, preferring the caller's thread queue
+    /// over the process-shared queue as Linux does.
+    pub(crate) fn take_pending_signal(&mut self) -> Option<PendingSignal> {
+        let blocked = self.state.thread_signals.blocked;
+        let mut process_signals = self
+            .state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generations = process_signals.pending_generations;
+        if let Some(event) = self
+            .state
+            .thread_signals
+            .pending
+            .take_eligible(blocked, &generations)
+        {
+            return Some(PendingSignal {
+                event,
+                domain: PendingSignalDomain::Thread,
+            });
+        }
+        let event = process_signals
+            .shared_pending
+            .take_eligible(blocked, &generations)?;
+        Some(PendingSignal {
+            event,
+            domain: PendingSignalDomain::Process,
+        })
+    }
+
+    /// Selects one event for a return-to-user delivery boundary and updates
+    /// every signalfd alias before the Tool hook or disposition is evaluated.
+    /// Ordinary syscall returns and rt_sigreturn continuations share this path.
+    pub(crate) fn take_pending_signal_for_delivery(
+        &mut self,
+    ) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
+        let pending = self.take_pending_signal();
+        self.refresh_signalfd_readiness()?;
+        Ok(pending)
+    }
+
+    /// Recomputes every signalfd alias after another consumer removes or
+    /// requeues pending state.
+    pub(crate) fn refresh_signalfd_readiness(&self) -> Result<(), reverie::syscalls::Errno> {
+        refresh_all_signalfd_readiness(&self.state)
+            .map_err(|raw| reverie::syscalls::Errno::new(i32::try_from(-raw).unwrap_or(libc::EIO)))
+    }
+
+    pub(crate) fn has_eligible_pending_signal(&self) -> bool {
+        let blocked = self.state.thread_signals.blocked;
+        let process_signals = self
+            .state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generations = &process_signals.pending_generations;
+        self.state
+            .thread_signals
+            .pending
+            .any_eligible(blocked, generations)
+            || process_signals
+                .shared_pending
+                .any_eligible(blocked, generations)
+    }
+
+    /// Preflights a post-exec signal-mask injection. Lifecycle callbacks have
+    /// no stopped userspace return frame, so making an exec-preserved pending
+    /// signal eligible here must fail before the mask or old-mask output is
+    /// changed and before the new image executes.
+    pub(crate) fn lifecycle_signal_mask_preflight(
+        &self,
+        request: &SyscallRequest,
+        memory: &GuestMemory,
+    ) -> Option<i64> {
+        if request.number() != libc::SYS_rt_sigprocmask as u64 {
+            return None;
+        }
+        let next = match prospective_sigprocmask(
+            memory,
+            self.state.thread_signals.blocked,
+            request.args(),
+        ) {
+            Ok(Some(next)) => next,
+            Ok(None) => return None,
+            Err(error) => return Some(error),
+        };
+        let process_signals = self
+            .state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generations = &process_signals.pending_generations;
+        let eligible = self
+            .state
+            .thread_signals
+            .pending
+            .any_eligible(next, generations)
+            || process_signals
+                .shared_pending
+                .any_eligible(next, generations);
+        eligible.then_some(negative_errno(libc::ENOSYS))
+    }
+
+    fn has_shared_pending_signal(&self) -> bool {
+        let process_signals = self
+            .state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        process_signals.shared_pending.any_eligible(
+            KernelSigset::default(),
+            &process_signals.pending_generations,
+        )
+    }
+
+    pub(crate) fn caught_signal_restarts_syscall(&self, pending: PendingSignal) -> bool {
+        self.signal_disposition(pending.event.signal()) == SignalDisposition::Handled
+            && self.signal_action(pending.event.signal()).flags & libc::SA_RESTART as u64 != 0
+    }
+
+    pub(crate) fn signal_disposition(&self, signal: libc::c_int) -> SignalDisposition {
+        signal_disposition(&self.state, signal)
+    }
+
+    pub(crate) fn signal_action(&self, signal: libc::c_int) -> KernelSigaction {
+        installed_signal_action(&self.state, signal).unwrap_or_default()
+    }
+
+    pub(crate) fn signal_mask(&self) -> KernelSigset {
+        self.state.thread_signals.blocked
+    }
+
+    pub(crate) fn signal_altstack(&self, stack_pointer: u64) -> GuestStack {
+        match self.state.thread_signals.altstack {
+            Some(mut stack) => {
+                if stack.contains(stack_pointer) {
+                    stack.flags |= libc::SS_ONSTACK;
+                }
+                stack
+            }
+            None => GuestStack {
+                sp: 0,
+                flags: libc::SS_DISABLE,
+                size: 0,
+            },
+        }
+    }
+
+    pub(crate) fn signal_stack_top(
+        &self,
+        action: KernelSigaction,
+        stack_pointer: u64,
+    ) -> Result<(u64, Option<u64>, bool, bool), reverie::syscalls::Errno> {
+        let Some(stack) = self.state.thread_signals.altstack else {
+            return Ok((stack_pointer, None, true, false));
+        };
+        if stack.contains(stack_pointer) {
+            // Nested delivery stays on the alternate stack and preserves the
+            // interrupted handler's red zone. The frame must not underflow the
+            // configured lower bound even when adjacent memory is mapped.
+            return Ok((stack_pointer, Some(stack.sp), true, false));
+        }
+        if action.flags & libc::SA_ONSTACK as u64 == 0 {
+            return Ok((stack_pointer, None, true, false));
+        }
+        let top = stack.sp.wrapping_add(stack.size);
+        // Linux switches to the top of a fresh alternate stack after applying
+        // the interrupted stack's red-zone adjustment, so no red zone is
+        // subtracted from this new stack.
+        Ok((top, Some(stack.sp), false, stack.flags & SS_AUTODISARM != 0))
+    }
+
+    pub(crate) fn enter_signal_handler(
+        &mut self,
+        pending: PendingSignal,
+        action: KernelSigaction,
+        autodisarm: bool,
+    ) {
+        let signal = pending.event.signal();
+        self.state.thread_signals.blocked.union_with(action.mask);
+        if action.flags & libc::SA_NODEFER as u64 == 0 {
+            self.state.thread_signals.blocked.insert(signal);
+        }
+        self.state.thread_signals.blocked.clear_unmaskable();
+        if action.flags & libc::SA_RESETHAND as u64 != 0 {
+            self.state
+                .process_signals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .dispositions
+                .remove(&signal);
+        }
+        if autodisarm {
+            self.state.thread_signals.altstack = None;
+        }
+    }
+
+    pub(crate) fn restore_signal_thread_state(
+        &mut self,
+        mut blocked: KernelSigset,
+        stack: GuestStack,
+        restorer_stack_pointer: u64,
+    ) {
+        blocked.clear_unmaskable();
+        self.state.thread_signals.blocked = blocked;
+        if let Ok(restored) = validate_altstack_update(
+            self.state.thread_signals.altstack,
+            Some(restorer_stack_pointer),
+            stack,
+        ) {
+            self.state.thread_signals.altstack = restored;
+        }
+        // Linux ignores restore_altstack() failures while still restoring the
+        // mask, registers and FP state. In particular, a handler cannot replace
+        // an active alternate stack through its ucontext.
+    }
+
+    pub(crate) fn force_signal_exit(&mut self, signal: libc::c_int) {
+        self.exit_status = terminating_signal_status(signal, self.current_dumpable());
+        self.exit_group = true;
+    }
+
+    pub(crate) fn set_current_user_stack_pointer(&mut self, stack_pointer: u64) {
+        self.current_user_stack_pointer = Some(stack_pointer);
+    }
+
     pub(crate) fn set_thread_context(&mut self, tid: i32, fs_base: u64, gs_base: u64) {
         self.state.tid = tid;
         self.state.fs_base = fs_base;
@@ -2246,12 +2771,6 @@ impl SyscallExecutor for ElfExecutor {
         {
             return io_error(error);
         }
-        let signal_actions = self.signal_actions.clone();
-        self.state.signal_actions.clone_from(
-            &signal_actions
-                .lock()
-                .expect("KVM signal-actions lock poisoned"),
-        );
 
         if let Some(result) = self.execute_process_action(request, memory) {
             return result;
@@ -2269,15 +2788,6 @@ impl SyscallExecutor for ElfExecutor {
         {
             return io_error(error);
         }
-        let shared_signal_actions =
-            (request.number() == libc::SYS_rt_sigaction as u64).then(|| {
-                signal_actions
-                    .lock()
-                    .expect("KVM signal-actions lock poisoned")
-            });
-        if let Some(shared_signal_actions) = shared_signal_actions.as_ref() {
-            self.state.signal_actions.clone_from(shared_signal_actions);
-        }
 
         // Clones share the underlying MAP_SHARED mapping, so writes through this
         // handle reach the guest; `execute_basic_syscall` needs `&mut` access.
@@ -2285,7 +2795,7 @@ impl SyscallExecutor for ElfExecutor {
         let sigchld_action_before = (request.number() == libc::SYS_rt_sigaction as u64
             && request.args()[0] as libc::c_int == libc::SIGCHLD
             && request.args()[1] != 0)
-            .then(|| self.state.signal_actions.get(&libc::SIGCHLD).copied());
+            .then(|| installed_signal_action(&self.state, libc::SIGCHLD));
         let address_space_syscall = matches!(
             request.number(),
             number if number == libc::SYS_brk as u64
@@ -2305,6 +2815,7 @@ impl SyscallExecutor for ElfExecutor {
                 &mut memory,
                 &mut self.state,
                 request,
+                self.current_user_stack_pointer,
                 self.output.as_mut(),
             );
             shared.program_break = self.state.program_break;
@@ -2317,17 +2828,15 @@ impl SyscallExecutor for ElfExecutor {
                 &mut memory,
                 &mut self.state,
                 request,
+                self.current_user_stack_pointer,
                 self.output.as_mut(),
             )
         };
         if let Some(mut shared_fs) = shared_fs {
             *shared_fs = FsState::try_from_elf(&self.state).expect("clone updated KVM fs state");
         }
-        if let Some(mut shared_signal_actions) = shared_signal_actions {
-            shared_signal_actions.clone_from(&self.state.signal_actions);
-        }
         if let Some(before) = sigchld_action_before {
-            let after = self.state.signal_actions.get(&libc::SIGCHLD).copied();
+            let after = installed_signal_action(&self.state, libc::SIGCHLD);
             if after != before {
                 self.sigchld_auto_reap
                     .store(sigchld_auto_reaps(&self.state), Ordering::SeqCst);
@@ -2718,6 +3227,14 @@ fn readv(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
         return negative_errno(libc::EINVAL);
     }
     let mut total: i64 = 0;
+    if signalfd_mask(state, fd).is_some() {
+        let vectors = match decode_guest_iovecs(memory, args[1], count) {
+            Ok(vectors) => vectors,
+            Err(error) => return error,
+        };
+        return signalfd_read_stream(memory, state, fd, &vectors, true, false)
+            .expect("signalfd mask disappeared without descriptor mutation");
+    }
     for index in 0..count {
         let entry = args[1] + (index as u64) * 16;
         let mut base = [0u8; 8];
@@ -2745,6 +3262,47 @@ fn readv(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
         }
     }
     total
+}
+
+fn preadv(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    has_flags: bool,
+) -> i64 {
+    let raw_offset = args[3] as i64;
+    if raw_offset < -1 {
+        return negative_errno(libc::EINVAL);
+    }
+    let Ok(fd) = libc::c_int::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    if signalfd_mask(state, fd).is_none() {
+        return negative_errno(libc::ENOSYS);
+    }
+    if raw_offset >= 0 {
+        return negative_errno(libc::ESPIPE);
+    }
+    let flags = if has_flags { args[5] as libc::c_int } else { 0 };
+    if flags & !libc::RWF_NOWAIT != 0 {
+        return negative_errno(libc::EOPNOTSUPP);
+    }
+    let Ok(count) = usize::try_from(args[2]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    let vectors = match decode_guest_iovecs(memory, args[1], count) {
+        Ok(vectors) => vectors,
+        Err(error) => return error,
+    };
+    signalfd_read_stream(
+        memory,
+        state,
+        fd,
+        &vectors,
+        true,
+        flags & libc::RWF_NOWAIT != 0,
+    )
+    .expect("signalfd mask disappeared without descriptor mutation")
 }
 
 fn write_without_sigpipe(fd: RawFd, bytes: &[u8]) -> i64 {
@@ -2893,15 +3451,15 @@ fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
     if let Err(error) = ensure_read_capable(file) {
         return error;
     }
-    if !range_is_valid(memory, args[1], args[2]) {
-        return negative_errno(libc::EFAULT);
-    }
     if let Err(error) = ensure_readable(file) {
         return error;
     }
     let host_fd = file.as_raw_fd();
     if let Some(result) = signalfd_read(memory, state, fd, args[1], requested_length) {
         return result;
+    }
+    if !range_is_valid(memory, args[1], args[2]) {
+        return negative_errno(libc::EFAULT);
     }
     if requested_length == 0 {
         return 0;
@@ -3699,6 +4257,9 @@ fn guest_fd_link_target(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Resul
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return Err(negative_errno(libc::ENOENT));
     };
+    if signalfd_mask(state, guest_fd).is_some() {
+        return Ok(b"anon_inode:[signalfd]".to_vec());
+    }
     if let Some(&inode) = state.proc_files.get(&guest_fd)
         && let Some(path) = synthetic_proc_path_for_inode(inode)
     {
@@ -3751,6 +4312,12 @@ fn open_guest_fd_path(
         // that real supervisor procfs descriptor would bypass the synthetic
         // guest-fd metadata model and expose host-specific procfs identity.
         return negative_errno(libc::ELOOP);
+    }
+    if flags & libc::O_PATH as u64 != 0 && signalfd_mask(state, guest_fd).is_some() {
+        // Reopening the private eventfd carrier as O_PATH would discard the
+        // virtual signalfd identity. Refuse before allocating a guest or host
+        // descriptor; ordinary access modes retain Linux's EACCES result.
+        return negative_errno(libc::ENOSYS);
     }
     let source_alias = output_alias(state, guest_fd);
     let source_proc_inode = state.proc_files.get(&guest_fd).copied();
@@ -4062,32 +4629,63 @@ struct DuplicateFdSource {
     proc_inode: Option<u64>,
     object_inode: Arc<GuestFileIdentity>,
     is_random: bool,
-    signalfd_mask: Option<[u8; KERNEL_SIGSET_SIZE]>,
+    signalfd_mask: Option<Arc<KernelSigset>>,
 }
 
-fn signalfd_mask(state: &LoadedStaticElf, fd: libc::c_int) -> Option<[u8; KERNEL_SIGSET_SIZE]> {
+/// Stops supported generic writes from reaching the eventfd that privately
+/// backs a virtual signalfd. Linux signalfd descriptions are read-only.
+/// Undispatched transfer syscalls remain ENOSYS without touching any host fd;
+/// broad interception here would change their pointer and zero-work ordering.
+fn virtual_signalfd_write_error(
+    state: &LoadedStaticElf,
+    number: u64,
+    args: &[u64; 6],
+) -> Option<i64> {
+    let errno = match number {
+        number if number == libc::SYS_write as u64 || number == libc::SYS_writev as u64 => {
+            libc::EINVAL
+        }
+        number if number == libc::SYS_pwrite64 as u64 => {
+            if (args[3] as i64) < 0 {
+                libc::EINVAL
+            } else {
+                libc::ESPIPE
+            }
+        }
+        number if number == libc::SYS_sendto as u64 || number == libc::SYS_sendmsg as u64 => {
+            libc::ENOTSOCK
+        }
+        _ => return None,
+    };
+    let Ok(fd) = libc::c_int::try_from(args[0]) else {
+        return None;
+    };
+    signalfd_mask(state, fd).map(|_| negative_errno(errno))
+}
+
+fn signalfd_mask(state: &LoadedStaticElf, fd: libc::c_int) -> Option<Arc<KernelSigset>> {
     state
-        .signalfd_state
+        .process_signals
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .masks
+        .signalfd_masks
         .get(&fd)
-        .copied()
+        .cloned()
 }
 
 fn replace_signalfd_mask(
     state: &LoadedStaticElf,
     fd: libc::c_int,
-    mask: Option<[u8; KERNEL_SIGSET_SIZE]>,
+    mask: Option<Arc<KernelSigset>>,
 ) {
-    let mut signalfd_state = state
-        .signalfd_state
+    let mut process_signals = state
+        .process_signals
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(mask) = mask {
-        signalfd_state.masks.insert(fd, mask);
+        process_signals.signalfd_masks.insert(fd, mask);
     } else {
-        signalfd_state.masks.remove(&fd);
+        process_signals.signalfd_masks.remove(&fd);
     }
 }
 
@@ -4362,14 +4960,15 @@ fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
         let Some(host_fd) = host_fd(state, guest_fd) else {
             return negative_errno(libc::EBADF);
         };
+        let virtual_signalfd = signalfd_mask(state, guest_fd).is_some();
         let mut events = 0;
         if membership[0] {
             events |= libc::POLLIN;
         }
-        if membership[1] {
+        if membership[1] && !virtual_signalfd {
             events |= libc::POLLOUT;
         }
-        if membership[2] {
+        if membership[2] && !virtual_signalfd {
             events |= libc::POLLPRI;
         }
         poll_fds.push(libc::pollfd {
@@ -4377,7 +4976,7 @@ fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
             events,
             revents: 0,
         });
-        requested.push((guest_fd, membership));
+        requested.push((guest_fd, membership, virtual_signalfd));
     }
 
     // Detcore owns guest time. Preserve readiness that exists now without
@@ -4393,12 +4992,19 @@ fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
         vec![0_u64; word_count],
     ];
     let mut ready_count = 0_i64;
-    for (poll_fd, (guest_fd, membership)) in poll_fds.iter().zip(requested) {
-        let ready = [
-            poll_fd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0,
-            poll_fd.revents & (libc::POLLOUT | libc::POLLERR) != 0,
-            poll_fd.revents & libc::POLLPRI != 0,
-        ];
+    for (poll_fd, (guest_fd, membership, virtual_signalfd)) in poll_fds.iter().zip(requested) {
+        let ready = if virtual_signalfd {
+            // The host eventfd is only a private carrier for virtual signal
+            // readiness. A Linux signalfd is read-only and never reports the
+            // eventfd's unconditional POLLOUT readiness.
+            [poll_fd.revents & libc::POLLIN != 0, false, false]
+        } else {
+            [
+                poll_fd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0,
+                poll_fd.revents & (libc::POLLOUT | libc::POLLERR) != 0,
+                poll_fd.revents & libc::POLLPRI != 0,
+            ]
+        };
         for index in 0..ready_sets.len() {
             if membership[index] && ready[index] {
                 fd_set_insert(&mut ready_sets[index], guest_fd);
@@ -4545,11 +5151,24 @@ fn poll_with_timeout(
         .iter()
         .map(|poll_fd| poll_fd.fd)
         .collect::<Vec<_>>();
+    let guest_events = poll_fds
+        .iter()
+        .map(|poll_fd| poll_fd.events)
+        .collect::<Vec<_>>();
+    let virtual_signalfds = guest_fds
+        .iter()
+        .map(|fd| *fd >= 0 && signalfd_mask(state, *fd).is_some())
+        .collect::<Vec<_>>();
+    let virtual_signalfd_wait = timeout != 0 && virtual_signalfds.iter().any(|present| *present);
     let mut invalid = vec![false; count];
     for (index, poll_fd) in poll_fds.iter_mut().enumerate() {
         poll_fd.revents = 0;
         if poll_fd.fd < 0 {
             continue;
+        }
+        if virtual_signalfds[index] {
+            // A signalfd exposes only the carrier's synthetic readable state.
+            poll_fd.events &= libc::POLLIN;
         }
         match host_fd(state, poll_fd.fd) {
             Some(host_fd) => poll_fd.fd = host_fd,
@@ -4563,17 +5182,31 @@ fn poll_with_timeout(
     // SYS_poll remains nonblocking for deterministic personality calls. The
     // concurrent KVM ppoll path may block in the host so QEMU's root event loop
     // can wait for worker eventfds without spinning on virtual clock reads.
-    let ready = unsafe { libc::poll(poll_fds.as_mut_ptr(), count as libc::nfds_t, timeout) };
+    // A virtual signalfd is different: readiness is guest state, so probe it
+    // without blocking and fail closed below only when no event is ready.
+    let host_timeout = if virtual_signalfd_wait { 0 } else { timeout };
+    let ready = unsafe { libc::poll(poll_fds.as_mut_ptr(), count as libc::nfds_t, host_timeout) };
     if ready < 0 {
         return io_error(std::io::Error::last_os_error());
     }
-    let mut invalid_count = 0;
     for (index, poll_fd) in poll_fds.iter_mut().enumerate() {
         poll_fd.fd = guest_fds[index];
+        poll_fd.events = guest_events[index];
         if invalid[index] {
             poll_fd.revents = libc::POLLNVAL;
-            invalid_count += 1;
+        } else if virtual_signalfds[index] {
+            poll_fd.revents &= libc::POLLIN;
         }
+    }
+    let ready_count = poll_fds
+        .iter()
+        .filter(|poll_fd| poll_fd.revents != 0)
+        .count() as libc::c_int;
+    if virtual_signalfd_wait && ready_count == 0 {
+        // poll/ppoll ignores O_NONBLOCK. A real wait here would park the host
+        // vCPU outside Detcore's scheduler and race readiness publication.
+        // Refuse before changing the guest pollfd array.
+        return negative_errno(libc::ENOSYS);
     }
     {
         // SAFETY: poll_fds remains initialized ABI data and the byte view is
@@ -4584,7 +5217,7 @@ fn poll_with_timeout(
             return negative_errno(libc::EFAULT);
         }
     }
-    i64::from(ready + invalid_count)
+    i64::from(ready_count)
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -4622,6 +5255,13 @@ fn epoll_ctl(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
             Err(error) => return error,
         }
     };
+    if matches!(operation, libc::EPOLL_CTL_ADD | libc::EPOLL_CTL_MOD)
+        && signalfd_mask(state, args[2] as libc::c_int).is_some()
+    {
+        // Otherwise a blocking ppoll of this epoll descriptor could wait on
+        // virtual signal readiness without carrying signalfd metadata itself.
+        return negative_errno(libc::ENOSYS);
+    }
     // SAFETY: both descriptors were translated from live guest descriptors;
     // event is initialized and Linux validates the requested operation.
     zero_or_errno(unsafe { libc::epoll_ctl(epoll_fd, operation, target_fd, &mut event) })
@@ -4703,14 +5343,6 @@ fn eventfd2(state: &mut LoadedStaticElf, initial: u64, raw_flags: u64) -> i64 {
     insert_file_with_flags(state, file, flags & libc::EFD_CLOEXEC != 0, None)
 }
 
-fn signal_mask_contains(mask: &[u8; KERNEL_SIGSET_SIZE], signal: libc::c_int) -> bool {
-    if !(1..=64).contains(&signal) {
-        return false;
-    }
-    let bit = (signal - 1) as usize;
-    mask[bit / 8] & (1 << (bit % 8)) != 0
-}
-
 fn set_signalfd_ready(file: &std::fs::File, ready: bool) -> Result<(), i64> {
     let mut poll_fd = libc::pollfd {
         fd: file.as_raw_fd(),
@@ -4765,13 +5397,10 @@ fn signalfd(
         return negative_errno(libc::EINVAL);
     }
     let mut mask = match read_guest_bytes::<KERNEL_SIGSET_SIZE>(memory, args[1]) {
-        Ok(mask) => mask,
+        Ok(mask) => KernelSigset::from_bytes(mask),
         Err(error) => return error,
     };
-    for signal in [libc::SIGKILL, libc::SIGSTOP] {
-        let bit = (signal - 1) as usize;
-        mask[bit / 8] &= !(1 << (bit % 8));
-    }
+    mask.clear_unmaskable();
     let Ok(flags) = libc::c_int::try_from(raw_flags) else {
         return negative_errno(libc::EINVAL);
     };
@@ -4781,6 +5410,80 @@ fn signalfd(
     }
 
     let requested_fd = args[0] as libc::c_int;
+    if requested_fd == -1 && flags & libc::SFD_NONBLOCK == 0 {
+        return negative_errno(libc::ENOSYS);
+    }
+
+    let update_aliases = if requested_fd != -1 {
+        if flags != 0 {
+            return negative_errno(libc::EINVAL);
+        }
+        let process_signals = state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(description) = process_signals.signalfd_masks.get(&requested_fd).cloned() else {
+            return negative_errno(libc::EINVAL);
+        };
+        if !state.files.contains_key(&requested_fd) {
+            return negative_errno(libc::EINVAL);
+        }
+        // A signalfd mask belongs to the open file description. Descriptor
+        // aliases share this exact Arc, while independently created signalfds
+        // receive distinct Arcs even when their masks happen to be equal.
+        Some(
+            process_signals
+                .signalfd_masks
+                .iter()
+                .filter_map(|(&fd, candidate)| Arc::ptr_eq(candidate, &description).then_some(fd))
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        None
+    };
+
+    // One shared eventfd cannot encode per-caller readiness. Signalfd is fully
+    // modeled for a single-thread process; setup/update remains refused once a
+    // sibling exists, and thread creation is refused while a signalfd is open.
+    if state
+        .task_lifecycle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .has_live_sibling(state.tid, state.pid)
+    {
+        return negative_errno(libc::ENOSYS);
+    }
+
+    if let Some(alias_fds) = update_aliases {
+        let ready = {
+            let mut process_signals = state
+                .process_signals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let description = Arc::new(mask);
+            for &fd in &alias_fds {
+                process_signals
+                    .signalfd_masks
+                    .insert(fd, description.clone());
+            }
+            let generations = &process_signals.pending_generations;
+            state.thread_signals.pending.any_matching(mask, generations)
+                || process_signals
+                    .shared_pending
+                    .any_matching(mask, generations)
+        };
+        for fd in alias_fds {
+            let file = state
+                .files
+                .get(&fd)
+                .expect("signalfd alias disappeared during mask update");
+            if let Err(error) = set_signalfd_ready(file, ready) {
+                return error;
+            }
+        }
+        return i64::from(requested_fd);
+    }
+
     let guest_fd = if requested_fd == -1 {
         let event_flags = libc::EFD_CLOEXEC
             | if flags & libc::SFD_NONBLOCK != 0 {
@@ -4801,30 +5504,22 @@ fn signalfd(
         }
         guest_fd as libc::c_int
     } else {
-        if flags != 0 {
-            return negative_errno(libc::EINVAL);
-        }
-        let state_lock = state
-            .signalfd_state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !state_lock.masks.contains_key(&requested_fd) {
-            return negative_errno(libc::EINVAL);
-        }
-        drop(state_lock);
         requested_fd
     };
 
     let ready = {
-        let mut signalfd_state = state
-            .signalfd_state
+        let mut process_signals = state
+            .process_signals
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        signalfd_state.masks.insert(guest_fd, mask);
-        signalfd_state
-            .pending
-            .iter()
-            .any(|signal| signal_mask_contains(&mask, *signal))
+        process_signals
+            .signalfd_masks
+            .insert(guest_fd, Arc::new(mask));
+        let generations = &process_signals.pending_generations;
+        state.thread_signals.pending.any_matching(mask, generations)
+            || process_signals
+                .shared_pending
+                .any_matching(mask, generations)
     };
     let file = state
         .files
@@ -4836,20 +5531,42 @@ fn signalfd(
     }
 }
 
-fn queue_blocked_signal(state: &mut LoadedStaticElf, signal: libc::c_int) -> Result<(), i64> {
+fn queue_signal_event(
+    state: &mut LoadedStaticElf,
+    event: reverie::SignalEvent,
+    process_directed: bool,
+) -> Result<(), i64> {
+    let signal = event.signal();
     let matching_fds = {
-        let mut signalfd_state = state
-            .signalfd_state
+        // Queue insertion and disposition-driven generation changes share this
+        // lock. A sibling therefore cannot invalidate a private entry between
+        // reading its generation and publishing it.
+        let mut process_signals = state
+            .process_signals
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !signalfd_state.pending.insert(signal) {
+        let generation = process_signals.pending_generation(signal);
+        let inserted = if process_directed {
+            process_signals.shared_pending.enqueue(event, generation)
+        } else {
+            state.thread_signals.pending.enqueue(event, generation)
+        }
+        .map_err(|errno| negative_errno(errno.into_raw()))?;
+        if !inserted {
             return Ok(());
         }
-        signalfd_state
-            .masks
-            .iter()
-            .filter_map(|(&fd, mask)| signal_mask_contains(mask, signal).then_some(fd))
-            .collect::<Vec<_>>()
+
+        // Thread-private readiness is exact because the process cannot acquire
+        // a sibling while a signalfd description exists (prepare_thread above).
+        if process_directed || state.thread_signals.blocked.contains(signal) {
+            process_signals
+                .signalfd_masks
+                .iter()
+                .filter_map(|(&fd, mask)| mask.contains(signal).then_some(fd))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        }
     };
     for fd in matching_fds {
         let Some(file) = state.files.get(&fd) else {
@@ -4860,76 +5577,288 @@ fn queue_blocked_signal(state: &mut LoadedStaticElf, signal: libc::c_int) -> Res
     Ok(())
 }
 
-// TODO-HUMAN-REVIEW(PR-235): Review virtual signalfd dequeue semantics.
+const SIGNALFD_RECORD_SIZE: usize = std::mem::size_of::<libc::signalfd_siginfo>();
+const X86_64_TASK_SIZE: u64 = 1_u64 << 47;
+
+fn user_range_passes_access_ok(address: u64, length: u64) -> bool {
+    address < X86_64_TASK_SIZE
+        && address
+            .checked_add(length)
+            .is_some_and(|end| end <= X86_64_TASK_SIZE)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GuestIoVec {
+    base: u64,
+    length: usize,
+}
+
+fn decode_guest_iovecs(
+    memory: &GuestMemory,
+    address: u64,
+    count: usize,
+) -> Result<Vec<GuestIoVec>, i64> {
+    if count > libc::UIO_MAXIOV as usize {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    let table_length = count
+        .checked_mul(16)
+        .ok_or_else(|| negative_errno(libc::EINVAL))?;
+    if !range_is_valid(memory, address, table_length as u64) {
+        return Err(negative_errno(libc::EFAULT));
+    }
+    let mut vectors = Vec::with_capacity(count);
+    let mut total = 0usize;
+    for index in 0..count {
+        let entry = address + index as u64 * 16;
+        let mut bytes = [0; 16];
+        if memory.read(entry, &mut bytes).is_err() {
+            return Err(negative_errno(libc::EFAULT));
+        }
+        let base = u64::from_le_bytes(bytes[..8].try_into().expect("iovec base"));
+        let raw_length = u64::from_le_bytes(bytes[8..].try_into().expect("iovec length"));
+        let length = usize::try_from(raw_length).map_err(|_| negative_errno(libc::EINVAL))?;
+        // Linux imports an iovec after access_ok validates its userspace
+        // address shape, but page accessibility is not tested until copyout.
+        // Preserve that distinction because signalfd dequeues before copyout.
+        if length != 0 && !user_range_passes_access_ok(base, raw_length) {
+            return Err(negative_errno(libc::EFAULT));
+        }
+        total = total
+            .checked_add(length)
+            .filter(|total| *total <= isize::MAX as usize)
+            .ok_or_else(|| negative_errno(libc::EINVAL))?;
+        vectors.push(GuestIoVec { base, length });
+    }
+    Ok(vectors)
+}
+
+struct GuestWriteCursor<'a> {
+    vectors: &'a [GuestIoVec],
+    index: usize,
+    offset: usize,
+}
+
+impl GuestWriteCursor<'_> {
+    fn write(&mut self, memory: &mut GuestMemory, mut bytes: &[u8]) -> Result<(), ()> {
+        while !bytes.is_empty() {
+            while self.index < self.vectors.len() && self.offset == self.vectors[self.index].length
+            {
+                self.index += 1;
+                self.offset = 0;
+            }
+            let vector = self.vectors.get(self.index).ok_or(())?;
+            let count = bytes.len().min(vector.length - self.offset);
+            let address = vector.base + self.offset as u64;
+            let writable = memory
+                .user_writable_prefix(address, count)
+                .map_err(|_| ())?;
+            if writable != 0 {
+                memory.write(address, &bytes[..writable]).map_err(|_| ())?;
+                self.offset += writable;
+                bytes = &bytes[writable..];
+            }
+            if writable < count {
+                return Err(());
+            }
+        }
+        Ok(())
+    }
+}
+
+fn encode_signalfd_siginfo(event: reverie::SignalEvent) -> [u8; SIGNALFD_RECORD_SIZE] {
+    // SAFETY: signalfd_siginfo is a plain Linux ABI structure and zero is a
+    // valid value for every field not populated by this process-local model.
+    let mut info = unsafe { std::mem::zeroed::<libc::signalfd_siginfo>() };
+    let raw = event.siginfo();
+    info.ssi_signo = event.signal() as u32;
+    info.ssi_errno = i32::from_ne_bytes(raw[4..8].try_into().expect("siginfo errno"));
+    info.ssi_code = i32::from_ne_bytes(raw[8..12].try_into().expect("siginfo code"));
+    if info.ssi_code == libc::SI_TIMER {
+        info.ssi_tid = u32::from_ne_bytes(raw[16..20].try_into().expect("siginfo timer id"));
+        info.ssi_overrun =
+            u32::from_ne_bytes(raw[20..24].try_into().expect("siginfo timer overrun"));
+        let value = u64::from_ne_bytes(raw[24..32].try_into().expect("siginfo timer value"));
+        info.ssi_ptr = value;
+        info.ssi_int = value as i32;
+    } else {
+        // SI_USER, SI_TKILL, and the accepted SIGALRM/SI_KERNEL producer use
+        // the kill-style pid/uid arm of siginfo_t.
+        info.ssi_pid = u32::from_ne_bytes(raw[16..20].try_into().expect("siginfo pid"));
+        info.ssi_uid = u32::from_ne_bytes(raw[20..24].try_into().expect("siginfo uid"));
+    }
+    let mut bytes = [0; SIGNALFD_RECORD_SIZE];
+    // SAFETY: both objects are live for exactly the size of signalfd_siginfo.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            std::ptr::from_ref(&info).cast::<u8>(),
+            bytes.as_mut_ptr(),
+            SIGNALFD_RECORD_SIZE,
+        );
+    }
+    bytes
+}
+
+fn refresh_all_signalfd_readiness(state: &LoadedStaticElf) -> Result<(), i64> {
+    let readiness = {
+        let process_signals = state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        process_signals
+            .signalfd_masks
+            .iter()
+            .map(|(&fd, mask)| {
+                (
+                    fd,
+                    state
+                        .thread_signals
+                        .pending
+                        .any_matching(**mask, &process_signals.pending_generations)
+                        || process_signals
+                            .shared_pending
+                            .any_matching(**mask, &process_signals.pending_generations),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    for (fd, ready) in readiness {
+        if let Some(file) = state.files.get(&fd) {
+            set_signalfd_ready(file, ready)?;
+        }
+    }
+    Ok(())
+}
+
+fn take_signalfd_event(
+    state: &mut LoadedStaticElf,
+    mask: KernelSigset,
+) -> Result<Option<reverie::SignalEvent>, i64> {
+    let event = {
+        let mut process_signals = state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generations = process_signals.pending_generations;
+        state
+            .thread_signals
+            .pending
+            .take_signalfd_matching(mask, &generations)
+            .or_else(|| {
+                process_signals
+                    .shared_pending
+                    .take_signalfd_matching(mask, &generations)
+            })
+    };
+    refresh_all_signalfd_readiness(state)?;
+    Ok(event)
+}
+
+fn signalfd_read_stream(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    fd: libc::c_int,
+    vectors: &[GuestIoVec],
+    vector_zero_semantics: bool,
+    force_nonblocking: bool,
+) -> Option<i64> {
+    let mask = state
+        .process_signals
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .signalfd_masks
+        .get(&fd)
+        .map(|mask| **mask)?;
+    let file = state.files.get(&fd)?;
+    if let Err(error) = ensure_read_capable(file).and_then(|()| ensure_readable(file)) {
+        return Some(error);
+    }
+    let raw_fd = file.as_raw_fd();
+    let status_flags = match fd_status_flags(raw_fd) {
+        Ok(flags) => flags,
+        Err(error) => return Some(error),
+    };
+    if !force_nonblocking && status_flags & libc::O_NONBLOCK == 0 {
+        // A host wait would escape Detcore's scheduler and race the readiness
+        // publication. Creation and F_SETFL prevent this state; keep the read
+        // path fail-closed as a defensive invariant.
+        return Some(negative_errno(libc::ENOSYS));
+    }
+    let total = vectors
+        .iter()
+        .try_fold(0usize, |total, vector| total.checked_add(vector.length));
+    let Some(total) = total else {
+        return Some(negative_errno(libc::EINVAL));
+    };
+    if total == 0 && vector_zero_semantics {
+        return Some(0);
+    }
+    if total < SIGNALFD_RECORD_SIZE {
+        return Some(negative_errno(libc::EINVAL));
+    }
+    let capacity = total / SIGNALFD_RECORD_SIZE;
+    let mut cursor = GuestWriteCursor {
+        vectors,
+        index: 0,
+        offset: 0,
+    };
+    let mut completed = 0usize;
+    loop {
+        let event = match take_signalfd_event(state, mask) {
+            Ok(event) => event,
+            Err(error) => {
+                return Some(if completed == 0 {
+                    error
+                } else {
+                    (completed * SIGNALFD_RECORD_SIZE) as i64
+                });
+            }
+        };
+        let Some(event) = event else {
+            if completed != 0 {
+                return Some((completed * SIGNALFD_RECORD_SIZE) as i64);
+            }
+            return Some(negative_errno(libc::EAGAIN));
+        };
+        let record = encode_signalfd_siginfo(event);
+        if cursor.write(memory, &record).is_err() {
+            return Some(if completed == 0 {
+                negative_errno(libc::EFAULT)
+            } else {
+                (completed * SIGNALFD_RECORD_SIZE) as i64
+            });
+        }
+        completed += 1;
+        if completed == capacity {
+            return Some((completed * SIGNALFD_RECORD_SIZE) as i64);
+        }
+    }
+}
+
+// TODO-HUMAN-REVIEW(PR-235): Review virtual signalfd aggregate dequeue semantics.
 fn signalfd_read(
     memory: &mut GuestMemory,
     state: &mut LoadedStaticElf,
     fd: libc::c_int,
+
     address: u64,
     length: usize,
 ) -> Option<i64> {
-    let mask = state
-        .signalfd_state
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .masks
-        .get(&fd)
-        .copied()?;
-    if length < std::mem::size_of::<libc::signalfd_siginfo>() {
-        return Some(negative_errno(libc::EINVAL));
-    }
-    if !range_is_valid(
+    signalfd_read_stream(
         memory,
-        address,
-        std::mem::size_of::<libc::signalfd_siginfo>() as u64,
-    ) {
-        return Some(negative_errno(libc::EFAULT));
-    }
-
-    let (signal, still_ready) = {
-        let mut signalfd_state = state
-            .signalfd_state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let signal = signalfd_state
-            .pending
-            .iter()
-            .copied()
-            .find(|signal| signal_mask_contains(&mask, *signal));
-        if let Some(signal) = signal {
-            signalfd_state.pending.remove(&signal);
-        }
-        let still_ready = signalfd_state
-            .pending
-            .iter()
-            .any(|signal| signal_mask_contains(&mask, *signal));
-        (signal, still_ready)
-    };
-    let file = state
-        .files
-        .get(&fd)
-        .expect("virtual signalfd mask exists without a descriptor");
-    if let Err(error) = set_signalfd_ready(file, still_ready) {
-        return Some(error);
-    }
-    let Some(signal) = signal else {
-        return Some(negative_errno(libc::EAGAIN));
-    };
-
-    // SAFETY: signalfd_siginfo is a plain Linux ABI structure and zero is a
-    // valid value for every field not populated by this process-local model.
-    let mut info = unsafe { std::mem::zeroed::<libc::signalfd_siginfo>() };
-    info.ssi_signo = signal as u32;
-    info.ssi_pid = state.pid as u32;
-    info.ssi_uid = 0;
-    let written = write_struct(memory, address, &info);
-    Some(if written < 0 {
-        written
-    } else {
-        std::mem::size_of::<libc::signalfd_siginfo>() as i64
-    })
+        state,
+        fd,
+        &[GuestIoVec {
+            base: address,
+            length,
+        }],
+        false,
+        false,
+    )
 }
-
 // TODO-HUMAN-REVIEW(PR-235): Review host-backed KVM timerfd creation semantics.
 fn timerfd_create(state: &mut LoadedStaticElf, raw_clock_id: u64, raw_flags: u64) -> i64 {
     let Ok(clock_id) = libc::c_int::try_from(raw_clock_id) else {
@@ -5849,6 +6778,11 @@ fn translate_outgoing_control(control: &mut [u8], state: &LoadedStaticElf) -> Re
         {
             let guest_fd = read_control_fd(control, offset)?;
             let host_fd = host_fd(state, guest_fd).ok_or_else(|| negative_errno(libc::EBADF))?;
+            if signalfd_mask(state, guest_fd).is_some() {
+                // Receiving this eventfd without its virtual signalfd metadata
+                // would create an alias that can escape the nonblocking guard.
+                return Err(negative_errno(libc::ENOSYS));
+            }
             write_control_fd(control, offset, host_fd)?;
         }
     }
@@ -8678,6 +9612,11 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 | libc::O_NOATIME
                 | libc::O_NONBLOCK;
             let flags = args[2] as libc::c_int & settable;
+            if source_signalfd_mask.is_some() && flags & libc::O_NONBLOCK == 0 {
+                // Blocking virtual signalfd waits require scheduler ownership;
+                // reject before changing the shared open-file description.
+                return negative_errno(libc::ENOSYS);
+            }
             // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
             zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, flags) })
         }
@@ -9306,6 +10245,13 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
     if !is_anonymous && !args[5].is_multiple_of(PAGE_SIZE) {
         return negative_errno(libc::EINVAL);
     }
+    if !is_anonymous
+        && let Ok(fd) = libc::c_int::try_from(args[4])
+        && signalfd_mask(state, fd).is_some()
+    {
+        // Do not expose the non-mappable eventfd carrier's ESPIPE result.
+        return negative_errno(libc::ENODEV);
+    }
     // Linux treats a nonfixed address as a hint. This bounded personality uses
     // its deterministic allocator rather than risking an occupied mapping.
     let address = if fixed {
@@ -9357,8 +10303,11 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
         return negative_errno(libc::EFAULT);
     }
     if memory
-        .map_user_range(address, length as u64, args[2] == libc::PROT_NONE as u64)
+        .map_user_range(address, length as u64, false)
         .is_err()
+        || memory
+            .protect_user_range(address, length as u64, args[2] as libc::c_int)
+            .is_err()
     {
         return negative_errno(libc::ENOMEM);
     }
@@ -9439,7 +10388,7 @@ fn mprotect(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     if !range_is_valid(memory, address, length) || !memory.user_range_is_mapped(address, length) {
         return negative_errno(libc::ENOMEM);
     }
-    match memory.map_user_range(address, length, protection == libc::PROT_NONE as u64) {
+    match memory.protect_user_range(address, length, protection as libc::c_int) {
         Ok(()) => 0,
         Err(_) => negative_errno(libc::ENOMEM),
     }
@@ -10253,16 +11202,12 @@ fn rt_sigaction(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u
         None
     } else {
         match read_guest_bytes::<KERNEL_SIGACTION_SIZE>(memory, args[1]) {
-            Ok(action) => Some(action),
+            Ok(action) => Some(KernelSigaction::decode(action)),
             Err(error) => return error,
         }
     };
     if let Some(action) = &mut action {
-        let mask = &mut action[KERNEL_SIGACTION_SIZE - KERNEL_SIGSET_SIZE..];
-        for signal in [libc::SIGKILL, libc::SIGSTOP] {
-            let bit = (signal - 1) as usize;
-            mask[bit / 8] &= !(1 << (bit % 8));
-        }
+        action.mask.clear_unmaskable();
     }
     if action.is_some() && matches!(signal, libc::SIGKILL | libc::SIGSTOP) {
         return negative_errno(libc::EINVAL);
@@ -10276,84 +11221,149 @@ fn rt_sigaction(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u
     // a separate, still-open question; accepting the installation does not answer it
     // and does not claim delivery.
 
-    let previous = state
-        .signal_actions
-        .get(&signal)
-        .copied()
-        .unwrap_or([0; KERNEL_SIGACTION_SIZE]);
-    if let Some(action) = action {
-        state.signal_actions.insert(signal, action);
+    let discards_pending = action.is_some_and(|action| {
+        action.handler == libc::SIG_IGN as u64
+            || action.handler == libc::SIG_DFL as u64
+                && default_signal_disposition(signal) == SignalDisposition::Ignore
+    });
+    // Linux discards every instance that predates an ignored disposition.
+    // Per-thread queues are not directly reachable from a sibling, so a
+    // process-shared generation makes those old entries ineligible atomically.
+    // A blocked signal generated after this transition uses the new generation
+    // and may remain pending if a handler is installed before it is unblocked.
+    let (previous, readiness) = {
+        let mut process_signals = state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = process_signals
+            .dispositions
+            .get(&signal)
+            .copied()
+            .unwrap_or_default();
+        if discards_pending {
+            if let Err(error) = process_signals.advance_pending_generation(signal) {
+                return negative_errno(error.into_raw());
+            }
+            state.thread_signals.pending.remove(signal);
+            process_signals.shared_pending.remove(signal);
+        }
+        if let Some(action) = action {
+            process_signals.dispositions.insert(signal, action);
+        }
+        let readiness = if discards_pending {
+            let generations = &process_signals.pending_generations;
+            process_signals
+                .signalfd_masks
+                .iter()
+                .filter_map(|(&fd, mask)| {
+                    let mask = **mask;
+                    mask.contains(signal).then_some((
+                        fd,
+                        state.thread_signals.pending.any_matching(mask, generations)
+                            || process_signals
+                                .shared_pending
+                                .any_matching(mask, generations),
+                    ))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        (previous, readiness)
+    };
+    for (fd, ready) in readiness {
+        if let Some(file) = state.files.get(&fd)
+            && let Err(error) = set_signalfd_ready(file, ready)
+        {
+            return error;
+        }
     }
     if args[2] != 0 {
-        return write_bytes(memory, args[2], &previous);
+        return write_bytes(memory, args[2], &previous.encode());
     }
     0
 }
 
-fn rt_sigprocmask(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn prospective_sigprocmask(
+    memory: &GuestMemory,
+    current: KernelSigset,
+    args: &[u64; 6],
+) -> Result<Option<KernelSigset>, i64> {
     if args[3] != KERNEL_SIGSET_SIZE as u64 {
-        return negative_errno(libc::EINVAL);
+        return Err(negative_errno(libc::EINVAL));
     }
-    let requested = if args[1] == 0 {
-        None
-    } else {
-        match read_guest_bytes::<KERNEL_SIGSET_SIZE>(memory, args[1]) {
-            Ok(mask) => Some(mask),
-            Err(error) => return error,
-        }
-    };
-    let previous = state.signal_mask;
-    if let Some(requested) = requested {
-        match args[0] as libc::c_int {
-            libc::SIG_BLOCK => {
-                for (current, requested) in state.signal_mask.iter_mut().zip(requested) {
-                    *current |= requested;
-                }
-            }
-            libc::SIG_UNBLOCK => {
-                for (current, requested) in state.signal_mask.iter_mut().zip(requested) {
-                    *current &= !requested;
-                }
-            }
-            libc::SIG_SETMASK => state.signal_mask = requested,
-            _ => return negative_errno(libc::EINVAL),
-        }
-        for signal in [libc::SIGKILL, libc::SIGSTOP] {
-            let bit = (signal - 1) as usize;
-            state.signal_mask[bit / 8] &= !(1 << (bit % 8));
-        }
+    if args[1] == 0 {
+        return Ok(None);
+    }
+    let requested =
+        KernelSigset::from_bytes(read_guest_bytes::<KERNEL_SIGSET_SIZE>(memory, args[1])?);
+    let mut next = current;
+    match args[0] as libc::c_int {
+        libc::SIG_BLOCK => next.union_with(requested),
+        libc::SIG_UNBLOCK => next.remove_all(requested),
+        libc::SIG_SETMASK => next = requested,
+        _ => return Err(negative_errno(libc::EINVAL)),
+    }
+    next.clear_unmaskable();
+    Ok(Some(next))
+}
+
+fn rt_sigprocmask(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let previous = state.thread_signals.blocked;
+    match prospective_sigprocmask(memory, previous, args) {
+        Ok(Some(next)) => state.thread_signals.blocked = next,
+        Ok(None) => {}
+        Err(error) => return error,
     }
     if args[2] != 0 {
-        return write_bytes(memory, args[2], &previous);
+        return write_bytes(memory, args[2], &previous.to_bytes());
     }
     0
+}
+
+fn rt_sigpending(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    if args[1] != KERNEL_SIGSET_SIZE as u64 {
+        return negative_errno(libc::EINVAL);
+    }
+    let process_signals = state
+        .process_signals
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let generations = &process_signals.pending_generations;
+    let mut pending = state.thread_signals.pending.pending_mask(generations);
+    pending.union_with(process_signals.shared_pending.pending_mask(generations));
+    // Linux reports only signals that are both pending and blocked.
+    pending.intersect_with(state.thread_signals.blocked);
+    write_bytes(memory, args[0], &pending.to_bytes())
 }
 
 /// Effective action for a signal after honoring any handler installed through
 /// `rt_sigaction`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum SignalDisposition {
+pub(crate) enum SignalDisposition {
     /// Default action terminates the process.
     Terminate,
     /// Signal is ignored (default or `SIG_IGN`).
     Ignore,
     /// Default action stops the process.
     Stop,
-    /// A user handler is installed that this guest kernel cannot deliver.
+    /// A user handler is installed for deferred delivery at a user boundary.
     Handled,
 }
 
-/// Emulates `kill`/`tkill`/`tgkill` for the single-process guest model.
+/// Emulates `kill`/`tkill`/`tgkill` for the bounded virtual process tree and
+/// explicitly refuses delivery that requires cross-process recipient fanout.
 ///
-/// This guest kernel does not deliver asynchronous signals or run user handlers.
-/// However, a process that signals itself with a fatal, default-disposition
-/// signal (most importantly glibc `abort()` raising `SIGABRT` via `tgkill`) must
-/// still terminate. Before this handler those syscalls returned `ENOSYS`, so
-/// `abort()` fell through to its "unreachable" `hlt` trap and the VM reported a
-/// spurious `#GP` (exception vector 13) instead of exiting. A self-directed
-/// fatal signal now terminates the process with the conventional `128 + signo`
-/// status; ignored, stopped, blocked, or user-handled signals are reported as
-/// accepted without altering control flow.
+/// Supported standard signals directed to the current task are queued for the
+/// backend's next return-to-user delivery boundary. This lets a Tool inspect,
+/// replace, or suppress an event before its current disposition is applied.
+/// Blocked signals remain pending. Ignored signals are queued long enough for
+/// the Tool hook to observe them, then discarded at that return boundary; an
+/// unchanged fatal default disposition terminates with the conventional
+/// `128 + signo` status. Stopped-state scheduling, queued real-time siginfo,
+/// and delivery to another live task are outside this foundation and fail
+/// visibly rather than reporting false success.
 // TODO-HUMAN-REVIEW(#95): Review self-signal termination and the default-disposition table.
 fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> SyscallAction {
     let is_kill = number == libc::SYS_kill as u64;
@@ -10391,7 +11401,80 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
     // and it accepts a LEADER-targeted request and then evaluates or mutates
     // the WORKER's signal state. `kill` is unchanged: it names a process.
     let targets_self = if is_kill {
-        target == state.pid || target == 0 || target == -1
+        let processes: Vec<(i32, i32)> = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .processes()
+            .collect();
+        match target {
+            // Process groups are distinct from thread groups. A fork inherits
+            // its parent's PGID, so group delivery is supported only when the
+            // selected group contains exactly this one process. Refuse a
+            // multi-process fanout before mutating any pending set.
+            0 => {
+                let members: Vec<i32> = processes
+                    .iter()
+                    .filter_map(|&(tgid, pgid)| (pgid == state.pgid).then_some(tgid))
+                    .collect();
+                if members.is_empty() {
+                    return continue_with(negative_errno(libc::ESRCH));
+                }
+                if signal == 0 {
+                    return continue_with(0);
+                }
+                if members.as_slice() != [state.pid] {
+                    return continue_with(negative_errno(libc::ENOSYS));
+                }
+                true
+            }
+            -1 => {
+                // Linux kill(-1) excludes both the caller and PID 1. The
+                // remaining cross-process fanout is deliberately unsupported.
+                let eligible = processes
+                    .iter()
+                    .filter(|(tgid, _)| *tgid != state.pid && *tgid != 1)
+                    .count();
+                if eligible == 0 {
+                    return continue_with(negative_errno(libc::ESRCH));
+                }
+                return continue_with(if signal == 0 {
+                    0
+                } else {
+                    negative_errno(libc::ENOSYS)
+                });
+            }
+            target if target < -1 => {
+                let Some(group) = target.checked_abs() else {
+                    return continue_with(negative_errno(libc::ESRCH));
+                };
+                let members: Vec<i32> = processes
+                    .iter()
+                    .filter_map(|&(tgid, pgid)| (pgid == group).then_some(tgid))
+                    .collect();
+                if members.is_empty() {
+                    return continue_with(negative_errno(libc::ESRCH));
+                }
+                if signal == 0 {
+                    return continue_with(0);
+                }
+                if members.as_slice() != [state.pid] {
+                    return continue_with(negative_errno(libc::ENOSYS));
+                }
+                true
+            }
+            _ if target == state.pid => true,
+            _ if !processes.iter().any(|(tgid, _)| *tgid == target) => {
+                return continue_with(negative_errno(libc::ESRCH));
+            }
+            _ => {
+                return continue_with(if signal == 0 {
+                    0
+                } else {
+                    negative_errno(libc::ENOSYS)
+                });
+            }
+        }
     } else {
         // Linux rejects a non-positive thread id outright, before any lookup.
         if target <= 0 {
@@ -10433,6 +11516,13 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
         return continue_with(0);
     }
 
+    // These producer classes require state this first foundation does not yet
+    // model. Reject them before mask/disposition handling so a blocked or
+    // ignored action cannot turn an unsupported delivery into false success.
+    if signal > 31 || matches!(signal, libc::SIGCHLD | libc::SIGPIPE) {
+        return continue_with(negative_errno(libc::ENOSYS));
+    }
+
     // SIGKILL can never be caught, blocked, or ignored.
     if signal == libc::SIGKILL {
         return terminating_signal_status(signal, process_dumpable(state))
@@ -10440,30 +11530,42 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
             .unwrap_or_else(|| continue_with(negative_errno(libc::ENOSYS)));
     }
 
-    // A blocked signal becomes process-pending and wakes any matching virtual
-    // signalfd without entering the supervisor's host signal machinery.
-    if signal_is_blocked(state, signal) {
-        if let Err(error) = queue_blocked_signal(state, signal) {
-            return continue_with(error);
-        }
-        return continue_with(0);
+    match signal_disposition(state, signal) {
+        SignalDisposition::Stop => return continue_with(negative_errno(libc::ENOSYS)),
+        SignalDisposition::Ignore | SignalDisposition::Terminate | SignalDisposition::Handled => {}
     }
 
-    match signal_disposition(state, signal) {
-        SignalDisposition::Terminate => terminating_signal_status(signal, process_dumpable(state))
-            .map(SyscallAction::Exit)
-            .unwrap_or_else(|| continue_with(negative_errno(libc::ENOSYS))),
-        SignalDisposition::Ignore => continue_with(0),
-        // ⚠️ TRUTHFULNESS. This guest kernel runs no user handler and models no
-        // stopped state, so reporting 0 here claimed a delivery that never
-        // happened — a guest that installed a handler and signalled itself saw
-        // success and then observed its handler had not run. Fail visibly
-        // instead. Ignore stays successful because "discard it" IS the
-        // delivery, and a blocked Handler/Stop is queued above and never
-        // reaches here.
-        SignalDisposition::Stop | SignalDisposition::Handled => {
-            continue_with(negative_errno(libc::ENOSYS))
-        }
+    // A process-directed signal has no preselected recipient. With more than
+    // one live thread, letting whichever host vCPU reaches a boundary first
+    // take the shared event would make delivery depend on host scheduling.
+    // Hermit's later deterministic scheduler will own that selection; this
+    // foundation fails visibly until then.
+    if is_kill
+        && state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .has_live_sibling(state.tid, state.pid)
+    {
+        return continue_with(negative_errno(libc::ENOSYS));
+    }
+
+    // Queue even an unblocked default-fatal signal. The same return boundary
+    // immediately applies its disposition in the plain loop, while the Tool
+    // loop first gets exactly one structured hook invocation (as ptrace does
+    // at a signal-delivery stop). A blocked event simply remains pending.
+    let event = if is_kill {
+        event_for_process(signal, state.pid)
+    } else {
+        event_for_thread(signal, state.pid, state.tid)
+    };
+    let event = match event {
+        Ok(event) => event,
+        Err(errno) => return continue_with(negative_errno(errno.into_raw())),
+    };
+    match queue_signal_event(state, event, is_kill) {
+        Ok(()) => continue_with(0),
+        Err(error) => continue_with(error),
     }
 }
 
@@ -10497,12 +11599,24 @@ fn terminating_signal_status(signal: libc::c_int, dumpable: bool) -> Option<Exit
 
 /// Resolves the effective disposition of `signal`, honoring any installed
 /// handler before falling back to the kernel default action.
+fn installed_signal_action(
+    state: &LoadedStaticElf,
+    signal: libc::c_int,
+) -> Option<KernelSigaction> {
+    state
+        .process_signals
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .dispositions
+        .get(&signal)
+        .copied()
+}
+
 fn signal_disposition(state: &LoadedStaticElf, signal: libc::c_int) -> SignalDisposition {
-    if let Some(action) = state.signal_actions.get(&signal) {
-        let handler = kernel_sigaction_handler(action);
+    if let Some(action) = installed_signal_action(state, signal) {
         const SIG_DFL: u64 = 0;
         const SIG_IGN: u64 = 1;
-        match handler {
+        match action.handler {
             SIG_DFL => {}
             SIG_IGN => return SignalDisposition::Ignore,
             _ => return SignalDisposition::Handled,
@@ -10511,26 +11625,14 @@ fn signal_disposition(state: &LoadedStaticElf, signal: libc::c_int) -> SignalDis
     default_signal_disposition(signal)
 }
 
-fn kernel_sigaction_handler(action: &[u8; KERNEL_SIGACTION_SIZE]) -> u64 {
-    u64::from_le_bytes(action[0..8].try_into().expect("8-byte handler word"))
-}
-
-fn kernel_sigaction_flags(action: &[u8; KERNEL_SIGACTION_SIZE]) -> u64 {
-    u64::from_le_bytes(action[8..16].try_into().expect("8-byte flags word"))
-}
-
 /// Linux discards a child's terminal wait status when the parent explicitly
 /// ignores SIGCHLD or installs SA_NOCLDWAIT. The default SIGCHLD disposition is
 /// also "ignore", but unlike an explicit SIG_IGN it still leaves a waitable
 /// zombie, so inspect the installed action rather than the effective disposition.
 fn sigchld_auto_reaps(state: &LoadedStaticElf) -> bool {
-    state
-        .signal_actions
-        .get(&libc::SIGCHLD)
-        .is_some_and(|action| {
-            kernel_sigaction_handler(action) == 1
-                || kernel_sigaction_flags(action) & libc::SA_NOCLDWAIT as u64 != 0
-        })
+    installed_signal_action(state, libc::SIGCHLD).is_some_and(|action| {
+        action.handler == libc::SIG_IGN as u64 || action.flags & libc::SA_NOCLDWAIT as u64 != 0
+    })
 }
 
 /// The kernel default action for `signal` when no handler is installed.
@@ -10544,54 +11646,80 @@ fn default_signal_disposition(signal: libc::c_int) -> SignalDisposition {
 
 /// Reports whether `signal` is currently blocked by the guest's signal mask.
 fn signal_is_blocked(state: &LoadedStaticElf, signal: libc::c_int) -> bool {
-    let bit = (signal - 1) as usize;
-    state
-        .signal_mask
-        .get(bit / 8)
-        .is_some_and(|mask| mask & (1 << (bit % 8)) != 0)
+    state.thread_signals.blocked.contains(signal)
 }
 
-fn sigaltstack(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn validate_altstack_update(
+    current: Option<GuestStack>,
+    current_stack_pointer: Option<u64>,
+    requested: GuestStack,
+) -> Result<Option<GuestStack>, i64> {
+    let allowed_flags = libc::SS_DISABLE | SS_AUTODISARM;
+    let disabled = requested.flags & libc::SS_DISABLE != 0;
+    if requested.flags & !allowed_flags != 0 || disabled && requested.flags & SS_AUTODISARM != 0 {
+        // SS_ONSTACK is status-only and is never valid as input.
+        return Err(negative_errno(libc::EINVAL));
+    }
+    if !disabled && requested.size < libc::MINSIGSTKSZ as u64 {
+        return Err(negative_errno(libc::ENOMEM));
+    }
+    if current.is_some_and(|stack| {
+        current_stack_pointer.is_some_and(|stack_pointer| stack.contains(stack_pointer))
+    }) {
+        return Err(negative_errno(libc::EPERM));
+    }
+    Ok(if disabled {
+        None
+    } else {
+        Some(GuestStack {
+            flags: requested.flags & SS_AUTODISARM,
+            ..requested
+        })
+    })
+}
+
+fn sigaltstack(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    current_user_stack_pointer: Option<u64>,
+    args: &[u64; 6],
+) -> i64 {
     let requested = if args[0] == 0 {
         None
     } else {
-        let stack = match read_guest_struct::<GuestStack>(memory, args[0]) {
-            Ok(stack) => stack,
+        let stack = match read_guest_bytes::<24>(memory, args[0]) {
+            Ok(stack) => GuestStack::decode(stack),
             Err(error) => return error,
         };
-        const SS_AUTODISARM: libc::c_int = libc::c_int::MIN;
-        let allowed_flags = libc::SS_DISABLE | SS_AUTODISARM;
-        if stack.flags & !allowed_flags != 0
-            || stack.flags & libc::SS_DISABLE != 0 && stack.flags & SS_AUTODISARM != 0
-        {
-            return negative_errno(libc::EINVAL);
-        }
-        if stack.flags & libc::SS_DISABLE == 0 && stack.size < libc::MINSIGSTKSZ as u64 {
-            return negative_errno(libc::ENOMEM);
-        }
         Some(stack)
     };
-    let previous = state.signal_alt_stack.clone();
+    let previous = state.thread_signals.altstack;
+    let on_stack = previous.is_some_and(|stack| {
+        current_user_stack_pointer.is_some_and(|stack_pointer| stack.contains(stack_pointer))
+    });
     if let Some(requested) = requested {
-        state.signal_alt_stack = if requested.flags & libc::SS_DISABLE != 0 {
-            None
-        } else {
-            Some(struct_bytes(&requested))
-        };
+        state.thread_signals.altstack =
+            match validate_altstack_update(previous, current_user_stack_pointer, requested) {
+                Ok(stack) => stack,
+                Err(error) => return error,
+            };
     }
     if args[1] != 0 {
-        if let Some(previous) = previous.as_ref() {
-            return write_bytes(memory, args[1], previous);
+        if let Some(mut previous) = previous {
+            if on_stack {
+                previous.flags |= libc::SS_ONSTACK;
+            }
+            return write_bytes(memory, args[1], &previous.encode());
         }
-        return write_struct(
+        return write_bytes(
             memory,
             args[1],
             &GuestStack {
                 sp: 0,
                 flags: libc::SS_DISABLE,
-                _padding: 0,
                 size: 0,
-            },
+            }
+            .encode(),
         );
     }
     0
@@ -10603,51 +11731,63 @@ fn sigaltstack(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u6
 /// form before injecting it and then drives blocking and timeout resolution
 /// itself against the deterministic virtual clock. This handler is therefore a
 /// pure, non-blocking poll of the guest kernel's pending-signal set: it consumes
-/// the lowest-numbered pending signal that the `set` argument selects and returns
-/// its number, or reports `EAGAIN` when nothing matches (which detcore reads as
-/// "would have blocked" and reschedules deterministically). Before this route the
-/// executor fell through to `ENOSYS`, so a guest that called `sigtimedwait`
-/// diverged from the golden ptrace backend (which returns `EAGAIN` for an empty
-/// zero-timeout wait). `pending` is a `BTreeSet`, so iteration order — and thus
-/// which signal is dequeued — is fully deterministic.
+/// the pending signal that Linux's `next_signal()` ordering selects (the
+/// synchronous-number class first, then ascending numbers) and returns its
+/// number, or reports `EAGAIN` when nothing matches (which detcore reads as
+/// "would have blocked" and reschedules deterministically). Before this route
+/// the executor fell through to `ENOSYS`, so a guest that called
+/// `sigtimedwait` diverged from the golden ptrace backend (which returns
+/// `EAGAIN` for an empty zero-timeout wait). Selection within each pending
+/// domain is deterministic.
 // TODO-HUMAN-REVIEW(rrnewton/reverie#315): Review virtual rt_sigtimedwait dequeue semantics.
 fn rt_sigtimedwait(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     if args[3] != KERNEL_SIGSET_SIZE as u64 {
         return negative_errno(libc::EINVAL);
     }
-    let set = match read_guest_bytes::<KERNEL_SIGSET_SIZE>(memory, args[0]) {
-        Ok(set) => set,
+    let mut set = match read_guest_bytes::<KERNEL_SIGSET_SIZE>(memory, args[0]) {
+        Ok(set) => KernelSigset::from_bytes(set),
         Err(error) => return error,
     };
+    set.clear_unmaskable();
     // Dequeue the lowest matching pending signal under the lock, then recompute
     // the readiness of any signalfd whose mask also selected it, mirroring
     // `signalfd_read` (both consume from the same shared pending set).
-    let (signal, readiness) = {
-        let mut signalfd_state = state
-            .signalfd_state
+    let (event, readiness) = {
+        let mut process_signals = state
+            .process_signals
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let signal = signalfd_state.pending.iter().copied().find(|&signal| {
-            signal != libc::SIGKILL && signal != libc::SIGSTOP && signal_mask_contains(&set, signal)
-        });
+        let generations = process_signals.pending_generations;
+        let event = state
+            .thread_signals
+            .pending
+            .take_matching(set, &generations)
+            .or_else(|| {
+                process_signals
+                    .shared_pending
+                    .take_matching(set, &generations)
+            });
         let mut readiness = Vec::new();
-        if let Some(signal) = signal {
-            signalfd_state.pending.remove(&signal);
-            let affected = signalfd_state
-                .masks
+        if let Some(event) = event {
+            let signal = event.signal();
+            let affected = process_signals
+                .signalfd_masks
                 .iter()
-                .filter_map(|(&fd, mask)| signal_mask_contains(mask, signal).then_some(fd))
+                .filter_map(|(&fd, mask)| mask.contains(signal).then_some(fd))
                 .collect::<Vec<_>>();
             for fd in affected {
-                let mask = signalfd_state.masks[&fd];
-                let still_ready = signalfd_state
+                let mask = *process_signals.signalfd_masks[&fd];
+                let still_ready = state
+                    .thread_signals
                     .pending
-                    .iter()
-                    .any(|&pending| signal_mask_contains(&mask, pending));
+                    .any_matching(mask, &generations)
+                    || process_signals
+                        .shared_pending
+                        .any_matching(mask, &generations);
                 readiness.push((fd, still_ready));
             }
         }
-        (signal, readiness)
+        (event, readiness)
     };
     for (fd, ready) in readiness {
         if let Some(file) = state.files.get(&fd)
@@ -10656,28 +11796,21 @@ fn rt_sigtimedwait(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: 
             return error;
         }
     }
-    let Some(signal) = signal else {
+    let Some(event) = event else {
         return negative_errno(libc::EAGAIN);
     };
-    // Fill the guest-visible siginfo_t when requested. The x86-64 kernel layout
-    // places si_signo at 0, si_code at 8, and the kill(2) union (si_pid, si_uid)
-    // at 16/20; the delivered signal is process-local, so si_code is SI_USER.
+    // Preserve all event metadata rather than synthesizing a second siginfo.
     if args[1] != 0 {
-        const SIGINFO_SIZE: usize = 128;
-        if !range_is_valid(memory, args[1], SIGINFO_SIZE as u64) {
+        if !range_is_valid(memory, args[1], reverie::SIGNAL_INFO_SIZE as u64) {
             return negative_errno(libc::EFAULT);
         }
-        let mut info = [0u8; SIGINFO_SIZE];
-        info[0..4].copy_from_slice(&signal.to_ne_bytes());
-        info[8..12].copy_from_slice(&libc::SI_USER.to_ne_bytes());
-        info[16..20].copy_from_slice(&state.pid.to_ne_bytes());
-        info[20..24].copy_from_slice(&0i32.to_ne_bytes());
+        let info = event.siginfo();
         let written = write_bytes(memory, args[1], &info);
         if written < 0 {
             return written;
         }
     }
-    signal as i64
+    event.signal() as i64
 }
 
 fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -10853,6 +11986,7 @@ fn read_guest_struct<T>(memory: &GuestMemory, address: u64) -> Result<T, i64> {
     Ok(unsafe { value.assume_init() })
 }
 
+#[cfg(test)]
 fn struct_bytes<T>(value: &T) -> Vec<u8> {
     // SAFETY: Linux ABI structs are initialized plain data and the returned
     // Vec owns its copy before value can be dropped.
@@ -11080,6 +12214,11 @@ const fn negative_errno(errno: libc::c_int) -> i64 {
 }
 
 #[cfg(test)]
+pub(crate) fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf {
+    tests::test_state(cwd)
+}
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
@@ -11120,7 +12259,7 @@ mod tests {
         }
     }
 
-    fn test_state(cwd: &Path) -> LoadedStaticElf {
+    pub(super) fn test_state(cwd: &Path) -> LoadedStaticElf {
         LoadedStaticElf {
             entry_point: 0,
             stack_pointer: 0,
@@ -11142,6 +12281,7 @@ mod tests {
             fs_base: 0,
             gs_base: 0,
             pid: 1,
+            pgid: 1,
             tid: 1,
             ppid: 0,
             is_traced_tree_root: true,
@@ -11160,12 +12300,10 @@ mod tests {
             sched_priority: 0,
             sched_reset_on_fork: false,
             ioprio: 0,
-            signal_actions: BTreeMap::new(),
-            signal_mask: [0; KERNEL_SIGSET_SIZE],
-            signal_alt_stack: None,
-            signalfd_state: Arc::new(std::sync::Mutex::new(crate::elf::SignalFdState::default())),
+            process_signals: Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
+            thread_signals: ThreadSignalState::default(),
             task_lifecycle: Arc::new(std::sync::Mutex::new(
-                crate::elf::TaskLifecycleTable::with_root(1, 1, true),
+                crate::elf::TaskLifecycleTable::with_root(1, 1, 1, true),
             )),
             files: BTreeMap::new(),
             random_device_fds: BTreeSet::new(),
@@ -11183,6 +12321,54 @@ mod tests {
                 },
             )),
         }
+    }
+
+    fn test_signal_action(
+        state: &LoadedStaticElf,
+        signal: libc::c_int,
+    ) -> Option<[u8; KERNEL_SIGACTION_SIZE]> {
+        state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .dispositions
+            .get(&signal)
+            .copied()
+            .map(KernelSigaction::encode)
+    }
+
+    fn test_signal_actions(
+        state: &LoadedStaticElf,
+    ) -> BTreeMap<libc::c_int, [u8; KERNEL_SIGACTION_SIZE]> {
+        state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .dispositions
+            .iter()
+            .map(|(&signal, &action)| (signal, action.encode()))
+            .collect()
+    }
+
+    fn test_install_signal_action(
+        state: &LoadedStaticElf,
+        signal: libc::c_int,
+        action: [u8; KERNEL_SIGACTION_SIZE],
+    ) {
+        state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .dispositions
+            .insert(signal, KernelSigaction::decode(action));
+    }
+
+    fn test_block_signal(state: &mut LoadedStaticElf, signal: libc::c_int) {
+        state.thread_signals.blocked.insert(signal);
+    }
+
+    fn test_blocked_mask(state: &LoadedStaticElf) -> [u8; KERNEL_SIGSET_SIZE] {
+        state.thread_signals.blocked.to_bytes()
     }
 
     fn syscall_result(
@@ -12056,6 +13242,7 @@ mod tests {
                 &mut memory,
                 &mut state,
                 &SyscallRequest::new(libc::SYS_fstat as u64, [fd as u64, address, 0, 0, 0, 0]),
+                None,
                 Some(&mut output),
             );
             assert!(matches!(
@@ -12107,15 +13294,20 @@ mod tests {
         // is disabled. This is the control that prevents an inherited pipe from
         // making the captured-output assertion pass through the host fallback.
         assert!(matches!(
-            execute_basic_syscall_with_output(&mut memory, &mut state, &request, None),
+            execute_basic_syscall_with_output(&mut memory, &mut state, &request, None, None),
             SyscallAction::Continue {
                 result: 4,
                 segment: None
             }
         ));
 
-        let action =
-            execute_basic_syscall_with_output(&mut memory, &mut state, &request, Some(&mut output));
+        let action = execute_basic_syscall_with_output(
+            &mut memory,
+            &mut state,
+            &request,
+            None,
+            Some(&mut output),
+        );
         assert!(matches!(
             action,
             SyscallAction::Continue {
@@ -15320,6 +16512,7 @@ mod tests {
         const RECV_IOV: u64 = 0x500;
         const RECV_MSG: u64 = 0x580;
         const RECV_BUFFER: u64 = 0x600;
+        const SIGNAL_MASK: u64 = 0x700;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
@@ -15397,6 +16590,60 @@ mod tests {
             ),
             negative_errno(libc::EOPNOTSUPP)
         );
+
+        let mut signal_mask = KernelSigset::default();
+        signal_mask.insert(libc::SIGUSR1);
+        memory.write(SIGNAL_MASK, &signal_mask.to_bytes()).unwrap();
+        let signal_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_signalfd4,
+            [
+                u64::MAX,
+                SIGNAL_MASK,
+                KERNEL_SIGSET_SIZE as u64,
+                libc::SFD_NONBLOCK as u64,
+                0,
+                0,
+            ],
+        );
+        let signal_alias = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [signal_fd as u64, 0, 0, 0, 0, 0],
+        );
+        for donated in [signal_fd, signal_alias] {
+            let control = rights_control(&[donated as libc::c_int]);
+            memory.write(SEND_CONTROL, &control).unwrap();
+            send_message.msg_controllen = control.len();
+            assert_eq!(write_struct(&mut memory, SEND_MSG, &send_message), 0);
+            let files_before = state.files.keys().copied().collect::<Vec<_>>();
+            let masks_before = state.process_signals.lock().unwrap().signalfd_masks.clone();
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_sendmsg,
+                    [socket_fds[0] as u64, SEND_MSG, 0, 0, 0, 0],
+                ),
+                negative_errno(libc::ENOSYS),
+                "SCM_RIGHTS must not lose signalfd metadata for fd {donated}",
+            );
+            assert_eq!(
+                state.files.keys().copied().collect::<Vec<_>>(),
+                files_before
+            );
+            assert_eq!(
+                state.process_signals.lock().unwrap().signalfd_masks,
+                masks_before,
+            );
+            assert_eq!(
+                control_rights(&read_guest_bytes::<24>(&memory, SEND_CONTROL).unwrap()),
+                [donated as libc::c_int],
+                "the guest control buffer is not rewritten",
+            );
+        }
 
         // Every rejected send happened before the host syscall: the peer queue
         // remains empty and a nonblocking receive reports EAGAIN.
@@ -18278,10 +19525,2190 @@ mod tests {
         );
     }
 
+    #[test]
+    fn consuming_signal_refreshes_distinct_and_duplicated_signalfd_readiness() {
+        const MASK: u64 = 0x100;
+        const POLL_FDS: u64 = 0x180;
+        const INFO: u64 = 0x240;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let pid = state.pid;
+        test_block_signal(&mut state, libc::SIGUSR1);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut mask = KernelSigset::default();
+        mask.insert(libc::SIGUSR1);
+        memory.write(MASK, &mask.to_bytes()).unwrap();
+        let create = |memory: &mut GuestMemory, state: &mut LoadedStaticElf| {
+            syscall_result(
+                memory,
+                state,
+                libc::SYS_signalfd4,
+                [
+                    u64::MAX,
+                    MASK,
+                    KERNEL_SIGSET_SIZE as u64,
+                    (libc::SFD_CLOEXEC | libc::SFD_NONBLOCK) as u64,
+                    0,
+                    0,
+                ],
+            ) as libc::c_int
+        };
+        let first = create(&mut memory, &mut state);
+        let second = create(&mut memory, &mut state);
+        assert_eq!((first, second), (3, 4));
+        assert_eq!(
+            result_of(kill_signal(
+                &mut state,
+                libc::SYS_kill as u64,
+                &[pid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            )),
+            0,
+        );
+        let poll = |memory: &mut GuestMemory,
+                    state: &mut LoadedStaticElf,
+                    first: libc::c_int,
+                    second: libc::c_int| {
+            let first_poll = libc::pollfd {
+                fd: first,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let second_poll = libc::pollfd {
+                fd: second,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            write_struct(memory, POLL_FDS, &first_poll);
+            write_struct(
+                memory,
+                POLL_FDS + std::mem::size_of::<libc::pollfd>() as u64,
+                &second_poll,
+            );
+            syscall_result(memory, state, libc::SYS_poll, [POLL_FDS, 2, 0, 0, 0, 0])
+        };
+        assert_eq!(poll(&mut memory, &mut state, first, second), 2);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [first as u64, INFO, 128, 0, 0, 0],
+            ),
+            128,
+        );
+        assert_eq!(poll(&mut memory, &mut state, first, second), 0);
+
+        let duplicated = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [first as u64, 0, 0, 0, 0, 0],
+        ) as libc::c_int;
+        assert_eq!(duplicated, 5);
+
+        test_block_signal(&mut state, libc::SIGUSR2);
+        mask.remove(libc::SIGUSR1);
+        mask.insert(libc::SIGUSR2);
+        memory.write(MASK, &mask.to_bytes()).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_signalfd4,
+                [first as u64, MASK, KERNEL_SIGSET_SIZE as u64, 0, 0, 0],
+            ),
+            i64::from(first),
+            "updating one alias must update the shared signalfd description",
+        );
+        {
+            let process_signals = state.process_signals.lock().unwrap();
+            assert!(process_signals.signalfd_masks[&first].contains(libc::SIGUSR2));
+            assert!(process_signals.signalfd_masks[&duplicated].contains(libc::SIGUSR2));
+            assert!(!process_signals.signalfd_masks[&first].contains(libc::SIGUSR1));
+            assert!(!process_signals.signalfd_masks[&duplicated].contains(libc::SIGUSR1));
+            assert!(process_signals.signalfd_masks[&second].contains(libc::SIGUSR1));
+            assert!(!process_signals.signalfd_masks[&second].contains(libc::SIGUSR2));
+        }
+        assert_eq!(
+            result_of(kill_signal(
+                &mut state,
+                libc::SYS_kill as u64,
+                &[pid as u64, libc::SIGUSR2 as u64, 0, 0, 0, 0],
+            )),
+            0,
+        );
+        assert_eq!(poll(&mut memory, &mut state, first, duplicated), 2);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [duplicated as u64, INFO, 128, 0, 0, 0],
+            ),
+            128,
+        );
+        assert_eq!(poll(&mut memory, &mut state, first, duplicated), 0);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [first as u64, 0, 0, 0, 0, 0]
+            ),
+            0,
+        );
+        assert_eq!(
+            result_of(kill_signal(
+                &mut state,
+                libc::SYS_kill as u64,
+                &[pid as u64, libc::SIGUSR2 as u64, 0, 0, 0, 0],
+            )),
+            0,
+        );
+        assert_eq!(poll(&mut memory, &mut state, second, duplicated), 1);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [duplicated as u64, INFO, 128, 0, 0, 0],
+            ),
+            128,
+        );
+        assert_eq!(poll(&mut memory, &mut state, second, duplicated), 0);
+
+        // The second independently-created description is CLOEXEC, while dup
+        // cleared CLOEXEC on its alias of the first description. Exec must
+        // remove exactly the closed description's mask and preserve the live
+        // alias with its unchanged mask.
+        let mut after_exec = test_state(&root.0);
+        after_exec.inherit_process_state(state);
+        assert!(!after_exec.files.contains_key(&second));
+        assert!(after_exec.files.contains_key(&duplicated));
+        let process_signals = after_exec.process_signals.lock().unwrap();
+        assert_eq!(
+            process_signals
+                .signalfd_masks
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![duplicated],
+        );
+        assert!(process_signals.signalfd_masks[&duplicated].contains(libc::SIGUSR2));
+        assert!(!process_signals.signalfd_masks[&duplicated].contains(libc::SIGUSR1));
+    }
+
+    #[test]
+    fn delivery_selection_refreshes_every_signalfd_alias_before_filtering() {
+        const MASK: u64 = 0x100;
+        const POLL_FDS: u64 = 0x180;
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let pid = executor.state.pid;
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut mask = KernelSigset::default();
+        mask.insert(libc::SIGUSR1);
+        mask.insert(libc::SIGUSR2);
+        memory.write(MASK, &mask.to_bytes()).unwrap();
+        test_block_signal(&mut executor.state, libc::SIGUSR1);
+        test_block_signal(&mut executor.state, libc::SIGUSR2);
+        let original = syscall_result(
+            &mut memory,
+            &mut executor.state,
+            libc::SYS_signalfd4,
+            [
+                u64::MAX,
+                MASK,
+                KERNEL_SIGSET_SIZE as u64,
+                libc::SFD_NONBLOCK as u64,
+                0,
+                0,
+            ],
+        ) as libc::c_int;
+        let alias = syscall_result(
+            &mut memory,
+            &mut executor.state,
+            libc::SYS_dup,
+            [original as u64, 0, 0, 0, 0, 0],
+        ) as libc::c_int;
+        let poll = |memory: &mut GuestMemory, state: &mut LoadedStaticElf| {
+            for (index, fd) in [original, alias].into_iter().enumerate() {
+                let descriptor = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                assert_eq!(
+                    write_struct(
+                        memory,
+                        POLL_FDS + index as u64 * std::mem::size_of::<libc::pollfd>() as u64,
+                        &descriptor,
+                    ),
+                    0,
+                );
+            }
+            syscall_result(memory, state, libc::SYS_poll, [POLL_FDS, 2, 0, 0, 0, 0])
+        };
+        let queue = |state: &mut LoadedStaticElf| {
+            assert_eq!(
+                result_of(kill_signal(
+                    state,
+                    libc::SYS_kill as u64,
+                    &[pid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+                )),
+                0,
+            );
+        };
+
+        // Ordinary delivery removes an event that was readable while blocked.
+        // The return-boundary helper must clear every alias before disposition
+        // processing (and the same helper is used after rt_sigreturn).
+        queue(&mut executor.state);
+        assert_eq!(poll(&mut memory, &mut executor.state), 2);
+        executor.state.thread_signals.blocked.remove(libc::SIGUSR1);
+        let selected = executor
+            .take_pending_signal_for_delivery()
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.event.signal(), libc::SIGUSR1);
+        assert_eq!(poll(&mut memory, &mut executor.state), 0);
+
+        // Suppression has no requeue step, so selection itself must have
+        // removed the stale readiness from every alias.
+        test_block_signal(&mut executor.state, libc::SIGUSR1);
+        queue(&mut executor.state);
+        assert_eq!(poll(&mut memory, &mut executor.state), 2);
+        executor.state.thread_signals.blocked.remove(libc::SIGUSR1);
+        let suppressed = executor
+            .take_pending_signal_for_delivery()
+            .unwrap()
+            .unwrap();
+        assert_eq!(suppressed.event.signal(), libc::SIGUSR1);
+        assert_eq!(poll(&mut memory, &mut executor.state), 0);
+
+        // A Tool replacement that is blocked is requeued and makes every
+        // alias ready again for the replacement signal.
+        test_block_signal(&mut executor.state, libc::SIGUSR1);
+        queue(&mut executor.state);
+        executor.state.thread_signals.blocked.remove(libc::SIGUSR1);
+        let selected = executor
+            .take_pending_signal_for_delivery()
+            .unwrap()
+            .unwrap();
+        assert_eq!(poll(&mut memory, &mut executor.state), 0);
+        let mut info = selected.event.siginfo();
+        info[..4].copy_from_slice(&libc::SIGUSR2.to_ne_bytes());
+        let replacement = reverie::SignalEvent::new(
+            libc::SIGUSR2,
+            info,
+            reverie::SignalTarget::Process {
+                pid: reverie::Pid::from_raw(pid),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            executor
+                .prepare_filtered_signal_delivery(replacement)
+                .unwrap(),
+            None,
+        );
+        assert_eq!(poll(&mut memory, &mut executor.state), 2);
+    }
+
+    #[test]
+    fn single_thread_signalfd_supports_private_pending_and_refuses_sibling_lifetimes() {
+        const MASK: u64 = 0x100;
+        const POLL_FD: u64 = 0x140;
+
+        let root = TestDir::new();
+        let mut leader = ElfExecutor::new(test_state(&root.0), false);
+        test_block_signal(&mut leader.state, libc::SIGUSR1);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut mask = KernelSigset::default();
+        mask.insert(libc::SIGUSR1);
+        memory.write(MASK, &mask.to_bytes()).unwrap();
+        let signal_fd = leader.execute(
+            &SyscallRequest::new(
+                libc::SYS_signalfd4 as u64,
+                [
+                    u64::MAX,
+                    MASK,
+                    KERNEL_SIGSET_SIZE as u64,
+                    (libc::SFD_CLOEXEC | libc::SFD_NONBLOCK) as u64,
+                    0,
+                    0,
+                ],
+            ),
+            &memory,
+        );
+        assert_eq!(signal_fd, 3);
+        assert!(
+            leader.thread_child(7).is_err(),
+            "a signalfd owner cannot acquire a sibling with unrepresentable per-thread readiness",
+        );
+        let tid = leader.state.tid;
+        assert_eq!(
+            leader.execute(
+                &SyscallRequest::new(
+                    libc::SYS_tkill as u64,
+                    [tid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0,
+            "the single owning thread can publish exact private readiness",
+        );
+
+        let poll_fd = libc::pollfd {
+            fd: signal_fd as libc::c_int,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(write_struct(&mut memory, POLL_FD, &poll_fd), 0);
+        assert_eq!(
+            leader.execute(
+                &SyscallRequest::new(libc::SYS_poll as u64, [POLL_FD, 1, 0, 0, 0, 0]),
+                &memory,
+            ),
+            1,
+        );
+        assert_eq!(
+            leader.execute(
+                &SyscallRequest::new(
+                    libc::SYS_read as u64,
+                    [signal_fd as u64, 0x180, 128, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            128,
+        );
+
+        // The single-thread reverse ordering is representable too: setup sees
+        // the already-pending private signal and publishes readiness.
+        let mut standalone = test_state(&root.0);
+        let tid = standalone.tid;
+        test_block_signal(&mut standalone, libc::SIGUSR1);
+        assert_eq!(
+            result_of(kill_signal(
+                &mut standalone,
+                libc::SYS_tkill as u64,
+                &[tid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            )),
+            0,
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut standalone,
+                libc::SYS_signalfd4,
+                [99, MASK, KERNEL_SIGSET_SIZE as u64, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL),
+            "ordinary descriptor validation must precede the limitation",
+        );
+        assert!(standalone.thread_signals.pending.contains(libc::SIGUSR1));
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut standalone,
+                libc::SYS_signalfd4,
+                [
+                    u64::MAX,
+                    MASK,
+                    KERNEL_SIGSET_SIZE as u64,
+                    libc::SFD_NONBLOCK as u64,
+                    0,
+                    0,
+                ],
+            ),
+            3,
+        );
+        assert!(standalone.thread_signals.pending.contains(libc::SIGUSR1));
+        assert_eq!(standalone.files.len(), 1);
+
+        let mut reverse_leader = ElfExecutor::new(test_state(&root.0), false);
+        let mut reverse_worker = reverse_leader.thread_child(8).unwrap();
+        test_block_signal(&mut reverse_worker.state, libc::SIGUSR1);
+        assert_eq!(
+            result_of(kill_signal(
+                &mut reverse_worker.state,
+                libc::SYS_tkill as u64,
+                &[8, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            )),
+            0,
+        );
+        assert_eq!(
+            reverse_leader.execute(
+                &SyscallRequest::new(
+                    libc::SYS_signalfd4 as u64,
+                    [
+                        u64::MAX,
+                        MASK,
+                        KERNEL_SIGSET_SIZE as u64,
+                        (libc::SFD_CLOEXEC | libc::SFD_NONBLOCK) as u64,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::ENOSYS),
+            "a sibling's private pending state is not observable by shared eventfd setup",
+        );
+        assert!(
+            reverse_worker
+                .state
+                .thread_signals
+                .pending
+                .contains(libc::SIGUSR1)
+        );
+        assert!(reverse_leader.state.files.is_empty());
+    }
+
+    #[test]
+    fn process_fork_with_inherited_signalfd_is_explicitly_unsupported() {
+        const MASK: u64 = 0x100;
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut mask = KernelSigset::default();
+        mask.insert(libc::SIGUSR1);
+        memory.write(MASK, &mask.to_bytes()).unwrap();
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_signalfd4 as u64,
+                    [
+                        u64::MAX,
+                        MASK,
+                        KERNEL_SIGSET_SIZE as u64,
+                        (libc::SFD_CLOEXEC | libc::SFD_NONBLOCK) as u64,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            3,
+        );
+        assert_eq!(
+            executor.execute(&SyscallRequest::new(libc::SYS_fork as u64, [0; 6]), &memory,),
+            negative_errno(libc::ENOSYS),
+            "a shared host eventfd cannot represent per-process readiness after fork",
+        );
+        assert!(executor.take_process_action().is_none());
+        assert!(
+            executor.fork_child(7, false).is_err(),
+            "the internal process-child path must enforce the same pre-mutation guard",
+        );
+    }
+
+    #[test]
+    fn signalfd_is_one_aggregate_record_stream_across_scalar_and_vectored_reads() {
+        const MASK: u64 = 0x100;
+        const IOVEC: u64 = 0x180;
+        const OUTPUT: u64 = 0x400;
+        const OUTPUT_A: u64 = 0x800;
+        const OUTPUT_B: u64 = 0x900;
+        const OUTPUT_C: u64 = 0xa00;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let pid = state.pid;
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut mask = KernelSigset::default();
+        mask.insert(libc::SIGUSR1);
+        mask.insert(libc::SIGUSR2);
+        memory.write(MASK, &mask.to_bytes()).unwrap();
+        test_block_signal(&mut state, libc::SIGUSR1);
+        test_block_signal(&mut state, libc::SIGUSR2);
+        let signal_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_signalfd4,
+            [
+                u64::MAX,
+                MASK,
+                KERNEL_SIGSET_SIZE as u64,
+                libc::SFD_NONBLOCK as u64,
+                0,
+                0,
+            ],
+        );
+        assert_eq!(signal_fd, 3);
+        let queue = |state: &mut LoadedStaticElf, signal| {
+            assert_eq!(
+                result_of(kill_signal(
+                    state,
+                    libc::SYS_kill as u64,
+                    &[pid as u64, signal as u64, 0, 0, 0, 0],
+                )),
+                0,
+            );
+        };
+
+        queue(&mut state, libc::SIGUSR2);
+        queue(&mut state, libc::SIGUSR1);
+        memory.write(OUTPUT, &[0xcc; 300]).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [signal_fd as u64, OUTPUT, 300, 0, 0, 0],
+            ),
+            256,
+        );
+        let first: libc::signalfd_siginfo = read_struct(&memory, OUTPUT);
+        let second: libc::signalfd_siginfo = read_struct(&memory, OUTPUT + 128);
+        assert_eq!(
+            (first.ssi_signo, second.ssi_signo),
+            (libc::SIGUSR1 as u32, libc::SIGUSR2 as u32)
+        );
+        let mut trailing = [0; 44];
+        memory.read(OUTPUT + 256, &mut trailing).unwrap();
+        assert_eq!(trailing, [0xcc; 44]);
+
+        queue(&mut state, libc::SIGUSR2);
+        queue(&mut state, libc::SIGUSR1);
+        memory.write(OUTPUT_A, &[0xdd; 64]).unwrap();
+        memory.write(OUTPUT_B, &[0xdd; 65]).unwrap();
+        memory.write(OUTPUT_C, &[0xdd; 128]).unwrap();
+        for (index, vector) in [
+            libc::iovec {
+                iov_base: OUTPUT_A as *mut _,
+                iov_len: 64,
+            },
+            libc::iovec {
+                iov_base: OUTPUT_B as *mut _,
+                iov_len: 65,
+            },
+            libc::iovec {
+                iov_base: OUTPUT_C as *mut _,
+                iov_len: 128,
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                write_struct(&mut memory, IOVEC + index as u64 * 16, &vector),
+                0
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [signal_fd as u64, IOVEC, 3, 0, 0, 0],
+            ),
+            256,
+        );
+        let mut gathered = [0; 256];
+        memory.read(OUTPUT_A, &mut gathered[..64]).unwrap();
+        memory.read(OUTPUT_B, &mut gathered[64..129]).unwrap();
+        memory.read(OUTPUT_C, &mut gathered[129..]).unwrap();
+        assert_eq!(
+            u32::from_ne_bytes(gathered[..4].try_into().unwrap()),
+            libc::SIGUSR1 as u32
+        );
+        assert_eq!(
+            u32::from_ne_bytes(gathered[128..132].try_into().unwrap()),
+            libc::SIGUSR2 as u32
+        );
+        let mut sentinel = [0; 1];
+        memory.read(OUTPUT_C + 127, &mut sentinel).unwrap();
+        assert_eq!(sentinel, [0xdd]);
+
+        queue(&mut state, libc::SIGUSR1);
+        let one = libc::iovec {
+            iov_base: OUTPUT as *mut _,
+            iov_len: 128,
+        };
+        assert_eq!(write_struct(&mut memory, IOVEC, &one), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv2,
+                [signal_fd as u64, IOVEC, 1, (-2_i64) as u64, 0, 0,],
+            ),
+            negative_errno(libc::EINVAL),
+        );
+        assert!(
+            state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(libc::SIGUSR1),
+            "an invalid signed 64-bit offset must not dequeue the signal",
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv2,
+                [
+                    signal_fd as u64,
+                    IOVEC,
+                    1,
+                    u32::MAX as u64,
+                    u32::MAX as u64,
+                    0,
+                ],
+            ),
+            negative_errno(libc::ESPIPE),
+            "args[4] is padding on x86-64; args[3]=0xffffffff is positive",
+        );
+        assert!(
+            state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(libc::SIGUSR1),
+            "a positioned signalfd read must not dequeue the signal",
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv2,
+                [
+                    signal_fd as u64,
+                    IOVEC,
+                    1,
+                    u64::MAX,
+                    0,
+                    libc::RWF_NOWAIT as u64
+                ],
+            ),
+            128,
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv2,
+                [signal_fd as u64, u64::MAX, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::ESPIPE),
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv2,
+                [
+                    signal_fd as u64,
+                    IOVEC,
+                    1,
+                    u64::MAX,
+                    0,
+                    libc::RWF_NOWAIT as u64
+                ],
+            ),
+            negative_errno(libc::EAGAIN),
+        );
+
+        // Standard instances coalesce within one pending domain, while the
+        // same number in the caller-private and process-shared domains yields
+        // two records in one aggregate read.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_tkill,
+                [pid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_tkill,
+                [pid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        queue(&mut state, libc::SIGUSR1);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [signal_fd as u64, OUTPUT, 256, 0, 0, 0],
+            ),
+            256,
+        );
+    }
+
+    #[test]
+    fn signalfd_preadv_offsets_use_signed_arg3_and_ignore_arg4_padding() {
+        const MASK: u64 = 0x100;
+        const IOVEC: u64 = 0x180;
+        const OUTPUT: u64 = 0x300;
+        let root = TestDir::new();
+
+        for number in [libc::SYS_preadv, libc::SYS_preadv2] {
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            let mut mask = KernelSigset::default();
+            mask.insert(libc::SIGUSR1);
+            memory.write(MASK, &mask.to_bytes()).unwrap();
+            test_block_signal(&mut state, libc::SIGUSR1);
+            let signal_fd = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_signalfd4,
+                [
+                    u64::MAX,
+                    MASK,
+                    KERNEL_SIGSET_SIZE as u64,
+                    libc::SFD_NONBLOCK as u64,
+                    0,
+                    0,
+                ],
+            );
+            let vector = libc::iovec {
+                iov_base: OUTPUT as *mut _,
+                iov_len: SIGNALFD_RECORD_SIZE,
+            };
+            assert_eq!(write_struct(&mut memory, IOVEC, &vector), 0);
+            let pid = state.pid;
+            assert_eq!(
+                result_of(kill_signal(
+                    &mut state,
+                    libc::SYS_kill as u64,
+                    &[pid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+                )),
+                0,
+            );
+            let flags = if number == libc::SYS_preadv2 {
+                libc::RWF_NOWAIT as u64
+            } else {
+                0
+            };
+            for (low, high, expected) in [
+                ((-2_i64) as u64, 0, negative_errno(libc::EINVAL)),
+                (
+                    u32::MAX as u64,
+                    u32::MAX as u64,
+                    negative_errno(libc::ESPIPE),
+                ),
+            ] {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        number,
+                        [signal_fd as u64, IOVEC, 1, low, high, flags],
+                    ),
+                    expected,
+                    "syscall={number}, arg3={low:#x}, arg4={high:#x}",
+                );
+                assert!(
+                    state
+                        .process_signals
+                        .lock()
+                        .unwrap()
+                        .shared_pending
+                        .contains(libc::SIGUSR1),
+                    "offset failure must not consume pending state",
+                );
+            }
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [signal_fd as u64, IOVEC, 1, u64::MAX, 0, flags],
+                ),
+                SIGNALFD_RECORD_SIZE as i64,
+                "(-1, 0) is the current-position sentinel",
+            );
+        }
+    }
+
+    #[test]
+    fn signalfd_vector_validation_and_fault_consumption_match_linux_ordering() {
+        const MASK: u64 = 0x100;
+        const IOVEC: u64 = 0x180;
+        const OUTPUT: u64 = 0x300;
+        let boundary = PAGE_SIZE - 192;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let pid = state.pid;
+        let mut memory = GuestMemory::new(0, (3 * PAGE_SIZE) as usize).unwrap();
+        let mut mask = KernelSigset::default();
+        mask.insert(libc::SIGUSR1);
+        mask.insert(libc::SIGUSR2);
+        memory.write(MASK, &mask.to_bytes()).unwrap();
+        test_block_signal(&mut state, libc::SIGUSR1);
+        test_block_signal(&mut state, libc::SIGUSR2);
+        let signal_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_signalfd4,
+            [
+                u64::MAX,
+                MASK,
+                KERNEL_SIGSET_SIZE as u64,
+                libc::SFD_NONBLOCK as u64,
+                0,
+                0,
+            ],
+        );
+        let queue = |state: &mut LoadedStaticElf, signal| {
+            assert_eq!(
+                result_of(kill_signal(
+                    state,
+                    libc::SYS_kill as u64,
+                    &[pid as u64, signal as u64, 0, 0, 0, 0],
+                )),
+                0,
+            );
+        };
+        queue(&mut state, libc::SIGUSR1);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [signal_fd as u64, OUTPUT, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EINVAL),
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [signal_fd as u64, IOVEC, 0, 0, 0, 0]
+            ),
+            0,
+        );
+        let short = libc::iovec {
+            iov_base: OUTPUT as *mut _,
+            iov_len: 127,
+        };
+        assert_eq!(write_struct(&mut memory, IOVEC, &short), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [signal_fd as u64, IOVEC, 1, 0, 0, 0]
+            ),
+            negative_errno(libc::EINVAL),
+        );
+        assert!(
+            state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(libc::SIGUSR1)
+        );
+
+        let invalid_table = libc::iovec {
+            iov_base: OUTPUT as *mut _,
+            iov_len: 128,
+        };
+        memory
+            .write_raw(PAGE_SIZE - 8, unsafe {
+                std::slice::from_raw_parts(
+                    std::ptr::from_ref(&invalid_table).cast::<u8>(),
+                    std::mem::size_of::<libc::iovec>(),
+                )
+            })
+            .unwrap();
+        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
+        memory.map_user_range(PAGE_SIZE, PAGE_SIZE, true).unwrap();
+        memory.enable_user_access();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [signal_fd as u64, PAGE_SIZE - 8, 1, 0, 0, 0]
+            ),
+            negative_errno(libc::EFAULT),
+        );
+        assert!(
+            state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(libc::SIGUSR1)
+        );
+
+        queue(&mut state, libc::SIGUSR2);
+        let crossing = libc::iovec {
+            iov_base: boundary as *mut _,
+            iov_len: 256,
+        };
+        assert_eq!(write_struct(&mut memory, IOVEC, &crossing), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [signal_fd as u64, IOVEC, 1, 0, 0, 0]
+            ),
+            128,
+            "the faulting second record is consumed after its accessible prefix is copied",
+        );
+        assert!(
+            state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .is_empty()
+        );
+
+        queue(&mut state, libc::SIGUSR1);
+        let outside_guest_mapping = libc::iovec {
+            iov_base: (memory.guest_end() + PAGE_SIZE) as *mut libc::c_void,
+            iov_len: SIGNALFD_RECORD_SIZE,
+        };
+        assert_eq!(write_struct(&mut memory, IOVEC, &outside_guest_mapping), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [signal_fd as u64, IOVEC, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT),
+        );
+        assert!(
+            !state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(libc::SIGUSR1),
+            "a canonical but unmapped destination faults only after dequeue",
+        );
+
+        queue(&mut state, libc::SIGUSR1);
+        let outside_user_range = libc::iovec {
+            iov_base: (1_u64 << 47) as *mut libc::c_void,
+            iov_len: SIGNALFD_RECORD_SIZE,
+        };
+        assert_eq!(write_struct(&mut memory, IOVEC, &outside_user_range), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [signal_fd as u64, IOVEC, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT),
+        );
+        assert!(
+            state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(libc::SIGUSR1),
+            "an address rejected by access_ok fails before dequeue",
+        );
+    }
+    #[test]
+    fn blocking_signalfd_forms_refuse_before_mutation_and_aliases_stay_nonblocking() {
+        const MASK: u64 = 0x100;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut mask = KernelSigset::default();
+        mask.insert(libc::SIGUSR1);
+        memory.write(MASK, &mask.to_bytes()).unwrap();
+        test_block_signal(&mut state, libc::SIGUSR1);
+        let original_next_inode = state.file_identity_table.lock().unwrap().next_inode;
+        for (number, flags) in [
+            (libc::SYS_signalfd, 0),
+            (libc::SYS_signalfd4, 0),
+            (libc::SYS_signalfd4, libc::SFD_CLOEXEC as u64),
+        ] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [u64::MAX, MASK, KERNEL_SIGSET_SIZE as u64, flags, 0, 0],
+                ),
+                negative_errno(libc::ENOSYS),
+            );
+            assert!(state.files.is_empty());
+            assert!(state.fd_object_inodes.is_empty());
+            assert!(
+                state
+                    .process_signals
+                    .lock()
+                    .unwrap()
+                    .signalfd_masks
+                    .is_empty()
+            );
+            assert_eq!(
+                state.file_identity_table.lock().unwrap().next_inode,
+                original_next_inode,
+                "blocking refusal must precede fd identity allocation",
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_signalfd4,
+                [u64::MAX, MASK, KERNEL_SIGSET_SIZE as u64, 0x4000, 0, 0],
+            ),
+            negative_errno(libc::EINVAL),
+            "flag validation precedes the unsupported blocking-mode guard",
+        );
+        let signal_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_signalfd4,
+            [
+                u64::MAX,
+                MASK,
+                KERNEL_SIGSET_SIZE as u64,
+                libc::SFD_NONBLOCK as u64,
+                0,
+                0,
+            ],
+        );
+        assert_eq!(signal_fd, 3);
+        let alias = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [signal_fd as u64, 0, 0, 0, 0, 0],
+        );
+        assert_eq!(alias, 4);
+        let fixed_alias = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup2,
+            [signal_fd as u64, 10, 0, 0, 0, 0],
+        );
+        assert_eq!(fixed_alias, 10);
+        let fcntl_alias = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_fcntl,
+            [signal_fd as u64, libc::F_DUPFD as u64, 20, 0, 0, 0],
+        );
+        assert_eq!(fcntl_alias, 20);
+        let aliases = [signal_fd, alias, fixed_alias, fcntl_alias];
+        for fd in aliases {
+            assert_ne!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_fcntl,
+                    [fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+                ) & i64::from(libc::O_NONBLOCK),
+                0,
+            );
+        }
+        for fd in aliases {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_fcntl,
+                    [fd as u64, libc::F_SETFL as u64, 0, 0, 0, 0],
+                ),
+                negative_errno(libc::ENOSYS),
+            );
+            for observed in aliases {
+                assert_ne!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_fcntl,
+                        [observed as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+                    ) & i64::from(libc::O_NONBLOCK),
+                    0,
+                    "F_SETFL refusal through alias {fd} changed shared status flags",
+                );
+            }
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [
+                    alias as u64,
+                    libc::F_SETFL as u64,
+                    libc::O_NONBLOCK as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            0,
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [signal_fd as u64, 0x200, 128, 0, 0, 0],
+            ),
+            negative_errno(libc::EAGAIN),
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_signalfd4,
+                [signal_fd as u64, MASK, KERNEL_SIGSET_SIZE as u64, 0, 0, 0],
+            ),
+            signal_fd,
+            "mask updates on an existing nonblocking description remain supported",
+        );
+        let masks = &state.process_signals.lock().unwrap().signalfd_masks;
+        for fd in aliases {
+            assert!(masks[&(fd as i32)].contains(libc::SIGUSR1));
+            assert!(
+                Arc::ptr_eq(&masks[&(signal_fd as i32)], &masks[&(fd as i32)]),
+                "alias {fd} must retain the shared signalfd description",
+            );
+        }
+    }
+
+    #[test]
+    fn ppoll_refuses_blocking_virtual_signalfd_before_guest_or_host_mutation() {
+        const MASK: u64 = 0x100;
+        const POLL_FD: u64 = 0x180;
+        const TIMEOUT: u64 = 0x200;
+        const EPOLL_EVENT: u64 = 0x280;
+        const EPOLL_OUTPUT: u64 = 0x300;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut mask = KernelSigset::default();
+        mask.insert(libc::SIGUSR1);
+        memory.write(MASK, &mask.to_bytes()).unwrap();
+        test_block_signal(&mut state, libc::SIGUSR1);
+        let signal_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_signalfd4,
+            [
+                u64::MAX,
+                MASK,
+                KERNEL_SIGSET_SIZE as u64,
+                libc::SFD_NONBLOCK as u64,
+                0,
+                0,
+            ],
+        );
+        let alias = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [signal_fd as u64, 0, 0, 0, 0, 0],
+        );
+
+        let untouched = libc::pollfd {
+            fd: alias as libc::c_int,
+            events: libc::POLLIN,
+            revents: libc::POLLPRI,
+        };
+        for timeout in [
+            None,
+            Some(libc::timespec {
+                tv_sec: 5,
+                tv_nsec: 0,
+            }),
+        ] {
+            assert_eq!(write_struct(&mut memory, POLL_FD, &untouched), 0);
+            let timeout_address = if let Some(timeout) = timeout {
+                assert_eq!(write_struct(&mut memory, TIMEOUT, &timeout), 0);
+                TIMEOUT
+            } else {
+                0
+            };
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_ppoll,
+                    [POLL_FD, 1, timeout_address, 0, 0, 0],
+                ),
+                negative_errno(libc::ENOSYS),
+            );
+            let observed: libc::pollfd = read_struct(&memory, POLL_FD);
+            assert_eq!(observed.fd, untouched.fd);
+            assert_eq!(observed.events, untouched.events);
+            assert_eq!(observed.revents, untouched.revents);
+        }
+
+        let zero_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        assert_eq!(write_struct(&mut memory, TIMEOUT, &zero_timeout), 0);
+        let empty = libc::pollfd {
+            revents: 0,
+            ..untouched
+        };
+        assert_eq!(write_struct(&mut memory, POLL_FD, &empty), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ppoll,
+                [POLL_FD, 1, TIMEOUT, 0, 0, 0],
+            ),
+            0,
+            "zero-timeout ppoll remains a supported readiness probe",
+        );
+
+        let pid = state.pid;
+        assert_eq!(
+            result_of(kill_signal(
+                &mut state,
+                libc::SYS_kill as u64,
+                &[pid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            )),
+            0,
+        );
+        assert_eq!(write_struct(&mut memory, POLL_FD, &empty), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ppoll,
+                [POLL_FD, 1, TIMEOUT, 0, 0, 0],
+            ),
+            1,
+        );
+        let ready: libc::pollfd = read_struct(&memory, POLL_FD);
+        assert_eq!(ready.fd, alias as libc::c_int);
+        assert_ne!(ready.revents & libc::POLLIN, 0);
+        assert_eq!(write_struct(&mut memory, POLL_FD, &empty), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ppoll,
+                [POLL_FD, 1, 0, 0, 0, 0],
+            ),
+            1,
+            "an unbounded ppoll may return already-published readiness",
+        );
+        let ready: libc::pollfd = read_struct(&memory, POLL_FD);
+        assert_ne!(ready.revents & libc::POLLIN, 0);
+
+        let epoll_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_epoll_create1,
+            [0, 0, 0, 0, 0, 0],
+        );
+        let event = libc::epoll_event {
+            events: libc::EPOLLIN as u32,
+            u64: 0x1234,
+        };
+        assert_eq!(write_struct(&mut memory, EPOLL_EVENT, &event), 0);
+        for target in [signal_fd, alias] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_epoll_ctl,
+                    [
+                        epoll_fd as u64,
+                        libc::EPOLL_CTL_ADD as u64,
+                        target as u64,
+                        EPOLL_EVENT,
+                        0,
+                        0,
+                    ],
+                ),
+                negative_errno(libc::ENOSYS),
+                "a signalfd alias must not hide behind epoll before ppoll",
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_wait,
+                [epoll_fd as u64, EPOLL_OUTPUT, 1, 0, 0, 0],
+            ),
+            0,
+            "the refused epoll_ctl calls did not mutate the host epoll set",
+        );
+    }
+    #[test]
+    fn signalfd_backing_is_not_writable_seekable_or_pollout_visible() {
+        const MASK: u64 = 0x100;
+        const DATA: u64 = 0x180;
+        const IOVEC: u64 = 0x200;
+        const POLL_FD: u64 = 0x280;
+        const FD_SET: u64 = 0x300;
+        const TIMEVAL: u64 = 0x380;
+        const TIMESPEC: u64 = 0x400;
+        const PATH: u64 = 0x480;
+        const LINK: u64 = 0x580;
+        const INFO: u64 = 0x680;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, (2 * PAGE_SIZE) as usize).unwrap();
+        let mut mask = KernelSigset::default();
+        mask.insert(libc::SIGUSR1);
+        memory.write(MASK, &mask.to_bytes()).unwrap();
+        test_block_signal(&mut state, libc::SIGUSR1);
+        let signal_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_signalfd4,
+            [
+                u64::MAX,
+                MASK,
+                KERNEL_SIGSET_SIZE as u64,
+                libc::SFD_NONBLOCK as u64,
+                0,
+                0,
+            ],
+        );
+        assert_eq!(signal_fd, 3);
+        let alias = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [signal_fd as u64, 0, 0, 0, 0, 0],
+        );
+        assert_eq!(alias, 4);
+
+        memory.write(DATA, &1_u64.to_ne_bytes()).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [signal_fd as u64, DATA, 8, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL),
+        );
+        memory.write(DATA + 8, &2_u64.to_ne_bytes()).unwrap();
+        let vectors = [
+            libc::iovec {
+                iov_base: DATA as usize as *mut libc::c_void,
+                iov_len: 8,
+            },
+            libc::iovec {
+                iov_base: (DATA + 8) as usize as *mut libc::c_void,
+                iov_len: 8,
+            },
+        ];
+        for (index, vector) in vectors.iter().enumerate() {
+            assert_eq!(
+                write_struct(
+                    &mut memory,
+                    IOVEC + (index * std::mem::size_of::<libc::iovec>()) as u64,
+                    vector,
+                ),
+                0,
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_writev,
+                [alias as u64, IOVEC, 2, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL),
+        );
+        // Linux validates the target type before copying socket payload
+        // metadata. Do not expose the eventfd carrier through a bad pointer.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendto,
+                [alias as u64, u64::MAX, 8, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOTSOCK),
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendmsg,
+                [alias as u64, u64::MAX, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOTSOCK),
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwrite64,
+                [alias as u64, DATA, 8, 0, 0, 0],
+            ),
+            negative_errno(libc::ESPIPE),
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwrite64,
+                [alias as u64, DATA, 8, u64::MAX, 0, 0],
+            ),
+            negative_errno(libc::EINVAL),
+        );
+
+        let pollin = libc::pollfd {
+            fd: alias as libc::c_int,
+            events: libc::POLLIN,
+            revents: libc::POLLPRI,
+        };
+        assert_eq!(write_struct(&mut memory, POLL_FD, &pollin), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_poll,
+                [POLL_FD, 1, 0, 0, 0, 0],
+            ),
+            0,
+            "refused writes must not fabricate signalfd readability",
+        );
+        let observed: libc::pollfd = read_struct(&memory, POLL_FD);
+        assert_eq!(observed.events, libc::POLLIN);
+        assert_eq!(observed.revents, 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [alias as u64, INFO, 128, 0, 0, 0],
+            ),
+            negative_errno(libc::EAGAIN),
+        );
+
+        let pollout = libc::pollfd {
+            fd: signal_fd as libc::c_int,
+            events: libc::POLLOUT,
+            revents: libc::POLLPRI,
+        };
+        assert_eq!(write_struct(&mut memory, POLL_FD, &pollout), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_poll,
+                [POLL_FD, 1, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        let observed: libc::pollfd = read_struct(&memory, POLL_FD);
+        assert_eq!(observed.events, libc::POLLOUT);
+        assert_eq!(observed.revents, 0);
+
+        let fd_bit = 1_u64 << signal_fd;
+        memory.write(FD_SET, &fd_bit.to_ne_bytes()).unwrap();
+        let zero_timeval = libc::timeval {
+            tv_sec: 0,
+            tv_usec: 0,
+        };
+        assert_eq!(write_struct(&mut memory, TIMEVAL, &zero_timeval), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_select,
+                [signal_fd as u64 + 1, 0, FD_SET, 0, TIMEVAL, 0],
+            ),
+            0,
+        );
+        assert_eq!(read_struct::<u64>(&memory, FD_SET), 0);
+
+        let long_timeout = libc::timespec {
+            tv_sec: 60,
+            tv_nsec: 0,
+        };
+        assert_eq!(write_struct(&mut memory, TIMESPEC, &long_timeout), 0);
+        for timeout_address in [TIMESPEC, 0] {
+            assert_eq!(write_struct(&mut memory, POLL_FD, &pollout), 0);
+            let started = std::time::Instant::now();
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_ppoll,
+                    [POLL_FD, 1, timeout_address, 0, 0, 0],
+                ),
+                negative_errno(libc::ENOSYS),
+            );
+            assert!(started.elapsed() < std::time::Duration::from_secs(1));
+            let observed: libc::pollfd = read_struct(&memory, POLL_FD);
+            assert_eq!(observed.fd, pollout.fd);
+            assert_eq!(observed.events, pollout.events);
+            assert_eq!(observed.revents, pollout.revents);
+        }
+
+        let pid = state.pid;
+        assert_eq!(
+            result_of(kill_signal(
+                &mut state,
+                libc::SYS_kill as u64,
+                &[pid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            )),
+            0,
+        );
+        let readable = libc::pollfd {
+            fd: alias as libc::c_int,
+            events: libc::POLLIN | libc::POLLOUT,
+            revents: 0,
+        };
+        assert_eq!(write_struct(&mut memory, POLL_FD, &readable), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ppoll,
+                [POLL_FD, 1, 0, 0, 0, 0],
+            ),
+            1,
+        );
+        let observed: libc::pollfd = read_struct(&memory, POLL_FD);
+        assert_eq!(observed.events, readable.events);
+        assert_eq!(observed.revents, libc::POLLIN);
+
+        let event_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_eventfd2,
+            [0, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0],
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [event_fd as u64, DATA, 8, 0, 0, 0],
+            ),
+            8,
+        );
+        let event_pollout = libc::pollfd {
+            fd: event_fd as libc::c_int,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        assert_eq!(write_struct(&mut memory, POLL_FD, &event_pollout), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_poll,
+                [POLL_FD, 1, 0, 0, 0, 0],
+            ),
+            1,
+        );
+        let observed: libc::pollfd = read_struct(&memory, POLL_FD);
+        assert_ne!(observed.revents & libc::POLLOUT, 0);
+
+        let mmap_next = state.mmap_next;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mmap,
+                [
+                    0,
+                    PAGE_SIZE,
+                    libc::PROT_READ as u64,
+                    libc::MAP_PRIVATE as u64,
+                    alias as u64,
+                    0,
+                ],
+            ),
+            negative_errno(libc::ENODEV),
+        );
+        assert_eq!(state.mmap_next, mmap_next);
+
+        let path = format!("/proc/self/fd/{alias}\0");
+        memory.write(PATH, path.as_bytes()).unwrap();
+        let target = b"anon_inode:[signalfd]";
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readlink,
+                [PATH, LINK, 64, 0, 0, 0],
+            ),
+            target.len() as i64,
+        );
+        let mut observed_target = vec![0; target.len()];
+        memory.read(LINK, &mut observed_target).unwrap();
+        assert_eq!(observed_target, target);
+        let file_count = state.files.len();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_openat,
+                [libc::AT_FDCWD as u64, PATH, libc::O_PATH as u64, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOSYS),
+        );
+        assert_eq!(state.files.len(), file_count);
+    }
+
+    #[test]
+    fn signalfd_record_preserves_supported_posix_timer_metadata() {
+        let signal = libc::SIGALRM;
+        let timer_id = 17_i32;
+        let overrun = 3_i32;
+        let value = 0x1234_5678_9abc_def0_u64;
+        let mut raw = [0_u8; reverie::SIGNAL_INFO_SIZE];
+        raw[..4].copy_from_slice(&signal.to_ne_bytes());
+        raw[8..12].copy_from_slice(&libc::SI_TIMER.to_ne_bytes());
+        raw[16..20].copy_from_slice(&timer_id.to_ne_bytes());
+        raw[20..24].copy_from_slice(&overrun.to_ne_bytes());
+        raw[24..32].copy_from_slice(&value.to_ne_bytes());
+        let event = reverie::SignalEvent::new(
+            signal,
+            raw,
+            reverie::SignalTarget::Process {
+                pid: reverie::Pid::from_raw(1),
+            },
+        )
+        .unwrap();
+        let bytes = encode_signalfd_siginfo(event);
+        // SAFETY: encode_signalfd_siginfo returns one aligned-independent,
+        // fully initialized ABI record and read_unaligned copies it by value.
+        let info =
+            unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<libc::signalfd_siginfo>()) };
+        assert_eq!(info.ssi_signo, signal as u32);
+        assert_eq!(info.ssi_code, libc::SI_TIMER);
+        assert_eq!(info.ssi_tid, timer_id as u32);
+        assert_eq!(info.ssi_overrun, overrun as u32);
+        assert_eq!(info.ssi_ptr, value);
+        assert_eq!(info.ssi_int, value as i32);
+    }
+
+    #[test]
+    fn signalfd_fault_consumes_but_short_record_preserves_pending_signal() {
+        const MASK: u64 = 0x100;
+        const IOVEC: u64 = 0x180;
+        const VALID_INFO: u64 = 0x200;
+        let boundary = PAGE_SIZE - 64;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let pid = state.pid;
+        test_block_signal(&mut state, libc::SIGUSR1);
+        let mut memory = GuestMemory::new(0, (3 * PAGE_SIZE) as usize).unwrap();
+        let mut mask = KernelSigset::default();
+        mask.insert(libc::SIGUSR1);
+        memory.write(MASK, &mask.to_bytes()).unwrap();
+        let signal_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_signalfd4,
+            [
+                u64::MAX,
+                MASK,
+                KERNEL_SIGSET_SIZE as u64,
+                (libc::SFD_CLOEXEC | libc::SFD_NONBLOCK) as u64,
+                0,
+                0,
+            ],
+        );
+        assert_eq!(signal_fd, 3);
+        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
+        memory.map_user_range(PAGE_SIZE, PAGE_SIZE, true).unwrap();
+        memory.enable_user_access();
+
+        let queue = |state: &mut LoadedStaticElf| {
+            assert_eq!(
+                result_of(kill_signal(
+                    state,
+                    libc::SYS_kill as u64,
+                    &[pid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+                )),
+                0,
+            );
+        };
+        queue(&mut state);
+        let crossing = libc::iovec {
+            iov_base: boundary as *mut libc::c_void,
+            iov_len: 128,
+        };
+        assert_eq!(write_struct(&mut memory, IOVEC, &crossing), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [signal_fd as u64, IOVEC, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT),
+        );
+        assert!(
+            !state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(libc::SIGUSR1)
+        );
+
+        queue(&mut state);
+        let truncated = libc::iovec {
+            iov_base: VALID_INFO as *mut libc::c_void,
+            iov_len: 64,
+        };
+        assert_eq!(write_struct(&mut memory, IOVEC, &truncated), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [signal_fd as u64, IOVEC, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL),
+        );
+        assert!(
+            state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(libc::SIGUSR1)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [signal_fd as u64, VALID_INFO, 128, 0, 0, 0],
+            ),
+            128,
+        );
+    }
+
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(rrnewton/reverie#315): regression for the rt_sigtimedwait
     // dispatch arm (was ENOSYS). Detcore injects the zero-timeout non-blocking
     // form, so the executor is a pure poll of the guest kernel's pending set.
+    #[test]
+    fn rt_sigpending_unions_both_domains_and_intersects_the_thread_mask() {
+        const OUTPUT: u64 = 0x100;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let pid = state.pid;
+        let tid = state.tid;
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        test_block_signal(&mut state, libc::SIGUSR1);
+        test_block_signal(&mut state, libc::SIGUSR2);
+        queue_signal_event(
+            &mut state,
+            event_for_thread(libc::SIGUSR1, pid, tid).unwrap(),
+            false,
+        )
+        .unwrap();
+        queue_signal_event(
+            &mut state,
+            event_for_process(libc::SIGUSR2, pid).unwrap(),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_rt_sigpending,
+                [u64::MAX, (KERNEL_SIGSET_SIZE + 1) as u64, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL),
+            "sigset width is validated before copyout",
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_rt_sigpending,
+                [OUTPUT, KERNEL_SIGSET_SIZE as u64, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        let pending = KernelSigset::from_bytes(read_guest_bytes(&memory, OUTPUT).unwrap());
+        assert!(pending.contains(libc::SIGUSR1));
+        assert!(pending.contains(libc::SIGUSR2));
+
+        state.thread_signals.blocked.remove(libc::SIGUSR2);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_rt_sigpending,
+                [OUTPUT, KERNEL_SIGSET_SIZE as u64, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        let pending = KernelSigset::from_bytes(read_guest_bytes(&memory, OUTPUT).unwrap());
+        assert!(pending.contains(libc::SIGUSR1));
+        assert!(!pending.contains(libc::SIGUSR2));
+    }
+
+    #[test]
+    fn ignored_disposition_discards_single_thread_pending_domains_and_readiness() {
+        const ACTION: u64 = 0x100;
+        const MASK: u64 = 0x140;
+        const POLL_FD: u64 = 0x180;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let pid = state.pid;
+        let tid = state.tid;
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let ignored = KernelSigaction {
+            handler: libc::SIG_IGN as u64,
+            ..KernelSigaction::default()
+        };
+        memory.write(ACTION, &ignored.encode()).unwrap();
+
+        queue_signal_event(
+            &mut state,
+            event_for_thread(libc::SIGUSR1, pid, tid).unwrap(),
+            false,
+        )
+        .unwrap();
+        queue_signal_event(
+            &mut state,
+            event_for_process(libc::SIGUSR1, pid).unwrap(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            rt_sigaction(
+                &mut memory,
+                &mut state,
+                &[
+                    libc::SIGUSR1 as u64,
+                    ACTION,
+                    0,
+                    KERNEL_SIGSET_SIZE as u64,
+                    0,
+                    0,
+                ],
+            ),
+            0,
+        );
+        assert!(state.thread_signals.pending.is_empty());
+        assert!(
+            state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .is_empty()
+        );
+
+        let mut ready_state = test_state(&root.0);
+        test_block_signal(&mut ready_state, libc::SIGUSR1);
+        let mut mask = KernelSigset::default();
+        mask.insert(libc::SIGUSR1);
+        memory.write(MASK, &mask.to_bytes()).unwrap();
+        let signal_fd = syscall_result(
+            &mut memory,
+            &mut ready_state,
+            libc::SYS_signalfd4,
+            [
+                u64::MAX,
+                MASK,
+                KERNEL_SIGSET_SIZE as u64,
+                (libc::SFD_CLOEXEC | libc::SFD_NONBLOCK) as u64,
+                0,
+                0,
+            ],
+        );
+        let ready_pid = ready_state.pid;
+        queue_signal_event(
+            &mut ready_state,
+            event_for_process(libc::SIGUSR1, ready_pid).unwrap(),
+            true,
+        )
+        .unwrap();
+        let poll_fd = libc::pollfd {
+            fd: signal_fd as libc::c_int,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(write_struct(&mut memory, POLL_FD, &poll_fd), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut ready_state,
+                libc::SYS_poll,
+                [POLL_FD, 1, 0, 0, 0, 0],
+            ),
+            1,
+        );
+        assert_eq!(
+            rt_sigaction(
+                &mut memory,
+                &mut ready_state,
+                &[
+                    libc::SIGUSR1 as u64,
+                    ACTION,
+                    0,
+                    KERNEL_SIGSET_SIZE as u64,
+                    0,
+                    0,
+                ],
+            ),
+            0,
+        );
+        assert_eq!(write_struct(&mut memory, POLL_FD, &poll_fd), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut ready_state,
+                libc::SYS_poll,
+                [POLL_FD, 1, 0, 0, 0, 0],
+            ),
+            0,
+            "discarding shared pending state must clear signalfd readiness",
+        );
+    }
+
+    #[test]
+    fn ignored_disposition_with_live_sibling_invalidates_only_older_pending_events() {
+        const ACTION: u64 = 0x100;
+        const SET: u64 = 0x140;
+        const PENDING: u64 = 0x180;
+        let root = TestDir::new();
+        let mut leader = ElfExecutor::new(test_state(&root.0), false);
+        let mut worker = leader.thread_child(7).unwrap();
+        let pid = leader.state.pid;
+        let signal = libc::SIGUSR1;
+        test_install_signal_action(&leader.state, signal, custom_action(0x4000));
+        test_block_signal(&mut worker.state, signal);
+
+        let marked_event = |marker| {
+            let event = event_for_thread(signal, pid, 7).unwrap();
+            let mut info = event.siginfo();
+            info[127] = marker;
+            reverie::SignalEvent::new(signal, info, event.target()).unwrap()
+        };
+        queue_signal_event(&mut worker.state, marked_event(0x11), false).unwrap();
+        queue_signal_event(
+            &mut leader.state,
+            event_for_process(signal, pid).unwrap(),
+            true,
+        )
+        .unwrap();
+
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut selected = KernelSigset::default();
+        selected.insert(signal);
+        memory.write(SET, &selected.to_bytes()).unwrap();
+        memory
+            .write(
+                ACTION,
+                &KernelSigaction {
+                    handler: libc::SIG_IGN as u64,
+                    ..KernelSigaction::default()
+                }
+                .encode(),
+            )
+            .unwrap();
+        assert_eq!(
+            rt_sigaction(
+                &mut memory,
+                &mut leader.state,
+                &[signal as u64, ACTION, 0, KERNEL_SIGSET_SIZE as u64, 0, 0,],
+            ),
+            0,
+        );
+        assert_eq!(leader.signal_disposition(signal), SignalDisposition::Ignore);
+        assert!(
+            worker.state.thread_signals.pending.contains(signal),
+            "a sibling's old row remains physically private",
+        );
+        assert!(
+            !leader
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(signal),
+            "the reachable shared row is removed eagerly",
+        );
+        assert_eq!(
+            rt_sigpending(
+                &mut memory,
+                &worker.state,
+                &[PENDING, KERNEL_SIGSET_SIZE as u64, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        assert!(
+            !KernelSigset::from_bytes(read_guest_bytes(&memory, PENDING).unwrap()).contains(signal),
+            "the sibling's stale row must not be observable through rt_sigpending",
+        );
+        assert_eq!(
+            rt_sigtimedwait(
+                &mut memory,
+                &mut worker.state,
+                &[SET, 0, 0, KERNEL_SIGSET_SIZE as u64, 0, 0],
+            ),
+            negative_errno(libc::EAGAIN),
+            "the sibling's stale row must not be selectable by rt_sigtimedwait",
+        );
+        worker.state.thread_signals.blocked.remove(signal);
+        assert!(!worker.has_eligible_pending_signal());
+        assert_eq!(worker.take_pending_signal(), None);
+
+        // Linux retains a blocked signal generated while its disposition is
+        // ignored because that disposition may change before the signal is
+        // unblocked. This new event replaces the stale coalesced row.
+        test_block_signal(&mut worker.state, signal);
+        queue_signal_event(&mut worker.state, marked_event(0x22), false).unwrap();
+        assert_eq!(
+            rt_sigpending(
+                &mut memory,
+                &worker.state,
+                &[PENDING, KERNEL_SIGSET_SIZE as u64, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        assert!(
+            KernelSigset::from_bytes(read_guest_bytes(&memory, PENDING).unwrap()).contains(signal)
+        );
+
+        memory.write(ACTION, &custom_action(0x5000)).unwrap();
+        assert_eq!(
+            rt_sigaction(
+                &mut memory,
+                &mut leader.state,
+                &[signal as u64, ACTION, 0, KERNEL_SIGSET_SIZE as u64, 0, 0,],
+            ),
+            0,
+        );
+        worker.state.thread_signals.blocked.remove(signal);
+        let delivered = worker
+            .take_pending_signal()
+            .expect("the post-ignore blocked event was lost on handler reinstall");
+        assert_eq!(delivered.event.siginfo()[127], 0x22);
+        assert_eq!(worker.take_pending_signal(), None);
+    }
+
+    #[test]
+    fn default_ignored_sigaction_with_live_sibling_invalidates_older_pending() {
+        const ACTION: u64 = 0x100;
+        let root = TestDir::new();
+        let mut leader = ElfExecutor::new(test_state(&root.0), false);
+        let mut worker = leader.thread_child(7).unwrap();
+        let signal = libc::SIGWINCH;
+        test_block_signal(&mut worker.state, signal);
+        queue_signal_event(
+            &mut worker.state,
+            event_for_thread(signal, leader.state.pid, 7).unwrap(),
+            false,
+        )
+        .unwrap();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory
+            .write(ACTION, &KernelSigaction::default().encode())
+            .unwrap();
+
+        for ignored in [libc::SIGCHLD, libc::SIGURG, libc::SIGWINCH, libc::SIGCONT] {
+            assert_eq!(
+                default_signal_disposition(ignored),
+                SignalDisposition::Ignore,
+            );
+        }
+        assert_eq!(
+            rt_sigaction(
+                &mut memory,
+                &mut leader.state,
+                &[signal as u64, ACTION, 0, KERNEL_SIGSET_SIZE as u64, 0, 0,],
+            ),
+            0,
+        );
+        worker.state.thread_signals.blocked.remove(signal);
+        assert_eq!(worker.take_pending_signal(), None);
+    }
+
+    #[test]
+    fn pending_generation_overflow_fails_before_sigaction_mutation() {
+        const ACTION: u64 = 0x100;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let signal = libc::SIGUSR1;
+        let pid = state.pid;
+        let tid = state.tid;
+        test_install_signal_action(&state, signal, custom_action(0x4000));
+        state.process_signals.lock().unwrap().pending_generations[signal as usize] = u64::MAX;
+        queue_signal_event(
+            &mut state,
+            event_for_thread(signal, pid, tid).unwrap(),
+            false,
+        )
+        .unwrap();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory
+            .write(
+                ACTION,
+                &KernelSigaction {
+                    handler: libc::SIG_IGN as u64,
+                    ..KernelSigaction::default()
+                }
+                .encode(),
+            )
+            .unwrap();
+        assert_eq!(
+            rt_sigaction(
+                &mut memory,
+                &mut state,
+                &[signal as u64, ACTION, 0, KERNEL_SIGSET_SIZE as u64, 0, 0,],
+            ),
+            negative_errno(libc::EOVERFLOW),
+        );
+        assert_eq!(
+            signal_disposition(&state, signal),
+            SignalDisposition::Handled
+        );
+        assert_eq!(
+            state
+                .process_signals
+                .lock()
+                .unwrap()
+                .pending_generation(signal),
+            u64::MAX,
+        );
+        assert!(
+            state.thread_signals.pending.contains(signal),
+            "overflow must not discard the existing pending event",
+        );
+        assert!(ElfExecutor::new(state, false).has_eligible_pending_signal());
+    }
+
     #[test]
     fn rt_sigtimedwait_polls_pending_and_reports_eagain_when_empty() {
         const SET: u64 = 0x100;
@@ -18325,7 +21752,7 @@ mod tests {
 
         // Block SIGUSR1 and self-queue it, then the wait consumes it, returns the
         // signal number, and fills the kill(2) siginfo union (si_signo, si_pid).
-        state.signal_mask[bit / 8] |= 1 << (bit % 8);
+        test_block_signal(&mut state, libc::SIGUSR1);
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -19021,8 +22448,12 @@ mod tests {
         let mut state = test_state(&root.0);
         // What `KvmBackend::set_root_pid(ROOT_DETPID)` produces.
         state.pid = 3;
+        state.pgid = 3;
         state.tid = 3;
         state.ppid = 1;
+        state.task_lifecycle = Arc::new(std::sync::Mutex::new(
+            crate::elf::TaskLifecycleTable::with_root(3, 3, 3, true),
+        ));
         let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
         let mut executor = ElfExecutor::new(state, false);
 
@@ -20366,8 +23797,8 @@ mod tests {
             negative_errno(libc::EFAULT)
         );
         assert_eq!(
-            state.signal_actions.get(&libc::SIGUSR2),
-            Some(&expected_action),
+            test_signal_action(&state, libc::SIGUSR2),
+            Some(expected_action),
             "new sigaction remains installed if copying old action fails"
         );
 
@@ -20382,7 +23813,7 @@ mod tests {
             ),
             negative_errno(libc::EINVAL)
         );
-        assert_eq!(state.signal_mask, [0; KERNEL_SIGSET_SIZE]);
+        assert_eq!(test_blocked_mask(&state), [0; KERNEL_SIGSET_SIZE]);
         assert_eq!(
             read_guest_bytes::<KERNEL_SIGSET_SIZE>(&memory, OLD_MASK).unwrap(),
             [0x33; KERNEL_SIGSET_SIZE],
@@ -20408,8 +23839,16 @@ mod tests {
             read_guest_bytes::<KERNEL_SIGSET_SIZE>(&memory, OLD_MASK).unwrap(),
             [0; KERNEL_SIGSET_SIZE]
         );
-        assert_eq!(state.signal_mask[1] & 1, 0, "SIGKILL must remain unblocked");
-        assert_eq!(state.signal_mask[2] & 4, 0, "SIGSTOP must remain unblocked");
+        assert_eq!(
+            test_blocked_mask(&state)[1] & 1,
+            0,
+            "SIGKILL must remain unblocked"
+        );
+        assert_eq!(
+            test_blocked_mask(&state)[2] & 4,
+            0,
+            "SIGSTOP must remain unblocked"
+        );
         memory.write(MASK, &[0; KERNEL_SIGSET_SIZE]).unwrap();
         assert_eq!(
             syscall_result(
@@ -20428,17 +23867,17 @@ mod tests {
             negative_errno(libc::EFAULT)
         );
         assert_eq!(
-            state.signal_mask, [0; KERNEL_SIGSET_SIZE],
+            test_blocked_mask(&state),
+            [0; KERNEL_SIGSET_SIZE],
             "new signal mask remains installed if copying the old mask fails"
         );
 
         let stack = GuestStack {
             sp: 0x800,
             flags: 0,
-            _padding: 0,
             size: libc::MINSIGSTKSZ as u64,
         };
-        assert_eq!(write_struct(&mut memory, ALT_STACK, &stack), 0);
+        assert_eq!(write_bytes(&mut memory, ALT_STACK, &stack.encode()), 0);
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -20448,15 +23887,14 @@ mod tests {
             ),
             0
         );
-        let previous: GuestStack = read_struct(&memory, OLD_ALT_STACK);
+        let previous = GuestStack::decode(read_guest_bytes::<24>(&memory, OLD_ALT_STACK).unwrap());
         assert_eq!(previous.flags, libc::SS_DISABLE);
         let disabled = GuestStack {
             sp: u64::MAX,
             flags: libc::SS_DISABLE,
-            _padding: 0,
             size: u64::MAX,
         };
-        assert_eq!(write_struct(&mut memory, ALT_STACK, &disabled), 0);
+        assert_eq!(write_bytes(&mut memory, ALT_STACK, &disabled.encode()), 0);
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -20467,7 +23905,7 @@ mod tests {
             negative_errno(libc::EFAULT)
         );
         assert!(
-            state.signal_alt_stack.is_none(),
+            state.thread_signals.altstack.is_none(),
             "disabled altstack remains applied if copying the old stack fails"
         );
         assert_eq!(
@@ -20479,14 +23917,18 @@ mod tests {
             ),
             0
         );
-        let disabled_query: GuestStack = read_struct(&memory, OLD_ALT_STACK);
+        let disabled_query =
+            GuestStack::decode(read_guest_bytes::<24>(&memory, OLD_ALT_STACK).unwrap());
         assert_eq!(disabled_query.sp, 0);
         assert_eq!(disabled_query.flags, libc::SS_DISABLE);
         assert_eq!(disabled_query.size, 0);
         let child = state.try_clone_for_fork(2).unwrap();
-        assert_eq!(child.signal_actions[&libc::SIGUSR1], expected_action);
-        assert_eq!(child.signal_mask, state.signal_mask);
-        assert_eq!(child.signal_alt_stack, state.signal_alt_stack);
+        assert_eq!(
+            test_signal_action(&child, libc::SIGUSR1),
+            Some(expected_action)
+        );
+        assert_eq!(child.thread_signals.blocked, state.thread_signals.blocked);
+        assert_eq!(child.thread_signals.altstack, state.thread_signals.altstack);
     }
 
     #[test]
@@ -20502,7 +23944,12 @@ mod tests {
             .files
             .insert(4, std::fs::File::open(&path).unwrap());
         previous.cloexec_fds.extend([libc::STDIN_FILENO, 4]);
-        previous.signal_alt_stack = Some(vec![1; 16]);
+        previous.thread_signals.altstack = Some(GuestStack {
+            sp: 1,
+            flags: 0,
+            size: 16,
+        });
+        previous.pgid = 55;
         let mut ignored = [0x7f; KERNEL_SIGACTION_SIZE];
         ignored[..std::mem::size_of::<usize>()].copy_from_slice(&libc::SIG_IGN.to_ne_bytes());
         let mut canonical_ignored = [0; KERNEL_SIGACTION_SIZE];
@@ -20510,8 +23957,8 @@ mod tests {
             .copy_from_slice(&libc::SIG_IGN.to_ne_bytes());
         let mut caught = [0; KERNEL_SIGACTION_SIZE];
         caught[..std::mem::size_of::<usize>()].copy_from_slice(&2usize.to_ne_bytes());
-        previous.signal_actions.insert(libc::SIGUSR1, ignored);
-        previous.signal_actions.insert(libc::SIGUSR2, caught);
+        test_install_signal_action(&previous, libc::SIGUSR1, ignored);
+        test_install_signal_action(&previous, libc::SIGUSR2, caught);
         let mut replacement = test_state(&root.0);
         replacement.inherit_process_state(previous);
         assert!(replacement.files.contains_key(&3));
@@ -20524,11 +23971,302 @@ mod tests {
         );
         assert!(replacement.cloexec_fds.is_empty());
         assert_eq!(
-            replacement.signal_actions.get(&libc::SIGUSR1),
-            Some(&canonical_ignored)
+            test_signal_action(&replacement, libc::SIGUSR1),
+            Some(canonical_ignored)
         );
-        assert!(!replacement.signal_actions.contains_key(&libc::SIGUSR2));
-        assert!(replacement.signal_alt_stack.is_none());
+        assert_eq!(test_signal_action(&replacement, libc::SIGUSR2), None);
+        assert!(replacement.thread_signals.altstack.is_none());
+        assert_eq!(replacement.pgid, 55, "exec preserves the process group");
+        assert_eq!(
+            replacement
+                .task_lifecycle
+                .lock()
+                .unwrap()
+                .get(replacement.tid)
+                .unwrap()
+                .pgid,
+            55,
+        );
+    }
+
+    #[test]
+    fn altstack_uses_open_lower_and_closed_upper_boundaries() {
+        const REQUEST: u64 = 0x100;
+        const OLD: u64 = 0x180;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let stack = GuestStack {
+            sp: 0x8000,
+            flags: 0,
+            size: libc::MINSIGSTKSZ as u64,
+        };
+        let top = stack.sp + stack.size;
+        state.thread_signals.altstack = Some(stack);
+
+        for (current, on_stack) in [(stack.sp, false), (stack.sp + 1, true), (top, true)] {
+            assert_eq!(
+                sigaltstack(
+                    &mut memory,
+                    &mut state,
+                    Some(current),
+                    &[0, OLD, 0, 0, 0, 0]
+                ),
+                0,
+            );
+            let queried = GuestStack::decode(read_guest_bytes::<24>(&memory, OLD).unwrap());
+            assert_eq!(
+                queried.flags & libc::SS_ONSTACK != 0,
+                on_stack,
+                "current rsp={current:#x}",
+            );
+        }
+
+        let replacement = GuestStack {
+            sp: 0x20_000,
+            flags: 0,
+            size: libc::MINSIGSTKSZ as u64,
+        };
+        memory.write(REQUEST, &replacement.encode()).unwrap();
+        for current in [stack.sp + 1, top] {
+            assert_eq!(
+                sigaltstack(
+                    &mut memory,
+                    &mut state,
+                    Some(current),
+                    &[REQUEST, 0, 0, 0, 0, 0],
+                ),
+                negative_errno(libc::EPERM),
+            );
+            assert_eq!(state.thread_signals.altstack, Some(stack));
+        }
+        assert_eq!(
+            sigaltstack(
+                &mut memory,
+                &mut state,
+                Some(stack.sp),
+                &[REQUEST, 0, 0, 0, 0, 0],
+            ),
+            0,
+            "the lower bound is not part of a downward-growing altstack",
+        );
+        assert_eq!(state.thread_signals.altstack, Some(replacement));
+    }
+
+    #[test]
+    fn sigaltstack_accepts_and_preserves_an_overflowing_descriptor() {
+        const REQUEST: u64 = 0x100;
+        const OLD: u64 = 0x180;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let overflowing = GuestStack {
+            sp: u64::MAX - 8,
+            flags: 0,
+            size: libc::MINSIGSTKSZ as u64,
+        };
+        memory.write(REQUEST, &overflowing.encode()).unwrap();
+        assert_eq!(
+            sigaltstack(
+                &mut memory,
+                &mut state,
+                Some(0x4000),
+                &[REQUEST, OLD, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        assert_eq!(state.thread_signals.altstack, Some(overflowing));
+        assert_eq!(
+            GuestStack::decode(read_guest_bytes::<24>(&memory, OLD).unwrap()),
+            GuestStack {
+                sp: 0,
+                flags: libc::SS_DISABLE,
+                size: 0,
+            },
+        );
+        assert_eq!(
+            sigaltstack(
+                &mut memory,
+                &mut state,
+                Some(u64::MAX),
+                &[0, OLD, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        let observed = GuestStack::decode(read_guest_bytes::<24>(&memory, OLD).unwrap());
+        assert_eq!(observed.sp, overflowing.sp);
+        assert_eq!(observed.size, overflowing.size);
+        assert_eq!(observed.flags, libc::SS_ONSTACK);
+
+        let executor = ElfExecutor::new(state, false);
+        let action = KernelSigaction {
+            flags: libc::SA_ONSTACK as u64,
+            ..Default::default()
+        };
+        assert_eq!(
+            executor.signal_stack_top(action, 0x4000),
+            Ok((
+                overflowing.sp.wrapping_add(overflowing.size),
+                Some(overflowing.sp),
+                false,
+                false,
+            )),
+        );
+    }
+
+    #[test]
+    fn sa_onstack_placement_obeys_boundaries_and_autodisarm() {
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let stack = GuestStack {
+            sp: 0x8000,
+            flags: 0,
+            size: libc::MINSIGSTKSZ as u64,
+        };
+        let top = stack.sp + stack.size;
+        let action = KernelSigaction {
+            flags: libc::SA_ONSTACK as u64,
+            ..Default::default()
+        };
+        executor.state.thread_signals.altstack = Some(stack);
+        for current in [stack.sp + 1, top] {
+            assert_eq!(
+                executor.signal_stack_top(action, current),
+                Ok((current, Some(stack.sp), true, false)),
+                "an rsp in (base, top] is nested",
+            );
+        }
+        assert_eq!(
+            executor.signal_stack_top(action, stack.sp),
+            Ok((top, Some(stack.sp), false, false)),
+            "an rsp at base is off-stack and starts a fresh altstack frame",
+        );
+
+        let autodisarm = GuestStack {
+            flags: SS_AUTODISARM,
+            ..stack
+        };
+        executor.state.thread_signals.altstack = Some(autodisarm);
+        assert_eq!(
+            executor.signal_stack_top(action, stack.sp + 1),
+            Ok((top, Some(stack.sp), false, true)),
+            "an armed SS_AUTODISARM stack is treated as off-stack",
+        );
+        assert_eq!(executor.signal_altstack(stack.sp + 1).flags, SS_AUTODISARM,);
+    }
+
+    #[test]
+    fn rt_sigreturn_ignores_invalid_altstack_restore_but_restores_the_mask() {
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let original_stack = GuestStack {
+            sp: 0x4000,
+            flags: 0,
+            size: libc::MINSIGSTKSZ as u64,
+        };
+        executor.state.thread_signals.altstack = Some(original_stack);
+        executor.state.thread_signals.blocked.insert(libc::SIGUSR1);
+        let mut restored_mask = KernelSigset::default();
+        restored_mask.insert(libc::SIGUSR2);
+        for invalid_stack in [
+            GuestStack {
+                sp: 0x8000,
+                flags: 0x1234,
+                size: libc::MINSIGSTKSZ as u64,
+            },
+            GuestStack {
+                sp: 0x8000,
+                flags: 0,
+                size: libc::MINSIGSTKSZ as u64 - 1,
+            },
+        ] {
+            executor.restore_signal_thread_state(
+                restored_mask,
+                invalid_stack,
+                original_stack.sp + 1,
+            );
+            assert_eq!(executor.state.thread_signals.altstack, Some(original_stack));
+        }
+
+        let overflowing_stack = GuestStack {
+            sp: u64::MAX - 8,
+            flags: 0,
+            size: libc::MINSIGSTKSZ as u64,
+        };
+        executor.restore_signal_thread_state(restored_mask, overflowing_stack, original_stack.sp);
+        assert_eq!(
+            executor.state.thread_signals.altstack,
+            Some(overflowing_stack),
+            "Linux stores the descriptor without eagerly adding sp and size",
+        );
+        executor.state.thread_signals.altstack = Some(original_stack);
+
+        let distinct_valid_stack = GuestStack {
+            sp: 0x20_000,
+            flags: 0,
+            size: libc::MINSIGSTKSZ as u64,
+        };
+        executor.restore_signal_thread_state(
+            restored_mask,
+            distinct_valid_stack,
+            original_stack.sp + 1,
+        );
+        assert_eq!(
+            executor.state.thread_signals.altstack,
+            Some(original_stack),
+            "rt_sigreturn ignores EPERM from replacing an active altstack",
+        );
+
+        assert!(
+            !executor
+                .state
+                .thread_signals
+                .blocked
+                .contains(libc::SIGUSR1)
+        );
+        assert!(
+            executor
+                .state
+                .thread_signals
+                .blocked
+                .contains(libc::SIGUSR2)
+        );
+    }
+
+    #[test]
+    fn rt_sigreturn_ignores_ss_onstack_altstack_input() {
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let original_stack = GuestStack {
+            sp: 0x4000,
+            flags: 0,
+            size: libc::MINSIGSTKSZ as u64,
+        };
+        executor.state.thread_signals.altstack = Some(original_stack);
+        let mut restored_mask = KernelSigset::default();
+        restored_mask.insert(libc::SIGUSR2);
+        let invalid_stack = GuestStack {
+            sp: 0x20_000,
+            flags: libc::SS_ONSTACK,
+            size: libc::MINSIGSTKSZ as u64,
+        };
+        executor.restore_signal_thread_state(restored_mask, invalid_stack, original_stack.sp);
+        assert_eq!(executor.state.thread_signals.altstack, Some(original_stack));
+
+        assert!(
+            !executor
+                .state
+                .thread_signals
+                .blocked
+                .contains(libc::SIGUSR1)
+        );
+        assert!(
+            executor
+                .state
+                .thread_signals
+                .blocked
+                .contains(libc::SIGUSR2)
+        );
     }
 
     #[test]
@@ -20778,8 +24516,8 @@ mod tests {
         ignored[..std::mem::size_of::<usize>()].copy_from_slice(&libc::SIG_IGN.to_ne_bytes());
         let mut caught = [0; KERNEL_SIGACTION_SIZE];
         caught[..std::mem::size_of::<usize>()].copy_from_slice(&2usize.to_ne_bytes());
-        executor.state.signal_actions.insert(libc::SIGUSR1, ignored);
-        executor.state.signal_actions.insert(libc::SIGUSR2, caught);
+        test_install_signal_action(&executor.state, libc::SIGUSR1, ignored);
+        test_install_signal_action(&executor.state, libc::SIGUSR2, caught);
         let request = SyscallRequest::new(
             libc::SYS_clone3 as u64,
             [CLONE3_ARGS, clone3.len() as u64, 0, 0, 0, 0],
@@ -20803,17 +24541,17 @@ mod tests {
                 assert_eq!(clear_child_tid, None);
                 let child = executor.fork_child(child_pid, clear_sighand).unwrap();
                 assert_eq!(
-                    child.state.signal_actions.get(&libc::SIGUSR1),
-                    Some(&ignored)
+                    test_signal_action(&child.state, libc::SIGUSR1),
+                    Some(ignored)
                 );
-                assert!(!child.state.signal_actions.contains_key(&libc::SIGUSR2));
+                assert_eq!(test_signal_action(&child.state, libc::SIGUSR2), None);
                 assert_eq!(
-                    executor.state.signal_actions.get(&libc::SIGUSR1),
-                    Some(&ignored)
+                    test_signal_action(&executor.state, libc::SIGUSR1),
+                    Some(ignored)
                 );
                 assert_eq!(
-                    executor.state.signal_actions.get(&libc::SIGUSR2),
-                    Some(&caught)
+                    test_signal_action(&executor.state, libc::SIGUSR2),
+                    Some(caught)
                 );
             }
             _ => panic!("clone3 with CLONE_CLEAR_SIGHAND did not create a fork action"),
@@ -20841,6 +24579,80 @@ mod tests {
         assert_eq!(executor.execute_process_action(&request, &memory), Some(1));
         executor.replace_after_exec(test_state(&root.0));
         assert_eq!(executor.take_clear_child_tid(), None);
+    }
+
+    #[test]
+    fn post_exec_mask_preflight_preserves_both_pending_domains_across_recursive_exec() {
+        const EMPTY_MASK: u64 = 0x100;
+        const OLD_MASK: u64 = 0x200;
+        let root = TestDir::new();
+
+        for (label, process_directed, signal) in [
+            ("thread", false, libc::SIGUSR1),
+            ("process", true, libc::SIGUSR2),
+        ] {
+            let mut executor = ElfExecutor::new(test_state(&root.0), false);
+            let pid = executor.state.pid;
+            let tid = executor.state.tid;
+            test_block_signal(&mut executor.state, signal);
+            let (number, arguments) = if process_directed {
+                (libc::SYS_kill, [pid as u64, signal as u64, 0, 0, 0, 0])
+            } else {
+                (libc::SYS_tkill, [tid as u64, signal as u64, 0, 0, 0, 0])
+            };
+            assert_eq!(
+                result_of(kill_signal(&mut executor.state, number as u64, &arguments,)),
+                0,
+            );
+
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            memory.write(EMPTY_MASK, &[0; KERNEL_SIGSET_SIZE]).unwrap();
+            let old_sentinel = [0xa5; KERNEL_SIGSET_SIZE];
+            memory.write(OLD_MASK, &old_sentinel).unwrap();
+            let request = SyscallRequest::new(
+                libc::SYS_rt_sigprocmask as u64,
+                [
+                    libc::SIG_SETMASK as u64,
+                    EMPTY_MASK,
+                    OLD_MASK,
+                    KERNEL_SIGSET_SIZE as u64,
+                    0,
+                    0,
+                ],
+            );
+
+            for exec_depth in 1..=2 {
+                executor.replace_after_exec(test_state(&root.0));
+                assert!(
+                    executor.state.thread_signals.blocked.contains(signal),
+                    "{label} mask was not preserved across exec {exec_depth}",
+                );
+                assert_eq!(
+                    executor.lifecycle_signal_mask_preflight(&request, &memory),
+                    Some(negative_errno(libc::ENOSYS)),
+                    "{label} pending signal became eligible after exec {exec_depth}",
+                );
+                assert!(executor.state.thread_signals.blocked.contains(signal));
+                let still_pending = if process_directed {
+                    executor
+                        .state
+                        .process_signals
+                        .lock()
+                        .unwrap()
+                        .shared_pending
+                        .contains(signal)
+                } else {
+                    executor.state.thread_signals.pending.contains(signal)
+                };
+                assert!(still_pending, "{label} pending signal was consumed");
+                let mut observed = [0; KERNEL_SIGSET_SIZE];
+                memory.read(OLD_MASK, &mut observed).unwrap();
+                assert_eq!(
+                    observed, old_sentinel,
+                    "{label} old-mask output changed before refusal",
+                );
+            }
+        }
     }
 
     #[test]
@@ -22202,7 +26014,7 @@ mod tests {
         let child_completion = completion.clone();
         let handle = std::thread::spawn(move || {
             ready_sender.send(()).unwrap();
-            start_receiver.recv().unwrap();
+            assert_eq!(start_receiver.recv().unwrap(), ChildStartCommand::Start);
             started_sender.send(()).unwrap();
             *child_completion.lock().unwrap() =
                 Some(ChildCompletion::Waitable(ExitStatus::SUCCESS));
@@ -22217,6 +26029,161 @@ mod tests {
         executor.join_all_child_processes().unwrap();
     }
 
+    #[test]
+    fn child_start_gate_resolves_once_and_preserves_failed_delivery() {
+        let (start_sender, start_receiver) = std::sync::mpsc::channel();
+        let start_gate = ChildStartGate::new(start_sender);
+        assert_eq!(start_gate.start(), Ok(true));
+        assert_eq!(start_gate.start(), Ok(false));
+        assert_eq!(start_receiver.recv().unwrap(), ChildStartCommand::Start);
+        assert!(matches!(
+            start_receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty | std::sync::mpsc::TryRecvError::Disconnected)
+        ));
+        assert_eq!(start_gate.cancel(), ChildStartCancellation::AlreadyStarted);
+
+        let (cancel_sender, cancel_receiver) = std::sync::mpsc::channel();
+        let cancel_gate = ChildStartGate::new(cancel_sender);
+        assert_eq!(
+            cancel_gate.cancel(),
+            ChildStartCancellation::NewlyCancelled {
+                delivery_failed: false
+            }
+        );
+        assert_eq!(cancel_receiver.recv().unwrap(), ChildStartCommand::Cancel);
+        assert_eq!(
+            cancel_gate.cancel(),
+            ChildStartCancellation::AlreadyCancelled
+        );
+        assert_eq!(cancel_gate.start(), Ok(false));
+
+        let (lost_sender, lost_receiver) = std::sync::mpsc::channel();
+        let lost_gate = ChildStartGate::new(lost_sender);
+        drop(lost_receiver);
+        assert!(lost_gate.start().is_err());
+        assert_eq!(
+            lost_gate.cancel(),
+            ChildStartCancellation::NewlyCancelled {
+                delivery_failed: true
+            }
+        );
+    }
+
+    #[test]
+    fn discarding_named_fork_joins_only_that_unstarted_child() {
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_in_child = cancelled.clone();
+        let (cancel_sender, cancel_receiver) = std::sync::mpsc::channel();
+        let cancel_completion = Arc::new(Mutex::new(None));
+        let cancel_handle = std::thread::spawn(move || match cancel_receiver.recv() {
+            Ok(ChildStartCommand::Cancel) => {
+                cancelled_in_child.store(true, Ordering::Release);
+                Ok(())
+            }
+            other => Err(crate::Error::UnexpectedVcpuExit(format!(
+                "unstarted child received {other:?}"
+            ))),
+        });
+        executor.register_child_process(2, cancel_sender, cancel_completion, cancel_handle);
+
+        let sibling_finished = Arc::new(AtomicBool::new(false));
+        let sibling_finished_in_child = sibling_finished.clone();
+        let (sibling_start_sender, sibling_start_receiver) = std::sync::mpsc::channel();
+        let (sibling_release_sender, sibling_release_receiver) = std::sync::mpsc::channel();
+        let sibling_completion = Arc::new(Mutex::new(None));
+        let sibling_handle = std::thread::spawn(move || {
+            assert_eq!(
+                sibling_start_receiver.recv().unwrap(),
+                ChildStartCommand::Start
+            );
+            sibling_release_receiver.recv().unwrap();
+            sibling_finished_in_child.store(true, Ordering::Release);
+            Ok(())
+        });
+        executor.register_child_process(
+            3,
+            sibling_start_sender,
+            sibling_completion,
+            sibling_handle,
+        );
+        assert!(
+            executor
+                .child_wait
+                .lock()
+                .unwrap()
+                .pending_processes
+                .get(&3)
+                .unwrap()
+                .start
+                .start()
+                .unwrap()
+        );
+
+        assert!(executor.discard_unstarted_child_process(2).unwrap());
+        assert!(cancelled.load(Ordering::Acquire));
+        assert!(
+            !executor
+                .child_wait
+                .lock()
+                .unwrap()
+                .pending_processes
+                .contains_key(&2)
+        );
+        assert!(
+            executor
+                .child_wait
+                .lock()
+                .unwrap()
+                .pending_processes
+                .contains_key(&3)
+        );
+        assert!(!executor.discard_unstarted_child_process(3).unwrap());
+        assert!(!executor.discard_unstarted_child_process(99).unwrap());
+        assert!(!sibling_finished.load(Ordering::Acquire));
+
+        sibling_release_sender.send(()).unwrap();
+        let sibling = executor
+            .child_wait
+            .lock()
+            .unwrap()
+            .pending_processes
+            .remove(&3)
+            .unwrap();
+        sibling.handle.join().unwrap().unwrap();
+        assert!(sibling_finished.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn discarding_unstarted_fork_propagates_the_child_result() {
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let (start_sender, start_receiver) = std::sync::mpsc::channel();
+        let completion = Arc::new(Mutex::new(None));
+        let handle = std::thread::spawn(move || {
+            assert_eq!(start_receiver.recv().unwrap(), ChildStartCommand::Cancel);
+            Err(crate::Error::UnexpectedVcpuExit(
+                "forced unstarted-child failure".to_owned(),
+            ))
+        });
+        executor.register_child_process(2, start_sender, completion, handle);
+
+        assert!(matches!(
+            executor.discard_unstarted_child_process(2),
+            Err(crate::Error::UnexpectedVcpuExit(message))
+                if message == "forced unstarted-child failure"
+        ));
+        assert!(
+            !executor
+                .child_wait
+                .lock()
+                .unwrap()
+                .pending_processes
+                .contains_key(&2)
+        );
+    }
     fn custom_action(handler: u64) -> [u8; KERNEL_SIGACTION_SIZE] {
         let mut action = [0; KERNEL_SIGACTION_SIZE];
         action[0..8].copy_from_slice(&handler.to_le_bytes());
@@ -22257,7 +26224,7 @@ mod tests {
             ),
             0,
         );
-        assert!(state.signal_actions.contains_key(&libc::SIGCHLD));
+        assert!(test_signal_action(&state, libc::SIGCHLD).is_some());
         assert!(
             !sigchld_auto_reaps(&state),
             "a real SIGCHLD handler must not auto-reap; the child stays waitable"
@@ -22474,58 +26441,64 @@ mod tests {
     #[test]
     fn self_directed_fatal_signal_terminates_with_conventional_status() {
         let dir = TestDir::new();
-        let mut state = test_state(&dir.0);
-        let pid = state.pid;
+        let mut executor = ElfExecutor::new(test_state(&dir.0), false);
+        let pid = executor.state.pid;
 
         // abort() raises SIGABRT via tgkill(pid, tid, SIGABRT).
-        let action = kill_signal(
-            &mut state,
-            libc::SYS_tgkill as u64,
-            &[pid as u64, pid as u64, libc::SIGABRT as u64, 0, 0, 0],
+        assert_eq!(
+            result_of(kill_signal(
+                &mut executor.state,
+                libc::SYS_tgkill as u64,
+                &[pid as u64, pid as u64, libc::SIGABRT as u64, 0, 0, 0],
+            )),
+            0,
         );
-        match action {
-            SyscallAction::Exit(status) => {
-                assert_eq!(status, ExitStatus::Signaled(Signal::SIGABRT, true));
-                assert_eq!(conventional_exit_code(status), 128 + libc::SIGABRT);
-            }
-            _ => panic!("expected Exit for self-directed SIGABRT"),
-        }
+        let status = apply_next_default_signal(&mut executor);
+        assert_eq!(status, ExitStatus::Signaled(Signal::SIGABRT, true));
+        assert_eq!(conventional_exit_code(status), 128 + libc::SIGABRT);
     }
 
     #[test]
     fn nondumpable_fatal_signal_omits_core_status_in_both_wait_apis() {
         const OUTPUT: u64 = 0x100;
         let dir = TestDir::new();
-        let mut state = test_state(&dir.0);
-        let pid = state.pid;
+        let mut executor = ElfExecutor::new(test_state(&dir.0), false);
+        let pid = executor.state.pid;
         assert_eq!(
-            prctl(&mut state, &[libc::PR_SET_DUMPABLE as u64, 0, 0, 0, 0, 0],),
+            prctl(
+                &mut executor.state,
+                &[libc::PR_SET_DUMPABLE as u64, 0, 0, 0, 0, 0],
+            ),
             0,
         );
-        let status = match kill_signal(
-            &mut state,
-            libc::SYS_kill as u64,
-            &[pid as u64, libc::SIGABRT as u64, 0, 0, 0, 0],
-        ) {
-            SyscallAction::Exit(status) => status,
-            SyscallAction::Continue { .. } => panic!("SIGABRT did not terminate"),
-        };
+        assert_eq!(
+            result_of(kill_signal(
+                &mut executor.state,
+                libc::SYS_kill as u64,
+                &[pid as u64, libc::SIGABRT as u64, 0, 0, 0, 0],
+            )),
+            0,
+        );
+        let status = apply_next_default_signal(&mut executor);
         assert_eq!(status, ExitStatus::Signaled(Signal::SIGABRT, false));
 
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
-        state.children.insert(7, status);
-        assert_eq!(wait4(&mut memory, &mut state, &[7, OUTPUT, 0, 0, 0, 0]), 7,);
+        executor.state.children.insert(7, status);
+        assert_eq!(
+            wait4(&mut memory, &mut executor.state, &[7, OUTPUT, 0, 0, 0, 0]),
+            7,
+        );
         let mut raw_status = [0; std::mem::size_of::<libc::c_int>()];
         memory.read(OUTPUT, &mut raw_status).unwrap();
         let raw_status = libc::c_int::from_le_bytes(raw_status);
         assert!(libc::WIFSIGNALED(raw_status));
         assert!(!libc::WCOREDUMP(raw_status));
 
-        state.children.insert(8, status);
+        executor.state.children.insert(8, status);
         assert_eq!(
             waitid(
                 &mut memory,
-                &mut state,
+                &mut executor.state,
                 &[libc::P_PID as u64, 8, OUTPUT, libc::WEXITED as u64, 0, 0],
             ),
             0,
@@ -22557,16 +26530,18 @@ mod tests {
         );
 
         let sibling_tid = sibling.state.tid;
-        match kill_signal(
-            &mut sibling.state,
-            libc::SYS_tkill as u64,
-            &[sibling_tid as u64, libc::SIGABRT as u64, 0, 0, 0, 0],
-        ) {
-            SyscallAction::Exit(status) => {
-                assert_eq!(status, ExitStatus::Signaled(Signal::SIGABRT, false));
-            }
-            SyscallAction::Continue { .. } => panic!("SIGABRT did not terminate sibling"),
-        }
+        assert_eq!(
+            result_of(kill_signal(
+                &mut sibling.state,
+                libc::SYS_tkill as u64,
+                &[sibling_tid as u64, libc::SIGABRT as u64, 0, 0, 0, 0],
+            )),
+            0,
+        );
+        assert_eq!(
+            apply_next_default_signal(&mut sibling),
+            ExitStatus::Signaled(Signal::SIGABRT, false)
+        );
     }
 
     #[test]
@@ -22587,31 +26562,290 @@ mod tests {
     }
 
     #[test]
-    fn kill_and_tkill_self_fatal_signals_terminate() {
+    fn kill_and_tkill_exact_self_fatal_signals_terminate() {
         let dir = TestDir::new();
-        let mut state = test_state(&dir.0);
-        let pid = state.pid;
+        let mut deferred = ElfExecutor::new(test_state(&dir.0), false);
+        let pid = deferred.state.pid;
+        assert_eq!(
+            result_of(kill_signal(
+                &mut deferred.state,
+                libc::SYS_kill as u64,
+                &[pid as u64, libc::SIGSEGV as u64, 0, 0, 0, 0],
+            )),
+            0,
+        );
+        assert_eq!(
+            apply_next_default_signal(&mut deferred),
+            ExitStatus::Signaled(Signal::SIGSEGV, true),
+        );
 
-        for (number, args) in [
-            (
-                libc::SYS_kill,
-                [pid as u64, libc::SIGSEGV as u64, 0, 0, 0, 0],
+        let mut immediate = test_state(&dir.0);
+        let pid = immediate.pid;
+        assert!(matches!(
+            kill_signal(
+                &mut immediate,
+                libc::SYS_tkill as u64,
+                &[pid as u64, libc::SIGKILL as u64, 0, 0, 0, 0],
             ),
-            (
-                libc::SYS_tkill,
-                [pid as u64, libc::SIGKILL as u64, 0, 0, 0, 0],
-            ),
-            // kill(-1, SIGTERM) broadcasts to a set that includes ourselves.
-            (
-                libc::SYS_kill,
-                [(-1i64) as u64, libc::SIGTERM as u64, 0, 0, 0, 0],
-            ),
+            SyscallAction::Exit(_)
+        ));
+    }
+
+    #[test]
+    fn unsupported_signal_producers_fail_without_mutating_pending_state() {
+        let dir = TestDir::new();
+        for (target, signal, error) in [
+            (-1_i32, libc::SIGUSR1, libc::ESRCH),
+            (-7, libc::SIGUSR1, libc::ESRCH),
+            (1, libc::SIGCHLD, libc::ENOSYS),
+            (1, libc::SIGPIPE, libc::ENOSYS),
+            (1, libc::SIGRTMIN(), libc::ENOSYS),
         ] {
-            match kill_signal(&mut state, number as u64, &args) {
-                SyscallAction::Exit(_) => {}
-                _ => panic!("expected Exit for syscall {number}"),
-            }
+            let mut state = test_state(&dir.0);
+            test_block_signal(&mut state, signal);
+            assert_eq!(
+                result_of(kill_signal(
+                    &mut state,
+                    libc::SYS_kill as u64,
+                    &[target as u64, signal as u64, 0, 0, 0, 0],
+                )),
+                negative_errno(error),
+                "target={target}, signal={signal}",
+            );
+            assert!(state.thread_signals.pending.is_empty());
+            assert!(
+                state
+                    .process_signals
+                    .lock()
+                    .unwrap()
+                    .shared_pending
+                    .is_empty()
+            );
         }
+    }
+
+    #[test]
+    fn process_group_kill_is_deterministic_or_refuses_before_mutation() {
+        let dir = TestDir::new();
+        let state_for_pid_2 = || {
+            let mut state = test_state(&dir.0);
+            state.pid = 2;
+            state.pgid = 2;
+            state.tid = 2;
+            state.ppid = 1;
+            state.task_lifecycle = Arc::new(std::sync::Mutex::new(
+                crate::elf::TaskLifecycleTable::with_root(2, 2, 2, true),
+            ));
+            state
+        };
+
+        // A group containing only one process has an unambiguous target.
+        let mut single = ElfExecutor::new(state_for_pid_2(), false);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(&mut memory, &mut single.state, libc::SYS_getpgrp, [0; 6],),
+            2,
+        );
+        for target in [0_i32, -2] {
+            test_block_signal(&mut single.state, libc::SIGUSR1);
+            assert_eq!(
+                result_of(kill_signal(
+                    &mut single.state,
+                    libc::SYS_kill as u64,
+                    &[target as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+                )),
+                0,
+                "single-member process-group target {target}",
+            );
+            assert!(
+                single
+                    .state
+                    .process_signals
+                    .lock()
+                    .unwrap()
+                    .shared_pending
+                    .remove(libc::SIGUSR1)
+                    .is_some(),
+            );
+        }
+
+        // fork inherits its parent's process group. Group delivery with two
+        // processes is refused before either pending domain is touched.
+        let parent = ElfExecutor::new(state_for_pid_2(), false);
+        let mut child = parent.fork_child(7, false).unwrap();
+        assert_eq!(child.state.pgid, parent.state.pgid);
+        assert_eq!(
+            syscall_result(&mut memory, &mut child.state, libc::SYS_getpgrp, [0; 6],),
+            2,
+            "a fork child reports its inherited PGID, not its TGID",
+        );
+        assert_eq!(
+            result_of(kill_signal(
+                &mut child.state,
+                libc::SYS_kill as u64,
+                &[(-7_i32) as u64, 0, 0, 0, 0, 0],
+            )),
+            negative_errno(libc::ESRCH),
+            "fork does not create a process group named for the child",
+        );
+        test_block_signal(&mut child.state, libc::SIGUSR2);
+        assert_eq!(
+            result_of(kill_signal(
+                &mut child.state,
+                libc::SYS_kill as u64,
+                &[0, libc::SIGUSR2 as u64, 0, 0, 0, 0],
+            )),
+            negative_errno(libc::ENOSYS),
+            "kill(0) cannot deterministically fan out to parent and child",
+        );
+        let inherited_pgid = child.state.pgid;
+        assert_eq!(
+            result_of(kill_signal(
+                &mut child.state,
+                libc::SYS_kill as u64,
+                &[(-inherited_pgid) as u64, libc::SIGUSR2 as u64, 0, 0, 0, 0],
+            )),
+            negative_errno(libc::ENOSYS),
+            "kill(-getpgrp()) refuses the same multi-process fanout",
+        );
+        assert!(
+            child
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .is_empty()
+        );
+        assert!(
+            parent
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .is_empty()
+        );
+
+        // kill(-1) excludes both the calling process and PID 1. A child of the
+        // synthetic init therefore has no target until another child exists.
+        let init = ElfExecutor::new(test_state(&dir.0), false);
+        let mut caller = init.fork_child(8, false).unwrap();
+        assert_eq!(
+            result_of(kill_signal(
+                &mut caller.state,
+                libc::SYS_kill as u64,
+                &[(-1_i32) as u64, 0, 0, 0, 0, 0],
+            )),
+            negative_errno(libc::ESRCH),
+            "PID 1 is excluded from kill(-1), as is the caller",
+        );
+        let foreign = init.fork_child(9, false).unwrap();
+        assert_eq!(
+            result_of(kill_signal(
+                &mut caller.state,
+                libc::SYS_kill as u64,
+                &[(-1_i32) as u64, 0, 0, 0, 0, 0],
+            )),
+            0,
+            "a distinct non-init process is visible to kill(-1, 0)",
+        );
+        assert_eq!(
+            result_of(kill_signal(
+                &mut caller.state,
+                libc::SYS_kill as u64,
+                &[(-1_i32) as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            )),
+            negative_errno(libc::ENOSYS),
+            "cross-process fanout is refused before selecting a recipient",
+        );
+        assert!(caller.state.thread_signals.pending.is_empty());
+        assert!(
+            caller
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .is_empty()
+        );
+        assert!(foreign.state.thread_signals.pending.is_empty());
+        assert!(
+            foreign
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .is_empty()
+        );
+
+        // Process lookup is keyed by TGID rather than leader TID. A surviving
+        // worker can probe and signal its process after the leader exits.
+        let leaderless = init.fork_child(20, false).unwrap();
+        let mut worker = leaderless.thread_child(21).unwrap();
+        leaderless
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap()
+            .remove(leaderless.state.tid, leaderless.task_generation);
+        assert_eq!(
+            result_of(kill_signal(
+                &mut caller.state,
+                libc::SYS_kill as u64,
+                &[20, 0, 0, 0, 0, 0],
+            )),
+            0,
+            "a foreign caller can probe a leaderless live process by TGID",
+        );
+        assert_eq!(
+            result_of(kill_signal(
+                &mut caller.state,
+                libc::SYS_kill as u64,
+                &[20, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            )),
+            negative_errno(libc::ENOSYS),
+            "foreign leaderless delivery is refused before pending mutation",
+        );
+        assert!(caller.state.thread_signals.pending.is_empty());
+        assert!(
+            worker
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .is_empty()
+        );
+        assert_eq!(
+            result_of(kill_signal(
+                &mut worker.state,
+                libc::SYS_kill as u64,
+                &[20, 0, 0, 0, 0, 0],
+            )),
+            0,
+            "kill(tgid, 0) finds a leaderless live process",
+        );
+        test_block_signal(&mut worker.state, libc::SIGUSR1);
+        assert_eq!(
+            result_of(kill_signal(
+                &mut worker.state,
+                libc::SYS_kill as u64,
+                &[20, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            )),
+            0,
+            "positive kill(tgid, signal) targets a leaderless caller process",
+        );
+        assert!(
+            worker
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(libc::SIGUSR1),
+        );
     }
 
     #[test]
@@ -22646,33 +26880,30 @@ mod tests {
         let mut state = test_state(&dir.0);
         let pid = state.pid;
 
-        // A user handler that we cannot deliver must not terminate the process.
-        //
-        // ⚠️ EXPECTATION DELIBERATELY CHANGED FROM `result: 0`, and this is a
-        // behaviour change rather than a test repair. The old expectation
-        // encoded the defect: this guest kernel runs no user handler, so
-        // reporting 0 told the guest its signal had been delivered when nothing
-        // happened. What must not change is that it does not TERMINATE, which
-        // is what this test is named for and is still asserted -- the action is
-        // still `Continue`, not `Exit`. Only the reported value moves, from a
-        // false success to a visible ENOSYS.
-        state
-            .signal_actions
-            .insert(libc::SIGTERM, custom_action(0x4000));
+        // A caught process-directed signal succeeds and remains pending for
+        // the backend's return-to-user delivery path.
+        test_install_signal_action(&state, libc::SIGTERM, custom_action(0x4000));
         assert!(matches!(
             kill_signal(
                 &mut state,
                 libc::SYS_kill as u64,
                 &[pid as u64, libc::SIGTERM as u64, 0, 0, 0, 0],
             ),
-            SyscallAction::Continue { result, .. } if result == negative_errno(libc::ENOSYS)
+            SyscallAction::Continue { result: 0, .. }
         ));
+        assert!(
+            state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(libc::SIGTERM)
+        );
 
         // A blocked fatal signal stays pending rather than terminating.
         let mut blocked = test_state(&dir.0);
         let blocked_pid = blocked.pid;
-        let bit = (libc::SIGINT - 1) as usize;
-        blocked.signal_mask[bit / 8] |= 1 << (bit % 8);
+        test_block_signal(&mut blocked, libc::SIGINT);
         assert!(matches!(
             kill_signal(
                 &mut blocked,
@@ -22685,11 +26916,8 @@ mod tests {
         // SIGKILL ignores both the mask and any installed handler.
         let mut unkillable = test_state(&dir.0);
         let unkillable_pid = unkillable.pid;
-        unkillable
-            .signal_actions
-            .insert(libc::SIGKILL, custom_action(0x1));
-        let bit = (libc::SIGKILL - 1) as usize;
-        unkillable.signal_mask[bit / 8] |= 1 << (bit % 8);
+        test_install_signal_action(&unkillable, libc::SIGKILL, custom_action(0x1));
+        test_block_signal(&mut unkillable, libc::SIGKILL);
         assert!(matches!(
             kill_signal(
                 &mut unkillable,
@@ -22719,6 +26947,157 @@ mod tests {
         }
     }
 
+    #[test]
+    fn signal_to_live_other_process_is_explicitly_unsupported() {
+        let dir = TestDir::new();
+        let mut parent = ElfExecutor::new(test_state(&dir.0), false);
+        let child = parent.fork_child(7, false).unwrap();
+        assert_eq!(
+            result_of(kill_signal(
+                &mut parent.state,
+                libc::SYS_kill as u64,
+                &[7, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            )),
+            negative_errno(libc::ENOSYS),
+        );
+        assert!(parent.state.thread_signals.pending.is_empty());
+        assert!(
+            parent
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .is_empty()
+        );
+        assert!(child.state.thread_signals.pending.is_empty());
+        assert!(
+            child
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn process_directed_signal_with_live_sibling_is_schedule_independent_refusal() {
+        let dir = TestDir::new();
+        for _ in 0..16 {
+            let leader = ElfExecutor::new(test_state(&dir.0), false);
+            let worker = leader.thread_child(7).unwrap();
+            let pid = leader.state.pid;
+            let barrier = Arc::new(std::sync::Barrier::new(3));
+            let leader_barrier = barrier.clone();
+            let worker_barrier = barrier.clone();
+            let leader_thread = std::thread::spawn(move || {
+                let mut executor = leader;
+                leader_barrier.wait();
+                let result = result_of(kill_signal(
+                    &mut executor.state,
+                    libc::SYS_kill as u64,
+                    &[pid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+                ));
+                leader_barrier.wait();
+                (executor, result)
+            });
+            let worker_thread = std::thread::spawn(move || {
+                let mut executor = worker;
+                worker_barrier.wait();
+                let result = result_of(kill_signal(
+                    &mut executor.state,
+                    libc::SYS_kill as u64,
+                    &[pid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+                ));
+                worker_barrier.wait();
+                (executor, result)
+            });
+            barrier.wait();
+            barrier.wait();
+            let (leader, leader_result) = leader_thread.join().unwrap();
+            let (worker, worker_result) = worker_thread.join().unwrap();
+            assert_eq!(leader_result, negative_errno(libc::ENOSYS));
+            assert_eq!(worker_result, negative_errno(libc::ENOSYS));
+            assert!(leader.state.thread_signals.pending.is_empty());
+            assert!(worker.state.thread_signals.pending.is_empty());
+            assert!(
+                leader
+                    .state
+                    .process_signals
+                    .lock()
+                    .unwrap()
+                    .shared_pending
+                    .is_empty(),
+            );
+        }
+    }
+
+    #[test]
+    fn process_pending_signal_prevents_a_new_host_timed_thread_consumer() {
+        let dir = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&dir.0), false);
+        let pid = executor.state.pid;
+        test_block_signal(&mut executor.state, libc::SIGUSR1);
+        assert_eq!(
+            result_of(kill_signal(
+                &mut executor.state,
+                libc::SYS_kill as u64,
+                &[pid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            )),
+            0,
+        );
+        assert!(executor.has_shared_pending_signal());
+
+        let next_pid_before = executor.next_pid.load(Ordering::SeqCst);
+        let files_before = executor.state.files.len();
+        let identities_before = executor.state.fd_object_inodes.len();
+        assert!(
+            executor
+                .state
+                .task_lifecycle
+                .lock()
+                .unwrap()
+                .get(next_pid_before)
+                .is_none()
+        );
+        assert_eq!(
+            executor.prepare_thread(THREAD_CLONE_REQUIRED_FLAGS, Some(0x8000), None, None, None,),
+            negative_errno(libc::ENOSYS),
+        );
+        assert!(executor.process_action.is_none());
+        assert_eq!(executor.next_pid.load(Ordering::SeqCst), next_pid_before);
+        assert_eq!(executor.state.files.len(), files_before);
+        assert_eq!(executor.state.fd_object_inodes.len(), identities_before);
+        assert!(executor.has_shared_pending_signal());
+        assert!(
+            executor
+                .state
+                .task_lifecycle
+                .lock()
+                .unwrap()
+                .get(next_pid_before)
+                .is_none()
+        );
+
+        let error = match executor.thread_child(next_pid_before) {
+            Ok(_) => panic!("the internal transition accepted an unselected pending signal"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("lacks a selected recipient"));
+        assert!(executor.has_shared_pending_signal());
+        assert!(
+            executor
+                .state
+                .task_lifecycle
+                .lock()
+                .unwrap()
+                .get(next_pid_before)
+                .is_none()
+        );
+    }
+
     /// Build a CLONE_THREAD worker and hand back its state, so a test can
     /// exercise the `pid != tid` shape that every pre-existing signal test
     /// missed by using `test_state`, where pid == tid == 1.
@@ -22743,8 +27122,273 @@ mod tests {
         }
     }
 
+    fn apply_next_default_signal(executor: &mut ElfExecutor) -> ExitStatus {
+        let pending = executor
+            .take_pending_signal()
+            .expect("default-fatal signal was not pending at the return boundary");
+        let signal = pending.event.signal();
+        assert_eq!(
+            executor.signal_disposition(signal),
+            SignalDisposition::Terminate
+        );
+        executor.force_signal_exit(signal);
+        executor
+            .take_exit()
+            .expect("default signal did not exit")
+            .status
+    }
+
     /// The premise the rejected implementation got wrong: a worker's tid is not
     /// its pid. If this ever fails, every assertion below is vacuous.
+    #[test]
+    fn selected_process_event_stays_with_selected_thread() {
+        let dir = TestDir::new();
+        let mut leader = ElfExecutor::new(test_state(&dir.0), false);
+        let pid = leader.state.pid;
+        let mut worker = leader.thread_child(7).unwrap();
+        let event = event_for_process(libc::SIGUSR1, pid).unwrap();
+
+        worker.defer_signal_delivery(event).unwrap();
+
+        assert!(worker.state.thread_signals.pending.contains(libc::SIGUSR1));
+        assert!(!leader.state.thread_signals.pending.contains(libc::SIGUSR1));
+        assert!(
+            !leader
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(libc::SIGUSR1),
+            "a preselected process-directed event must not return to process-wide selection",
+        );
+        let selected = worker.take_pending_signal().unwrap();
+        assert_eq!(selected.domain, PendingSignalDomain::Thread);
+        assert_eq!(
+            selected.event.target(),
+            reverie::SignalTarget::Process {
+                pid: reverie::Pid::from_raw(pid)
+            }
+        );
+        assert!(leader.take_pending_signal().is_none());
+    }
+
+    #[test]
+    fn deferred_signal_accepts_timer_provenance_but_rejects_faults_and_queues() {
+        let dir = TestDir::new();
+        for (signal, code) in [
+            (libc::SIGALRM, libc::SI_KERNEL),
+            (libc::SIGUSR1, libc::SI_TIMER),
+            (libc::SIGUSR1, libc::SI_USER),
+            (libc::SIGUSR1, libc::SI_TKILL),
+        ] {
+            let mut executor = ElfExecutor::new(test_state(&dir.0), false);
+            let pid = executor.state.pid;
+            let info = signal_info_user(signal, pid, 0, code);
+            let target = if code == libc::SI_TKILL {
+                reverie::SignalTarget::Thread {
+                    pid: reverie::Pid::from_raw(pid),
+                    tid: reverie::Pid::from_raw(pid),
+                }
+            } else {
+                reverie::SignalTarget::Process {
+                    pid: reverie::Pid::from_raw(pid),
+                }
+            };
+            let event = reverie::SignalEvent::new(signal, info, target).unwrap();
+            executor.defer_signal_delivery(event).unwrap();
+            let selected = executor.take_pending_signal().unwrap();
+            assert_eq!(
+                selected.event.siginfo(),
+                info,
+                "signal={signal}, code={code}"
+            );
+        }
+
+        for (signal, code) in [
+            (libc::SIGKILL, libc::SI_USER),
+            (libc::SIGSTOP, libc::SI_USER),
+            (libc::SIGUSR1, libc::SI_KERNEL),
+            (libc::SIGSEGV, 1), // SEGV_MAPERR is a positive synchronous code.
+            (libc::SIGUSR1, libc::SI_QUEUE),
+            (libc::SIGUSR1, libc::SI_MESGQ),
+        ] {
+            let mut executor = ElfExecutor::new(test_state(&dir.0), false);
+            let pid = executor.state.pid;
+            let event = reverie::SignalEvent::new(
+                signal,
+                signal_info_user(signal, pid, 0, code),
+                reverie::SignalTarget::Process {
+                    pid: reverie::Pid::from_raw(pid),
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                executor.defer_signal_delivery(event),
+                Err(reverie::syscalls::Errno::ENOSYS),
+                "signal={signal}, code={code}",
+            );
+            assert!(executor.take_pending_signal().is_none());
+        }
+
+        for (code, target) in [
+            (
+                libc::SI_USER,
+                reverie::SignalTarget::Thread {
+                    pid: reverie::Pid::from_raw(1),
+                    tid: reverie::Pid::from_raw(1),
+                },
+            ),
+            (
+                libc::SI_TKILL,
+                reverie::SignalTarget::Process {
+                    pid: reverie::Pid::from_raw(1),
+                },
+            ),
+            (
+                libc::SI_TIMER,
+                reverie::SignalTarget::Thread {
+                    pid: reverie::Pid::from_raw(1),
+                    tid: reverie::Pid::from_raw(1),
+                },
+            ),
+        ] {
+            let mut executor = ElfExecutor::new(test_state(&dir.0), false);
+            let info = signal_info_user(libc::SIGUSR1, 1, 0, code);
+            let event = reverie::SignalEvent::new(libc::SIGUSR1, info, target).unwrap();
+            assert_eq!(
+                executor.defer_signal_delivery(event),
+                Err(reverie::syscalls::Errno::ENOSYS),
+                "mismatched code={code}, target={target:?}",
+            );
+        }
+
+        let mut executor = ElfExecutor::new(test_state(&dir.0), false);
+        let pid = executor.state.pid;
+        let info = signal_info_user(libc::SIGRTMIN(), pid, 0, libc::SI_TIMER);
+        let realtime = reverie::SignalEvent::new(
+            libc::SIGRTMIN(),
+            info,
+            reverie::SignalTarget::Process {
+                pid: reverie::Pid::from_raw(pid),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            executor.defer_signal_delivery(realtime),
+            Err(reverie::syscalls::Errno::ENOSYS),
+        );
+    }
+
+    #[test]
+    fn structured_replacement_uses_replacement_disposition_and_mask() {
+        let dir = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&dir.0), false);
+        let pid = executor.state.pid;
+        let tid = executor.state.tid;
+        let mut first_mask = KernelSigset::default();
+        first_mask.insert(libc::SIGTERM);
+        let first = KernelSigaction {
+            handler: 0x1111,
+            flags: libc::SA_NODEFER as u64,
+            restorer: 0xaaaa,
+            mask: first_mask,
+        };
+        let mut replacement_mask = KernelSigset::default();
+        replacement_mask.insert(libc::SIGINT);
+        let replacement = KernelSigaction {
+            handler: 0x2222,
+            flags: libc::SA_RESETHAND as u64,
+            restorer: 0xbbbb,
+            mask: replacement_mask,
+        };
+        test_install_signal_action(&executor.state, libc::SIGUSR1, first.encode());
+        test_install_signal_action(&executor.state, libc::SIGUSR2, replacement.encode());
+
+        let mut info = event_for_thread(libc::SIGUSR1, pid, tid).unwrap().siginfo();
+        info[..4].copy_from_slice(&libc::SIGUSR2.to_ne_bytes());
+        let replaced = reverie::SignalEvent::new(
+            libc::SIGUSR2,
+            info,
+            reverie::SignalTarget::Thread {
+                pid: reverie::Pid::from_raw(pid),
+                tid: reverie::Pid::from_raw(tid),
+            },
+        )
+        .unwrap();
+        let pending = executor
+            .prepare_filtered_signal_delivery(replaced)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(pending.event.signal(), libc::SIGUSR2);
+        assert_eq!(executor.signal_action(pending.event.signal()), replacement);
+        executor.enter_signal_handler(pending, replacement, false);
+        assert!(executor.state.thread_signals.blocked.contains(libc::SIGINT));
+        assert!(
+            !executor
+                .state
+                .thread_signals
+                .blocked
+                .contains(libc::SIGTERM)
+        );
+        assert_eq!(
+            executor.signal_disposition(libc::SIGUSR2),
+            SignalDisposition::Terminate
+        );
+        assert_eq!(executor.signal_action(libc::SIGUSR1), first);
+    }
+
+    #[test]
+    fn blocked_tool_replacement_requeues_without_consuming_another_event() {
+        let dir = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&dir.0), false);
+        let pid = executor.state.pid;
+        let tid = executor.state.tid;
+        executor
+            .defer_signal_delivery(event_for_thread(libc::SIGUSR1, pid, tid).unwrap())
+            .unwrap();
+        executor
+            .defer_signal_delivery(event_for_thread(libc::SIGTERM, pid, tid).unwrap())
+            .unwrap();
+        let selected = executor.take_pending_signal().unwrap();
+        assert_eq!(selected.event.signal(), libc::SIGUSR1);
+
+        executor.state.thread_signals.blocked.insert(libc::SIGUSR2);
+        let mut info = selected.event.siginfo();
+        info[..4].copy_from_slice(&libc::SIGUSR2.to_ne_bytes());
+        let replacement = reverie::SignalEvent::new(
+            libc::SIGUSR2,
+            info,
+            reverie::SignalTarget::Thread {
+                pid: reverie::Pid::from_raw(pid),
+                tid: reverie::Pid::from_raw(tid),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            executor
+                .prepare_filtered_signal_delivery(replacement)
+                .unwrap(),
+            None,
+            "a replacement newly blocked by its signal number is requeued",
+        );
+        assert!(
+            executor
+                .state
+                .thread_signals
+                .pending
+                .contains(libc::SIGUSR2)
+        );
+        let untouched = executor.take_pending_signal().unwrap();
+        assert_eq!(
+            untouched.event.signal(),
+            libc::SIGTERM,
+            "the next eligible event must remain pending and unfiltered"
+        );
+    }
+
     #[test]
     fn thread_child_worker_has_pid_distinct_from_tid() {
         let dir = TestDir::new();
@@ -22795,11 +27439,9 @@ mod tests {
         let (mut worker, _leader, leader_tid) = worker_state(&dir, 7);
         let worker = &mut worker.state;
         let pid = worker.pid;
-        worker
-            .signal_actions
-            .insert(libc::SIGUSR1, custom_action(0x4321));
-        let before_actions = worker.signal_actions.clone();
-        let before_mask = worker.signal_mask;
+        test_install_signal_action(worker, libc::SIGUSR1, custom_action(0x4321));
+        let before_actions = test_signal_actions(worker);
+        let before_mask = test_blocked_mask(worker);
 
         let result = result_of(kill_signal(
             worker,
@@ -22817,27 +27459,29 @@ mod tests {
             "a live sibling is a backend limitation, not a missing target"
         );
         assert_eq!(
-            worker.signal_actions, before_actions,
+            test_signal_actions(worker),
+            before_actions,
             "dispositions mutated"
         );
-        assert_eq!(worker.signal_mask, before_mask, "signal mask mutated");
+        assert_eq!(
+            test_blocked_mask(worker),
+            before_mask,
+            "signal mask mutated"
+        );
 
-        // ⚠️ THE ASSERTIONS ABOVE DO NOT DISCRIMINATE ON THEIR OWN, and I proved
-        // that by mutation: restoring the rejected `state.pid` comparison makes
-        // this call target-self, and SIGUSR1's unsupported handler then returns
-        // ENOSYS anyway, so every assertion above still passes while the bug is
-        // present. A BLOCKED signal is what separates the two, because the
-        // wrong branch has a visible side effect: it QUEUES the signal into
-        // this worker's pending set. Correct behaviour queues nothing.
+        // A blocked signal makes the no-mutation requirement explicit. If the
+        // target is incorrectly compared with this worker's process id, the
+        // wrong branch reports success and queues the signal in this worker.
+        // Correct live-sibling refusal changes no pending state.
         let blocked = libc::SIGUSR2;
-        let bit = (blocked - 1) as usize;
-        worker.signal_mask[bit / 8] |= 1 << (bit % 8);
-        let pending_before = worker
-            .signalfd_state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .pending
-            .clone();
+        test_block_signal(worker, blocked);
+        let pending_before = {
+            let process_signals = worker.process_signals.lock().unwrap();
+            worker
+                .thread_signals
+                .pending
+                .pending_mask(&process_signals.pending_generations)
+        };
 
         let blocked_result = result_of(kill_signal(
             worker,
@@ -22850,12 +27494,13 @@ mod tests {
             negative_errno(libc::ENOSYS),
             "a blocked signal aimed at the leader is still not ours to take"
         );
-        let pending_after = worker
-            .signalfd_state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .pending
-            .clone();
+        let pending_after = {
+            let process_signals = worker.process_signals.lock().unwrap();
+            worker
+                .thread_signals
+                .pending
+                .pending_mask(&process_signals.pending_generations)
+        };
         assert_eq!(
             pending_after, pending_before,
             "a leader-targeted blocked signal was queued into the WORKER's pending set"
@@ -22924,28 +27569,28 @@ mod tests {
         );
     }
 
-    /// Truthfulness: an unblocked Handler or Stop is not delivered by this
-    /// guest kernel, so it must fail visibly. Ignore still succeeds, because
-    /// discarding the signal IS the delivery.
+    /// A caught signal is queued for the current task, while stopped-state
+    /// scheduling still fails visibly. An ignored signal is also queued so a
+    /// Tool can observe its delivery stop; the return-boundary path discards it
+    /// after that hook.
     #[test]
-    fn unsupported_handler_and_stop_fail_visibly_while_ignore_succeeds() {
+    fn caught_and_ignored_signals_succeed_while_stop_fails_visibly() {
         let dir = TestDir::new();
         let (mut worker, _leader, _) = worker_state(&dir, 7);
         let worker = &mut worker.state;
         let tid = worker.tid;
 
-        worker
-            .signal_actions
-            .insert(libc::SIGUSR1, custom_action(0x4321));
+        test_install_signal_action(worker, libc::SIGUSR1, custom_action(0x4321));
         assert_eq!(
             result_of(kill_signal(
                 worker,
                 libc::SYS_tkill as u64,
                 &[tid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
             )),
-            negative_errno(libc::ENOSYS),
-            "an installed handler cannot run here, so success would be a lie"
+            0,
+            "a caught self-thread signal must be accepted for deferred delivery"
         );
+        assert!(worker.thread_signals.pending.contains(libc::SIGUSR1));
 
         assert_eq!(
             result_of(kill_signal(
@@ -22957,9 +27602,7 @@ mod tests {
             "no stopped state is modeled"
         );
 
-        worker
-            .signal_actions
-            .insert(libc::SIGUSR2, custom_action(1));
+        test_install_signal_action(worker, libc::SIGUSR2, custom_action(1));
         assert_eq!(
             result_of(kill_signal(
                 worker,
@@ -22969,12 +27612,16 @@ mod tests {
             0,
             "SIG_IGN is a real delivery outcome",
         );
+        assert!(
+            worker.thread_signals.pending.contains(libc::SIGUSR2),
+            "ignored signals remain observable to the Tool until the return boundary",
+        );
     }
 
     #[test]
     fn signal_disposition_honors_handlers_over_defaults() {
         let dir = TestDir::new();
-        let mut state = test_state(&dir.0);
+        let state = test_state(&dir.0);
 
         assert_eq!(
             signal_disposition(&state, libc::SIGABRT),
@@ -22989,20 +27636,50 @@ mod tests {
             SignalDisposition::Stop
         );
 
-        state
-            .signal_actions
-            .insert(libc::SIGABRT, custom_action(0x1)); // SIG_IGN
+        test_install_signal_action(&state, libc::SIGABRT, custom_action(0x1)); // SIG_IGN
         assert_eq!(
             signal_disposition(&state, libc::SIGABRT),
             SignalDisposition::Ignore
         );
-        state
-            .signal_actions
-            .insert(libc::SIGABRT, custom_action(0xdead_beef));
+        test_install_signal_action(&state, libc::SIGABRT, custom_action(0xdead_beef));
         assert_eq!(
             signal_disposition(&state, libc::SIGABRT),
             SignalDisposition::Handled
         );
+    }
+
+    #[test]
+    fn promote_after_thread_exec_preserves_pgid_before_image_replacement() {
+        let dir = TestDir::new();
+        let mut state = test_state(&dir.0);
+        state.pid = 3;
+        state.tid = 7;
+        state.pgid = 55;
+        state.task_lifecycle = Arc::new(std::sync::Mutex::new(
+            crate::elf::TaskLifecycleTable::with_root(3, 3, 55, true),
+        ));
+        state
+            .task_lifecycle
+            .lock()
+            .unwrap()
+            .register(7, 3, 55, true);
+        let mut executor = ElfExecutor::new(state, false);
+
+        assert_eq!(executor.promote_after_thread_exec(), 3);
+        assert_eq!(executor.thread_identity(), (3, 3));
+        let lifecycle = executor.state.task_lifecycle.lock().unwrap();
+        assert_eq!(lifecycle.processes().collect::<Vec<_>>(), vec![(3, 55)]);
+        assert_eq!(
+            lifecycle.get(3),
+            Some(crate::elf::TaskLifecycleState {
+                generation: executor.task_generation,
+                tgid: 3,
+                pgid: 55,
+                robust_list_head: 0,
+                dumpable: true,
+            })
+        );
+        assert_eq!(lifecycle.get(7), None);
     }
 
     #[test]
@@ -23014,12 +27691,16 @@ mod tests {
         leader.pid = 37;
         leader.tid = 37;
         leader.task_lifecycle = Arc::new(std::sync::Mutex::new(
-            crate::elf::TaskLifecycleTable::with_root(37, 37, true),
+            crate::elf::TaskLifecycleTable::with_root(37, 37, 37, true),
         ));
         leader.executable_path = executable.clone();
         leader.executable_file = Some(Arc::new(std::fs::File::open(&executable).unwrap()));
         leader.executable_image = Arc::from(b"loaded image".as_slice());
-        leader.task_lifecycle.lock().unwrap().register(38, 37, true);
+        leader
+            .task_lifecycle
+            .lock()
+            .unwrap()
+            .register(38, 37, 37, true);
         let mut worker = leader.try_clone_for_fork(38).unwrap();
         worker.pid = 37;
         worker.ppid = leader.ppid;

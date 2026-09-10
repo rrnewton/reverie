@@ -58,6 +58,7 @@ mod guest;
 #[cfg(target_arch = "x86_64")]
 mod rdtsc;
 mod regs;
+mod signal;
 mod stack;
 mod subscription;
 mod timer;
@@ -76,6 +77,7 @@ pub use rdtsc::*;
 pub use regs::RegDisplay;
 pub use regs::RegDisplayOptions;
 pub use reverie_process as process;
+pub use signal::*;
 pub use stack::*;
 pub use subscription::*;
 pub use timer::*;

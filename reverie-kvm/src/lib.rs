@@ -22,6 +22,7 @@ mod error;
 mod executor;
 mod memory;
 mod runtime;
+mod signal;
 mod stats;
 mod syscall;
 mod tools;

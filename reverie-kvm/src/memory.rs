@@ -42,7 +42,8 @@ struct UserAccess {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UserPageState {
-    Accessible,
+    ReadOnly,
+    Writable,
     NoAccess,
 }
 
@@ -173,7 +174,35 @@ impl GuestMemory {
         let state = if no_access {
             UserPageState::NoAccess
         } else {
-            UserPageState::Accessible
+            UserPageState::Writable
+        };
+        let mut access = self
+            .mapping
+            .user_access
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        for page in first_page..=last_page {
+            access.pages.insert(page, state);
+        }
+        Ok(())
+    }
+
+    /// Changes userspace read/write permissions for an already-mapped range.
+    pub(crate) fn protect_user_range(
+        &self,
+        guest_address: u64,
+        length: u64,
+        protection: libc::c_int,
+    ) -> Result<()> {
+        let Some((first_page, last_page)) = self.checked_page_range(guest_address, length)? else {
+            return Ok(());
+        };
+        let state = if protection == libc::PROT_NONE {
+            UserPageState::NoAccess
+        } else if protection & libc::PROT_WRITE != 0 {
+            UserPageState::Writable
+        } else {
+            UserPageState::ReadOnly
         };
         let mut access = self
             .mapping
@@ -344,7 +373,7 @@ impl GuestMemory {
     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
     pub fn write(&mut self, guest_address: u64, source: &[u8]) -> Result<()> {
         self.checked_offset(guest_address, source.len())?;
-        if self.user_accessible_prefix(guest_address, source.len())? != source.len() {
+        if self.user_writable_prefix(guest_address, source.len())? != source.len() {
             return Err(Error::GuestMemoryAccessDenied {
                 address: guest_address,
                 length: source.len(),
@@ -376,7 +405,7 @@ impl GuestMemory {
     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
     pub fn zero(&mut self, guest_address: u64, length: usize) -> Result<()> {
         self.checked_offset(guest_address, length)?;
-        if self.user_accessible_prefix(guest_address, length)? != length {
+        if self.user_writable_prefix(guest_address, length)? != length {
             return Err(Error::GuestMemoryAccessDenied {
                 address: guest_address,
                 length,
@@ -468,7 +497,47 @@ impl GuestMemory {
 
         let mut cursor = guest_address;
         while cursor < end {
-            if access.pages.get(&(cursor / PAGE_SIZE as u64)) != Some(&UserPageState::Accessible) {
+            if !matches!(
+                access.pages.get(&(cursor / PAGE_SIZE as u64)),
+                Some(UserPageState::ReadOnly | UserPageState::Writable)
+            ) {
+                break;
+            }
+            let next_page = (cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64;
+            cursor = next_page.min(end);
+        }
+        Ok(usize::try_from(cursor - guest_address).expect("guest memory prefix must fit usize"))
+    }
+
+    /// Returns the writable prefix of a guest userspace range.
+    pub(crate) fn user_writable_prefix(&self, guest_address: u64, length: usize) -> Result<usize> {
+        if length == 0 {
+            return Ok(0);
+        }
+        if guest_address < self.guest_base() || guest_address >= self.guest_end() {
+            return Err(Error::InvalidGuestAddress {
+                address: guest_address,
+                length,
+                guest_base: self.guest_base(),
+                guest_end: self.guest_end(),
+            });
+        }
+        let end = guest_address
+            .saturating_add(length as u64)
+            .min(self.guest_end());
+        let access = self
+            .mapping
+            .user_access
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        if !access.enabled {
+            return Ok(
+                usize::try_from(end - guest_address).expect("guest memory prefix must fit usize")
+            );
+        }
+        let mut cursor = guest_address;
+        while cursor < end {
+            if access.pages.get(&(cursor / PAGE_SIZE as u64)) != Some(&UserPageState::Writable) {
                 break;
             }
             let next_page = (cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64;
@@ -721,6 +790,51 @@ mod tests {
         let mut bytes = [0; 6];
         parent.read(PAGE_SIZE as u64, &mut bytes).unwrap();
         assert_eq!(&bytes, b"mapped");
+    }
+
+    #[test]
+    fn tracked_read_only_pages_reject_backend_copyout_but_remain_readable() {
+        let mut memory = GuestMemory::new(0, PAGE_SIZE * 2).unwrap();
+        memory
+            .map_user_range(PAGE_SIZE as u64, PAGE_SIZE as u64, false)
+            .unwrap();
+        memory.enable_user_access();
+        memory.write(PAGE_SIZE as u64, b"before").unwrap();
+        memory
+            .protect_user_range(PAGE_SIZE as u64, PAGE_SIZE as u64, libc::PROT_READ)
+            .unwrap();
+
+        let mut bytes = [0; 6];
+        memory.read(PAGE_SIZE as u64, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"before");
+        assert_eq!(
+            memory
+                .user_accessible_prefix(PAGE_SIZE as u64, PAGE_SIZE)
+                .unwrap(),
+            PAGE_SIZE,
+        );
+        assert_eq!(
+            memory
+                .user_writable_prefix(PAGE_SIZE as u64, PAGE_SIZE)
+                .unwrap(),
+            0
+        );
+        assert!(matches!(
+            memory.write(PAGE_SIZE as u64, b"after!"),
+            Err(Error::GuestMemoryAccessDenied { .. })
+        ));
+        assert!(matches!(
+            memory.zero(PAGE_SIZE as u64, 1),
+            Err(Error::GuestMemoryAccessDenied { .. })
+        ));
+        memory
+            .protect_user_range(
+                PAGE_SIZE as u64,
+                PAGE_SIZE as u64,
+                libc::PROT_READ | libc::PROT_WRITE,
+            )
+            .unwrap();
+        memory.write(PAGE_SIZE as u64, b"after!").unwrap();
     }
 
     #[test]
