@@ -748,7 +748,7 @@ fn load_executable(
         .unwrap_or(PROGRAM_HEADERS_ADDRESS);
     copy_program_headers(memory, image, &elf)?;
     if program_headers_address == PROGRAM_HEADERS_ADDRESS {
-        memory.map_user_range(PROGRAM_HEADERS_ADDRESS, PAGE_SIZE, false)?;
+        memory.map_user_permissions(PROGRAM_HEADERS_ADDRESS, PAGE_SIZE, true, false)?;
     }
     let (stack_pointer, auxv) = build_initial_stack(
         memory,
@@ -1412,6 +1412,53 @@ mod tests {
             base,
             align_up(main_end + INTERPRETER_MIN_BRK_HEADROOM, PAGE_SIZE).unwrap()
         );
+    }
+
+    #[test]
+    fn loaded_nonwritable_segment_rejects_user_copyout() {
+        let image = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        let elf = Elf::parse(&image).unwrap();
+        let end = elf
+            .program_headers
+            .iter()
+            .filter(|header| header.p_type == PT_LOAD)
+            .map(|header| MAIN_LOAD_BIAS + header.p_vaddr + header.p_memsz)
+            .max()
+            .unwrap();
+        let memory_size = usize::try_from(align_up(end, PAGE_SIZE).unwrap()).unwrap();
+        let mut memory = GuestMemory::new(0, memory_size).unwrap();
+        load_segments(&mut memory, &image, &elf, MAIN_LOAD_BIAS).unwrap();
+        memory.enable_user_access();
+
+        let address = elf
+            .program_headers
+            .iter()
+            .filter(|header| {
+                header.p_type == PT_LOAD
+                    && header.p_memsz != 0
+                    && header.p_flags & goblin::elf::program_header::PF_R != 0
+                    && header.p_flags & PF_W == 0
+            })
+            .map(|header| MAIN_LOAD_BIAS + header.p_vaddr)
+            .find(|address| {
+                let page = *address & !(PAGE_SIZE - 1);
+                !elf.program_headers.iter().any(|other| {
+                    other.p_type == PT_LOAD && other.p_flags & PF_W != 0 && {
+                        let start = (MAIN_LOAD_BIAS + other.p_vaddr) & !(PAGE_SIZE - 1);
+                        let end =
+                            align_up(MAIN_LOAD_BIAS + other.p_vaddr + other.p_memsz, PAGE_SIZE)
+                                .unwrap();
+                        (start..end).contains(&page)
+                    }
+                })
+            })
+            .expect("test executable has a nonwritable PT_LOAD page");
+
+        memory.read(address, &mut [0]).unwrap();
+        assert!(matches!(
+            memory.copy_to_user(address, &[0]),
+            Err(Error::GuestMemoryAccessDenied { .. })
+        ));
     }
 
     #[test]

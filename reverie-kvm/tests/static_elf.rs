@@ -55,6 +55,151 @@ use reverie_kvm::StraceTool;
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 
 #[test]
+fn native_and_kvm_epoll_partial_records_preserve_events() {
+    if !leader_self_exec_bounded("native_and_kvm_epoll_partial_records_preserve_events") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program_with_args(
+        &directory.0,
+        "epoll-partial-matrix",
+        EPOLL_PARTIAL_MATRIX,
+        &["-std=c11", "-Wall", "-Wextra", "-Werror"],
+    );
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "10s"])
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(native.status.success(), "native epoll matrix: {native:?}");
+    assert!(native.stderr.is_empty());
+    assert!(
+        native
+            .stdout
+            .ends_with(b"SUMMARY cases=156 passed=156 failed=0\n")
+    );
+    let program = executable.to_str().unwrap();
+    let (stdout, stderr) = run_host_program_captured(program, &[program], &directory.0);
+    assert_eq!(stdout, native.stdout);
+    assert!(stderr.is_empty());
+}
+
+const EPOLL_PARTIAL_MATRIX: &str = r#"#define _GNU_SOURCE
+#include <errno.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+_Static_assert(sizeof(struct epoll_event) == 12, "This control requires a packed12-byte epoll_event");
+
+static void require(int condition, const char *operation) {
+    if (!condition) {
+        perror(operation);
+        exit(100);
+    }
+}
+
+static void expected_record(unsigned char *destination) {
+    const unsigned char record[12] = {1, 0, 0, 0, 0xf0, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12};
+    memcpy(destination, record, sizeof(record));
+}
+
+static int run_case(int protection, const char *protection_name, uint32_t mode, const char *mode_name, int event_count, size_t prefix) {
+    size_t allocation = 8192;
+    size_t page = 4096;
+    unsigned char *mapping = mmap(NULL, allocation, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    require(mapping != MAP_FAILED, "mmap");
+    unsigned char expected[8192];
+    memset(mapping, 0xa5, allocation);
+    memset(expected, 0xa5, sizeof(expected));
+    size_t whole_bytes = event_count == 2 ? 12 : 0;
+    size_t offset = page - whole_bytes - prefix;
+    size_t partial_offset = offset + whole_bytes;
+    if (whole_bytes) expected_record(expected + offset);
+    if (prefix >= 4) {
+        const unsigned char flags[4] = {1, 0, 0, 0};
+        memcpy(expected + partial_offset, flags, sizeof(flags));
+    }
+    if (prefix == 12) expected_record(expected + partial_offset);
+    int expected_count = event_count - 1 + (prefix == 12);
+    int expected_result = expected_count ? expected_count : -1;
+    int expected_error = expected_count ? 0 : EFAULT;
+    int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    require(epoll_fd >= 0, "epoll_create1");
+    int descriptors[2] = {-1, -1};
+    for (int index = 0; index < event_count; ++index) {
+        descriptors[index] = eventfd(1, EFD_CLOEXEC | EFD_NONBLOCK);
+        require(descriptors[index] >= 0, "eventfd");
+        struct epoll_event registration = {.events = EPOLLIN | mode, .data.u64 = UINT64_C(0x123456789abcdef0)};
+        require(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, descriptors[index], &registration) == 0, "epoll_ctl");
+    }
+    require(mprotect(mapping + page, page, protection) == 0, "mprotect tested boundary");
+    errno = 0;
+    int result = epoll_wait(epoll_fd, (struct epoll_event *)(mapping + offset), event_count, 0);
+    int error = errno;
+    require(mprotect(mapping + page, page, PROT_READ) == 0, "mprotect inspect");
+    int full_mapping = !memcmp(mapping, expected, allocation);
+    size_t differing_bytes = 0;
+    size_t first_difference = allocation;
+    for (size_t index = 0; index < allocation; ++index) {
+        if (mapping[index] != expected[index]) {
+            if (!differing_bytes) first_difference = index;
+            ++differing_bytes;
+        }
+    }
+    unsigned char retry[64], expected_retry[64];
+    memset(retry, 0xa5, sizeof(retry));
+    memset(expected_retry, 0xa5, sizeof(expected_retry));
+    int expected_remaining = prefix == 12 ? 0 : 1;
+    if (expected_remaining) expected_record(expected_retry);
+    errno = 0;
+    int remaining = epoll_wait(epoll_fd, (struct epoll_event *)retry, 2, 0);
+    int remaining_error = errno;
+    int full_retry = !memcmp(retry, expected_retry, sizeof(retry));
+    unsigned char final[64], expected_final[64];
+    memset(final, 0xa5, sizeof(final));
+    memset(expected_final, 0xa5, sizeof(expected_final));
+    errno = 0;
+    int final_result = epoll_wait(epoll_fd, (struct epoll_event *)final, 2, 0);
+    int final_error = errno;
+    int full_final = !memcmp(final, expected_final, sizeof(final));
+    int success = result == expected_result && error == expected_error && full_mapping && remaining == expected_remaining && !remaining_error && full_retry && !final_result && !final_error && full_final;
+    printf("mode=%s protection=%s events=%d prefix=%zu result=%d errno=%d expected=%d/%d full8192=%d differences=%zu first_difference=%zu retry=%d/%d full64=%d final=%d/%d final_full64=%d record=", mode_name, protection_name, event_count, prefix, result, error, expected_result, expected_error, full_mapping, differing_bytes, first_difference, remaining, remaining_error, full_retry, final_result, final_error, full_final);
+    for (size_t index = 0; index < (size_t)event_count * 12; ++index) printf("%02x", mapping[offset + index]);
+    printf(" verdict=%s\n", success ? "PASS" : "FAIL");
+    for (int index = 0; index < event_count; ++index) require(close(descriptors[index]) == 0, "close eventfd");
+    require(close(epoll_fd) == 0, "close epoll");
+    require(munmap(mapping, allocation) == 0, "munmap");
+    return !success;
+}
+
+int main(void) {
+    require(sysconf(_SC_PAGESIZE) == 4096, "4096-byte page prerequisite");
+    const struct {uint32_t value; const char *name;} modes[] = {{EPOLLONESHOT, "oneshot"}, {EPOLLET, "edge"}, {EPOLLONESHOT | EPOLLET, "oneshot-edge"}};
+    const struct {int value; const char *name;} protections[] = {{PROT_READ, "RO"}, {PROT_NONE, "NONE"}};
+    int cases = 0;
+    int failed = 0;
+    for (size_t mode = 0; mode < sizeof(modes) / sizeof(modes[0]); ++mode) {
+        for (size_t protection = 0; protection < sizeof(protections) / sizeof(protections[0]); ++protection) {
+            for (int event_count = 1; event_count <= 2; ++event_count) {
+                for (size_t prefix = 0; prefix <= 12; ++prefix) {
+                    failed += run_case(protections[protection].value, protections[protection].name, modes[mode].value, modes[mode].name, event_count, prefix);
+                    ++cases;
+                }
+            }
+        }
+    }
+    printf("SUMMARY cases=%d passed=%d failed=%d\n", cases, cases - failed, failed);
+    return failed ? 1 : 0;
+}
+"#;
+
+#[test]
 fn file_script_exec_plain() {
     file_script_exec_control("file_script_exec_plain", "plain");
 }
