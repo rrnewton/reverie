@@ -342,8 +342,10 @@ fn execute_basic_syscall_with_output(
         // TODO-HUMAN-REVIEW(#120)
         readv(memory, state, args)
     } else if number == libc::SYS_preadv as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         preadv(memory, state, args, false)
     } else if number == libc::SYS_preadv2 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         preadv(memory, state, args, true)
     } else if number == libc::SYS_pread64 as u64 {
         pread64(memory, state, args)
@@ -838,6 +840,7 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_rt_sigprocmask as u64 {
         rt_sigprocmask(memory, state, args)
     } else if number == libc::SYS_rt_sigpending as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         rt_sigpending(memory, state, args)
     } else if number == libc::SYS_sigaltstack as u64 {
         sigaltstack(memory, state, current_user_stack_pointer, args)
@@ -3166,6 +3169,7 @@ fn readv(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
     total
 }
 
+// TODO-HUMAN-REVIEW(PR-543): Review virtual signalfd preadv/preadv2 offsets and flags.
 fn preadv(
     memory: &mut GuestMemory,
     state: &mut LoadedStaticElf,
@@ -11498,6 +11502,7 @@ fn rt_sigprocmask(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &
     0
 }
 
+// TODO-HUMAN-REVIEW(PR-543): Review shared/thread pending masks and bounded copyout.
 fn rt_sigpending(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     if args[1] > KERNEL_SIGSET_SIZE as u64 {
         return negative_errno(libc::EINVAL);
