@@ -118,6 +118,17 @@ MERGE_GATE_AUTHORITY_CHECKER = (
     ROOT / "hermit" / "scripts" / "configure-merge-gate-ruleset.sh"
 )
 DEFAULT_AGENT_SNAPSHOT = STATE_ROOT / "ignored" / "ci-hub" / "agent-snapshot.json"
+DEFAULT_DISK_STATE = STATE_ROOT / "ignored" / "ops-state" / "disk.json"
+DEFAULT_DISK_FILESYSTEM_PATH = STATE_ROOT
+DISK_FREE_INSTRUMENT = "btrfs filesystem usage -b"
+_BTRFS_FREE_ESTIMATED = re.compile(
+    r"^\s*Free \(estimated\):\s*([0-9]+)(?:\s|$)", re.MULTILINE
+)
+_BTRFS_DEVICE_SIZE = re.compile(
+    r"^\s*Device size:\s*([0-9]+)(?:\s|$)", re.MULTILINE
+)
+
+
 @dataclass(frozen=True)
 class TaskRecord:
     id: str
@@ -1076,6 +1087,96 @@ def cache_agent_snapshot(
         _emit({"state": "unknown", "summary": f"cannot-cache-agent-snapshot:{error}"})
         return 1
     _emit({"state": "ok", "count": len(agents), "summary": "agent-snapshot-cached"})
+    return 0
+
+
+def _parse_btrfs_usage_bytes(output: str) -> tuple[int, int]:
+    free_matches = _BTRFS_FREE_ESTIMATED.findall(output)
+    size_matches = _BTRFS_DEVICE_SIZE.findall(output)
+    if len(free_matches) != 1:
+        raise RuntimeError(
+            "btrfs output must contain exactly one Free (estimated) byte value"
+        )
+    if len(size_matches) != 1:
+        raise RuntimeError("btrfs output must contain exactly one Device size byte value")
+    free_bytes = int(free_matches[0])
+    device_size_bytes = int(size_matches[0])
+    if device_size_bytes <= 0 or free_bytes > device_size_bytes:
+        raise RuntimeError(
+            "btrfs Free (estimated) byte value is outside the device size"
+        )
+    return free_bytes, device_size_bytes
+
+
+def _persist_disk_state(
+    path: Path,
+    *,
+    free_bytes: int,
+    device_size_bytes: int,
+    filesystem_path: Path,
+    captured_at: float,
+) -> None:
+    document = {
+        "schema_version": 1,
+        "free_bytes": free_bytes,
+        "device_size_bytes": device_size_bytes,
+        "instrument": DISK_FREE_INSTRUMENT,
+        "filesystem_path": str(filesystem_path),
+        "captured_at": captured_at,
+    }
+    encoded = (json.dumps(document, sort_keys=True) + "\n").encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_bytes(encoded)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def cache_disk_free(
+    *,
+    filesystem_path: Path = DEFAULT_DISK_FILESYSTEM_PATH,
+    state_file: Path = DEFAULT_DISK_STATE,
+    now: float | None = None,
+) -> int:
+    """Publish one fresh btrfs allocator reading for the disk watcher."""
+    try:
+        resolved_path = filesystem_path.resolve(strict=True)
+        command = ["btrfs", "filesystem", "usage", "-b", str(resolved_path)]
+        environment = dict(os.environ)
+        environment["LC_ALL"] = "C"
+        measured = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=environment,
+        )
+        if measured.returncode != 0:
+            detail = measured.stderr.strip() or measured.stdout.strip() or "no output"
+            raise RuntimeError(
+                f"{DISK_FREE_INSTRUMENT} exited {measured.returncode}: {detail}"
+            )
+        free_bytes, device_size_bytes = _parse_btrfs_usage_bytes(measured.stdout)
+        _persist_disk_state(
+            state_file,
+            free_bytes=free_bytes,
+            device_size_bytes=device_size_bytes,
+            filesystem_path=resolved_path,
+            captured_at=time.time() if now is None else now,
+        )
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        _emit({"state": "unknown", "summary": f"cannot-cache-disk-free:{error}"})
+        return 1
+    _emit(
+        {
+            "state": "ok",
+            "free_bytes": free_bytes,
+            "instrument": DISK_FREE_INSTRUMENT,
+            "summary": "disk-free-cached",
+        }
+    )
     return 0
 
 
@@ -2128,6 +2229,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="destination for the validated snapshot (default: %(default)s)",
     )
 
+    cache_disk = subparsers.add_parser(
+        "cache-disk",
+        help="publish a fresh btrfs free-space reading",
+        description="Publish a fresh btrfs free-space reading.",
+    )
+    cache_disk.add_argument(
+        "--filesystem-path",
+        type=Path,
+        default=DEFAULT_DISK_FILESYSTEM_PATH,
+        help="path on the btrfs filesystem to measure (default: %(default)s)",
+    )
+    cache_disk.add_argument(
+        "--state-file",
+        type=Path,
+        default=DEFAULT_DISK_STATE,
+        help="destination for the disk reading (default: %(default)s)",
+    )
+
     pull_requests = subparsers.add_parser(
         "pull-requests",
         help="report pull-request validation and queue health",
@@ -2177,6 +2296,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_active_work(parsed, parsed._command_parser)
     if parsed.command == "cache-agents":
         return cache_agent_snapshot(snapshot_file=parsed.snapshot_file)
+    if parsed.command == "cache-disk":
+        return cache_disk_free(
+            filesystem_path=parsed.filesystem_path,
+            state_file=parsed.state_file,
+        )
     if parsed.command == "pull-requests":
         return pull_request_gate(census_cache_dir=parsed.census_cache_dir)
     if parsed.command == "primary-snapshot":

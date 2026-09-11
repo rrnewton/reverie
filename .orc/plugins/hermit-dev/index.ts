@@ -1138,6 +1138,7 @@ async function verifyRegisteredSurface(): Promise<SelfTestResult> {
   const requiredScripts = [
     OPERATIONAL_TICK_SCRIPT_NAME,
     AGENT_SNAPSHOT_SCRIPT_NAME,
+    DISK_FREE_SCRIPT_NAME,
     AGENT_LIVENESS_SCRIPT_NAME,
     ARGV_ECHO_SCRIPT_NAME,
   ];
@@ -1272,6 +1273,8 @@ function hermitDevStatus() {
     agentSnapshotIntervalMinutes: AGENT_SNAPSHOT_INTERVAL_MS / 60000,
     agentSnapshotWarningIntervalMinutes:
       AGENT_SNAPSHOT_WARNING_INTERVAL_MS / 60000,
+    diskFreeWorkflow: DISK_FREE_WORKFLOW_NAME,
+    diskFreeIntervalMinutes: DISK_FREE_INTERVAL_MS / 60000,
     policyReloadWorkflow: POLICY_RELOAD_WORKFLOW_NAME,
     policyReloadIntervalMinutes: POLICY_RELOAD_INTERVAL_MS / 60000,
     agentLivenessCommand: AGENT_LIVENESS_COMMAND,
@@ -1280,6 +1283,45 @@ function hermitDevStatus() {
     maxActiveWorktrees: 12,
     maxAgents: 15,
   };
+}
+
+const DISK_FREE_INTERVAL_MS = 15 * 60 * 1000;
+const DISK_FREE_WORKFLOW_NAME = "hermit-dev-disk-free-15m-v1";
+const DISK_FREE_SCRIPT_NAME = "hermitCacheDiskFree";
+const DISK_FREE_COMMAND =
+  'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
+  "./ci-hub/health/operational_health.py cache-disk " +
+  '--filesystem-path "' + SHELL_WORKSPACE_ROOT + '" ' +
+  '--state-file "' + SHELL_WORKSPACE_ROOT +
+  '/ignored/ops-state/disk.json"';
+
+export async function diskFreeHeartbeat(wf: WfContext): Promise<void> {
+  await wf.loop(async () => {
+    let failure: string | null = null;
+    try {
+      const result = await callRegisteredScript(DISK_FREE_SCRIPT_NAME, []);
+      const exitCode = Number(result.exitCode);
+      const stdout = String(result.stdout || "").trim();
+      const stderr = String(result.stderr || "").trim();
+      if (
+        exitCode !== 0 ||
+        !/(?:^|\n)state=ok(?:\n|$)/.test(stdout) ||
+        !/(?:^|\n)free_bytes=[0-9]+(?:\n|$)/.test(stdout) ||
+        !/(?:^|\n)summary=disk-free-cached(?:\n|$)/.test(stdout)
+      ) {
+        failure =
+          "disk writer did not confirm a fresh btrfs free-space reading " +
+          "(exit=" + exitCode + "): " +
+          ([stdout, stderr].filter(Boolean).join("\n") || "no output");
+      }
+    } catch (err) {
+      failure = "disk writer threw: " + String(err);
+    }
+    if (failure !== null) {
+      orc.log("error", "hermit-dev disk free-space writer failed: " + failure);
+    }
+    await wf.sleep(DISK_FREE_INTERVAL_MS);
+  });
 }
 
 // --- registration ----------------------------------------------------------
@@ -1363,6 +1405,12 @@ function registerPluginSurface(): void {
     script: AGENT_SNAPSHOT_COMMAND,
     description:
       "Cache the complete live ORC agent list for claim ownership readers",
+    timeoutSec: 60,
+  });
+
+  orc.registerScript(DISK_FREE_SCRIPT_NAME, {
+    script: DISK_FREE_COMMAND,
+    description: "Publish a fresh btrfs free-space reading for the disk watcher",
     timeoutSec: 60,
   });
 
@@ -1514,6 +1562,15 @@ function registerPluginSurface(): void {
     "Refresh the complete ORC agent snapshot inside its freshness window",
     {
       name: AGENT_SNAPSHOT_WORKFLOW_NAME,
+      restartable: HEARTBEAT_RESTARTABLE,
+    },
+  );
+
+  orc.workflow(
+    diskFreeHeartbeat,
+    "Publish a fresh btrfs free-space reading every fifteen minutes",
+    {
+      name: DISK_FREE_WORKFLOW_NAME,
       restartable: HEARTBEAT_RESTARTABLE,
     },
   );

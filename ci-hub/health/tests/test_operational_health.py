@@ -901,6 +901,176 @@ class OperationalHealthTest(unittest.TestCase):
             snapshot_file=operational_health.DEFAULT_AGENT_SNAPSHOT
         )
 
+    def test_cache_disk_free_publishes_fresh_btrfs_allocator_value(self) -> None:
+        measured = SimpleNamespace(
+            returncode=0,
+            stdout="""Overall:
+    Device size:                 3760476651520
+    Free (estimated):             136671014912    (min: 135596748800)
+    Free (statfs, df):            135596224512
+""",
+            stderr="WARNING: per-device usage unavailable\n",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            filesystem_path = Path(directory)
+            state_file = filesystem_path / "ignored" / "ops-state" / "disk.json"
+            with mock.patch.object(
+                operational_health.subprocess, "run", return_value=measured
+            ) as run:
+                result, output = self.capture(
+                    operational_health.cache_disk_free,
+                    filesystem_path=filesystem_path,
+                    state_file=state_file,
+                    now=1000.25,
+                )
+            document = json.loads(state_file.read_text())
+
+        self.assertEqual(result, 0)
+        self.assertIn("state=ok", output)
+        self.assertIn("free_bytes=136671014912", output)
+        self.assertEqual(document["free_bytes"], 136671014912)
+        self.assertEqual(document["device_size_bytes"], 3760476651520)
+        self.assertEqual(document["captured_at"], 1000.25)
+        self.assertEqual(
+            document["instrument"], operational_health.DISK_FREE_INSTRUMENT
+        )
+        self.assertEqual(document["filesystem_path"], str(filesystem_path))
+        run.assert_called_once()
+        self.assertEqual(
+            run.call_args.args[0],
+            ["btrfs", "filesystem", "usage", "-b", str(filesystem_path)],
+        )
+        self.assertEqual(run.call_args.kwargs["env"]["LC_ALL"], "C")
+
+    def test_cache_disk_free_refuses_ambiguous_value_without_replacing(self) -> None:
+        measured = SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "Free (estimated): 136671014912 (min: 135596748800)\n"
+                "Free (estimated): 1\n"
+            ),
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            filesystem_path = Path(directory)
+            state_file = filesystem_path / "disk.json"
+            state_file.write_text("last usable reading\n")
+            with mock.patch.object(
+                operational_health.subprocess, "run", return_value=measured
+            ):
+                result, output = self.capture(
+                    operational_health.cache_disk_free,
+                    filesystem_path=filesystem_path,
+                    state_file=state_file,
+                    now=1000,
+                )
+            retained = state_file.read_text()
+
+        self.assertEqual(result, 1)
+        self.assertIn("exactly one Free (estimated)", output)
+        self.assertEqual(retained, "last usable reading\n")
+
+    def test_cache_disk_free_refuses_value_larger_than_device(self) -> None:
+        measured = SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "Device size: 100\n"
+                "Free (estimated): 101 (min: 99)\n"
+            ),
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            filesystem_path = Path(directory)
+            state_file = filesystem_path / "disk.json"
+            with mock.patch.object(
+                operational_health.subprocess, "run", return_value=measured
+            ):
+                result, output = self.capture(
+                    operational_health.cache_disk_free,
+                    filesystem_path=filesystem_path,
+                    state_file=state_file,
+                    now=1000,
+                )
+            exists = state_file.exists()
+
+        self.assertEqual(result, 1)
+        self.assertIn("outside the device size", output)
+        self.assertFalse(exists)
+
+    def test_cache_disk_free_measures_again_instead_of_reusing_prior_value(self) -> None:
+        readings = [
+            SimpleNamespace(
+                returncode=0,
+                stdout="Device size: 1000\nFree (estimated): 600\n",
+                stderr="",
+            ),
+            SimpleNamespace(
+                returncode=0,
+                stdout="Device size: 1000\nFree (estimated): 575\n",
+                stderr="",
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            filesystem_path = Path(directory)
+            state_file = filesystem_path / "disk.json"
+            with mock.patch.object(
+                operational_health.subprocess, "run", side_effect=readings
+            ) as run:
+                first, _ = self.capture(
+                    operational_health.cache_disk_free,
+                    filesystem_path=filesystem_path,
+                    state_file=state_file,
+                    now=1000,
+                )
+                second, _ = self.capture(
+                    operational_health.cache_disk_free,
+                    filesystem_path=filesystem_path,
+                    state_file=state_file,
+                    now=1900,
+                )
+            document = json.loads(state_file.read_text())
+
+        self.assertEqual((first, second), (0, 0))
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(document["free_bytes"], 575)
+        self.assertEqual(document["captured_at"], 1900)
+
+    def test_cache_disk_free_command_failure_publishes_nothing(self) -> None:
+        measured = SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="not a btrfs filesystem\n",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            filesystem_path = Path(directory)
+            state_file = filesystem_path / "disk.json"
+            with mock.patch.object(
+                operational_health.subprocess, "run", return_value=measured
+            ):
+                result, output = self.capture(
+                    operational_health.cache_disk_free,
+                    filesystem_path=filesystem_path,
+                    state_file=state_file,
+                    now=1000,
+                )
+            exists = state_file.exists()
+
+        self.assertEqual(result, 1)
+        self.assertIn("exited 1", output)
+        self.assertIn("not a btrfs filesystem", output)
+        self.assertFalse(exists)
+
+    def test_cache_disk_command_dispatches_to_the_writer(self) -> None:
+        with mock.patch.object(
+            operational_health, "cache_disk_free", return_value=7
+        ) as cache:
+            result = operational_health.main(["cache-disk"])
+        self.assertEqual(result, 7)
+        cache.assert_called_once_with(
+            filesystem_path=operational_health.DEFAULT_DISK_FILESYSTEM_PATH,
+            state_file=operational_health.DEFAULT_DISK_STATE,
+        )
+
     def test_taskgraph_query_parses_exact_tag_array(self) -> None:
         output = """task_json
 ---------------

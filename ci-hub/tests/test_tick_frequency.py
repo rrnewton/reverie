@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TICK_MINUTES = 30
 AGENT_SNAPSHOT_MINUTES = 5
+DISK_FREE_MINUTES = 15
 
 
 def read(relative: str) -> str:
@@ -63,6 +64,22 @@ def test_agent_snapshot_refresh_is_independent_and_inside_freshness_limit() -> N
     )
     assert match is not None
     assert AGENT_SNAPSHOT_MINUTES < int(match.group(1))
+
+
+def test_disk_free_writer_has_an_independent_fifteen_minute_schedule() -> None:
+    plugin = read(".orc/plugins/hermit-dev/index.ts")
+
+    assert (
+        f"const DISK_FREE_INTERVAL_MS = {DISK_FREE_MINUTES} * 60 * 1000;"
+        in plugin
+    )
+    assert 'const DISK_FREE_WORKFLOW_NAME = "hermit-dev-disk-free-15m-v1";' in plugin
+    assert 'const DISK_FREE_SCRIPT_NAME = "hermitCacheDiskFree";' in plugin
+    assert "./ci-hub/health/operational_health.py cache-disk" in plugin
+    assert "/ignored/ops-state/disk.json" in plugin
+    assert "orc.registerScript(DISK_FREE_SCRIPT_NAME" in plugin
+    assert "orc.workflow(\n    diskFreeHeartbeat" in plugin
+    assert "await wf.sleep(DISK_FREE_INTERVAL_MS);" in plugin
 
 
 def test_no_tick_hub_reminder_claims_a_faster_cadence_than_the_outer_tick() -> None:
