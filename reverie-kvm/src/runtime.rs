@@ -27,6 +27,7 @@ use reverie::GlobalTool;
 use reverie::Guest;
 use reverie::Never;
 use reverie::Pid;
+use reverie::SignalEvent;
 use reverie::Stack;
 use reverie::Subscription;
 use reverie::ThreadOwnership;
@@ -45,11 +46,21 @@ use crate::Result;
 use crate::SyscallRequest;
 use crate::VMCALL_SYSCALL_TRANSPORT;
 use crate::bootstrap::TOOL_STACK_SIZE;
-use crate::bootstrap::configure_process_syscall_return;
+use crate::bootstrap::process_syscall_return_registers;
 use crate::bootstrap::set_user_segment_base;
+use crate::bootstrap::stage_process_syscall_return;
+use crate::executor::ChildStartCancellation;
+#[cfg(test)]
+use crate::executor::ChildStartCommand;
+use crate::executor::ChildStartGate;
 use crate::executor::ElfExecutor;
+use crate::executor::PendingSignal;
 use crate::executor::ProcessAction;
 use crate::executor::conventional_exit_code;
+use crate::vm::CompletedSyscallBoundary;
+use crate::vm::PageZeroFault;
+use crate::vm::ProcessActionContinuation;
+use crate::vm::ProcessActionOutcome;
 
 const STACK_CAPACITY: usize = TOOL_STACK_SIZE as usize;
 
@@ -63,7 +74,64 @@ enum HandlerSignal {
 }
 
 type SharedHandlerSignal = Arc<Mutex<Option<HandlerSignal>>>;
-type SharedChildStarts = Arc<Mutex<Vec<std::sync::mpsc::Sender<()>>>>;
+pub(crate) type SharedChildStarts = Arc<Mutex<Vec<PendingChildStart>>>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PendingChildKind {
+    ForkProcess(i32),
+    ToolThread(i32),
+}
+
+pub(crate) enum PendingChildCancellation {
+    NewlyCancelled {
+        child: PendingChildKind,
+        delivery_failed: bool,
+    },
+    AlreadyStarted,
+    AlreadyCancelled,
+}
+
+pub(crate) struct PendingChildStart {
+    child: PendingChildKind,
+    start: ChildStartGate,
+}
+
+impl PendingChildStart {
+    pub(crate) fn fork_process(pid: i32, start: ChildStartGate) -> Self {
+        Self {
+            child: PendingChildKind::ForkProcess(pid),
+            start,
+        }
+    }
+
+    pub(crate) fn tool_thread(tid: i32, start: ChildStartGate) -> Self {
+        Self {
+            child: PendingChildKind::ToolThread(tid),
+            start,
+        }
+    }
+
+    fn start(&self) -> std::result::Result<(), std::sync::mpsc::SendError<()>> {
+        self.start.start().map(|_| ())
+    }
+
+    fn is_pending(&self) -> bool {
+        self.start.is_pending()
+    }
+
+    pub(crate) fn cancel(self) -> PendingChildCancellation {
+        match self.start.cancel() {
+            ChildStartCancellation::NewlyCancelled { delivery_failed } => {
+                PendingChildCancellation::NewlyCancelled {
+                    child: self.child,
+                    delivery_failed,
+                }
+            }
+            ChildStartCancellation::AlreadyStarted => PendingChildCancellation::AlreadyStarted,
+            ChildStartCancellation::AlreadyCancelled => PendingChildCancellation::AlreadyCancelled,
+        }
+    }
+}
 
 // AUTONOMOUS-BOT-IMPLEMENTED: Keep root syscalls that share worker state in one backend.
 // TODO-HUMAN-REVIEW(PR-173): Review KVM root syscall ownership.
@@ -124,7 +192,9 @@ where
 }
 
 enum InjectionCompletion {
-    Returns,
+    Returns {
+        syscall_result: Option<i64>,
+    },
     DoesNotReturn {
         image_replaced: bool,
         process_exited: bool,
@@ -151,6 +221,18 @@ pub(crate) struct ToolContext<'a, T: Tool> {
 trait GuestSyscallExecutor<T: Tool>: Send + Sync {
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64;
 
+    fn defer_signal_delivery(&mut self, _event: SignalEvent) -> std::result::Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+
+    fn ordinary_injection_allowed(&self, _request: &SyscallRequest) -> bool {
+        true
+    }
+
+    fn tail_injection_allowed(&self) -> bool {
+        true
+    }
+
     // TODO-HUMAN-REVIEW(PR-235): Review virtual process ancestry exposed to Tool handlers.
     fn parent_pid(&self) -> Option<Pid> {
         None
@@ -171,7 +253,11 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
     where
         T: 'a,
     {
-        Box::pin(async { Ok(InjectionCompletion::Returns) })
+        Box::pin(async {
+            Ok(InjectionCompletion::Returns {
+                syscall_result: None,
+            })
+        })
     }
 }
 
@@ -185,18 +271,53 @@ impl<T: Tool> GuestSyscallExecutor<T> for DirectSyscallExecutor<'_> {
     }
 }
 
-#[derive(Clone, Copy)]
-struct ProcessBoundary {
-    frame_address: u64,
-    return_slot: usize,
-}
-
+#[derive(Clone)]
 enum ProcessExecutionContext {
     InitialExec(SyscallRequest),
     InitialExecCompleted,
     Lifecycle,
-    SyscallBoundary(ProcessBoundary),
-    SyscallReturn,
+    SignalBoundary(CompletedSyscallBoundary),
+    FaultBoundary(Box<PageZeroFault>),
+    SyscallBoundary(CompletedSyscallBoundary),
+}
+
+impl ProcessExecutionContext {
+    fn tail_injection_allowed(&self) -> bool {
+        !matches!(self, Self::SignalBoundary(_) | Self::FaultBoundary(_))
+    }
+
+    fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
+        !matches!(self, Self::SignalBoundary(_) | Self::FaultBoundary(_))
+            || !injection_can_be_nonreturning(request)
+    }
+
+    fn injected_signal_allowed(&self, request: &SyscallRequest) -> bool {
+        !signal_request_requires_return_frame(request)
+            || matches!(
+                self,
+                Self::SignalBoundary(_) | Self::SyscallBoundary(_) | Self::FaultBoundary(_)
+            )
+    }
+}
+
+/// Returns whether a successful injected syscall can abandon the current Tool
+/// handler instead of producing an ordinary scalar result.
+fn injection_can_be_nonreturning(request: &SyscallRequest) -> bool {
+    match request.number() {
+        number
+            if number == libc::SYS_execve as u64
+                || number == libc::SYS_execveat as u64
+                || number == libc::SYS_exit as u64
+                || number == libc::SYS_exit_group as u64 =>
+        {
+            true
+        }
+        number if number == libc::SYS_kill as u64 || number == libc::SYS_tkill as u64 => {
+            request.args()[1] == libc::SIGKILL as u64
+        }
+        number if number == libc::SYS_tgkill as u64 => request.args()[2] == libc::SIGKILL as u64,
+        _ => false,
+    }
 }
 
 /// Returns whether an injected request is the already-installed initial exec.
@@ -218,6 +339,19 @@ fn matches_initial_exec(expected: &SyscallRequest, request: &SyscallRequest) -> 
         && *request.args() == [libc::AT_FDCWD as u64, path, argv, envp, 0, 0]
 }
 
+fn signal_request_requires_return_frame(request: &SyscallRequest) -> bool {
+    let signal = match request.number() {
+        number if number == libc::SYS_kill as u64 || number == libc::SYS_tkill as u64 => {
+            request.args()[1]
+        }
+        number if number == libc::SYS_tgkill as u64 => request.args()[2],
+        _ => 0,
+    };
+    // Signal zero is an existence/permission probe and cannot create pending
+    // delivery, so it is safe in lifecycle callbacks without a return frame.
+    signal != 0
+}
+
 struct StaticElfSyscallExecutor<'a> {
     backend: &'a mut KvmBackend,
     executor: &'a mut ElfExecutor,
@@ -235,6 +369,27 @@ where
     <T::GlobalState as GlobalTool>::Config: 'static,
 {
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+        if !self.process_context.ordinary_injection_allowed(request) {
+            // KvmGuest performs the same check before dispatch. Keep the
+            // production executor fail-closed as well: a future Guest caller
+            // must not execute an irreversible transition and only then learn
+            // that SignalBoundary cannot resume its Tool hook.
+            return -(i64::from(Errno::ENOSYS.into_raw()));
+        }
+        if matches!(self.process_context, ProcessExecutionContext::Lifecycle)
+            && let Some(result) = self
+                .executor
+                .lifecycle_signal_mask_preflight(request, memory)
+        {
+            return result;
+        }
+        if !self.process_context.injected_signal_allowed(request) {
+            // A successful injected self-signal would become pending, but a
+            // lifecycle callback has no transported userspace context in which
+            // to run the structured hook or build a signal frame. Refuse before
+            // mutating pending state instead of delaying it to another syscall.
+            return -(i64::from(Errno::ENOSYS.into_raw()));
+        }
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-233): Review synthetic initial exec completion.
         if matches!(
@@ -249,6 +404,31 @@ where
         let result = self.executor.execute(request, memory);
         self.last_result = Some(result);
         result
+    }
+
+    fn defer_signal_delivery(&mut self, event: SignalEvent) -> std::result::Result<(), Errno> {
+        match self.process_context {
+            // The stopped syscall transport provides an exact userspace
+            // register file and a frame slot for delivery at this boundary.
+            // SignalBoundary is the same transport while the structured hook
+            // filters the selected event.
+            ProcessExecutionContext::SignalBoundary(_)
+            | ProcessExecutionContext::FaultBoundary(_)
+            | ProcessExecutionContext::SyscallBoundary(_) => {
+                self.executor.defer_signal_delivery(event)
+            }
+            // Initial-start/post-exec callbacks do not have that transport.
+            // Refuse rather than silently delaying until an unrelated syscall.
+            _ => Err(Errno::ENOSYS),
+        }
+    }
+
+    fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
+        self.process_context.ordinary_injection_allowed(request)
+    }
+
+    fn tail_injection_allowed(&self) -> bool {
+        self.process_context.tail_injection_allowed()
     }
 
     fn parent_pid(&self) -> Option<Pid> {
@@ -284,38 +464,47 @@ where
                         process_exited: true,
                     }
                 } else {
-                    InjectionCompletion::Returns
+                    InjectionCompletion::Returns {
+                        syscall_result: None,
+                    }
                 });
             };
-            let image_replaced = matches!(&action, ProcessAction::Exec { .. });
+            if !action.returns_to_original_image() && self.executor.has_eligible_pending_signal() {
+                return Err(Error::UnexpectedVcpuExit(
+                    "KVM Tool exec with an eligible deferred signal is unsupported; \
+                     delivery requires a syscall return frame"
+                        .to_owned(),
+                ));
+            }
             hide_tool_scratch(&self.memory, self.backend.tool_stack_top())?;
-            let action_result: Result<()> = async {
-                match self.process_context {
-                    ProcessExecutionContext::SyscallBoundary(boundary) => {
+            let action_result: Result<ProcessActionOutcome> = async {
+                match self.process_context.clone() {
+                    ProcessExecutionContext::FaultBoundary(fault) => {
+                        self.backend
+                            .run_process_action_with_tool_from_fault(
+                                self.executor,
+                                action,
+                                context,
+                                &fault,
+                            )
+                            .await
+                    }
+                    ProcessExecutionContext::SignalBoundary(boundary)
+                    | ProcessExecutionContext::SyscallBoundary(boundary) => {
                         let result = self
                             .last_result
                             .expect("process action must have an injected syscall result");
-                        SyscallRequest::write_result(
-                            &mut self.memory,
-                            boundary.frame_address,
-                            result,
-                        )?;
-                        // SAFETY: return_slot points into this stopped vCPU's stable
-                        // KVM_RUN mapping. Publish it before re-entering the vCPU.
-                        unsafe {
-                            (boundary.return_slot as *mut u64).write(0);
-                        }
+                        boundary.stage_action_result(self.backend, result)?;
+                        let continuation =
+                            ProcessActionContinuation::from_captured(&action, boundary);
                         self.backend
-                            .run_process_action_with_tool(self.executor, action, true, context)
-                            .await?;
-                        self.process_context = ProcessExecutionContext::SyscallReturn;
-                        Ok(())
-                    }
-                    ProcessExecutionContext::SyscallReturn => {
-                        self.backend
-                            .run_process_action_with_tool(self.executor, action, false, context)
-                            .await?;
-                        Ok(())
+                            .run_process_action_with_tool_at_boundary(
+                                self.executor,
+                                action,
+                                context,
+                                continuation,
+                            )
+                            .await
                     }
                     ProcessExecutionContext::InitialExec(_)
                     | ProcessExecutionContext::Lifecycle => match action {
@@ -333,7 +522,7 @@ where
                                 &argv,
                                 &envp,
                             )?;
-                            Ok(())
+                            Ok(ProcessActionOutcome::replaced())
                         }
                         _ => Err(Error::UnexpectedVcpuExit(
                             "fork/clone injection requires a guest syscall boundary".to_owned(),
@@ -346,16 +535,18 @@ where
             }
             .await;
             let expose_result = expose_tool_scratch(&self.memory, self.backend.tool_stack_top());
-            action_result?;
+            let outcome = action_result?;
             expose_result?;
             *self.process_completed = true;
-            if image_replaced || self.executor.has_pending_exit() {
+            if outcome.image_replaced || self.executor.has_pending_exit() {
                 Ok(InjectionCompletion::DoesNotReturn {
-                    image_replaced,
+                    image_replaced: outcome.image_replaced,
                     process_exited: self.executor.has_pending_exit(),
                 })
             } else {
-                Ok(InjectionCompletion::Returns)
+                Ok(InjectionCompletion::Returns {
+                    syscall_result: Some(outcome.syscall_result),
+                })
             }
         })
     }
@@ -499,6 +690,15 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         self.registers
     }
 
+    async fn defer_signal_delivery(
+        &mut self,
+        event: SignalEvent,
+    ) -> std::result::Result<(), reverie::Error> {
+        self.executor
+            .defer_signal_delivery(event)
+            .map_err(Into::into)
+    }
+
     async fn stack(&mut self) -> Self::Stack {
         KvmStack::new(
             self.memory.clone(),
@@ -511,7 +711,20 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> std::result::Result<i64, Errno> {
         let request = SyscallRequest::from_syscall(syscall);
-        let result = raw_to_result(self.executor.execute(&request, &self.memory));
+        if !self.executor.ordinary_injection_allowed(&request) {
+            return Err(Errno::ENOSYS);
+        }
+        if injection_can_be_nonreturning(&request)
+            && self
+                .pending_child_starts
+                .lock()
+                .expect("KVM child-start lock poisoned")
+                .iter()
+                .any(PendingChildStart::is_pending)
+        {
+            return Err(Errno::ENOSYS);
+        }
+        let mut result = raw_to_result(self.executor.execute(&request, &self.memory));
         if result.is_ok() {
             let context = ToolContext {
                 pid: self.pid,
@@ -537,7 +750,11 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
                     });
                     return std::future::pending().await;
                 }
-                Ok(InjectionCompletion::Returns) => {}
+                Ok(InjectionCompletion::Returns { syscall_result }) => {
+                    if let Some(raw) = syscall_result {
+                        result = raw_to_result(raw);
+                    }
+                }
                 Err(error) => {
                     self.signal_handler(HandlerSignal::RuntimeError(error));
                     return std::future::pending().await;
@@ -548,6 +765,14 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     }
 
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
+        if !self.executor.tail_injection_allowed() {
+            // Refuse before executing any syscall so write/fd/process/address-
+            // space/pending/exit state cannot change before the hook errors.
+            self.signal_handler(HandlerSignal::RuntimeError(Error::Reverie(
+                Errno::ENOSYS.into(),
+            )));
+            return std::future::pending().await;
+        }
         let result = self.inject(syscall).await;
         self.signal_handler(HandlerSignal::TailInjected {
             result,
@@ -773,40 +998,57 @@ async fn drive_handler<T>(
     poll_fn(|context| match future.as_mut().poll(context) {
         Poll::Ready(result) => Poll::Ready(HandlerOutcome::Returned(result)),
         Poll::Pending => {
-            let starts = pending_child_starts
-                .lock()
-                .expect("KVM child-start lock poisoned")
-                .drain(..)
-                .collect::<Vec<_>>();
-            for start in starts {
-                if start.send(()).is_err() {
-                    return Poll::Ready(HandlerOutcome::RuntimeError(Error::UnexpectedVcpuExit(
-                        "KVM child exited before its parent suspended registration".to_owned(),
-                    )));
-                }
-            }
-            match handler_signal
+            let handler_signal = handler_signal
                 .lock()
                 .expect("KVM handler signal lock poisoned")
-                .take()
-            {
+                .take();
+            match handler_signal {
                 Some(HandlerSignal::TailInjected {
                     result,
                     image_replaced,
                     process_exited,
-                }) => Poll::Ready(HandlerOutcome::TailInjected {
-                    result,
-                    image_replaced,
-                    process_exited,
-                }),
-                Some(HandlerSignal::RuntimeError(error)) => {
-                    Poll::Ready(HandlerOutcome::RuntimeError(error))
+                }) => {
+                    return Poll::Ready(HandlerOutcome::TailInjected {
+                        result,
+                        image_replaced,
+                        process_exited,
+                    });
                 }
-                None => Poll::Pending,
+                Some(HandlerSignal::RuntimeError(error)) => {
+                    return Poll::Ready(HandlerOutcome::RuntimeError(error));
+                }
+                None => {}
             }
+            let mut starts = pending_child_starts
+                .lock()
+                .expect("KVM child-start lock poisoned");
+            if starts.iter().any(|start| start.start().is_err()) {
+                return Poll::Ready(HandlerOutcome::RuntimeError(Error::UnexpectedVcpuExit(
+                    "KVM child exited before its parent suspended registration".to_owned(),
+                )));
+            }
+            starts.clear();
+            Poll::Pending
         }
     })
     .await
+}
+
+pub(crate) fn start_pending_children(pending_child_starts: &SharedChildStarts) -> Result<()> {
+    let mut starts = pending_child_starts
+        .lock()
+        .expect("KVM child-start lock poisoned");
+    for start in starts.iter() {
+        // Both fork and Tool-thread workers block on this receiver as their
+        // first operation after a successful host spawn. A disconnected
+        // receiver therefore indicates an internal registration invariant
+        // violation rather than a guest-visible failure.
+        start.start().map_err(|_| {
+            Error::UnexpectedVcpuExit("registered KVM child lost its parent start gate".to_owned())
+        })?;
+    }
+    starts.clear();
+    Ok(())
 }
 
 fn tool_stack_bottom(tool_stack_top: u64) -> u64 {
@@ -844,6 +1086,14 @@ where
 {
     let tool_stack_top = backend.tool_stack_top();
     loop {
+        if executor.has_eligible_pending_signal() {
+            return Err(Error::UnexpectedVcpuExit(
+                "KVM post-exec lifecycle has an eligible preserved signal; delivery requires a \
+                 syscall return frame"
+                    .to_owned(),
+            ));
+        }
+
         let registers = kvm_registers(backend.vcpu.get_regs()?, 0);
         let handler_signal = Arc::new(Mutex::new(None));
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
@@ -1023,6 +1273,11 @@ where
     }
 }
 
+#[derive(Clone, Copy)]
+struct ToolExit {
+    status: ExitStatus,
+    process_exited: bool,
+}
 async fn notify_tool_exit<T: Tool>(
     tool: T,
     pid: Pid,
@@ -1030,7 +1285,7 @@ async fn notify_tool_exit<T: Tool>(
     global_state: &T::GlobalState,
     config: &<T::GlobalState as GlobalTool>::Config,
     thread_state: T::ThreadState,
-    status: ExitStatus,
+    exit: ToolExit,
 ) -> Result<()> {
     // on_exit_thread deregisters this thread from the scheduler, so its RPCs
     // must be attributed to the exiting thread's tid.
@@ -1039,16 +1294,19 @@ async fn notify_tool_exit<T: Tool>(
         state: global_state,
         config,
     };
-    tool.on_exit_thread(tid, &thread_global, thread_state, status)
+    tool.on_exit_thread(tid, &thread_global, thread_state, exit.status)
         .await
         .map_err(Error::Reverie)?;
+    if !exit.process_exited {
+        return Ok(());
+    }
     // The process-exit hook belongs to the thread-group leader (tid == pid).
     let process_global = KvmGlobal {
         tid: pid,
         state: global_state,
         config,
     };
-    tool.on_exit_process(pid, &process_global, status)
+    tool.on_exit_process(pid, &process_global, exit.status)
         .await
         .map_err(Error::Reverie)
 }
@@ -1071,7 +1329,19 @@ impl KvmBackend {
         // or scratch page after a terminal exit has been observed. Release it
         // before on_exit_thread can wake and admit another guest thread.
         self.release_thread_slot();
-        notify_tool_exit(tool, pid, tid, global_state, config, thread_state, status).await
+        notify_tool_exit(
+            tool,
+            pid,
+            tid,
+            global_state,
+            config,
+            thread_state,
+            ToolExit {
+                status,
+                process_exited: pid == tid,
+            },
+        )
+        .await
     }
 
     /// Runs the installed guest program through a shared Reverie `Tool`.
@@ -1245,9 +1515,9 @@ impl KvmBackend {
     /// fork/clone/exec/wait operations. A successful injected exec replaces the
     /// image without resuming the old handler. Forked process children receive
     /// their own process/thread tool state and dispatch subscribed syscalls through
-    /// the same global state. `CLONE_THREAD` workers still execute directly through
-    /// the KVM personality.
-    /// Tool `inject`/`tail_inject` calls are serviced by the ELF guest kernel
+    /// the same global state. `CLONE_THREAD` workers are Tool-owned by default and
+    /// may explicitly opt into host ownership through the existing thread-ownership
+    /// contract. Tool `inject`/`tail_inject` calls are serviced by the ELF guest kernel
     /// ([`ElfExecutor`]). Unlike [`Self::run_with_tool`], results are written
     /// back into the guest's syscall frame (the trampoline reads them and
     /// `SYSRET`s) and the guest exits via `exit`/`exit_group` rather than `HLT`.
@@ -1302,6 +1572,211 @@ impl KvmBackend {
         })?;
         let (status, stdout, stderr) = result;
         Ok((global_state, conventional_exit_code(status), stdout, stderr))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn filter_one_pending_signal_with_tool<T>(
+        &mut self,
+        executor: &mut ElfExecutor,
+        pid: Pid,
+        tid: Pid,
+        tool: &T,
+        memory: &GuestMemory,
+        auxv: &[(libc::c_ulong, libc::c_ulong)],
+        registers: kvm_regs,
+        syscall_number: u64,
+        frame_address: u64,
+        thread_state: &mut T::ThreadState,
+        global_state: &Arc<T::GlobalState>,
+        config: &<T::GlobalState as GlobalTool>::Config,
+        subscriptions: &Subscription,
+        stack_checked_out: &Arc<AtomicBool>,
+    ) -> Result<Option<PendingSignal>>
+    where
+        T: Tool + 'static,
+        T::ThreadState: 'static,
+        T::GlobalState: 'static,
+        <T::GlobalState as GlobalTool>::Config: 'static,
+    {
+        // Linux repeats signal selection on the same exit-to-user path when a
+        // tracer suppresses a signal or the replacement disposition ignores
+        // it. There are at most two standard-signal domains of 31 entries; the
+        // bound also prevents a Tool that keeps generating events from
+        // monopolizing this boundary forever.
+        for _ in 0..64 {
+            let pending = self
+                .filter_next_pending_signal_with_tool(
+                    executor,
+                    pid,
+                    tid,
+                    tool,
+                    memory,
+                    auxv,
+                    registers,
+                    syscall_number,
+                    frame_address,
+                    thread_state,
+                    global_state,
+                    config,
+                    subscriptions,
+                    stack_checked_out,
+                    None,
+                )
+                .await?;
+            if pending.is_some()
+                || executor.has_pending_exit()
+                || !executor.has_eligible_pending_signal()
+            {
+                return Ok(pending);
+            }
+        }
+        Err(Error::UnexpectedVcpuExit(
+            "KVM signal hook exhausted one return boundary without selecting delivery".to_owned(),
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn filter_next_pending_signal_with_tool<T>(
+        &mut self,
+        executor: &mut ElfExecutor,
+        pid: Pid,
+        tid: Pid,
+        tool: &T,
+        memory: &GuestMemory,
+        auxv: &[(libc::c_ulong, libc::c_ulong)],
+        registers: kvm_regs,
+        syscall_number: u64,
+        frame_address: u64,
+        thread_state: &mut T::ThreadState,
+        global_state: &Arc<T::GlobalState>,
+        config: &<T::GlobalState as GlobalTool>::Config,
+        subscriptions: &Subscription,
+        stack_checked_out: &Arc<AtomicBool>,
+        fault: Option<&PageZeroFault>,
+    ) -> Result<Option<PendingSignal>>
+    where
+        T: Tool + 'static,
+        T::ThreadState: 'static,
+        T::GlobalState: 'static,
+        <T::GlobalState as GlobalTool>::Config: 'static,
+    {
+        let pending = if let Some(fault) = fault {
+            fault.pending()
+        } else {
+            let Some(pending) = executor
+                .take_pending_signal_for_delivery()
+                .map_err(|errno| Error::Reverie(errno.into()))?
+            else {
+                return Ok(None);
+            };
+            pending
+        };
+
+        let handler_signal = Arc::new(Mutex::new(None));
+        let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+        let mut process_completed = false;
+        let tool_stack_top = self.tool_stack_top();
+        expose_tool_scratch(memory, tool_stack_top)?;
+        let process_context = if let Some(fault) = fault {
+            ProcessExecutionContext::FaultBoundary(Box::new(fault.clone()))
+        } else {
+            ProcessExecutionContext::SignalBoundary(CompletedSyscallBoundary::capture(
+                self,
+                frame_address,
+                Some(registers),
+            )?)
+        };
+        let outcome = {
+            let mut guest_executor = StaticElfSyscallExecutor {
+                backend: self,
+                executor,
+                memory: memory.clone(),
+                process_context,
+                last_result: None,
+                process_completed: &mut process_completed,
+            };
+            let mut guest = KvmGuest::<T>::new(
+                pid,
+                tid,
+                memory.clone(),
+                auxv,
+                fault.map_or_else(
+                    || kvm_registers(registers, syscall_number),
+                    PageZeroFault::user_registers,
+                ),
+                thread_state,
+                &mut guest_executor,
+                global_state.as_ref(),
+                Some(global_state.clone()),
+                config,
+                subscriptions,
+                handler_signal.clone(),
+                pending_child_starts.clone(),
+                tool_stack_top,
+                stack_checked_out.clone(),
+            );
+            drive_handler(
+                tool.handle_structured_signal_event(&mut guest, pending.event),
+                handler_signal,
+                pending_child_starts.clone(),
+            )
+            .await
+        };
+        hide_tool_scratch(memory, tool_stack_top)?;
+        let replacement = match outcome {
+            HandlerOutcome::Returned(Ok(replacement)) => replacement,
+            HandlerOutcome::Returned(Err(errno)) => {
+                let error = self.cleanup_unstarted_tool_children_after_error(
+                    executor,
+                    &pending_child_starts,
+                    Error::Reverie(errno.into()),
+                );
+                return Err(error);
+            }
+            HandlerOutcome::RuntimeError(error) => {
+                return Err(self.cleanup_unstarted_tool_children_after_error(
+                    executor,
+                    &pending_child_starts,
+                    error,
+                ));
+            }
+            HandlerOutcome::TailInjected { .. } => {
+                let error = Error::UnexpectedVcpuExit(
+                    "tail injection from a KVM signal hook is unsupported".to_owned(),
+                );
+                return Err(self.cleanup_unstarted_tool_children_after_error(
+                    executor,
+                    &pending_child_starts,
+                    error,
+                ));
+            }
+        };
+        self.start_pending_tool_children(executor, &pending_child_starts)?;
+        if executor.take_process_action().is_some() {
+            return Err(Error::UnexpectedVcpuExit(
+                "process action from a KVM signal hook is unsupported".to_owned(),
+            ));
+        }
+        match replacement {
+            Some(event) => {
+                let pending = if let Some(fault) = fault.filter(|fault| event == fault.event) {
+                    Some(fault.pending())
+                } else {
+                    executor
+                        .prepare_filtered_signal_delivery(event)
+                        .map_err(|errno| Error::Reverie(errno.into()))?
+                };
+                if pending.is_some_and(|pending| {
+                    executor.signal_disposition(pending.event.signal())
+                        == crate::executor::SignalDisposition::Ignore
+                }) {
+                    Ok(None)
+                } else {
+                    Ok(pending)
+                }
+            }
+            None => Ok(None),
+        }
     }
 
     // TODO-HUMAN-REVIEW(PR-192): Review recursive KVM process Tool runtime.
@@ -1375,6 +1850,27 @@ impl KvmBackend {
             HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
             HandlerOutcome::RuntimeError(error) => return Err(error),
             HandlerOutcome::TailInjected { .. } => {}
+        }
+        if self.guest_thread_is_cancelled() {
+            // The parent releases the start gate after it has begun scheduler
+            // registration. handle_thread_start completes the child-side
+            // ordering. Preserve handle_thread_start -> on_exit ordering,
+            // but do not execute post-exec hooks or a guest instruction after
+            // cancellation. Clear CHILD_CLEARTID immediately before the Tool
+            // exit callback; the worker wrapper then observes that the address
+            // has already been consumed.
+            self.clear_registered_worker_tid_before_exit(executor);
+            self.notify_tool_exit(
+                tool,
+                (pid, tid),
+                global_state.as_ref(),
+                config,
+                thread_state,
+                ExitStatus::SUCCESS,
+            )
+            .await?;
+            let (stdout, stderr) = executor.take_output();
+            return Ok((ExitStatus::SUCCESS, stdout, stderr));
         }
         auxv = executor.auxv().to_vec();
         if let Some(exit) = executor.take_exit() {
@@ -1504,6 +2000,20 @@ impl KvmBackend {
                 let (stdout, stderr) = executor.take_output();
                 return Ok((status, stdout, stderr));
             }
+            if self.guest_thread_is_cancelled() {
+                self.clear_registered_worker_tid_before_exit(executor);
+                self.notify_tool_exit(
+                    tool,
+                    (pid, tid),
+                    global_state.as_ref(),
+                    config,
+                    thread_state,
+                    ExitStatus::SUCCESS,
+                )
+                .await?;
+                let (stdout, stderr) = executor.take_output();
+                return Ok((ExitStatus::SUCCESS, stdout, stderr));
+            }
             let vcpu_exit = match self.vcpu.run() {
                 Ok(exit) => exit,
                 Err(error) if error.errno() == libc::EINTR => continue,
@@ -1521,7 +2031,63 @@ impl KvmBackend {
                     if self.try_resume_vmware_backdoor_probe()? {
                         continue;
                     }
-                    return Err(self.static_elf_halt_error()?);
+                    let Some(fault) = self.capture_page_zero_fault(executor)? else {
+                        return Err(self.static_elf_halt_error()?);
+                    };
+                    executor.prepare_captured_page_zero_fault();
+                    executor.set_current_user_stack_pointer(fault.registers.rsp);
+                    let pending = self
+                        .filter_next_pending_signal_with_tool(
+                            executor,
+                            pid,
+                            tid,
+                            &tool,
+                            &memory,
+                            &auxv,
+                            fault.registers,
+                            u64::MAX,
+                            self.syscall_frame_address,
+                            &mut thread_state,
+                            &global_state,
+                            config,
+                            subscriptions,
+                            &stack_checked_out,
+                            Some(&fault),
+                        )
+                        .await?;
+                    if let Some((segment, address)) = executor.take_segment() {
+                        set_user_segment_base(&self.vcpu, segment, address)?;
+                    }
+                    if !executor.has_pending_exit() {
+                        if let Some(pending) = pending {
+                            self.deliver_page_zero_fault(executor, &fault, pending)?;
+                        } else {
+                            fault.resume_user(self, fault.registers)?;
+                        }
+                    }
+                    if let Some(exit) = executor.take_exit() {
+                        self.discard_process_clear_tid_at_signal_return(executor);
+                        if exit.group {
+                            self.request_guest_thread_group_exit(exit.status);
+                        }
+                        if executor.is_thread_group_leader() {
+                            self.cancel_guest_threads();
+                        }
+                        executor.join_all_child_processes()?;
+                        self.clear_registered_worker_tid_before_exit(executor);
+                        self.notify_tool_exit(
+                            tool,
+                            (pid, tid),
+                            global_state.as_ref(),
+                            config,
+                            thread_state,
+                            exit.status,
+                        )
+                        .await?;
+                        let (stdout, stderr) = executor.take_output();
+                        return Ok((exit.status, stdout, stderr));
+                    }
+                    continue;
                 }
                 exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
             };
@@ -1536,6 +2102,92 @@ impl KvmBackend {
             }
             let registers = self.vcpu.get_regs()?;
             let request = SyscallRequest::read_from(&memory, frame_address)?;
+            // The KVM_RUN hypercall return slot is one-shot storage. Publish
+            // its unused value exactly once while this decoded exit is live;
+            // process actions may re-enter the vCPU before the Tool callback
+            // returns, after which this pointer must never be reused.
+            unsafe {
+                (return_slot as *mut u64).write(0);
+            }
+            let userspace =
+                process_syscall_return_registers(&memory, registers, frame_address, 0, None)?;
+            executor.set_current_user_stack_pointer(userspace.rsp);
+            if request.number() == libc::SYS_rt_sigreturn as u64 {
+                // `rt_sigreturn` is backend-owned: its apparent syscall result
+                // is the register file restored from the guest frame, not an
+                // ordinary scalar return value that a Tool can replace.
+                let mut signal_exit = None;
+                if let Some(restored) = self.restore_rt_sigreturn(executor, frame_address)? {
+                    executor.set_current_user_stack_pointer(restored.rsp);
+                    let pending = self
+                        .filter_one_pending_signal_with_tool(
+                            executor,
+                            pid,
+                            tid,
+                            &tool,
+                            &memory,
+                            &auxv,
+                            restored,
+                            request.number(),
+                            frame_address,
+                            &mut thread_state,
+                            &global_state,
+                            config,
+                            subscriptions,
+                            &stack_checked_out,
+                        )
+                        .await?;
+                    if let Some((segment, address)) = executor.take_segment() {
+                        set_user_segment_base(&self.vcpu, segment, address)?;
+                    }
+                    signal_exit = executor.take_exit();
+                    let delivered = if signal_exit.is_none()
+                        && let Some(pending) = pending
+                    {
+                        self.deliver_selected_signal_from_registers(
+                            executor,
+                            frame_address,
+                            restored,
+                            pending,
+                        )?
+                    } else {
+                        false
+                    };
+                    signal_exit = signal_exit.or_else(|| executor.take_exit());
+                    if !delivered && signal_exit.is_none() {
+                        stage_process_syscall_return(
+                            &mut memory,
+                            &self.vcpu,
+                            frame_address,
+                            restored,
+                        )?;
+                    }
+                }
+                signal_exit = signal_exit.or_else(|| executor.take_exit());
+                if let Some(exit) = signal_exit {
+                    self.discard_process_clear_tid_at_signal_return(executor);
+                    if exit.group {
+                        self.request_guest_thread_group_exit(exit.status);
+                    }
+                    if executor.is_thread_group_leader() {
+                        self.cancel_guest_threads();
+                    }
+                    executor.join_all_child_processes()?;
+                    self.clear_registered_worker_tid_before_exit(executor);
+                    self.notify_tool_exit(
+                        tool,
+                        (pid, tid),
+                        global_state.as_ref(),
+                        config,
+                        thread_state,
+                        exit.status,
+                    )
+                    .await?;
+                    let (stdout, stderr) = executor.take_output();
+                    return Ok((exit.status, stdout, stderr));
+                }
+                continue;
+            }
             let syscall = request.into_syscall()?;
             // TODO-HUMAN-REVIEW(PR-156): Review root process-syscall Tool dispatch.
             // CLONE_THREAD is deliberately NOT backend-owned: the parent's
@@ -1551,103 +2203,123 @@ impl KvmBackend {
                 && subscriptions
                     .iter_syscalls()
                     .any(|number| number == syscall.number());
-            let (result, handler_replaced_image, handler_process_completed) = if subscribed {
-                let mut handler_process_completed = false;
-                // The `ERESTARTSYS` restart protocol (Reverie #362) on the KVM
-                // side: a Tool may ask for the syscall to be re-run rather than
-                // completed. `classify_handler_result` owns that policy; this
-                // loop owns only the re-invocation, rebuilding the guest view
-                // each attempt exactly as a fresh syscall event would.
-                loop {
-                    let handler_signal = Arc::new(Mutex::new(None));
-                    let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
-                    expose_tool_scratch(&memory, tool_stack_top)?;
-                    let outcome = {
-                        let mut guest_executor = StaticElfSyscallExecutor {
-                            backend: self,
-                            executor,
-                            memory: memory.clone(),
-                            process_context: ProcessExecutionContext::SyscallBoundary(
-                                ProcessBoundary {
-                                    frame_address,
-                                    return_slot,
-                                },
-                            ),
-                            last_result: None,
-                            process_completed: &mut handler_process_completed,
+            let (mut result, handler_replaced_image, _handler_process_completed, restart_requested) =
+                if subscribed {
+                    let mut handler_process_completed = false;
+                    // With no eligible virtual signal, ERESTARTSYS immediately
+                    // re-enters the callback as before. With one, leave the loop so
+                    // the structured signal hook and disposition decide whether
+                    // the saved context reports EINTR or rewinds the syscall under
+                    // SA_RESTART. The private errno itself never reaches userspace.
+                    loop {
+                        let handler_signal = Arc::new(Mutex::new(None));
+                        let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                        expose_tool_scratch(&memory, tool_stack_top)?;
+                        let boundary =
+                            CompletedSyscallBoundary::capture(self, frame_address, None)?;
+                        let outcome = {
+                            let mut guest_executor = StaticElfSyscallExecutor {
+                                backend: self,
+                                executor,
+                                memory: memory.clone(),
+                                process_context: ProcessExecutionContext::SyscallBoundary(boundary),
+                                last_result: None,
+                                process_completed: &mut handler_process_completed,
+                            };
+                            let mut guest = KvmGuest::<T>::new(
+                                pid,
+                                tid,
+                                memory.clone(),
+                                &auxv,
+                                kvm_registers(registers, request.number()),
+                                &mut thread_state,
+                                &mut guest_executor,
+                                global_state.as_ref(),
+                                Some(global_state.clone()),
+                                config,
+                                subscriptions,
+                                handler_signal.clone(),
+                                pending_child_starts.clone(),
+                                tool_stack_top,
+                                stack_checked_out.clone(),
+                            );
+                            drive_handler(
+                                tool.handle_syscall_event(&mut guest, syscall),
+                                handler_signal,
+                                pending_child_starts.clone(),
+                            )
+                            .await
                         };
-                        let mut guest = KvmGuest::<T>::new(
-                            pid,
-                            tid,
-                            memory.clone(),
-                            &auxv,
-                            kvm_registers(registers, request.number()),
-                            &mut thread_state,
-                            &mut guest_executor,
-                            global_state.as_ref(),
-                            Some(global_state.clone()),
-                            config,
-                            subscriptions,
-                            handler_signal.clone(),
-                            pending_child_starts.clone(),
-                            tool_stack_top,
-                            stack_checked_out.clone(),
-                        );
-                        drive_handler(
-                            tool.handle_syscall_event(&mut guest, syscall),
-                            handler_signal,
-                            pending_child_starts,
-                        )
-                        .await
-                    };
-                    executor.start_pending_child_processes()?;
-                    hide_tool_scratch(&memory, tool_stack_top)?;
-                    break match outcome {
-                        HandlerOutcome::Returned(result) => {
-                            match classify_handler_result(result)? {
-                                Some(raw) => (raw, false, handler_process_completed),
-                                // A restart is only meaningful while the process
-                                // is still live to re-run the syscall.
-                                None if !handler_process_completed => continue,
-                                None => (
-                                    -(i64::from(Errno::ERESTARTSYS.into_raw())),
-                                    false,
-                                    handler_process_completed,
-                                ),
+                        hide_tool_scratch(&memory, tool_stack_top)?;
+                        let classified = match outcome {
+                            HandlerOutcome::Returned(result) => {
+                                let classified = match classify_handler_result(result) {
+                                    Ok(classified) => classified,
+                                    Err(error) => {
+                                        return Err(self
+                                            .cleanup_unstarted_tool_children_after_error(
+                                                executor,
+                                                &pending_child_starts,
+                                                error,
+                                            ));
+                                    }
+                                };
+                                match classified {
+                                    Some(raw) => (raw, false, handler_process_completed, false),
+                                    None if !handler_process_completed
+                                        && executor.has_eligible_pending_signal() =>
+                                    {
+                                        (-(libc::EINTR as i64), false, false, true)
+                                    }
+                                    // A restart is only meaningful while the process
+                                    // is still live to re-run the syscall.
+                                    None if !handler_process_completed => {
+                                        self.start_pending_tool_children(
+                                            executor,
+                                            &pending_child_starts,
+                                        )?;
+                                        continue;
+                                    }
+                                    None => (
+                                        -(i64::from(Errno::ERESTARTSYS.into_raw())),
+                                        false,
+                                        handler_process_completed,
+                                        false,
+                                    ),
+                                }
                             }
-                        }
-                        HandlerOutcome::TailInjected {
-                            result,
-                            image_replaced,
-                            ..
-                        } => (
-                            result_to_raw(result),
-                            image_replaced,
-                            handler_process_completed,
-                        ),
-                        HandlerOutcome::RuntimeError(error) => return Err(error),
-                    };
-                }
-            } else {
-                (executor.execute(&request, &memory), false, false)
-            };
+                            HandlerOutcome::TailInjected {
+                                result,
+                                image_replaced,
+                                ..
+                            } => (
+                                result_to_raw(result),
+                                image_replaced,
+                                handler_process_completed,
+                                false,
+                            ),
+                            HandlerOutcome::RuntimeError(error) => {
+                                return Err(self.cleanup_unstarted_tool_children_after_error(
+                                    executor,
+                                    &pending_child_starts,
+                                    error,
+                                ));
+                            }
+                        };
+                        self.start_pending_tool_children(executor, &pending_child_starts)?;
+                        break classified;
+                    }
+                } else {
+                    (executor.execute(&request, &memory), false, false, false)
+                };
+            let mut returned_registers =
+                process_syscall_return_registers(&memory, registers, frame_address, result, None)?;
+            let mut restarted_registers = restart_requested
+                .then(|| restart_syscall_registers(returned_registers, request.number()))
+                .transpose()?;
             // The ring0 trampoline reads the result from the frame and then
             // SYSRETs, so the hypercall return slot is unused here.
             SyscallRequest::write_result(&mut memory, frame_address, result)?;
-            // SAFETY: return_slot points into this vCPU's stable KVM_RUN mapping.
-            // The vCPU is stopped whenever the slot is written.
-            unsafe {
-                (return_slot as *mut u64).write(0);
-            }
-            if handler_process_completed && !handler_replaced_image {
-                configure_process_syscall_return(
-                    &memory,
-                    &self.vcpu,
-                    self.syscall_frame_address,
-                    result,
-                    None,
-                )?;
-            }
             let pending_segment = executor.take_segment();
             let mut pending_exit = executor.take_exit();
             let pending_process = executor.take_process_action();
@@ -1657,7 +2329,13 @@ impl KvmBackend {
             }
             let mut replaced_image = handler_replaced_image;
             if let Some(action) = pending_process {
-                replaced_image |= matches!(&action, ProcessAction::Exec { .. });
+                let continuation = CompletedSyscallBoundary::capture_for_action(
+                    self,
+                    frame_address,
+                    None,
+                    &action,
+                )?;
+                let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
                 let context: ToolContext<'_, T> = ToolContext {
                     pid,
                     tid,
@@ -1665,11 +2343,31 @@ impl KvmBackend {
                     global_state: Some(global_state.clone()),
                     config: config.clone(),
                     subscriptions: subscriptions.clone(),
-                    pending_child_starts: Arc::new(Mutex::new(Vec::new())),
+                    pending_child_starts: pending_child_starts.clone(),
                 };
-                self.run_process_action_with_tool(executor, action, true, context)
+                let outcome = self
+                    .run_process_action_with_tool_at_boundary(
+                        executor,
+                        action,
+                        context,
+                        continuation,
+                    )
                     .await?;
-                executor.start_pending_child_processes()?;
+                if !outcome.image_replaced {
+                    result = outcome.syscall_result;
+                    returned_registers = process_syscall_return_registers(
+                        &memory,
+                        registers,
+                        frame_address,
+                        result,
+                        None,
+                    )?;
+                    restarted_registers = restart_requested
+                        .then(|| restart_syscall_registers(returned_registers, request.number()))
+                        .transpose()?;
+                }
+                replaced_image |= outcome.image_replaced;
+                self.start_pending_tool_children(executor, &pending_child_starts)?;
             }
             if replaced_image {
                 auxv = executor.auxv().to_vec();
@@ -1704,6 +2402,60 @@ impl KvmBackend {
             if let Some((segment, address)) = executor.take_segment() {
                 set_user_segment_base(&self.vcpu, segment, address)?;
             }
+            if !replaced_image && pending_exit.is_none() {
+                let pending = self
+                    .filter_one_pending_signal_with_tool(
+                        executor,
+                        pid,
+                        tid,
+                        &tool,
+                        &memory,
+                        &auxv,
+                        returned_registers,
+                        request.number(),
+                        frame_address,
+                        &mut thread_state,
+                        &global_state,
+                        config,
+                        subscriptions,
+                        &stack_checked_out,
+                    )
+                    .await?;
+                if let Some((segment, address)) = executor.take_segment() {
+                    set_user_segment_base(&self.vcpu, segment, address)?;
+                }
+                pending_exit = pending_exit.or_else(|| executor.take_exit());
+                let mut delivered = false;
+                if pending_exit.is_none()
+                    && let Some(pending) = pending
+                {
+                    let signal_registers =
+                        if restart_requested && executor.caught_signal_restarts_syscall(pending) {
+                            restarted_registers.expect("restart registers were constructed")
+                        } else {
+                            returned_registers
+                        };
+                    delivered = self.deliver_selected_signal_from_registers(
+                        executor,
+                        frame_address,
+                        signal_registers,
+                        pending,
+                    )?;
+                }
+                pending_exit = pending_exit.or_else(|| executor.take_exit());
+                if restart_requested && !delivered && pending_exit.is_none() {
+                    // Suppression, an ignored replacement, or a replacement
+                    // newly blocked by its signal number means no handler ran;
+                    // resume by re-executing the original syscall rather than
+                    // leaking EINTR or the kernel-private ERESTARTSYS value.
+                    stage_process_syscall_return(
+                        &mut memory,
+                        &self.vcpu,
+                        frame_address,
+                        restarted_registers.expect("restart registers were constructed"),
+                    )?;
+                }
+            }
             pending_exit = pending_exit.or_else(|| executor.take_exit());
             if let Some(exit) = pending_exit {
                 executor.join_all_child_processes()?;
@@ -1728,8 +2480,9 @@ impl KvmBackend {
 }
 
 /// Resolve a Tool handler's return value into the raw word written to the
-/// guest's syscall frame, or `None` when the `ERESTARTSYS` restart protocol
-/// (Reverie #362) requires re-running the Tool callback.
+/// guest's syscall frame, or `None` when the `ERESTARTSYS` protocol requires
+/// either re-running the Tool callback or applying signal-disposition restart
+/// policy at the static-ELF return boundary.
 ///
 /// `ERESTARTSYS` is kernel-private: Linux never delivers it to userspace. It
 /// either re-issues the interrupted syscall or reports `EINTR`. Detcore returns
@@ -1741,18 +2494,16 @@ impl KvmBackend {
 /// through that path, so this backend must repeat the callback itself. Without
 /// it the private 512 reaches the guest as an application-visible errno.
 ///
-/// This restarts on `ERESTARTSYS` regardless of which syscall produced it,
-/// matching `reverie-ptrace`, whose restart frame is likewise not conditioned on
-/// the syscall number (`reverie-ptrace/src/task.rs`). It deliberately does *not*
-/// match the old `reverie-preload::drive_tool_syscall` policy, which restarted
-/// only `wait4` and passed an explicit `ERESTARTSYS` through to the guest for
-/// every other subscribed syscall. The shared preload driver now applies this
-/// same unconditional restart rule, so neither backend exposes the private 512.
+/// With no eligible virtual signal the callback is re-entered immediately. If
+/// one is pending, the static-ELF loop runs the structured signal hook first,
+/// then saves either `EINTR` or a rewound syscall according to the final
+/// signal's disposition and `SA_RESTART`. The other Linux-internal restart
+/// classes are not part of Reverie's current Tool contract and fail explicitly
+/// if a Tool manufactures one.
 ///
 /// Isolating the policy in one pure function keeps it directly testable. Note
-/// that testing it does not test the restart itself — the re-invocation loops in
-/// `run_with_tool` and `run_static_elf_with_tool` are covered by
-/// `tests/erestartsys.rs`, which fails if either loop stops re-invoking.
+/// that testing it does not test restart execution; integration tests cover
+/// both callback re-entry and signal-disposition-dependent frame restoration.
 fn classify_handler_result(
     result: std::result::Result<i64, reverie::Error>,
 ) -> Result<Option<i64>> {
@@ -1760,9 +2511,25 @@ fn classify_handler_result(
         Ok(value) => Ok(Some(value)),
         Err(error) => match error.into_errno().map_err(Error::Reverie)? {
             Errno::ERESTARTSYS => Ok(None),
+            errno if matches!(errno.into_raw(), 513 | 514 | 516) => {
+                Err(Error::UnexpectedVcpuExit(format!(
+                    "unsupported Linux-internal syscall restart class {}",
+                    errno.into_raw(),
+                )))
+            }
             errno => Ok(Some(-(i64::from(errno.into_raw())))),
         },
     }
+}
+
+fn restart_syscall_registers(mut registers: kvm_regs, syscall_number: u64) -> Result<kvm_regs> {
+    registers.rip = registers.rip.checked_sub(2).ok_or_else(|| {
+        Error::UnexpectedVcpuExit(
+            "cannot rewind a syscall at an instruction pointer below two".to_owned(),
+        )
+    })?;
+    registers.rax = syscall_number;
+    Ok(registers)
 }
 
 fn raw_to_result(result: i64) -> std::result::Result<i64, Errno> {
@@ -1776,7 +2543,7 @@ fn result_to_raw(result: std::result::Result<i64, Errno>) -> i64 {
     }
 }
 
-fn kvm_registers(registers: kvm_regs, syscall_number: u64) -> libc::user_regs_struct {
+pub(crate) fn kvm_registers(registers: kvm_regs, syscall_number: u64) -> libc::user_regs_struct {
     libc::user_regs_struct {
         r15: registers.r15,
         r14: registers.r14,
@@ -1918,9 +2685,14 @@ mod tests {
         let handler_signal = Arc::new(Mutex::new(None));
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
-        pending_child_starts.lock().unwrap().push(start_sender);
+        let start_gate = ChildStartGate::new(start_sender);
+        pending_child_starts
+            .lock()
+            .unwrap()
+            .push(PendingChildStart::fork_process(2, start_gate));
         let handler = poll_fn(|context| match start_receiver.try_recv() {
-            Ok(()) => Poll::Ready(true),
+            Ok(ChildStartCommand::Start) => Poll::Ready(true),
+            Ok(ChildStartCommand::Cancel) => Poll::Ready(false),
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 context.waker().wake_by_ref();
                 Poll::Pending
@@ -1936,6 +2708,45 @@ mod tests {
             )),
             HandlerOutcome::Returned(true)
         ));
+    }
+
+    #[test]
+    fn handler_runtime_error_precedes_and_preserves_unstarted_child_gate() {
+        let handler_signal = Arc::new(Mutex::new(Some(HandlerSignal::RuntimeError(
+            Error::UnexpectedVcpuExit("forced boundary restore failure".to_owned()),
+        ))));
+        let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+        let (start_sender, start_receiver) = std::sync::mpsc::channel();
+        let start_gate = ChildStartGate::new(start_sender);
+        pending_child_starts
+            .lock()
+            .unwrap()
+            .push(PendingChildStart::tool_thread(2, start_gate));
+
+        let outcome = futures::executor::block_on(drive_handler(
+            std::future::pending::<()>(),
+            handler_signal,
+            pending_child_starts.clone(),
+        ));
+        assert!(matches!(
+            outcome,
+            HandlerOutcome::RuntimeError(Error::UnexpectedVcpuExit(message))
+                if message == "forced boundary restore failure"
+        ));
+        assert!(matches!(
+            start_receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+
+        let pending = pending_child_starts.lock().unwrap().pop().unwrap();
+        assert!(matches!(
+            pending.cancel(),
+            PendingChildCancellation::NewlyCancelled {
+                child: PendingChildKind::ToolThread(2),
+                delivery_failed: false
+            }
+        ));
+        assert_eq!(start_receiver.recv().unwrap(), ChildStartCommand::Cancel);
     }
 
     #[test]
@@ -1958,6 +2769,16 @@ mod tests {
             Some(-(libc::EBADF as i64))
         );
 
+        for unsupported in [513, 514, 516] {
+            let error = classify_handler_result(Err(Errno::new(unsupported).into())).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("unsupported Linux-internal syscall restart class"),
+                "unexpected error for restart class {unsupported}: {error}",
+            );
+        }
+
         // Success values pass through untouched, including 0 and large reads.
         assert_eq!(classify_handler_result(Ok(0)).unwrap(), Some(0));
         assert_eq!(classify_handler_result(Ok(4096)).unwrap(), Some(4096));
@@ -1973,6 +2794,420 @@ mod tests {
         ] {
             assert_ne!(classify_handler_result(result).unwrap(), Some(private));
         }
+    }
+
+    #[derive(Debug, Default, Eq, PartialEq)]
+    struct TailInjectionSideEffects {
+        output_bytes: usize,
+        descriptors: usize,
+        tasks: usize,
+        address_space_generation: usize,
+        pending_signal: bool,
+        pending_process_action: bool,
+        exited: bool,
+        completion_callbacks: usize,
+    }
+
+    #[derive(Default)]
+    struct SideEffectingExecutor {
+        state: TailInjectionSideEffects,
+    }
+
+    impl GuestSyscallExecutor<crate::StraceTool> for SideEffectingExecutor {
+        fn execute(&mut self, request: &SyscallRequest, _memory: &GuestMemory) -> i64 {
+            match request.number() as libc::c_long {
+                libc::SYS_write => self.state.output_bytes += request.args()[2] as usize,
+                libc::SYS_pipe2 => self.state.descriptors += 2,
+                libc::SYS_fork | libc::SYS_clone => {
+                    self.state.tasks += 1;
+                    self.state.pending_process_action = true;
+                }
+                libc::SYS_execve | libc::SYS_execveat => {
+                    self.state.address_space_generation += 1;
+                    self.state.pending_process_action = true;
+                }
+                libc::SYS_mmap => self.state.address_space_generation += 1,
+                libc::SYS_kill | libc::SYS_tkill | libc::SYS_tgkill => {
+                    self.state.pending_signal = true
+                }
+                libc::SYS_exit | libc::SYS_exit_group => self.state.exited = true,
+                number => panic!("unexpected side-effect probe syscall {number}"),
+            }
+            0
+        }
+
+        fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
+            !injection_can_be_nonreturning(request)
+        }
+
+        fn complete_injection<'a>(
+            &'a mut self,
+            _context: ToolContext<'a, crate::StraceTool>,
+        ) -> Pin<Box<dyn Future<Output = Result<InjectionCompletion>> + Send + 'a>>
+        where
+            crate::StraceTool: 'a,
+        {
+            self.state.completion_callbacks += 1;
+            Box::pin(async {
+                Ok(InjectionCompletion::DoesNotReturn {
+                    image_replaced: true,
+                    process_exited: true,
+                })
+            })
+        }
+
+        fn tail_injection_allowed(&self) -> bool {
+            false
+        }
+    }
+
+    #[derive(Default)]
+    struct PermissiveSideEffectingExecutor {
+        state: TailInjectionSideEffects,
+    }
+
+    impl GuestSyscallExecutor<crate::StraceTool> for PermissiveSideEffectingExecutor {
+        fn execute(&mut self, request: &SyscallRequest, _memory: &GuestMemory) -> i64 {
+            match request.number() as libc::c_long {
+                libc::SYS_execve | libc::SYS_execveat => {
+                    self.state.address_space_generation += 1;
+                    self.state.pending_process_action = true;
+                }
+                libc::SYS_kill | libc::SYS_tkill | libc::SYS_tgkill => {
+                    self.state.pending_signal = true
+                }
+                libc::SYS_exit | libc::SYS_exit_group => self.state.exited = true,
+                number => panic!("unexpected nonreturning probe syscall {number}"),
+            }
+            0
+        }
+
+        fn complete_injection<'a>(
+            &'a mut self,
+            _context: ToolContext<'a, crate::StraceTool>,
+        ) -> Pin<Box<dyn Future<Output = Result<InjectionCompletion>> + Send + 'a>>
+        where
+            crate::StraceTool: 'a,
+        {
+            self.state.completion_callbacks += 1;
+            Box::pin(async {
+                Ok(InjectionCompletion::Returns {
+                    syscall_result: None,
+                })
+            })
+        }
+    }
+
+    #[test]
+    fn unresolved_children_refuse_every_nonreturning_injection_before_mutation() {
+        let requests = [
+            SyscallRequest::new(libc::SYS_execve as u64, [0x100, 0x200, 0x300, 0, 0, 0]),
+            SyscallRequest::new(
+                libc::SYS_execveat as u64,
+                [libc::AT_FDCWD as u64, 0x100, 0x200, 0x300, 0, 0],
+            ),
+            SyscallRequest::new(libc::SYS_exit as u64, [7, 0, 0, 0, 0, 0]),
+            SyscallRequest::new(libc::SYS_exit_group as u64, [8, 0, 0, 0, 0, 0]),
+            SyscallRequest::new(libc::SYS_kill as u64, [1, libc::SIGKILL as u64, 0, 0, 0, 0]),
+            SyscallRequest::new(
+                libc::SYS_tkill as u64,
+                [1, libc::SIGKILL as u64, 0, 0, 0, 0],
+            ),
+            SyscallRequest::new(
+                libc::SYS_tgkill as u64,
+                [1, 1, libc::SIGKILL as u64, 0, 0, 0],
+            ),
+        ];
+        for thread in [false, true] {
+            for request in requests {
+                let memory = GuestMemory::new(0, STACK_CAPACITY).unwrap();
+                let auxv = [];
+                let mut thread_state = ();
+                let global_state = crate::StraceLog::default();
+                let config = ();
+                let subscriptions = Subscription::none();
+                let handler_signal = Arc::new(Mutex::new(None));
+                let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                let (start_sender, start_receiver) = std::sync::mpsc::channel();
+                let start_gate = ChildStartGate::new(start_sender);
+                pending_child_starts.lock().unwrap().push(if thread {
+                    PendingChildStart::tool_thread(2, start_gate)
+                } else {
+                    PendingChildStart::fork_process(2, start_gate)
+                });
+                let child = std::thread::spawn(move || {
+                    assert_eq!(start_receiver.recv().unwrap(), ChildStartCommand::Cancel);
+                });
+                let mut executor = PermissiveSideEffectingExecutor::default();
+                let mut guest = KvmGuest::<crate::StraceTool>::new(
+                    Pid::from_raw(1),
+                    Pid::from_raw(1),
+                    memory,
+                    &auxv,
+                    // SAFETY: the test does not inspect any register field.
+                    unsafe { std::mem::zeroed() },
+                    &mut thread_state,
+                    &mut executor,
+                    &global_state,
+                    None,
+                    &config,
+                    &subscriptions,
+                    handler_signal.clone(),
+                    pending_child_starts.clone(),
+                    crate::bootstrap::TOOL_STACK_TOP,
+                    Arc::new(AtomicBool::new(false)),
+                );
+                let result =
+                    futures::FutureExt::now_or_never(guest.inject(request.into_syscall().unwrap()));
+                assert_eq!(result, Some(Err(Errno::ENOSYS)));
+                assert!(handler_signal.lock().unwrap().is_none());
+                assert_eq!(executor.state, TailInjectionSideEffects::default());
+
+                let pending = pending_child_starts.lock().unwrap().pop().unwrap();
+                let expected = if thread {
+                    PendingChildKind::ToolThread(2)
+                } else {
+                    PendingChildKind::ForkProcess(2)
+                };
+                assert!(matches!(
+                    pending.cancel(),
+                    PendingChildCancellation::NewlyCancelled {
+                        child,
+                        delivery_failed: false
+                    } if child == expected
+                ));
+                child.join().unwrap();
+            }
+        }
+
+        for started_gate in [false, true] {
+            let memory = GuestMemory::new(0, STACK_CAPACITY).unwrap();
+            let auxv = [];
+            let mut thread_state = ();
+            let global_state = crate::StraceLog::default();
+            let config = ();
+            let subscriptions = Subscription::none();
+            let handler_signal = Arc::new(Mutex::new(None));
+            let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+            if started_gate {
+                let (start_sender, start_receiver) = std::sync::mpsc::channel();
+                let start_gate = ChildStartGate::new(start_sender);
+                assert_eq!(start_gate.start(), Ok(true));
+                assert_eq!(start_receiver.recv().unwrap(), ChildStartCommand::Start);
+                pending_child_starts
+                    .lock()
+                    .unwrap()
+                    .push(PendingChildStart::fork_process(2, start_gate));
+            }
+            let mut executor = PermissiveSideEffectingExecutor::default();
+            let mut guest = KvmGuest::<crate::StraceTool>::new(
+                Pid::from_raw(1),
+                Pid::from_raw(1),
+                memory,
+                &auxv,
+                // SAFETY: the test does not inspect any register field.
+                unsafe { std::mem::zeroed() },
+                &mut thread_state,
+                &mut executor,
+                &global_state,
+                None,
+                &config,
+                &subscriptions,
+                handler_signal,
+                pending_child_starts,
+                crate::bootstrap::TOOL_STACK_TOP,
+                Arc::new(AtomicBool::new(false)),
+            );
+            let result = futures::FutureExt::now_or_never(
+                guest.inject(
+                    SyscallRequest::new(libc::SYS_execve as u64, [0x100, 0x200, 0x300, 0, 0, 0])
+                        .into_syscall()
+                        .unwrap(),
+                ),
+            );
+            assert_eq!(result, Some(Ok(0)));
+            assert_eq!(executor.state.address_space_generation, 1);
+            assert_eq!(executor.state.completion_callbacks, 1);
+        }
+    }
+
+    fn assert_tail_injection_rejected_before_execute(
+        executor: &mut SideEffectingExecutor,
+        request: SyscallRequest,
+    ) {
+        let memory = GuestMemory::new(0, STACK_CAPACITY).unwrap();
+        let auxv = [];
+        let mut thread_state = ();
+        let global_state = crate::StraceLog::default();
+        let config = ();
+        let subscriptions = Subscription::none();
+        let handler_signal = Arc::new(Mutex::new(None));
+        let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+        let mut guest = KvmGuest::<crate::StraceTool>::new(
+            Pid::from_raw(1),
+            Pid::from_raw(1),
+            memory,
+            &auxv,
+            // SAFETY: the test does not inspect any register field.
+            unsafe { std::mem::zeroed() },
+            &mut thread_state,
+            executor,
+            &global_state,
+            None,
+            &config,
+            &subscriptions,
+            handler_signal.clone(),
+            pending_child_starts.clone(),
+            crate::bootstrap::TOOL_STACK_TOP,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let syscall = request.into_syscall().unwrap();
+        match futures::executor::block_on(drive_handler(
+            guest.tail_inject(syscall),
+            handler_signal,
+            pending_child_starts,
+        )) {
+            HandlerOutcome::RuntimeError(Error::Reverie(reverie::Error::Errno(errno))) => {
+                assert_eq!(errno, Errno::ENOSYS)
+            }
+            HandlerOutcome::RuntimeError(error) => panic!("unexpected tail refusal: {error}"),
+            HandlerOutcome::TailInjected { .. } => panic!("tail injection unexpectedly ran"),
+            HandlerOutcome::Returned(_) => panic!("tail injection unexpectedly returned"),
+        }
+    }
+
+    fn test_process_boundary() -> CompletedSyscallBoundary {
+        CompletedSyscallBoundary::for_test()
+    }
+
+    #[test]
+    fn signal_hook_tail_injection_is_rejected_before_every_executor_side_effect() {
+        let boundary = test_process_boundary();
+        assert!(
+            !ProcessExecutionContext::SignalBoundary(boundary.clone()).tail_injection_allowed()
+        );
+        assert!(
+            ProcessExecutionContext::SyscallBoundary(boundary.clone()).tail_injection_allowed()
+        );
+        assert!(ProcessExecutionContext::Lifecycle.tail_injection_allowed());
+
+        let nonfatal_signal =
+            SyscallRequest::new(libc::SYS_kill as u64, [1, libc::SIGUSR1 as u64, 0, 0, 0, 0]);
+        assert!(
+            ProcessExecutionContext::SignalBoundary(boundary)
+                .injected_signal_allowed(&nonfatal_signal)
+        );
+        assert!(
+            !ProcessExecutionContext::Lifecycle.injected_signal_allowed(&nonfatal_signal),
+            "a lifecycle callback still lacks a resumable signal frame",
+        );
+
+        let requests = [
+            SyscallRequest::new(libc::SYS_write as u64, [1, 0x100, 4, 0, 0, 0]),
+            SyscallRequest::new(libc::SYS_pipe2 as u64, [0x200, 0, 0, 0, 0, 0]),
+            SyscallRequest::new(libc::SYS_fork as u64, [0; 6]),
+            SyscallRequest::new(
+                libc::SYS_clone as u64,
+                [libc::SIGCHLD as u64, 0, 0, 0, 0, 0],
+            ),
+            SyscallRequest::new(libc::SYS_execve as u64, [0x300, 0, 0, 0, 0, 0]),
+            SyscallRequest::new(
+                libc::SYS_mmap as u64,
+                [
+                    0,
+                    4096,
+                    (libc::PROT_READ | libc::PROT_WRITE) as u64,
+                    (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64,
+                    (-1_i32) as u64,
+                    0,
+                ],
+            ),
+            SyscallRequest::new(libc::SYS_kill as u64, [1, libc::SIGUSR1 as u64, 0, 0, 0, 0]),
+            SyscallRequest::new(libc::SYS_exit as u64, [7, 0, 0, 0, 0, 0]),
+        ];
+        let mut executor = SideEffectingExecutor::default();
+        for request in requests {
+            assert_tail_injection_rejected_before_execute(&mut executor, request);
+        }
+        assert_eq!(executor.state, TailInjectionSideEffects::default());
+    }
+
+    #[test]
+    fn signal_hook_ordinary_nonreturning_injection_is_rejected_before_side_effects() {
+        let requests = [
+            SyscallRequest::new(libc::SYS_execve as u64, [0x100, 0x200, 0x300, 0, 0, 0]),
+            SyscallRequest::new(
+                libc::SYS_execveat as u64,
+                [libc::AT_FDCWD as u64, 0x100, 0x200, 0x300, 0, 0],
+            ),
+            SyscallRequest::new(libc::SYS_exit as u64, [7, 0, 0, 0, 0, 0]),
+            SyscallRequest::new(libc::SYS_exit_group as u64, [8, 0, 0, 0, 0, 0]),
+            SyscallRequest::new(libc::SYS_kill as u64, [1, libc::SIGKILL as u64, 0, 0, 0, 0]),
+            SyscallRequest::new(
+                libc::SYS_tkill as u64,
+                [1, libc::SIGKILL as u64, 0, 0, 0, 0],
+            ),
+            SyscallRequest::new(
+                libc::SYS_tgkill as u64,
+                [1, 1, libc::SIGKILL as u64, 0, 0, 0],
+            ),
+        ];
+        let mut executor = SideEffectingExecutor::default();
+        for request in requests {
+            let boundary = test_process_boundary();
+            assert!(
+                !ProcessExecutionContext::SignalBoundary(boundary)
+                    .ordinary_injection_allowed(&request)
+            );
+            let memory = GuestMemory::new(0, STACK_CAPACITY).unwrap();
+            let auxv = [];
+            let mut thread_state = ();
+            let global_state = crate::StraceLog::default();
+            let config = ();
+            let subscriptions = Subscription::none();
+            let handler_signal = Arc::new(Mutex::new(None));
+            let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+            let mut guest = KvmGuest::<crate::StraceTool>::new(
+                Pid::from_raw(1),
+                Pid::from_raw(1),
+                memory,
+                &auxv,
+                // SAFETY: the test does not inspect any register field.
+                unsafe { std::mem::zeroed() },
+                &mut thread_state,
+                &mut executor,
+                &global_state,
+                None,
+                &config,
+                &subscriptions,
+                handler_signal.clone(),
+                pending_child_starts.clone(),
+                crate::bootstrap::TOOL_STACK_TOP,
+                Arc::new(AtomicBool::new(false)),
+            );
+            let result =
+                futures::FutureExt::now_or_never(guest.inject(request.into_syscall().unwrap()));
+            assert_eq!(result, Some(Err(Errno::ENOSYS)));
+            assert!(handler_signal.lock().unwrap().is_none());
+            assert!(pending_child_starts.lock().unwrap().is_empty());
+            assert_eq!(executor.state, TailInjectionSideEffects::default());
+        }
+
+        // Returning injections remain available to a structured hook.
+        assert!(
+            ProcessExecutionContext::SignalBoundary(test_process_boundary())
+                .ordinary_injection_allowed(&SyscallRequest::new(
+                    libc::SYS_write as u64,
+                    [1, 0x100, 4, 0, 0, 0],
+                ))
+        );
+        assert!(
+            ProcessExecutionContext::SignalBoundary(test_process_boundary())
+                .ordinary_injection_allowed(&SyscallRequest::new(
+                    libc::SYS_kill as u64,
+                    [1, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+                ))
+        );
     }
 
     #[test]

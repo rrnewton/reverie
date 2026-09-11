@@ -630,6 +630,46 @@ impl GuestMemory {
         }
         Ok(usize::try_from(cursor - guest_address).expect("guest memory prefix must fit usize"))
     }
+
+    /// Returns the writable prefix of a guest userspace range.
+    pub(crate) fn user_writable_prefix(&self, guest_address: u64, length: usize) -> Result<usize> {
+        if length == 0 {
+            return Ok(0);
+        }
+        if guest_address < self.guest_base() || guest_address >= self.guest_end() {
+            return Err(Error::InvalidGuestAddress {
+                address: guest_address,
+                length,
+                guest_base: self.guest_base(),
+                guest_end: self.guest_end(),
+            });
+        }
+        let end = guest_address
+            .saturating_add(length as u64)
+            .min(self.guest_end());
+        let access = self
+            .mapping
+            .user_access
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        if !access.enabled {
+            return Ok(
+                usize::try_from(end - guest_address).expect("guest memory prefix must fit usize")
+            );
+        }
+        let mut cursor = guest_address;
+        while cursor < end {
+            if !matches!(
+                access.pages.get(&(cursor / PAGE_SIZE as u64)),
+                Some(UserPageState::Accessible { writable: true })
+            ) {
+                break;
+            }
+            let next_page = (cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64;
+            cursor = next_page.min(end);
+        }
+        Ok(usize::try_from(cursor - guest_address).expect("guest memory prefix must fit usize"))
+    }
 }
 
 fn create_memory_backing() -> io::Result<OwnedFd> {
@@ -1301,6 +1341,47 @@ mod tests {
         assert!(memory.put_user_i32((PAGE_SIZE * 4) as u64, 0).is_err());
         assert!(memory.put_user_i32(0, 0).is_err());
         memory.put_user_i32(PAGE_SIZE as u64, 0).unwrap();
+    }
+
+    #[test]
+    fn tracked_read_only_pages_reject_backend_copyout_but_remain_readable() {
+        let mut memory = GuestMemory::new(0, PAGE_SIZE * 2).unwrap();
+        memory
+            .map_user_range(PAGE_SIZE as u64, PAGE_SIZE as u64, false)
+            .unwrap();
+        memory.enable_user_access();
+        memory.write(PAGE_SIZE as u64, b"before").unwrap();
+        memory
+            .map_user_permissions(PAGE_SIZE as u64, PAGE_SIZE as u64, true, false)
+            .unwrap();
+
+        let mut bytes = [0; 6];
+        memory.read(PAGE_SIZE as u64, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"before");
+        assert_eq!(
+            memory
+                .user_accessible_prefix(PAGE_SIZE as u64, PAGE_SIZE)
+                .unwrap(),
+            PAGE_SIZE,
+        );
+        assert_eq!(
+            memory
+                .user_writable_prefix(PAGE_SIZE as u64, PAGE_SIZE)
+                .unwrap(),
+            0
+        );
+        assert!(matches!(
+            memory.copy_to_user(PAGE_SIZE as u64, b"after!"),
+            Err(Error::GuestMemoryAccessDenied { .. })
+        ));
+        assert!(matches!(
+            memory.copy_to_user(PAGE_SIZE as u64, &[0]),
+            Err(Error::GuestMemoryAccessDenied { .. })
+        ));
+        memory
+            .map_user_permissions(PAGE_SIZE as u64, PAGE_SIZE as u64, true, true)
+            .unwrap();
+        memory.copy_to_user(PAGE_SIZE as u64, b"after!").unwrap();
     }
 
     #[test]

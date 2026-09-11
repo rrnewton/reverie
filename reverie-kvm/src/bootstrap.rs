@@ -26,6 +26,7 @@ const PAGE_SIZE: u64 = 4096;
 const LARGE_PAGE_SIZE: u64 = 2 * 1024 * 1024;
 const PAGE_DIRECTORY_SPAN: u64 = 1024 * 1024 * 1024;
 const PAGE_DIRECTORY_ADDRESSES: [u64; 3] = [0x4000, 0x9000, 0xe000];
+const FIRST_PAGE_TABLE_ADDRESS: u64 = 0;
 const MAX_IDENTITY_MAP: u64 = PAGE_DIRECTORY_SPAN * PAGE_DIRECTORY_ADDRESSES.len() as u64;
 
 const GDT_ADDRESS: u64 = 0x1000;
@@ -313,6 +314,47 @@ pub(crate) fn configure_user_segments(vcpu: &VcpuFd) -> Result<()> {
     Ok(())
 }
 
+/// Reconstructs the userspace register file stopped at a syscall boundary.
+///
+/// The live vCPU is executing the ring-zero VMCALL trampoline, which has
+/// overwritten RAX/RBX/RCX/RDX/RSI. The transport frame is authoritative for
+/// those registers and for the userspace return RIP and RFLAGS.
+pub(crate) fn process_syscall_return_registers(
+    memory: &GuestMemory,
+    mut registers: kvm_bindings::kvm_regs,
+    syscall_frame_address: u64,
+    result: i64,
+    stack_pointer: Option<u64>,
+) -> Result<kvm_bindings::kvm_regs> {
+    let return_rip = read_u64(
+        memory,
+        frame_word_address_u64(syscall_frame_address, RETURN_RIP_WORD),
+    )?;
+    let return_flags = read_u64(
+        memory,
+        frame_word_address_u64(syscall_frame_address, RETURN_FLAGS_WORD),
+    )?;
+    registers.rax = result as u64;
+    registers.rdi = read_u64(memory, frame_word_address_u64(syscall_frame_address, 1))?;
+    registers.rsi = read_u64(memory, frame_word_address_u64(syscall_frame_address, 2))?;
+    registers.rdx = read_u64(memory, frame_word_address_u64(syscall_frame_address, 3))?;
+    registers.r10 = read_u64(memory, frame_word_address_u64(syscall_frame_address, 4))?;
+    registers.r8 = read_u64(memory, frame_word_address_u64(syscall_frame_address, 5))?;
+    registers.r9 = read_u64(memory, frame_word_address_u64(syscall_frame_address, 6))?;
+    registers.rbx = read_u64(
+        memory,
+        frame_word_address_u64(syscall_frame_address, SAVED_RBX_WORD),
+    )?;
+    registers.rcx = return_rip;
+    registers.r11 = return_flags;
+    registers.rip = return_rip;
+    registers.rflags = return_flags;
+    if let Some(stack_pointer) = stack_pointer {
+        registers.rsp = stack_pointer;
+    }
+    Ok(registers)
+}
+
 // TODO-HUMAN-REVIEW(PR-172): Review syscall-frame selection for concurrent vCPUs.
 pub(crate) fn configure_process_syscall_return(
     memory: &GuestMemory,
@@ -322,36 +364,70 @@ pub(crate) fn configure_process_syscall_return(
     stack_pointer: Option<u64>,
 ) -> Result<()> {
     configure_user_segments(vcpu)?;
-
-    let return_rip = read_u64(
+    let regs = process_syscall_return_registers(
         memory,
-        frame_word_address_u64(syscall_frame_address, RETURN_RIP_WORD),
+        vcpu.get_regs()?,
+        syscall_frame_address,
+        result,
+        stack_pointer,
     )?;
-    let return_flags = read_u64(
-        memory,
-        frame_word_address_u64(syscall_frame_address, RETURN_FLAGS_WORD),
-    )?;
-    let mut regs = vcpu.get_regs()?;
-    regs.rax = result as u64;
-    regs.rdi = read_u64(memory, frame_word_address_u64(syscall_frame_address, 1))?;
-    regs.rsi = read_u64(memory, frame_word_address_u64(syscall_frame_address, 2))?;
-    regs.rdx = read_u64(memory, frame_word_address_u64(syscall_frame_address, 3))?;
-    regs.r10 = read_u64(memory, frame_word_address_u64(syscall_frame_address, 4))?;
-    regs.r8 = read_u64(memory, frame_word_address_u64(syscall_frame_address, 5))?;
-    regs.r9 = read_u64(memory, frame_word_address_u64(syscall_frame_address, 6))?;
-    regs.rbx = read_u64(
-        memory,
-        frame_word_address_u64(syscall_frame_address, SAVED_RBX_WORD),
-    )?;
-    regs.rcx = return_rip;
-    regs.r11 = return_flags;
-    regs.rip = return_rip;
-    regs.rflags = return_flags;
-    if let Some(stack_pointer) = stack_pointer {
-        regs.rsp = stack_pointer;
-    }
     vcpu.set_regs(&regs)?;
     Ok(())
+}
+
+/// Stages a userspace register file for the trampoline that is currently
+/// stopped at its VMCALL. KVM completes that instruction before observing a
+/// register write, so changing CS/RIP here would resume the remaining ring-zero
+/// trampoline under user segments. Instead, put every trampoline-restored
+/// register in its transport word and change only the registers it preserves.
+pub(crate) fn stage_process_syscall_return(
+    memory: &mut GuestMemory,
+    vcpu: &VcpuFd,
+    syscall_frame_address: u64,
+    registers: kvm_bindings::kvm_regs,
+) -> Result<()> {
+    for (word, value) in [
+        (RESULT_WORD, registers.rax),
+        (1, registers.rdi),
+        (2, registers.rsi),
+        (3, registers.rdx),
+        (4, registers.r10),
+        (5, registers.r8),
+        (6, registers.r9),
+        (RETURN_RIP_WORD, registers.rip),
+        (RETURN_FLAGS_WORD, registers.rflags),
+        (SAVED_RBX_WORD, registers.rbx),
+    ] {
+        write_u64(
+            memory,
+            frame_word_address_u64(syscall_frame_address, word),
+            value,
+        )?;
+    }
+    let mut live = vcpu.get_regs()?;
+    live.rbp = registers.rbp;
+    live.rsp = registers.rsp;
+    live.r12 = registers.r12;
+    live.r13 = registers.r13;
+    live.r14 = registers.r14;
+    live.r15 = registers.r15;
+    vcpu.set_regs(&live)?;
+    Ok(())
+}
+
+pub(crate) fn syscall_hypercall_address(
+    hypercall_instruction: [u8; 3],
+    syscall_trampoline_address: u64,
+    syscall_frame_address: u64,
+) -> u64 {
+    let trampoline = syscall_trampoline(hypercall_instruction, syscall_frame_address);
+    let offset = trampoline
+        .windows(hypercall_instruction.len())
+        .position(|window| window == hypercall_instruction)
+        .expect("syscall trampoline must contain its hypercall");
+    syscall_trampoline_address
+        .checked_add(offset as u64)
+        .expect("syscall hypercall address must not overflow")
 }
 
 // TODO-HUMAN-REVIEW(PR-172): Review per-thread trampoline park/unpark updates.
@@ -363,10 +439,11 @@ pub(crate) fn set_syscall_return_park(
     park: bool,
 ) -> Result<()> {
     let trampoline = syscall_trampoline(hypercall_instruction, syscall_frame_address);
-    let return_offset = trampoline
-        .windows(hypercall_instruction.len())
-        .position(|window| window == hypercall_instruction)
-        .expect("syscall trampoline must contain its hypercall")
+    let return_offset = (syscall_hypercall_address(
+        hypercall_instruction,
+        syscall_trampoline_address,
+        syscall_frame_address,
+    ) - syscall_trampoline_address) as usize
         + hypercall_instruction.len();
     let byte = if park {
         0xf4
@@ -472,6 +549,14 @@ pub(crate) fn exception_from_halt(rip: u64) -> Option<u8> {
 }
 
 fn write_page_tables(memory: &mut GuestMemory) -> Result<()> {
+    memory.zero_raw(FIRST_PAGE_TABLE_ADDRESS, PAGE_SIZE as usize)?;
+    for index in 1..PAGE_SIZE / std::mem::size_of::<u64>() as u64 {
+        write_u64(
+            memory,
+            FIRST_PAGE_TABLE_ADDRESS + index * std::mem::size_of::<u64>() as u64,
+            (index * PAGE_SIZE) | 0x7,
+        )?;
+    }
     memory.zero_raw(PML4_ADDRESS, PAGE_SIZE as usize)?;
     memory.zero_raw(PDPT_ADDRESS, PAGE_SIZE as usize)?;
     write_u64(memory, PML4_ADDRESS, PDPT_ADDRESS | 0x7)?;
@@ -496,7 +581,11 @@ fn write_page_tables(memory: &mut GuestMemory) -> Result<()> {
             write_u64(
                 memory,
                 directory_address + index * std::mem::size_of::<u64>() as u64,
-                ((first_page + index) * LARGE_PAGE_SIZE) | 0x87,
+                if first_page + index == 0 {
+                    FIRST_PAGE_TABLE_ADDRESS | 0x7
+                } else {
+                    ((first_page + index) * LARGE_PAGE_SIZE) | 0x87
+                },
             )?;
         }
     }
@@ -755,6 +844,7 @@ fn frame_word_address_u64(syscall_frame_address: u64, word: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SyscallRequest;
 
     #[test]
     fn trampoline_preserves_syscall_return_state() {
@@ -763,6 +853,58 @@ mod tests {
         assert!(code.windows(3).any(|window| window == [0x0f, 0x01, 0xc1]));
         assert_eq!(&code[code.len() - 3..], &[0x48, 0x0f, 0x07]);
         assert!(code.len() < THREAD_TSS_OFFSET as usize);
+    }
+
+    #[test]
+    fn signal_context_uses_transport_frame_not_poisoned_trampoline_registers() {
+        const FRAME: u64 = 0x1000;
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let request =
+            SyscallRequest::new(libc::SYS_kill as u64, [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        request.write_to(&mut memory, FRAME).unwrap();
+        memory
+            .write_raw(
+                frame_word_address_u64(FRAME, RETURN_RIP_WORD),
+                &0x1234_5678_u64.to_le_bytes(),
+            )
+            .unwrap();
+        memory
+            .write_raw(
+                frame_word_address_u64(FRAME, RETURN_FLAGS_WORD),
+                &0x202_u64.to_le_bytes(),
+            )
+            .unwrap();
+        memory
+            .write_raw(
+                frame_word_address_u64(FRAME, SAVED_RBX_WORD),
+                &0x7777_u64.to_le_bytes(),
+            )
+            .unwrap();
+        let live = kvm_bindings::kvm_regs {
+            rax: u64::MAX,
+            rbx: u64::MAX,
+            rcx: u64::MAX,
+            rdx: u64::MAX,
+            rsi: u64::MAX,
+            r12: 0x1212,
+            rsp: 0x7fff_f000,
+            ..Default::default()
+        };
+        let restored = process_syscall_return_registers(&memory, live, FRAME, 0, None).unwrap();
+        let context = crate::signal::Sigcontext::from_kvm(
+            restored,
+            0x7fff_e000,
+            crate::signal::KernelSigset::default(),
+        );
+        assert_eq!(
+            (context.rax, context.rdi, context.rsi, context.rdx),
+            (0, 0x11, 0x22, 0x33)
+        );
+        assert_eq!((context.r10, context.r8, context.r9), (0x44, 0x55, 0x66));
+        assert_eq!(
+            (context.rbx, context.rip, context.rflags),
+            (0x7777, 0x1234_5678, 0x202)
+        );
     }
 
     #[test]
@@ -857,6 +999,66 @@ mod tests {
         assert_eq!(
             read_u64(&memory, 0xe000 + 511 * 8).unwrap(),
             0xbfe0_0000 | 0x87
+        );
+    }
+
+    #[test]
+    fn page_zero_table_preserves_every_other_identity_entry() {
+        let mut memory = GuestMemory::new(0, MAX_IDENTITY_MAP as usize).unwrap();
+        write_page_tables(&mut memory).unwrap();
+        assert_eq!(read_u64(&memory, PAGE_DIRECTORY_ADDRESSES[0]).unwrap(), 0x7);
+        let mut actual = [0_u8; PAGE_SIZE as usize];
+        memory.read_raw(0, &mut actual).unwrap();
+        let mut expected = [0_u8; PAGE_SIZE as usize];
+        for index in 1..512 {
+            let entry = (index as u64 * PAGE_SIZE) | 0x7;
+            expected[index * 8..index * 8 + 8].copy_from_slice(&entry.to_le_bytes());
+        }
+        assert_eq!(actual, expected);
+        for (directory_index, address) in PAGE_DIRECTORY_ADDRESSES.into_iter().enumerate() {
+            for index in 0..512 {
+                let ordinal = directory_index * 512 + index;
+                let expected = if ordinal == 0 {
+                    0x7
+                } else {
+                    (ordinal as u64 * LARGE_PAGE_SIZE) | 0x87
+                };
+                assert_eq!(
+                    read_u64(&memory, address + index as u64 * 8).unwrap(),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn page_zero_table_preserves_neighbor_bootstrap_bytes() {
+        let mut memory = GuestMemory::new(0, (LARGE_PAGE_SIZE * 2) as usize).unwrap();
+        memory
+            .write_raw(0, &vec![0xa5; LARGE_PAGE_SIZE as usize])
+            .unwrap();
+        write_descriptor_tables(&mut memory).unwrap();
+        write_vdso(&mut memory).unwrap();
+        let mut before = vec![0; LARGE_PAGE_SIZE as usize];
+        memory.read_raw(0, &mut before).unwrap();
+        write_page_tables(&mut memory).unwrap();
+        let mut after = vec![0; LARGE_PAGE_SIZE as usize];
+        memory.read_raw(0, &mut after).unwrap();
+        for address in (PAGE_SIZE..LARGE_PAGE_SIZE).step_by(PAGE_SIZE as usize) {
+            if address == PML4_ADDRESS
+                || address == PDPT_ADDRESS
+                || address == PAGE_DIRECTORY_ADDRESSES[0]
+            {
+                continue;
+            }
+            let start = address as usize;
+            let end = start + PAGE_SIZE as usize;
+            assert_eq!(&after[start..end], &before[start..end], "page {address:#x}");
+        }
+        assert_eq!(read_u64(&memory, 0).unwrap(), 0);
+        assert_eq!(
+            read_u64(&memory, PAGE_SIZE - 8).unwrap(),
+            (511 * PAGE_SIZE) | 0x7
         );
     }
 

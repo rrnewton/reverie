@@ -39,6 +39,8 @@ use crate::Result;
 use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::PROGRAM_HEADERS_ADDRESS;
 use crate::bootstrap::VDSO_ADDRESS;
+use crate::signal::ProcessSignalState;
+use crate::signal::ThreadSignalState;
 
 const PAGE_SIZE: u64 = 4096;
 pub(crate) const TASK_COMM_LEN: usize = 16;
@@ -119,20 +121,13 @@ pub(crate) struct GuestFileIdentityTable {
     pub objects: std::collections::BTreeMap<(libc::dev_t, libc::ino_t), GuestFileIdentityEntry>,
 }
 
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-235): Review process-local virtual signalfd state.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct SignalFdState {
-    pub masks: std::collections::BTreeMap<i32, [u8; 8]>,
-    pub pending: std::collections::BTreeSet<i32>,
-}
-
 /// Process-tree-wide state whose lifetime follows a guest task rather than an
 /// individual [`LoadedStaticElf`] snapshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TaskLifecycleState {
     pub generation: u64,
     pub tgid: i32,
+    pub pgid: i32,
     pub robust_list_head: u64,
     pub dumpable: bool,
 }
@@ -144,13 +139,13 @@ pub(crate) struct TaskLifecycleTable {
 }
 
 impl TaskLifecycleTable {
-    pub(crate) fn with_root(tid: i32, tgid: i32, dumpable: bool) -> Self {
+    pub(crate) fn with_root(tid: i32, tgid: i32, pgid: i32, dumpable: bool) -> Self {
         let mut table = Self::default();
-        table.register(tid, tgid, dumpable);
+        table.register(tid, tgid, pgid, dumpable);
         table
     }
 
-    pub(crate) fn register(&mut self, tid: i32, tgid: i32, dumpable: bool) -> u64 {
+    pub(crate) fn register(&mut self, tid: i32, tgid: i32, pgid: i32, dumpable: bool) -> u64 {
         self.next_generation = self
             .next_generation
             .checked_add(1)
@@ -161,6 +156,7 @@ impl TaskLifecycleTable {
             TaskLifecycleState {
                 generation,
                 tgid,
+                pgid,
                 robust_list_head: 0,
                 dumpable,
             },
@@ -168,11 +164,17 @@ impl TaskLifecycleTable {
         generation
     }
 
-    pub(crate) fn ensure_registered(&mut self, tid: i32, tgid: i32, dumpable: bool) -> u64 {
+    pub(crate) fn ensure_registered(
+        &mut self,
+        tid: i32,
+        tgid: i32,
+        pgid: i32,
+        dumpable: bool,
+    ) -> u64 {
         self.tasks
             .get(&tid)
             .map(|task| task.generation)
-            .unwrap_or_else(|| self.register(tid, tgid, dumpable))
+            .unwrap_or_else(|| self.register(tid, tgid, pgid, dumpable))
     }
 
     pub(crate) fn remove(&mut self, tid: i32, generation: u64) {
@@ -185,14 +187,15 @@ impl TaskLifecycleTable {
         }
     }
 
-    pub(crate) fn reset_after_exec(&mut self, tid: i32, tgid: i32) -> u64 {
+    pub(crate) fn reset_after_exec(&mut self, tid: i32, tgid: i32, pgid: i32) -> u64 {
         if let Some(task) = self.tasks.get_mut(&tid) {
             task.tgid = tgid;
+            task.pgid = pgid;
             task.robust_list_head = 0;
             task.dumpable = true;
             task.generation
         } else {
-            self.register(tid, tgid, true)
+            self.register(tid, tgid, pgid, true)
         }
     }
 
@@ -206,6 +209,24 @@ impl TaskLifecycleTable {
 
     pub(crate) fn get(&self, tid: i32) -> Option<TaskLifecycleState> {
         self.tasks.get(&tid).copied()
+    }
+
+    pub(crate) fn has_live_sibling(&self, tid: i32, tgid: i32) -> bool {
+        self.tasks
+            .iter()
+            .any(|(&candidate, task)| candidate != tid && task.tgid == tgid)
+    }
+
+    /// Returns `(tgid, pgid)` for each live virtual process exactly once,
+    /// including a thread group whose leader exited while a member remains.
+    pub(crate) fn processes(&self) -> impl Iterator<Item = (i32, i32)> {
+        let mut processes = std::collections::BTreeMap::new();
+        for task in self.tasks.values() {
+            if let Some(previous) = processes.insert(task.tgid, task.pgid) {
+                debug_assert_eq!(previous, task.pgid, "one process has inconsistent PGIDs");
+            }
+        }
+        processes.into_iter()
     }
 
     pub(crate) fn set_dumpable(&mut self, tgid: i32, dumpable: bool) -> bool {
@@ -241,6 +262,8 @@ pub(crate) struct LoadedStaticElf {
     pub fs_base: u64,
     pub gs_base: u64,
     pub pid: i32,
+    /// Virtual process-group identity, inherited across `fork`.
+    pub pgid: i32,
     // TODO-HUMAN-REVIEW(PR-132): Review single-vCPU thread identity transitions.
     pub tid: i32,
     /// The value this process reports from `getppid(2)`.
@@ -299,10 +322,12 @@ pub(crate) struct LoadedStaticElf {
     pub sched_priority: libc::c_int,
     pub sched_reset_on_fork: bool,
     pub ioprio: libc::c_int,
-    pub signal_actions: std::collections::BTreeMap<i32, [u8; 32]>,
-    pub signal_mask: [u8; 8],
-    pub signal_alt_stack: Option<Vec<u8>>,
-    pub signalfd_state: std::sync::Arc<std::sync::Mutex<SignalFdState>>,
+    /// Dispositions and process-pending signals shared by a thread group.
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-235): Review process-local virtual signalfd state.
+    pub process_signals: std::sync::Arc<std::sync::Mutex<ProcessSignalState>>,
+    /// Mask, alternate stack, and pending signals private to this thread.
+    pub thread_signals: ThreadSignalState,
     // One process-tree-wide membership table distinguishes a live task with no
     // robust-list registration from an unknown/dead tid. Entries are created
     // with each executor, reset across exec, and removed when that executor is
@@ -347,12 +372,11 @@ impl LoadedStaticElf {
             .iter()
             .map(|(&fd, file)| Ok((fd, file.try_clone()?)))
             .collect::<Result<_>>()?;
-        let signalfd_masks = self
-            .signalfd_state
+        let process_signals = self
+            .process_signals
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .masks
-            .clone();
+            .for_fork();
         Ok(Self {
             entry_point: self.entry_point,
             stack_pointer: self.stack_pointer,
@@ -377,6 +401,7 @@ impl LoadedStaticElf {
             fs_base: self.fs_base,
             gs_base: self.gs_base,
             pid: child_pid,
+            pgid: self.pgid,
             tid: child_pid,
             ppid: self.pid,
             // A guest-created child always has a traced parent: this process.
@@ -413,13 +438,8 @@ impl LoadedStaticElf {
             } else {
                 self.ioprio
             },
-            signal_actions: self.signal_actions.clone(),
-            signal_mask: self.signal_mask,
-            signal_alt_stack: self.signal_alt_stack.clone(),
-            signalfd_state: std::sync::Arc::new(std::sync::Mutex::new(SignalFdState {
-                masks: signalfd_masks,
-                pending: std::collections::BTreeSet::new(),
-            })),
+            process_signals: std::sync::Arc::new(std::sync::Mutex::new(process_signals)),
+            thread_signals: self.thread_signals.for_fork(),
             task_lifecycle: self.task_lifecycle.clone(),
             files,
             random_device_fds: self.random_device_fds.clone(),
@@ -439,11 +459,12 @@ impl LoadedStaticElf {
         let thp_disabled =
             std::sync::Arc::new(AtomicU8::new(previous.thp_disabled.load(Ordering::SeqCst)));
         let cloexec_fds = previous.cloexec_fds;
-        let previous_signalfd_state = previous
-            .signalfd_state
+        let mut process_signals = previous
+            .process_signals
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
+            .after_exec();
+        let thread_signals = previous.thread_signals.after_exec();
         let mut stdin = previous.stdin;
         let files: std::collections::BTreeMap<_, _> = previous
             .files
@@ -475,14 +496,9 @@ impl LoadedStaticElf {
             .into_iter()
             .filter(|(fd, _)| files.contains_key(fd))
             .collect();
-        let signalfd_state = SignalFdState {
-            masks: previous_signalfd_state
-                .masks
-                .into_iter()
-                .filter(|(fd, _)| files.contains_key(fd))
-                .collect(),
-            pending: previous_signalfd_state.pending,
-        };
+        process_signals
+            .signalfd_masks
+            .retain(|fd, _| files.contains_key(fd));
         let task_lifecycle = previous.task_lifecycle.clone();
         let file_identity_table = previous.file_identity_table.clone();
         {
@@ -501,28 +517,12 @@ impl LoadedStaticElf {
                 closed_standard_fds.insert(fd);
             }
         }
-        let signal_actions = previous
-            .signal_actions
-            .into_iter()
-            .filter_map(|(signal, action)| {
-                let handler = usize::from_ne_bytes(
-                    action[..std::mem::size_of::<usize>()]
-                        .try_into()
-                        .expect("signal handler field size"),
-                );
-                (handler == libc::SIG_IGN).then(|| {
-                    let mut ignored = [0; 32];
-                    ignored[..std::mem::size_of::<usize>()]
-                        .copy_from_slice(&libc::SIG_IGN.to_ne_bytes());
-                    (signal, ignored)
-                })
-            })
-            .collect();
 
         self.cwd = previous.cwd;
         self.cwd_fd = previous.cwd_fd;
         self.stdin = stdin;
         self.pid = previous.pid;
+        self.pgid = previous.pgid;
         self.tid = previous.tid;
         self.ppid = previous.ppid;
         // `execve` replaces the image, never the position in the process tree.
@@ -546,14 +546,13 @@ impl LoadedStaticElf {
         self.sched_priority = previous.sched_priority;
         self.sched_reset_on_fork = previous.sched_reset_on_fork;
         self.ioprio = previous.ioprio;
-        self.signal_actions = signal_actions;
-        self.signal_mask = previous.signal_mask;
-        self.signalfd_state = std::sync::Arc::new(std::sync::Mutex::new(signalfd_state));
+        self.process_signals = std::sync::Arc::new(std::sync::Mutex::new(process_signals));
+        self.thread_signals = thread_signals;
         self.task_lifecycle = task_lifecycle;
         self.task_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .reset_after_exec(self.tid, self.pid);
+            .reset_after_exec(self.tid, self.pid, self.pgid);
         self.files = files;
         self.random_device_fds = random_device_fds;
         self.stdout_alias_fds = stdout_alias_fds;
@@ -817,6 +816,7 @@ fn load_executable(
         fs_base: 0,
         gs_base: 0,
         pid: 1,
+        pgid: 1,
         tid: 1,
         ppid: 0,
         // The backend-installed image is the root of the traced process tree.
@@ -842,12 +842,10 @@ fn load_executable(
         sched_priority: 0,
         sched_reset_on_fork: false,
         ioprio: 0,
-        signal_actions: std::collections::BTreeMap::new(),
-        signal_mask: [0; 8],
-        signal_alt_stack: None,
-        signalfd_state: std::sync::Arc::new(std::sync::Mutex::new(SignalFdState::default())),
+        process_signals: std::sync::Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
+        thread_signals: ThreadSignalState::default(),
         task_lifecycle: std::sync::Arc::new(std::sync::Mutex::new(TaskLifecycleTable::with_root(
-            1, 1, true,
+            1, 1, 1, true,
         ))),
         files: std::collections::BTreeMap::new(),
         random_device_fds: std::collections::BTreeSet::new(),
