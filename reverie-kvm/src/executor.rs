@@ -6405,7 +6405,7 @@ fn ioctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
-    match args[1] as libc::c_ulong {
+    match libc::c_ulong::from(args[1] as libc::c_uint) {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-229): Review virtual FIOCLEX/FIONCLEX descriptor flags.
         libc::FIOCLEX => {
@@ -6423,7 +6423,7 @@ fn ioctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
         SIOCETHTOOL => negative_errno(libc::ENODEV),
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-533): Review host FIONREAD query and guest copyback.
-        libc::FIONREAD => forward_fionread(memory, host_fd, args[2]),
+        libc::FIONREAD => forward_fionread(memory, state, guest_fd, host_fd, args[2]),
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-332): Report real terminal state to the guest.
         // The executor's inherited standard descriptors are the real host fds, so
@@ -6454,7 +6454,13 @@ fn ioctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
     }
 }
 
-fn forward_fionread(memory: &mut GuestMemory, host_fd: RawFd, out_addr: u64) -> i64 {
+fn forward_fionread(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    guest_fd: libc::c_int,
+    host_fd: RawFd,
+    out_addr: u64,
+) -> i64 {
     let mut readable_bytes: libc::c_int = 0;
     // Query into supervisor-owned storage before touching guest memory. Linux
     // reports EBADF or the descriptor-specific error (such as ENOTTY) ahead of
@@ -6471,7 +6477,25 @@ fn forward_fionread(memory: &mut GuestMemory, host_fd: RawFd, out_addr: u64) -> 
     if result < 0 {
         return io_error(std::io::Error::last_os_error());
     }
-    write_struct(memory, out_addr, &readable_bytes)
+    if state
+        .proc_files
+        .get(&guest_fd)
+        .is_some_and(|&inode| !is_synthetic_proc_directory_inode(inode))
+    {
+        let position = lseek(
+            state,
+            &[guest_fd as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0],
+            false,
+        );
+        if position < 0 {
+            return position;
+        }
+        readable_bytes = position.wrapping_neg() as libc::c_int;
+    }
+    match memory.write_user(out_addr, &readable_bytes.to_ne_bytes()) {
+        Ok(()) => 0,
+        Err(_) => negative_errno(libc::EFAULT),
+    }
 }
 
 /// Size of the kernel `struct termios` returned by `TCGETS`: four 4-byte mode
@@ -9105,7 +9129,7 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
         return negative_errno(libc::EFAULT);
     }
     if memory
-        .map_user_range(address, length as u64, args[2] == libc::PROT_NONE as u64)
+        .map_user_range_with_protection(address, length as u64, args[2] as libc::c_int)
         .is_err()
     {
         return negative_errno(libc::ENOMEM);
@@ -9187,7 +9211,7 @@ fn mprotect(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     if !range_is_valid(memory, address, length) || !memory.user_range_is_mapped(address, length) {
         return negative_errno(libc::ENOMEM);
     }
-    match memory.map_user_range(address, length, protection == libc::PROT_NONE as u64) {
+    match memory.map_user_range_with_protection(address, length, protection as libc::c_int) {
         Ok(()) => 0,
         Err(_) => negative_errno(libc::ENOMEM),
     }
@@ -10806,6 +10830,7 @@ const fn negative_errno(errno: libc::c_int) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    include!("fionread_contract_tests.rs");
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
     use std::os::unix::fs::FileTypeExt;
