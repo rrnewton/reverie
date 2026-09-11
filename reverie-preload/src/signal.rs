@@ -25,6 +25,7 @@ use crate::trap;
 use crate::user_dispatch::syscall_result;
 
 pub mod native_frame;
+pub mod owned_trace;
 mod runtime_owned;
 pub use runtime_owned::RuntimeSignal;
 pub use runtime_owned::configure_runtime_signals;
@@ -33,6 +34,17 @@ pub use runtime_owned::runtime_ordinary_mask;
 pub use runtime_owned::runtime_signal_descriptors;
 pub use runtime_owned::runtime_signal_mask;
 pub use runtime_owned::runtime_signals_configured;
+
+/// Sources which must stay unblocked in guest masks. Unlike returning sources,
+/// an owned synchronous trace remains blocked by runtime_handler_mask.
+pub fn required_runtime_signal_mask() -> u64 {
+    runtime_signal_mask()
+        | if owned_trace::configured() {
+            1 << (libc::SIGTRAP - 1)
+        } else {
+            0
+        }
+}
 
 #[repr(C)]
 #[derive(Default)]
@@ -72,6 +84,7 @@ pub(crate) unsafe fn install_user_dispatch_handler(on_alt_stack: bool) -> io::Re
         mask: runtime_handler_mask(),
     };
     unsafe { runtime_owned::install_runtime_signals()? };
+    unsafe { owned_trace::install()? };
     syscall_result(unsafe {
         trap::raw_syscall6(
             libc::SYS_rt_sigaction,
@@ -124,6 +137,7 @@ pub const RESERVED_SIGNALS: &[i32] = &[libc::SIGSYS];
 /// Whether `signal` is reserved by the runtime.
 pub fn is_reserved(signal: i32) -> bool {
     RESERVED_SIGNALS.contains(&signal)
+        || (signal == libc::SIGTRAP && owned_trace::configured())
         || ((1..=64).contains(&signal) && runtime_signal_mask() & (1u64 << (signal - 1)) != 0)
 }
 

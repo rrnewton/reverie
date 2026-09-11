@@ -427,6 +427,38 @@ impl Command {
         self
     }
 
+    /// Retains a private descriptor duplicate above stdio for each child exec.
+    ///
+    /// The duplicate is CLOEXEC in the parent for its entire lifetime. Only the
+    /// child's copy has that flag cleared, after stdio setup, through the normal
+    /// pre-exec path (also preserved by `try_into_std`). The returned number names
+    /// the same open file description; no destination descriptor is overwritten.
+    /// Dropping the command closes the parent copy, including on spawn failure.
+    /// Successful exec transfers the child copy to the child, which must close it.
+    /// A reusable command retains its parent copy between spawns. Later unsafe
+    /// pre-exec callbacks must not close or repurpose this descriptor.
+    pub fn inherit_fd(&mut self, descriptor: std::os::fd::BorrowedFd<'_>) -> io::Result<i32> {
+        use std::os::fd::AsRawFd;
+        use std::os::fd::FromRawFd;
+        use std::os::fd::OwnedFd;
+
+        let raw = unsafe {
+            libc::fcntl(
+                descriptor.as_raw_fd(),
+                libc::F_DUPFD_CLOEXEC,
+                libc::STDERR_FILENO + 1,
+            )
+        };
+        if raw == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        let owned = unsafe { OwnedFd::from_raw_fd(raw) };
+        unsafe {
+            self.pre_exec(move || inherit_fd_for_exec(owned.as_raw_fd()));
+        }
+        Ok(raw)
+    }
+
     /// Returns the path to the program that was given to [`Command::new`].
     ///
     /// # Examples
@@ -747,9 +779,49 @@ where
     None
 }
 
+unsafe fn inherit_fd_for_exec(fd: i32) -> Result<(), Errno> {
+    unsafe {
+        let flags = Errno::result(libc::fcntl(fd, libc::F_GETFD)).inspect_err(|_| {
+            crate::report_pre_exec_failure(libc::STDERR_FILENO, b"reverie pre_exec inherit_fd: fcntl F_GETFD failed\n");
+        })?;
+        Errno::result(libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC))
+            .inspect_err(|_| {
+                crate::report_pre_exec_failure(libc::STDERR_FILENO, b"reverie pre_exec inherit_fd: fcntl F_SETFD failed\n");
+            })?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pre_exec_inherit_fd_diagnostic_preserves_error() {
+        use std::io::Read;
+        use std::os::unix::process::CommandExt;
+        for closed_stderr in [false, true] {
+            let mut output = tempfile::tempfile().unwrap();
+            let mut command = std::process::Command::new("/bin/true");
+            command.stderr(output.try_clone().unwrap());
+            unsafe {
+                command.pre_exec(move || {
+                    if closed_stderr {
+                        libc::close(libc::STDERR_FILENO);
+                    }
+                    inherit_fd_for_exec(-1).map_err(Into::into)
+                });
+            }
+            let error = command.spawn().unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+            assert_eq!(error.to_string(), io::Error::from_raw_os_error(libc::EBADF).to_string());
+            use std::io::Seek;
+            output.rewind().unwrap();
+            let mut message = String::new();
+            output.read_to_string(&mut message).unwrap();
+            assert_eq!(message, if closed_stderr { "" } else { "reverie pre_exec inherit_fd: fcntl F_GETFD failed\n" });
+        }
+    }
 
     #[test]
     fn find_program() {

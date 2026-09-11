@@ -34,6 +34,12 @@ static DESCRIPTORS: [AtomicI64; 65] = [const { AtomicI64::new(-1) }; 65];
 /// Bodies classify the actual interrupted PC; count equality is not a witness.
 /// This restricted registration is not arbitrary guest signal virtualization.
 pub unsafe fn configure_runtime_signals(signals: &'static [RuntimeSignal]) -> io::Result<()> {
+    if super::owned_trace::configured() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "owned trace source configured",
+        ));
+    }
     let mut mask = 0u64;
     for action in signals {
         if !matches!(action.signal, libc::SIGTRAP | libc::SIGUSR2)
@@ -165,25 +171,36 @@ unsafe extern "C" fn runtime_signal_body(
     info: *mut libc::siginfo_t,
     frame: *mut libc::c_void,
 ) -> Continuation {
-    if info.is_null()
-        || frame.is_null()
-        || unsafe { trap::raw_syscall6(libc::SYS_gettid, [0; 6]) } != OWNER.load(Ordering::Relaxed)
-    {
-        unsafe { trap::exit_now(126) };
+    if info.is_null() || frame.is_null() {
+        unsafe { trap::terminal126("runtime-signal/frame", "predicate", None) };
+    }
+    let tid = unsafe { trap::raw_syscall6(libc::SYS_gettid, [0; 6]) };
+    if tid != OWNER.load(Ordering::Relaxed) {
+        unsafe { trap::terminal126("runtime-signal/owner", "raw-gettid", Some(tid)) };
     }
     let Some(source) = SIGNALS
         .get()
         .and_then(|sources| sources.iter().find(|source| source.signal == signal))
     else {
-        unsafe { trap::exit_now(126) };
+        unsafe { trap::terminal126("runtime-signal/source", "signal", Some(i64::from(signal))) };
     };
     if !unsafe { (source.validate)(signal, info, frame) } {
-        unsafe { trap::exit_now(126) };
+        unsafe { trap::terminal126("runtime-signal/validate", "signal", Some(i64::from(signal))) };
     }
     unsafe { (source.body)(signal, info, frame) }
 }
 
 crate::clocked_signal!(runtime_signal_clocked, runtime_signal_body);
+
+unsafe extern "C" fn runtime_disable_failed(result: i64) -> ! {
+    unsafe {
+        trap::terminal126(
+            "runtime-signal/PERF_EVENT_IOC_DISABLE",
+            "raw-result",
+            Some(result),
+        )
+    }
+}
 
 #[unsafe(naked)]
 unsafe extern "C" fn runtime_signal_entry(
@@ -200,7 +217,8 @@ unsafe extern "C" fn runtime_signal_entry(
         "lea rdx, [rip + 2f]", "lea r12, [rip + 3f]",
         "cmp rax, rcx", "cmovne rdx, r12", "jmp rdx",
         "2:", "pop r12", "pop rdx", "pop rsi", "pop rdi", "jmp {clocked}",
-        "3:", "mov eax, 231", "mov edi, 126", "call reverie_preload_trusted_syscall_ip", "ud2",
+        "3:", "mov rdi, rax", "sub rsp, 8", "call {failed}", "ud2",
         descriptors = sym DESCRIPTORS, clocked = sym runtime_signal_clocked,
+        failed = sym runtime_disable_failed,
     );
 }

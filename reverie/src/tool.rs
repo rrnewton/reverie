@@ -30,6 +30,11 @@ use crate::rdtsc::Rdtsc;
 #[cfg(target_arch = "x86_64")]
 use crate::rdtsc::RdtscResult;
 
+/// A Tool that cannot commit a suspended guest's progress must refuse it.
+#[derive(Debug, thiserror::Error)]
+#[error("guest progress transitions are unsupported")]
+pub struct UnsupportedGuestProgress;
+
 /// Who owns a guest thread: the single axis that governs *both* how the thread
 /// executes *and* who owns its thread-synchronization primitives (`futex`,
 /// `CLONE_CHILD_CLEARTID`).
@@ -378,6 +383,60 @@ pub trait Tool: Send + Sync + Default {
         c: Syscall,
     ) -> Result<i64, Error> {
         guest.tail_inject(c).await
+    }
+
+    /// Handles a typed vDSO function event.
+    ///
+    /// No backend delivers these events yet. Future delivery requires an
+    /// explicit capability rollout; until then this inactive default preserves
+    /// existing Tool and subscription behavior. A normal signed C return,
+    /// including a negative value, is `Ok(i64)`. An `Error` is a
+    /// control-plane refusal and must not be converted into a guest errno.
+    async fn handle_vdso_event<T: Guest<Self>>(
+        &self,
+        _guest: &mut T,
+        event: crate::vdso::VdsoEvent,
+    ) -> Result<i64, Error> {
+        match event {
+            crate::vdso::VdsoEvent::Getrandom(_) => {
+                Err(crate::vdso::UnsupportedVdsoEvent::Getrandom.into())
+            }
+        }
+    }
+
+    /// Queries virtual RNG inputs for this Tool's registered thread state.
+    ///
+    /// This read-only query performs no guest memory effects or function return.
+    /// The backend owns associating the state with this Tool and authenticating
+    /// any eventual image/operand use. This is not an event-accounting hook or
+    /// runtime capability grant; no backend queries it yet.
+    fn vdso_rng_snapshot(
+        &self,
+        _thread_state: &Self::ThreadState,
+    ) -> Result<crate::vdso::VdsoRngSnapshot, Error> {
+        Err(crate::vdso::UnsupportedVdsoEvent::RngSnapshot.into())
+    }
+
+    /// Commits progress at an authenticated, suspended non-branch boundary.
+    ///
+    /// The backend supplies its registered initialized Guest. Every read_clock
+    /// during this callback must return the same already-captured cumulative
+    /// observation, without a new hardware sample or a reset baseline. The
+    /// faulting operation is not thereby retired. This is not a substitute for
+    /// an actual syscall, instruction, signal or timer event.
+    ///
+    /// Implementations may await scheduling and request timers. The caller must
+    /// resolve interrupted timer ownership under its validated timer contract,
+    /// without counting a fault as instruction completion, then revalidate
+    /// ownership before resuming. A successful explicit arm follows Guest's
+    /// single-timer replacement contract, including a pending instruction suffix;
+    /// administrative interruption alone is neither an arm nor completion.
+    /// Errors, cancellation and panics may follow partial
+    /// commitment and must not be retried as a fresh transition. Snapshot or
+    /// native/frame effects happen only after successful commitment and after
+    /// releasing the Guest/state borrow. Default is a typed refusal, not a no-op.
+    async fn handle_guest_progress<G: Guest<Self>>(&self, _guest: &mut G) -> Result<(), Error> {
+        Err(Error::Tool(UnsupportedGuestProgress.into()))
     }
 
     /// CPUID is trapped, the tool should implement this function to return

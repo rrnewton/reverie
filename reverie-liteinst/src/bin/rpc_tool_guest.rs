@@ -30,6 +30,9 @@ use reverie_rpc_transport::RpcServer;
 #[path = "rpc_tool_guest/sud_only.rs"]
 mod sud_only_guest;
 
+#[cfg(feature = "test-owned-cpuid")]
+#[path = "rpc_tool_guest/owned_cpuid.rs"]
+mod owned_cpuid;
 #[path = "rpc_tool_guest/sud_masks.rs"]
 mod sud_masks;
 #[path = "rpc_tool_guest/syscall_fallback.rs"]
@@ -747,7 +750,7 @@ fn coordinator(path: &Path) {
 
 unsafe extern "C" fn forbidden_signal_handler(_signal: libc::c_int) {}
 
-fn guest(path: &Path) {
+fn guest(path: &Path, bootstrap: bool) {
     let mut expected_mask = 0_u64;
     let mask_query = unsafe {
         reverie_liteinst_rpc_sigprocmask(
@@ -758,7 +761,19 @@ fn guest(path: &Path) {
         )
     };
     assert_eq!(mask_query, 0);
-    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    if bootstrap {
+        unsafe {
+            std::env::set_var(reverie_liteinst::COORDINATOR_ENV, "guest-value");
+            reverie_liteinst::install_tool_from_bootstrap::<CounterTool>(path)
+        }
+        .unwrap();
+        assert_eq!(
+            std::env::var(reverie_liteinst::COORDINATOR_ENV).unwrap(),
+            "guest-value"
+        );
+    } else {
+        unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    }
     let ignored = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
     assert_ne!(ignored, libc::SIG_ERR);
     let defaulted = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
@@ -1315,9 +1330,20 @@ fn main() {
     let path = args.next().expect("socket path");
     match mode.to_str() {
         Some("coordinator") => coordinator(Path::new(&path)),
-        Some("guest") => guest(Path::new(&path)),
+        Some("guest") => guest(Path::new(&path), false),
+        Some("bootstrap-guest") => guest(Path::new(&path), true),
         Some("syscall-fallback") => syscall_fallback_guest::run(Path::new(&path)),
-        Some(mode) if mode.starts_with("sud-") => sud_only_guest::run(Path::new(&path), mode),
+        #[cfg(feature = "test-owned-cpuid")]
+        Some(mode) if mode.starts_with("sud-owned-cpuid") => {
+            owned_cpuid::run(Path::new(&path), mode)
+        }
+        #[cfg(not(feature = "test-owned-cpuid"))]
+        Some(mode) if mode.starts_with("sud-owned-cpuid") => {
+            panic!("owned CPUID fixture requires test-owned-cpuid")
+        }
+        Some(mode) if mode.starts_with("sud-") || mode.starts_with("bootstrap-sud-") => {
+            sud_only_guest::run(Path::new(&path), mode)
+        }
         Some("preinstalled-handler") => preinstalled_handler_guest(Path::new(&path)),
         Some("pending-sigsys") => pending_sigsys_guest(Path::new(&path)),
         Some("preblocked-sigsys") => preblocked_sigsys_guest(Path::new(&path)),

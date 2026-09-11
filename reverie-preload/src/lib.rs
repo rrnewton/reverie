@@ -57,6 +57,7 @@ pub mod dispatch;
 pub mod fmt;
 pub mod fork;
 pub mod lifecycle;
+pub mod precise_timer;
 pub mod seccomp;
 pub mod signal;
 pub mod sync;

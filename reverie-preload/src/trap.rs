@@ -31,6 +31,35 @@ use crate::seccomp::TrustedGate;
 use crate::signal;
 const SYS_SECCOMP_CODE: libc::c_int = 1;
 
+/// Optional owned-frame handoff after SUD provenance validation, before scalar
+/// dispatch or RAX normalization. Returning None retains the standard path.
+pub struct OwnedUserDispatch {
+    pub capture: unsafe fn(
+        i32,
+        *mut libc::siginfo_t,
+        *mut libc::c_void,
+        usize,
+    ) -> Option<crate::clock_boundary::Continuation>,
+}
+
+static OWNED_USER_DISPATCH: AtomicPtr<OwnedUserDispatch> = AtomicPtr::new(ptr::null_mut());
+
+/// # Safety
+/// Register before interception and guest threads. The process-lifetime callback
+/// must be allocation-free, non-unwinding and authenticate frame/owner/lifetime
+/// independently. It may claim only guest-owned SUD events, never runtime calls.
+pub unsafe fn register_owned_user_dispatch(hooks: &'static OwnedUserDispatch) -> io::Result<()> {
+    OWNED_USER_DISPATCH
+        .compare_exchange(
+            ptr::null_mut(),
+            (hooks as *const OwnedUserDispatch).cast_mut(),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .map(|_| ())
+        .map_err(|_| io::Error::other("owned SUD capture already registered"))
+}
+
 pub struct RuntimeEntryHooks {
     pub enter: unsafe extern "C" fn(),
     pub leave: unsafe extern "C" fn(),
@@ -248,8 +277,101 @@ pub fn dispatch_direct(number: i64, args: [u64; 6], instruction_pointer: u64) ->
     }
 }
 
+#[track_caller]
 pub(crate) unsafe fn exit_now(code: i32) -> ! {
+    if code == 126 {
+        unsafe { terminal126("sigsys-admission", "predicate", None) }
+    }
     let _ = unsafe { raw_syscall6(libc::SYS_exit_group, [code as u64, 0, 0, 0, 0, 0]) };
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+struct Terminal126Line {
+    bytes: [u8; 768],
+    used: usize,
+}
+
+impl Terminal126Line {
+    fn push(&mut self, bytes: &[u8]) {
+        let count = bytes.len().min(self.bytes.len() - 1 - self.used);
+        self.bytes[self.used..self.used + count].copy_from_slice(&bytes[..count]);
+        self.used += count;
+    }
+
+    fn number(&mut self, value: i64) {
+        if value < 0 {
+            self.push(b"-");
+        }
+        let mut value = value.unsigned_abs();
+        let mut digits = [0u8; 20];
+        let mut cursor = digits.len();
+        loop {
+            cursor -= 1;
+            digits[cursor] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
+        }
+        self.push(&digits[cursor..]);
+    }
+
+    fn new(
+        site: &core::panic::Location<'_>,
+        operation: &str,
+        detail: &str,
+        value: Option<i64>,
+    ) -> Self {
+        let mut line = Self {
+            bytes: [0; 768],
+            used: 0,
+        };
+        line.push(b"liteinst terminal126: operation=");
+        line.push(operation.as_bytes());
+        line.push(b" detail=");
+        line.push(detail.as_bytes());
+        line.push(b" value=");
+        match value {
+            Some(value) => line.number(value),
+            None => line.push(b"none"),
+        }
+        line.push(b" site=");
+        line.push(site.file().as_bytes());
+        line.push(b":");
+        line.number(i64::from(site.line()));
+        line.push(b":");
+        line.number(i64::from(site.column()));
+        line.bytes[line.used] = b'\n';
+        line.used += 1;
+        line
+    }
+}
+
+/// Failure-only, allocation-free diagnostic through the existing trusted gate.
+/// One best-effort write: no retries, TLS, formatting callbacks or signal-policy
+/// changes. A write can block or raise SIGPIPE under the inherited policy; lack
+/// of a record cannot exclude this branch. Values are tagged, not inferred errno.
+#[doc(hidden)]
+#[track_caller]
+pub fn report_terminal126(operation: &str, detail: &str, value: Option<i64>) {
+    let line = Terminal126Line::new(core::panic::Location::caller(), operation, detail, value);
+    let _ = unsafe {
+        raw_syscall6(
+            libc::SYS_write,
+            [2, line.bytes.as_ptr() as u64, line.used as u64, 0, 0, 0],
+        )
+    };
+}
+
+/// # Safety
+/// Only call at an already-terminal refusal; this never returns or repairs state.
+#[doc(hidden)]
+#[track_caller]
+pub unsafe fn terminal126(operation: &str, detail: &str, value: Option<i64>) -> ! {
+    report_terminal126(operation, detail, value);
+    let _ = unsafe { raw_syscall6(libc::SYS_exit_group, [126, 0, 0, 0, 0, 0]) };
     loop {
         core::hint::spin_loop();
     }
@@ -266,7 +388,7 @@ unsafe extern "C" fn sigsys_body(
     context: *mut libc::c_void,
 ) -> crate::clock_boundary::Continuation {
     let _runtime = RuntimeEntryGuard::enter();
-    unsafe { dispatch_signal(signal_number, info, context, SYS_SECCOMP_CODE) }
+    unsafe { dispatch_signal(signal_number, info, context, SYS_SECCOMP_CODE, None) }
 }
 
 crate::clocked_signal!(sigsys_handler, sigsys_body);
@@ -275,6 +397,8 @@ unsafe extern "C" fn user_dispatch_body(
     signal_number: libc::c_int,
     info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
+    _scope_token: u64,
+    entry_sp: usize,
 ) -> crate::clock_boundary::Continuation {
     let _runtime = RuntimeEntryGuard::enter();
     unsafe {
@@ -283,17 +407,19 @@ unsafe extern "C" fn user_dispatch_body(
             info,
             context,
             crate::user_dispatch::SYS_USER_DISPATCH_CODE,
+            Some(entry_sp),
         )
     }
 }
 
-crate::clocked_signal!(user_dispatch_handler, user_dispatch_body);
+crate::clocked_signal!(user_dispatch_handler, user_dispatch_body, frame_entry);
 
 unsafe fn dispatch_signal(
     signal_number: libc::c_int,
     info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
     expected_code: i32,
+    entry_sp: Option<usize>,
 ) -> crate::clock_boundary::Continuation {
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-133): Review fail-closed SIGSYS provenance validation.
@@ -324,20 +450,44 @@ unsafe fn dispatch_signal(
         {
             unsafe { exit_now(126) };
         }
-        registers[libc::REG_RAX as usize] = i64::from(syscall_info.number);
         if syscall_info.number == libc::SYS_rt_sigreturn as i32 {
+            registers[libc::REG_RAX as usize] = i64::from(syscall_info.number);
             registers[libc::REG_RIP as usize] = trusted_sigreturn_restorer as *const () as i64;
             IN_HANDLER.set(previous_handler);
             return crate::clock_boundary::Continuation::GUEST;
         }
+        let hooks = OWNED_USER_DISPATCH.load(Ordering::Acquire);
+        if let Some(entry_sp) = entry_sp
+            && !hooks.is_null()
+            && let Some(continuation) = unsafe {
+                ((*hooks).capture)(
+                    signal_number,
+                    info,
+                    (context as *mut libc::ucontext_t).cast(),
+                    entry_sp,
+                )
+            }
+        {
+            IN_HANDLER.set(previous_handler);
+            return continuation;
+        }
+        context.uc_mcontext.gregs[libc::REG_RAX as usize] = i64::from(syscall_info.number);
     }
     let mut return_mask = None;
     let continuation = if expected_code == crate::user_dispatch::SYS_USER_DISPATCH_CODE {
         crate::user_dispatch::with_dispatch_mask(&mut context.uc_sigmask, || {
-            dispatch_registers(registers, expected_code, &mut return_mask)
+            dispatch_registers(
+                &mut context.uc_mcontext.gregs,
+                expected_code,
+                &mut return_mask,
+            )
         })
     } else {
-        dispatch_registers(registers, expected_code, &mut return_mask)
+        dispatch_registers(
+            &mut context.uc_mcontext.gregs,
+            expected_code,
+            &mut return_mask,
+        )
     };
     if let Some(mask) = return_mask {
         unsafe { (&raw mut context.uc_sigmask).cast::<u64>().write(mask) };
@@ -430,6 +580,77 @@ const _: () =
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal126_label_value_and_site_are_preserved() {
+        let site = core::panic::Location::caller();
+        for value in [None, Some(0), Some(-22), Some(i64::MIN), Some(i64::MAX)] {
+            let line = Terminal126Line::new(site, "restore-mask", "raw-result", value);
+            let value = value
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".into());
+            assert_eq!(
+                std::str::from_utf8(&line.bytes[..line.used]).unwrap(),
+                format!(
+                    "liteinst terminal126: operation=restore-mask detail=raw-result value={value} site={}:{}:{}\n",
+                    site.file(),
+                    site.line(),
+                    site.column()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn terminal126_truncation_is_bounded_and_terminated() {
+        let line = Terminal126Line::new(
+            core::panic::Location::caller(),
+            &"x".repeat(2000),
+            "predicate",
+            None,
+        );
+        assert_eq!(line.used, line.bytes.len());
+        assert_eq!(line.bytes[line.used - 1], b'\n');
+    }
+
+    #[test]
+    fn terminal126_ordinary_child_keeps_status_and_raw_result() {
+        const CHILD: &str = "REVERIE_TERMINAL126_HOST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            unsafe { terminal126("host-control", "raw-result", Some(-22)) }
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "trap::tests::terminal126_ordinary_child_keeps_status_and_raw_result",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(126));
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            stderr.contains("operation=host-control detail=raw-result value=-22 site="),
+            "{stderr}"
+        );
+        let full = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "trap::tests::terminal126_ordinary_child_keeps_status_and_raw_result",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(full)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(126));
+    }
 
     #[test]
     fn user_dispatch_option_uses_linux_int_width() {

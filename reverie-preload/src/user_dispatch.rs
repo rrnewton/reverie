@@ -120,8 +120,8 @@ pub unsafe fn forward_syscall(number: i64, args: [u64; 6]) -> i64 {
     if closed != 0 {
         unsafe { trap::exit_now(125) };
     }
-    if signal::runtime_signals_configured()
-        && guest_mask & (signal::runtime_signal_mask() | (1u64 << (libc::SIGSYS - 1))) != 0
+    if (signal::runtime_signals_configured() || signal::owned_trace::configured())
+        && guest_mask & (signal::required_runtime_signal_mask() | (1u64 << (libc::SIGSYS - 1))) != 0
     {
         unsafe { trap::exit_now(125) };
     }
