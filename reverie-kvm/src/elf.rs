@@ -738,12 +738,6 @@ fn load_executable(
     let executable_path =
         resolve_executable_path(argv0, envp, cwd).unwrap_or_else(|_| PathBuf::from(argv0));
     let thread_name = initial_thread_name(&executable_path);
-    let executable_file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
-        .open(&executable_path)
-        .ok()
-        .map(std::sync::Arc::new);
     let argv0 = argv0.as_bytes().to_vec();
 
     Ok(LoadedStaticElf {
@@ -756,7 +750,7 @@ fn load_executable(
         mmap_next,
         mmap_limit,
         executable_path,
-        executable_file,
+        executable_file: None,
         executable_image: std::sync::Arc::from(image),
         argv0,
         cwd: cwd.to_owned(),

@@ -55,6 +55,279 @@ use reverie_kvm::StraceTool;
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 
 #[test]
+fn initial_exec_binding_bytes_different_file() {
+    initial_exec_binding_control(
+        "initial_exec_binding_bytes_different_file",
+        false,
+        "different",
+    );
+}
+
+#[test]
+fn initial_exec_binding_bytes_identical_file() {
+    initial_exec_binding_control(
+        "initial_exec_binding_bytes_identical_file",
+        false,
+        "identical",
+    );
+}
+
+#[test]
+fn initial_exec_binding_bytes_missing_file() {
+    initial_exec_binding_control("initial_exec_binding_bytes_missing_file", false, "missing");
+}
+
+#[test]
+fn initial_exec_binding_bytes_arbitrary_argv() {
+    initial_exec_binding_control(
+        "initial_exec_binding_bytes_arbitrary_argv",
+        false,
+        "arbitrary",
+    );
+}
+
+#[test]
+fn initial_exec_binding_bytes_replace_known_binding() {
+    initial_exec_binding_control(
+        "initial_exec_binding_bytes_replace_known_binding",
+        false,
+        "after-file",
+    );
+}
+
+#[test]
+fn initial_exec_binding_file_different_file() {
+    initial_exec_binding_control(
+        "initial_exec_binding_file_different_file",
+        true,
+        "different",
+    );
+}
+
+#[test]
+fn initial_exec_binding_file_identical_file() {
+    initial_exec_binding_control(
+        "initial_exec_binding_file_identical_file",
+        true,
+        "identical",
+    );
+}
+
+#[test]
+fn initial_exec_binding_file_arbitrary_argv() {
+    initial_exec_binding_control(
+        "initial_exec_binding_file_arbitrary_argv",
+        true,
+        "arbitrary",
+    );
+}
+
+#[test]
+fn initial_exec_binding_file_unlinked_before_install() {
+    initial_exec_binding_control(
+        "initial_exec_binding_file_unlinked_before_install",
+        true,
+        "unlink",
+    );
+}
+
+#[test]
+fn initial_exec_binding_file_replaced_before_install() {
+    initial_exec_binding_control(
+        "initial_exec_binding_file_replaced_before_install",
+        true,
+        "replace",
+    );
+}
+
+#[test]
+fn initial_exec_binding_file_failed_read_preserves_image() {
+    initial_exec_binding_control(
+        "initial_exec_binding_file_failed_read_preserves_image",
+        true,
+        "read-error",
+    );
+}
+
+fn initial_exec_binding_control(test: &str, file_backed: bool, case: &str) {
+    use std::io::Seek;
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    if !leader_self_exec_bounded(test) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(&directory.0, "image-a", INITIAL_EXEC_BINDING_PROGRAM);
+    let other = compile_c_program(&directory.0, "image-b", "int main(void) { return 77; }");
+    if case == "identical" {
+        std::fs::copy(&program, &other).unwrap();
+        assert_eq!(
+            std::fs::read(&program).unwrap(),
+            std::fs::read(&other).unwrap()
+        );
+    }
+    let file = std::fs::File::open(&program).unwrap();
+    let metadata = file.metadata().unwrap();
+    assert_ne!(metadata.ino(), std::fs::metadata(&other).unwrap().ino());
+    let image = std::fs::read(&program).unwrap();
+    let missing = directory.0.join("absent-image");
+    let argv0 = match case {
+        "missing" => missing.to_str().unwrap(),
+        "arbitrary" => "arbitrary-argv0-not-a-path",
+        _ => other.to_str().unwrap(),
+    };
+    let deleted = matches!(case, "unlink" | "replace");
+    if case == "unlink" {
+        std::fs::remove_file(&program).unwrap();
+    } else if case == "replace" {
+        std::fs::rename(&other, &program).unwrap();
+    }
+    let environment = [
+        format!("BINDING_KNOWN={}", u8::from(file_backed)),
+        format!("BINDING_DEV={}", metadata.dev()),
+        format!("BINDING_INO={}", metadata.ino()),
+        format!("BINDING_ARGV={argv0}"),
+        format!(
+            "BINDING_LINK={}{}",
+            program.display(),
+            if deleted { " (deleted)" } else { "" }
+        ),
+    ];
+    let envp = environment.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    if file_backed {
+        let mut offset_alias = file.try_clone().unwrap();
+        offset_alias.seek(std::io::SeekFrom::Start(7)).unwrap();
+        backend
+            .install_static_elf_file_with_context(
+                file,
+                &[argv0, "argument-preserved"],
+                &envp,
+                &directory.0,
+            )
+            .unwrap();
+        assert_eq!(offset_alias.stream_position().unwrap(), 7);
+        if case == "read-error" {
+            let unreadable = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH)
+                .open(&other)
+                .unwrap();
+            let error = backend
+                .install_static_elf_file_with_context(
+                    unreadable,
+                    &["wrong-image"],
+                    &[],
+                    &directory.0,
+                )
+                .unwrap_err();
+            assert!(
+                matches!(error, Error::HostIo(ref error) if error.raw_os_error() == Some(libc::EBADF)),
+                "{error}"
+            );
+        }
+    } else {
+        if case == "after-file" {
+            backend
+                .install_static_elf_file_with_context(
+                    file.try_clone().unwrap(),
+                    &[argv0, "argument-preserved"],
+                    &envp,
+                    &directory.0,
+                )
+                .unwrap();
+        }
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[argv0, "argument-preserved"],
+                &envp,
+                &directory.0,
+            )
+            .unwrap();
+        drop(file);
+    }
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!(
+        code,
+        0,
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    );
+    assert_eq!(
+        stdout,
+        if file_backed {
+            b"known object and selfexec exact=PASS\n".as_slice()
+        } else {
+            b"unknown backing and failed selfexec exact=PASS\n".as_slice()
+        }
+    );
+    assert!(
+        stderr.is_empty(),
+        "stderr={}",
+        String::from_utf8_lossy(&stderr)
+    );
+}
+
+const INITIAL_EXEC_BINDING_PROGRAM: &str = r###"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/prctl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+extern char **environ;
+
+int main(int argc, char **argv) {
+    if (argc != 2 || strcmp(argv[0], getenv("BINDING_ARGV")) || strcmp(argv[1], "argument-preserved")) return 10;
+    int known = !strcmp(getenv("BINDING_KNOWN"), "1");
+    unsigned char actual[4096], expected[4096];
+    memset(actual, 0x5a, sizeof(actual)); memset(expected, 0x5a, sizeof(expected));
+    errno = 0;
+    int result = stat("/proc/self/exe", (struct stat *)actual);
+    int error = errno;
+    if (known) {
+        struct stat metadata;
+        memcpy(&metadata, actual, sizeof(metadata));
+        if (result || error || metadata.st_dev != strtoull(getenv("BINDING_DEV"), NULL, 10) || metadata.st_ino != strtoull(getenv("BINDING_INO"), NULL, 10) || memcmp(actual + sizeof(metadata), expected + sizeof(metadata), sizeof(actual) - sizeof(metadata))) {
+            printf("known stat result=%d errno=%d inode=%llu expected=%s\n", result, error, (unsigned long long)metadata.st_ino, getenv("BINDING_INO"));
+            return 11;
+        }
+        memset(actual, 0x5a, sizeof(actual));
+        const char *link = getenv("BINDING_LINK");
+        size_t length = strlen(link);
+        if (length >= sizeof(expected)) return 12;
+        memcpy(expected, link, length);
+        if (readlink("/proc/self/exe", (char *)actual, sizeof(actual)) != (ssize_t)length || memcmp(actual, expected, sizeof(actual))) return 13;
+    } else if (result != -1 || error != ENOENT || memcmp(actual, expected, sizeof(actual))) {
+        printf("unknown stat result=%d errno=%d full4096_unchanged=%d\n", result, error, !memcmp(actual, expected, sizeof(actual)));
+        return 14;
+    }
+    unsigned char name[64], expected_name[64];
+    memset(name, 0x5a, sizeof(name)); memset(expected_name, 0x5a, sizeof(expected_name));
+    if (getenv("BINDING_AFTER")) {
+        memset(expected_name, 0, 16); memcpy(expected_name, "exe", 3);
+        if (prctl(PR_GET_NAME, name) || memcmp(name, expected_name, sizeof(name))) return 15;
+        puts("known object and selfexec exact=PASS");
+        return 0;
+    }
+    if (prctl(PR_SET_NAME, "binding-before") || setenv("BINDING_AFTER", "1", 1)) return 16;
+    errno = 0;
+    execve("/proc/self/exe", argv, environ);
+    error = errno;
+    memset(expected_name, 0, 16); memcpy(expected_name, "binding-before", 14);
+    if (known || error != ENOENT || prctl(PR_GET_NAME, name) || memcmp(name, expected_name, sizeof(name))) return 17;
+    puts("unknown backing and failed selfexec exact=PASS");
+    return 0;
+}
+"###;
+
+#[test]
 fn leader_self_exec_output_permissions() {
     if !leader_self_exec_bounded("leader_self_exec_output_permissions") {
         return;
@@ -129,11 +402,10 @@ fn leader_self_exec_lifetime_control(test: &str, mode: &str, method: &str) {
             "running-image",
             LEADER_SELF_EXEC_LIFETIME_PROGRAM,
         );
-        let image = std::fs::read(&program).unwrap();
         let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
         backend
-            .install_static_elf_with_context(
-                &image,
+            .install_static_elf_file_with_context(
+                std::fs::File::open(&program).unwrap(),
                 &[program.to_str().unwrap(), mode, method],
                 &[],
                 &directory.0,
@@ -483,13 +755,12 @@ fn self_exec_proc_aliases_use_loaded_image_after_unlink_or_replacement() {
 
         let root = TestDirectory::new();
         let executable = compile_assembly_program(&root.0, name, &source);
-        let image = std::fs::read(&executable).unwrap();
         let executable_name = executable.to_str().unwrap().to_owned();
         let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
         backend.set_root_pid(ROOT_PID).unwrap();
         backend
-            .install_static_elf_with_context(
-                &image,
+            .install_static_elf_file_with_context(
+                std::fs::File::open(&executable).unwrap(),
                 &[executable_name.as_str()],
                 &["INITIAL=1"],
                 &root.0,
@@ -635,11 +906,15 @@ fn exec_through_symlink_reports_the_opened_executable_and_preserves_argv0() {
         argv0 = ARGV0,
     );
     let launcher = compile_assembly_program(&root.0, "symlink-exec-launcher", &root_source);
-    let launcher_image = std::fs::read(&launcher).unwrap();
     let launcher = launcher.to_str().unwrap();
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
     backend
-        .install_static_elf_with_context(&launcher_image, &[launcher], &[], &root.0)
+        .install_static_elf_file_with_context(
+            std::fs::File::open(launcher).unwrap(),
+            &[launcher],
+            &[],
+            &root.0,
+        )
         .unwrap();
 
     let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
@@ -827,12 +1102,16 @@ fn repeated_self_exec_preserves_executable_identity_argv_and_envp() {
 
     let root = TestDirectory::new();
     let executable = compile_assembly_program(&root.0, "repeated-self-exec", source);
-    let image = std::fs::read(&executable).unwrap();
     let executable = executable.to_str().unwrap();
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
     backend.set_root_pid(ROOT_PID).unwrap();
     backend
-        .install_static_elf_with_context(&image, &[executable], &["INITIAL=1"], &root.0)
+        .install_static_elf_file_with_context(
+            std::fs::File::open(executable).unwrap(),
+            &[executable],
+            &["INITIAL=1"],
+            &root.0,
+        )
         .unwrap();
 
     let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
@@ -928,7 +1207,23 @@ int main(void) {{
     );
     let launcher = compile_c_program(&root.0, "comm-launcher", &launcher_source);
     let launcher = launcher.to_str().unwrap();
-    let (stdout, stderr) = run_host_program_captured(launcher, &[launcher], &root.0);
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_file_with_context(
+            std::fs::File::open(launcher).unwrap(),
+            &[launcher],
+            &["PATH=/usr/bin:/bin"],
+            &root.0,
+        )
+        .unwrap();
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!(
+        code,
+        0,
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    );
     let target = target.canonicalize().unwrap();
     let expected = format!(
         "{target}\nalias-name\nnot-the-path\n{target}\nexe\nsecond-argv-zero\n",
@@ -968,12 +1263,16 @@ fn leader_self_exec_guest(
     arguments: &[&str],
     expected: &[u8],
 ) {
-    let image = std::fs::read(program).unwrap();
     let mut argv = vec![program.to_str().unwrap()];
     argv.extend_from_slice(arguments);
     let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
     backend
-        .install_static_elf_with_context(&image, &argv, &[], directory)
+        .install_static_elf_file_with_context(
+            std::fs::File::open(program).unwrap(),
+            &argv,
+            &[],
+            directory,
+        )
         .unwrap();
     let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
     assert_eq!(
