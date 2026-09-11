@@ -65,6 +65,7 @@ use crate::bootstrap::thread_tool_stack_top;
 use crate::elf::LoadedStaticElf;
 use crate::elf::initial_thread_name;
 use crate::elf::load_static_elf;
+use crate::elf::load_static_elf_file;
 use crate::executor::ChildCompletion;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
@@ -695,7 +696,11 @@ impl KvmBackend {
         envp: &[&str],
         cwd: &Path,
     ) -> Result<()> {
-        let mut loaded = load_static_elf(&mut self.memory, image, argv, envp, cwd)?;
+        let loaded = load_static_elf(&mut self.memory, image, argv, envp, cwd)?;
+        self.install_loaded_static_elf(loaded)
+    }
+
+    fn install_loaded_static_elf(&mut self, mut loaded: LoadedStaticElf) -> Result<()> {
         loaded.pid = self.root_pid;
         loaded.tid = self.root_pid;
         loaded.ppid = root_parent_pid(self.root_pid);
@@ -712,11 +717,14 @@ impl KvmBackend {
         Ok(())
     }
 
-    /// Loads image bytes from the supplied open file and retains that same object.
+    /// Loads image bytes from the supplied open file, retaining the final executable.
     ///
     /// Positional reads start at zero without changing the file's shared offset.
     /// `argv[0]` remains independent of the file identity. The retained object's
     /// path supplies the initial executable name; later exec uses its invoked name.
+    /// For scripts, each interpreter is read from its retained open file, and the
+    /// final interpreter's file and bytes become the executable identity. The
+    /// original script still supplies the invoked name and script argument.
     /// This does not add initial execution authorization or snapshot concurrent
     /// host file writes. The caller must provide a stable, readable executable.
     pub fn install_static_elf_file_with_context(
@@ -726,36 +734,8 @@ impl KvmBackend {
         envp: &[&str],
         cwd: &Path,
     ) -> Result<()> {
-        use std::os::unix::fs::FileExt;
-
-        let mut image = Vec::new();
-        let mut buffer = [0; 64 * 1024];
-        loop {
-            let count = match file.read_at(&mut buffer, image.len() as u64) {
-                Ok(count) => count,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error.into()),
-            };
-            if count == 0 {
-                break;
-            }
-            image.extend_from_slice(&buffer[..count]);
-        }
-        let executable_path = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
-        self.install_static_elf_with_context(&image, argv, envp, cwd)?;
-        let loaded = self
-            .static_elf
-            .as_mut()
-            .ok_or(Error::StaticElfNotInstalled)?;
-        let thread_name = initial_thread_name(&executable_path);
-        loaded.executable_path = executable_path;
-        loaded.executable_file = Some(Arc::new(file));
-        loaded.thread_name = thread_name;
-        *loaded
-            .thread_group_leader_name
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = thread_name;
-        Ok(())
+        let loaded = load_static_elf_file(&mut self.memory, file, argv, envp, cwd)?;
+        self.install_loaded_static_elf(loaded)
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED

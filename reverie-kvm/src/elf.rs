@@ -6,12 +6,16 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Read;
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::FileExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 
@@ -573,7 +577,44 @@ pub(crate) fn load_static_elf(
 ) -> Result<LoadedStaticElf> {
     // TODO-HUMAN-REVIEW(PR-132): Review ELF user-map construction.
     memory.clear_user_access();
-    load_executable(memory, image, argv, envp, cwd, 0)
+    load_executable(memory, image, argv, envp, cwd, 0, None)
+}
+
+pub(crate) fn load_static_elf_file(
+    memory: &mut GuestMemory,
+    file: File,
+    argv: &[&str],
+    envp: &[&str],
+    cwd: &Path,
+) -> Result<LoadedStaticElf> {
+    let image = read_file_image(&file)?;
+    let invoked_path = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
+    memory.clear_user_access();
+    let mut loaded = load_executable(memory, &image, argv, envp, cwd, 0, Some(Arc::new(file)))?;
+    let thread_name = initial_thread_name(&invoked_path);
+    loaded.thread_name = thread_name;
+    *loaded
+        .thread_group_leader_name
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = thread_name;
+    Ok(loaded)
+}
+
+fn read_file_image(file: &File) -> std::io::Result<Vec<u8>> {
+    let mut image = Vec::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let count = match file.read_at(&mut buffer, image.len() as u64) {
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if count == 0 {
+            break;
+        }
+        image.extend_from_slice(&buffer[..count]);
+    }
+    Ok(image)
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review recursive script interpreter loading.
@@ -584,6 +625,7 @@ fn load_executable(
     envp: &[&str],
     cwd: &Path,
     script_depth: usize,
+    executable_file: Option<Arc<File>>,
 ) -> Result<LoadedStaticElf> {
     let argv0 = *argv
         .first()
@@ -594,13 +636,24 @@ fn load_executable(
                 "script interpreter recursion limit exceeded".to_string(),
             ));
         }
-        let script_path = resolve_executable_path(argv0, envp, cwd)?;
+        let script_path = if let Some(file) = executable_file.as_ref() {
+            std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?
+        } else {
+            resolve_executable_path(argv0, envp, cwd)?
+        };
         let interpreter_path = resolve_executable_path(&interpreter, envp, cwd)?;
-        let interpreter_image = std::fs::read(&interpreter_path).map_err(|error| {
+        let read_error = |error| {
             Error::UnsupportedElf(format!(
                 "cannot read script interpreter {interpreter_path:?}: {error}"
             ))
-        })?;
+        };
+        let (interpreter_image, interpreter_file) = if executable_file.is_some() {
+            let file = File::open(&interpreter_path).map_err(read_error)?;
+            let image = read_file_image(&file).map_err(read_error)?;
+            (image, Some(Arc::new(file)))
+        } else {
+            (std::fs::read(&interpreter_path).map_err(read_error)?, None)
+        };
         if interpreter_image.len() as u64 > MAX_INTERPRETER_BYTES {
             return Err(Error::UnsupportedElf(format!(
                 "script interpreter {interpreter_path:?} exceeds {MAX_INTERPRETER_BYTES} bytes"
@@ -625,6 +678,7 @@ fn load_executable(
             envp,
             cwd,
             script_depth + 1,
+            interpreter_file,
         );
     }
 
@@ -735,8 +789,11 @@ fn load_executable(
         .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
         .open(cwd)?;
 
-    let executable_path =
-        resolve_executable_path(argv0, envp, cwd).unwrap_or_else(|_| PathBuf::from(argv0));
+    let executable_path = if let Some(file) = executable_file.as_ref() {
+        std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?
+    } else {
+        resolve_executable_path(argv0, envp, cwd).unwrap_or_else(|_| PathBuf::from(argv0))
+    };
     let thread_name = initial_thread_name(&executable_path);
     let argv0 = argv0.as_bytes().to_vec();
 
@@ -750,7 +807,7 @@ fn load_executable(
         mmap_next,
         mmap_limit,
         executable_path,
-        executable_file: None,
+        executable_file,
         executable_image: std::sync::Arc::from(image),
         argv0,
         cwd: cwd.to_owned(),
