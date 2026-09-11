@@ -1,0 +1,150 @@
+lane,category,test,mode,backend,samples,q1_s,median_s,q3_s,iqr_s,max_s,step_timeouts,terminal_passes,clean_passes,retried_repetitions,result
+portable,applications,applications/example-timed-progress-bar,verify,dbt,10,3.586,3.763,3.931,0.345,3.957,0,0,0,0,incomplete
+portable,applications,applications/example-timed-progress-bar,verify,kvm,10,25.309,25.685,26.011,0.702,27.042,0,10,10,0,passed every repetition
+portable,applications,applications/example-timed-progress-bar,verify,liteinst,10,60.426,60.436,60.447,0.021,60.475,10,0,0,1,incomplete
+portable,applications,applications/example-timed-progress-bar,verify,ptrace,10,29.904,45.504,60.504,30.6,60.518,5,5,5,1,incomplete
+portable,backend-parity-c,backend-parity-c/aio-refusal,verify,liteinst,10,6.276,6.662,6.954,0.678,7.47,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/cpu-virtualization,verify,dbt,10,3.085,3.108,3.274,0.189,3.344,0,0,0,0,incomplete
+portable,backend-parity-c,backend-parity-c/cwd-roundtrip,verify,liteinst,10,6.199,6.742,6.878,0.679,7.094,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/dup-shared-offset,verify,dbt,10,3.126,3.163,3.226,0.101,3.503,0,0,0,0,incomplete
+portable,backend-parity-c,backend-parity-c/event-delivery-ordering,verify,liteinst,10,6.318,6.592,6.791,0.473,7.389,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/eventfd-semantics,verify,liteinst,10,6.481,6.59,6.705,0.224,6.845,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/fcntl-owner,verify,liteinst,10,6.249,6.564,6.915,0.665,7.264,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/fd-duplication,verify,dbt,10,3.403,3.474,3.667,0.264,3.74,0,0,0,0,incomplete
+portable,backend-parity-c,backend-parity-c/file-io-roundtrip,verify,liteinst,10,4.625,4.889,5.075,0.45,7.014,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/fork-exec-pipeline,verify,kvm,10,6.147,6.438,9.852,3.706,12.251,0,10,7,3,flaky
+portable,backend-parity-c,backend-parity-c/getcpu-identity,verify,dbt,10,3.413,3.553,3.555,0.142,3.556,0,0,0,0,incomplete
+portable,backend-parity-c,backend-parity-c/getpriority-identity,verify,dbt,10,3.206,3.307,3.383,0.177,3.386,0,0,0,0,incomplete
+portable,backend-parity-c,backend-parity-c/getrusage-self-accounting,verify,liteinst,10,8.08,8.191,8.297,0.216,8.515,0,0,0,10,incomplete
+portable,backend-parity-c,backend-parity-c/hardware-trap-identity,verify,dbt,10,3.577,3.644,3.646,0.069,3.799,0,0,0,0,incomplete
+portable,backend-parity-c,backend-parity-c/host-identity,verify,dbt,10,3.44,3.546,3.619,0.179,3.725,0,0,0,0,incomplete
+portable,backend-parity-c,backend-parity-c/lseek-positioning,verify,dbt,10,3.441,3.508,3.565,0.124,3.864,0,0,0,0,incomplete
+portable,backend-parity-c,backend-parity-c/membarrier-query,verify,liteinst,10,4.674,4.888,5.074,0.4,5.123,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/mkdir-rmdir,verify,liteinst,10,4.657,4.701,4.855,0.198,5.191,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/numa-node-identity,verify,dbt,10,3.27,3.29,3.329,0.059,3.696,0,0,0,0,incomplete
+portable,backend-parity-c,backend-parity-c/o-tmpfile-anon,verify,liteinst,10,4.585,4.616,4.732,0.147,4.812,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/personality-domain,verify,liteinst,10,4.561,4.841,4.929,0.368,5.599,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/pidfd-open-self,verify,dbt,10,3.107,3.108,3.135,0.028,3.214,0,0,0,0,incomplete
+portable,backend-parity-c,backend-parity-c/pipe-capacity,verify,liteinst,10,4.862,4.935,5.013,0.151,5.452,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/prctl-identity,verify,dbt,10,3.338,3.387,3.545,0.207,3.608,0,0,0,0,incomplete
+portable,backend-parity-c,backend-parity-c/pthread-lifecycle,verify,kvm,10,2.848,4.054,4.798,1.95,6.035,0,10,6,4,flaky
+portable,backend-parity-c,backend-parity-c/pthread-lifecycle,verify,sabre,10,5.004,5.094,5.171,0.167,5.549,0,0,0,10,failed every repetition
+portable,backend-parity-c,backend-parity-c/record-lock,verify,liteinst,10,4.876,4.981,5.247,0.371,6.222,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/rlimit-identity,verify,dbt,10,3.155,3.185,3.244,0.09,3.664,0,0,0,0,incomplete
+portable,backend-parity-c,backend-parity-c/sched-getaffinity-identity,verify,dbt,10,3.109,3.122,3.13,0.021,3.321,0,0,0,0,incomplete
+portable,backend-parity-c,backend-parity-c/sendfile-copy,verify,liteinst,10,4.835,4.939,5.008,0.173,5.23,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/set-tid-address,verify,liteinst,10,4.642,4.684,4.811,0.169,5.195,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/short-io-split-identity,verify,kvm,10,8.091,10.083,12.367,4.275,16.963,0,9,8,2,flaky
+portable,backend-parity-c,backend-parity-c/signal-delivery-sequence,verify,liteinst,10,4.674,4.816,4.897,0.223,5.073,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/signal-waitstatus-identity,verify,dbt,10,3.179,3.283,3.344,0.166,3.641,0,0,0,0,incomplete
+portable,backend-parity-c,backend-parity-c/symlink-ops,verify,liteinst,10,4.875,5.126,5.199,0.324,5.588,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/timer-family-identity,verify,ptrace,10,8.644,8.882,9.174,0.53,9.529,0,0,0,10,failed every repetition
+portable,backend-parity-c,backend-parity-c/umask-mode,verify,liteinst,10,5.033,5.165,5.22,0.188,5.747,0,10,10,0,passed every repetition
+portable,backend-parity-c,backend-parity-c/vectored-io,verify,liteinst,10,5.047,5.202,5.437,0.39,6.408,0,10,10,0,passed every repetition
+portable,bin-c,bin-c/robust-futex-test,verify,ptrace,10,2.817,2.867,2.881,0.063,3.037,0,10,10,0,passed every repetition
+portable,c-programs,c-programs/acct-refusal-probe,verify,dbt,10,3.542,3.682,3.765,0.223,3.798,0,0,0,0,incomplete
+portable,c-programs,c-programs/add-key-enosys,verify,dbt,10,3.739,3.78,3.822,0.083,3.828,0,0,0,0,incomplete
+portable,c-programs,c-programs/adjtimex-deterministic,verify,dbt,10,3.739,3.828,4.13,0.391,4.35,0,0,0,0,incomplete
+portable,c-programs,c-programs/bpf-enosys,verify,dbt,10,3.452,3.589,3.648,0.197,3.747,0,0,0,0,incomplete
+portable,c-programs,c-programs/cachestat-enosys,verify,dbt,10,3.176,3.356,3.547,0.371,3.753,0,0,0,0,incomplete
+portable,c-programs,c-programs/clock-adjtime-deterministic,verify,dbt,10,3.8,3.821,3.942,0.142,3.972,0,0,0,0,incomplete
+portable,c-programs,c-programs/copy-file-range-refusal-probe,verify,dbt,10,3.942,4.03,4.242,0.3,5.127,0,0,0,0,incomplete
+portable,c-programs,c-programs/dbt-copied-tiocgpgrp,verify,kvm,10,4.647,5.127,5.93,1.282,9.252,0,10,8,2,flaky
+portable,c-programs,c-programs/dbt-copied-tiocgpgrp,verify,sabre,10,3.668,4.098,4.151,0.483,4.276,0,10,10,0,passed every repetition
+portable,c-programs,c-programs/dbt-execveat-unsupported,verify,dbt,10,3.754,3.99,4.32,0.566,4.363,0,0,0,0,incomplete
+portable,c-programs,c-programs/dbt-execveat-unsupported,verify,sabre,10,8.935,8.941,9.142,0.207,10.277,0,0,0,10,failed every repetition
+portable,c-programs,c-programs/dbt-pid-virtualization,verify,ptrace,10,4.387,4.442,4.691,0.303,5.079,0,1,0,10,incomplete
+portable,c-programs,c-programs/dbt-self-sigqueue,verify,dbt,10,3.401,3.476,3.685,0.284,4.251,0,0,0,0,incomplete
+portable,c-programs,c-programs/dbt-unsupported-syscall,verify,ptrace,10,3.716,3.822,3.905,0.189,3.941,0,0,0,10,incomplete
+portable,c-programs,c-programs/dbt-wait-lifecycle,verify,sabre,10,3.731,3.95,3.975,0.244,4.178,0,10,10,0,passed every repetition
+portable,c-programs,c-programs/futex-requeue-enosys,verify,dbt,10,4.253,4.325,4.417,0.164,4.934,0,0,0,0,incomplete
+portable,c-programs,c-programs/futex-waitv-enosys,verify,dbt,10,3.808,4.002,4.058,0.25,4.52,0,0,0,0,incomplete
+portable,c-programs,c-programs/futex-wake-enosys,verify,dbt,10,3.333,3.647,3.816,0.483,4.161,0,0,0,0,incomplete
+portable,c-programs,c-programs/get-robust-list-child,verify,kvm,10,4.396,4.852,5.856,1.459,12.12,0,10,9,1,flaky
+portable,c-programs,c-programs/get-robust-list-child,verify,sabre,10,3.359,3.458,3.724,0.365,4.474,0,10,10,0,passed every repetition
+portable,c-programs,c-programs/get-robust-list-self,verify,dbt,10,3.3,3.339,3.449,0.149,3.624,0,0,0,0,incomplete
+portable,c-programs,c-programs/get-robust-list-thread,verify,sabre,10,4.883,4.886,4.899,0.016,4.916,0,0,0,10,failed every repetition
+portable,c-programs,c-programs/ioctl-fioclex,verify,dbt,10,3.177,3.228,3.311,0.133,3.466,0,0,0,0,incomplete
+portable,c-programs,c-programs/ioctl-fioclex,verify,liteinst,10,4.958,5.199,5.657,0.699,6.282,0,10,10,0,passed every repetition
+portable,c-programs,c-programs/just-spin,verify,kvm,10,2.989,3.048,3.641,0.652,4.589,0,10,9,1,flaky
+portable,c-programs,c-programs/just-spin,verify,sabre,10,5.409,5.476,5.542,0.133,6.139,0,0,0,10,failed every repetition
+portable,c-programs,c-programs/kcmp-eperm,verify,dbt,10,3.213,3.239,3.261,0.049,3.365,0,0,0,0,incomplete
+portable,c-programs,c-programs/keyctl-enosys,verify,dbt,10,3.768,3.896,4.023,0.255,4.157,0,0,0,0,incomplete
+portable,c-programs,c-programs/listmount-enosys,verify,dbt,10,4.865,5.003,5.198,0.333,5.316,0,0,0,0,incomplete
+portable,c-programs,c-programs/lsm-get-self-attr-enosys,verify,dbt,10,3.776,3.967,4.033,0.256,4.152,0,0,0,0,incomplete
+portable,c-programs,c-programs/lsm-list-modules-enosys,verify,dbt,10,3.112,3.114,3.127,0.016,3.147,0,0,0,0,incomplete
+portable,c-programs,c-programs/lsm-set-self-attr-enosys,verify,dbt,10,3.798,3.8,3.8,0.002,3.801,0,0,0,0,incomplete
+portable,c-programs,c-programs/map-shadow-stack-enosys,verify,dbt,10,3.675,3.77,3.92,0.245,4.199,0,0,0,0,incomplete
+portable,c-programs,c-programs/memfd-secret-enosys,verify,dbt,10,3.862,3.883,3.949,0.087,4.431,0,0,0,0,incomplete
+portable,c-programs,c-programs/nanosleep-par,verify,sabre,10,3.874,3.897,3.984,0.109,4.188,0,10,10,0,passed every repetition
+portable,c-programs,c-programs/nanosleep-threads-nocrash,verify,sabre,10,5.123,5.367,6.161,1.037,6.168,0,0,0,10,failed every repetition
+portable,c-programs,c-programs/nanosleep-threads-simple,verify,ptrace,10,5.199,5.2,5.204,0.005,5.445,0,0,0,10,incomplete
+portable,c-programs,c-programs/pause-alarm-interrupt,verify,liteinst,10,4.684,4.812,4.943,0.259,5.408,0,10,10,0,passed every repetition
+portable,c-programs,c-programs/perf-event-hardware-enosys,verify,dbt,10,4.444,4.446,4.449,0.005,4.449,0,0,0,0,incomplete
+portable,c-programs,c-programs/perf-event-open-enosys,verify,dbt,10,3.96,3.995,4.322,0.362,4.921,0,0,0,0,incomplete
+portable,c-programs,c-programs/perf-event-software-enosys,verify,dbt,10,3.75,3.751,3.752,0.002,3.894,0,0,0,0,incomplete
+portable,c-programs,c-programs/perf-event-watchpoint-enosys,verify,dbt,10,3.251,3.253,3.276,0.025,3.419,0,0,0,0,incomplete
+portable,c-programs,c-programs/pidfd-waitid-child,verify,sabre,10,3.34,3.432,3.433,0.093,3.433,0,10,10,0,passed every repetition
+portable,c-programs,c-programs/pipe2-errno-precedence,verify,dbt,10,4.109,4.242,4.324,0.216,4.361,0,0,0,0,incomplete
+portable,c-programs,c-programs/ppoll-simulation,verify,sabre,10,5.847,6.075,6.116,0.269,6.14,0,0,0,10,failed every repetition
+portable,c-programs,c-programs/printf-with-threads,verify,sabre,10,6.021,6.071,6.124,0.103,6.404,0,0,0,10,failed every repetition
+portable,c-programs,c-programs/process-mrelease-enosys,verify,dbt,10,4.145,4.314,4.364,0.22,4.42,0,0,0,0,incomplete
+portable,c-programs,c-programs/process-vm-readv-refusal-probe,verify,dbt,10,3.758,3.906,3.983,0.225,4.068,0,0,0,0,incomplete
+portable,c-programs,c-programs/process-vm-writev-refusal-probe,verify,dbt,10,3.474,3.503,3.545,0.071,3.709,0,0,0,0,incomplete
+portable,c-programs,c-programs/prodcons-determinism,verify,kvm,10,4.083,4.242,4.366,0.283,7.028,0,10,9,1,flaky
+portable,c-programs,c-programs/prodcons-determinism,verify,sabre,10,49.176,52.181,55.027,5.851,58.561,0,0,0,10,failed every repetition
+portable,c-programs,c-programs/ptrace-attach-eperm,verify,sabre,10,3.442,3.525,3.564,0.122,3.576,0,10,10,0,passed every repetition
+portable,c-programs,c-programs/ptrace-eperm,verify,dbt,10,3.604,3.663,3.991,0.387,4.638,0,0,0,0,incomplete
+portable,c-programs,c-programs/ptrace-seize-eperm,verify,sabre,10,3.243,3.315,3.39,0.147,3.562,0,10,10,0,passed every repetition
+portable,c-programs,c-programs/ptrace-traceme-eperm,verify,dbt,10,3.253,3.308,3.356,0.103,3.379,0,0,0,0,incomplete
+portable,c-programs,c-programs/record-replay-fd-close,verify,sabre,10,9.736,10.101,10.501,0.766,11.223,0,0,0,10,failed every repetition
+portable,c-programs,c-programs/record-replay-file-state,verify,ptrace,10,3.454,3.599,3.713,0.259,4.02,0,3,0,10,incomplete
+portable,c-programs,c-programs/remap-file-pages-anonymous-enosys,verify,dbt,10,3.164,3.294,3.395,0.231,3.41,0,0,0,0,incomplete
+portable,c-programs,c-programs/remap-file-pages-memfd-enosys,verify,dbt,10,3.453,3.54,3.628,0.175,3.833,0,0,0,0,incomplete
+portable,c-programs,c-programs/remap-file-pages-tmpfile-enosys,verify,dbt,10,3.543,3.575,3.61,0.067,4.381,0,0,0,0,incomplete
+portable,c-programs,c-programs/remap-file-pages-tmpfile-enosys,verify,sabre,10,4.657,4.784,4.863,0.207,5.795,0,10,10,0,passed every repetition
+portable,c-programs,c-programs/request-key-enosys,verify,dbt,10,4.558,4.642,4.81,0.252,5.206,0,0,0,0,incomplete
+portable,c-programs,c-programs/resource-determinism,verify,ptrace,10,6.711,6.787,6.891,0.18,6.913,0,0,0,10,incomplete
+portable,c-programs,c-programs/sched-yield-progress,verify,sabre,10,8.174,8.619,8.81,0.636,9.037,0,0,0,10,failed every repetition
+portable,c-programs,c-programs/sigmask-preemption,verify,sabre,10,49.159,49.761,54.85,5.691,60.435,2,0,0,8,incomplete
+portable,c-programs,c-programs/sigtimedwait-timeout-0s,verify,sabre,10,9.165,9.31,9.521,0.356,9.815,0,0,0,10,failed every repetition
+portable,c-programs,c-programs/so-incoming-cpu-tcp4,verify,sabre,10,5.332,5.694,5.785,0.453,5.994,0,10,10,0,passed every repetition
+portable,c-programs,c-programs/socket-timestamp-edge-cases,verify,liteinst,10,6.275,6.571,6.79,0.515,7.818,0,0,0,10,incomplete
+portable,c-programs,c-programs/socket-timestamp-edge-cases,verify,ptrace,10,4.47,4.679,4.843,0.373,4.995,0,0,0,10,incomplete
+portable,c-programs,c-programs/splice-enosys,verify,dbt,10,4.366,4.651,4.905,0.539,5.473,0,0,0,0,incomplete
+portable,c-programs,c-programs/statmount-enosys,verify,dbt,10,4.69,4.76,4.971,0.281,5.083,0,0,0,0,incomplete
+portable,c-programs,c-programs/syscall-file-metadata,verify,kvm,10,2.36,2.399,2.446,0.086,2.737,0,10,10,0,passed every repetition
+portable,c-programs,c-programs/sysfs-enosys,verify,dbt,10,4.129,4.194,4.355,0.225,4.91,0,0,0,0,incomplete
+portable,c-programs,c-programs/syslog-deterministic,verify,dbt,10,3.839,3.901,4.043,0.204,4.305,0,0,0,0,incomplete
+portable,c-programs,c-programs/sysv-sem-enosys,verify,dbt,10,4.34,4.905,5.033,0.694,5.343,0,0,0,0,incomplete
+portable,c-programs,c-programs/sysv-shm-enosys,verify,dbt,10,4.951,5.341,5.416,0.465,5.53,0,0,0,0,incomplete
+portable,c-programs,c-programs/tee-enosys,verify,dbt,10,4.623,4.709,4.773,0.151,5.169,0,0,0,0,incomplete
+portable,c-programs,c-programs/thread-self-procfs-handoff,verify,sabre,10,7.41,7.616,7.977,0.567,8.439,0,0,0,10,failed every repetition
+portable,c-programs,c-programs/thread-sync-determinism,verify,kvm,10,2.38,2.578,3.63,1.25,3.679,0,7,6,4,flaky
+portable,c-programs,c-programs/threadexhaustion,verify,sabre,10,6.905,7.053,7.282,0.377,7.912,0,0,0,10,failed every repetition
+portable,c-programs,c-programs/ustat-enosys,verify,dbt,10,3.405,3.45,3.477,0.073,3.552,0,0,0,0,incomplete
+portable,c-programs,c-programs/vmsplice-enosys,verify,dbt,10,3.509,3.635,3.693,0.184,3.765,0,0,0,0,incomplete
+portable,chaos-c,chaos-c/lock-granularity,verify,sabre,10,8.396,8.882,9.057,0.662,9.684,0,0,0,10,failed every repetition
+portable,determinism-stress,determinism-stress/example-race,verify,kvm,10,4.546,4.704,6.492,1.945,7.493,0,10,7,3,flaky
+portable,determinism-stress,determinism-stress/example-race,verify,sabre,10,34.819,36.811,38.123,3.304,39.561,0,0,0,10,failed every repetition
+portable,determinism-stress,determinism-stress/thread-output,verify,kvm,10,4.423,4.726,7.649,3.227,8.976,0,8,6,4,flaky
+portable,determinism-stress-c,determinism-stress-c/fork-tree,verify,sabre,10,13.119,13.388,13.709,0.59,16.318,0,10,10,0,passed every repetition
+portable,determinism-stress-c,determinism-stress-c/mmap-fork-shared,verify,sabre,10,23.114,23.53,24.093,0.979,26.467,0,10,10,0,passed every repetition
+portable,determinism-stress-c,determinism-stress-c/pipe-chain,verify,sabre,10,6.312,6.492,7.302,0.989,8.213,0,10,10,0,passed every repetition
+portable,determinism-stress-c,determinism-stress-c/thread-stress,verify,sabre,10,17.023,18.255,19.677,2.654,21.277,0,0,0,10,failed every repetition
+portable,language-runtimes,language-runtimes/example-python-random,verify,dbt,10,3.447,3.582,3.613,0.166,3.654,0,0,0,0,incomplete
+portable,language-runtimes,language-runtimes/example-python-random,verify,sabre,10,24.513,24.864,27.141,2.628,29.014,0,5,2,8,flaky
+portable,language-runtimes,language-runtimes/python-hashseed,verify,ptrace,10,4.215,4.495,4.898,0.683,7.821,0,10,10,0,passed every repetition
+portable,language-runtimes,language-runtimes/ruby-random,verify,kvm,10,3.414,3.786,4.319,0.905,5.046,0,10,10,0,passed every repetition
+portable,language-runtimes,language-runtimes/tcl-rand-clock,verify,kvm,10,5.719,6.12,9.852,4.133,10.263,0,8,6,4,flaky
+portable,shared-futex-c,shared-futex-c/qemu-exec-init,verify,ptrace,10,3.917,4.148,4.69,0.773,5.035,0,0,0,10,incomplete
+portable,shared-futex-c,shared-futex-c/qemu-hello,verify,ptrace,10,3.867,4.024,4.137,0.27,4.425,0,0,0,10,incomplete
+portable,shared-futex-c,shared-futex-c/qemu-init,verify,ptrace,10,4.102,4.187,4.252,0.15,4.4,0,0,0,10,incomplete
+portable,shared-futex-c,shared-futex-c/qemu-net-init,verify,ptrace,10,4.246,4.273,4.321,0.075,4.632,0,0,0,10,incomplete
+portable,system-utils,system-utils/clock-determinism,verify,liteinst,10,4.635,4.724,4.821,0.186,5.922,0,10,10,0,passed every repetition
+portable,system-utils,system-utils/date-nanoseconds,verify,kvm,10,4.06,4.505,5.2,1.141,7.556,0,10,8,2,flaky
+portable,system-utils,system-utils/example-devrand,verify,sabre,10,17.761,18.097,18.513,0.752,19.996,0,0,0,10,failed every repetition
+portable,system-utils,system-utils/procfs-sanitized-paths,verify,ptrace,10,6.349,6.511,6.73,0.381,7.066,0,0,0,10,failed every repetition
+portable,system-utils,system-utils/record-getpid,verify,liteinst,10,4.633,4.924,5.147,0.514,5.808,0,10,10,0,passed every repetition
+portable,system-utils,system-utils/startup-tls-guards,verify,sabre,10,6.524,6.659,6.809,0.285,7.035,0,0,0,10,failed every repetition
+portable,util-c,util-c/pmu-skid,verify,ptrace,10,4.21,4.293,4.397,0.187,4.556,0,0,0,10,incomplete
