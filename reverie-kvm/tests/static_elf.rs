@@ -10413,6 +10413,93 @@ int main(void) {
     }
 }
 
+const RESTORER_ADDRESS_SOURCE: &str = r#"#define _GNU_SOURCE
+#include <signal.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+static int returning;
+
+__attribute__((naked)) static void valid_restorer(void) {
+    __asm__ volatile("mov $15, %rax; syscall; ud2");
+}
+
+static void handler(int number) {
+    if (number != SIGUSR1 || write(1, "handler\n", 8) != 8) _exit(81);
+    if (!returning) _exit(42);
+}
+
+int main(int argc, char **argv) {
+    if (argc != 2) return 82;
+    returning = strcmp(argv[1], "valid-return") == 0;
+    struct {
+        void (*handler)(int);
+        uint64_t flags;
+        uintptr_t restorer;
+        uint64_t mask;
+    } action = {handler, UINT64_C(0x04000000),
+        returning ? (uintptr_t)valid_restorer : strtoull(argv[1], NULL, 0), 0};
+    if (syscall(SYS_rt_sigaction, SIGUSR1, &action, NULL, 8)) return 83;
+    if (syscall(SYS_tgkill, getpid(), syscall(SYS_gettid), SIGUSR1)) return 84;
+    if (write(1, "resumed\n", 8) != 8) return 85;
+    return 0;
+}
+"#;
+
+fn check_restorer_address(name: &str, argument: &str) {
+    if !kvm_available(name) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(&directory.0, name, RESTORER_ADDRESS_SOURCE);
+    let image = std::fs::read(&executable).unwrap();
+    let argv = [executable.to_str().unwrap(), argument];
+    let returning = argument == "valid-return";
+    let status = ExitStatus::Exited(if returning { 0 } else { 42 });
+    let output: &[u8] = if returning {
+        b"handler\nresumed\n"
+    } else {
+        b"handler\n"
+    };
+    let mut direct = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    direct
+        .install_static_elf_with_context(&image, &argv, &["PATH=/usr/bin:/bin"], &directory.0)
+        .unwrap();
+    let (code, stdout, stderr) = direct.run_static_elf_captured().unwrap();
+    assert_eq!(code, status.code().unwrap());
+    assert_eq!(stdout, output);
+    assert!(stderr.is_empty());
+    check_typed_signal_status(&image, &argv, &directory, status, output);
+}
+
+#[test]
+fn restorer_address_zero() {
+    check_restorer_address("restorer_address_zero", "0");
+}
+
+#[test]
+fn restorer_address_bit47() {
+    check_restorer_address("restorer_address_bit47", "0x800000000000");
+}
+
+#[test]
+fn restorer_address_bit63() {
+    check_restorer_address("restorer_address_bit63", "0x8000000000000000");
+}
+
+#[test]
+fn restorer_address_all_bits() {
+    check_restorer_address("restorer_address_all_bits", "0xffffffffffffffff");
+}
+
+#[test]
+fn restorer_address_valid_return() {
+    check_restorer_address("restorer_address_valid_return", "valid-return");
+}
+
 const NESTED_NULL_CONTEXT_SOURCE: &str = r#"#define _GNU_SOURCE
 #include <signal.h>
 #include <stdint.h>
