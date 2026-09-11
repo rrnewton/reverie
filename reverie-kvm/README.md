@@ -127,4 +127,25 @@ synthetic files, descriptor reopen aliases, and guest-owned descriptor link
 targets. It does not yet enumerate procfs directories, so proc-inspection tools
 that scan the process table remain unsupported.
 
+The synthetic `/proc` directory uses a real proc-root descriptor only as a
+kernel pathname anchor. Its enumeration remains empty, metadata is synthesized,
+and relative opens still use the deterministic child allowlist. Receiving that
+root through `SCM_RIGHTS` restores the same synthetic mapping by comparing its
+directory type, procfs type, device/inode and descriptor mount identity against
+a live opened `/proc` root. This requires `statx` to return `STATX_MNT_ID` (Linux
+5.8 or newer); an unavailable identity is not guessed. Other real-procfs rights,
+including nested directories, files and a different mount view, are refused
+instead of exposing host proc content. Ordinary non-procfs rights are unchanged.
+This does not repair transfer identity for synthetic regular-file memfds.
+
+Mutations resolve their actual parent/target, so a relative `..` from the proc
+root can reach an ordinary filesystem directory; mutations within procfs remain
+refused. This does not expand the relative-open allowlist or provide a virtual
+mount namespace. Procfs working directories and filesystem-stat results remain
+unsupported: `fchdir` into the proc root and procfs `statfs`/`fstatfs` return
+`EACCES`. The previous synthetic anchor could incorrectly make `fchdir` enter
+host `/`; that is not preserved as a supported operation. Unlike Linux, this
+backend also continues to reject `fchdir` on ordinary `O_PATH` descriptors with
+`EBADF`. Ordinary readable-directory cwd operations remain supported.
+
 The ELF loader supports one host interpreter and enough file-backed mapping for small dynamically linked programs. General libc coverage remains bounded by the explicit syscall personality; unsupported operations fail with `ENOSYS` rather than silently bypassing the tool.
