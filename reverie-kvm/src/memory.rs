@@ -48,7 +48,7 @@ struct UserAccess {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UserPageState {
-    Accessible { writable: bool },
+    Accessible,
     NoAccess,
 }
 
@@ -213,32 +213,13 @@ impl GuestMemory {
         length: u64,
         no_access: bool,
     ) -> Result<()> {
-        self.map_user_range_with_protection(
-            guest_address,
-            length,
-            if no_access {
-                libc::PROT_NONE
-            } else {
-                libc::PROT_READ | libc::PROT_WRITE
-            },
-        )
-    }
-
-    pub(crate) fn map_user_range_with_protection(
-        &self,
-        guest_address: u64,
-        length: u64,
-        protection: libc::c_int,
-    ) -> Result<()> {
         let Some((first_page, last_page)) = self.checked_page_range(guest_address, length)? else {
             return Ok(());
         };
-        let state = if protection == libc::PROT_NONE {
+        let state = if no_access {
             UserPageState::NoAccess
         } else {
-            UserPageState::Accessible {
-                writable: protection & libc::PROT_WRITE != 0,
-            }
+            UserPageState::Accessible
         };
         let mut access = self
             .mapping
@@ -418,34 +399,6 @@ impl GuestMemory {
         self.write_raw(guest_address, source)
     }
 
-    pub(crate) fn write_user(&mut self, guest_address: u64, source: &[u8]) -> Result<()> {
-        self.checked_offset(guest_address, source.len())?;
-        if source.is_empty() {
-            return Ok(());
-        }
-        let access = self
-            .mapping
-            .user_access
-            .lock()
-            .expect("guest memory access map lock poisoned");
-        let first_page = guest_address / PAGE_SIZE as u64;
-        let last_page = (guest_address + source.len() as u64 - 1) / PAGE_SIZE as u64;
-        if access.enabled
-            && (first_page..=last_page).any(|page| {
-                !matches!(
-                    access.pages.get(&page),
-                    Some(UserPageState::Accessible { writable: true })
-                )
-            })
-        {
-            return Err(Error::GuestMemoryAccessDenied {
-                address: guest_address,
-                length: source.len(),
-            });
-        }
-        self.write_raw(guest_address, source)
-    }
-
     // TODO-HUMAN-REVIEW(PR-132): Review internal copies that bypass the user map.
     pub(crate) fn write_raw(&self, guest_address: u64, source: &[u8]) -> Result<()> {
         let offset = self.checked_offset(guest_address, source.len())?;
@@ -606,10 +559,7 @@ impl GuestMemory {
 
         let mut cursor = guest_address;
         while cursor < end {
-            if !matches!(
-                access.pages.get(&(cursor / PAGE_SIZE as u64)),
-                Some(UserPageState::Accessible { .. })
-            ) {
+            if access.pages.get(&(cursor / PAGE_SIZE as u64)) != Some(&UserPageState::Accessible) {
                 break;
             }
             let next_page = (cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64;

@@ -6405,7 +6405,7 @@ fn ioctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
-    match libc::c_ulong::from(args[1] as libc::c_uint) {
+    match args[1] as libc::c_ulong {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-229): Review virtual FIOCLEX/FIONCLEX descriptor flags.
         libc::FIOCLEX => {
@@ -6421,9 +6421,6 @@ fn ioctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-230): Review the no-guest-NIC ioctl model.
         SIOCETHTOOL => negative_errno(libc::ENODEV),
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-533): Review host FIONREAD query and guest copyback.
-        libc::FIONREAD => forward_fionread(memory, state, guest_fd, host_fd, args[2]),
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-332): Report real terminal state to the guest.
         // The executor's inherited standard descriptors are the real host fds, so
@@ -6451,50 +6448,6 @@ fn ioctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
             std::mem::size_of::<libc::pid_t>(),
         ),
         _ => negative_errno(libc::ENOTTY),
-    }
-}
-
-fn forward_fionread(
-    memory: &mut GuestMemory,
-    state: &LoadedStaticElf,
-    guest_fd: libc::c_int,
-    host_fd: RawFd,
-    out_addr: u64,
-) -> i64 {
-    let mut readable_bytes: libc::c_int = 0;
-    // Query into supervisor-owned storage before touching guest memory. Linux
-    // reports EBADF or the descriptor-specific error (such as ENOTTY) ahead of
-    // EFAULT when both the descriptor and output pointer are invalid.
-    // SAFETY: readable_bytes is a live writable c_int and host_fd is borrowed
-    // from the executor's descriptor table for the duration of this call.
-    let result = unsafe {
-        libc::ioctl(
-            host_fd,
-            libc::FIONREAD,
-            std::ptr::from_mut(&mut readable_bytes),
-        )
-    };
-    if result < 0 {
-        return io_error(std::io::Error::last_os_error());
-    }
-    if state
-        .proc_files
-        .get(&guest_fd)
-        .is_some_and(|&inode| !is_synthetic_proc_directory_inode(inode))
-    {
-        let position = lseek(
-            state,
-            &[guest_fd as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0],
-            false,
-        );
-        if position < 0 {
-            return position;
-        }
-        readable_bytes = position.wrapping_neg() as libc::c_int;
-    }
-    match memory.write_user(out_addr, &readable_bytes.to_ne_bytes()) {
-        Ok(()) => 0,
-        Err(_) => negative_errno(libc::EFAULT),
     }
 }
 
@@ -9129,7 +9082,7 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
         return negative_errno(libc::EFAULT);
     }
     if memory
-        .map_user_range_with_protection(address, length as u64, args[2] as libc::c_int)
+        .map_user_range(address, length as u64, args[2] == libc::PROT_NONE as u64)
         .is_err()
     {
         return negative_errno(libc::ENOMEM);
@@ -9211,7 +9164,7 @@ fn mprotect(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     if !range_is_valid(memory, address, length) || !memory.user_range_is_mapped(address, length) {
         return negative_errno(libc::ENOMEM);
     }
-    match memory.map_user_range_with_protection(address, length, protection as libc::c_int) {
+    match memory.map_user_range(address, length, protection == libc::PROT_NONE as u64) {
         Ok(()) => 0,
         Err(_) => negative_errno(libc::ENOMEM),
     }
@@ -10830,7 +10783,6 @@ const fn negative_errno(errno: libc::c_int) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    include!("fionread_contract_tests.rs");
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
     use std::os::unix::fs::FileTypeExt;
@@ -20185,179 +20137,6 @@ mod tests {
                 [0, 0x100, 1, 0, 0, 0],
             ),
             negative_errno(libc::EBADF)
-        );
-    }
-
-    #[test]
-    fn ioctl_fionread_reports_pending_stream_bytes_without_consuming() {
-        const FDS: u64 = 0x100;
-        const COUNT: u64 = 0x120;
-        const PAYLOAD: u64 = 0x200;
-        const READ_BACK: u64 = 0x300;
-
-        let root = TestDir::new();
-        let mut state = test_state(&root.0);
-        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
-
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_pipe2,
-                [FDS, libc::O_CLOEXEC as u64, 0, 0, 0, 0],
-            ),
-            0
-        );
-        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, FDS);
-        memory.write(PAYLOAD, b"abcdef").unwrap();
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_write,
-                [pipe_fds[1] as u64, PAYLOAD, 6, 0, 0, 0],
-            ),
-            6
-        );
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_ioctl,
-                [pipe_fds[0] as u64, libc::FIONREAD, COUNT, 0, 0, 0],
-            ),
-            0
-        );
-        assert_eq!(read_struct::<libc::c_int>(&memory, COUNT), 6);
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_read,
-                [pipe_fds[0] as u64, READ_BACK, 6, 0, 0, 0],
-            ),
-            6
-        );
-        assert_eq!(
-            read_guest_bytes::<6>(&memory, READ_BACK).unwrap(),
-            *b"abcdef"
-        );
-
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_socketpair,
-                [libc::AF_UNIX as u64, libc::SOCK_STREAM as u64, 0, FDS, 0, 0,],
-            ),
-            0
-        );
-        let socket_fds: [libc::c_int; 2] = read_struct(&memory, FDS);
-        memory.write(PAYLOAD, b"xyz").unwrap();
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_write,
-                [socket_fds[1] as u64, PAYLOAD, 3, 0, 0, 0],
-            ),
-            3
-        );
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_ioctl,
-                [socket_fds[0] as u64, libc::FIONREAD, PAGE_SIZE, 0, 0, 0],
-            ),
-            negative_errno(libc::EFAULT)
-        );
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_ioctl,
-                [socket_fds[0] as u64, libc::FIONREAD, COUNT, 0, 0, 0],
-            ),
-            0
-        );
-        assert_eq!(read_struct::<libc::c_int>(&memory, COUNT), 3);
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_read,
-                [socket_fds[0] as u64, READ_BACK, 3, 0, 0, 0],
-            ),
-            3
-        );
-        assert_eq!(read_guest_bytes::<3>(&memory, READ_BACK).unwrap(), *b"xyz");
-    }
-
-    #[test]
-    fn ioctl_fionread_preserves_linux_error_ordering() {
-        const FDS: u64 = 0x100;
-        const COUNT: u64 = 0x120;
-        const BAD_OUTPUT: u64 = PAGE_SIZE;
-
-        let root = TestDir::new();
-        let mut state = test_state(&root.0);
-        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_pipe2,
-                [FDS, libc::O_CLOEXEC as u64, 0, 0, 0, 0],
-            ),
-            0
-        );
-        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, FDS);
-        state
-            .files
-            .insert(5, std::fs::File::open("/dev/null").unwrap());
-        memory.write(COUNT, &[0x5a; 4]).unwrap();
-
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_ioctl,
-                [pipe_fds[0] as u64, libc::FIONREAD, BAD_OUTPUT, 0, 0, 0],
-            ),
-            negative_errno(libc::EFAULT)
-        );
-        for output in [COUNT, BAD_OUTPUT] {
-            assert_eq!(
-                syscall_result(
-                    &mut memory,
-                    &mut state,
-                    libc::SYS_ioctl,
-                    [99, libc::FIONREAD, output, 0, 0, 0],
-                ),
-                negative_errno(libc::EBADF)
-            );
-        }
-        for output in [COUNT, BAD_OUTPUT] {
-            assert_eq!(
-                syscall_result(
-                    &mut memory,
-                    &mut state,
-                    libc::SYS_ioctl,
-                    [5, libc::FIONREAD, output, 0, 0, 0],
-                ),
-                negative_errno(libc::ENOTTY)
-            );
-        }
-        assert_eq!(read_guest_bytes::<4>(&memory, COUNT).unwrap(), [0x5a; 4]);
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_ioctl,
-                [pipe_fds[0] as u64, 0xffff_ffff, COUNT, 0, 0, 0],
-            ),
-            negative_errno(libc::ENOTTY)
         );
     }
 
