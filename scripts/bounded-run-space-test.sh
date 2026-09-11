@@ -81,6 +81,15 @@ check "$(yn '[ "$live" = "4000000" ]')" "the limit is LIVE on the qgroup, not me
 "$BRS" report "$out" >/dev/null 2>"$WORK/under.err"; under_rc=$?
 check "$(yn '[ "$under_rc" -eq 0 ]')" "report says an under-limit space is still complete" "exit=$under_rc"
 
+# Changing the live limit after create must invalidate the recorded guarantee.
+sudo -n btrfs qgroup limit 8M "0/$id" "$WORK/mnt"
+"$BRS" report "$out" >/dev/null 2>"$WORK/changed-limit.err"; changed_rc=$?
+check "$(yn '[ "$changed_rc" -eq 10 ]')" "report refuses a live limit that differs from the recorded limit" "exit=$changed_rc"
+check "$(yn 'grep -q "live qgroup limit" "$WORK/changed-limit.err"')" "limit drift is named as UNBOUNDED" "$(cat "$WORK/changed-limit.err")"
+sudo -n btrfs qgroup limit 4000000 "0/$id" "$WORK/mnt"
+"$BRS" report "$out" >/dev/null 2>"$WORK/restored-limit.err"; restored_rc=$?
+check "$(yn '[ "$restored_rc" -eq 0 ]')" "report accepts the restored recorded limit" "exit=$restored_rc"
+
 # --- 5. the bound actually stops a writer with EDQUOT, and report says so -------
 write_result="$(python3 - "$out/flood.log" <<'PY'
 import sys
@@ -119,18 +128,24 @@ if [ -n "$nb" ] && [ "$(stat -fc %T "$nb")" != "btrfs" ]; then
     check "$(yn '[ "$rc3" -eq 10 ]')" "non-btrfs base exits 10" "exit=$rc3"
     check "$(yn 'grep -q "is not btrfs" "$WORK/t9.err"')" "non-btrfs base names that as the reason" "$(cat "$WORK/t9.err")"
     check "$(yn '[ -d "$out3" ]')" "non-btrfs base still yields a usable directory" ""
-    "$BRS" destroy "$out3" >/dev/null 2>&1
-    rmdir "$nb" 2>/dev/null || true
 else
     fail "non-btrfs base case could not run" "no non-btrfs tmpfs available at /dev/shm"
 fi
 
-# --- 8. destroy refuses paths it did not create ----------------------------------
+# --- 8. destroy refuses absent and copied identity markers -----------------------
 victim="$WORK/brs-unmarked-victim"
 mkdir "$victim"; printf 'keep\n' > "$victim/important"
 "$BRS" destroy "$victim" >/dev/null 2>"$WORK/refuse.err"; refuse_rc=$?
 check "$(yn '[ "$refuse_rc" -eq 12 ]')" "destroy refuses an unmarked lookalike directory" "exit=$refuse_rc"
 check "$(yn '[ -f "$victim/important" ]')" "refused destroy leaves the unowned contents intact" ""
+if [ -n "${out3:-}" ] && [ -f "$out3/.UNBOUNDED" ]; then
+    cp "$out3/.UNBOUNDED" "$victim/.UNBOUNDED"
+    "$BRS" destroy "$victim" >/dev/null 2>"$WORK/copied-marker.err"; copied_rc=$?
+    check "$(yn '[ "$copied_rc" -eq 12 ]')" "destroy refuses a marker copied from another space" "exit=$copied_rc"
+    check "$(yn '[ -f "$victim/important" ]')" "copied-marker refusal preserves the unowned contents" ""
+    "$BRS" destroy "$out3" >/dev/null 2>&1
+    rmdir "$nb" 2>/dev/null || true
+fi
 
 # --- 9. usage errors -------------------------------------------------------------
 "$BRS" create --limit banana --base /tmp >/dev/null 2>&1
