@@ -756,6 +756,13 @@ fn hide_tool_scratch_pages(memory: &GuestMemory) -> Result<()> {
     Ok(())
 }
 
+struct InitializedKvmResources {
+    vcpu: VcpuFd,
+    vm: VmFd,
+    kvm: Kvm,
+    hypercall_instruction: [u8; 3],
+}
+
 impl KvmBackend {
     pub(crate) fn guest_thread_is_cancelled(&self) -> bool {
         self.is_guest_thread && self.thread_group.cancelled.load(Ordering::Acquire)
@@ -789,12 +796,10 @@ impl KvmBackend {
         Self::new_with_memory_and_cpuid_policy(memory, cpuid_policy, stdin)
     }
 
-    fn new_with_memory_and_cpuid_policy(
-        memory: GuestMemory,
+    fn initialize_resources(
+        memory: &GuestMemory,
         cpuid_policy: CpuidPolicy,
-        stdin: Option<File>,
-    ) -> Result<Self> {
-        install_worker_interrupt_handler()?;
+    ) -> Result<InitializedKvmResources> {
         let kvm = Kvm::new()?;
         let vm = kvm.create_vm()?;
         if !vm.check_extension(Cap::ExitHypercall) {
@@ -827,6 +832,36 @@ impl KvmBackend {
 
         let vcpu = vm.create_vcpu(0)?;
         vcpu.set_cpuid2(&cpuid)?;
+        Ok(InitializedKvmResources {
+            vcpu,
+            vm,
+            kvm,
+            hypercall_instruction,
+        })
+    }
+
+    fn new_with_memory_and_cpuid_policy(
+        memory: GuestMemory,
+        cpuid_policy: CpuidPolicy,
+        stdin: Option<File>,
+    ) -> Result<Self> {
+        install_worker_interrupt_handler()?;
+        const INITIALIZATION_ATTEMPTS: usize = 3;
+        let mut attempts = 0;
+        let InitializedKvmResources {
+            vcpu,
+            vm,
+            kvm,
+            hypercall_instruction,
+        } = loop {
+            attempts += 1;
+            match Self::initialize_resources(&memory, cpuid_policy) {
+                Ok(resources) => break resources,
+                Err(Error::Kvm(error))
+                    if error.errno() == libc::EINTR && attempts < INITIALIZATION_ATTEMPTS => {}
+                Err(error) => return Err(error),
+            }
+        };
         Ok(Self {
             vcpu,
             vm,
@@ -2891,6 +2926,798 @@ fn supported_hypercall_instruction(cpuid: &CpuId) -> Result<[u8; 3]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod initialization_tests {
+        use std::io::Seek;
+        use std::io::SeekFrom;
+        use std::io::Write;
+        use std::os::unix::fs::MetadataExt;
+        use std::process::Child;
+        use std::process::Command;
+        use std::process::Stdio;
+        use std::sync::atomic::AtomicU64;
+        use std::time::Duration;
+        use std::time::Instant;
+
+        use super::*;
+
+        const MARK: u64 = 0x5431_0000;
+        const STAGES: [&str; 9] = [
+            "open",
+            "create-vm",
+            "run-size",
+            "cpuid",
+            "enable-cap",
+            "memory",
+            "create-vcpu",
+            "run-mmap",
+            "set-cpuid",
+        ];
+
+        struct ChildGuard(Child, Option<i32>);
+
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                if let Some(tid) = self.1 {
+                    loop {
+                        let mut status = 0;
+                        let result = unsafe {
+                            libc::waitpid(tid, &mut status, libc::__WALL | libc::WNOHANG)
+                        };
+                        if result < 0
+                            || result == tid
+                                && (libc::WIFEXITED(status) || libc::WIFSIGNALED(status))
+                        {
+                            break;
+                        }
+                        if result == tid && libc::WIFSTOPPED(status) {
+                            unsafe {
+                                libc::ptrace(libc::PTRACE_CONT, tid, 0, libc::SIGKILL);
+                            }
+                        }
+                        if Instant::now() >= deadline {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
+                while self.0.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                assert!(
+                    self.0.try_wait().unwrap().is_some(),
+                    "traced child cleanup exceeded two seconds"
+                );
+            }
+        }
+
+        fn marker(number: u64, first: u64, second: u64, third: u64) {
+            unsafe {
+                libc::syscall(libc::SYS_getpid, MARK + number, first, second, third);
+            }
+        }
+
+        #[test]
+        fn initialization_child() {
+            let Ok(directory) = std::env::var("REVERIE_INIT_TEST_DIRECTORY") else {
+                return;
+            };
+            let configuration = std::env::var("REVERIE_INIT_TEST_CASE").unwrap();
+            let fields: Vec<_> = configuration.split(',').collect();
+            let stage = fields[0];
+            let failures: usize = fields[1].parse().unwrap();
+            let errno: i32 = fields[2].parse().unwrap();
+            let directory = std::path::PathBuf::from(directory);
+            let memory = GuestMemory::new(0, 0x20_0000).unwrap();
+            let mut expected: Vec<u8> = (0..memory.len())
+                .map(|index| (index.wrapping_mul(37) ^ (index >> 9)) as u8)
+                .collect();
+            memory.write_raw(0, &expected).unwrap();
+            memory.enable_user_access();
+            memory.map_user_permissions(0, 4096, true, false).unwrap();
+            memory
+                .map_user_permissions(4096, 4096, false, false)
+                .unwrap();
+            memory.map_user_permissions(8192, 4096, true, true).unwrap();
+            let peer = memory.clone();
+            let address = memory.host_address();
+            let mut input = File::options()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(directory.join("stdin"))
+                .unwrap();
+            input.write_all(b"retained-input-with-position").unwrap();
+            input.seek(SeekFrom::Start(7)).unwrap();
+            let input_observer = input.try_clone().unwrap();
+            let metadata = input.metadata().unwrap();
+            let policy = CpuidPolicy::default();
+            let request = Arc::new(AtomicU64::new(0));
+            let acknowledgement = Arc::new(AtomicU64::new(0));
+            let peer_request = request.clone();
+            let peer_acknowledgement = acknowledgement.clone();
+            let writer_memory = memory.clone();
+            let writer = std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(15);
+                loop {
+                    match peer_request.load(Ordering::Acquire) {
+                        1 => {
+                            writer_memory.write_raw(0x10_000, &[0xe7; 4096]).unwrap();
+                            peer_acknowledgement.store(1, Ordering::Release);
+                        }
+                        2 => break,
+                        _ => (),
+                    }
+                    assert!(Instant::now() < deadline, "peer deadline");
+                    std::thread::yield_now();
+                }
+            });
+            let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+            std::fs::write(directory.join("tid"), tid.to_string()).unwrap();
+            assert_eq!(unsafe { libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) }, 0);
+            unsafe {
+                libc::raise(libc::SIGSTOP);
+            }
+            marker(
+                0,
+                address,
+                Arc::as_ptr(&request) as u64,
+                Arc::as_ptr(&acknowledgement) as u64,
+            );
+            let mut result =
+                KvmBackend::new_with_memory_and_cpuid_policy(memory, policy, Some(input));
+            marker(1, 0, 0, 0);
+            if acknowledgement.load(Ordering::Acquire) == 1 {
+                expected[0x10_000..0x11_000].fill(0xe7);
+            }
+            request.store(2, Ordering::Release);
+            writer.join().unwrap();
+            let mut actual = vec![0; expected.len()];
+            peer.read_raw(0, &mut actual).unwrap();
+            assert_eq!(actual, expected, "complete shared backing changed");
+            assert_eq!(peer.host_address(), address);
+            assert!(peer.put_user_i32(0, 0).is_err());
+            assert!(peer.read(4096, &mut [0; 4]).is_err());
+            peer.put_user_i32(
+                8192,
+                i32::from_ne_bytes(expected[8192..8196].try_into().unwrap()),
+            )
+            .unwrap();
+            assert_eq!(input_observer.metadata().unwrap().ino(), metadata.ino());
+            assert_eq!(input_observer.metadata().unwrap().dev(), metadata.dev());
+            assert_eq!((&input_observer).stream_position().unwrap(), 7);
+            match &result {
+                Ok(backend) => {
+                    assert!(
+                        errno == libc::EINTR && failures < 3 || failures == 0,
+                        "unexpected success"
+                    );
+                    assert_eq!(backend.memory.host_address(), address);
+                    assert_eq!(backend.cpuid_policy, policy);
+                    assert_eq!(
+                        backend.stdin.as_ref().unwrap().metadata().unwrap().ino(),
+                        metadata.ino()
+                    );
+                    assert!(backend.thread_slot.is_none());
+                    assert!(
+                        backend
+                            .thread_group
+                            .transport_slots
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .all(|used| !used)
+                    );
+                    assert!(backend.thread_group.workers.lock().unwrap().is_empty());
+                    assert!(backend.static_elf.is_none());
+                    assert!(backend.exit_collector.is_none());
+                    assert_eq!(backend.vcpu.get_regs().unwrap().rip, 0xfff0);
+                }
+                Err(Error::HostIo(error)) if stage == "sigaction" => {
+                    assert_eq!(error.raw_os_error(), Some(errno))
+                }
+                Err(Error::HypercallExitUnsupported) if stage == "capability" => (),
+                Err(Error::UnsupportedCpuidProfile(_)) if stage == "policy" => (),
+                Err(Error::Kvm(error)) => {
+                    assert!(
+                        failures >= 3 || errno != libc::EINTR,
+                        "eligible EINTR was not recovered: {configuration}"
+                    );
+                    assert_eq!(error.errno(), errno);
+                }
+                Err(error) => panic!("unexpected error: {error:?}"),
+            }
+            if stage == "post-registers" || stage == "guest" {
+                let backend = result.as_mut().unwrap();
+                marker(3, 0, 0, 0);
+                let installed = backend.install_real_mode_program(8192, &[0xf4]);
+                if stage == "post-registers" {
+                    assert!(
+                        matches!(installed, Err(Error::Kvm(error)) if error.errno() == libc::EINTR)
+                    );
+                } else {
+                    installed.unwrap();
+                    marker(4, 0, 0, 0);
+                    backend
+                        .run(|_, _| panic!("unexpected guest syscall"))
+                        .unwrap();
+                }
+                marker(1, 0, 0, 0);
+            }
+            let mut retained_wrapper_memory = None;
+            if stage == "thread-registers" || stage == "process-registers" {
+                let mut parent = result.unwrap();
+                parent.memory.clear_user_access();
+                configure_long_mode(
+                    &mut parent.memory,
+                    &parent.vcpu,
+                    0x10_0000,
+                    0x1f_f000,
+                    parent.hypercall_instruction,
+                )
+                .unwrap();
+                let registers = parent.vcpu.get_regs().unwrap();
+                let xsave = parent.vcpu.get_xsave().unwrap();
+                let group = parent.thread_group.clone();
+                let memory = if stage == "process-registers" {
+                    parent.memory.snapshot().unwrap()
+                } else {
+                    parent.memory.clone()
+                };
+                retained_wrapper_memory = Some(memory.clone());
+                let mut parent_before = vec![0; peer.len()];
+                peer.read_raw(0, &mut parent_before).unwrap();
+                drop(parent);
+                marker(5, memory.host_address(), 0, 0);
+                result = if stage == "thread-registers" {
+                    KvmBackend::from_thread_state(
+                        memory,
+                        registers,
+                        xsave,
+                        None,
+                        policy,
+                        2,
+                        group.clone(),
+                    )
+                } else {
+                    KvmBackend::from_process_snapshot(KvmProcessSnapshot {
+                        memory,
+                        registers,
+                        xsave,
+                        stdin: None,
+                        cpuid_policy: policy,
+                    })
+                };
+                marker(1, 0, 0, 0);
+                assert!(matches!(&result, Err(Error::Kvm(error)) if error.errno() == libc::EINTR));
+                assert!(
+                    group
+                        .transport_slots
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .all(|used| !used),
+                    "failed setup leaked a slot"
+                );
+                assert!(group.workers.lock().unwrap().is_empty());
+                assert!(group.worker_handles.lock().unwrap().is_empty());
+                if stage == "process-registers" {
+                    let mut parent_after = vec![0; peer.len()];
+                    peer.read_raw(0, &mut parent_after).unwrap();
+                    assert_eq!(parent_before, parent_after);
+                }
+            }
+            drop(result);
+            marker(2, 0, 0, 0);
+            drop(retained_wrapper_memory);
+            println!("INITIALIZATION CHILD VERIFIED {configuration}");
+        }
+
+        fn traced_read(tid: i32, address: u64) -> u64 {
+            unsafe {
+                *libc::__errno_location() = 0;
+                let result = libc::ptrace(libc::PTRACE_PEEKDATA, tid, address, 0);
+                assert_eq!(*libc::__errno_location(), 0);
+                result as u64
+            }
+        }
+
+        fn traced_write(tid: i32, address: u64, value: u64) {
+            assert_eq!(
+                unsafe { libc::ptrace(libc::PTRACE_POKEDATA, tid, address, value) },
+                0
+            );
+        }
+
+        fn traced_path(tid: i32, address: u64) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for offset in (0..4096).step_by(8) {
+                for byte in traced_read(tid, address + offset).to_ne_bytes() {
+                    if byte == 0 {
+                        return bytes;
+                    }
+                    bytes.push(byte);
+                }
+            }
+            panic!("unterminated traced path");
+        }
+
+        fn fd_link(pid: u32, fd: u64) -> String {
+            std::fs::read_link(format!("/proc/{pid}/fd/{fd}"))
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        }
+
+        fn resources(pid: u32) -> (Vec<(String, String)>, Vec<String>) {
+            let mut descriptors: Vec<_> = std::fs::read_dir(format!("/proc/{pid}/fd"))
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let target = std::fs::read_link(entry.path())
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned();
+                    (name, target)
+                })
+                .filter(|(_, target)| {
+                    target == "/dev/kvm"
+                        || target.starts_with("anon_inode:") && target.contains("kvm")
+                })
+                .collect();
+            descriptors.sort();
+            let mappings = std::fs::read_to_string(format!("/proc/{pid}/maps"))
+                .unwrap()
+                .lines()
+                .filter(|line| line.contains("kvm-vcpu"))
+                .map(str::to_owned)
+                .collect();
+            (descriptors, mappings)
+        }
+
+        fn wait_stop(tid: i32, deadline: Instant) -> i32 {
+            loop {
+                let mut status = 0;
+                let result =
+                    unsafe { libc::waitpid(tid, &mut status, libc::__WALL | libc::WNOHANG) };
+                assert!(result >= 0, "waitpid: {}", std::io::Error::last_os_error());
+                if result == tid {
+                    return status;
+                }
+                assert!(Instant::now() < deadline, "traced child deadline");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        fn run_case(stage: &str, failures: usize, errno: i32) -> bool {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let directory = std::env::temp_dir().join(format!(
+                "reverie-init-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&directory).unwrap();
+            let configuration = format!("{stage},{failures},{errno}");
+            let output = File::create(directory.join("output")).unwrap();
+            let child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "vm::tests::initialization_tests::initialization_child",
+                    "--nocapture",
+                ])
+                .env("REVERIE_INIT_TEST_DIRECTORY", &directory)
+                .env("REVERIE_INIT_TEST_CASE", &configuration)
+                .stdout(Stdio::from(output.try_clone().unwrap()))
+                .stderr(Stdio::from(output))
+                .spawn()
+                .unwrap();
+            let mut child = ChildGuard(child, None);
+            let pid = child.0.id();
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let tid = loop {
+                if let Ok(text) = std::fs::read_to_string(directory.join("tid"))
+                    && let Ok(tid) = text.parse::<i32>()
+                {
+                    break tid;
+                }
+                assert!(
+                    child.0.try_wait().unwrap().is_none(),
+                    "child exited before trace: {}",
+                    std::fs::read_to_string(directory.join("output")).unwrap()
+                );
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(1));
+            };
+            child.1 = Some(tid);
+            let status = wait_stop(tid, deadline);
+            assert!(libc::WIFSTOPPED(status));
+            assert_eq!(
+                unsafe {
+                    libc::ptrace(
+                        libc::PTRACE_SETOPTIONS,
+                        tid,
+                        0,
+                        libc::PTRACE_O_TRACESYSGOOD | libc::PTRACE_O_EXITKILL,
+                    )
+                },
+                0
+            );
+            let mut active = false;
+            let mut attempts = 0;
+            let mut injected = 0;
+            let mut pending = false;
+            let mut request = 0;
+            let mut acknowledgement = 0;
+            let mut completed = false;
+            let mut post_initialization = false;
+            let mut handler_calls = 0;
+            let mut cpuid_buffer = 0;
+            let mut backing = Vec::new();
+            let mut registration_address = 0;
+            let mut wrapper_phase = false;
+            let mut events = Vec::new();
+            loop {
+                assert_eq!(unsafe { libc::ptrace(libc::PTRACE_SYSCALL, tid, 0, 0) }, 0);
+                let status = wait_stop(tid, deadline);
+                if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+                    break;
+                }
+                assert_eq!(libc::WSTOPSIG(status), libc::SIGTRAP | 0x80);
+                let mut info = [0_u64; 16];
+                assert!(
+                    unsafe {
+                        libc::ptrace(
+                            libc::PTRACE_GET_SYSCALL_INFO,
+                            tid,
+                            std::mem::size_of_val(&info),
+                            info.as_mut_ptr(),
+                        )
+                    } > 0
+                );
+                let entry = info[0] as u8 == 1;
+                let mut registers: libc::user_regs_struct = unsafe { std::mem::zeroed() };
+                assert_eq!(
+                    unsafe { libc::ptrace(libc::PTRACE_GETREGS, tid, 0, &mut registers) },
+                    0
+                );
+                if !entry {
+                    if pending {
+                        registers.rax = (-(errno as i64)) as u64;
+                        assert_eq!(
+                            unsafe { libc::ptrace(libc::PTRACE_SETREGS, tid, 0, &registers) },
+                            0
+                        );
+                        pending = false;
+                    } else if cpuid_buffer != 0 {
+                        assert_eq!(registers.rax, 0);
+                        let entries = traced_read(tid, cpuid_buffer) as u32;
+                        assert!(entries > 0 && entries <= KVM_MAX_CPUID_ENTRIES as u32);
+                        let mut changed = false;
+                        for index in 0..entries {
+                            let entry_address = cpuid_buffer + 8 + u64::from(index) * 40;
+                            if traced_read(tid, entry_address) as u32 == 1 {
+                                let edx = traced_read(tid, entry_address + 24);
+                                traced_write(tid, entry_address + 24, edx & !(1 << 26));
+                                changed = true;
+                            }
+                        }
+                        assert!(changed);
+                        injected += 1;
+                        cpuid_buffer = 0;
+                    }
+                    continue;
+                }
+                if registers.orig_rax == libc::SYS_getpid as u64
+                    && (MARK..=MARK + 5).contains(&registers.rdi)
+                {
+                    match registers.rdi - MARK {
+                        0 => {
+                            active = true;
+                            request = registers.rdx;
+                            acknowledgement = registers.r10;
+                            registration_address = registers.rsi;
+                            assert_eq!(resources(pid), (vec![], vec![]));
+                            backing = std::fs::read_to_string(format!("/proc/{pid}/maps"))
+                                .unwrap()
+                                .lines()
+                                .filter(|line| line.contains("memfd:reverie-kvm-guest-memory"))
+                                .map(str::to_owned)
+                                .collect();
+                            assert_eq!(backing.len(), 1);
+                        }
+                        1 => {
+                            active = false;
+                            events.push(format!("result {:?}", resources(pid)));
+                        }
+                        2 => {
+                            assert_eq!(
+                                resources(pid),
+                                (vec![], vec![]),
+                                "resources after result drop"
+                            );
+                            completed = true;
+                        }
+                        3 => {
+                            active = true;
+                            post_initialization = true;
+                        }
+                        4 => {
+                            active = false;
+                        }
+                        5 => {
+                            active = true;
+                            wrapper_phase = true;
+                            registration_address = registers.rsi;
+                            assert_eq!(resources(pid), (vec![], vec![]));
+                            backing = std::fs::read_to_string(format!("/proc/{pid}/maps"))
+                                .unwrap()
+                                .lines()
+                                .filter(|line| line.contains("memfd:reverie-kvm-guest-memory"))
+                                .map(str::to_owned)
+                                .collect();
+                        }
+                        _ => unreachable!(),
+                    }
+                    let current_backing: Vec<_> =
+                        std::fs::read_to_string(format!("/proc/{pid}/maps"))
+                            .unwrap()
+                            .lines()
+                            .filter(|line| line.contains("memfd:reverie-kvm-guest-memory"))
+                            .map(str::to_owned)
+                            .collect();
+                    assert_eq!(
+                        current_backing, backing,
+                        "backing mapping/device/inode changed"
+                    );
+                }
+                if !active {
+                    continue;
+                }
+                assert_ne!(
+                    registers.orig_rax,
+                    libc::SYS_memfd_create as u64,
+                    "memory allocated inside retry"
+                );
+                assert_ne!(
+                    registers.orig_rax,
+                    libc::SYS_dup as u64,
+                    "input duplicated inside retry"
+                );
+                assert_ne!(
+                    registers.orig_rax,
+                    libc::SYS_dup2 as u64,
+                    "input duplicated inside retry"
+                );
+                assert_ne!(
+                    registers.orig_rax,
+                    libc::SYS_dup3 as u64,
+                    "input duplicated inside retry"
+                );
+                assert!(
+                    !(registers.orig_rax == libc::SYS_fcntl as u64
+                        && [libc::F_DUPFD as u64, libc::F_DUPFD_CLOEXEC as u64]
+                            .contains(&registers.rsi)),
+                    "input duplicated inside retry"
+                );
+                let operation = if registers.orig_rax == libc::SYS_openat as u64
+                    && traced_path(tid, registers.rsi) == b"/dev/kvm"
+                {
+                    assert!(
+                        !post_initialization,
+                        "post-initialization failure restarted constructor"
+                    );
+                    assert_eq!(
+                        resources(pid),
+                        (vec![], vec![]),
+                        "failed attempt resources survived into a new open"
+                    );
+                    attempts += 1;
+                    "open"
+                } else if registers.orig_rax == libc::SYS_ioctl as u64 {
+                    match registers.rsi & 0xffff {
+                        0xae01 => "create-vm",
+                        0xae04 => "run-size",
+                        0xae05 => "cpuid",
+                        0xaea3 => "enable-cap",
+                        0xae46 => "memory",
+                        0xae41 => "create-vcpu",
+                        0xae90 => "set-cpuid",
+                        0xae03 => "capability",
+                        0xae82 if wrapper_phase => {
+                            post_initialization = true;
+                            stage
+                        }
+                        0xae82 if post_initialization => "post-registers",
+                        0xae80 => panic!("KVM_RUN during initialization"),
+                        _ => "other-ioctl",
+                    }
+                } else if registers.orig_rax == libc::SYS_mmap as u64
+                    && fd_link(pid, registers.r8).contains("kvm-vcpu")
+                {
+                    "run-mmap"
+                } else if registers.orig_rax == libc::SYS_rt_sigaction as u64
+                    && registers.rdi == libc::SIGURG as u64
+                {
+                    "sigaction"
+                } else {
+                    continue;
+                };
+                if operation == "sigaction" {
+                    handler_calls += 1;
+                    assert_eq!(handler_calls, 1, "handler installation repeated");
+                }
+                if operation == "cpuid" {
+                    assert_eq!(
+                        traced_read(tid, registers.rdx),
+                        KVM_MAX_CPUID_ENTRIES as u64,
+                        "fresh CPUID capacity/padding"
+                    );
+                    for offset in (8..8 + KVM_MAX_CPUID_ENTRIES * 40).step_by(8) {
+                        assert_eq!(
+                            traced_read(tid, registers.rdx + offset as u64),
+                            0,
+                            "fresh CPUID scratch"
+                        );
+                    }
+                    if stage == "policy" {
+                        cpuid_buffer = registers.rdx;
+                    }
+                }
+                if operation == "memory" {
+                    let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).unwrap();
+                    let current: Vec<_> = maps
+                        .lines()
+                        .filter(|line| line.contains("memfd:reverie-kvm-guest-memory"))
+                        .map(str::to_owned)
+                        .collect();
+                    assert_eq!(current, backing);
+                    assert_eq!(
+                        traced_read(tid, registers.rdx + 24),
+                        registration_address,
+                        "registered a different backing"
+                    );
+                }
+                let current_resources = resources(pid);
+                events.push(format!(
+                    "attempt={attempts} operation={operation} resources={current_resources:?}"
+                ));
+                if operation == stage && injected < failures {
+                    let expected_descriptors = match operation {
+                        "open" | "sigaction" => 0,
+                        "create-vm" => 1,
+                        "run-mmap" | "set-cpuid" | "post-registers" | "thread-registers"
+                        | "process-registers" => 3,
+                        _ => 2,
+                    };
+                    assert_eq!(
+                        current_resources.0.len(),
+                        expected_descriptors,
+                        "real resource prefix at {operation}: {current_resources:?}"
+                    );
+                    assert_eq!(
+                        current_resources.1.len(),
+                        usize::from(operation == "set-cpuid" || post_initialization),
+                        "real run mapping at {operation}"
+                    );
+                    if injected == 0 && !post_initialization {
+                        traced_write(tid, request, 1);
+                        while traced_read(tid, acknowledgement) != 1 {
+                            assert!(Instant::now() < deadline, "peer write deadline");
+                            std::thread::yield_now();
+                        }
+                    }
+                    injected += 1;
+                    registers.orig_rax = u64::MAX;
+                    assert_eq!(
+                        unsafe { libc::ptrace(libc::PTRACE_SETREGS, tid, 0, &registers) },
+                        0
+                    );
+                    pending = true;
+                }
+            }
+            let status = child.0.wait().unwrap();
+            let expected_attempts = if stage == "sigaction" {
+                0
+            } else if wrapper_phase {
+                2
+            } else if errno != libc::EINTR
+                || ["capability", "policy", "post-registers", "guest"].contains(&stage)
+            {
+                1
+            } else {
+                (failures + 1).min(3)
+            };
+            let output = std::fs::read_to_string(directory.join("output")).unwrap();
+            let passed = status.success()
+                && completed
+                && handler_calls == 1
+                && attempts == expected_attempts
+                && injected == failures.min(expected_attempts.max(1));
+            println!(
+                "INITIALIZATION CASE {configuration} attempts={attempts} injected={injected} expected={expected_attempts} status={status} completed={completed} evidence={} passed={passed}\n{}\n{output}",
+                directory.display(),
+                events.join("\n")
+            );
+            passed
+        }
+
+        fn available() -> bool {
+            match KvmBackend::new(0x20_0000) {
+                Ok(_) => true,
+                Err(error) => {
+                    assert!(
+                        std::env::var_os("REVERIE_REQUIRE_KVM").is_none(),
+                        "KVM required: {error}"
+                    );
+                    eprintln!("skipping initialization KVM controls: {error}");
+                    false
+                }
+            }
+        }
+
+        #[test]
+        fn initialization_once_eintr_stage_matrix() {
+            if !available() {
+                return;
+            }
+            let mut failures = Vec::new();
+            for stage in STAGES {
+                if !run_case(stage, 1, libc::EINTR) {
+                    failures.push(stage);
+                }
+            }
+            assert!(failures.is_empty(), "unrecovered stages: {failures:?}");
+        }
+
+        #[test]
+        fn initialization_bound_and_error_stage_matrix() {
+            if !available() {
+                return;
+            }
+            let mut failed = Vec::new();
+            for stage in STAGES {
+                for (count, errno) in [
+                    (2, libc::EINTR),
+                    (3, libc::EINTR),
+                    (1, libc::EIO),
+                    (1, libc::ENOMEM),
+                ] {
+                    if !run_case(stage, count, errno) {
+                        failed.push(format!("{stage},{count},{errno}"));
+                    }
+                }
+            }
+            for stage in ["sigaction", "capability"] {
+                if !run_case(stage, 1, libc::EINTR) {
+                    failed.push(stage.to_owned());
+                }
+            }
+            assert!(failed.is_empty(), "failed cases: {failed:?}");
+        }
+
+        #[test]
+        fn initialization_policy_and_post_commit_boundaries() {
+            if !available() {
+                return;
+            }
+            let cases = [
+                ("policy", 1),
+                ("post-registers", 1),
+                ("guest", 0),
+                ("thread-registers", 1),
+                ("process-registers", 1),
+            ];
+            let mut failed = Vec::new();
+            for (stage, count) in cases {
+                if !run_case(stage, count, libc::EINTR) {
+                    failed.push(stage);
+                }
+            }
+            assert!(failed.is_empty(), "boundary controls failed: {failed:?}");
+        }
+    }
 
     #[derive(Default)]
     struct SlotReleaseLog {
