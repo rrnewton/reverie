@@ -1147,7 +1147,7 @@ reminders:
   # parser. Keeping this reminder in gate_set_integrity below means deleting the
   # schedule produces an alarm rather than silence.
   - name: orphaned_hermit_reaper
-    cadence_secs: 900
+    cadence_secs: 1800
     gate:
       timeout_secs: 60
       cmd: python3 scripts/orphaned-hermit-reaper.py --report-orphans

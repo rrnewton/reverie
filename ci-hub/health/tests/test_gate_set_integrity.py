@@ -128,7 +128,7 @@ def test_orphan_reaper_schedule_is_detection_only_and_bounded():
     reminder = {row["name"]: row for row in config["reminders"]}[
         "orphaned_hermit_reaper"
     ]
-    assert reminder["cadence_secs"] == 900
+    assert reminder["cadence_secs"] == 1800
     assert reminder["gate"] == {
         "timeout_secs": 60,
         "cmd": "python3 scripts/orphaned-hermit-reaper.py --report-orphans",
