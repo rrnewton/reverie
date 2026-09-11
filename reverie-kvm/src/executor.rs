@@ -19084,7 +19084,7 @@ mod tests {
                         0,
                     ],
                 ),
-                negative_errno(libc::ELOOP),
+                watch,
                 "IN_DONT_FOLLOW must not watch the supervisor procfs link for {prefix}",
             );
         }
@@ -19872,6 +19872,22 @@ mod tests {
                 .unwrap()
                 .rights
                 .is_empty()
+        );
+
+        // A consuming recvmsg with no usable control space consumes and drops
+        // every right even though it exposes no descriptor to the receiver.
+        let transfer = publish_pending_inotify_rights(&state, vec![pending_right(0)]).unwrap();
+        assert!(transfer.is_some());
+        let mut no_visible_rights: [PendingReceivedRight; 0] = [];
+        attach_received_inotify_state(&state, &mut no_visible_rights, true).unwrap();
+        assert!(
+            state
+                .pending_inotify_rights
+                .lock()
+                .unwrap()
+                .rights
+                .is_empty(),
+            "a fully control-truncated consuming receive must retire the send",
         );
     }
 
