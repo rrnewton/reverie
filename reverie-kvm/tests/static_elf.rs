@@ -28,20 +28,27 @@ use reverie::GlobalRPC;
 use reverie::GlobalTool;
 use reverie::Guest;
 use reverie::Pid;
+use reverie::SignalEvent;
+use reverie::SignalTarget;
 use reverie::Stack;
 use reverie::Subscription;
 use reverie::ThreadOwnership;
 use reverie::Tool;
+use reverie::syscalls::AddrMut;
 use reverie::syscalls::CArrayPtr;
 use reverie::syscalls::CStrPtr;
+use reverie::syscalls::Clone as CloneSyscall;
 use reverie::syscalls::Errno;
 use reverie::syscalls::Execve;
 use reverie::syscalls::ExitGroup;
 use reverie::syscalls::Fork;
 use reverie::syscalls::FromToRaw;
+use reverie::syscalls::Kill;
 use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::PathPtr;
 use reverie::syscalls::Syscall;
+use reverie::syscalls::SyscallArgs;
+use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_kvm::CounterTool;
 use reverie_kvm::Error;
@@ -2523,6 +2530,12 @@ const LOAD_ADDRESS: u64 = 0x20_0000;
 const CODE_OFFSET: usize = 0x1000;
 const POST_EXEC_RANDOM: [u8; 16] = *b"kvm-post-exec-ok";
 static POST_EXEC_FAILURE_EXITED: AtomicBool = AtomicBool::new(false);
+const SIGNAL_EXIT_CHILD_TID: u64 = 0x0800_3000;
+const SIGNAL_EXIT_AFTER_CALLBACK: i32 = 0x5a5a_5a5a;
+static SIGNAL_EXIT_OBSERVED_TID: AtomicU64 = AtomicU64::new(u64::MAX);
+static SIGNAL_EXIT_MEMORY: Mutex<Option<reverie_kvm::GuestMemory>> = Mutex::new(None);
+static POST_EXEC_UNMASK_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+static POST_EXEC_ENTRY_WRITES: AtomicU64 = AtomicU64::new(0);
 
 fn proc_root_path_case(case: usize) {
     assert!(kvm_available("proc_root_path_case"));
@@ -2656,6 +2669,179 @@ int main(void) {
 static NEXT_TEST_EXECUTABLE: AtomicU64 = AtomicU64::new(0);
 
 struct TestExecutable(PathBuf);
+
+struct NativeTestExecutable(std::fs::File);
+
+impl NativeTestExecutable {
+    fn writer() -> std::fs::File {
+        use std::os::fd::FromRawFd;
+        let descriptor = unsafe {
+            libc::memfd_create(
+                c"native-executable".as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
+        };
+        assert!(descriptor >= 0, "{}", std::io::Error::last_os_error());
+        unsafe { std::fs::File::from_raw_fd(descriptor) }
+    }
+
+    fn publish(mut writer: std::fs::File, image: &[u8], mode: u32) -> Self {
+        use std::io::Write;
+        use std::os::fd::AsRawFd;
+        writer.write_all(image).unwrap();
+        writer
+            .set_permissions(std::fs::Permissions::from_mode(mode))
+            .unwrap();
+        assert_eq!(
+            unsafe {
+                libc::fcntl(
+                    writer.as_raw_fd(),
+                    libc::F_ADD_SEALS,
+                    libc::F_SEAL_WRITE
+                        | libc::F_SEAL_GROW
+                        | libc::F_SEAL_SHRINK
+                        | libc::F_SEAL_SEAL,
+                )
+            },
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        Self(std::fs::File::open(format!("/proc/self/fd/{}", writer.as_raw_fd())).unwrap())
+    }
+
+    fn new(image: &[u8], mode: u32) -> Self {
+        Self::publish(Self::writer(), image, mode)
+    }
+
+    fn path(&self) -> PathBuf {
+        use std::os::fd::AsRawFd;
+        PathBuf::from(format!("/proc/self/fd/{}", self.0.as_raw_fd()))
+    }
+}
+
+#[test]
+fn native_executable_publication_survives_inherited_writer() {
+    use std::os::fd::AsRawFd;
+    let test = "native_executable_publication_survives_inherited_writer";
+    if std::env::var("REVERIE_NATIVE_PUBLICATION_CHILD").as_deref() != Ok(test) {
+        let output = std::process::Command::new("timeout")
+            .args(["--kill-after=2s", "30s"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env("REVERIE_NATIVE_PUBLICATION_CHILD", test)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
+    let image = static_elf(&[0xb8, 0x3c, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]);
+    let writer = NativeTestExecutable::writer();
+    let writer_fd = writer.as_raw_fd();
+    assert_eq!(
+        unsafe { libc::fcntl(writer_fd, libc::F_GETFD) } & libc::FD_CLOEXEC,
+        libc::FD_CLOEXEC
+    );
+    let mut release = [-1; 2];
+    assert_eq!(
+        unsafe { libc::pipe2(release.as_mut_ptr(), libc::O_CLOEXEC) },
+        0
+    );
+    let holder = unsafe { libc::fork() };
+    assert!(holder >= 0);
+    if holder == 0 {
+        unsafe {
+            libc::close(release[1]);
+            let mut byte = 0_u8;
+            let count = libc::read(release[0], (&raw mut byte).cast(), 1);
+            let closed = libc::close(writer_fd);
+            libc::_exit(if count == 1 && byte == 1 && closed == 0 {
+                0
+            } else {
+                91
+            });
+        }
+    }
+    unsafe {
+        libc::close(release[0]);
+    }
+    let executable = NativeTestExecutable::publish(writer, &image, 0o700);
+    let held = std::process::Command::new(executable.path()).output();
+    assert_eq!(
+        unsafe { libc::write(release[1], [1_u8].as_ptr().cast(), 1) },
+        1
+    );
+    unsafe {
+        libc::close(release[1]);
+    }
+    let mut status = -1;
+    assert_eq!(unsafe { libc::waitpid(holder, &raw mut status, 0) }, holder);
+    assert_eq!(status, 0);
+    let released = std::process::Command::new(executable.path())
+        .output()
+        .unwrap();
+    assert_eq!(released.status.code(), Some(0));
+    assert!(released.stdout.is_empty());
+    assert!(released.stderr.is_empty());
+    assert_eq!(std::fs::read(executable.path()).unwrap(), image);
+    assert_eq!(
+        executable.0.metadata().unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let positive = NativeTestExecutable::new(&image, 0o755);
+    assert_eq!(
+        positive.0.metadata().unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    assert_eq!(
+        std::process::Command::new(positive.path())
+            .status()
+            .unwrap()
+            .code(),
+        Some(0)
+    );
+    positive
+        .0
+        .set_permissions(std::fs::Permissions::from_mode(0o600))
+        .unwrap();
+    assert_eq!(
+        std::process::Command::new(positive.path())
+            .output()
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::EACCES)
+    );
+    assert_eq!(
+        unsafe { libc::fcntl(executable.0.as_raw_fd(), libc::F_GETFL) } & libc::O_ACCMODE,
+        libc::O_RDONLY
+    );
+    assert_eq!(
+        unsafe { libc::fcntl(executable.0.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+        libc::FD_CLOEXEC
+    );
+    eprintln!("post-release positive passed; inherited-writer execution: {held:?}");
+    let held = held.expect("execution must succeed while inherited CLOEXEC writer remains open");
+    assert_eq!(held.status.code(), Some(0));
+    assert!(held.stdout.is_empty());
+    assert!(held.stderr.is_empty());
+    assert_eq!(
+        unsafe { libc::fcntl(executable.0.as_raw_fd(), libc::F_GET_SEALS) },
+        libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL
+    );
+    let reopened_writer = std::fs::OpenOptions::new()
+        .write(true)
+        .open(executable.path())
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::pwrite(reopened_writer.as_raw_fd(), [0_u8].as_ptr().cast(), 1, 0) },
+        -1
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EPERM)
+    );
+    assert_eq!(std::fs::read(executable.path()).unwrap(), image);
+}
 
 impl TestExecutable {
     fn new(image: &[u8]) -> Self {
@@ -2847,6 +3033,189 @@ impl Tool for PostExecTool {
         // This lifecycle hook runs before the ELF entry point, matching execve.
         let address = unsafe { address.into_mut() };
         guest.memory().write_value(address, &POST_EXEC_RANDOM)
+    }
+}
+
+#[derive(Default)]
+struct LifecycleSignalLog {
+    callbacks: Mutex<Vec<u8>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for LifecycleSignalLog {
+    type Request = u8;
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Pid, callback: u8) {
+        self.callbacks
+            .lock()
+            .expect("lifecycle signal log lock poisoned")
+            .push(callback);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct LifecycleSignalTool;
+
+fn lifecycle_signal(pid: Pid, tid: Pid) -> SignalEvent {
+    let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+    info[0..4].copy_from_slice(&libc::SIGUSR1.to_ne_bytes());
+    info[8..12].copy_from_slice(&libc::SI_TKILL.to_ne_bytes());
+    SignalEvent::new(libc::SIGUSR1, info, SignalTarget::Thread { pid, tid }).unwrap()
+}
+
+#[reverie::tool]
+impl Tool for LifecycleSignalTool {
+    type GlobalState = LifecycleSignalLog;
+    type ThreadState = ();
+
+    async fn handle_thread_start<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+    ) -> Result<(), reverie::Error> {
+        let error = guest
+            .defer_signal_delivery(lifecycle_signal(guest.pid(), guest.tid()))
+            .await
+            .expect_err("thread-start delivery without a syscall frame must fail");
+        let errno = error.into_errno()?;
+        if errno != Errno::ENOSYS {
+            return Err(errno.into());
+        }
+        let error = guest
+            .inject(
+                Kill::new()
+                    .with_pid(guest.pid().as_raw())
+                    .with_sig(libc::SIGUSR1),
+            )
+            .await
+            .expect_err("thread-start self-signal without a syscall frame must fail");
+        if error != Errno::ENOSYS {
+            return Err(error.into());
+        }
+        guest.send_rpc(1).await;
+        Ok(())
+    }
+
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+        let error = guest
+            .defer_signal_delivery(lifecycle_signal(guest.pid(), guest.tid()))
+            .await
+            .expect_err("post-exec delivery without a syscall frame must fail");
+        let errno = error.into_errno().map_err(|_| Errno::EIO)?;
+        if errno != Errno::ENOSYS {
+            return Err(errno);
+        }
+        let error = guest
+            .inject(
+                Kill::new()
+                    .with_pid(guest.pid().as_raw())
+                    .with_sig(libc::SIGUSR1),
+            )
+            .await
+            .expect_err("post-exec self-signal without a syscall frame must fail");
+        if error != Errno::ENOSYS {
+            return Err(error);
+        }
+        guest.send_rpc(2).await;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+struct PostExecPendingLog;
+
+#[reverie::global_tool]
+impl GlobalTool for PostExecPendingLog {
+    type Request = u8;
+    type Response = ();
+    type Config = (bool, String);
+
+    async fn receive_rpc(&self, _from: Pid, event: u8) {
+        match event {
+            1 => {
+                POST_EXEC_UNMASK_CALLBACKS.fetch_add(1, Ordering::SeqCst);
+            }
+            2 => {
+                POST_EXEC_ENTRY_WRITES.fetch_add(1, Ordering::SeqCst);
+            }
+            _ => panic!("unknown post-exec test event {event}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PostExecPendingTool;
+
+#[reverie::tool]
+impl Tool for PostExecPendingTool {
+    type GlobalState = PostExecPendingLog;
+    type ThreadState = u8;
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        if matches!(syscall, Syscall::Write(_)) {
+            guest.send_rpc(2).await;
+        }
+        if matches!(syscall, Syscall::Execve(_) | Syscall::Execveat(_)) {
+            guest.tail_inject(syscall).await
+        }
+        Ok(guest.inject(syscall).await?)
+    }
+
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+        let ordinal = {
+            let ordinal = guest.thread_state_mut();
+            *ordinal += 1;
+            *ordinal
+        };
+        guest.send_rpc(1).await;
+        let (recursive, recursive_path) = guest.config().clone();
+        if recursive && ordinal == 2 {
+            let path = recursive_path.as_bytes();
+            assert!(path.len() < 512);
+            let mut path_bytes = [0_u8; 512];
+            path_bytes[..path.len()].copy_from_slice(path);
+            let mut stack = guest.stack().await;
+            let path = stack.push(path_bytes).as_raw();
+            let argv = stack.push([path, 0]).as_raw();
+            let envp = stack.push([0_usize]).as_raw();
+            let _guard = stack.commit()?;
+            let exec = Execve::new()
+                .with_path(PathPtr::from_ptr(path as *const libc::c_char))
+                .with_argv(Option::<CArrayPtr<CStrPtr>>::from_raw(argv))
+                .with_envp(Option::<CArrayPtr<CStrPtr>>::from_raw(envp));
+            guest.tail_inject(exec).await
+        }
+
+        let expected = if recursive { 3 } else { 2 };
+        if ordinal != expected {
+            return Ok(());
+        }
+        let mut stack = guest.stack().await;
+        let empty_mask = stack.push(0_u64).as_raw() as u64;
+        let _guard = stack.commit()?;
+        let unmask = reverie_kvm::SyscallRequest::new(
+            libc::SYS_rt_sigprocmask as u64,
+            [
+                libc::SIG_SETMASK as u64,
+                empty_mask,
+                0,
+                std::mem::size_of::<u64>() as u64,
+                0,
+                0,
+            ],
+        )
+        .into_syscall()
+        .expect("rt_sigprocmask is a known syscall");
+        let error = guest
+            .inject(unmask)
+            .await
+            .expect_err("post-exec unmask of preserved pending signal must fail");
+        Err(error)
     }
 }
 
@@ -3646,6 +4015,455 @@ fn static_elf_self_abort_terminates_instead_of_faulting() {
     assert!(stderr.is_empty());
 }
 
+/// Exercises the kernel-visible frame, handler ABI, mask transition, libc
+/// restorer, and backend-owned rt_sigreturn path on a real vCPU.
+#[test]
+fn static_elf_caught_signal_returns_through_rt_sigreturn() {
+    if !kvm_available("signal-frame test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "caught-signal-rt-return",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <signal.h>
+#include <stdint.h>
+#include <sys/ucontext.h>
+#include <unistd.h>
+
+static volatile sig_atomic_t observed;
+static unsigned char alternate_stack[65536];
+static unsigned char replacement_stack[65536];
+
+static void handler(int signo, siginfo_t *info, void *raw_context) {
+  ucontext_t *context = (ucontext_t *)raw_context;
+  sigset_t current;
+  if (signo != SIGUSR1) {
+    observed = 10;
+    return;
+  }
+  if (info == 0 || info->si_signo != SIGUSR1 || info->si_code != SI_USER) {
+    observed = 11;
+    return;
+  }
+  if (context == 0 || (long)context->uc_mcontext.gregs[REG_RAX] != 0) {
+    observed = 12;
+    return;
+  }
+  if (sigprocmask(SIG_SETMASK, 0, &current) != 0 ||
+      sigismember(&current, SIGUSR1) != 1 ||
+      sigismember(&current, SIGUSR2) != 1) {
+    observed = 13;
+    return;
+  }
+  stack_t current_stack;
+  uintptr_t handler_sp = (uintptr_t)&current_stack;
+  if (handler_sp < (uintptr_t)alternate_stack ||
+      handler_sp >= (uintptr_t)alternate_stack + sizeof(alternate_stack)) {
+    observed = 14;
+    return;
+  }
+  if (sigaltstack(0, &current_stack) != 0 ||
+      (current_stack.ss_flags & SS_ONSTACK) == 0) {
+    observed = 15;
+    return;
+  }
+  stack_t replacement = {
+    .ss_sp = replacement_stack, .ss_size = sizeof(replacement_stack), .ss_flags = 0
+  };
+  errno = 0;
+  if (sigaltstack(&replacement, 0) != -1 || errno != EPERM) {
+    observed = 16;
+    return;
+  }
+  context->uc_mcontext.gregs[REG_RAX] = 0x5a;
+  __asm__ volatile("pxor %%xmm15, %%xmm15" ::: "xmm15");
+  observed = 1;
+}
+
+int main(void) {
+  stack_t configured = {
+    .ss_sp = alternate_stack, .ss_size = sizeof(alternate_stack), .ss_flags = 0
+  };
+  if (sigaltstack(&configured, 0) != 0) return 19;
+  struct sigaction action = {0};
+  action.sa_sigaction = handler;
+  action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sigemptyset(&action.sa_mask);
+  sigaddset(&action.sa_mask, SIGUSR2);
+  const uint64_t expected_xmm = UINT64_C(0x123456789abcdef0);
+  uint64_t restored_xmm = 0;
+  __asm__ volatile("movq %0, %%xmm15" :: "r"(expected_xmm) : "xmm15");
+  if (sigaction(SIGUSR1, &action, 0) != 0) return 20;
+  int kill_result = kill(getpid(), SIGUSR1);
+  __asm__ volatile("movq %%xmm15, %0" : "=r"(restored_xmm));
+  if (kill_result != 0x5a) return 21;
+  if (observed != 1) return observed == 0 ? 22 : observed;
+  if (restored_xmm != expected_xmm) return 25;
+
+  sigset_t restored;
+  if (sigprocmask(SIG_SETMASK, 0, &restored) != 0) return 23;
+  if (sigismember(&restored, SIGUSR1) != 0 ||
+      sigismember(&restored, SIGUSR2) != 0) return 24;
+  stack_t restored_stack;
+  if (sigaltstack(0, &restored_stack) != 0) return 26;
+  if ((restored_stack.ss_flags & SS_ONSTACK) != 0) return 27;
+  if (restored_stack.ss_sp != alternate_stack ||
+      restored_stack.ss_size != sizeof(alternate_stack)) return 28;
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!(
+        code,
+        0,
+        "signal guest failed with code {code}; stdout={}; stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr),
+    );
+}
+
+#[test]
+fn static_elf_altstack_boundaries_match_linux_frame_placement() {
+    if !kvm_available("alternate-stack boundary test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "altstack-boundaries",
+        r#"
+#define _GNU_SOURCE
+#include <signal.h>
+#include <stdint.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+static volatile sig_atomic_t nested_seen;
+static uintptr_t alt_lower;
+static int mode;
+
+__attribute__((naked)) static void nested_handler(void) {
+  __asm__ volatile(
+      "movl $1, nested_seen(%rip)\n\t"
+      "ret\n\t");
+}
+
+__attribute__((naked)) static void fresh_handler(void) {
+  __asm__ volatile(
+      "xorl %edi, %edi\n\t"
+      "movl $60, %eax\n\t"
+      "syscall\n\t"
+      "ud2\n\t");
+}
+
+static void outer_handler(int signo) {
+  if (signo != SIGUSR1) _exit(40);
+  long pid = syscall(SYS_getpid);
+  long tid = syscall(SYS_gettid);
+  // For lower % 64 == 8, this interrupted RSP makes the nested frame begin
+  // exactly at lower: xsave=lower+440, frame=xsave-440, with a 128-byte
+  // red zone ending at the chosen RSP.
+  uintptr_t target = alt_lower + 1404 - (mode != 1);
+  volatile unsigned char *red_zone = (volatile unsigned char *)(target - 128);
+  for (unsigned i = 0; i < 128; ++i) red_zone[i] = (unsigned char)(i ^ 0xa5);
+
+  register long nr __asm__("rax") = SYS_tgkill;
+  register long arg1 __asm__("rdi") = pid;
+  register long arg2 __asm__("rsi") = tid;
+  register long arg3 __asm__("rdx") = SIGUSR2;
+  register uintptr_t new_sp __asm__("r8") = target;
+  __asm__ volatile(
+      "mov %%rsp, %%r10\n\t"
+      "mov %%r8, %%rsp\n\t"
+      "syscall\n\t"
+      "mov %%r10, %%rsp\n\t"
+      : "+a"(nr), "+r"(new_sp)
+      : "D"(arg1), "S"(arg2), "d"(arg3)
+      : "rcx", "r11", "r10", "memory");
+  if (nr != 0 || nested_seen != 1) _exit(41);
+  for (unsigned i = 0; i < 128; ++i) {
+    if (red_zone[i] != (unsigned char)(i ^ 0xa5)) _exit(42);
+  }
+  _exit(0);
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2) return 20;
+  long page = sysconf(_SC_PAGESIZE);
+  unsigned char *mapping = mmap(0, (size_t)page * 3,
+                                PROT_READ | PROT_WRITE,
+                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (mapping == MAP_FAILED) return 21;
+  unsigned char *middle = mapping + page;
+
+  if (strcmp(argv[1], "fresh") == 0) {
+    // The configured stack straddles a PROT_NONE guard, but the exact fresh
+    // frame starts at middle+8. Reserving an erroneous second red zone would
+    // start the frame 128 bytes lower in the guard.
+    if (mprotect(mapping, (size_t)page, PROT_NONE) != 0) return 22;
+    stack_t stack = {
+      .ss_sp = middle - 764,
+      .ss_size = 2048,
+      .ss_flags = 0,
+    };
+    if (sigaltstack(&stack, 0) != 0) return 23;
+    struct sigaction action = {0};
+    action.sa_handler = fresh_handler;
+    action.sa_flags = SA_ONSTACK;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGUSR1, &action, 0) != 0) return 24;
+    if (kill(getpid(), SIGUSR1) != 0) return 25;
+    return 26;
+  }
+
+  alt_lower = (uintptr_t)middle + 8;
+  stack_t stack = {
+    .ss_sp = (void *)alt_lower,
+    .ss_size = (size_t)page - 8,
+    .ss_flags = 0,
+  };
+  if (sigaltstack(&stack, 0) != 0) return 27;
+  if (strcmp(argv[1], "guard") == 0 &&
+      mprotect(mapping, (size_t)page, PROT_NONE) != 0) return 28;
+
+  struct sigaction inner = {0};
+  inner.sa_handler = nested_handler;
+  inner.sa_flags = SA_ONSTACK;
+  sigemptyset(&inner.sa_mask);
+  if (sigaction(SIGUSR2, &inner, 0) != 0) return 29;
+  struct sigaction outer = {0};
+  outer.sa_handler = outer_handler;
+  outer.sa_flags = SA_ONSTACK;
+  sigemptyset(&outer.sa_mask);
+  if (sigaction(SIGUSR1, &outer, 0) != 0) return 30;
+  mode = strcmp(argv[1], "exact") == 0 ? 1 : 2;
+  if (kill(getpid(), SIGUSR1) != 0) return 31;
+  return 32;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    for (mode, expected) in [
+        ("fresh", 0),
+        ("exact", 0),
+        ("underflow", 128 + libc::SIGSEGV),
+        ("guard", 128 + libc::SIGSEGV),
+    ] {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable, mode],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        assert_eq!(
+            code,
+            expected,
+            "altstack mode {mode} failed; stdout={}; stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr),
+        );
+    }
+}
+
+#[test]
+fn static_elf_signal_frame_requires_writable_altstack() {
+    if !kvm_available("read-only alternate signal stack test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "readonly-altstack",
+        r#"
+#define _GNU_SOURCE
+#include <signal.h>
+#include <stddef.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+static void handler(int signo) {
+  (void)signo;
+  _exit(77);
+}
+
+int main(void) {
+  long page = sysconf(_SC_PAGESIZE);
+  size_t size = (size_t)SIGSTKSZ;
+  size = (size + (size_t)page - 1) & ~((size_t)page - 1);
+  void *stack = mmap(0, size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (stack == MAP_FAILED) return 20;
+  stack_t configured = { .ss_sp = stack, .ss_size = size, .ss_flags = 0 };
+  if (sigaltstack(&configured, 0) != 0) return 21;
+  struct sigaction action = {0};
+  action.sa_handler = handler;
+  action.sa_flags = SA_ONSTACK;
+  sigemptyset(&action.sa_mask);
+  if (sigaction(SIGUSR1, &action, 0) != 0) return 22;
+  if (mprotect(stack, size, PROT_READ) != 0) return 23;
+  if (kill(getpid(), SIGUSR1) != 0) return 24;
+  return 25;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!(
+        code,
+        128 + libc::SIGSEGV,
+        "a handler frame must not be written through a PROT_READ altstack; stdout={}; stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr),
+    );
+}
+#[test]
+fn static_elf_rt_sigreturn_accepts_null_and_redirected_fpstate() {
+    if !kvm_available("rt_sigreturn fpstate-pointer test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "rt-sigreturn-fpstate",
+        include_str!("fixtures/rt_sigreturn_fpregs.c"),
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    for (mode, expected_code) in [
+        ("null", 0),
+        ("alternate", 0),
+        ("legacy", 0),
+        ("legacy-guard", 0),
+        ("xsave-unaligned", 128 + libc::SIGSEGV),
+        ("subset", 0),
+        ("uc-stack-invalid", 0),
+        ("uc-stack-onstack", 0),
+        ("uc-stack-replace", 0),
+        ("invalid", 128 + libc::SIGSEGV),
+    ] {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable, mode],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        assert_eq!(code, expected_code, "mode={mode}");
+        assert!(stdout.is_empty(), "mode={mode}");
+        assert!(stderr.is_empty(), "mode={mode}");
+    }
+}
+
+#[test]
+fn static_elf_chains_pending_after_sigreturn_before_user_code() {
+    if !kvm_available("pending-signal boundary test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "pending-signal-boundaries",
+        r#"
+#define _GNU_SOURCE
+#include <signal.h>
+#include <unistd.h>
+
+static volatile sig_atomic_t phase;
+static volatile sig_atomic_t between;
+static volatile sig_atomic_t failure;
+
+static void first_handler(int signal) {
+  if (signal != SIGUSR1 || phase != 0 || between != 0) failure = 10;
+  phase = 1;
+}
+
+static void second_handler(int signal) {
+  if (signal != SIGUSR2 || phase != 1 || between != 0) failure = 11;
+  phase = 2;
+}
+
+static int install(int signal, void (*handler)(int)) {
+  struct sigaction action = {0};
+  action.sa_handler = handler;
+  sigemptyset(&action.sa_mask);
+  return sigaction(signal, &action, 0);
+}
+
+int main(void) {
+  if (install(SIGUSR1, first_handler) != 0) return 20;
+  if (install(SIGUSR2, second_handler) != 0) return 21;
+  sigset_t pair;
+  sigemptyset(&pair);
+  sigaddset(&pair, SIGUSR1);
+  sigaddset(&pair, SIGUSR2);
+  if (sigprocmask(SIG_BLOCK, &pair, 0) != 0) return 22;
+  if (kill(getpid(), SIGUSR1) != 0) return 23;
+  if (kill(getpid(), SIGUSR2) != 0) return 24;
+  if (sigprocmask(SIG_UNBLOCK, &pair, 0) != 0) return 25;
+  between = 1;
+  if (failure != 0) return failure;
+  return phase == 2 ? 0 : 26;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let code = backend.run_static_elf().unwrap();
+    assert_eq!(
+        code, 0,
+        "pending-signal boundary guest failed with code {code}"
+    );
+}
 #[test]
 fn static_elf_clone_tid_side_effects_reach_guest_memory() {
     match Kvm::new() {
@@ -4697,12 +5515,10 @@ fn kvm_initial_rbp_and_rflags_match_native_linux_process_entry() {
         0x0f, 0x0b, // ud2
     ];
     let image = static_elf(&code);
-    let executable = TestExecutable::new(&image);
-    let mut permissions = std::fs::metadata(&executable.0).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&executable.0, permissions).unwrap();
-
-    let native = std::process::Command::new(&executable.0).output().unwrap();
+    let executable = NativeTestExecutable::new(&image, 0o755);
+    let native = std::process::Command::new(executable.path())
+        .output()
+        .unwrap();
     assert!(
         native.status.success(),
         "native entry-register fixture failed: {native:?}",
@@ -4742,13 +5558,8 @@ fn kvm_initial_rbp_and_rflags_match_native_linux_process_entry() {
 
 #[test]
 fn kvm_static_elf_getppid_follows_pid_namespace_contract() {
-    match Kvm::new() {
-        Ok(_) => {}
-        Err(error) if kvm_is_unavailable(&error) => {
-            eprintln!("skipping KVM getppid namespace test: cannot open /dev/kvm: {error}");
-            return;
-        }
-        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    if !kvm_available("getppid/getpgrp namespace test") {
+        return;
     }
 
     // A static ELF guest that issues getppid and self-checks the deterministic
@@ -4773,6 +5584,32 @@ fn kvm_static_elf_getppid_follows_pid_namespace_contract() {
         ]
     }
 
+    // A second fixture pins the process group after root-PID configuration.
+    // Both configuration orderings are production paths and must rebuild the
+    // loaded lifecycle table with a PGID distinct from its default value.
+    #[rustfmt::skip]
+    fn getpgrp_probe(expected_pgid: u8) -> [u8; 52] {
+        [
+            0xb8, 0x6f, 0x00, 0x00, 0x00,   // mov eax, SYS_getpgrp (111)
+            0x0f, 0x05,                     // syscall
+            0x48, 0x83, 0xf8, expected_pgid, // cmp rax, expected_pgid
+            0x75, 0x19,                     // jne failure
+            0x31, 0xff,                     // xor edi, edi (current process group)
+            0x31, 0xf6,                     // xor esi, esi (signal 0 probe)
+            0xb8, 0x3e, 0x00, 0x00, 0x00,   // mov eax, SYS_kill (62)
+            0x0f, 0x05,                     // syscall
+            0x48, 0x85, 0xc0,               // test rax, rax
+            0x75, 0x09,                     // jne failure
+            0xb8, 0xe7, 0x00, 0x00, 0x00,   // mov eax, SYS_exit_group (231)
+            0x31, 0xff,                     // xor edi, edi
+            0x0f, 0x05,                     // syscall  (exit_group(0))
+            0xb8, 0xe7, 0x00, 0x00, 0x00,   // failure: mov eax, SYS_exit_group
+            0xbf, 0x2a, 0x00, 0x00, 0x00,   // mov edi, 42
+            0x0f, 0x05,                     // syscall  (exit_group(42))
+            0x0f, 0x0b,                     // ud2
+        ]
+    }
+
     // Conventional root guest: detcore ROOT_DETPID == 3 => getppid() == 1.
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
     backend
@@ -4784,6 +5621,30 @@ fn kvm_static_elf_getppid_follows_pid_namespace_contract() {
         0,
         "root guest pid=3 must report getppid()==1 in the PID namespace"
     );
+
+    for set_before_install in [false, true] {
+        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+        if set_before_install {
+            backend.set_root_pid(3).unwrap();
+        }
+        backend
+            .install_static_elf(&static_elf(&getpgrp_probe(3)), "/bin/true")
+            .unwrap();
+        if !set_before_install {
+            backend.set_root_pid(3).unwrap();
+        }
+        assert_eq!(
+            backend.run_static_elf().unwrap(),
+            0,
+            "root guest pid=3 must report getpgrp()==3 and make kill(0,0) find its group when \
+             set_root_pid runs {} install",
+            if set_before_install {
+                "before"
+            } else {
+                "after"
+            },
+        );
+    }
 
     // Namespace init edge case: a guest that is itself PID 1 has no parent.
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
@@ -5402,6 +6263,149 @@ fn tool_receives_post_exec_with_guest_auxv() {
     let mut random = [0; 16];
     backend.memory().read(address as u64, &mut random).unwrap();
     assert_eq!(random, POST_EXEC_RANDOM);
+}
+
+#[test]
+fn lifecycle_callbacks_refuse_deferred_signal_without_a_syscall_frame() {
+    if !kvm_available("lifecycle signal-boundary test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "lifecycle-signal-boundaries",
+        r#"
+#include <pthread.h>
+
+static void *worker(void *argument) {
+  return argument;
+}
+
+int main(void) {
+  pthread_t thread;
+  if (pthread_create(&thread, 0, worker, 0) != 0) return 10;
+  if (pthread_join(thread, 0) != 0) return 11;
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    backend.set_thread_ownership(ThreadOwnership::Tool);
+
+    let (log, exit_code, stdout, stderr) = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<LifecycleSignalTool>((), true),
+    )
+    .unwrap();
+
+    assert_eq!(exit_code, 0);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    assert_eq!(
+        *log.callbacks
+            .lock()
+            .expect("lifecycle signal log lock poisoned"),
+        vec![1, 2, 1],
+        "root start, initial post-exec, and clone child start refuse both structured deferral and \
+         injected self-signals without a return frame",
+    );
+}
+
+#[test]
+fn post_exec_unmask_refuses_preserved_pending_signals_before_entry() {
+    if !kvm_available("post-exec pending-signal preflight test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let target = compile_c_program(
+        &directory.0,
+        "post-exec-pending-target",
+        r#"
+#include <unistd.h>
+int main(void) {
+  if (write(STDOUT_FILENO, "ENTRY", 5) != 5) return 30;
+  return 31;
+}
+"#,
+    );
+    let launcher = compile_c_program(
+        &directory.0,
+        "post-exec-pending-launcher",
+        r#"
+#define _GNU_SOURCE
+#include <signal.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  if (argc != 3) return 20;
+  sigset_t blocked;
+  sigemptyset(&blocked);
+  sigaddset(&blocked, SIGUSR1);
+  if (sigprocmask(SIG_BLOCK, &blocked, 0) != 0) return 21;
+  int queued = strcmp(argv[2], "process") == 0
+      ? kill(getpid(), SIGUSR1)
+      : (int)syscall(SYS_tgkill, getpid(), syscall(SYS_gettid), SIGUSR1);
+  if (queued != 0) return 22;
+  execl(argv[1], argv[1], (char *)0);
+  return 23;
+}
+"#,
+    );
+    let launcher = launcher.to_str().unwrap();
+    let target = target.to_str().unwrap();
+    let image = std::fs::read(launcher).unwrap();
+
+    for (scope, recursive, expected_callbacks) in [
+        ("process", false, 2),
+        ("thread", false, 2),
+        ("process", true, 3),
+        ("thread", true, 3),
+    ] {
+        POST_EXEC_UNMASK_CALLBACKS.store(0, Ordering::SeqCst);
+        POST_EXEC_ENTRY_WRITES.store(0, Ordering::SeqCst);
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[launcher, target, scope],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let error =
+            futures::executor::block_on(backend.run_static_elf_with_tool::<PostExecPendingTool>(
+                (recursive, target.to_owned()),
+                true,
+            ))
+            .expect_err("eligible post-exec signal must stop before running the new image");
+        assert!(
+            matches!(error, Error::PostExec(Errno::ENOSYS)),
+            "scope={scope}, recursive={recursive}, error={error}",
+        );
+        assert_eq!(
+            POST_EXEC_UNMASK_CALLBACKS.load(Ordering::SeqCst),
+            expected_callbacks,
+            "scope={scope}, recursive={recursive}",
+        );
+        assert_eq!(
+            POST_EXEC_ENTRY_WRITES.load(Ordering::SeqCst),
+            0,
+            "new image reached its entry write before signal handling; scope={scope}, recursive={recursive}",
+        );
+    }
 }
 
 #[test]
@@ -6469,6 +7473,145 @@ int main(void) {
     );
 }
 
+#[test]
+fn live_sibling_sigignore_invalidates_only_pretransition_pending_signal() {
+    if !kvm_available("sibling sigaction generation test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "sibling-sigignore-generation",
+        r#"
+#define _GNU_SOURCE
+#include <pthread.h>
+#include <signal.h>
+#include <stdatomic.h>
+#include <unistd.h>
+
+static _Atomic int phase;
+static _Atomic int failure;
+static volatile sig_atomic_t handler_calls;
+
+static void fail(int code) {
+  int expected = 0;
+  atomic_compare_exchange_strong(&failure, &expected, code);
+}
+
+static void handler(int signo) {
+  if (signo != SIGUSR1) {
+    fail(24);
+    return;
+  }
+  ++handler_calls;
+}
+
+static int install(void (*disposition)(int)) {
+  struct sigaction action = {0};
+  action.sa_handler = disposition;
+  sigemptyset(&action.sa_mask);
+  return sigaction(SIGUSR1, &action, 0);
+}
+
+static void *worker(void *unused) {
+  (void)unused;
+  sigset_t set;
+  sigemptyset(&set);
+  sigaddset(&set, SIGUSR1);
+  if (pthread_sigmask(SIG_BLOCK, &set, 0) != 0) fail(20);
+
+  if (raise(SIGUSR1) != 0) fail(21);
+  atomic_store_explicit(&phase, 1, memory_order_release);
+  while (atomic_load_explicit(&phase, memory_order_acquire) < 2)
+    __asm__ volatile("pause");
+
+  sigset_t pending;
+  if (sigpending(&pending) != 0 || sigismember(&pending, SIGUSR1) != 0)
+    fail(22);
+  atomic_store_explicit(&phase, 3, memory_order_release);
+  while (atomic_load_explicit(&phase, memory_order_acquire) < 4)
+    __asm__ volatile("pause");
+
+  // Reinstalling a handler must not resurrect the instance that SIG_IGN
+  // discarded before this worker's private queue could be reached.
+  if (pthread_sigmask(SIG_UNBLOCK, &set, 0) != 0) fail(23);
+  if (handler_calls != 0) fail(25);
+  handler_calls = 0;
+  if (pthread_sigmask(SIG_BLOCK, &set, 0) != 0) fail(26);
+  atomic_store_explicit(&phase, 5, memory_order_release);
+  while (atomic_load_explicit(&phase, memory_order_acquire) < 6)
+    __asm__ volatile("pause");
+
+  // This second instance is generated after SIG_IGN while blocked. Linux
+  // retains it because the disposition can change before it is unblocked.
+  if (raise(SIGUSR1) != 0 ||
+      sigpending(&pending) != 0 ||
+      sigismember(&pending, SIGUSR1) != 1)
+    fail(27);
+  atomic_store_explicit(&phase, 7, memory_order_release);
+  while (atomic_load_explicit(&phase, memory_order_acquire) < 8)
+    __asm__ volatile("pause");
+
+  if (pthread_sigmask(SIG_UNBLOCK, &set, 0) != 0) fail(28);
+  if (handler_calls != 1) fail(29);
+  return 0;
+}
+
+int main(void) {
+  if (install(handler) != 0) return 10;
+  pthread_t thread;
+  if (pthread_create(&thread, 0, worker, 0) != 0) return 11;
+  while (atomic_load_explicit(&phase, memory_order_acquire) < 1)
+    __asm__ volatile("pause");
+
+  if (install(SIG_IGN) != 0) return 12;
+  atomic_store_explicit(&phase, 2, memory_order_release);
+  while (atomic_load_explicit(&phase, memory_order_acquire) < 3)
+    __asm__ volatile("pause");
+
+  if (install(handler) != 0) return 13;
+  atomic_store_explicit(&phase, 4, memory_order_release);
+  while (atomic_load_explicit(&phase, memory_order_acquire) < 5)
+    __asm__ volatile("pause");
+
+  if (install(SIG_IGN) != 0) return 14;
+  atomic_store_explicit(&phase, 6, memory_order_release);
+  while (atomic_load_explicit(&phase, memory_order_acquire) < 7)
+    __asm__ volatile("pause");
+
+  if (install(handler) != 0) return 15;
+  atomic_store_explicit(&phase, 8, memory_order_release);
+  if (pthread_join(thread, 0) != 0) return 16;
+  return atomic_load_explicit(&failure, memory_order_acquire);
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+
+    let native = std::process::Command::new(executable).output().unwrap();
+    assert!(native.status.success(), "native: {native:?}");
+
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!(
+        code,
+        0,
+        "sibling sigaction guest failed with code {code}; stdout={}; stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr),
+    );
+}
+
 #[derive(Default)]
 struct ChildWaitEventLog {
     events: Mutex<Vec<BackendChildWaitEvent>>,
@@ -7357,9 +8500,10 @@ fn prctl_elf_copyout_image(kind: &str, writable: bool, name: bool, output_offset
 fn check_prctl_elf_copyout(kind: &str, writable: bool, name: bool, output_offset: u64) {
     assert!(kvm_available("check_prctl_elf_copyout"));
     let image = prctl_elf_copyout_image(kind, writable, name, output_offset);
-    let executable = TestExecutable::new(&image);
-    std::fs::set_permissions(&executable.0, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let native = std::process::Command::new(&executable.0).output().unwrap();
+    let executable = NativeTestExecutable::new(&image, 0o700);
+    let native = std::process::Command::new(executable.path())
+        .output()
+        .unwrap();
     assert_eq!(
         native.status.code(),
         Some(0),
@@ -7796,5 +8940,2721 @@ fn repair_prctl_required_kvm_is_not_optional() {
             String::from_utf8_lossy(&output.stderr).contains("requires usable /dev/kvm"),
             "{output:?}"
         );
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SignalExitOrderTool {
+    process: i32,
+}
+
+#[reverie::tool]
+impl Tool for SignalExitOrderTool {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    fn new(pid: Pid, _config: &()) -> Self {
+        Self {
+            process: pid.as_raw(),
+        }
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        Ok(guest.inject(syscall).await?)
+    }
+
+    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+        &self,
+        tid: Pid,
+        _global: &G,
+        _thread_state: Self::ThreadState,
+        _status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        if tid.as_raw() != self.process {
+            let mut bytes = [0; std::mem::size_of::<i32>()];
+            let mut memory = SIGNAL_EXIT_MEMORY
+                .lock()
+                .expect("signal-exit memory lock poisoned");
+            let memory = memory
+                .as_mut()
+                .expect("signal-exit memory was not installed");
+            memory
+                .read(SIGNAL_EXIT_CHILD_TID, &mut bytes)
+                .expect("child TID word must be readable at signal exit");
+            SIGNAL_EXIT_OBSERVED_TID.store(i32::from_le_bytes(bytes) as u64, Ordering::SeqCst);
+            memory
+                .write(
+                    SIGNAL_EXIT_CHILD_TID,
+                    &SIGNAL_EXIT_AFTER_CALLBACK.to_le_bytes(),
+                )
+                .expect("callback sentinel must be writable at signal exit");
+        }
+        Ok(())
+    }
+}
+
+const SIGNAL_HOOK_MARKER: usize = 0x0800_0000;
+
+#[derive(Default)]
+struct SignalHookLog {
+    signals: Mutex<Vec<i32>>,
+    thread_starts: Mutex<Vec<i32>>,
+}
+
+impl SignalHookLog {
+    fn signals(&self) -> Vec<i32> {
+        self.signals
+            .lock()
+            .expect("signal hook log lock poisoned")
+            .clone()
+    }
+
+    fn thread_starts(&self) -> Vec<i32> {
+        self.thread_starts
+            .lock()
+            .expect("signal thread-start log lock poisoned")
+            .clone()
+    }
+}
+
+#[reverie::global_tool]
+impl GlobalTool for SignalHookLog {
+    type Request = i64;
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Pid, request: i64) {
+        if request > 0 {
+            self.signals
+                .lock()
+                .expect("signal hook log lock poisoned")
+                .push(i32::try_from(request).unwrap());
+        } else {
+            self.thread_starts
+                .lock()
+                .expect("signal thread-start log lock poisoned")
+                .push(i32::try_from(-request).unwrap());
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SignalHookTool;
+
+#[reverie::tool]
+impl Tool for SignalHookTool {
+    type GlobalState = SignalHookLog;
+    type ThreadState = u64;
+
+    async fn handle_structured_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        event: SignalEvent,
+    ) -> Result<Option<SignalEvent>, Errno> {
+        let ordinal = {
+            let calls = guest.thread_state_mut();
+            *calls += 1;
+            *calls
+        };
+        guest.send_rpc(i64::from(event.signal())).await;
+        match ordinal {
+            1 => {
+                let mut info = event.siginfo();
+                info[0..4].copy_from_slice(&libc::SIGUSR2.to_ne_bytes());
+                Ok(Some(SignalEvent::new(libc::SIGUSR2, info, event.target())?))
+            }
+            2 => {
+                let marker = AddrMut::from_raw(SIGNAL_HOOK_MARKER)
+                    .expect("the signal-hook marker address is non-null");
+                guest.memory().write_value(marker, &0x5a_u8)?;
+                Ok(None)
+            }
+            3 => Ok(Some(event)),
+            4 => {
+                let marker = AddrMut::from_raw(SIGNAL_HOOK_MARKER + 1)
+                    .expect("the second signal-hook marker address is non-null");
+                guest.memory().write_value(marker, &0xa5_u8)?;
+                Ok(None)
+            }
+            5 => {
+                let mut info = event.siginfo();
+                info[0..4].copy_from_slice(&libc::SIGWINCH.to_ne_bytes());
+                Ok(Some(SignalEvent::new(
+                    libc::SIGWINCH,
+                    info,
+                    event.target(),
+                )?))
+            }
+            6 => Ok(Some(event)),
+            7 => {
+                let mut info = event.siginfo();
+                info[0..4].copy_from_slice(&libc::SIGTERM.to_ne_bytes());
+                Ok(Some(SignalEvent::new(libc::SIGTERM, info, event.target())?))
+            }
+            8..=9 => Ok(Some(event)),
+            10 => {
+                let child = guest.inject(Fork::new()).await?;
+                assert!(
+                    child > 0,
+                    "the returning injection must complete before the refusal probe",
+                );
+                assert_eq!(
+                    guest.inject(ExitGroup::new().with_status(77)).await,
+                    Err(Errno::ENOSYS),
+                    "a returning process action must not escape the signal-hook refusal",
+                );
+                Ok(Some(event))
+            }
+            _ => {
+                panic!(
+                    "unexpected signal-hook call {ordinal} for signal {} pid {} tid {}",
+                    event.signal(),
+                    guest.pid(),
+                    guest.tid()
+                )
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SignalBoundaryInjectionTool;
+
+#[reverie::tool]
+impl Tool for SignalBoundaryInjectionTool {
+    type GlobalState = SignalHookLog;
+    type ThreadState = u64;
+
+    async fn handle_structured_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        event: SignalEvent,
+    ) -> Result<Option<SignalEvent>, Errno> {
+        let ordinal = {
+            let calls = guest.thread_state_mut();
+            *calls += 1;
+            *calls
+        };
+        guest.send_rpc(i64::from(event.signal())).await;
+
+        let inject_clone = matches!(ordinal, 2 | 4 | 6 | 7);
+        let child = if inject_clone {
+            guest.inject(CloneSyscall::new()).await?
+        } else {
+            guest.inject(Fork::new()).await?
+        };
+        assert!(child > 0, "returning action {ordinal} must create a child");
+
+        if ordinal == 3 {
+            let second = guest.inject(CloneSyscall::new()).await?;
+            assert!(second > 0 && second != child);
+        }
+        assert_eq!(
+            guest.inject(ExitGroup::new().with_status(77)).await,
+            Err(Errno::ENOSYS),
+            "nonreturning injection must remain refused after action {ordinal}",
+        );
+
+        match ordinal {
+            1 | 6 => Ok(Some(event)),
+            3 | 7 => Ok(None),
+            2 | 8 => {
+                let mut info = event.siginfo();
+                info[0..4].copy_from_slice(&libc::SIGUSR2.to_ne_bytes());
+                Ok(Some(SignalEvent::new(libc::SIGUSR2, info, event.target())?))
+            }
+            4 | 5 => Ok(Some(event)),
+            _ => panic!(
+                "unexpected boundary-action hook {ordinal} for signal {} pid {} tid {}",
+                event.signal(),
+                guest.pid(),
+                guest.tid(),
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ForkWaitSignalTool;
+
+#[reverie::tool]
+impl Tool for ForkWaitSignalTool {
+    type GlobalState = SignalHookLog;
+    type ThreadState = u64;
+
+    async fn handle_structured_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        event: SignalEvent,
+    ) -> Result<Option<SignalEvent>, Errno> {
+        assert_eq!(event.signal(), libc::SIGWINCH);
+        let calls = guest.thread_state_mut();
+        assert_eq!(*calls, 0, "the signal boundary must be filtered once");
+        *calls = 1;
+        guest.send_rpc(i64::from(event.signal())).await;
+
+        let child = guest.inject(Fork::new()).await?;
+        assert!(child > 0);
+        let wait = Syscall::from_raw(
+            Sysno::wait4,
+            SyscallArgs::new(child as usize, 0, 0, 0, 0, 0),
+        );
+        assert_eq!(guest.inject(wait).await?, child);
+        Ok(Some(event))
+    }
+}
+
+#[derive(Debug, Default)]
+struct PendingChildRefusalLog;
+
+#[reverie::global_tool]
+impl GlobalTool for PendingChildRefusalLog {
+    type Request = ();
+    type Response = ();
+    type Config = bool;
+
+    async fn receive_rpc(&self, _from: Pid, (): ()) {}
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PendingChildRefusalTool;
+
+#[reverie::tool]
+impl Tool for PendingChildRefusalTool {
+    type GlobalState = PendingChildRefusalLog;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &bool) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscalls([Sysno::getpid]);
+        subscriptions
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        assert_eq!(syscall.number(), Sysno::getpid);
+        let child = if *guest.config() {
+            let flags = (libc::CLONE_VM
+                | libc::CLONE_FS
+                | libc::CLONE_FILES
+                | libc::CLONE_SIGHAND
+                | libc::CLONE_THREAD) as usize;
+            guest
+                .inject(Syscall::from_raw(
+                    Sysno::clone,
+                    SyscallArgs::new(flags, (LOAD_ADDRESS + 0x1ff0) as usize, 0, 0, 0, 0),
+                ))
+                .await?
+        } else {
+            guest.inject(Fork::new()).await?
+        };
+        assert!(child > 0);
+        assert_eq!(
+            guest.inject(ExitGroup::new().with_status(77)).await,
+            Err(Errno::ENOSYS),
+        );
+        Err(std::io::Error::other("forced error after pending-child refusal").into())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RtSignalBoundaryInjectionTool;
+
+#[reverie::tool]
+impl Tool for RtSignalBoundaryInjectionTool {
+    type GlobalState = SignalHookLog;
+    type ThreadState = u64;
+
+    async fn handle_structured_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        event: SignalEvent,
+    ) -> Result<Option<SignalEvent>, Errno> {
+        let ordinal = {
+            let calls = guest.thread_state_mut();
+            *calls += 1;
+            *calls
+        };
+        let registers = guest.regs().await;
+        guest.send_rpc(i64::from(event.signal())).await;
+        match ordinal {
+            1 => {
+                assert_eq!(registers.orig_rax, libc::SYS_rt_sigprocmask as u64);
+                Ok(Some(event))
+            }
+            2 => {
+                assert_eq!(registers.orig_rax, libc::SYS_rt_sigreturn as u64);
+                let fork_child = guest.inject(Fork::new()).await?;
+                let clone_child = guest.inject(CloneSyscall::new()).await?;
+                assert!(fork_child > 0 && clone_child > 0 && fork_child != clone_child);
+                assert_eq!(
+                    guest.inject(ExitGroup::new().with_status(77)).await,
+                    Err(Errno::ENOSYS),
+                );
+                Ok(Some(event))
+            }
+            _ => panic!(
+                "unexpected rt_sigreturn hook {ordinal} for signal {} pid {} tid {}",
+                event.signal(),
+                guest.pid(),
+                guest.tid(),
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SignalBoundaryThreadInjectionTool;
+
+#[reverie::tool]
+impl Tool for SignalBoundaryThreadInjectionTool {
+    type GlobalState = SignalHookLog;
+    type ThreadState = u64;
+
+    async fn handle_thread_start<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+    ) -> Result<(), reverie::Error> {
+        if guest.tid() != guest.pid() {
+            guest.send_rpc(-i64::from(guest.tid().as_raw())).await;
+        }
+        Ok(())
+    }
+
+    async fn handle_structured_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        event: SignalEvent,
+    ) -> Result<Option<SignalEvent>, Errno> {
+        assert_eq!(event.signal(), libc::SIGWINCH);
+        assert_eq!(
+            event.target(),
+            SignalTarget::Thread {
+                pid: guest.pid(),
+                tid: guest.tid(),
+            }
+        );
+        let calls = guest.thread_state_mut();
+        assert_eq!(*calls, 0, "the root signal boundary must be filtered once");
+        *calls = 1;
+        guest.send_rpc(i64::from(event.signal())).await;
+
+        let flags = (libc::CLONE_VM
+            | libc::CLONE_FS
+            | libc::CLONE_FILES
+            | libc::CLONE_SIGHAND
+            | libc::CLONE_THREAD) as usize;
+        let clone = Syscall::from_raw(
+            Sysno::clone,
+            SyscallArgs::new(flags, (LOAD_ADDRESS + 0x1ff0) as usize, 0, 0, 0, 0),
+        );
+        let child_tid = guest.inject(clone).await?;
+        assert!(child_tid > 0, "thread injection must return the child tid");
+        Ok(Some(event))
+    }
+}
+
+#[test]
+fn structured_tool_replaces_then_suppresses_at_consecutive_return_boundaries() {
+    if !kvm_available("structured signal Tool hook test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "structured-signal-tool",
+        r#"
+#define _GNU_SOURCE
+#include <signal.h>
+#include <stdint.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+#define HOOK_MARKER ((volatile unsigned char *)UINT64_C(0x08000000))
+
+static volatile sig_atomic_t usr1_calls;
+static volatile sig_atomic_t usr2_calls;
+static volatile sig_atomic_t urg_calls;
+static volatile sig_atomic_t handler_failure;
+
+static void usr1_handler(int signo, siginfo_t *info, void *context) {
+  (void)info;
+  (void)context;
+  ++usr1_calls;
+  if (signo != SIGUSR1) handler_failure = 10;
+}
+
+static void usr2_handler(int signo, siginfo_t *info, void *context) {
+  (void)context;
+  ++usr2_calls;
+  if (signo != SIGUSR2 || info == 0 || info->si_signo != SIGUSR2 ||
+      info->si_code != SI_USER) {
+    handler_failure = 11;
+    return;
+  }
+  sigset_t current;
+  if (sigprocmask(SIG_SETMASK, 0, &current) != 0 ||
+      sigismember(&current, SIGUSR2) != 1 ||
+      sigismember(&current, SIGTERM) != 1 ||
+      sigismember(&current, SIGURG) != 1 ||
+      sigismember(&current, SIGUSR1) != 0 ||
+      sigismember(&current, SIGWINCH) != 0) {
+    handler_failure = 12;
+  }
+}
+
+static void urg_handler(int signo) {
+  ++urg_calls;
+  if (signo != SIGURG) handler_failure = 13;
+}
+
+static int install(int signo, void (*handler)(int, siginfo_t *, void *),
+                   int masked) {
+  struct sigaction action = {0};
+  action.sa_sigaction = handler;
+  action.sa_flags = SA_SIGINFO;
+  sigemptyset(&action.sa_mask);
+  if (masked != 0) sigaddset(&action.sa_mask, masked);
+  if (signo == SIGUSR2) sigaddset(&action.sa_mask, SIGURG);
+  return sigaction(signo, &action, 0);
+}
+
+int main(void) {
+  pid_t original_pid = getpid();
+  void *mapping = mmap((void *)HOOK_MARKER, 4096, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+  if (mapping != (void *)HOOK_MARKER) return 20;
+  if (install(SIGUSR1, usr1_handler, SIGWINCH) != 0) return 21;
+  if (install(SIGUSR2, usr2_handler, SIGTERM) != 0) return 22;
+  if (signal(SIGURG, urg_handler) == SIG_ERR) return 23;
+
+  sigset_t pending;
+  sigemptyset(&pending);
+  sigaddset(&pending, SIGUSR1);
+  sigaddset(&pending, SIGTERM);
+  sigaddset(&pending, SIGURG);
+  if (sigprocmask(SIG_BLOCK, &pending, 0) != 0) return 24;
+  if (kill(getpid(), SIGUSR1) != 0) return 25;
+  if (kill(getpid(), SIGTERM) != 0) return 26;
+  if (kill(getpid(), SIGURG) != 0) return 33;
+  if (sigprocmask(SIG_UNBLOCK, &pending, 0) != 0) return 27;
+
+  // The second Tool callback runs on the first handler's rt_sigreturn
+  // continuation and writes this byte while suppressing SIGTERM. No later
+  // syscall is needed to make the marker visible.
+  if (*HOOK_MARKER != 0x5a) return 28;
+  if (handler_failure != 0) return handler_failure;
+  if (usr1_calls != 0) return 29;
+  if (usr2_calls != 1) return 30;
+  if (urg_calls != 1) return 34;
+  // An unblocked default-fatal self-signal must reach the Tool before its
+  // disposition is applied, so the Tool can suppress it at this boundary.
+  if (kill(getpid(), SIGINT) != 0) return 31;
+  if (*(HOOK_MARKER + 1) != 0xa5) return 32;
+
+  // Replacing the first event with a default-ignored signal must not let user
+  // code run before the next caught event at the same return boundary.
+  sigemptyset(&pending);
+  sigaddset(&pending, SIGINT);
+  sigaddset(&pending, SIGUSR1);
+  if (sigprocmask(SIG_BLOCK, &pending, 0) != 0) return 35;
+  if (kill(getpid(), SIGINT) != 0) return 36;
+  if (kill(getpid(), SIGUSR1) != 0) return 37;
+  if (sigprocmask(SIG_UNBLOCK, &pending, 0) != 0) return 38;
+  if (usr1_calls != 1) return 39;
+
+  // A replacement that is blocked under its new number stays pending, while
+  // the next eligible caught event is selected before user code resumes.
+  sigemptyset(&pending);
+  sigaddset(&pending, SIGINT);
+  sigaddset(&pending, SIGUSR1);
+  sigaddset(&pending, SIGTERM);
+  if (sigprocmask(SIG_BLOCK, &pending, 0) != 0) return 40;
+  if (kill(getpid(), SIGINT) != 0) return 41;
+  if (kill(getpid(), SIGUSR1) != 0) return 42;
+  sigdelset(&pending, SIGTERM);
+  if (sigprocmask(SIG_UNBLOCK, &pending, 0) != 0) return 43;
+  if (usr1_calls != 2) return 44;
+  sigset_t still_pending;
+  if (sigpending(&still_pending) != 0 ||
+      sigismember(&still_pending, SIGTERM) != 1) return 45;
+
+  // Like ptrace, the virtual Tool observes an explicit SIG_IGN and a
+  // default-ignored signal exactly once before disposition discards them.
+  if (signal(SIGUSR2, SIG_IGN) == SIG_ERR) return 46;
+  if (kill(getpid(), SIGUSR2) != 0) return 47;
+  if (usr2_calls != 1) return 48;
+  if (kill(getpid(), SIGWINCH) != 0) return 49;
+  // The Tool's final callback injects fork before probing the nonreturning
+  // refusal. The injected child leaves without duplicating the parent test.
+  if (getpid() != original_pid) _exit(0);
+  if (usr1_calls != 2 || usr2_calls != 1 || urg_calls != 1) return 50;
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (log, code, stdout, stderr) =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<SignalHookTool>((), true))
+            .unwrap();
+    let signals = log.signals();
+    assert_eq!(
+        code,
+        0,
+        "structured signal Tool guest failed with code {code}; signals={signals:?}; stdout={}; stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr),
+    );
+    assert_eq!(
+        signals,
+        vec![
+            libc::SIGUSR1,
+            libc::SIGTERM,
+            libc::SIGURG,
+            libc::SIGINT,
+            libc::SIGINT,
+            libc::SIGUSR1,
+            libc::SIGINT,
+            libc::SIGUSR1,
+            libc::SIGUSR2,
+            libc::SIGWINCH,
+        ]
+    );
+}
+
+#[test]
+fn returning_signal_hook_actions_restore_every_delivery_outcome() {
+    if !kvm_available("returning signal-hook action boundary test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "signal-hook-return-boundary",
+        r#"
+#define _GNU_SOURCE
+#include <signal.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+static volatile sig_atomic_t usr1_calls;
+static volatile sig_atomic_t urg_calls;
+static volatile sig_atomic_t handler_failure;
+static pid_t original_pid;
+
+static void caught(int signo) {
+  if (signo == SIGUSR1) ++usr1_calls;
+  else if (signo == SIGURG) ++urg_calls;
+  else handler_failure = 20;
+}
+
+static void leave_injected_child(void) {
+  if (getpid() != original_pid) syscall(SYS_exit_group, 0);
+}
+
+int main(void) {
+  original_pid = getpid();
+  if (signal(SIGUSR1, caught) == SIG_ERR) return 21;
+  if (signal(SIGURG, caught) == SIG_ERR) return 22;
+
+  sigset_t usr2;
+  sigemptyset(&usr2);
+  sigaddset(&usr2, SIGUSR2);
+  if (sigprocmask(SIG_BLOCK, &usr2, 0) != 0) return 23;
+
+  if (kill(getpid(), SIGWINCH) != 0) return 24;
+  leave_injected_child();
+
+  if (kill(getpid(), SIGUSR1) != 0) return 25;
+  leave_injected_child();
+  if (usr1_calls != 0) return 26;
+
+  // Suppression after two returning actions is followed immediately by the
+  // next caught event at the same sigprocmask return boundary.
+  sigset_t pair;
+  sigemptyset(&pair);
+  sigaddset(&pair, SIGUSR1);
+  sigaddset(&pair, SIGURG);
+  if (sigprocmask(SIG_BLOCK, &pair, 0) != 0) return 27;
+  if (kill(getpid(), SIGUSR1) != 0) return 28;
+  if (kill(getpid(), SIGURG) != 0) return 29;
+  if (sigprocmask(SIG_UNBLOCK, &pair, 0) != 0) return 30;
+  leave_injected_child();
+  if (usr1_calls != 0 || urg_calls != 1) return 31;
+
+  if (kill(getpid(), SIGUSR1) != 0) return 32;
+  leave_injected_child();
+  if (usr1_calls != 1) return 33;
+
+  if (kill(getpid(), SIGWINCH) != 0) return 34;
+  leave_injected_child();
+  if (kill(getpid(), SIGUSR1) != 0) return 35;
+  leave_injected_child();
+  if (usr1_calls != 1) return 36;
+
+  if (kill(getpid(), SIGUSR1) != 0) return 37;
+  leave_injected_child();
+  if (usr1_calls != 1) return 38;
+  sigset_t pending;
+  if (sigpending(&pending) != 0 || sigismember(&pending, SIGUSR2) != 1) return 39;
+  if (handler_failure != 0) return handler_failure;
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (log, code, stdout, stderr) = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<SignalBoundaryInjectionTool>((), true),
+    )
+    .unwrap();
+    assert_eq!(
+        code,
+        0,
+        "signal-boundary action guest failed with code {code}; stdout={}; stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr),
+    );
+    assert_eq!(
+        log.signals(),
+        vec![
+            libc::SIGWINCH,
+            libc::SIGUSR1,
+            libc::SIGUSR1,
+            libc::SIGURG,
+            libc::SIGUSR1,
+            libc::SIGWINCH,
+            libc::SIGUSR1,
+            libc::SIGUSR1,
+        ],
+    );
+}
+
+#[test]
+fn signal_hook_can_fork_and_wait_before_returning() {
+    if !kvm_available("same-callback signal-hook fork/wait test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "signal-hook-fork-wait",
+        r#"
+#define _GNU_SOURCE
+#include <signal.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+int main(void) {
+  pid_t original_pid = getpid();
+  if (kill(original_pid, SIGWINCH) != 0) return 20;
+  if (getpid() != original_pid) syscall(SYS_exit_group, 0);
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (log, code, stdout, stderr) = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<ForkWaitSignalTool>((), true),
+    )
+    .unwrap();
+    assert_eq!(
+        code,
+        0,
+        "same-callback fork/wait guest failed with code {code}; stdout={}; stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr),
+    );
+    assert_eq!(log.signals(), vec![libc::SIGWINCH]);
+}
+
+#[test]
+fn pending_fork_and_thread_refuse_nonreturning_injection_without_teardown_hang() {
+    if !kvm_available("pending-child nonreturning-injection refusal test") {
+        return;
+    }
+
+    let code = [
+        0xb8,
+        libc::SYS_getpid as u8,
+        0,
+        0,
+        0, // mov eax, SYS_getpid
+        0x0f,
+        0x05, // syscall
+        0x0f,
+        0x0b, // ud2: the top-level Tool error must stop before guest re-entry
+    ];
+    for thread in [false, true] {
+        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+        backend
+            .install_static_elf(
+                &static_elf(&code),
+                if thread {
+                    "/bin/pending-thread-refusal-test"
+                } else {
+                    "/bin/pending-fork-refusal-test"
+                },
+            )
+            .unwrap();
+        let error = futures::executor::block_on(
+            backend.run_static_elf_with_tool::<PendingChildRefusalTool>(thread, true),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("forced error after pending-child refusal"),
+            "unexpected pending-child callback error: {error}",
+        );
+    }
+}
+
+#[test]
+fn returning_thread_action_at_signal_boundary_restores_parent_continuation() {
+    if !kvm_available("returning CLONE_THREAD signal-boundary test") {
+        return;
+    }
+
+    fn append_exit(code: &mut Vec<u8>, group: bool, status: u32) {
+        let number = if group {
+            libc::SYS_exit_group as u32
+        } else {
+            libc::SYS_exit as u32
+        };
+        code.push(0xb8); // mov eax, syscall number
+        code.extend_from_slice(&number.to_le_bytes());
+        code.push(0xbf); // mov edi, status
+        code.extend_from_slice(&status.to_le_bytes());
+        code.extend_from_slice(&[0x0f, 0x05, 0x0f, 0x0b]); // syscall; ud2
+    }
+
+    fn patch_jump(code: &mut [u8], operand: usize, target: usize) {
+        let displacement = i32::try_from(target as isize - (operand + 4) as isize).unwrap();
+        code[operand..operand + 4].copy_from_slice(&displacement.to_le_bytes());
+    }
+
+    let mut code = vec![
+        0x49, 0x89, 0xe7, // mov r15, rsp
+        0xb8, 0x27, 0x00, 0x00, 0x00, // mov eax, SYS_getpid
+        0x0f, 0x05, // syscall
+        0x41, 0x89, 0xc6, // mov r14d, eax
+        0xb8, 0xba, 0x00, 0x00, 0x00, // mov eax, SYS_gettid
+        0x0f, 0x05, // syscall
+        0x41, 0x89, 0xc5, // mov r13d, eax
+        0xb8, 0xea, 0x00, 0x00, 0x00, // mov eax, SYS_tgkill
+        0x44, 0x89, 0xf7, // mov edi, r14d
+        0x44, 0x89, 0xee, // mov esi, r13d
+        0xba, 0x1c, 0x00, 0x00, 0x00, // mov edx, SIGWINCH
+        0x0f, 0x05, // syscall
+        0x41, 0x89, 0xc4, // mov r12d, eax
+        0x4c, 0x39, 0xfc, // cmp rsp, r15
+        0x0f, 0x85, 0, 0, 0, 0, // jne child
+    ];
+    let child_jump = code.len() - 4;
+    code.extend_from_slice(&[
+        0x45, 0x85, 0xe4, // test r12d, r12d
+        0x0f, 0x85, 0, 0, 0, 0, // jne failure
+    ]);
+    let failure_jump = code.len() - 4;
+    append_exit(&mut code, true, 0);
+
+    let child = code.len();
+    patch_jump(&mut code, child_jump, child);
+    append_exit(&mut code, false, 0);
+
+    let failure = code.len();
+    patch_jump(&mut code, failure_jump, failure);
+    append_exit(&mut code, true, 91);
+
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf(
+            &static_elf(&code),
+            "/bin/signal-boundary-thread-injection-test",
+        )
+        .unwrap();
+    let (log, exit_code, stdout, stderr) = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<SignalBoundaryThreadInjectionTool>((), true),
+    )
+    .unwrap();
+    assert_eq!(
+        exit_code,
+        0,
+        "thread boundary guest failed with code {exit_code}; stdout={}; stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr),
+    );
+    assert_eq!(log.signals(), vec![libc::SIGWINCH]);
+    let thread_starts = log.thread_starts();
+    assert_eq!(
+        thread_starts.len(),
+        1,
+        "the injected Tool thread must pass its start gate exactly once: {thread_starts:?}",
+    );
+}
+#[test]
+fn returning_actions_at_rt_sigreturn_restore_the_interrupted_continuation() {
+    if !kvm_available("rt_sigreturn returning action boundary test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "rt-signal-hook-return-boundary",
+        r#"
+#define _GNU_SOURCE
+#include <signal.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+static volatile sig_atomic_t usr1_calls;
+static volatile sig_atomic_t usr2_calls;
+static pid_t original_pid;
+
+static void caught(int signo) {
+  if (signo == SIGUSR1) ++usr1_calls;
+  else if (signo == SIGUSR2) ++usr2_calls;
+  else syscall(SYS_exit_group, 20);
+}
+
+int main(void) {
+  original_pid = getpid();
+  if (signal(SIGUSR1, caught) == SIG_ERR) return 21;
+  if (signal(SIGUSR2, caught) == SIG_ERR) return 22;
+  sigset_t both;
+  sigemptyset(&both);
+  sigaddset(&both, SIGUSR1);
+  sigaddset(&both, SIGUSR2);
+  if (sigprocmask(SIG_BLOCK, &both, 0) != 0) return 23;
+  if (kill(getpid(), SIGUSR1) != 0) return 24;
+  if (kill(getpid(), SIGUSR2) != 0) return 25;
+  if (sigprocmask(SIG_UNBLOCK, &both, 0) != 0) return 26;
+  // Both injected children resume from the restored context after the
+  // rt_sigreturn-selected second event and leave without replaying this call.
+  if (getpid() != original_pid) syscall(SYS_exit_group, 0);
+  if (usr1_calls != 1 || usr2_calls != 1) return 27;
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (log, code, stdout, stderr) = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<RtSignalBoundaryInjectionTool>((), true),
+    )
+    .unwrap();
+    assert_eq!(
+        code,
+        0,
+        "rt_sigreturn boundary guest failed with code {code}; stdout={}; stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr),
+    );
+    assert_eq!(log.signals(), vec![libc::SIGUSR1, libc::SIGUSR2]);
+}
+
+#[test]
+fn fatal_signal_at_rt_sigreturn_clears_child_tid_before_tool_exit() {
+    if !kvm_available("fatal rt_sigreturn CHILD_CLEARTID ordering test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "signal-exit-cleartid",
+        r#"
+#define _GNU_SOURCE
+#include <sched.h>
+#include <signal.h>
+#include <stdint.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#define TID_WORD ((int *)UINT64_C(0x08003000))
+static _Alignas(16) unsigned char child_stack[1 << 20];
+
+static void usr1_handler(int signo) {
+  if (signo != SIGUSR1) syscall(SYS_exit, 41);
+  long tid = syscall(SYS_gettid);
+  if (syscall(SYS_tgkill, getpid(), tid, SIGTERM) != 0) {
+    syscall(SYS_exit, 42);
+  }
+}
+
+static int child_main(void *unused) {
+  (void)unused;
+  long tid = syscall(SYS_gettid);
+  if (*TID_WORD != tid) syscall(SYS_exit, 43);
+  if (syscall(SYS_tgkill, getpid(), tid, SIGUSR1) != 0) {
+    syscall(SYS_exit, 44);
+  }
+  // SIGTERM is queued while the SIGUSR1 handler blocks it. It must terminate
+  // this thread group on the rt_sigreturn boundary before this instruction.
+  syscall(SYS_exit, 45);
+  return 45;
+}
+
+int main(void) {
+  void *mapped = mmap(TID_WORD, 4096, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+  if (mapped != (void *)TID_WORD) return 20;
+  *TID_WORD = 0x7fffffff;
+
+  struct sigaction action = {0};
+  action.sa_handler = usr1_handler;
+  sigemptyset(&action.sa_mask);
+  sigaddset(&action.sa_mask, SIGTERM);
+  if (sigaction(SIGUSR1, &action, 0) != 0) return 21;
+
+  int flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND |
+              CLONE_THREAD | CLONE_SYSVSEM | CLONE_CHILD_SETTID |
+              CLONE_CHILD_CLEARTID;
+  int child = clone(child_main, child_stack + sizeof(child_stack), flags,
+                    0, 0, 0, TID_WORD);
+  if (child < 0) return 22;
+  for (;;) __asm__ volatile("pause");
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    SIGNAL_EXIT_OBSERVED_TID.store(u64::MAX, Ordering::SeqCst);
+    *SIGNAL_EXIT_MEMORY
+        .lock()
+        .expect("signal-exit memory lock poisoned") = Some(backend.memory().clone());
+
+    let result = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<SignalExitOrderTool>((), true),
+    );
+    let mut final_bytes = [0; std::mem::size_of::<i32>()];
+    SIGNAL_EXIT_MEMORY
+        .lock()
+        .expect("signal-exit memory lock poisoned")
+        .as_ref()
+        .expect("signal-exit memory was not installed")
+        .read(SIGNAL_EXIT_CHILD_TID, &mut final_bytes)
+        .unwrap();
+    *SIGNAL_EXIT_MEMORY
+        .lock()
+        .expect("signal-exit memory lock poisoned") = None;
+    let (_, code, stdout, stderr) = result.unwrap();
+    assert_eq!(code, 128 + libc::SIGTERM);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    assert_eq!(SIGNAL_EXIT_OBSERVED_TID.load(Ordering::SeqCst), 0);
+    assert_eq!(i32::from_le_bytes(final_bytes), SIGNAL_EXIT_AFTER_CALLBACK);
+}
+
+#[derive(Default)]
+struct RestartSignalLog {
+    callbacks: Mutex<Vec<u8>>,
+}
+
+impl RestartSignalLog {
+    fn callbacks(&self) -> Vec<u8> {
+        self.callbacks
+            .lock()
+            .expect("restart signal log lock poisoned")
+            .clone()
+    }
+}
+
+#[reverie::global_tool]
+impl GlobalTool for RestartSignalLog {
+    type Request = u8;
+    type Response = ();
+    type Config = u8;
+
+    async fn receive_rpc(&self, _from: Pid, callback: u8) {
+        self.callbacks
+            .lock()
+            .expect("restart signal log lock poisoned")
+            .push(callback);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RestartSignalTool;
+
+#[reverie::tool]
+impl Tool for RestartSignalTool {
+    type GlobalState = RestartSignalLog;
+    type ThreadState = (u64, u64);
+
+    fn subscriptions(_config: &u8) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscall(Sysno::getpid);
+        subscriptions
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        assert!(matches!(syscall, Syscall::Getpid(_)));
+        let ordinal = {
+            let calls = guest.thread_state_mut();
+            calls.0 += 1;
+            calls.0
+        };
+        guest.send_rpc(0).await;
+        if ordinal == 1 {
+            let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+            info[0..4].copy_from_slice(&libc::SIGUSR1.to_ne_bytes());
+            info[8..12].copy_from_slice(&libc::SI_TKILL.to_ne_bytes());
+            let event = SignalEvent::new(
+                libc::SIGUSR1,
+                info,
+                SignalTarget::Thread {
+                    pid: guest.pid(),
+                    tid: guest.tid(),
+                },
+            )?;
+            guest.defer_signal_delivery(event).await?;
+            if *guest.config() >= 9 {
+                let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+                info[0..4].copy_from_slice(&libc::SIGUSR2.to_ne_bytes());
+                info[8..12].copy_from_slice(&libc::SI_TKILL.to_ne_bytes());
+                let event = SignalEvent::new(
+                    libc::SIGUSR2,
+                    info,
+                    SignalTarget::Thread {
+                        pid: guest.pid(),
+                        tid: guest.tid(),
+                    },
+                )?;
+                guest.defer_signal_delivery(event).await?;
+            }
+            if *guest.config() == 8 {
+                return Ok(3);
+            }
+            return Err(Errno::ERESTARTSYS.into());
+        }
+        assert_eq!(ordinal, 2, "a syscall restarted more than once");
+        Ok(77)
+    }
+
+    async fn handle_structured_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        event: SignalEvent,
+    ) -> Result<Option<SignalEvent>, Errno> {
+        guest.send_rpc(1).await;
+        let signal_ordinal = {
+            let calls = guest.thread_state_mut();
+            calls.1 += 1;
+            calls.1
+        };
+        let replacement = match *guest.config() {
+            3 => return Ok(None),
+            4 => libc::SIGWINCH,
+            5..=7 => libc::SIGUSR2,
+            9 | 12 if signal_ordinal == 1 => return Ok(None),
+            10 if signal_ordinal == 1 => libc::SIGWINCH,
+            11 if signal_ordinal == 1 => libc::SIGTERM,
+            _ => return Ok(Some(event)),
+        };
+        let mut info = event.siginfo();
+        info[0..4].copy_from_slice(&replacement.to_ne_bytes());
+        Ok(Some(SignalEvent::new(replacement, info, event.target())?))
+    }
+}
+
+#[test]
+fn pending_signal_applies_linux_erestartsys_policy_after_the_tool_hook() {
+    if !kvm_available("signal-aware ERESTARTSYS test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "signal-aware-erestartsys",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+static volatile sig_atomic_t usr1_calls;
+static volatile sig_atomic_t usr2_calls;
+
+static void usr1_handler(int signo) {
+  if (signo == SIGUSR1) ++usr1_calls;
+}
+
+static void usr2_handler(int signo) {
+  if (signo == SIGUSR2) ++usr2_calls;
+}
+
+static int install(int signo, void (*handler)(int), int flags) {
+  struct sigaction action = {0};
+  action.sa_handler = handler;
+  action.sa_flags = flags;
+  sigemptyset(&action.sa_mask);
+  return sigaction(signo, &action, 0);
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2) return 20;
+  int mode = atoi(argv[1]);
+  int usr1_flags = (mode == 2 || mode == 6) ? SA_RESTART : 0;
+  int usr2_flags = (mode == 7 || mode == 12) ? SA_RESTART : 0;
+  if (install(SIGUSR1, usr1_handler, usr1_flags) != 0) return 21;
+  if (install(SIGUSR2, usr2_handler, usr2_flags) != 0) return 22;
+  if (mode == 5 || mode == 11) {
+    sigset_t blocked;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, mode == 5 ? SIGUSR2 : SIGTERM);
+    if (sigprocmask(SIG_BLOCK, &blocked, 0) != 0) return 23;
+  }
+
+  errno = 0;
+  long result = syscall(SYS_getpid);
+  int saved_errno = errno;
+  if (mode == 1 || mode == 6 || (mode >= 9 && mode <= 11)) {
+    if (result != -1 || saved_errno != EINTR) return 24;
+  } else if (mode == 8) {
+    if (result != 3) return 25;
+  } else if (result != 77) {
+    return 26;
+  }
+
+  if (mode == 1 || mode == 2 || mode == 8) {
+    if (usr1_calls != 1 || usr2_calls != 0) return 27;
+  } else if (mode == 6 || mode == 7 || (mode >= 9 && mode <= 12)) {
+    if (usr1_calls != 0 || usr2_calls != 1) return 28;
+  } else if (usr1_calls != 0 || usr2_calls != 0) {
+    return 29;
+  }
+  if (mode == 5 || mode == 11) {
+    sigset_t pending;
+    int expected = mode == 5 ? SIGUSR2 : SIGTERM;
+    if (sigpending(&pending) != 0 || sigismember(&pending, expected) != 1) return 30;
+  }
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    for (mode, expected_callbacks) in [
+        (1_u8, vec![0, 1]),
+        (2, vec![0, 1, 0]),
+        (3, vec![0, 1, 0]),
+        (4, vec![0, 1, 0]),
+        (5, vec![0, 1, 0]),
+        (6, vec![0, 1]),
+        (7, vec![0, 1, 0]),
+        (8, vec![0, 1]),
+        (9, vec![0, 1, 1]),
+        (10, vec![0, 1, 1]),
+        (11, vec![0, 1, 1]),
+        (12, vec![0, 1, 1, 0]),
+    ] {
+        let argument = mode.to_string();
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable, &argument],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (log, code, stdout, stderr) = futures::executor::block_on(
+            backend.run_static_elf_with_tool::<RestartSignalTool>(mode, true),
+        )
+        .unwrap();
+        assert_eq!(
+            code,
+            0,
+            "signal-aware ERESTARTSYS mode {mode} failed; stdout={}; stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr),
+        );
+        assert_eq!(log.callbacks(), expected_callbacks, "mode {mode}");
+    }
+}
+
+#[test]
+fn static_elf_rt_sigreturn_requires_only_consumed_prefix() {
+    if !kvm_available("static_elf_rt_sigreturn_requires_only_consumed_prefix") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "static_elf_rt_sigreturn_requires_only_consumed_prefix",
+        r#"#define _GNU_SOURCE
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <ucontext.h>
+#include <unistd.h>
+
+static unsigned char *mapping;
+static size_t accessible;
+static volatile sig_atomic_t handled;
+
+static void handler(int signo, siginfo_t *info, void *context_raw) {
+    (void)info;
+    if (signo != SIGUSR1) _exit(80);
+    unsigned char *frame = mapping + 4096 - accessible;
+    memcpy(frame, (unsigned char *)context_raw - 8, accessible);
+    memset(frame + 232, 0, 8);
+    handled = 1;
+    __asm__ volatile("mov %0, %%rsp\n\tmov $15, %%rax\n\tsyscall\n\tud2"
+                     : : "r"(frame + 8) : "rax", "rcx", "r11", "memory");
+    __builtin_unreachable();
+}
+
+int main(int argc, char **argv) {
+    if (argc != 2 || sysconf(_SC_PAGESIZE) != 4096) return 81;
+    accessible = strtoul(argv[1], 0, 10);
+    if (accessible != 440 && accessible != 312 && accessible != 311) return 82;
+    mapping = mmap(0, 8192, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mapping == MAP_FAILED || mprotect(mapping + 4096, 4096, PROT_NONE)) return 83;
+    struct sigaction action = {.sa_sigaction = handler, .sa_flags = SA_SIGINFO};
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGUSR1, &action, 0)) return 84;
+    long result = syscall(SYS_tgkill, getpid(), syscall(SYS_gettid), SIGUSR1);
+    if (result != 0 || handled != 1) return 85;
+    puts("resumed result=0 handled=1");
+    return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    for (argument, expected_code, expected_stdout) in [
+        ("440", 0, "resumed result=0 handled=1\n"),
+        ("312", 0, "resumed result=0 handled=1\n"),
+        ("311", 128 + libc::SIGSEGV, ""),
+    ] {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        let argv = if argument.is_empty() {
+            vec![executable]
+        } else {
+            vec![executable, argument]
+        };
+        backend
+            .install_static_elf_with_context(&image, &argv, &["PATH=/usr/bin:/bin"], &directory.0)
+            .unwrap();
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        assert_eq!(
+            code, expected_code,
+            "case {argument}: stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert_eq!(stdout, expected_stdout.as_bytes(), "case {argument}");
+        assert!(stderr.is_empty(), "case {argument}: {stderr:?}");
+        let expected_status = if argument == "311" {
+            ExitStatus::from_raw(libc::SIGSEGV | 0x80)
+        } else {
+            ExitStatus::SUCCESS
+        };
+        check_typed_signal_status(
+            &image,
+            &argv,
+            &directory,
+            expected_status,
+            expected_stdout.as_bytes(),
+        );
+    }
+}
+
+#[test]
+fn static_elf_rt_sigpending_accepts_short_output_sizes() {
+    if !kvm_available("static_elf_rt_sigpending_accepts_short_output_sizes") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "static_elf_rt_sigpending_accepts_short_output_sizes",
+        r#"#define _GNU_SOURCE
+#include <errno.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+int main(void) {
+    sigset_t blocked;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGUSR1);
+    if (sigprocmask(SIG_BLOCK, &blocked, 0) || kill(getpid(), SIGUSR1)) return 81;
+    uintptr_t invalid_addresses[] = {0, 1, UINTPTR_MAX};
+    size_t sizes[] = {0, 1, 9};
+    for (size_t address_index = 0; address_index < 3; ++address_index) {
+        for (size_t size_index = 0; size_index < 3; ++size_index) {
+            errno = 0;
+            long result = syscall(SYS_rt_sigpending, invalid_addresses[address_index], sizes[size_index]);
+            int expected_error = size_index == 0 ? 0 : size_index == 1 ? EFAULT : EINVAL;
+            if (result != (size_index == 0 ? 0 : -1) || errno != expected_error) return 83;
+        }
+    }
+    for (size_t size = 0; size <= 9; ++size) {
+        unsigned char actual[16], expected[16];
+        memset(actual, 0xa5, sizeof(actual));
+        memset(expected, 0xa5, sizeof(expected));
+        if (size <= 8) {
+            memset(expected + 3, 0, size);
+            if (size >= 2) expected[4] = 2;
+        }
+        errno = 0;
+        long result = syscall(SYS_rt_sigpending, actual + 3, size);
+        int error = errno;
+        printf("size=%zu result=%ld errno=%d bytes=", size, result, error);
+        for (size_t index = 0; index < sizeof(actual); ++index) printf("%02x", actual[index]);
+        puts("");
+        if (result != (size <= 8 ? 0 : -1) || error != (size <= 8 ? 0 : EINVAL)
+            || memcmp(actual, expected, sizeof(actual))) return 82;
+    }
+    return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    {
+        let (argument, expected_code, expected_stdout) = (
+            "",
+            0,
+            "size=0 result=0 errno=0 bytes=a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5\nsize=1 result=0 errno=0 bytes=a5a5a500a5a5a5a5a5a5a5a5a5a5a5a5\nsize=2 result=0 errno=0 bytes=a5a5a50002a5a5a5a5a5a5a5a5a5a5a5\nsize=3 result=0 errno=0 bytes=a5a5a5000200a5a5a5a5a5a5a5a5a5a5\nsize=4 result=0 errno=0 bytes=a5a5a500020000a5a5a5a5a5a5a5a5a5\nsize=5 result=0 errno=0 bytes=a5a5a50002000000a5a5a5a5a5a5a5a5\nsize=6 result=0 errno=0 bytes=a5a5a5000200000000a5a5a5a5a5a5a5\nsize=7 result=0 errno=0 bytes=a5a5a500020000000000a5a5a5a5a5a5\nsize=8 result=0 errno=0 bytes=a5a5a50002000000000000a5a5a5a5a5\nsize=9 result=-1 errno=22 bytes=a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5\n",
+        );
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        let argv = if argument.is_empty() {
+            vec![executable]
+        } else {
+            vec![executable, argument]
+        };
+        backend
+            .install_static_elf_with_context(&image, &argv, &["PATH=/usr/bin:/bin"], &directory.0)
+            .unwrap();
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        assert_eq!(
+            code, expected_code,
+            "case {argument}: stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert_eq!(stdout, expected_stdout.as_bytes(), "case {argument}");
+        assert!(stderr.is_empty(), "case {argument}: {stderr:?}");
+    }
+}
+
+const NESTED_NULL_CONTEXT_SOURCE: &str = r#"#define _GNU_SOURCE
+#include <signal.h>
+#include <stdint.h>
+#include <string.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <ucontext.h>
+#include <unistd.h>
+
+static const char *mode;
+static uintptr_t expected_stack;
+static _Alignas(16) unsigned char alternate_stack[65536];
+
+__attribute__((naked)) static void restorer(void) {
+    __asm__ volatile("mov $15, %rax; syscall; ud2");
+}
+
+static void fault_handler(int number, siginfo_t *info, void *context) {
+    ucontext_t *frame = context;
+    greg_t *registers = frame->uc_mcontext.gregs;
+    int matched = number == SIGSEGV && info->si_code == SEGV_MAPERR && info->si_addr == NULL &&
+        registers[REG_TRAPNO] == 14 && registers[REG_ERR] == 20 &&
+        registers[REG_RIP] == 0 && (uintptr_t)registers[REG_RSP] == expected_stack &&
+        (registers[REG_CSGSFS] & 3) == 3;
+    int want_match = strcmp(mode, "caught-return") == 0 || strcmp(mode, "caught-resume") == 0 || strcmp(mode, "caught-resume-altstack") == 0;
+    if (matched != want_match) _exit(80);
+    if (!want_match) {
+        int trap = strcmp(mode, "handler-hlt") == 0 ? 13 : strcmp(mode, "handler-ud2") == 0 ? 6 : 14;
+        int error = strcmp(mode, "handler-datafault") == 0 ? 4 : 0;
+        int expected_signal = trap == 6 ? SIGILL : SIGSEGV;
+        if (number != expected_signal || registers[REG_TRAPNO] != trap ||
+            registers[REG_ERR] != error || registers[REG_RIP] == 0) _exit(81);
+    }
+    const char *output = matched ? "matched return context\n" : "different fault context\n";
+    size_t length = strlen(output);
+    if (write(1, output, length) != (ssize_t)length) _exit(82);
+    if (strcmp(mode, "caught-resume") == 0 || strcmp(mode, "caught-resume-altstack") == 0) {
+        if (strcmp(mode, "caught-resume-altstack") == 0) {
+            uintptr_t local = (uintptr_t)&frame;
+            if (local < (uintptr_t)alternate_stack || local >= (uintptr_t)alternate_stack + sizeof(alternate_stack)) _exit(93);
+        }
+        registers[REG_RIP] = (greg_t)restorer;
+        return;
+    }
+    _exit(43);
+}
+
+static void handler(int number, siginfo_t *info, void *context) {
+    (void)info;
+    if (number != SIGUSR1) _exit(83);
+    expected_stack = (uintptr_t)context;
+    if (write(1, "handler\n", 8) != 8) _exit(84);
+    if (strcmp(mode, "handler-hlt") == 0) __asm__ volatile("hlt");
+    if (strcmp(mode, "handler-ud2") == 0) __asm__ volatile("ud2");
+    if (strcmp(mode, "handler-datafault") == 0) {
+        uintptr_t address = 0;
+        __asm__ volatile("mov (%0), %%rax" : : "r"(address) : "rax", "memory");
+    }
+}
+
+int main(int argc, char **argv) {
+    if (argc != 2) return 85;
+    mode = argv[1];
+    struct {
+        void (*handler)(int, siginfo_t *, void *);
+        uint64_t flags;
+        void (*restorer)(void);
+        uint64_t mask;
+    } action = {handler, SA_SIGINFO | UINT64_C(0x04000000), NULL, 0};
+    if (strcmp(mode, "caught-resume-altstack") == 0) {
+        memset(alternate_stack, 0xa5, sizeof(alternate_stack));
+        stack_t stack = {.ss_sp = alternate_stack, .ss_size = sizeof(alternate_stack)};
+        if (sigaltstack(&stack, NULL)) return 94;
+        action.flags |= SA_ONSTACK;
+    }
+    if (syscall(SYS_rt_sigaction, SIGUSR1, &action, 0, 8)) return 87;
+    if (strcmp(mode, "ignored-return") == 0) {
+        if (signal(SIGSEGV, SIG_IGN) == SIG_ERR) return 88;
+    } else if (strcmp(mode, "blocked-return") == 0) {
+        uint64_t mask = UINT64_C(1) << (SIGSEGV - 1);
+        if (syscall(SYS_rt_sigprocmask, SIG_BLOCK, &mask, NULL, 8)) return 89;
+    } else if (strcmp(mode, "default-return") != 0) {
+        action.handler = fault_handler;
+        action.restorer = restorer;
+        if (syscall(SYS_rt_sigaction, SIGSEGV, &action, 0, 8) ||
+            syscall(SYS_rt_sigaction, SIGILL, &action, 0, 8)) return 90;
+    }
+    if (syscall(SYS_tgkill, getpid(), syscall(SYS_gettid), SIGUSR1)) return 91;
+    if (strcmp(mode, "caught-resume") == 0 || strcmp(mode, "caught-resume-altstack") == 0) {
+        if (strcmp(mode, "caught-resume-altstack") == 0) {
+            for (size_t index = 0; index < 32768; ++index)
+                if (alternate_stack[index] != 0xa5) return 95;
+            for (size_t index = sizeof(alternate_stack) - 16; index < sizeof(alternate_stack); ++index)
+                if (alternate_stack[index] != 0xa5) return 96;
+        }
+        if (write(1, "resumed\n", 8) != 8) return 97;
+        return 0;
+    }
+    return 92;
+}
+"#;
+
+#[test]
+fn page_zero_nested_null_caught_return() {
+    if !kvm_available("page_zero_nested_null_caught_return") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "page_zero_nested_null_caught_return",
+        NESTED_NULL_CONTEXT_SOURCE,
+    );
+    let image = std::fs::read(&executable).unwrap();
+    check_typed_signal_status(
+        &image,
+        &[executable.to_str().unwrap(), "caught-return"],
+        &directory,
+        ExitStatus::Exited(43),
+        b"handler\nmatched return context\n",
+    );
+}
+
+#[test]
+fn page_zero_nested_null_caught_resume() {
+    if !kvm_available("page_zero_nested_null_caught_resume") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "page_zero_nested_null_caught_resume",
+        NESTED_NULL_CONTEXT_SOURCE,
+    );
+    let image = std::fs::read(&executable).unwrap();
+    check_typed_signal_status(
+        &image,
+        &[executable.to_str().unwrap(), "caught-resume"],
+        &directory,
+        ExitStatus::Exited(0),
+        b"handler\nmatched return context\nresumed\n",
+    );
+}
+
+#[test]
+fn page_zero_nested_null_caught_resume_altstack() {
+    if !kvm_available("page_zero_nested_null_caught_resume_altstack") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "page_zero_nested_null_caught_resume_altstack",
+        NESTED_NULL_CONTEXT_SOURCE,
+    );
+    let image = std::fs::read(&executable).unwrap();
+    check_typed_signal_status(
+        &image,
+        &[executable.to_str().unwrap(), "caught-resume-altstack"],
+        &directory,
+        ExitStatus::Exited(0),
+        b"handler\nmatched return context\nresumed\n",
+    );
+}
+
+#[test]
+fn page_zero_nested_null_ignored() {
+    if !kvm_available("page_zero_nested_null_ignored") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "page_zero_nested_null_ignored",
+        NESTED_NULL_CONTEXT_SOURCE,
+    );
+    let image = std::fs::read(&executable).unwrap();
+    check_typed_signal_status(
+        &image,
+        &[executable.to_str().unwrap(), "ignored-return"],
+        &directory,
+        ExitStatus::from_raw(libc::SIGSEGV | 0x80),
+        b"handler\n",
+    );
+}
+
+#[test]
+fn page_zero_nested_null_blocked() {
+    if !kvm_available("page_zero_nested_null_blocked") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "page_zero_nested_null_blocked",
+        NESTED_NULL_CONTEXT_SOURCE,
+    );
+    let image = std::fs::read(&executable).unwrap();
+    check_typed_signal_status(
+        &image,
+        &[executable.to_str().unwrap(), "blocked-return"],
+        &directory,
+        ExitStatus::from_raw(libc::SIGSEGV | 0x80),
+        b"handler\n",
+    );
+}
+
+const PAGE_ZERO_FAULT_CONTEXT_SOURCE: &str = r#"#define _GNU_SOURCE
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ucontext.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+uintptr_t expected_sp;
+uint64_t expected_flags;
+unsigned char vector_input[16] = {1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31};
+unsigned char vector_output[16];
+static int fault_kind;
+static int expected_cs;
+static int expected_ss;
+static volatile sig_atomic_t handled;
+extern char read_fault, write_fault, read_resume, write_resume, fetch_resume;
+void run_read(void);
+void run_write(void);
+void run_fetch(void);
+
+#define SAVE "push %rbx; push %rbp; push %r12; push %r13; push %r14; push %r15; "
+#define SET_REGS "movdqu vector_input(%rip), %xmm15; " \
+    "mov $0x108, %r8; mov $0x109, %r9; mov $0x110, %r10; mov $0x111, %r11; " \
+    "mov $0x112, %r12; mov $0x113, %r13; mov $0x114, %r14; mov $0x115, %r15; " \
+    "mov $0x101, %rdi; mov $0x102, %rsi; mov $0x103, %rbp; mov $0x104, %rbx; " \
+    "mov $0x105, %rdx; mov $0x107, %rcx; xor %eax, %eax; " \
+    "pushfq; popq expected_flags(%rip); "
+#define RESTORE "movdqu %xmm15, vector_output(%rip); pop %r15; pop %r14; pop %r13; pop %r12; pop %rbp; pop %rbx; ret; "
+__asm__(".text; .global run_read, run_write, run_fetch; "
+    "run_read: " SAVE SET_REGS "mov %rsp, expected_sp(%rip); "
+    ".global read_fault, read_resume; read_fault: mov (%rax), %rax; read_resume: " RESTORE
+    "run_write: " SAVE SET_REGS "mov %rsp, expected_sp(%rip); "
+    ".global write_fault, write_resume; write_fault: mov %rdx, (%rax); write_resume: " RESTORE
+    "run_fetch: " SAVE SET_REGS "push %rax; mov %rsp, expected_sp(%rip); "
+    "ret; .global fetch_resume; fetch_resume: " RESTORE);
+
+static void handler(int number, siginfo_t *info, void *context) {
+    ucontext_t *frame = context;
+    greg_t *registers = frame->uc_mcontext.gregs;
+    unsigned char expected_info[128] = {0};
+    int signo = SIGSEGV;
+    int code = SEGV_MAPERR;
+    memcpy(expected_info, &signo, sizeof(signo));
+    memcpy(expected_info + 8, &code, sizeof(code));
+    if (number != SIGSEGV || memcmp(info, expected_info, sizeof(expected_info))) _exit(81);
+    uintptr_t expected_rip = fault_kind == 0 ? (uintptr_t)&read_fault :
+        fault_kind == 1 ? (uintptr_t)&write_fault : 0;
+    int expected_error = fault_kind == 0 ? 4 : fault_kind == 1 ? 6 : 20;
+    uintptr_t stack = expected_sp + (fault_kind == 2 ? 8 : 0);
+    if (registers[REG_TRAPNO] != 14 || registers[REG_ERR] != expected_error ||
+        registers[REG_CR2] != 0 || (uintptr_t)registers[REG_RIP] != expected_rip ||
+        (uintptr_t)registers[REG_RSP] != stack ||
+        (uint64_t)registers[REG_EFL] != (expected_flags | (1u << 16)) ||
+        (registers[REG_CSGSFS] & 0xffff) != expected_cs ||
+        ((registers[REG_CSGSFS] >> 48) & 0xffff) != expected_ss) _exit(82);
+    const int indices[15] = {REG_R8, REG_R9, REG_R10, REG_R11, REG_R12, REG_R13,
+        REG_R14, REG_R15, REG_RDI, REG_RSI, REG_RBP, REG_RBX, REG_RDX, REG_RAX, REG_RCX};
+    const uint64_t values[15] = {0x108,0x109,0x110,0x111,0x112,0x113,0x114,0x115,
+        0x101,0x102,0x103,0x104,0x105,0,0x107};
+    for (int index = 0; index != 15; ++index)
+        if ((uint64_t)registers[indices[index]] != values[index]) _exit(83);
+    if (!frame->uc_mcontext.fpregs ||
+        memcmp((unsigned char *)frame->uc_mcontext.fpregs + 160 + 15 * 16, vector_input, 16)) _exit(84);
+    if (write(1, "caught\n", 7) != 7) _exit(85);
+    handled++;
+    registers[REG_RIP] = (greg_t)(fault_kind == 0 ? &read_resume :
+        fault_kind == 1 ? &write_resume : &fetch_resume);
+}
+
+static int run_case(int argc, char **argv) {
+    if (argc != 4) return 86;
+    fault_kind = !strcmp(argv[1], "read") ? 0 : !strcmp(argv[1], "write") ? 1 : 2;
+    expected_cs = !strcmp(argv[3], "native") ? 0x33 : 0x23;
+    expected_ss = !strcmp(argv[3], "native") ? 0x2b : 0x18;
+    struct sigaction action = {0};
+    if (!strcmp(argv[2], "caught")) {
+        action.sa_sigaction = handler;
+        action.sa_flags = SA_SIGINFO;
+    } else if (!strcmp(argv[2], "ignored")) {
+        action.sa_handler = SIG_IGN;
+    } else {
+        action.sa_handler = SIG_DFL;
+    }
+    if (sigaction(SIGSEGV, &action, NULL)) return 87;
+    if (!strcmp(argv[2], "blocked")) {
+        sigset_t blocked;
+        sigemptyset(&blocked);
+        sigaddset(&blocked, SIGSEGV);
+        if (sigprocmask(SIG_BLOCK, &blocked, NULL)) return 88;
+    }
+    if (write(1, "before\n", 7) != 7) return 89;
+    if (fault_kind == 0) run_read();
+    else if (fault_kind == 1) run_write();
+    else run_fetch();
+    if (handled != 1 || memcmp(vector_output, vector_input, 16)) return 90;
+    if (write(1, "resumed\n", 8) != 8) return 91;
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc == 5 && !strcmp(argv[4], "wait")) {
+        pid_t child = fork();
+        if (child < 0) return 92;
+        if (child == 0) _exit(run_case(4, argv));
+        int status = 0x12345678;
+        if (waitpid(child, &status, 0) != child) return 93;
+        if (!strcmp(argv[2], "caught")) {
+            if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return 94;
+        } else {
+            if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGSEGV) return 95;
+        }
+        if (write(1, "waited\n", 7) != 7) return 96;
+        return 0;
+    }
+    return run_case(argc, argv);
+}
+"#;
+
+#[derive(Default)]
+struct PageFaultInjectionLog {
+    starts: Mutex<Vec<(u64, u64)>>,
+    exits: Mutex<Vec<i32>>,
+    faults: AtomicU64,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for PageFaultInjectionLog {
+    type Request = (u8, u64, u64);
+    type Response = bool;
+    type Config = bool;
+
+    async fn receive_rpc(&self, _from: Pid, request: Self::Request) -> bool {
+        match request {
+            (0, pid, tid) => {
+                let mut starts = self.starts.lock().unwrap();
+                let child = !starts.is_empty();
+                starts.push((pid, tid));
+                child
+            }
+            (1, _, _) => {
+                assert_eq!(self.faults.fetch_add(1, Ordering::SeqCst), 0);
+                false
+            }
+            (2, status, _) => {
+                self.exits.lock().unwrap().push(status as i32);
+                false
+            }
+            _ => panic!("unknown page-fault test request"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PageFaultInjectionTool {
+    thread: bool,
+}
+
+#[reverie::tool]
+impl Tool for PageFaultInjectionTool {
+    type GlobalState = PageFaultInjectionLog;
+    type ThreadState = ();
+
+    fn new(_pid: Pid, thread: &bool) -> Self {
+        Self { thread: *thread }
+    }
+
+    fn subscriptions(_config: &bool) -> Subscription {
+        Subscription::none()
+    }
+
+    async fn handle_thread_start<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+    ) -> Result<(), reverie::Error> {
+        let child = guest
+            .send_rpc((0, guest.pid().as_raw() as u64, guest.tid().as_raw() as u64))
+            .await;
+        if child {
+            let registers = guest.regs().await;
+            assert_eq!(
+                [
+                    registers.r8,
+                    registers.r9,
+                    registers.r10,
+                    registers.r11,
+                    registers.r12,
+                    registers.r13,
+                    registers.r14,
+                    registers.r15,
+                    registers.rdi,
+                    registers.rsi,
+                    registers.rbp,
+                    registers.rbx,
+                    registers.rdx,
+                    registers.rax,
+                    registers.rcx
+                ],
+                [
+                    0x108, 0x109, 0x110, 0x111, 0x112, 0x113, 0x114, 0x115, 0x101, 0x102, 0x103,
+                    0x104, 0x105, 0, 0x107
+                ],
+            );
+            guest
+                .tail_inject(Syscall::from_raw(
+                    Sysno::exit,
+                    SyscallArgs::new(0, 0, 0, 0, 0, 0),
+                ))
+                .await;
+        }
+        Ok(())
+    }
+
+    async fn handle_structured_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        event: SignalEvent,
+    ) -> Result<Option<SignalEvent>, Errno> {
+        assert_eq!(event.signal(), libc::SIGSEGV);
+        assert_eq!(
+            i32::from_ne_bytes(event.siginfo()[8..12].try_into().unwrap()),
+            1
+        );
+        assert_eq!(&event.siginfo()[16..24], &[0; 8]);
+        assert_eq!(
+            event.target(),
+            SignalTarget::Thread {
+                pid: guest.pid(),
+                tid: guest.tid()
+            }
+        );
+        let registers = guest.regs().await;
+        assert_eq!(registers.orig_rax, u64::MAX);
+        assert_eq!((registers.cs, registers.ss), (0x23, 0x18));
+        assert_eq!(registers.eflags & (1 << 16), 1 << 16);
+        guest.send_rpc((1, 0, 0)).await;
+        let request = if self.thread {
+            Syscall::from_raw(
+                Sysno::clone,
+                SyscallArgs::new(
+                    (libc::CLONE_VM
+                        | libc::CLONE_FS
+                        | libc::CLONE_FILES
+                        | libc::CLONE_SIGHAND
+                        | libc::CLONE_THREAD) as usize,
+                    (registers.rsp - 4096) as usize,
+                    0,
+                    0,
+                    0,
+                    0,
+                ),
+            )
+        } else {
+            Syscall::from_raw(Sysno::fork, SyscallArgs::new(0, 0, 0, 0, 0, 0))
+        };
+        assert!(guest.inject(request).await? > 0);
+        assert_eq!(guest.regs().await, registers);
+        Ok(Some(event))
+    }
+
+    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+        &self,
+        _tid: Pid,
+        global: &G,
+        _state: (),
+        status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        global.send_rpc((2, status.into_raw() as u64, 0)).await;
+        Ok(())
+    }
+}
+
+fn check_page_fault_returning_action(name: &str, thread: bool) {
+    if !kvm_available(name) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(&directory.0, name, PAGE_ZERO_FAULT_CONTEXT_SOURCE);
+    let image = std::fs::read(&executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable.to_str().unwrap(), "read", "caught", "kvm"],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (log, status, stdout, stderr) = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<PageFaultInjectionTool>(thread, true),
+    )
+    .unwrap();
+    assert_eq!(status, 0, "stdout={stdout:?} stderr={stderr:?}");
+    assert_eq!(stdout, b"before\ncaught\nresumed\n");
+    assert!(stderr.is_empty(), "{stderr:?}");
+    assert_eq!(log.faults.load(Ordering::SeqCst), 1);
+    assert_eq!(log.starts.lock().unwrap().len(), 2);
+    assert_eq!(*log.exits.lock().unwrap(), vec![0, 0]);
+}
+
+#[test]
+fn page_fault_hook_returning_fork_preserves_context() {
+    check_page_fault_returning_action("page_fault_hook_returning_fork_preserves_context", false);
+}
+
+#[test]
+fn page_fault_hook_returning_thread_preserves_context() {
+    check_page_fault_returning_action("page_fault_hook_returning_thread_preserves_context", true);
+}
+
+#[derive(Default, Debug)]
+struct PageFaultFilterLog {
+    events: Mutex<Vec<Vec<u8>>>,
+    statuses: Mutex<Vec<i32>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for PageFaultFilterLog {
+    type Request = (u8, Vec<u8>);
+    type Response = ();
+    type Config = u8;
+
+    async fn receive_rpc(&self, _from: Pid, (kind, bytes): Self::Request) {
+        if kind == 0 {
+            self.events.lock().unwrap().push(bytes);
+        } else {
+            self.statuses
+                .lock()
+                .unwrap()
+                .push(i32::from_ne_bytes(bytes.try_into().unwrap()));
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PageFaultFilterTool {
+    mode: u8,
+}
+
+#[reverie::tool]
+impl Tool for PageFaultFilterTool {
+    type GlobalState = PageFaultFilterLog;
+    type ThreadState = u8;
+
+    fn new(_pid: Pid, mode: &u8) -> Self {
+        Self { mode: *mode }
+    }
+    fn subscriptions(_config: &u8) -> Subscription {
+        Subscription::none()
+    }
+
+    async fn handle_structured_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        event: SignalEvent,
+    ) -> Result<Option<SignalEvent>, Errno> {
+        assert_eq!(event.signal(), libc::SIGSEGV);
+        let mut expected = [0; 128];
+        expected[..4].copy_from_slice(&libc::SIGSEGV.to_ne_bytes());
+        expected[8..12].copy_from_slice(&1_i32.to_ne_bytes());
+        assert_eq!(event.siginfo(), expected);
+        assert_eq!(
+            event.target(),
+            SignalTarget::Thread {
+                pid: guest.pid(),
+                tid: guest.tid()
+            }
+        );
+        guest.send_rpc((0, event.siginfo().to_vec())).await;
+        let count = *guest.thread_state() + 1;
+        *guest.thread_state_mut() = count;
+        assert!(count <= 2, "suppression did not preserve bounded refault");
+        match self.mode {
+            1 if count == 1 => Ok(None),
+            2 => {
+                let mut info = event.siginfo();
+                info[..4].copy_from_slice(&libc::SIGUSR1.to_ne_bytes());
+                info[8..12].copy_from_slice(&libc::SI_TKILL.to_ne_bytes());
+                Ok(Some(SignalEvent::new(libc::SIGUSR1, info, event.target())?))
+            }
+            3 => {
+                let error = guest.defer_signal_delivery(event).await.unwrap_err();
+                assert_eq!(error.into_errno().unwrap(), Errno::ENOSYS);
+                Ok(Some(event))
+            }
+            4 => Err(Errno::EIO),
+            _ => Ok(Some(event)),
+        }
+    }
+
+    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+        &self,
+        _tid: Pid,
+        global: &G,
+        _state: u8,
+        status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        global
+            .send_rpc((1, status.into_raw().to_ne_bytes().to_vec()))
+            .await;
+        Ok(())
+    }
+}
+
+fn check_page_fault_filter(name: &str, mode: u8) {
+    if !kvm_available(name) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(&directory.0, name, PAGE_ZERO_FAULT_CONTEXT_SOURCE);
+    let image = std::fs::read(&executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable.to_str().unwrap(), "read", "caught", "kvm"],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let result = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<PageFaultFilterTool>(mode, true),
+    );
+    if mode == 4 {
+        match result {
+            Err(Error::Reverie(error)) => assert_eq!(error.into_errno().unwrap(), Errno::EIO),
+            other => panic!("unexpected fault filter error: {other:?}"),
+        }
+        return;
+    }
+    let (log, code, stdout, stderr) = result.unwrap();
+    let status = if mode == 2 {
+        ExitStatus::from_raw(libc::SIGUSR1)
+    } else {
+        ExitStatus::SUCCESS
+    };
+    assert_eq!(*log.statuses.lock().unwrap(), vec![status.into_raw()]);
+    assert_eq!(code, if mode == 2 { 128 + libc::SIGUSR1 } else { 0 });
+    assert_eq!(
+        stdout,
+        if mode == 2 {
+            b"before\n".as_slice()
+        } else {
+            b"before\ncaught\nresumed\n".as_slice()
+        }
+    );
+    assert!(stderr.is_empty(), "{stderr:?}");
+    let events = log.events.lock().unwrap();
+    assert_eq!(events.len(), if mode == 1 { 2 } else { 1 });
+    assert!(events.windows(2).all(|pair| pair[0] == pair[1]));
+}
+
+#[test]
+fn page_fault_filter_suppression_refaults_once() {
+    check_page_fault_filter("page_fault_filter_suppression_refaults_once", 1);
+}
+#[test]
+fn page_fault_filter_replacement_keeps_typed_status() {
+    check_page_fault_filter("page_fault_filter_replacement_keeps_typed_status", 2);
+}
+#[test]
+fn page_fault_filter_public_defer_rejects_forgery() {
+    check_page_fault_filter("page_fault_filter_public_defer_rejects_forgery", 3);
+}
+#[test]
+fn page_fault_filter_preserves_original_error() {
+    check_page_fault_filter("page_fault_filter_preserves_original_error", 4);
+}
+
+fn check_page_zero_fault_context(name: &str, operation: &str, disposition: &str, with_tool: bool) {
+    if !kvm_available(name) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(&directory.0, name, PAGE_ZERO_FAULT_CONTEXT_SOURCE);
+    let image = std::fs::read(&executable).unwrap();
+    let expected = if disposition == "caught" {
+        b"before\ncaught\nresumed\n".as_slice()
+    } else {
+        b"before\n".as_slice()
+    };
+    let argv = [executable.to_str().unwrap(), operation, disposition, "kvm"];
+    if with_tool {
+        check_typed_signal_status(
+            &image,
+            &argv,
+            &directory,
+            if disposition == "caught" {
+                ExitStatus::SUCCESS
+            } else {
+                ExitStatus::from_raw(libc::SIGSEGV | 0x80)
+            },
+            expected,
+        );
+    } else {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        let mut argv = argv.to_vec();
+        argv.push("wait");
+        backend
+            .install_static_elf_with_context(&image, &argv, &["PATH=/usr/bin:/bin"], &directory.0)
+            .unwrap();
+        let (status, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        assert_eq!(status, 0, "stdout={stdout:?} stderr={stderr:?}");
+        let mut expected = expected.to_vec();
+        expected.extend_from_slice(b"waited\n");
+        assert_eq!(stdout, expected);
+        assert!(stderr.is_empty(), "{stderr:?}");
+    }
+}
+
+#[test]
+fn page_zero_fault_read_caught_direct() {
+    check_page_zero_fault_context(
+        "page_zero_fault_read_caught_direct",
+        "read",
+        "caught",
+        false,
+    );
+}
+
+#[test]
+fn page_zero_fault_read_caught_tool() {
+    check_page_zero_fault_context("page_zero_fault_read_caught_tool", "read", "caught", true);
+}
+
+#[test]
+fn page_zero_fault_read_default_direct() {
+    check_page_zero_fault_context(
+        "page_zero_fault_read_default_direct",
+        "read",
+        "default",
+        false,
+    );
+}
+
+#[test]
+fn page_zero_fault_read_default_tool() {
+    check_page_zero_fault_context("page_zero_fault_read_default_tool", "read", "default", true);
+}
+
+#[test]
+fn page_zero_fault_read_ignored_direct() {
+    check_page_zero_fault_context(
+        "page_zero_fault_read_ignored_direct",
+        "read",
+        "ignored",
+        false,
+    );
+}
+
+#[test]
+fn page_zero_fault_read_ignored_tool() {
+    check_page_zero_fault_context("page_zero_fault_read_ignored_tool", "read", "ignored", true);
+}
+
+#[test]
+fn page_zero_fault_read_blocked_direct() {
+    check_page_zero_fault_context(
+        "page_zero_fault_read_blocked_direct",
+        "read",
+        "blocked",
+        false,
+    );
+}
+
+#[test]
+fn page_zero_fault_read_blocked_tool() {
+    check_page_zero_fault_context("page_zero_fault_read_blocked_tool", "read", "blocked", true);
+}
+
+#[test]
+fn page_zero_fault_write_caught_direct() {
+    check_page_zero_fault_context(
+        "page_zero_fault_write_caught_direct",
+        "write",
+        "caught",
+        false,
+    );
+}
+
+#[test]
+fn page_zero_fault_write_caught_tool() {
+    check_page_zero_fault_context("page_zero_fault_write_caught_tool", "write", "caught", true);
+}
+
+#[test]
+fn page_zero_fault_write_default_direct() {
+    check_page_zero_fault_context(
+        "page_zero_fault_write_default_direct",
+        "write",
+        "default",
+        false,
+    );
+}
+
+#[test]
+fn page_zero_fault_write_default_tool() {
+    check_page_zero_fault_context(
+        "page_zero_fault_write_default_tool",
+        "write",
+        "default",
+        true,
+    );
+}
+
+#[test]
+fn page_zero_fault_write_ignored_direct() {
+    check_page_zero_fault_context(
+        "page_zero_fault_write_ignored_direct",
+        "write",
+        "ignored",
+        false,
+    );
+}
+
+#[test]
+fn page_zero_fault_write_ignored_tool() {
+    check_page_zero_fault_context(
+        "page_zero_fault_write_ignored_tool",
+        "write",
+        "ignored",
+        true,
+    );
+}
+
+#[test]
+fn page_zero_fault_write_blocked_direct() {
+    check_page_zero_fault_context(
+        "page_zero_fault_write_blocked_direct",
+        "write",
+        "blocked",
+        false,
+    );
+}
+
+#[test]
+fn page_zero_fault_write_blocked_tool() {
+    check_page_zero_fault_context(
+        "page_zero_fault_write_blocked_tool",
+        "write",
+        "blocked",
+        true,
+    );
+}
+
+#[test]
+fn page_zero_fault_fetch_caught_direct() {
+    check_page_zero_fault_context(
+        "page_zero_fault_fetch_caught_direct",
+        "fetch",
+        "caught",
+        false,
+    );
+}
+
+#[test]
+fn page_zero_fault_fetch_caught_tool() {
+    check_page_zero_fault_context("page_zero_fault_fetch_caught_tool", "fetch", "caught", true);
+}
+
+#[test]
+fn page_zero_fault_fetch_default_direct() {
+    check_page_zero_fault_context(
+        "page_zero_fault_fetch_default_direct",
+        "fetch",
+        "default",
+        false,
+    );
+}
+
+#[test]
+fn page_zero_fault_fetch_default_tool() {
+    check_page_zero_fault_context(
+        "page_zero_fault_fetch_default_tool",
+        "fetch",
+        "default",
+        true,
+    );
+}
+
+#[test]
+fn page_zero_fault_fetch_ignored_direct() {
+    check_page_zero_fault_context(
+        "page_zero_fault_fetch_ignored_direct",
+        "fetch",
+        "ignored",
+        false,
+    );
+}
+
+#[test]
+fn page_zero_fault_fetch_ignored_tool() {
+    check_page_zero_fault_context(
+        "page_zero_fault_fetch_ignored_tool",
+        "fetch",
+        "ignored",
+        true,
+    );
+}
+
+#[test]
+fn page_zero_fault_fetch_blocked_direct() {
+    check_page_zero_fault_context(
+        "page_zero_fault_fetch_blocked_direct",
+        "fetch",
+        "blocked",
+        false,
+    );
+}
+
+#[test]
+fn page_zero_fault_fetch_blocked_tool() {
+    check_page_zero_fault_context(
+        "page_zero_fault_fetch_blocked_tool",
+        "fetch",
+        "blocked",
+        true,
+    );
+}
+
+#[test]
+fn static_elf_null_restorer_preserves_handler_side_effects() {
+    if !kvm_available("static_elf_null_restorer_preserves_handler_side_effects") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_null_restorer_control(&directory);
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    for (argument, expected_code, expected_stdout) in [
+        ("null-exit", 42, "handler\n"),
+        ("null-return", 128 + libc::SIGSEGV, "handler\n"),
+        ("valid-return", 0, "handler\nresumed\n"),
+    ] {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        let argv = if argument.is_empty() {
+            vec![executable]
+        } else {
+            vec![executable, argument]
+        };
+        backend
+            .install_static_elf_with_context(&image, &argv, &["PATH=/usr/bin:/bin"], &directory.0)
+            .unwrap();
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        assert_eq!(
+            code, expected_code,
+            "case {argument}: stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert_eq!(stdout, expected_stdout.as_bytes(), "case {argument}");
+        assert!(stderr.is_empty(), "case {argument}: {stderr:?}");
+    }
+}
+
+fn compile_null_restorer_control(directory: &TestDirectory) -> PathBuf {
+    compile_c_program(
+        &directory.0,
+        "static_elf_null_restorer_preserves_handler_side_effects",
+        r#"#define _GNU_SOURCE
+#include <signal.h>
+#include <stdint.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+static int returning;
+__attribute__((naked)) static void restorer(void) {
+    __asm__ volatile("mov $15, %rax; syscall; ud2");
+}
+static void handler(int signo) {
+    if (signo != SIGUSR1 || write(1, "handler\n", 8) != 8) _exit(81);
+    if (!returning) _exit(42);
+}
+int main(int argc, char **argv) {
+    if (argc != 2) return 82;
+    returning = strcmp(argv[1], "null-exit") != 0;
+    struct {
+        void (*handler)(int);
+        uint64_t flags;
+        void (*restorer)(void);
+        uint64_t mask;
+    } action = {handler, 0x04000000, strcmp(argv[1], "valid-return") ? 0 : restorer, 0};
+    if (syscall(SYS_rt_sigaction, SIGUSR1, &action, 0, 8)) return 83;
+    if (syscall(SYS_tgkill, getpid(), syscall(SYS_gettid), SIGUSR1)) return 84;
+    if (write(1, "resumed\n", 8) != 8) return 85;
+    return 0;
+}
+"#,
+    )
+}
+
+#[derive(Default)]
+struct TypedSignalStatusLog {
+    statuses: Mutex<Vec<i32>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for TypedSignalStatusLog {
+    type Request = i32;
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Pid, status: i32) {
+        self.statuses.lock().unwrap().push(status);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct TypedSignalStatusTool;
+
+#[reverie::tool]
+impl Tool for TypedSignalStatusTool {
+    type GlobalState = TypedSignalStatusLog;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        Subscription::none()
+    }
+
+    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+        &self,
+        _tid: Pid,
+        global: &G,
+        _thread_state: (),
+        status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        global.send_rpc(status.into_raw()).await;
+        Ok(())
+    }
+}
+
+fn check_typed_signal_status(
+    image: &[u8],
+    argv: &[&str],
+    directory: &TestDirectory,
+    expected_status: ExitStatus,
+    expected_stdout: &[u8],
+) {
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(image, argv, &["PATH=/usr/bin:/bin"], &directory.0)
+        .unwrap();
+    let (log, code, stdout, stderr) = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<TypedSignalStatusTool>((), true),
+    )
+    .unwrap();
+    let statuses = log.statuses.lock().unwrap();
+    eprintln!(
+        "typed signal status: argv={argv:?} raw={statuses:?} code={code} stdout={stdout:?} stderr={stderr:?}"
+    );
+    assert_eq!(*statuses, vec![expected_status.into_raw()]);
+    assert_eq!(ExitStatus::from_raw(statuses[0]), expected_status);
+    assert_eq!(stdout, expected_stdout);
+    assert!(stderr.is_empty(), "{stderr:?}");
+    assert_eq!(
+        code,
+        expected_status
+            .code()
+            .unwrap_or_else(|| 128 + expected_status.signal().unwrap())
+    );
+}
+
+fn check_null_restorer_typed_status(name: &str, argument: &str, status: ExitStatus, stdout: &[u8]) {
+    if !kvm_available(name) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_null_restorer_control(&directory);
+    let image = std::fs::read(&executable).unwrap();
+    check_typed_signal_status(
+        &image,
+        &[executable.to_str().unwrap(), argument],
+        &directory,
+        status,
+        stdout,
+    );
+}
+
+#[test]
+fn typed_null_restorer_nonreturning_status() {
+    check_null_restorer_typed_status(
+        "typed_null_restorer_nonreturning_status",
+        "null-exit",
+        ExitStatus::Exited(42),
+        b"handler\n",
+    );
+}
+
+#[test]
+fn typed_null_restorer_returning_status() {
+    check_null_restorer_typed_status(
+        "typed_null_restorer_returning_status",
+        "null-return",
+        ExitStatus::from_raw(libc::SIGSEGV | 0x80),
+        b"handler\n",
+    );
+}
+
+#[test]
+fn typed_null_restorer_valid_return_status() {
+    check_null_restorer_typed_status(
+        "typed_null_restorer_valid_return_status",
+        "valid-return",
+        ExitStatus::SUCCESS,
+        b"handler\nresumed\n",
+    );
+}
+
+#[test]
+fn typed_null_restorer_exited139_is_not_sigsegv() {
+    if !kvm_available("typed_null_restorer_exited139_is_not_sigsegv") {
+        return;
+    }
+    assert_ne!(
+        ExitStatus::Exited(139),
+        ExitStatus::from_raw(libc::SIGSEGV | 0x80)
+    );
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "typed_exit139",
+        "#include <unistd.h>\nint main(void) { if (write(1, \"handler\\n\", 8) != 8) return 81; _exit(139); }\n",
+    );
+    let image = std::fs::read(&executable).unwrap();
+    check_typed_signal_status(
+        &image,
+        &[executable.to_str().unwrap()],
+        &directory,
+        ExitStatus::Exited(139),
+        b"handler\n",
+    );
+}
+
+#[test]
+fn static_elf_sigaltstack_active_precedes_requested_flags_and_size() {
+    if !kvm_available("static_elf_sigaltstack_active_precedes_requested_flags_and_size") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "static_elf_sigaltstack_active_precedes_requested_flags_and_size",
+        r#"#define _GNU_SOURCE
+#include <errno.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+static unsigned char alternate[65536];
+static unsigned char replacement[65536];
+static int results[6];
+static int errors[6];
+static int unchanged[6];
+static volatile sig_atomic_t entered;
+
+static void check(int offset) {
+    _Alignas(stack_t) unsigned char fault_output[sizeof(stack_t) + 16];
+    unsigned char fault_expected[sizeof(fault_output)];
+    memset(fault_output, 0xa5, sizeof(fault_output));
+    memset(fault_expected, 0xa5, sizeof(fault_expected));
+    errno = 0;
+    long fault_result = syscall(SYS_sigaltstack, (void *)1, fault_output);
+    if (fault_result != -1 || errno != EFAULT ||
+        memcmp(fault_output, fault_expected, sizeof(fault_output))) _exit(94);
+    for (int index = 0; index < 3; ++index) {
+        stack_t requested = {.ss_sp = replacement, .ss_size = sizeof(replacement), .ss_flags = 0};
+        if (index == 0) requested.ss_flags = 4;
+        if (index == 1) requested.ss_size = 0;
+        _Alignas(stack_t) unsigned char output[sizeof(stack_t) + 16];
+        unsigned char expected[sizeof(output)];
+        memset(output, 0xa5, sizeof(output));
+        memset(expected, 0xa5, sizeof(expected));
+        errno = 0;
+        results[offset + index] = syscall(SYS_sigaltstack, &requested, output);
+        errors[offset + index] = errno;
+        unchanged[offset + index] = memcmp(output, expected, sizeof(output)) == 0;
+    }
+}
+
+static void handler(int signal_number) {
+    unsigned char local;
+    if (signal_number != SIGUSR1 || (uintptr_t)&local < (uintptr_t)alternate ||
+        (uintptr_t)&local >= (uintptr_t)alternate + sizeof(alternate)) _exit(90);
+    entered = 1;
+    check(0);
+}
+
+int main(void) {
+    stack_t stack = {.ss_sp = alternate, .ss_size = sizeof(alternate), .ss_flags = 0};
+    if (sigaltstack(&stack, NULL) != 0) return 91;
+    struct sigaction action = {.sa_handler = handler, .sa_flags = SA_ONSTACK};
+    if (sigemptyset(&action.sa_mask) || sigaction(SIGUSR1, &action, NULL)) return 92;
+    if (raise(SIGUSR1) != 0 || entered != 1) return 93;
+    check(3);
+    int expected_errors[6] = {EPERM, EPERM, EPERM, EINVAL, ENOMEM, 0};
+    int failures = 0;
+    for (int index = 0; index < 6; ++index) {
+        int expected_result = index == 5 ? 0 : -1;
+        int correct = results[index] == expected_result && errors[index] == expected_errors[index] &&
+                      (index == 5 || unchanged[index] == 1);
+        printf("case=%d result=%d errno=%d full_output_unchanged=%d correct=%d\n",
+               index, results[index], errors[index], unchanged[index], correct);
+        failures += !correct;
+    }
+    return failures ? 1 : 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    {
+        let (argument, expected_code, expected_stdout) = (
+            "",
+            0,
+            "case=0 result=-1 errno=1 full_output_unchanged=1 correct=1\ncase=1 result=-1 errno=1 full_output_unchanged=1 correct=1\ncase=2 result=-1 errno=1 full_output_unchanged=1 correct=1\ncase=3 result=-1 errno=22 full_output_unchanged=1 correct=1\ncase=4 result=-1 errno=12 full_output_unchanged=1 correct=1\ncase=5 result=0 errno=0 full_output_unchanged=0 correct=1\n",
+        );
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        let argv = if argument.is_empty() {
+            vec![executable]
+        } else {
+            vec![executable, argument]
+        };
+        backend
+            .install_static_elf_with_context(&image, &argv, &["PATH=/usr/bin:/bin"], &directory.0)
+            .unwrap();
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        assert_eq!(
+            code, expected_code,
+            "case {argument}: stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert_eq!(stdout, expected_stdout.as_bytes(), "case {argument}");
+        assert!(stderr.is_empty(), "case {argument}: {stderr:?}");
     }
 }
