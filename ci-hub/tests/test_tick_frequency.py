@@ -44,7 +44,8 @@ def test_agent_snapshot_refresh_is_independent_and_inside_freshness_limit() -> N
     )
     assert '"hermit-dev-agent-snapshot-5m-v1"' in plugin
     assert 'const AGENT_SNAPSHOT_SCRIPT_NAME = "hermitCacheAgentSnapshot";' in plugin
-    assert "operational_health.py cache-agents" in plugin
+    assert "./ci-hub/health/operational_health.py cache-agents" in plugin
+    assert "/usr/bin/python3 ci-hub/health/operational_health.py cache-agents" not in plugin
     assert "orc.registerScript(AGENT_SNAPSHOT_SCRIPT_NAME" in plugin
     assert "orc.workflow(\n    agentSnapshotHeartbeat" in plugin
     assert "await wf.sleep(AGENT_SNAPSHOT_INTERVAL_MS);" in plugin
