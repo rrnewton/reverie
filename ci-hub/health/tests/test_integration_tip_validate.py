@@ -58,6 +58,7 @@ class Authorities:
         self.in_progress = in_progress
         self.admissible = admissible
         self.launches: list[str] = []
+        self.status_reads = 0
 
     def fetch(self, _settings: object, _timeout: float) -> str:
         return SHA
@@ -66,8 +67,21 @@ class Authorities:
         self, command: list[str] | tuple[str, ...], _cwd: Path, _timeout: float
     ) -> subprocess.CompletedProcess[str]:
         if "validate-status" in command and "--sha" in command:
+            self.status_reads += 1
             in_progress = [
-                {"sha": SHA, "in_progress": True, "summary": f"run {index}"}
+                {
+                    "sha": SHA,
+                    "in_progress": True,
+                    "summary": f"run {index}",
+                }
+                for index in range(self.in_progress)
+            ]
+            handles = [
+                {"unit": f"validate-{index}.service", "state": "running", "sha": SHA,
+                 "started_at": "2026-09-05T00:00:00Z", "slot": f"slot-{index}",
+                 "log_file": f"/logs/validate-{index}.log", "process_verified": True,
+                 "admission": "admitted", "finished_at": None, "result": None,
+                 "detail": None, "exit_code": None}
                 for index in range(self.in_progress)
             ]
             verdict = self.record_verdict if self.records else "NOT-VALIDATED"
@@ -103,7 +117,7 @@ class Authorities:
                 ),
                 "in_progress_count": len(in_progress),
                 "in_progress": in_progress,
-                "run_handles": in_progress,
+                "run_handles": handles,
                 "unreadable_handles": [],
             }
             return subprocess.CompletedProcess(command, report["exit_code"], json.dumps(report), "")
@@ -143,14 +157,13 @@ class Authorities:
     ) -> dict[str, object]:
         assert target == SHA
         self.launches.append(attempt_id)
+        self.in_progress = 1
         return {"pid": 123, "start_ticks": 456, "boot_id": "boot-fixture"}
 
 
 def read_twice(
     tmp_path: Path,
     authorities: Authorities,
-    *,
-    launcher_active=lambda _settings, _attempt, _timeout, _run: False,
 ):
     configured = settings(tmp_path)
     first = driver.run_tick(
@@ -158,7 +171,6 @@ def read_twice(
         fetch=authorities.fetch,
         run=authorities.run,
         spawn=authorities.spawn,
-        launcher_active=launcher_active,
     )
     time.sleep(0.01)
     second = driver.run_tick(
@@ -166,7 +178,6 @@ def read_twice(
         fetch=authorities.fetch,
         run=authorities.run,
         spawn=authorities.spawn,
-        launcher_active=launcher_active,
     )
     return first, second
 
@@ -183,32 +194,294 @@ def test_two_record_present_readings_launch_nothing(tmp_path: Path, capsys) -> N
 def test_two_in_progress_readings_launch_nothing(tmp_path: Path, capsys) -> None:
     authorities = Authorities(in_progress=1)
 
-    def launcher_must_not_be_queried(*_args) -> bool:
-        raise AssertionError("canonical in-progress authority must short-circuit systemd")
-
-    assert read_twice(
-        tmp_path, authorities, launcher_active=launcher_must_not_be_queried
-    ) == (0, 0)
+    assert read_twice(tmp_path, authorities) == (0, 0)
     assert authorities.launches == []
     output = capsys.readouterr().out
     assert output.count("state=in-progress") == 2
     assert output.count("in_progress_count=1") == 2
 
 
+def test_in_progress_without_a_qualifying_handle_refuses_the_decision(
+    tmp_path: Path,
+) -> None:
+    authorities = Authorities(in_progress=1)
+
+    def inconsistent_status(command, cwd, timeout):
+        result = authorities.run(command, cwd, timeout)
+        if "validate-status" not in command:
+            return result
+        value = json.loads(result.stdout)
+        value["run_handles"] = []
+        return subprocess.CompletedProcess(
+            command, result.returncode, json.dumps(value), ""
+        )
+
+    with pytest.raises(
+        driver.ObservationUnavailable,
+        match="in-progress run without a process-verified launching or running handle",
+    ):
+        driver.run_tick(
+            settings(tmp_path),
+            fetch=authorities.fetch,
+            run=inconsistent_status,
+            spawn=authorities.spawn,
+        )
+    assert authorities.launches == []
+
+
+def test_unverified_launching_handle_appearing_between_reads_is_unknown(
+    tmp_path: Path, capsys
+) -> None:
+    authorities = Authorities()
+
+    def launching_between_reads(command, cwd, timeout):
+        result = authorities.run(command, cwd, timeout)
+        if "validate-status" not in command or authorities.status_reads != 2:
+            return result
+        value = json.loads(result.stdout)
+        value["run_handles"] = [
+            {
+                "unit": "validate-current-main.service",
+                "state": "launching",
+                "sha": SHA,
+                "started_at": "2026-09-11T17:00:00Z",
+                "slot": "validate-current-main",
+                "log_file": "/state/ignored/validate/current-main.log",
+                "process_verified": False,
+                "admission": None,
+                "finished_at": None,
+                "result": None,
+                "detail": None,
+                "exit_code": None,
+            }
+        ]
+        return subprocess.CompletedProcess(command, result.returncode, json.dumps(value), "")
+
+    assert (
+        driver.run_tick(
+            settings(tmp_path),
+            fetch=authorities.fetch,
+            run=launching_between_reads,
+            spawn=authorities.spawn,
+        )
+        == 2
+    )
+    assert authorities.status_reads == 2
+    assert authorities.launches == []
+    output = capsys.readouterr().out
+    assert "state=unknown" in output
+    assert "head=" + SHA in output
+    assert "slot=validate-current-main" in output
+    assert "log=/state/ignored/validate/current-main.log" in output
+    assert "process_verified=False" in output
+    assert "repair or finish the handle before retrying" in output
+
+
+@pytest.mark.parametrize("state", ["preparing", "launching", "running"])
+def test_persistent_unverified_outstanding_handle_suppresses_with_remedy(
+    tmp_path: Path, capsys, state: str
+) -> None:
+    authorities = Authorities()
+
+    def outstanding_on_both_reads(command, cwd, timeout):
+        result = authorities.run(command, cwd, timeout)
+        if "validate-status" not in command:
+            return result
+        value = json.loads(result.stdout)
+        value["run_handles"] = [
+            {
+                "unit": "validate-stale.service",
+                "state": state,
+                "sha": SHA,
+                "started_at": "2026-09-01T00:00:00Z",
+                "slot": "validate-stale",
+                "log_file": "/logs/validate-stale.log",
+                "process_verified": False,
+                "admission": None,
+                "finished_at": None,
+                "result": None,
+                "detail": None,
+                "exit_code": None,
+            }
+        ]
+        return subprocess.CompletedProcess(command, result.returncode, json.dumps(value), "")
+
+    assert driver.run_tick(
+        settings(tmp_path),
+        fetch=authorities.fetch,
+        run=outstanding_on_both_reads,
+        spawn=authorities.spawn,
+    ) == 2
+    assert authorities.status_reads == 2
+    assert authorities.launches == []
+    output = capsys.readouterr().out
+    assert "state=unknown" in output
+    assert f"state={state}" in output
+    assert "process_verified=False" in output
+    assert "repair or finish the handle before retrying" in output
+    assert "state=in-progress" not in output
+
+
+@pytest.mark.parametrize(
+    ("state", "reason_code"),
+    [
+        ("preparing", "exact-target-already-queued"),
+        ("launching", "exact-target-already-queued"),
+        ("running", "exact-target-already-running"),
+    ],
+)
+def test_unverified_handle_with_exact_lock_corroboration_is_in_progress(
+    tmp_path: Path, capsys, state: str, reason_code: str
+) -> None:
+    authorities = Authorities()
+
+    def corroborated(command, cwd, timeout):
+        result = authorities.run(command, cwd, timeout)
+        if "validate-status" in command:
+            value = json.loads(result.stdout)
+            value["run_handles"] = [
+                {
+                    "unit": "validate-corroborated.service",
+                    "state": state,
+                    "sha": SHA,
+                    "started_at": "2026-09-11T18:00:00Z",
+                    "slot": "validate-corroborated",
+                    "log_file": "/logs/validate-corroborated.log",
+                    "process_verified": False,
+                    "admission": None,
+                    "finished_at": None,
+                    "result": None,
+                    "detail": None,
+                    "exit_code": None,
+                }
+            ]
+            return subprocess.CompletedProcess(command, result.returncode, json.dumps(value), "")
+        if "admission-status" in command:
+            value = {
+                "schema_version": 1,
+                "target": SHA,
+                "kind": "validate",
+                "admissible": False,
+                "state": "busy",
+                "reason_code": reason_code,
+                "detail": f"validate-lock confirms {reason_code} for {SHA}",
+            }
+            return subprocess.CompletedProcess(command, 1, json.dumps(value), "")
+        raise AssertionError(command)
+
+    assert driver.run_tick(
+        settings(tmp_path),
+        fetch=authorities.fetch,
+        run=corroborated,
+        spawn=authorities.spawn,
+    ) == 0
+    assert authorities.status_reads == 2
+    assert authorities.launches == []
+    output = capsys.readouterr().out
+    assert "state=in-progress" in output
+    assert "state=unknown" not in output
+    assert reason_code in output
+    assert "launched=0" in output
+
+
+@pytest.mark.parametrize("state", ["completed", "refused"])
+def test_terminal_or_refused_handles_allow_one_launch_after_stable_absence(
+    tmp_path: Path, capsys, state: str
+) -> None:
+    authorities = Authorities()
+
+    def terminal_on_both_reads(command, cwd, timeout):
+        result = authorities.run(command, cwd, timeout)
+        if "validate-status" not in command:
+            return result
+        value = json.loads(result.stdout)
+        value["run_handles"] = [
+            {
+                "unit": "validate-finished.service",
+                "state": state,
+                "sha": SHA,
+                "started_at": "2026-09-01T00:00:00Z",
+                "slot": "validate-finished",
+                "log_file": "/logs/validate-finished.log",
+                "process_verified": False,
+                "admission": "refused" if state == "refused" else "admitted",
+                "finished_at": "2026-09-01T00:01:00Z",
+                "result": "refused" if state == "refused" else "failure",
+                "detail": "terminal fixture",
+                "exit_code": 1,
+            }
+        ]
+        return subprocess.CompletedProcess(command, result.returncode, json.dumps(value), "")
+
+    assert driver.run_tick(
+        settings(tmp_path),
+        fetch=authorities.fetch,
+        run=terminal_on_both_reads,
+        spawn=authorities.spawn,
+    ) == 0
+    assert authorities.status_reads == 2
+    assert len(authorities.launches) == 1
+    output = capsys.readouterr().out
+    assert "state=launched" in output
+    assert "launched=1" in output
+
+
+@pytest.mark.parametrize(
+    "reason_code",
+    ["exact-target-already-queued", "exact-target-already-running"],
+)
+def test_lock_only_exact_target_suppresses_launch_after_two_empty_snapshots(
+    tmp_path: Path, capsys, reason_code: str
+) -> None:
+    authorities = Authorities()
+    events: list[str] = []
+
+    def lock_only(command, cwd, timeout):
+        if "validate-status" in command:
+            events.append("snapshot")
+            return authorities.run(command, cwd, timeout)
+        if "admission-status" in command:
+            events.append("lock")
+            report = {
+                "schema_version": 1,
+                "target": SHA,
+                "kind": "validate",
+                "admissible": False,
+                "state": "busy",
+                "reason_code": reason_code,
+                "detail": f"validation slot 3 already holds exact target {SHA}",
+            }
+            return subprocess.CompletedProcess(command, 1, json.dumps(report), "")
+        raise AssertionError(command)
+
+    assert (
+        driver.run_tick(
+            settings(tmp_path),
+            fetch=authorities.fetch,
+            run=lock_only,
+            spawn=authorities.spawn,
+        )
+        == 0
+    )
+    assert events == ["snapshot", "lock", "snapshot"]
+    assert authorities.launches == []
+    output = capsys.readouterr().out
+    assert "state=in-progress" in output
+    assert "validation slot 3 already holds exact target" in output
+    assert "launched=0" in output
+
+
 def test_absent_record_and_run_launches_exactly_once_across_two_readings(
     tmp_path: Path, capsys
 ) -> None:
     authorities = Authorities()
-    assert read_twice(
-        tmp_path,
-        authorities,
-        launcher_active=lambda _settings, _attempt, _timeout, _run: True,
-    ) == (0, 0)
+    assert read_twice(tmp_path, authorities) == (0, 0)
     assert len(authorities.launches) == 1
     output = capsys.readouterr().out
     assert output.count("state=launched") == 1
+    assert authorities.status_reads >= 3
     assert output.count("launched=1") == 1
-    assert output.count("no second validate started") == 1
+    assert output.count("no validate started") == 1
 
 
 def test_failed_prior_launch_is_not_reported_as_never_attempted(
@@ -237,7 +510,6 @@ def test_failed_prior_launch_is_not_reported_as_never_attempted(
             fetch=authorities.fetch,
             run=authorities.run,
             spawn=authorities.spawn,
-            launcher_active=lambda _settings, _attempt, _timeout, _run: False,
         )
         == 0
     )
@@ -336,7 +608,7 @@ def test_launch_failure_is_recorded_without_a_ledger_claim(tmp_path: Path, capsy
     assert "state=launch-failed" in output
 
 
-def test_pre_recorded_launcher_unit_closes_the_post_accept_kill_window(
+def test_pre_recorded_launcher_unit_is_not_used_as_run_truth(
     tmp_path: Path, capsys
 ) -> None:
     configured = settings(tmp_path)
@@ -358,15 +630,11 @@ def test_pre_recorded_launcher_unit_closes_the_post_accept_kill_window(
             fetch=authorities.fetch,
             run=authorities.run,
             spawn=authorities.spawn,
-            launcher_active=lambda _settings, attempt, _timeout, _run: (
-                attempt["launcher_unit"]
-                == "validate-ops-tick-fixture-launcher.service"
-            ),
         )
         == 0
     )
-    assert authorities.launches == []
-    assert "no second validate started" in capsys.readouterr().out
+    assert len(authorities.launches) == 1
+    assert "state=launched" in capsys.readouterr().out
 
 
 def test_launcher_runs_in_its_own_bounded_user_unit(tmp_path: Path, monkeypatch) -> None:
@@ -421,39 +689,6 @@ def test_launcher_refuses_a_short_lived_tool_root(tmp_path: Path) -> None:
             tmp_path / "launcher.log",
             7.0,
         )
-
-
-@pytest.mark.parametrize(
-    ("load_state", "active_state", "invocation", "expected"),
-    [
-        ("loaded", "activating", "invocation-1", True),
-        ("loaded", "active", "invocation-1", True),
-        ("loaded", "deactivating", "invocation-1", True),
-        ("loaded", "failed", "invocation-1", False),
-        ("not-found", "inactive", "", False),
-    ],
-)
-def test_launcher_activity_comes_from_its_systemd_unit(
-    tmp_path: Path,
-    load_state: str,
-    active_state: str,
-    invocation: str,
-    expected: bool,
-) -> None:
-    configured = settings(tmp_path)
-    attempt = {"launcher_unit": "validate-ops-tick-fixture-launcher.service"}
-
-    def systemctl(command, _cwd, _timeout):
-        assert command[:3] == ["systemctl", "--user", "show"]
-        output = (
-            f"LoadState={load_state}\n"
-            f"ActiveState={active_state}\n"
-            "SubState=running\n"
-            f"InvocationID={invocation}\n"
-        )
-        return subprocess.CompletedProcess(command, 0, output, "")
-
-    assert driver.launcher_unit_is_active(configured, attempt, 1.0, systemctl) is expected
 
 
 def test_unknown_admission_is_visible_and_never_launches(tmp_path: Path) -> None:

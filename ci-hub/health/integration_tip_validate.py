@@ -83,7 +83,6 @@ class Settings:
 Runner = Callable[[Sequence[str], Path, float], subprocess.CompletedProcess[str]]
 Fetcher = Callable[[Settings, float], str]
 Spawner = Callable[[Settings, str, str, str, Path, Path, float], Mapping[str, object]]
-LauncherActive = Callable[[Settings, Mapping[str, object], float, Runner], bool]
 
 
 def one_line(value: object) -> str:
@@ -182,6 +181,7 @@ def exact_record_count(
             target,
             "--repo",
             REPO,
+            "--log-paths",
             "--json",
         ],
         cwd=settings.state_root,
@@ -275,6 +275,64 @@ def exact_record_count(
     return count, in_progress_count, report
 
 
+def outstanding_run_handles(report: Mapping[str, object]) -> list[Mapping[str, object]]:
+    """Return nonterminal ci-hub records that still require reconciliation."""
+
+    selected: list[Mapping[str, object]] = []
+    handles = report.get("run_handles")
+    if not isinstance(handles, list):
+        raise ObservationUnavailable("exact validate-status omitted run_handles")
+    for handle in handles:
+        if not isinstance(handle, dict):
+            raise ObservationUnavailable("exact validate-status returned a malformed run handle")
+        if handle.get("state") not in {"preparing", "launching", "running"}:
+            continue
+        if handle.get("admission") == "refused":
+            continue
+        if any(handle.get(field) is not None for field in ("finished_at", "result", "exit_code")):
+            continue
+        required = ("unit", "sha", "started_at")
+        if any(not isinstance(handle.get(field), str) or not handle[field] for field in required):
+            raise ObservationUnavailable(
+                "an outstanding run handle omitted its unit, SHA, or start time"
+            )
+        if not isinstance(handle.get("process_verified"), bool):
+            raise ObservationUnavailable(
+                "an outstanding run handle omitted whether its process identity was verified"
+            )
+        selected.append(handle)
+    return selected
+
+
+def merge_run_handles(
+    first: Sequence[Mapping[str, object]], second: Sequence[Mapping[str, object]]
+) -> list[Mapping[str, object]]:
+    merged: list[Mapping[str, object]] = []
+    seen: set[tuple[object, object, object]] = set()
+    for handle in [*first, *second]:
+        key = (handle.get("unit"), handle.get("sha"), handle.get("started_at"))
+        if key not in seen:
+            seen.add(key)
+            merged.append(handle)
+    return merged
+
+
+def run_handle_text(handles: Sequence[Mapping[str, object]]) -> str:
+    return "; ".join(
+        "unit={unit} state={state} head={sha} slot={slot} log={log} "
+        "started={started_at} process_verified={process_verified}".format(
+            unit=handle["unit"],
+            state=handle["state"],
+            sha=handle["sha"],
+            slot=handle.get("slot") or "?",
+            log=handle.get("log_file") or "?",
+            started_at=handle["started_at"],
+            process_verified=handle["process_verified"],
+        )
+        for handle in handles
+    )
+
+
 def admission_status(
     settings: Settings, target: str, timeout: float, run: Runner
 ) -> dict[str, object]:
@@ -328,6 +386,13 @@ def admission_status(
     return report
 
 
+def admission_reports_exact_target(report: Mapping[str, object]) -> bool:
+    return report.get("reason_code") in {
+        "exact-target-already-queued",
+        "exact-target-already-running",
+    }
+
+
 def atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
@@ -355,62 +420,6 @@ def read_json(path: Path) -> dict[str, object] | None:
     if not isinstance(value, dict) or value.get("schema_version") != 1:
         raise ObservationUnavailable(f"prior tick attempt {path} has an unsupported shape")
     return value
-
-
-def launcher_unit_is_active(
-    settings: Settings,
-    attempt: Mapping[str, object],
-    timeout: float,
-    run: Runner,
-) -> bool:
-    unit = attempt.get("launcher_unit")
-    if not isinstance(unit, str) or not unit.endswith(".service"):
-        return False
-    completed = run(
-        [
-            "systemctl",
-            "--user",
-            "show",
-            unit,
-            "--property=LoadState",
-            "--property=ActiveState",
-            "--property=SubState",
-            "--property=InvocationID",
-            "--no-pager",
-        ],
-        settings.state_root,
-        timeout,
-    )
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or f"exit {completed.returncode}"
-        raise ObservationUnavailable(
-            f"cannot query periodic validate launcher unit {unit}: {one_line(detail)}"
-        )
-    fields = dict(
-        line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line
-    )
-    if fields.get("LoadState") == "not-found":
-        return False
-    if fields.get("LoadState") != "loaded" or not fields.get("InvocationID"):
-        raise ObservationUnavailable(
-            f"periodic validate launcher unit {unit} returned incomplete systemd identity"
-        )
-    return fields.get("ActiveState") in {
-        "activating",
-        "active",
-        "reloading",
-        "deactivating",
-    }
-
-
-def tick_attempt_is_active(
-    settings: Settings,
-    attempt: Mapping[str, object] | None,
-    timeout: float,
-    run: Runner,
-    active: LauncherActive,
-) -> bool:
-    return attempt is not None and active(settings, attempt, timeout, run)
 
 
 def latest_prior_attempt(
@@ -567,14 +576,43 @@ def run_tick(
     fetch: Fetcher = fetch_tip,
     run: Runner = run_bounded,
     spawn: Spawner = spawn_validate,
-    launcher_active: LauncherActive = launcher_unit_is_active,
     dry_run: bool = False,
 ) -> int:
     deadline = time.monotonic() + settings.total_timeout_seconds
     target = fetch(settings, remaining(deadline, 25.0))
     count, in_progress, status = exact_record_count(
-        settings, target, remaining(deadline, 35.0), run
+        settings, target, remaining(deadline, 25.0), run
     )
+    first_outstanding = outstanding_run_handles(status)
+    verified = [handle for handle in first_outstanding if handle["process_verified"] is True]
+    if in_progress and not verified:
+        raise ObservationUnavailable(
+            "exact validate-status reported an in-progress run without a process-verified "
+            "launching or running handle; rerun the exact validate-status query and repair "
+            "its run record before retrying"
+        )
+    outstanding = first_outstanding
+    admission: dict[str, object] | None = None
+    lock_reports_exact_target = False
+    if not count and not in_progress:
+        # A preparing record exists before validate-lock publishes its process
+        # identity. Read the lock between snapshots and preserve outstanding
+        # handles from either read so the periodic check never creates a
+        # duplicate during that window.
+        admission = admission_status(settings, target, remaining(deadline, 10.0), run)
+        lock_reports_exact_target = admission_reports_exact_target(admission)
+        count, in_progress, status = exact_record_count(
+            settings, target, remaining(deadline, 25.0), run
+        )
+        second_outstanding = outstanding_run_handles(status)
+        outstanding = merge_run_handles(first_outstanding, second_outstanding)
+        verified = [handle for handle in second_outstanding if handle["process_verified"] is True]
+        if in_progress and not verified:
+            raise ObservationUnavailable(
+                "exact validate-status reported an in-progress run without a process-verified "
+                "launching or running handle; rerun the exact validate-status query and repair "
+                "its run record before retrying"
+            )
     if count:
         verdict = str(status["verdict"])
         detail = record_status_text(status)
@@ -601,50 +639,57 @@ def run_tick(
         )
         return int(status["exit_code"])
 
-    # The canonical run-handle authority already proved these exact-target
-    # processes live from their cgroup-bound identities.  Honor that answer
-    # before consulting our narrower launcher receipt: a failed systemd query
-    # must not turn a known in-progress validation into UNKNOWN.
-    if in_progress:
+    # A process/cgroup-verified run handle or the exact validate-lock queue or
+    # held slot is positive evidence. An unverified handle alone is not.
+    if in_progress or lock_reports_exact_target:
+        reported_count = in_progress if in_progress else 1
+        details = (
+            run_handle_text(verified)
+            if verified
+            else one_line(admission.get("detail", "validate-lock reports this exact target"))
+        )
         emit(
             state="in-progress",
             target=target,
             record_count=0,
-            in_progress_count=in_progress,
+            in_progress_count=reported_count,
+            runs=details,
             launched=0,
             summary=(
-                f"exact Hermit main tip {target} already has {in_progress} "
-                "validate run(s) in progress; no validate started"
+                f"exact Hermit main tip {target} already has {reported_count} "
+                f"validate run(s) in progress; {details}; no validate started"
             ),
         )
         return 0
+
+    if outstanding:
+        details = run_handle_text(outstanding)
+        remedy = (
+            "inspect the listed run handle and validate-lock admission-status for this "
+            "exact SHA; repair or finish the handle before retrying"
+        )
+        emit(
+            state="unknown",
+            target=target,
+            record_count=0,
+            in_progress_count="unknown",
+            runs=details,
+            launched=0,
+            next_action=remedy,
+            summary=(
+                f"exact Hermit main tip {target} has an outstanding run handle whose "
+                f"process identity is not verified: {details}; {remedy}; no validate started"
+            ),
+        )
+        return 2
 
     tick_attempt = read_json(settings.state_dir / "latest.json")
     if tick_attempt is not None and tick_attempt.get("target") != target:
         tick_attempt = None
-    if tick_attempt_is_active(
-        settings,
-        tick_attempt,
-        remaining(deadline, 5.0),
-        run,
-        launcher_active,
-    ):
-        assert tick_attempt is not None
-        emit(
-            state="in-progress",
-            target=target,
-            record_count=0,
-            in_progress_count=1,
-            launched=0,
-            summary=(
-                f"launch attempt {tick_attempt.get('attempt_id', '?')} for exact Hermit main "
-                "tip is still running; no second validate started"
-            ),
-        )
-        return 0
 
     prior = latest_prior_attempt(tick_attempt, status["run_handles"])
-    admission = admission_status(settings, target, remaining(deadline, 10.0), run)
+    if admission is None:
+        admission = admission_status(settings, target, remaining(deadline, 10.0), run)
     if admission["admissible"] is not True:
         reason = one_line(admission.get("detail", admission.get("reason_code", "unknown")))
         admission_state = str(admission["state"])

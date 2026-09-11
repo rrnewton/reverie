@@ -507,20 +507,31 @@ struct ValidateStatusArgs {
         help_heading = "WHICH RESULTS"
     )]
     commit_timeline: bool,
-    /// Do not include process-verified validation runs that are still executing.
+    /// Do not include validation runs that are still launching or executing.
     #[arg(
         long,
         conflicts_with = "in_progress_only",
         help_heading = "WHICH RESULTS"
     )]
     exclude_in_progress: bool,
-    /// Show only process-verified validation runs that are still executing.
+    /// Show only validation runs that are still launching or executing.
     #[arg(
         long,
         conflicts_with = "exclude_in_progress",
         help_heading = "WHICH RESULTS"
     )]
     in_progress_only: bool,
+    /// Freshly fetch the selected repository's main branch, report whether its
+    /// exact tip has a validation in progress, and include slot and log paths.
+    /// This is an exact-SHA comparison; an older commit on main does not match.
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "sha_positional", "sha", "pr", "run_no", "commit_timeline"
+        ],
+        help_heading = "WHICH RESULTS"
+    )]
+    current_main: bool,
     /// Identity columns for the current/recent table. Comma-separated values
     /// and repeated flags are both accepted; `none` selects no identity column.
     /// The default shows the recorded SHA, branch, and its relationship to main.
@@ -6876,6 +6887,8 @@ struct ValidateRunRecord {
     #[serde(default)]
     branch: Option<String>,
     #[serde(default)]
+    wrkslots_slot: Option<String>,
+    #[serde(default)]
     log: Option<String>,
     #[serde(default)]
     admission_result: Option<ValidateRunAdmissionResult>,
@@ -7113,6 +7126,10 @@ struct ValidateRunAttempt {
     state: String,
     sha: String,
     started_at: String,
+    slot: Option<String>,
+    log_file: Option<String>,
+    process_verified: bool,
+    admission: Option<String>,
     finished_at: Option<String>,
     result: Option<String>,
     detail: Option<String>,
@@ -7274,16 +7291,24 @@ fn live_validate_runs_from(
                 });
                 continue;
             };
-            attempts.push(ValidateRunAttempt {
-                unit: unit.to_string(),
-                state: record.state.clone(),
-                sha: target.clone(),
-                started_at: started_at.clone(),
-                finished_at: record.finished_at.clone(),
-                result: record.result.clone(),
-                detail: record.detail.clone(),
-                exit_code: record.exit_code,
-            });
+            let (slot, log_file) = if include_log_paths {
+                let slot = match value
+                    .get("wrkslots_slot")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|slot| !slot.is_empty())
+                {
+                    Some(slot) => Some(slot.to_string()),
+                    None => {
+                        let source_checkout =
+                            current_validate_run_text(&value, "source_checkout", &path)?;
+                        slot_from_validate_checkout(state_root, &source_checkout)
+                    }
+                };
+                let log_file = current_validate_run_text(&value, "log", &path)?;
+                (slot, Some(log_file))
+            } else {
+                (None, None)
+            };
             let process_is_live = match record.process_identity.as_ref() {
                 Some(identity) => {
                     validate_run_process_is_live(proc_root, boot_id_path, unit, identity)
@@ -7291,6 +7316,26 @@ fn live_validate_runs_from(
                 }
                 None => false,
             };
+            attempts.push(ValidateRunAttempt {
+                unit: unit.to_string(),
+                state: record.state.clone(),
+                sha: target.clone(),
+                started_at: started_at.clone(),
+                slot: slot.clone(),
+                log_file: log_file.clone(),
+                process_verified: process_is_live,
+                admission: record
+                    .admission_result
+                    .as_ref()
+                    .map(|result| match result.state {
+                        validate_run_handle::AdmissionState::Admitted => "admitted".to_string(),
+                        validate_run_handle::AdmissionState::Refused => "refused".to_string(),
+                    }),
+                finished_at: record.finished_at.clone(),
+                result: record.result.clone(),
+                detail: record.detail.clone(),
+                exit_code: record.exit_code,
+            });
             let termination = confirmed_termination(&record)
                 .or_else(|| {
                     (!process_is_live)
@@ -7304,17 +7349,6 @@ fn live_validate_runs_from(
                     .as_ref()
                     .unwrap_or(&termination.requested_at)
                     .clone();
-                let (slot, log_file) = if include_log_paths {
-                    let source_checkout =
-                        current_validate_run_text(&value, "source_checkout", &path)?;
-                    let log_file = current_validate_run_text(&value, "log", &path)?;
-                    (
-                        slot_from_validate_checkout(state_root, &source_checkout),
-                        Some(log_file),
-                    )
-                } else {
-                    (None, None)
-                };
                 live.push(ValidateStatusEntry {
                     depth: None,
                     run_number: record.admission_result.as_ref().and_then(|result| {
@@ -7375,16 +7409,6 @@ fn live_validate_runs_from(
                     )
                 },
             );
-            let (slot, log_file) = if include_log_paths {
-                let source_checkout = current_validate_run_text(&value, "source_checkout", &path)?;
-                let log_file = current_validate_run_text(&value, "log", &path)?;
-                (
-                    slot_from_validate_checkout(state_root, &source_checkout),
-                    Some(log_file),
-                )
-            } else {
-                (None, None)
-            };
             live.push(ValidateStatusEntry {
                 depth: None,
                 run_number: record.admission_result.as_ref().and_then(|result| {
@@ -7500,6 +7524,27 @@ fn live_validate_runs_from(
             state: record.state.clone(),
             sha: record.target.clone(),
             started_at: record.started_at.clone(),
+            slot: if include_log_paths {
+                record.wrkslots_slot.clone().or_else(|| {
+                    record
+                        .source_checkout
+                        .as_deref()
+                        .or(record.checkout.as_deref())
+                        .and_then(|checkout| slot_from_validate_checkout(state_root, checkout))
+                })
+            } else {
+                None
+            },
+            log_file: if include_log_paths {
+                record.log.clone()
+            } else {
+                None
+            },
+            process_verified: false,
+            admission: record
+                .admission_result
+                .as_ref()
+                .map(|result| result.state.clone()),
             finished_at: record.finished_at.clone(),
             result: record.result.clone(),
             detail: record.detail.clone(),
@@ -7509,21 +7554,17 @@ fn live_validate_runs_from(
             attempts.push(attempt);
             continue;
         }
+        attempts.push(attempt);
         let Some(identity) = record.process_identity.as_ref() else {
-            unreadable_handles.push(validate_run_handle::UnreadableRecord {
-                path,
-                error: format!(
-                    "legacy validation run handle in state {} has no process identity",
-                    record.state
-                ),
-            });
             continue;
         };
-        attempts.push(attempt);
         if !validate_run_process_is_live(proc_root, boot_id_path, &record.unit, identity)
             .map_err(CiHubError::ValidateStatus)?
         {
             continue;
+        }
+        if let Some(attempt) = attempts.last_mut() {
+            attempt.process_verified = true;
         }
         let summary = format!(
             "agent={} unit={}",
@@ -7599,6 +7640,91 @@ fn live_validate_runs(
         now,
         include_log_paths,
     )
+}
+
+fn validate_attempt_is_outstanding(attempt: &ValidateRunAttempt) -> bool {
+    matches!(
+        attempt.state.as_str(),
+        "preparing" | "launching" | "running"
+    ) && attempt.admission.as_deref() != Some("refused")
+        && attempt.finished_at.is_none()
+        && attempt.result.is_none()
+        && attempt.exit_code.is_none()
+}
+
+fn exact_in_progress_count(entries: &[ValidateStatusEntry], sha: &str) -> usize {
+    entries
+        .iter()
+        .filter(|entry| entry.in_progress && entry.sha.as_deref() == Some(sha))
+        .count()
+}
+
+fn current_main_status_json(
+    sha: &str,
+    in_progress_count: usize,
+    answer_known: bool,
+    run_handles: &[ValidateRunAttempt],
+) -> serde_json::Value {
+    let (in_progress, reported_count) = if answer_known {
+        (
+            serde_json::Value::Bool(in_progress_count > 0),
+            serde_json::json!(in_progress_count),
+        )
+    } else {
+        (serde_json::Value::Null, serde_json::Value::Null)
+    };
+    let next_action = if answer_known {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!("inspect the listed run handle and validate-lock admission-status for this exact SHA; repair or finish the handle before retrying")
+    };
+    serde_json::json!({
+        "sha": sha,
+        "in_progress": in_progress,
+        "in_progress_count": reported_count,
+        "launch_decision_authority": answer_known && in_progress_count > 0,
+        "observation": "fresh main plus two reads of ci-hub run records",
+        "next_action": next_action,
+        "run_handles": run_handles,
+    })
+}
+
+fn fetch_current_validation_main(
+    tool_root: &Path,
+    state_root: &Path,
+    repo: &str,
+) -> Result<String, CiHubError> {
+    let checkout = validation_repo_checkout(state_root, repo);
+    let script = tool_root.join("ci-hub/lib/fetch_ref.py");
+    let output = Command::new("python3")
+        .arg(&script)
+        .arg("--repo")
+        .arg(&checkout)
+        .bounded_output()
+        .map_err(|source| CiHubError::Launch {
+            tool: format!("{} current-main fetch", script.display()),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(CiHubError::ValidateStatus(format!(
+            "cannot fetch current main for {repo} from {}: {}. Restore GitHub access, then retry `ci-hub validate-status --current-main`",
+            checkout.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        CiHubError::ValidateStatus(format!(
+            "current-main fetch returned unreadable JSON: {error}. Retry `ci-hub validate-status --current-main`"
+        ))
+    })?;
+    let sha = value
+        .get("tracking_sha")
+        .and_then(serde_json::Value::as_str)
+        .filter(|sha| is_oid(sha))
+        .ok_or_else(|| CiHubError::ValidateStatus(
+            "current-main fetch omitted a full lowercase tracking_sha; retry `ci-hub validate-status --current-main`".into()
+        ))?;
+    Ok(sha.to_string())
 }
 
 fn selected_validate_status_columns(
@@ -8692,6 +8818,11 @@ fn print_recent_validate_history(
             "--limit must be greater than zero".into(),
         ));
     }
+    let current_main_sha = if args.current_main {
+        Some(fetch_current_validation_main(tool_root, state_root, repo)?)
+    } else {
+        None
+    };
     let columns = selected_validate_status_columns(&args.columns)?;
     let main_history_requested = columns.contains(&ValidateStatusColumn::Main);
     let main_history = if main_history_requested {
@@ -8704,9 +8835,59 @@ fn print_recent_validate_history(
         None
     };
     let now = chrono::Utc::now();
-    let scan = live_validate_runs(tool_root, state_root, repo, now, args.log_paths)?;
+    let include_log_paths = args.log_paths || args.current_main;
+    let mut scan = live_validate_runs(tool_root, state_root, repo, now, include_log_paths)?;
+    if let Some(main_sha) = current_main_sha.as_deref() {
+        let first_attempts = scan
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.sha == main_sha && validate_attempt_is_outstanding(attempt))
+            .cloned()
+            .collect::<Vec<_>>();
+        let first_unreadable = scan.unreadable_handles;
+        scan = live_validate_runs(tool_root, state_root, repo, now, include_log_paths)?;
+        for attempt in first_attempts {
+            if !scan.attempts.iter().any(|existing| {
+                existing.unit == attempt.unit
+                    && existing.sha == attempt.sha
+                    && existing.started_at == attempt.started_at
+            }) {
+                scan.attempts.push(attempt);
+            }
+        }
+        for unreadable in first_unreadable {
+            if !scan
+                .unreadable_handles
+                .iter()
+                .any(|existing| existing.path == unreadable.path)
+            {
+                scan.unreadable_handles.push(unreadable);
+            }
+        }
+    }
+    let current_main_run_handles = current_main_sha
+        .as_deref()
+        .map(|main_sha| {
+            scan.attempts
+                .iter()
+                .filter(|attempt| {
+                    attempt.sha == main_sha && validate_attempt_is_outstanding(attempt)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let mut current = scan.entries;
+    let current_main_in_progress_count = current_main_sha
+        .as_deref()
+        .map(|main_sha| exact_in_progress_count(&current, main_sha));
     let live_total = current.iter().filter(|entry| entry.in_progress).count();
+    let current_main_has_unverified_outstanding = current_main_run_handles
+        .iter()
+        .any(|attempt| !attempt.process_verified);
+    let current_main_answer_known = current_main_sha.is_none()
+        || current_main_in_progress_count.is_some_and(|count| count > 0)
+        || (!current_main_has_unverified_outstanding && scan.unreadable_handles.is_empty());
     if args.exclude_in_progress {
         current.retain(|entry| !entry.in_progress);
     } else if args.in_progress_only {
@@ -8729,7 +8910,7 @@ fn print_recent_validate_history(
             .iter()
             .zip(historical_run_numbers.iter().copied())
             .map(|(row, run_number)| {
-                let mut entry = finished_validate_status_entry(repo, row, args.log_paths);
+                let mut entry = finished_validate_status_entry(repo, row, include_log_paths);
                 entry.run_number = run_number;
                 entry
             })
@@ -8750,7 +8931,7 @@ fn print_recent_validate_history(
                 *number == Some(run_number) && host_is_machine(row.host.as_deref(), &machine)
             })
             .map(|(row, number)| {
-                let mut entry = finished_validate_status_entry(repo, row, args.log_paths);
+                let mut entry = finished_validate_status_entry(repo, row, include_log_paths);
                 entry.run_number = number;
                 entry
             })
@@ -8782,7 +8963,7 @@ fn print_recent_validate_history(
                 &historical_run_numbers,
                 &current,
                 repo,
-                args.log_paths,
+                include_log_paths,
             );
             let window = if args.show_all {
                 RecentHistoryWindow::All
@@ -8825,22 +9006,34 @@ fn print_recent_validate_history(
     };
 
     if args.json {
+        let mut report = validate_status_history_json(
+            &entries,
+            &unreadable_handles,
+            repo,
+            &columns,
+            ledger,
+            &depth,
+            args,
+            commit_count,
+            unassigned_unreadable_count,
+            recent_counts,
+        );
+        if let Some(main_sha) = current_main_sha.as_deref() {
+            let count = current_main_in_progress_count.unwrap_or(0);
+            report["current_main"] = current_main_status_json(
+                main_sha,
+                count,
+                current_main_answer_known,
+                &current_main_run_handles,
+            );
+        }
         println!(
             "{}",
-            serde_json::to_string_pretty(&validate_status_history_json(
-                &entries,
-                &unreadable_handles,
-                repo,
-                &columns,
-                ledger,
-                &depth,
-                args,
-                commit_count,
-                unassigned_unreadable_count,
-                recent_counts,
-            ))
-            .expect("serialize recent validation history")
+            serde_json::to_string_pretty(&report).expect("serialize recent validation history")
         );
+        if args.current_main && !current_main_answer_known {
+            return Ok(2);
+        }
         return Ok(if args.run_no.is_some() && entries.is_empty() {
             4
         } else {
@@ -8848,6 +9041,34 @@ fn print_recent_validate_history(
         });
     }
 
+    if let Some(main_sha) = current_main_sha.as_deref() {
+        let count = current_main_in_progress_count.expect("current-main count is present");
+        if current_main_answer_known {
+            if count > 0 {
+                println!("CURRENT-MAIN {main_sha} VALIDATE-IN-PROGRESS=yes COUNT={count}");
+            } else {
+                println!(
+                    "CURRENT-MAIN {main_sha} VALIDATE-IN-PROGRESS=no COUNT=0 -- run records were read twice; before launching, also run `ci-hub validate-lock admission-status --agent AGENT --kind validate --target {main_sha} --target-was-fetched-main --json`"
+                );
+            }
+        } else {
+            println!(
+                "CURRENT-MAIN {main_sha} VALIDATE-IN-PROGRESS=unknown -- an outstanding unverified or unreadable run record may describe this exact commit; inspect the run handles and `ci-hub validate-lock admission-status --agent AGENT --kind validate --target {main_sha} --target-was-fetched-main --json`, then repair or finish the handle before retrying"
+            );
+        }
+        for attempt in &current_main_run_handles {
+            println!(
+                "RUN-HANDLE unit={} state={} head={} slot={} log={} started={} process_verified={}",
+                attempt.unit,
+                attempt.state,
+                attempt.sha,
+                attempt.slot.as_deref().unwrap_or("?"),
+                attempt.log_file.as_deref().unwrap_or("?"),
+                attempt.started_at,
+                attempt.process_verified,
+            );
+        }
+    }
     // Printed even when there are no runs at all: "no runs" and "no green in the
     // last N commits" are different facts and the second is the actionable one.
     println!("{}", depth.line());
@@ -8890,12 +9111,15 @@ fn print_recent_validate_history(
         args.times,
         now,
         args.commit_timeline,
-        args.log_paths,
+        include_log_paths,
     ) {
         println!("{line}");
     }
     if let Some(footer) = recent_counts.and_then(recent_validate_status_footer) {
         println!("{footer}");
+    }
+    if args.current_main && !current_main_answer_known {
+        return Ok(2);
     }
     Ok(0)
 }
@@ -12673,20 +12897,26 @@ mod tests {
         )
         .unwrap();
         assert!(scan.entries.is_empty());
-        assert_eq!(scan.attempts.len(), 1);
-        assert_eq!(scan.attempts[0].unit, "validate-legacy-completed.service");
-        assert_eq!(scan.attempts[0].state, "completed");
-        assert_eq!(scan.attempts[0].sha, "c".repeat(40));
-        assert_eq!(scan.attempts[0].result.as_deref(), Some("failure"));
-        assert_eq!(scan.attempts[0].exit_code, Some(1));
-        assert_eq!(scan.unreadable_handles.len(), 1);
-        assert!(
-            scan.unreadable_handles[0]
-                .error
-                .contains("has no process identity"),
-            "{}",
-            scan.unreadable_handles[0].error
-        );
+        assert_eq!(scan.attempts.len(), 2);
+        let stale = scan
+            .attempts
+            .iter()
+            .find(|attempt| attempt.unit == "validate-stale.service")
+            .expect("stale running attempt remains visible");
+        assert_eq!(stale.state, "running");
+        assert!(!stale.process_verified);
+        assert!(validate_attempt_is_outstanding(stale));
+        let completed = scan
+            .attempts
+            .iter()
+            .find(|attempt| attempt.unit == "validate-legacy-completed.service")
+            .expect("completed attempt remains visible");
+        assert_eq!(completed.state, "completed");
+        assert_eq!(completed.sha, "c".repeat(40));
+        assert_eq!(completed.result.as_deref(), Some("failure"));
+        assert_eq!(completed.exit_code, Some(1));
+        assert!(!validate_attempt_is_outstanding(completed));
+        assert!(scan.unreadable_handles.is_empty());
         std::fs::write(runs.join("unattributable.json"), b"{}\n").unwrap();
         let scan = live_validate_runs_from(
             &root,
@@ -12699,8 +12929,8 @@ mod tests {
         )
         .unwrap();
         assert!(scan.entries.is_empty());
-        assert_eq!(scan.attempts.len(), 1);
-        assert_eq!(scan.unreadable_handles.len(), 2);
+        assert_eq!(scan.attempts.len(), 2);
+        assert_eq!(scan.unreadable_handles.len(), 1);
         assert!(scan.unreadable_handles.iter().any(|record| {
             record.path == runs.join("unattributable.json")
                 && record.error.contains("missing field `schema_version`")
@@ -12708,6 +12938,92 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn current_main_in_progress_requires_the_exact_tip_sha() {
+        let mut older = finished_validate_status_entry(
+            CANONICAL_VALIDATE_REPO,
+            &history_row(schema4_receipt_value()),
+            true,
+        );
+        older.in_progress = true;
+        older.sha = Some("a".repeat(40));
+        let mut tip = older.clone();
+        tip.sha = Some("b".repeat(40));
+
+        assert_eq!(
+            exact_in_progress_count(std::slice::from_ref(&older), &"b".repeat(40)),
+            0
+        );
+        assert_eq!(exact_in_progress_count(&[older, tip], &"b".repeat(40)), 1);
+    }
+
+    #[test]
+    fn current_main_json_distinguishes_yes_no_and_unknown_and_reports_handles() {
+        let sha = "b".repeat(40);
+        let attempt = ValidateRunAttempt {
+            unit: "validate-main.service".into(),
+            state: "launching".into(),
+            sha: sha.clone(),
+            started_at: "2026-09-11T17:00:00Z".into(),
+            slot: Some("validate-main".into()),
+            log_file: Some("/state/ignored/validate/main.log".into()),
+            process_verified: false,
+            admission: None,
+            finished_at: None,
+            result: None,
+            detail: None,
+            exit_code: None,
+        };
+
+        let mut verified = attempt.clone();
+        verified.state = "running".into();
+        verified.process_verified = true;
+        let yes = current_main_status_json(&sha, 1, true, std::slice::from_ref(&verified));
+        assert_eq!(yes["in_progress"], true);
+        assert_eq!(yes["in_progress_count"], 1);
+        assert_eq!(yes["launch_decision_authority"], true);
+        assert_eq!(
+            yes["observation"],
+            "fresh main plus two reads of ci-hub run records"
+        );
+        assert_eq!(yes["run_handles"][0]["unit"], "validate-main.service");
+        assert_eq!(yes["run_handles"][0]["sha"], sha);
+        assert_eq!(yes["run_handles"][0]["started_at"], "2026-09-11T17:00:00Z");
+        assert_eq!(yes["run_handles"][0]["slot"], "validate-main");
+        assert_eq!(
+            yes["run_handles"][0]["log_file"],
+            "/state/ignored/validate/main.log"
+        );
+        assert_eq!(yes["run_handles"][0]["process_verified"], true);
+        assert!(yes["next_action"].is_null());
+
+        let no = current_main_status_json(&sha, 0, true, &[]);
+        assert_eq!(no["in_progress"], false);
+        assert_eq!(no["in_progress_count"], 0);
+        assert_eq!(no["launch_decision_authority"], false);
+        assert_eq!(no["run_handles"], serde_json::json!([]));
+
+        let unknown = current_main_status_json(&sha, 0, false, std::slice::from_ref(&attempt));
+        assert!(unknown["in_progress"].is_null());
+        assert!(unknown["in_progress_count"].is_null());
+        assert_eq!(unknown["launch_decision_authority"], false);
+        assert_eq!(unknown["run_handles"][0]["state"], "launching");
+        assert_eq!(unknown["run_handles"][0]["process_verified"], false);
+        assert!(unknown["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("repair or finish the handle"));
+
+        let mut preparing = attempt.clone();
+        preparing.state = "preparing".into();
+        assert!(validate_attempt_is_outstanding(&preparing));
+        assert!(validate_attempt_is_outstanding(&attempt));
+        assert!(!validate_attempt_is_outstanding(&ValidateRunAttempt {
+            state: "refused".into(),
+            admission: Some("refused".into()),
+            ..attempt
+        }));
+    }
     #[test]
     fn python_allocator_warning_filter_removes_only_the_exact_line() {
         let input = b"before\n<jemalloc>: Invalid conf pair: experimental_infallible_new:true\nafter\n<jemalloc>: another warning\n";
@@ -14545,6 +14861,25 @@ mod tests {
             panic!("wrong command variant")
         };
         assert!(args.log_paths);
+
+        let cli = Cli::try_parse_from(["ci-hub", "validate-status", "--current-main"]).unwrap();
+        let HubCommand::ValidateStatus(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        assert!(args.current_main);
+        assert!(Cli::try_parse_from([
+            "ci-hub",
+            "validate-status",
+            "--current-main",
+            "--sha",
+            RECEIPT_SHA,
+        ])
+        .is_err());
+        for help in ["-h", "--help"] {
+            let error = Cli::try_parse_from(["ci-hub", "validate-status", help]).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+            assert!(error.to_string().contains("--current-main"));
+        }
 
         for (value, expected) in [
             ("relative", ValidateStatusTimes::Relative),

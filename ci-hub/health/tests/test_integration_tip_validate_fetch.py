@@ -136,7 +136,7 @@ def test_newer_reconciled_tip_is_launched_instead_of_consuming_cadence_on_stale_
         )
         == 0
     )
-    assert status_targets == [CURRENT_SHA]
+    assert status_targets == [CURRENT_SHA, CURRENT_SHA]
     assert launch_targets == [CURRENT_SHA]
     assert json.loads((settings.state_dir / "latest.json").read_text())["target"] == CURRENT_SHA
     output = capsys.readouterr().out

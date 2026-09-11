@@ -152,6 +152,26 @@ stop rather than producing another unattributed termination. The signal-aware
 Rust driver records an operator stop that reaches its own handler as
 `no_result`, never as a product failure.
 
+To see current and recent validation runs together, including the exact head,
+slot, log path, and start time, run:
+
+```bash
+./ci-hub/ci-hub validate-status --current-main
+```
+
+This fetches main before comparing exact SHAs. An older commit on main does not
+count as a validation of the current main tip. The report reads ci-hub's durable
+run records twice before it says no current-main validation is in progress. A
+`preparing`, `launching`, or `running` handle without a process/cgroup identity
+that can still be verified is reported with its exact state and
+`process_verified=false`; the current-main answer is `unknown`, never `yes` or
+`no`. Inspect that handle and `validate-lock admission-status` for the exact SHA,
+then repair or finish the handle before retrying. The periodic integration-tip
+check uses the same two run-record reads with the exact-target validate-lock
+observation between them. It suppresses a duplicate while an unverified handle
+remains, and reports `in-progress` only for a verified process or an exact target
+held by the validate-lock queue or slot.
+
 ## Standing receipt reconciliation
 
 A validate receipt remains keyed to the exact commit it tested.
