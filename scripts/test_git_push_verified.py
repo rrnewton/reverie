@@ -63,6 +63,13 @@ class Fixture:
         out = git(self.root, "ls-remote", str(self.remote), "refs/heads/main").stdout
         return out.split()[0] if out.strip() else ""
 
+    def local_ref_state(self) -> str:
+        return git(self.work, "for-each-ref", "--format=%(refname) %(objectname)").stdout
+
+    def fetch_head_state(self) -> bytes | None:
+        path = self.work / ".git" / "FETCH_HEAD"
+        return path.read_bytes() if path.exists() else None
+
     def tool(self, *args):
         return subprocess.run(
             [sys.executable, str(TOOL), *args],
@@ -83,6 +90,8 @@ class GitPushVerified(unittest.TestCase):
         self.fx.advance_remote_behind_us()
         self.fx.diverge_locally()
         before = self.fx.remote_main()
+        refs_before = self.fx.local_ref_state()
+        fetch_head_before = self.fx.fetch_head_state()
 
         r = self.fx.tool("origin", "HEAD:main")
 
@@ -90,6 +99,16 @@ class GitPushVerified(unittest.TestCase):
         self.assertEqual(r.returncode, 2, "push failure is exit 2")
         self.assertIn("NOTHING LANDED", r.stderr)
         self.assertEqual(self.fx.remote_main(), before, "remote must be unchanged")
+        self.assertEqual(
+            refs_before,
+            self.fx.local_ref_state(),
+            "reading a remote commit must not move any local ref",
+        )
+        self.assertEqual(
+            fetch_head_before,
+            self.fx.fetch_head_state(),
+            "reading a remote commit must not rewrite FETCH_HEAD",
+        )
 
     def test_the_old_pipeline_pattern_still_lies(self):
         """Asserts the BUG, so the tool's reason for existing stays visible.

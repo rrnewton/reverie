@@ -145,18 +145,88 @@ class FormatVerdict(NamedTuple):
     line: str
 
 
-def rust_files_being_pushed(src: str, before: Optional[str]) -> list[str]:
-    """The .rs files this push would publish, or [] if none."""
-    span = f"{before}..{src}" if before else src
-    rc, out, _ = run(["git", "diff", "--name-only", span])
-    if rc != 0:                      # unrelated histories, first push of a branch, etc.
-        rc, out, _ = run(["git", "show", "--name-only", "--format=", src])
-        if rc != 0:
-            return []
-    return [f for f in out.split() if f.endswith(".rs")]
+class RustFiles(NamedTuple):
+    paths: list[str]
+    error: str | None
 
 
-def format_gate(src: str, before: Optional[str]) -> FormatVerdict:
+EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def fetch_remote_commit(remote: str, ref: str, commit: str) -> bool:
+    """Make a remote commit available locally without moving a local ref."""
+    if run(["git", "cat-file", "-e", f"{commit}^{{commit}}"])[0] == 0:
+        return True
+    if run(
+        [
+            "git",
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--refmap=",
+            remote,
+            commit,
+        ]
+    )[0] != 0:
+        return False
+    return run(["git", "cat-file", "-e", f"{commit}^{{commit}}"])[0] == 0
+
+
+def new_branch_base(remote: str, src: str) -> tuple[str | None, str | None]:
+    """Return the source's merge base with the remote default branch."""
+    rc, out, err = run(["git", "ls-remote", remote, "HEAD"])
+    if rc != 0:
+        detail = err.strip().splitlines()[-1] if err.strip() else f"git exited {rc}"
+        return None, f"could not read the remote default branch ({detail})"
+    fields = out.split()
+    if not fields:
+        return EMPTY_TREE_SHA, None
+    candidate = fields[0]
+    if not fetch_remote_commit(remote, "HEAD", candidate):
+        return None, "the remote default commit is not in this checkout; fetch it and rerun"
+    rc, out, err = run(["git", "merge-base", candidate, src])
+    if rc == 1 and not out.strip():
+        return EMPTY_TREE_SHA, None
+    if rc != 0 or not out.strip():
+        detail = err.strip().splitlines()[-1] if err.strip() else f"git exited {rc}"
+        return None, f"could not compare the source with the remote default branch ({detail})"
+    return out.strip(), None
+
+
+def rust_files_being_pushed(
+    src: str, before: Optional[str], remote: str, dst: str
+) -> RustFiles:
+    """Return the .rs files this push would publish, or an explicit error."""
+    if before is None:
+        # A destination that does not exist has no direct range base. Use the
+        # remote's default tip when the source descends from it, so every commit
+        # on a new feature branch is covered rather than only the tip commit.
+        # For an empty remote or an unrelated source, compare the complete
+        # source tree with Git's empty tree.
+        base, error = new_branch_base(remote, src)
+        if error is not None:
+            return RustFiles([], error)
+        assert base is not None
+    else:
+        if not fetch_remote_commit(remote, dst, before):
+            return RustFiles(
+                [],
+                "the remote destination commit is not in this checkout and could not be fetched",
+            )
+        base = before
+    rc, out, err = run(
+        ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{base}..{src}"]
+    )
+    if rc != 0:
+        detail = err.strip().splitlines()[-1] if err.strip() else f"git exited {rc}"
+        return RustFiles([], f"could not compare the pushed commits ({detail})")
+    return RustFiles([f for f in out.split() if f.endswith(".rs")], None)
+
+
+def format_gate(
+    src: str, before: Optional[str], remote: str, dst: str
+) -> FormatVerdict:
     """Refuse a push that would publish misformatted Rust.
 
     WHY THIS LIVES HERE AND NOT IN THE FULL PROFILE.
@@ -182,9 +252,31 @@ def format_gate(src: str, before: Optional[str]) -> FormatVerdict:
     and it is the failure mode this project has hit repeatedly tonight: an empty
     or unrunnable check read as a pass.
     """
-    rust = rust_files_being_pushed(src, before)
+    detected = rust_files_being_pushed(src, before, remote, dst)
+    if detected.error is not None:
+        return FormatVerdict(
+            True,
+            "git-push-verified: format NOT CHECKED -- could not determine which "
+            f"Rust files are being pushed: {detected.error}.",
+        )
+    rust = detected.paths
     if not rust:
         return FormatVerdict(False, "git-push-verified: format check SKIPPED (no .rs in this push)")
+    head = local_sha("HEAD")
+    if head != local_sha(src):
+        return FormatVerdict(
+            True,
+            "git-push-verified: format NOT CHECKED -- the source commit is not the "
+            "checked-out HEAD. Check out the source commit in a clean worktree, then rerun.",
+        )
+    rc, _, _ = run(["git", "diff", "--quiet", src, "--", *rust])
+    if rc != 0:
+        return FormatVerdict(
+            True,
+            "git-push-verified: format NOT CHECKED -- pushed Rust files differ "
+            "between the source commit and this working tree. Restore or commit them, "
+            "then rerun.",
+        )
     if shutil.which("cargo") is None:
         return FormatVerdict(
             False,
@@ -281,11 +373,11 @@ def main(argv: list[str]) -> int:
 
     warn_shared_checkout(src, before)
 
-    fmt = format_gate(src, before)
+    fmt = format_gate(src, before, remote, dst)
     print(fmt.line)
     if fmt.refused:
         print(
-            "git-push-verified: REFUSING THE PUSH. Run `cargo fmt --all` and push again.\n"
+            "git-push-verified: REFUSING THE PUSH. Resolve the reported format-check problem and push again.\n"
             "  This costs seconds and needs no receipt, lock, runner or network, which is\n"
             "  why it runs here instead of only in the full validate profile.",
             file=sys.stderr,
