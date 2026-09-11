@@ -555,6 +555,15 @@ struct ValidateStatusArgs {
     /// Show the worktree slot and full producer-recorded log file path.
     #[arg(long, help_heading = "HOW RENDERED")]
     log_paths: bool,
+    /// Show every unreadable validation run-record path and parse error when
+    /// inspecting current main. By default, only the count is shown.
+    #[arg(
+        long,
+        requires = "current_main",
+        conflicts_with = "json",
+        help_heading = "HOW RENDERED"
+    )]
+    show_unreadable_handles: bool,
     /// Repository whose validation runs to report; also resolves --pr head SHAs.
     #[arg(
         long,
@@ -7159,6 +7168,8 @@ struct ValidateRunAttempt {
     unit: String,
     state: String,
     sha: String,
+    #[serde(skip_serializing)]
+    agent: Option<String>,
     started_at: String,
     slot: Option<String>,
     log_file: Option<String>,
@@ -7176,6 +7187,116 @@ fn unreadable_run_handle_line(unreadable: &validate_run_handle::UnreadableRecord
         unreadable.path.display(),
         unreadable.error
     )
+}
+
+fn current_main_diagnostic_command() -> &'static str {
+    "./ci-hub/ci-hub validate-status --current-main --show-unreadable-handles"
+}
+
+fn current_main_lock_status_command() -> &'static str {
+    "./ci-hub/ci-hub validate-lock status"
+}
+
+fn valid_agent_name(value: &str) -> bool {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|character| character.is_ascii_alphanumeric())
+        && characters.all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, '.' | '_' | '/' | '@' | '+' | '-')
+        })
+}
+
+fn current_agent_name() -> Option<String> {
+    env::var("DG_AGENT_NAME")
+        .ok()
+        .filter(|agent| valid_agent_name(agent))
+}
+
+fn current_main_admission_command(sha: &str, agent: Option<&str>) -> Option<String> {
+    let agent = agent.filter(|agent| valid_agent_name(agent))?;
+    Some(format!(
+        "./ci-hub/ci-hub validate-lock admission-status --agent {agent} --kind validate --target {sha} --target-was-fetched-main --json"
+    ))
+}
+
+fn current_main_status_lines(
+    sha: &str,
+    in_progress_count: usize,
+    answer_known: bool,
+    run_handles: &[ValidateRunAttempt],
+    unreadable_handles: &[validate_run_handle::UnreadableRecord],
+    admission_agent: Option<&str>,
+    show_unreadable_handles: bool,
+) -> Vec<String> {
+    let answer = if answer_known {
+        if in_progress_count > 0 {
+            "yes"
+        } else {
+            "no"
+        }
+    } else {
+        "unknown"
+    };
+    let mut lines = vec![format!(
+        "CURRENT-MAIN {sha} VALIDATE-IN-PROGRESS={answer}{}",
+        answer_known
+            .then(|| format!(" COUNT={in_progress_count}"))
+            .unwrap_or_default()
+    )];
+
+    if !unreadable_handles.is_empty() {
+        lines.push(format!(
+            "RUN-HANDLES UNREADABLE={} -- {}",
+            unreadable_handles.len(),
+            if show_unreadable_handles {
+                "individual records follow"
+            } else {
+                "individual records hidden"
+            }
+        ));
+    }
+
+    for attempt in run_handles {
+        lines.push(format!(
+            "RUN-HANDLE unit={} state={} head={} agent={} slot={} log={} started={} process_verified={}",
+            attempt.unit,
+            attempt.state,
+            attempt.sha,
+            attempt.agent.as_deref().unwrap_or("?"),
+            attempt.slot.as_deref().unwrap_or("?"),
+            attempt.log_file.as_deref().unwrap_or("?"),
+            attempt.started_at,
+            attempt.process_verified,
+        ));
+    }
+
+    if show_unreadable_handles {
+        lines.extend(unreadable_handles.iter().map(unreadable_run_handle_line));
+    }
+
+    if !answer_known {
+        if !unreadable_handles.is_empty() && !show_unreadable_handles {
+            lines.push(format!(
+                "NEXT run `{}` to identify the unreadable run records.",
+                current_main_diagnostic_command()
+            ));
+        }
+        if !run_handles.is_empty() {
+            if let Some(command) = current_main_admission_command(sha, admission_agent) {
+                lines.push(format!(
+                    "NEXT run `{command}` to inspect admission for this exact commit."
+                ));
+            } else {
+                lines.push(format!(
+                    "NEXT run `{}` to inspect the validation lock; the RUN-HANDLE line above identifies the unverified record.",
+                    current_main_lock_status_command()
+                ));
+            }
+        }
+    }
+    lines
 }
 
 fn live_validate_runs_from(
@@ -7354,6 +7475,7 @@ fn live_validate_runs_from(
                 unit: unit.to_string(),
                 state: record.state.clone(),
                 sha: target.clone(),
+                agent: record.agent.clone(),
                 started_at: started_at.clone(),
                 slot: slot.clone(),
                 log_file: log_file.clone(),
@@ -7557,6 +7679,7 @@ fn live_validate_runs_from(
             unit: record.unit.clone(),
             state: record.state.clone(),
             sha: record.target.clone(),
+            agent: record.agent.clone(),
             started_at: record.started_at.clone(),
             slot: if include_log_paths {
                 record.wrkslots_slot.clone().or_else(|| {
@@ -9077,30 +9200,16 @@ fn print_recent_validate_history(
 
     if let Some(main_sha) = current_main_sha.as_deref() {
         let count = current_main_in_progress_count.expect("current-main count is present");
-        if current_main_answer_known {
-            if count > 0 {
-                println!("CURRENT-MAIN {main_sha} VALIDATE-IN-PROGRESS=yes COUNT={count}");
-            } else {
-                println!(
-                    "CURRENT-MAIN {main_sha} VALIDATE-IN-PROGRESS=no COUNT=0 -- run records were read twice; before launching, also run `ci-hub validate-lock admission-status --agent AGENT --kind validate --target {main_sha} --target-was-fetched-main --json`"
-                );
-            }
-        } else {
-            println!(
-                "CURRENT-MAIN {main_sha} VALIDATE-IN-PROGRESS=unknown -- an outstanding unverified or unreadable run record may describe this exact commit; inspect the run handles and `ci-hub validate-lock admission-status --agent AGENT --kind validate --target {main_sha} --target-was-fetched-main --json`, then repair or finish the handle before retrying"
-            );
-        }
-        for attempt in &current_main_run_handles {
-            println!(
-                "RUN-HANDLE unit={} state={} head={} slot={} log={} started={} process_verified={}",
-                attempt.unit,
-                attempt.state,
-                attempt.sha,
-                attempt.slot.as_deref().unwrap_or("?"),
-                attempt.log_file.as_deref().unwrap_or("?"),
-                attempt.started_at,
-                attempt.process_verified,
-            );
+        for line in current_main_status_lines(
+            main_sha,
+            count,
+            current_main_answer_known,
+            &current_main_run_handles,
+            &unreadable_handles,
+            current_agent_name().as_deref(),
+            args.show_unreadable_handles,
+        ) {
+            println!("{line}");
         }
     }
     // Printed even when there are no runs at all: "no runs" and "no green in the
@@ -9112,7 +9221,7 @@ fn print_recent_validate_history(
             recent_validate_status_note(recent_counts.expect("recent list has counts"))
         );
     }
-    for unreadable in &unreadable_handles {
+    for unreadable in unreadable_handles.iter().filter(|_| !args.current_main) {
         println!("{}", unreadable_run_handle_line(unreadable));
     }
     if let Some(commit_count) = commit_count {
@@ -13021,6 +13130,7 @@ mod tests {
             unit: "validate-main.service".into(),
             state: "launching".into(),
             sha: sha.clone(),
+            agent: None,
             started_at: "2026-09-11T17:00:00Z".into(),
             slot: Some("validate-main".into()),
             log_file: Some("/state/ignored/validate/main.log".into()),
@@ -13066,6 +13176,7 @@ mod tests {
         assert_eq!(unknown["launch_decision_authority"], false);
         assert_eq!(unknown["run_handles"][0]["state"], "launching");
         assert_eq!(unknown["run_handles"][0]["process_verified"], false);
+        assert!(unknown["run_handles"][0].get("agent").is_none());
         assert!(unknown["next_action"]
             .as_str()
             .unwrap()
@@ -13081,6 +13192,188 @@ mod tests {
             ..attempt
         }));
     }
+
+    fn command_from_next_line(line: &str) -> &str {
+        line.split('`')
+            .nth(1)
+            .expect("NEXT line contains one runnable command")
+    }
+
+    fn parse_printed_ci_hub_command(command: &str) -> Cli {
+        let mut words = command.split_whitespace();
+        assert_eq!(words.next(), Some("./ci-hub/ci-hub"));
+        Cli::try_parse_from(std::iter::once("ci-hub").chain(words))
+            .expect("printed command parses through the public CLI")
+    }
+
+    #[test]
+    fn current_main_default_bounds_unreadable_records_and_diagnostic_shows_all() {
+        let sha = "b".repeat(40);
+        let unreadable = (0..477)
+            .map(|index| validate_run_handle::UnreadableRecord {
+                path: PathBuf::from(format!("/state/ignored/validate/runs/broken-{index}.json")),
+                error: format!("fixture parse error {index}"),
+            })
+            .collect::<Vec<_>>();
+
+        let default = current_main_status_lines(&sha, 0, false, &[], &unreadable, None, false);
+        assert_eq!(
+            default[0],
+            format!("CURRENT-MAIN {sha} VALIDATE-IN-PROGRESS=unknown")
+        );
+        assert_eq!(
+            default.len(),
+            3,
+            "477 records must still produce bounded output"
+        );
+        assert!(default[1].contains("RUN-HANDLES UNREADABLE=477"));
+        assert!(!default.iter().any(|line| line.contains("broken-0.json")));
+        let fallback = command_from_next_line(default.last().unwrap());
+        assert_eq!(fallback, current_main_diagnostic_command());
+        let parsed = parse_printed_ci_hub_command(fallback);
+        let HubCommand::ValidateStatus(args) = parsed.command else {
+            panic!("agent-free remedy did not parse as validate-status")
+        };
+        assert!(args.current_main);
+        assert!(args.show_unreadable_handles);
+
+        let diagnostic = current_main_status_lines(&sha, 0, false, &[], &unreadable, None, true);
+        assert_eq!(diagnostic.len(), 479);
+        assert_eq!(
+            diagnostic
+                .iter()
+                .filter(|line| line.starts_with("RUN-HANDLE UNAVAILABLE "))
+                .count(),
+            477
+        );
+        assert!(diagnostic.iter().any(|line| line.contains("broken-0.json")));
+        assert!(diagnostic
+            .iter()
+            .any(|line| line.contains("broken-476.json")));
+    }
+
+    #[test]
+    fn current_main_text_keeps_yes_no_unknown_and_renders_actionable_remedies() {
+        let sha = "c".repeat(40);
+        let attempt = ValidateRunAttempt {
+            unit: "validate-current.service".into(),
+            state: "launching".into(),
+            sha: sha.clone(),
+            agent: Some("recorded-agent".into()),
+            started_at: "2026-09-11T17:00:00Z".into(),
+            slot: Some("validate-current".into()),
+            log_file: Some("/state/ignored/validate/current.log".into()),
+            process_verified: false,
+            admission: None,
+            finished_at: None,
+            result: None,
+            detail: None,
+            exit_code: None,
+        };
+
+        let yes = current_main_status_lines(&sha, 1, true, &[], &[], None, false);
+        assert_eq!(
+            yes,
+            vec![format!(
+                "CURRENT-MAIN {sha} VALIDATE-IN-PROGRESS=yes COUNT=1"
+            )]
+        );
+        let no = current_main_status_lines(&sha, 0, true, &[], &[], None, false);
+        assert_eq!(
+            no,
+            vec![format!(
+                "CURRENT-MAIN {sha} VALIDATE-IN-PROGRESS=no COUNT=0"
+            )]
+        );
+
+        let unknown = current_main_status_lines(
+            &sha,
+            0,
+            false,
+            std::slice::from_ref(&attempt),
+            &[],
+            Some("codex-status"),
+            false,
+        );
+        assert_eq!(
+            unknown[0],
+            format!("CURRENT-MAIN {sha} VALIDATE-IN-PROGRESS=unknown")
+        );
+        assert!(unknown[1].contains("agent=recorded-agent"));
+        let command = command_from_next_line(unknown.last().unwrap());
+        assert!(command.contains("--agent codex-status"));
+        let parsed = parse_printed_ci_hub_command(command);
+        assert!(matches!(parsed.command, HubCommand::ValidateLock(_)));
+
+        let unverified_without_agent = current_main_status_lines(
+            &sha,
+            0,
+            false,
+            std::slice::from_ref(&attempt),
+            &[],
+            Some("not a shell-safe agent"),
+            false,
+        );
+        assert_eq!(unverified_without_agent.len(), 3);
+        let fallback = command_from_next_line(unverified_without_agent.last().unwrap());
+        assert_eq!(fallback, current_main_lock_status_command());
+        let parsed = parse_printed_ci_hub_command(fallback);
+        let HubCommand::ValidateLock(args) = parsed.command else {
+            panic!("unverified-handle remedy did not parse as validate-lock")
+        };
+        assert!(matches!(
+            args.command,
+            validate_lock::ValidateLockCommand::Status
+        ));
+
+        let unreadable = validate_run_handle::UnreadableRecord {
+            path: PathBuf::from("/state/ignored/validate/runs/broken.json"),
+            error: "fixture parse error".into(),
+        };
+        let both =
+            current_main_status_lines(&sha, 0, false, &[attempt], &[unreadable], None, false);
+        let commands = both
+            .iter()
+            .filter(|line| line.starts_with("NEXT run `"))
+            .map(|line| command_from_next_line(line))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            commands,
+            [
+                current_main_diagnostic_command(),
+                current_main_lock_status_command()
+            ]
+        );
+        let first = parse_printed_ci_hub_command(commands[0]);
+        assert!(matches!(first.command, HubCommand::ValidateStatus(_)));
+        let second = parse_printed_ci_hub_command(commands[1]);
+        let HubCommand::ValidateLock(args) = second.command else {
+            panic!("second combined remedy did not parse as validate-lock")
+        };
+        assert!(matches!(
+            args.command,
+            validate_lock::ValidateLockCommand::Status
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn printed_current_main_remedy_entrypoint_exists_and_is_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let entrypoint = Path::new(file!())
+            .parent()
+            .expect("ci-hub.rs has a parent directory")
+            .join("ci-hub");
+        let metadata = std::fs::metadata(entrypoint)
+            .expect("printed remedy must not fail with command-not-found (127)");
+        assert_ne!(
+            metadata.permissions().mode() & 0o111,
+            0,
+            "printed remedy must not fail as unexecutable (126)"
+        );
+    }
+
     #[test]
     fn python_allocator_warning_filter_removes_only_the_exact_line() {
         let input = b"before\n<jemalloc>: Invalid conf pair: experimental_infallible_new:true\nafter\n<jemalloc>: another warning\n";
@@ -14924,6 +15217,30 @@ mod tests {
             panic!("wrong command variant")
         };
         assert!(args.current_main);
+        assert!(!args.show_unreadable_handles);
+        let cli = Cli::try_parse_from([
+            "ci-hub",
+            "validate-status",
+            "--current-main",
+            "--show-unreadable-handles",
+        ])
+        .unwrap();
+        let HubCommand::ValidateStatus(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        assert!(args.show_unreadable_handles);
+        assert!(
+            Cli::try_parse_from(["ci-hub", "validate-status", "--show-unreadable-handles"])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from([
+            "ci-hub",
+            "validate-status",
+            "--current-main",
+            "--show-unreadable-handles",
+            "--json"
+        ])
+        .is_err());
         assert!(Cli::try_parse_from([
             "ci-hub",
             "validate-status",
@@ -14936,6 +15253,7 @@ mod tests {
             let error = Cli::try_parse_from(["ci-hub", "validate-status", help]).unwrap_err();
             assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
             assert!(error.to_string().contains("--current-main"));
+            assert!(error.to_string().contains("--show-unreadable-handles"));
         }
 
         for (value, expected) in [

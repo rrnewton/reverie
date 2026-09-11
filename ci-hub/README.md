@@ -165,8 +165,17 @@ run records twice before it says no current-main validation is in progress. A
 `preparing`, `launching`, or `running` handle without a process/cgroup identity
 that can still be verified is reported with its exact state and
 `process_verified=false`; the current-main answer is `unknown`, never `yes` or
-`no`. Inspect that handle and `validate-lock admission-status` for the exact SHA,
-then repair or finish the handle before retrying. The periodic integration-tip
+`no`. Unreadable run records also keep the answer `unknown`. The default output
+reports their count without printing every path and parse error; use
+`validate-status --current-main --show-unreadable-handles` for those individual
+details. When `DG_AGENT_NAME` is a valid agent identity, the unknown result also
+prints a complete read-only `validate-lock admission-status` command for an
+unverified handle. Without that identity, it prints the agent-free
+`validate-lock status` command and keeps the handle's state, unit, head, slot,
+log, and start time in the report. When unreadable records and an unverified
+handle both prevent a yes/no answer, the output gives both applicable commands.
+
+The periodic integration-tip
 check uses the same two run-record reads with the exact-target validate-lock
 observation between them. It suppresses a duplicate while an unverified handle
 remains, and reports `in-progress` only for a verified process or an exact target
