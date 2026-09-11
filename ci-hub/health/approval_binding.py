@@ -108,6 +108,19 @@ UNDETERMINED = "UNDETERMINED"
 REFUSED = "REFUSED"
 REFUSED_STALE = "REFUSED_STALE"
 
+LANDING_NO_RESULT_PREFIX = "landing observability could not be determined: "
+LANDING_NO_RESULT_FIELDS = {
+    "repository_mismatch": frozenset({"origin", "repo"}),
+    "git_log_timeout": frozenset({"since"}),
+    "git_log_failed": frozenset({"since", "diagnostic"}),
+    "pr_association_failed": frozenset({"commit", "error"}),
+    "empty_window": frozenset(),
+}
+LANDING_EMPTY_WINDOW_EXPLANATION = (
+    "landing observability refuses an empty window: zero commits measured is not "
+    "zero unobserved landings, it is no measurement"
+)
+
 
 def review_lane_policy(
     rows: "Sequence[dict[str, Any]]", critical_required: bool
@@ -3301,13 +3314,12 @@ def report_landing_observability(
     remote = bounded_capture.git(["remote", "get-url", "origin"], cwd=checkout)
     origin = remote.stdout.strip()
     if remote.returncode != 0 or repo.lower() not in origin.lower():
-        print(
-            f"NO RESULT: refusing to mix repositories: the checkout's origin is "
-            f"{origin or '<unreadable>'} but --repo is {repo}; run this from a "
-            f"checkout of {repo}",
-            file=sys.stderr,
+        return emit_landing_observability_no_result(
+            "repository_mismatch",
+            as_json,
+            origin=origin or "<unreadable>",
+            repo=repo,
         )
-        return 1
     try:
         log = subprocess.run(
             ["git", "-C", checkout, "log", f"--since={since}", "--format=%H",
@@ -3315,24 +3327,176 @@ def report_landing_observability(
             capture_output=True, text=True, timeout=120,
         )
     except subprocess.TimeoutExpired:
-        print("NO RESULT: git log timed out", file=sys.stderr)
-        return 1
+        return emit_landing_observability_no_result(
+            "git_log_timeout",
+            as_json,
+            since=since,
+        )
     if log.returncode != 0:
-        print(f"NO RESULT: git log failed: {log.stderr.strip()[:200]}", file=sys.stderr)
-        return 1
+        return emit_landing_observability_no_result(
+            "git_log_failed",
+            as_json,
+            since=since,
+            diagnostic=log.stderr.strip()[:200]
+            or f"git exited {log.returncode} without an error message",
+        )
     shas = [line.strip() for line in log.stdout.splitlines() if line.strip()]
     landings = []
-    for sha in shas:
-        prs = gh_json(["api", f"repos/{repo}/commits/{sha}/pulls", "--jq",
-                       "[.[] | {number: .number}]"]) or []
-        landings.append({"sha": sha, "prs": prs})
+    try:
+        for sha in shas:
+            prs = gh_json(["api", f"repos/{repo}/commits/{sha}/pulls", "--jq",
+                           "[.[] | {number: .number}]"]) or []
+            landings.append({"sha": sha, "prs": prs})
+    except GitHubUnavailable as error:
+        return emit_landing_observability_no_result(
+            "pr_association_failed",
+            as_json,
+            commit=sha,
+            error=str(error).strip() or "GitHub API failure had no error message",
+        )
     try:
         report = landing_observability(landings)
-    except EmptyLandingWindow as error:
-        print(f"NO RESULT: {error}", file=sys.stderr)
-        return 1
+    except EmptyLandingWindow:
+        return emit_landing_observability_no_result("empty_window", as_json)
     emit_landing_observability(report, as_json)
     return 0
+
+
+def landing_observability_no_result(
+    reason: str,
+    *,
+    origin: str | None = None,
+    repo: str | None = None,
+    since: str | None = None,
+    diagnostic: str | None = None,
+    commit: str | None = None,
+    error: str | None = None,
+) -> dict[str, str]:
+    """Build a no-result report from only the fields its reason requires."""
+    required = LANDING_NO_RESULT_FIELDS.get(reason)
+    if required is None:
+        raise ValueError(f"unknown landing observability reason: {reason!r}")
+    supplied = {
+        "origin": origin,
+        "repo": repo,
+        "since": since,
+        "diagnostic": diagnostic,
+        "commit": commit,
+        "error": error,
+    }
+    present = frozenset(name for name, value in supplied.items() if value is not None)
+    if present != required:
+        raise ValueError(
+            f"landing observability reason {reason!r} requires fields "
+            f"{sorted(required)}, got {sorted(present)}"
+        )
+    fields: dict[str, str] = {}
+    for name in sorted(required):
+        value = supplied[name]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"landing observability reason {reason!r} requires nonempty {name}"
+            )
+        fields[name] = (
+            " ".join(value.split()).replace("{", "(").replace("}", ")")
+        )
+    if reason == "repository_mismatch":
+        message = (
+            f"refusing to mix repositories: checkout origin={fields['origin']}; "
+            f"requested repository={fields['repo']}"
+        )
+    elif reason == "git_log_timeout":
+        message = f"git log timed out for window={fields['since']}"
+    elif reason == "git_log_failed":
+        message = (
+            f"git log failed for window={fields['since']}: {fields['diagnostic']}"
+        )
+    elif reason == "pr_association_failed":
+        if not re.fullmatch(r"[0-9a-fA-F]{40}", fields["commit"]):
+            raise ValueError(
+                "landing observability pr_association_failed requires an exact commit SHA"
+            )
+        message = (
+            f"pull request association for commit {fields['commit']} could not be "
+            f"collected: {fields['error']}"
+        )
+    else:
+        message = LANDING_EMPTY_WINDOW_EXPLANATION
+    report = {"state": "NO_RESULT", "reason": reason, **fields}
+    report["summary"] = f"{LANDING_NO_RESULT_PREFIX}{message}"
+    return report
+
+
+def emit_landing_observability_no_result(
+    reason: str,
+    as_json: bool,
+    *,
+    origin: str | None = None,
+    repo: str | None = None,
+    since: str | None = None,
+    diagnostic: str | None = None,
+    commit: str | None = None,
+    error: str | None = None,
+) -> int:
+    """Emit a renderable, typed refusal without making absence look healthy."""
+    report = landing_observability_no_result(
+        reason,
+        origin=origin,
+        repo=repo,
+        since=since,
+        diagnostic=diagnostic,
+        commit=commit,
+        error=error,
+    )
+    emit_landing_observability(report, as_json)
+    print(
+        f"NO RESULT: {report['summary'].removeprefix(LANDING_NO_RESULT_PREFIX)}",
+        file=sys.stderr,
+    )
+    return 75
+
+
+def _require_landing_observability_summary(report: dict[str, Any]) -> None:
+    """Refuse a tick-facing report that cannot fill its summary placeholder."""
+    summary = report.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        raise ValueError(
+            "landing observability report requires a nonempty summary"
+        )
+    if re.search(r"\{[A-Za-z_][A-Za-z0-9_.-]*\}", summary):
+        raise ValueError("landing observability summary contains a placeholder")
+    if report.get("state") == "NO_RESULT":
+        reason = report.get("reason")
+        if not isinstance(reason, str):
+            raise ValueError("landing observability NO_RESULT requires a reason")
+        constructor_fields = {
+            name: report[name]
+            for name in frozenset().union(*LANDING_NO_RESULT_FIELDS.values())
+            if name in report
+        }
+        expected = landing_observability_no_result(reason, **constructor_fields)
+        if report != expected:
+            raise ValueError(
+                "landing observability report does not match its structured fields"
+            )
+        return
+    total = report.get("window_commits")
+    via_pr = report.get("landed_via_pr")
+    without_pr = report.get("landed_without_pr")
+    if (
+        not all(
+            isinstance(value, int) and not isinstance(value, bool)
+            for value in (total, via_pr, without_pr)
+        )
+        or total <= 0
+        or via_pr + without_pr != total
+        or not summary.startswith(
+            f"{without_pr} of {total} commits landed without a pull request"
+        )
+    ):
+        raise ValueError(
+            "landing observability summary must name its measured landing counts"
+        )
 
 
 def emit_landing_observability(report: dict[str, Any], as_json: bool) -> None:
@@ -3342,6 +3506,8 @@ def emit_landing_observability(report: dict[str, Any], as_json: bool) -> None:
     leaves the configured ``{summary}`` unresolved even though the report
     contains a real summary, so every non-JSON field is emitted explicitly.
     """
+    if not as_json:
+        _require_landing_observability_summary(report)
     if as_json:
         print(json.dumps(report))
     else:
