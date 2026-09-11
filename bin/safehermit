@@ -200,7 +200,7 @@ fi
 if [ -z "$log_dir" ]; then
     log_dir="$LOG_ROOT/$run_id"
     mkdir -p "$log_dir" || die "cannot create log dir $log_dir"
-    [ -n "$disk_state" ] || disk_state="NOT_APPLIED:scripts/bounded-run-space not present (branch runner-bounded-run-space_20260819 is unlanded)"
+    [ -n "$disk_state" ] || disk_state="NOT_APPLIED:scripts/bounded-run-space not present; retained log directory is not capped"
 fi
 log_file="$log_dir/hermit.log"
 
