@@ -34,18 +34,22 @@ serializes the Linux ABI register frame, exits KVM, then returns with
 `SYSRETQ`.
 
 Architectural exceptions (vectors 0 through 31) enter a ring-0 handler on the
-TSS exception stack and exit KVM as `Error::GuestException`, which reports the
-vector, saved guest instruction pointer, and `CR2`. The backend reports faults
-to its caller; it does not yet translate them into Linux signals.
+TSS exception stack. The static-ELF direct and Tool loops translate one bounded
+class into Linux signal delivery: actual user-mode nonpresent read, write or
+instruction-fetch faults in virtual page zero produce `SIGSEGV` with
+`SEGV_MAPERR` and the captured fault address. Other exception classes remain
+`Error::GuestException`, reporting the vector, saved guest instruction pointer
+and `CR2`; this is not general synchronous-fault delivery.
 
 `run_static_elf` supplies a deliberately small Linux personality. It handles process exit, host-backed filesystem descriptors, stdout/stderr writes, deterministic identity, time and random queries, FS/GS bases, `brk`, anonymous and file-backed `mmap`, and common startup no-ops. Unsupported syscalls return `ENOSYS`.
 
 The host-backed filesystem layer includes descriptor duplication, file and
 filesystem metadata, permission and timestamp updates, and bounded
 create/link/rename/unlink operations. A virtual umask is applied to creation
-modes before they are forwarded to the host. The executor also persists signal
-actions, masks, and alternate-stack configuration even though asynchronous
-signal delivery remains outside the current process model. `mincore`, `getcpu`,
+modes before they are forwarded to the host. The executor retains signal
+actions, masks, pending state and alternate-stack configuration and delivers
+supported events at explicit execution boundaries, as described below.
+`mincore`, `getcpu`,
 `sched_getaffinity`, and `membarrier` report the deterministic single-vCPU
 topology.
 
@@ -54,12 +58,61 @@ The process personality implements `fork`, `vfork`, process-only `clone`/`clone3
 RAM snapshot and fresh VM/vCPU, inherit duplicated host file descriptions, and
 run to completion before the parent resumes. Legacy process clones support
 `CLONE_PARENT_SETTID`, `CLONE_CHILD_SETTID`, and `CLONE_CHILD_CLEARTID`. A
-bounded glibc pthread clone profile can run child threads that complete without
-parent or sibling progress: each child runs to completion on the shared vCPU
-before its parent resumes. Forked processes receive independent process/thread
+bounded glibc pthread clone profile creates child vCPUs over shared guest RAM;
+thread dispatch follows the configured Tool or host ownership. This is not a
+general concurrent process scheduler. Forked processes receive independent process/thread
 tool state, run subscribed syscall and lifecycle callbacks, and contribute to
-the root tool's shared `GlobalState`. `CLONE_THREAD` workers still execute
-through the KVM personality without per-thread tool lifecycle callbacks.
+the root tool's shared `GlobalState`. Tool-owned workers run the corresponding
+Tool lifecycle callbacks; opting into unmonitored threads does not provide that
+instrumentation.
+
+## Bounded signal delivery
+
+Standard-signal state includes shared process and per-thread pending sets,
+coalescing, installed actions and blocked masks. Self-targeted `kill`, `tkill`
+and `tgkill` use guest identities, not supervisor signal delivery. Supported
+events are selected for a concrete guest task at syscall/Tool boundaries;
+the backend does not use host scheduling to choose among live sibling threads.
+Ambiguous process-directed delivery with live siblings, foreign-process
+delivery and multi-process fanout remain unsupported. Signal-zero identity
+probes do not imply delivery support. Realtime-signal queues and general timer
+production are not implemented. `rt_sigtimedwait` can consume an already pending
+virtual event; it does not implement a timed blocking wait.
+
+Tool-driven execution exposes structured signal events through
+`Tool::handle_structured_signal_event`; accepted selected events can be deferred
+through `Guest::defer_signal_delivery`. Public deferral validates signal, target
+and provenance. It does not admit arbitrary positive-code hardware faults:
+page-zero fault delivery depends on the actual captured exception context.
+These interfaces do not establish Hermit/Detcore determinism, record/replay or
+paired-backend parity, and they do not create a scheduler or host-time producer.
+
+Handler entry supports the bounded x86-64 signal frame, alternate stacks
+including `SS_AUTODISARM`, and `rt_sigreturn` restoration of registers, masks,
+stack state and the supported XSAVE image. The KVM signal codec uses **832 bytes
+of XSAVE state** (512 legacy, 64 header, 256 YMM) and **836 bytes including the
+trailing `FP_XSTATE_MAGIC2` in the signal frame**. These are not the total signal
+frame size. Header, payload and malformed-frame checks are unchanged; this is
+not full native-frame byte equality or support for arbitrary extended CPU state.
+
+The captured page-zero context retains interrupted registers, stack/flags,
+selectors, trap/error and `CR2`; KVM selectors are not claimed byte-identical to
+native selectors. Supported handlers can inspect and modify that context and
+resume through `rt_sigreturn`; default, blocked and ignored page-zero fault
+dispositions follow the bounded forced-signal path. Page-zero faults are not a
+general mechanism for `HLT`, `UD2`, protection faults or other CPU exceptions.
+The full restorer word is retained without a premature address bound: a
+nonreturning handler may use a null or high restorer. Returning to null can use
+the page-zero fault path, but unsupported high-return CPU fault classes remain
+unsupported rather than being relabelled as successful Linux signal delivery.
+
+Virtual `signalfd` consumes supported pending events and models record-stream
+reads, descriptor aliases and readiness. Creation requires `SFD_NONBLOCK`;
+the model is limited to a single-thread process and refuses unsupported
+sibling/fork lifetimes while a signalfd is open. `preadv`/`preadv2` support here
+is restricted to that virtual stream and its offset/flag rules; ordinary
+descriptor vector positional reads are not thereby implemented. This does not
+forward host signal state or claim general descriptor-transfer lifetime parity.
 
 ## Task names and prctl state
 
@@ -141,14 +194,18 @@ and completing sibling teardown for worker exec are not implemented. Linux
 supports that replacement; this remains a ptrace-versus-KVM capability gap,
 not successful worker-exec parity.
 
-This crate is not a complete Linux execution backend. Each process has one vCPU
-and fixed-address identity mappings; pthread clones run cooperatively rather than
-concurrently, so programs that require parent/child or sibling interleaving can
-stall. Asynchronous signal delivery, concurrent process scheduling, and hardware
-page-permission enforcement remain unsupported. Host-side
-guest-memory copies track mapped and `PROT_NONE` pages so intercepted syscalls can
-preserve Linux fault and partial-copy behavior; the identity-mapped vCPU page
-tables remain permissive for direct guest loads and stores. Filesystem access forwards into the host namespace with bounded
+This crate is not a complete Linux execution backend. It uses fixed-address
+identity mappings and bounded thread/process execution paths; programs requiring
+unsupported parent/child or sibling scheduling interleavings can stall. The
+signal subset above does not provide arbitrary asynchronous producers, general
+fault delivery, complete concurrent process scheduling or general hardware
+page-permission enforcement. Explicit user-copy paths consult software mapping,
+read/write and `PROT_NONE` metadata; privileged Tool/loader access is separate,
+and not every existing copy path enforces all Linux permission/fault semantics.
+The identity-mapped vCPU page tables remain permissive for direct guest accesses
+except virtual page zero, whose 4-KiB leaf is nonpresent. That exception does not
+enforce ELF/mprotect permissions on other pages or restrict privileged raw host
+access to guest backing. Filesystem access forwards into the host namespace with bounded
 memory copies and a guest-owned descriptor table; it does not isolate or
 snapshot host filesystem changes. The current hypercall transport also reuses
 standardized KVM hypercall 12 because it is the only hypercall KVM exposes to
