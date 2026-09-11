@@ -683,7 +683,11 @@ impl KvmBackend {
         self.install_static_elf_with_context(image, argv, envp, &cwd)
     }
 
-    /// Loads an ELF with explicit arguments, environment, and working directory.
+    /// Loads independently supplied ELF bytes, arguments, environment, and working directory.
+    ///
+    /// This entry does not establish a backing file from `argv[0]`. Executable
+    /// following-stat and retained self-exec require a known backing file and
+    /// return ENOENT without one. The legacy nominal executable readlink remains.
     pub fn install_static_elf_with_context(
         &mut self,
         image: &[u8],
@@ -705,6 +709,52 @@ impl KvmBackend {
         )?;
         self.memory.enable_user_access();
         self.static_elf = Some(loaded);
+        Ok(())
+    }
+
+    /// Loads image bytes from the supplied open file and retains that same object.
+    ///
+    /// Positional reads start at zero without changing the file's shared offset.
+    /// `argv[0]` remains independent of the file identity. The retained object's
+    /// path supplies the initial executable name; later exec uses its invoked name.
+    /// This does not add initial execution authorization or snapshot concurrent
+    /// host file writes. The caller must provide a stable, readable executable.
+    pub fn install_static_elf_file_with_context(
+        &mut self,
+        file: File,
+        argv: &[&str],
+        envp: &[&str],
+        cwd: &Path,
+    ) -> Result<()> {
+        use std::os::unix::fs::FileExt;
+
+        let mut image = Vec::new();
+        let mut buffer = [0; 64 * 1024];
+        loop {
+            let count = match file.read_at(&mut buffer, image.len() as u64) {
+                Ok(count) => count,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if count == 0 {
+                break;
+            }
+            image.extend_from_slice(&buffer[..count]);
+        }
+        let executable_path = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
+        self.install_static_elf_with_context(&image, argv, envp, cwd)?;
+        let loaded = self
+            .static_elf
+            .as_mut()
+            .ok_or(Error::StaticElfNotInstalled)?;
+        let thread_name = initial_thread_name(&executable_path);
+        loaded.executable_path = executable_path;
+        loaded.executable_file = Some(Arc::new(file));
+        loaded.thread_name = thread_name;
+        *loaded
+            .thread_group_leader_name
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = thread_name;
         Ok(())
     }
 
