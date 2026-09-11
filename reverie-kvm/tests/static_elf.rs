@@ -4185,6 +4185,258 @@ fn put_u64(image: &mut [u8], offset: usize, value: u64) {
     image[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
+#[test]
+fn native_and_kvm_prctl_names_keep_worker_local_and_format_procfs_leader_bytes() {
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "pthread-prctl-name",
+        r#"
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <string.h>
+#include <sys/prctl.h>
+#include <unistd.h>
+
+static const unsigned char leader_name[5] = {0xff, '\n', '\\', 'L', 0};
+static const unsigned char stat_name[6] = {'(', 0xff, '\n', '\\', 'L', ')'};
+static const unsigned char status_name[13] = {
+    'N', 'a', 'm', 'e', ':', '\t', 0xff, '\\', 'n', '\\', '\\', 'L', '\n'
+};
+
+static const unsigned char *find_bytes(const unsigned char *haystack, size_t haystack_len,
+                                       const unsigned char *needle, size_t needle_len) {
+  if (needle_len > haystack_len) return 0;
+  for (size_t i = 0; i <= haystack_len - needle_len; ++i) {
+    if (memcmp(haystack + i, needle, needle_len) == 0) return haystack + i;
+  }
+  return 0;
+}
+
+static int read_proc(const char *path, unsigned char *buffer, size_t capacity) {
+  int fd = open(path, O_RDONLY);
+  if (fd < 0) return -1;
+  ssize_t count = read(fd, buffer, capacity);
+  close(fd);
+  return count < 0 ? -1 : (int)count;
+}
+
+static void *worker(void *unused) {
+  (void)unused;
+  unsigned char worker_name[16] = "worker";
+  unsigned char observed[16] = {0};
+  unsigned char buffer[1024];
+  if (prctl(PR_SET_NAME, worker_name) != 0) return (void *)(uintptr_t)1;
+  if (prctl(PR_GET_NAME, observed) != 0) return (void *)(uintptr_t)2;
+  if (memcmp(observed, worker_name, sizeof(observed)) != 0)
+    return (void *)(uintptr_t)3;
+  if (write(1, observed, sizeof(observed)) != sizeof(observed))
+    return (void *)(uintptr_t)4;
+
+  int count = read_proc("/proc/self/stat", buffer, sizeof(buffer));
+  const unsigned char *found = count < 0 ? 0 : find_bytes(
+      buffer, (size_t)count, stat_name, sizeof(stat_name));
+  if (!found) return (void *)(uintptr_t)5;
+  if (write(1, found, sizeof(stat_name)) != sizeof(stat_name))
+    return (void *)(uintptr_t)6;
+
+  count = read_proc("/proc/self/status", buffer, sizeof(buffer));
+  found = count < 0 ? 0 : find_bytes(
+      buffer, (size_t)count, status_name, sizeof(status_name));
+  if (!found) return (void *)(uintptr_t)7;
+  if (write(1, found, sizeof(status_name)) != sizeof(status_name))
+    return (void *)(uintptr_t)8;
+  return 0;
+}
+
+int main(void) {
+  if (prctl(PR_SET_NAME, leader_name) != 0) return 10;
+  pthread_t thread;
+  if (pthread_create(&thread, 0, worker, 0) != 0) return 11;
+  void *result = 0;
+  if (pthread_join(thread, &result) != 0) return 12;
+  if (result != 0) return 20 + (int)(uintptr_t)result;
+
+  unsigned char observed[16] = {0};
+  if (prctl(PR_GET_NAME, observed) != 0) return 13;
+  if (memcmp(observed, leader_name, sizeof(leader_name)) != 0) return 14;
+  if (write(1, observed, sizeof(observed)) != sizeof(observed)) return 15;
+  return 0;
+}
+"#,
+    );
+    let mut expected = b"worker".to_vec();
+    expected.resize(16, 0);
+    expected.extend_from_slice(&[b'(', 0xff, b'\n', b'\\', b'L', b')']);
+    expected.extend_from_slice(b"Name:\t\xff\\n\\\\L\n");
+    expected.extend_from_slice(&[0xff, b'\n', b'\\', b'L']);
+    expected.resize(51, 0);
+
+    let native = std::process::Command::new(&executable)
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "native task-name fixture failed: {native:?}"
+    );
+    assert_eq!(native.stdout, expected, "native Linux format changed");
+    assert!(native.stderr.is_empty());
+
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM thread-name test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let executable = executable.to_str().unwrap();
+    let (kvm_stdout, kvm_stderr) =
+        run_host_program_captured(executable, &[executable], &directory.0);
+    assert_eq!(kvm_stdout, native.stdout, "KVM must match native Linux");
+    assert!(kvm_stderr.is_empty());
+}
+
+#[test]
+fn kvm_direct_and_tool_match_prctl_identity_cell() {
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "prctl-identity",
+        r#"
+#include <stdio.h>
+#include <string.h>
+#include <sys/prctl.h>
+
+int main(void) {
+  const char *wanted = "hermit-probe";
+  char name[16] = {0};
+  int pdeath = -1;
+
+  if (prctl(PR_SET_NAME, wanted, 0, 0, 0) != 0 ||
+      prctl(PR_GET_NAME, name, 0, 0, 0) != 0 || strcmp(name, wanted) != 0)
+    return 1;
+  if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0)
+    return 2;
+  int dumpable_after_clear = prctl(PR_GET_DUMPABLE, 0, 0, 0, 0);
+  if (prctl(PR_SET_DUMPABLE, 1, 0, 0, 0) != 0)
+    return 3;
+  int dumpable_after_set = prctl(PR_GET_DUMPABLE, 0, 0, 0, 0);
+  if (prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0) != 0)
+    return 4;
+  int keepcaps_after_set = prctl(PR_GET_KEEPCAPS, 0, 0, 0, 0);
+  if (prctl(PR_SET_KEEPCAPS, 0, 0, 0, 0) != 0)
+    return 5;
+  int keepcaps_after_clear = prctl(PR_GET_KEEPCAPS, 0, 0, 0, 0);
+  if (prctl(PR_GET_PDEATHSIG, &pdeath, 0, 0, 0) != 0)
+    return 6;
+  if (dumpable_after_clear != 0 || dumpable_after_set != 1 ||
+      keepcaps_after_set != 1 || keepcaps_after_clear != 0 || pdeath != 0)
+    return 7;
+
+  printf("prctl-identity name=%s dumpable_after_clear=%d dumpable_after_set=%d "
+         "keepcaps_after_set=%d keepcaps_after_clear=%d pdeathsig_initial=%d\n",
+         name, dumpable_after_clear, dumpable_after_set, keepcaps_after_set,
+         keepcaps_after_clear, pdeath);
+  return 0;
+}
+"#,
+    );
+    let expected = concat!(
+        "prctl-identity name=hermit-probe dumpable_after_clear=0 ",
+        "dumpable_after_set=1 keepcaps_after_set=1 keepcaps_after_clear=0 ",
+        "pdeathsig_initial=0\n",
+    )
+    .as_bytes();
+    let native = std::process::Command::new(&executable)
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert!(native.status.success(), "native fixture failed: {native:?}");
+    assert_eq!(native.stdout, expected);
+    assert!(native.stderr.is_empty());
+
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM prctl identity test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let executable = executable.to_str().unwrap();
+    let (direct_stdout, direct_stderr) =
+        run_host_program_captured(executable, &[executable], &directory.0);
+    assert_eq!(direct_stdout, expected);
+    assert!(direct_stderr.is_empty());
+    let (tool_stdout, tool_stderr) =
+        run_host_program_with_tool_captured(executable, &[executable], &directory.0);
+    assert_eq!(tool_stdout, expected);
+    assert!(tool_stderr.is_empty());
+}
+
+#[test]
+fn kvm_direct_and_tool_match_thp_disable_cell() {
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "thp-disable",
+        r#"
+#include <stdio.h>
+#include <sys/prctl.h>
+
+#ifndef PR_SET_THP_DISABLE
+#define PR_SET_THP_DISABLE 41
+#endif
+#ifndef PR_GET_THP_DISABLE
+#define PR_GET_THP_DISABLE 42
+#endif
+
+int main(void) {
+  int set_on = prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0) == 0;
+  int get_after_set = prctl(PR_GET_THP_DISABLE, 0, 0, 0, 0);
+  int set_off = prctl(PR_SET_THP_DISABLE, 0, 0, 0, 0) == 0;
+  int get_after_clear = prctl(PR_GET_THP_DISABLE, 0, 0, 0, 0);
+  int ok = set_on + (get_after_set == 1) + set_off + (get_after_clear == 0);
+  printf("thp ok=%d set_on=%d get_after_set=%d set_off=%d get_after_clear=%d\n",
+         ok, set_on, get_after_set, set_off, get_after_clear);
+  return ok == 4 ? 0 : 1;
+}
+"#,
+    );
+    let expected = b"thp ok=4 set_on=1 get_after_set=1 set_off=1 get_after_clear=0\n";
+    let native = std::process::Command::new(&executable)
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert!(native.status.success(), "native fixture failed: {native:?}");
+    assert_eq!(native.stdout, expected);
+    assert!(native.stderr.is_empty());
+
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM THP state test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let executable = executable.to_str().unwrap();
+    let (direct_stdout, direct_stderr) =
+        run_host_program_captured(executable, &[executable], &directory.0);
+    assert_eq!(direct_stdout, expected);
+    assert!(direct_stderr.is_empty());
+    let (tool_stdout, tool_stderr) =
+        run_host_program_with_tool_captured(executable, &[executable], &directory.0);
+    assert_eq!(tool_stdout, expected);
+    assert!(tool_stderr.is_empty());
+}
+
 /// A LIVE pthread worker exercises the `pid != tid` path end to end.
 ///
 /// ⚠️ THIS IS THE CASE THE REJECTED IMPLEMENTATION COULD NOT SEE. Every earlier
