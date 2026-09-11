@@ -55,6 +55,339 @@ use reverie_kvm::StraceTool;
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 
 #[test]
+fn file_script_exec_plain() {
+    file_script_exec_control("file_script_exec_plain", "plain");
+}
+
+#[test]
+fn file_script_exec_unlink_interpreter() {
+    file_script_exec_control("file_script_exec_unlink_interpreter", "unlink");
+}
+
+#[test]
+fn file_script_exec_replace_interpreter() {
+    file_script_exec_control("file_script_exec_replace_interpreter", "replace");
+}
+
+#[test]
+fn file_script_exec_script_nonexecutable() {
+    file_script_exec_control("file_script_exec_script_nonexecutable", "script0600");
+}
+
+#[test]
+fn file_script_exec_interpreter_nonexecutable() {
+    file_script_exec_control("file_script_exec_interpreter_nonexecutable", "interp0600");
+}
+
+#[test]
+fn file_script_exec_interpreter_execute_only() {
+    file_script_exec_control("file_script_exec_interpreter_execute_only", "interp0100");
+}
+
+#[test]
+fn file_script_exec_nested_interpreter() {
+    file_script_exec_control("file_script_exec_nested_interpreter", "nested");
+}
+
+#[test]
+fn file_script_exec_bytes_unknown() {
+    file_script_exec_control("file_script_exec_bytes_unknown", "unknown");
+}
+
+#[test]
+fn file_script_exec_arbitrary_argv0() {
+    file_script_exec_control("file_script_exec_arbitrary_argv0", "arbitrary");
+}
+
+fn file_script_exec_control(test: &str, case: &str) {
+    use std::os::unix::fs::MetadataExt;
+
+    if !leader_self_exec_bounded(test) {
+        return;
+    }
+    for native in [true, false] {
+        if native && case == "unknown" {
+            continue;
+        }
+        let directory = TestDirectory::new();
+        let interpreter = compile_c_program(
+            &directory.0,
+            "real-interpreter",
+            SCRIPT_EXEC_CONTROL_PROGRAM,
+        );
+        let replacement =
+            compile_c_program(&directory.0, "replacement", "int main(void) { return 77; }");
+        let script = directory.0.join("invoked-script");
+        let middle = directory.0.join("middle-script");
+        std::fs::write(
+            &middle,
+            format!("#!{} middle argument\n", interpreter.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&middle, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let nested = case == "nested";
+        let target = if nested { &middle } else { &interpreter };
+        std::fs::write(&script, format!("#!{} outer argument\n", target.display())).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let metadata = std::fs::metadata(&interpreter).unwrap();
+        let mut expected_argv = vec![interpreter.to_string_lossy().into_owned()];
+        if nested {
+            expected_argv.extend([
+                "middle argument".to_owned(),
+                middle.to_string_lossy().into_owned(),
+            ]);
+        }
+        expected_argv.extend([
+            "outer argument".to_owned(),
+            script.to_string_lossy().into_owned(),
+            "tail-argument".to_owned(),
+        ]);
+        let mut environment = vec![
+            ("SCRIPT_CASE".to_owned(), case.to_owned()),
+            ("SCRIPT_DEV".to_owned(), metadata.dev().to_string()),
+            ("SCRIPT_INO".to_owned(), metadata.ino().to_string()),
+            (
+                "SCRIPT_PATH".to_owned(),
+                script.to_string_lossy().into_owned(),
+            ),
+            (
+                "INTERPRETER_PATH".to_owned(),
+                interpreter.to_string_lossy().into_owned(),
+            ),
+            (
+                "REPLACEMENT_PATH".to_owned(),
+                replacement.to_string_lossy().into_owned(),
+            ),
+            ("SCRIPT_ARGC".to_owned(), expected_argv.len().to_string()),
+            ("SCRIPT_ENV".to_owned(), "environment-preserved".to_owned()),
+        ];
+        for (index, argument) in expected_argv.into_iter().enumerate() {
+            environment.push((format!("SCRIPT_ARG{index}"), argument));
+        }
+        let expected: &[u8] = if case == "unknown" {
+            b"script bytes unknown backing exact=PASS\n"
+        } else if case == "interp0600" {
+            b"script interpreter EACCES and name unchanged exact=PASS\n"
+        } else {
+            b"script final interpreter identity argv env name selfexec exact=PASS\n"
+        };
+        if native {
+            let start = std::time::Instant::now();
+            let mut command = std::process::Command::new("timeout");
+            command.args(["--kill-after=2s", "10s"]);
+            if case == "arbitrary" {
+                command
+                    .args([
+                        "/bin/bash",
+                        "-c",
+                        "exec -a not-the-script \"$1\" tail-argument",
+                        "--",
+                    ])
+                    .arg(&script);
+            } else {
+                command.arg(&script).arg("tail-argument");
+            }
+            command.envs(environment);
+            eprintln!("native command {case}: {command:?}");
+            let result = command.output().unwrap();
+            eprintln!(
+                "native {case}: status={:?} seconds={} stdout={}",
+                result.status.code(),
+                start.elapsed().as_secs_f64(),
+                String::from_utf8_lossy(&result.stdout)
+            );
+            assert_eq!(result.status.code(), Some(0), "{result:?}");
+            assert_eq!(result.stdout, expected);
+            assert!(result.stderr.is_empty());
+        } else {
+            let envp = environment
+                .into_iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>();
+            let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
+            let argv = [
+                if case == "arbitrary" {
+                    "not-the-script"
+                } else {
+                    script.to_str().unwrap()
+                },
+                "tail-argument",
+            ];
+            let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+            if case == "unknown" {
+                backend
+                    .install_static_elf_with_context(
+                        &std::fs::read(&script).unwrap(),
+                        &argv,
+                        &envp,
+                        &directory.0,
+                    )
+                    .unwrap();
+            } else {
+                backend
+                    .install_static_elf_file_with_context(
+                        std::fs::File::open(&script).unwrap(),
+                        &argv,
+                        &envp,
+                        &directory.0,
+                    )
+                    .unwrap();
+            }
+            let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+            assert_eq!(
+                code,
+                0,
+                "case={case} stdout={} stderr={}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            );
+            assert_eq!(stdout, expected);
+            assert!(stderr.is_empty());
+        }
+    }
+}
+
+const SCRIPT_EXEC_CONTROL_PROGRAM: &str = r###"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/prctl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+extern char **environ;
+static volatile int image_value = 42;
+
+int main(int argc, char **argv) {
+    const char *mode = getenv("SCRIPT_CASE"), *path = getenv("INTERPRETER_PATH");
+    int after = getenv("SCRIPT_AFTER") != NULL, unknown = !strcmp(mode, "unknown");
+    if (argc != atoi(getenv("SCRIPT_ARGC")) || strcmp(getenv("SCRIPT_ENV"), "environment-preserved") || image_value != 42) return 10;
+    for (int index = 0; index < argc; ++index) {
+        char key[64]; snprintf(key, sizeof(key), "SCRIPT_ARG%d", index);
+        if (strcmp(argv[index], getenv(key))) return 11;
+    }
+    unsigned char name[64], expected_name[64], output[4096], expected[4096];
+    memset(name, 0x5a, sizeof(name)); memset(expected_name, 0x5a, sizeof(expected_name));
+    memset(expected_name, 0, 16); memcpy(expected_name, after ? "exe" : "invoked-script", after ? 3 : 14);
+    if (prctl(PR_GET_NAME, name) || (!unknown && memcmp(name, expected_name, sizeof(name)))) return 12;
+    if (!after) {
+        if (!strcmp(mode, "unlink") && unlink(path)) return 13;
+        if (!strcmp(mode, "replace") && rename(getenv("REPLACEMENT_PATH"), path)) return 14;
+        if (!strcmp(mode, "script0600") && chmod(getenv("SCRIPT_PATH"), 0600)) return 15;
+        if (!strcmp(mode, "interp0600") && chmod(path, 0600)) return 16;
+        if (!strcmp(mode, "interp0100") && chmod(path, 0100)) return 17;
+    }
+    memset(output, 0x5a, sizeof(output)); memset(expected, 0x5a, sizeof(expected));
+    errno = 0;
+    int result = stat("/proc/self/exe", (struct stat *)output), error = errno;
+    if (unknown) {
+        if (result != -1 || error != ENOENT || memcmp(output, expected, sizeof(output))) return 18;
+    } else {
+        struct stat metadata; memcpy(&metadata, output, sizeof(metadata));
+        if (result || error || metadata.st_dev != strtoull(getenv("SCRIPT_DEV"), NULL, 10) || metadata.st_ino != strtoull(getenv("SCRIPT_INO"), NULL, 10) || memcmp(output + sizeof(metadata), expected + sizeof(metadata), sizeof(output)-sizeof(metadata))) {
+            printf("script identity result=%d errno=%d inode=%llu expected=%s\n", result, error, (unsigned long long)metadata.st_ino, getenv("SCRIPT_INO"));
+            return 19;
+        }
+        char link[4096];
+        int length = snprintf(link, sizeof(link), "%s%s", path, !strcmp(mode, "unlink") || !strcmp(mode, "replace") ? " (deleted)" : "");
+        if (length < 0 || length >= 4096) return 20;
+        memcpy(expected, link, length); memset(output, 0x5a, sizeof(output));
+        if (readlink("/proc/self/exe", (char *)output, sizeof(output)) != length || memcmp(output, expected, sizeof(output))) return 21;
+    }
+    if (after) { puts("script final interpreter identity argv env name selfexec exact=PASS"); return 0; }
+    if (prctl(PR_SET_NAME, "before-self") || setenv("SCRIPT_AFTER", "1", 1)) return 22;
+    image_value = 99;
+    errno = 0; execve("/proc/self/exe", argv, environ); error = errno;
+    if (error != (unknown ? ENOENT : EACCES) || (!unknown && strcmp(mode, "interp0600"))) return 23;
+    memset(name, 0x5a, sizeof(name)); memset(expected_name, 0x5a, sizeof(expected_name));
+    memset(expected_name, 0, 16); memcpy(expected_name, "before-self", 11);
+    if (prctl(PR_GET_NAME, name) || memcmp(name, expected_name, sizeof(name)) || image_value != 99) return 24;
+    puts(unknown ? "script bytes unknown backing exact=PASS" : "script interpreter EACCES and name unchanged exact=PASS");
+    return 0;
+}
+"###;
+
+#[test]
+fn file_script_exec_interpreter_identity() {
+    if !leader_self_exec_bounded("file_script_exec_interpreter_identity") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(&directory.0, "actual-interpreter", SCRIPT_IDENTITY_PROGRAM);
+    let script = directory.0.join("input-script");
+    std::fs::write(&script, format!("#!{}\n", program.display())).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let setting = format!("EXPECTED_EXE={}", program.display());
+    for (kind, input) in [("elf", &program), ("script", &script)] {
+        let start = std::time::Instant::now();
+        let mut command = std::process::Command::new("timeout");
+        command
+            .args(["--kill-after=2s", "10s"])
+            .arg(input)
+            .env("EXPECTED_EXE", &program);
+        eprintln!("native command {kind}: {command:?}");
+        let native = command.output().unwrap();
+        eprintln!(
+            "native {kind}: status={:?} seconds={} stdout={}",
+            native.status.code(),
+            start.elapsed().as_secs_f64(),
+            String::from_utf8_lossy(&native.stdout)
+        );
+        assert_eq!(native.status.code(), Some(0));
+        assert_eq!(
+            native.stdout,
+            b"interpreter_body=1 executable_inode_matches=1 link_full4096_matches=1\n"
+        );
+        assert!(native.stderr.is_empty());
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_file_with_context(
+                std::fs::File::open(input).unwrap(),
+                &[input.to_str().unwrap()],
+                &[&setting],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        eprintln!(
+            "guest {kind}: code={code} stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        assert_eq!(code, 0, "{kind}: identity must match loaded interpreter");
+        assert_eq!(stdout, native.stdout);
+        assert_eq!(stderr, native.stderr);
+    }
+}
+
+const SCRIPT_IDENTITY_PROGRAM: &str = r###"
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+int main(void) {
+    const char *path = getenv("EXPECTED_EXE");
+    if (!path || strlen(path) >= 4096) return 10;
+    struct stat expected_stat, actual_stat;
+    if (stat(path, &expected_stat) || stat("/proc/self/exe", &actual_stat)) return 11;
+    unsigned char actual[4096], expected[4096];
+    memset(actual, 0x5a, sizeof(actual));
+    memset(expected, 0x5a, sizeof(expected));
+    memcpy(expected, path, strlen(path));
+    ssize_t count = readlink("/proc/self/exe", (char *)actual, sizeof(actual));
+    int link_equal = count == (ssize_t)strlen(path) && !memcmp(actual, expected, sizeof(actual));
+    int identity_equal = actual_stat.st_dev == expected_stat.st_dev && actual_stat.st_ino == expected_stat.st_ino;
+    printf("interpreter_body=1 executable_inode_matches=%d link_full4096_matches=%d\n", identity_equal, link_equal);
+    return identity_equal && link_equal ? 0 : 21;
+}
+"###;
+
+#[test]
 fn initial_exec_binding_bytes_different_file() {
     initial_exec_binding_control(
         "initial_exec_binding_bytes_different_file",
