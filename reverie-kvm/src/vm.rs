@@ -2301,10 +2301,7 @@ impl KvmBackend {
         }
 
         let action = executor.signal_action(signal);
-        if action.flags & SA_RESTORER == 0
-            || action.handler == 0
-            || action.handler >= (1_u64 << 47)
-            || action.restorer >= (1_u64 << 47)
+        if action.flags & SA_RESTORER == 0 || action.handler == 0 || action.handler >= (1_u64 << 47)
         {
             executor.force_signal_exit(libc::SIGSEGV);
             return Ok(false);
@@ -4018,7 +4015,65 @@ mod tests {
         }
     }
 
+    fn qualify_waiter_enrollment(host: u64) {
+        let parking = std::sync::atomic::AtomicI32::new(0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            let moved = unsafe {
+                libc::syscall(
+                    libc::SYS_futex,
+                    host,
+                    libc::FUTEX_CMP_REQUEUE,
+                    0,
+                    1_usize,
+                    parking.as_ptr(),
+                    0x5a5a_5a5a_i32,
+                )
+            };
+            assert!(
+                (0..=1).contains(&moved),
+                "futex enrollment returned {moved}: {}",
+                std::io::Error::last_os_error()
+            );
+            if moved == 1 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "waiter did not enroll"
+            );
+            std::thread::yield_now();
+        }
+        let returned = unsafe {
+            libc::syscall(
+                libc::SYS_futex,
+                parking.as_ptr(),
+                libc::FUTEX_CMP_REQUEUE,
+                0,
+                1_usize,
+                host,
+                0,
+            )
+        };
+        assert_eq!(returned, 1, "waiter must be queued at its original word");
+        assert_eq!(parking.load(Ordering::Relaxed), 0);
+    }
+
     fn check_fatal_worker_memory(mode: u8, fail_callback: bool, cancel_before_start: bool) {
+        check_fatal_worker_memory_with_waiter_delay(
+            mode,
+            fail_callback,
+            cancel_before_start,
+            std::time::Duration::ZERO,
+        );
+    }
+
+    fn check_fatal_worker_memory_with_waiter_delay(
+        mode: u8,
+        fail_callback: bool,
+        cancel_before_start: bool,
+        waiter_delay: std::time::Duration,
+    ) {
         let Some((mut parent, mut executor, boundary)) = backend_at_completed_tool_boundary()
         else {
             return;
@@ -4108,6 +4163,7 @@ mod tests {
                     tv_nsec: 0,
                 };
                 ready_sender.send(()).unwrap();
+                std::thread::sleep(waiter_delay);
                 let result = unsafe {
                     libc::syscall(
                         libc::SYS_futex,
@@ -4137,7 +4193,9 @@ mod tests {
             ready_receiver
                 .recv_timeout(std::time::Duration::from_secs(1))
                 .unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            qualify_waiter_enrollment(
+                parent.memory.host_address() + address - parent.memory.guest_base(),
+            );
             Some(waiter)
         } else {
             None
@@ -4180,6 +4238,24 @@ mod tests {
     #[test]
     fn fatal_worker_ro_failed_store_still_wakes() {
         check_fatal_worker_memory(1, false, false);
+    }
+    #[test]
+    fn fatal_worker_ro_delayed_waiter_qualifies() {
+        check_fatal_worker_memory_with_waiter_delay(
+            1,
+            false,
+            false,
+            std::time::Duration::from_millis(150),
+        );
+    }
+    #[test]
+    fn fatal_worker_rw_delayed_waiter_qualifies() {
+        check_fatal_worker_memory_with_waiter_delay(
+            0,
+            false,
+            false,
+            std::time::Duration::from_millis(150),
+        );
     }
     #[test]
     fn fatal_worker_none_preserves_full_memory() {
