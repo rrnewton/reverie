@@ -125,8 +125,6 @@ const AGENT_SNAPSHOT_SCRIPT_NAME = "hermitCacheAgentSnapshot";
 const AGENT_SNAPSHOT_COMMAND =
   'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
   'HERMIT_AGENT_SNAPSHOT_JSON="$1" ' +
-  // Keep the repository entrypoint's interpreter selection. Hard-coding
-  // /usr/bin/python3 can select Python 3.9, which cannot import tomllib.
   "./ci-hub/health/operational_health.py cache-agents " +
   '--snapshot-file "' + SHELL_WORKSPACE_ROOT +
   '/ignored/ci-hub/agent-snapshot.json"';
