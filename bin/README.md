@@ -104,10 +104,13 @@ precisely the case that caused the outage — hence the binary is an argument.
 
 Tests: `bin/safehermit-test.sh`.
 
-## Known gap
+## Disk-bound scope
 
-`scripts/bounded-run-space` is not present on `main` (branch
-`runner-bounded-run-space_20260819` is unlanded), so `safehermit` reports
-`bound.disk=NOT_APPLIED`. `hermit-repeat` applies its own total-artefact cap
-(`--max-total-mb`, default 4096) because under `--verify` hermit's log goes to
-files that `safehermit`'s 64 MiB **stderr** cap never sees.
+`scripts/bounded-run-space` gives `safehermit`'s retained log directory a btrfs
+qgroup limit. The `bound.disk` report names that scope: it does not claim to
+bound guest writes, an explicit Hermit `--log-file` outside that directory, or
+a Hermit process that did not enter through `safehermit`.
+
+`hermit-repeat` therefore keeps its own total-artefact cap (`--max-total-mb`,
+default 4096), because under `--verify` Hermit's log goes to files that
+`safehermit`'s 64 MiB **stderr** cap never sees.

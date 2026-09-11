@@ -188,7 +188,7 @@ if [ -x "$brs" ]; then
     log_dir="$("$brs" create --limit "$disk_limit" --tag "safehermit-$run_id" --base "$LOG_ROOT" 2>/dev/null)"
     rc=$?
     if [ $rc -eq 0 ] && [ -n "$log_dir" ]; then
-        disk_state="APPLIED:$disk_limit"
+        disk_state="APPLIED:$disk_limit for log_dir only; guest paths and explicit log files elsewhere are outside this bound"
     elif [ -n "$log_dir" ]; then
         # exit 10: the space exists but nothing caps it. RELAY IT -- this is the
         # case bounded-run-space exists to make impossible to miss.
