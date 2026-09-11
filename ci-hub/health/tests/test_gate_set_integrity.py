@@ -19,6 +19,7 @@ from pathlib import Path
 import yaml
 
 HERE = Path(__file__).resolve().parent
+LIVE_CONFIG = HERE.parent / "tick-hub.yaml"
 SPEC = importlib.util.spec_from_file_location("gsi", HERE.parent / "gate_set_integrity.py")
 gsi = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gsi)
@@ -119,3 +120,20 @@ def test_every_required_entry_explains_what_goes_unwatched():
     """A bare name tells a reader nothing about what they are switching off."""
     for name, why in gsi.REQUIRED.items():
         assert why and len(why) > 10, f"{name} has no meaningful explanation"
+
+
+def test_orphan_reaper_schedule_is_detection_only_and_bounded():
+    """The scheduled path must report candidates without gaining kill authority."""
+    config = yaml.safe_load(LIVE_CONFIG.read_text())
+    reminder = {row["name"]: row for row in config["reminders"]}[
+        "orphaned_hermit_reaper"
+    ]
+    assert reminder["cadence_secs"] == 900
+    assert reminder["gate"] == {
+        "timeout_secs": 60,
+        "cmd": "python3 scripts/orphaned-hermit-reaper.py --report-orphans",
+        "when": "failure",
+        "capture": True,
+    }
+    assert "--apply" not in reminder["gate"]["cmd"]
+    assert reminder["emit"]["title"].endswith("{summary}")

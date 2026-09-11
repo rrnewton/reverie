@@ -74,6 +74,7 @@ REQUIRED: dict[str, str] = {
     # The one that motivated this file. Absent for 13h after the 2026-08-17
     # out-of-disk incident; nothing watched the filesystem in that window.
     "btrfs_headroom": "filesystem headroom and runaway writers on /data",
+    "orphaned_hermit_reaper": "orphaned Hermit and test processes that no live owner will reap",
     # Per-slot disk residue; one of only two mechanisms found genuinely live
     # during the 2026-08-19 invocation audit.
     "worktree_disk_residue": "slots accumulating on disk with no live process",

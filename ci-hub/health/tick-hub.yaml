@@ -1138,6 +1138,28 @@ reminders:
         component: gate-runner-presence
       title: "gate runner is not confirmably present on all four surfaces: {summary}"
 
+  # ORPHAN REAPER, DETECTION ONLY. The reaper's --apply path requires explicit
+  # PIDs from a prior report and an acknowledgement, so this scheduled path
+  # cannot signal anything. Exit 1 means eligible orphans were found; exit 3
+  # means an explicitly inspected process was unreadable. Both need attention.
+  #
+  # The first line on every path is summary=... for tick-hub's captured-field
+  # parser. Keeping this reminder in gate_set_integrity below means deleting the
+  # schedule produces an alarm rather than silence.
+  - name: orphaned_hermit_reaper
+    cadence_secs: 900
+    gate:
+      timeout_secs: 60
+      cmd: python3 scripts/orphaned-hermit-reaper.py --report-orphans
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: orphaned-hermit-reaper
+      title: "orphaned Hermit/test processes are running unowned: {summary}"
+
   # FILESYSTEM HEADROOM. The 2026-08-17 out-of-disk incident took down ORC and
   # every running agent, and was found by an agent tripping over it -- nothing
   # was watching. This is the thing that watches.
