@@ -222,6 +222,13 @@ the task. `landing=implemented-unlanded`, `landing=n/a`, and
 `landing=superseded` do not add it. This makes the tag a derived index of the
 verified marker rather than a second fact an agent must remember to record.
 
+If a TaskGraph write interrupts that sequence after the closure record is
+stored, rerun the exact same `close-task` command. It re-verifies the evidence
+and gates, reuses only a byte-identical existing record, and retries the missing
+tag or status update without duplicating the record. `--check-only` previews
+that recovery without writing. A raw `tg update --status closed` is not a
+supported recovery path and remains refused by the closure guard.
+
 The gateway closes only a landed code reference, a URL that resolves, a local
 artifact tracked on freshly fetched parent `main`, or a GitHub Actions run ID
 that resolves. Local artifact evidence is recorded as the typed tuple

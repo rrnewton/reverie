@@ -201,6 +201,48 @@ def tags_with_landed(tags: Sequence[str]) -> tuple[str, ...] | None:
     return (*tags, "landed")
 
 
+def count_exact_closure_records(
+    task: str, note: str, *, run: Run = _run
+) -> int | None:
+    """Count byte-identical closure records for ``task``, or fail unreadable.
+
+    ``close_task`` records its note and status through separate TaskGraph
+    commands.  If the note succeeds and the status update is interrupted, the
+    supported recovery is to rerun the same close command.  Matching the whole
+    UTF-8 note makes that retry idempotent without treating a different closure
+    record as authority for this one.
+
+    The content is encoded as hexadecimal before it enters SQL.  Task ids use
+    the same restricted alphabet as ``read_task_tags``, so neither value needs
+    SQL quoting or escaping.
+    """
+    if not _TASK_ID_OK.match(task):
+        return None
+    note_hex = note.encode("utf-8").hex().upper()
+    result = run(
+        (
+            "tg",
+            "sql",
+            "select json_object('exact_note_count', count(*)) "
+            "from task_notes "
+            f"where task_id='{task}' and hex(content)='{note_hex}'",
+        ),
+        cwd=ROOT,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        rows = taskgraph_db.parse_json_rows(result.stdout)
+    except taskgraph_db.TaskGraphUnavailable:
+        return None
+    if len(rows) != 1:
+        return None
+    count = rows[0].get("exact_note_count")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        return None
+    return count
+
+
 def _json_object(output: str) -> dict[str, object] | None:
     try:
         value = json.loads(output)
@@ -784,15 +826,29 @@ def close_task(
         # that ci-hub/directives/tg_landed.py regexes out is unaffected.
         + (f" detail={evidence.reason}" if evidence.reason else "")
     )
+    existing_records = count_exact_closure_records(task, note, run=run)
+    if existing_records is None:
+        print(
+            "UNVERIFIABLE "
+            f"task={task} reason=could-not-check-existing-closure-record; "
+            "the closure note, tags, and task status were not changed",
+            file=sys.stderr,
+        )
+        return UNVERIFIABLE
     # THE DRY RUN STOPS HERE -- after every gate, before the first mutation. Any
     # check added above is in the preview by construction; anything below is a
     # write and is the only thing --check-only skips.
     if dry_run:
         tag_detail = " would-add-tag=landed" if add_landed_tag else ""
+        record_detail = (
+            f"would-reuse={anchor} existing-records={existing_records}"
+            if existing_records
+            else f"would-record={anchor}"
+        )
         print(
             f"VERIFIED task={task} kind={evidence.kind} "
             f"reference={evidence.reference} resolved={evidence.resolved} "
-            f"would-record={anchor}{tag_detail} rc=0"
+            f"{record_detail}{tag_detail} rc=0"
         )
         return CLOSED
     # ⚠️ THE CLOSURE NOTE GOES THROUGH THE VERIFIED WRITER, NOT `tg note`.
@@ -812,29 +868,35 @@ def close_task(
     # it refuses the form. Routing through the verified writer satisfies the
     # guard AND buys the read-back proof, which is strictly better than an
     # exemption would have been.
-    with tempfile.NamedTemporaryFile(
-        "w", suffix=".note", delete=False, encoding="utf-8"
-    ) as handle:
-        handle.write(note)
-        note_path = handle.name
-    try:
-        noted = run(
-            (str(ROOT / "ci-hub" / "bin" / "tg-note-verified"), task, "--file", note_path),
-            cwd=ROOT,
-        )
-    finally:
+    #
+    # An exact record can already exist when a preceding invocation stored and
+    # verified it but lost the separate status write to SQLite contention. In
+    # that state, reuse this record and continue with the missing writes. A
+    # different record never satisfies this check.
+    if existing_records == 0:
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".note", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write(note)
+            note_path = handle.name
         try:
-            os.unlink(note_path)
-        except OSError:
-            pass
-    if noted.returncode != 0:
-        print(
-            "UNVERIFIABLE "
-            f"task={task} reason=failed-to-record-reference detail="
-            f"{(noted.stderr or noted.stdout).strip()}",
-            file=sys.stderr,
-        )
-        return UNVERIFIABLE
+            noted = run(
+                (str(ROOT / "ci-hub" / "bin" / "tg-note-verified"), task, "--file", note_path),
+                cwd=ROOT,
+            )
+        finally:
+            try:
+                os.unlink(note_path)
+            except OSError:
+                pass
+        if noted.returncode != 0:
+            print(
+                "UNVERIFIABLE "
+                f"task={task} reason=failed-to-record-reference detail="
+                f"{(noted.stderr or noted.stdout).strip()}",
+                file=sys.stderr,
+            )
+            return UNVERIFIABLE
     # DERIVED, NOT A SECOND MANUAL FACT. The verified marker is durable before
     # its query index is written. A failed or unconfirmed tag update leaves the
     # task open, so no closed `landing=landed` task can silently omit `landed`.
@@ -870,9 +932,11 @@ def close_task(
             file=sys.stderr,
         )
         return UNVERIFIABLE
+    recovery_detail = " closure-record=reused" if existing_records else ""
     print(
         f"CLOSED task={task} kind={evidence.kind} "
-        f"reference={evidence.reference} resolved={evidence.resolved} rc=0"
+        f"reference={evidence.reference} resolved={evidence.resolved}"
+        f"{recovery_detail} rc=0"
     )
     return CLOSED
 

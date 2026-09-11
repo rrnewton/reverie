@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -152,6 +153,23 @@ def completed(command, rc=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(command, rc, stdout, stderr)
 
 
+def task_sql_result(command, *, tags: str, notes: tuple[str, ...] | list[str] = ()):
+    if "exact_note_count" in command[2]:
+        match = re.search(r"hex\(content\)='([0-9A-F]*)'", command[2])
+        assert match is not None, command[2]
+        expected = bytes.fromhex(match.group(1)).decode("utf-8")
+        count = sum(note == expected for note in notes)
+        return completed(
+            command,
+            stdout=(
+                "json_object('exact_note_count', count(*))\n"
+                "---------------\n"
+                f'{{"exact_note_count":{count}}}\n\n(1 rows)\n'
+            ),
+        )
+    return completed(command, stdout=f"tags\n----\n{tags}\n\n(1 row)\n")
+
+
 class FakeRunner:
     def __init__(
         self,
@@ -161,6 +179,7 @@ class FakeRunner:
         artifact_type="blob",
         artifact_ancestry_rc=0,
         tags="implemented",
+        status_failures=0,
     ):
         try:
             parsed_tags = json.loads(tags)
@@ -173,6 +192,9 @@ class FakeRunner:
         self.artifact_ancestry_rc = artifact_ancestry_rc
         self.task_mutations: list[tuple[str, ...]] = []
         self.commands: list[tuple[str, ...]] = []
+        self.notes: list[str] = []
+        self.status = "IN_PROGRESS"
+        self.status_failures = status_failures
 
     def __call__(self, command, **_kwargs):
         command = tuple(str(item) for item in command)
@@ -233,6 +255,7 @@ class FakeRunner:
         if command[:4] == ("git", "-C", str(verified_close.ROOT), "rev-parse"):
             return completed(command, stdout="c" * 40 + "\n")
         if command[:2] == ("tg", "sql"):
+            result = task_sql_result(command, tags=self.tags, notes=self.notes)
             # A READ, not a mutation. Keeping it out of task_mutations is what
             # lets the "refused paths never touch the task" assertions stay
             # meaningful now that the gateway reads tags before closing.
@@ -244,10 +267,7 @@ class FakeRunner:
             # "Tags:" line that its mission-view output does not contain, so it
             # answered "no tags" for every task alive -- a stub that is too
             # forgiving is exactly how that survived.
-            return completed(
-                command,
-                stdout=f"tags\n----\n{self.tags}\n\n(1 row)\n",
-            )
+            return result
         if command and str(command[0]).endswith("tg-note-verified"):
             # The durable closure note is written through the verified writer, not
             # `tg note`. It IS a mutation of the task's record, so it belongs in
@@ -269,12 +289,28 @@ class FakeRunner:
                 except OSError:
                     content = ""
             self.task_mutations.append(("tg", "note", command[1], content))
+            self.notes.append(content)
             return completed(command)
         if command and command[0] == "tg":
             if command[:2] == ("tg", "update") and "--tags" in command:
                 raw = command[command.index("--tags") + 1]
                 self.tags = json.dumps(raw.split(",") if raw else [])
             self.task_mutations.append(command)
+            if command[:2] == ("tg", "update") and command[-2:] == (
+                "--status",
+                "closed",
+            ):
+                if self.status_failures:
+                    self.status_failures -= 1
+                    return completed(
+                        command,
+                        rc=1,
+                        stderr=(
+                            "SQLite error 517: Cannot promote read transaction to write "
+                            "transaction because of writes by another connection."
+                        ),
+                    )
+                self.status = "CLOSED"
             return completed(command)
         raise AssertionError(f"unexpected command: {command}")
 
@@ -837,17 +873,18 @@ class DispositionClosesWithoutInflatingTheMetric(unittest.TestCase):
 
     def _harness(self, tags: str):
         recorded: list[tuple[str, ...]] = []
+        notes: list[str] = []
 
         def run(command, cwd=None, **kw):
             import subprocess as _sp
             if command[:2] == ("tg", "sql"):
-                return _sp.CompletedProcess(
-                    list(command), 0, f"tags\n----\n{tags}\n\n(1 row)\n", ""
-                )
+                return task_sql_result(command, tags=tags, notes=notes)
             if command and str(command[0]).endswith("tg-note-verified") and "--file" in command:
                 path = list(command)[list(command).index("--file") + 1]
                 with open(path, encoding="utf-8") as handle:
-                    recorded.append(("tg", "note", command[1], handle.read()))
+                    content = handle.read()
+                    notes.append(content)
+                    recorded.append(("tg", "note", command[1], content))
                 return _sp.CompletedProcess(list(command), 0, "", "")
             recorded.append(tuple(command))
             return _sp.CompletedProcess(list(command), 0, "", "")
@@ -961,7 +998,7 @@ class CheckOnlyPredictsTheRealRun(unittest.TestCase):
         def run(command, cwd=None, **kw):
             import subprocess as _sp
             if command[:2] == ("tg", "sql"):
-                return _sp.CompletedProcess(list(command), 0, f"tags\n----\n{tags}\n\n(1 row)\n", "")
+                return task_sql_result(command, tags=tags)
             return _sp.CompletedProcess(list(command), 0, "", "")
         return run
 
@@ -991,7 +1028,7 @@ class CheckOnlyPredictsTheRealRun(unittest.TestCase):
         def run(command, cwd=None, **kw):
             import subprocess as _sp
             if command[:2] == ("tg", "sql"):
-                return _sp.CompletedProcess(list(command), 0, 'tags\n----\n["review"]\n\n(1 row)\n', "")
+                return task_sql_result(command, tags='["review"]')
             seen.append(tuple(command))
             return _sp.CompletedProcess(list(command), 0, "", "")
         verified_close.close_task("t", self._disposition(), run=run, dry_run=True)
@@ -1000,6 +1037,104 @@ class CheckOnlyPredictsTheRealRun(unittest.TestCase):
             [],
             "the preview must not write a note or change status",
         )
+
+
+class InterruptedClosureRetryIsIdempotent(unittest.TestCase):
+    """A retry must finish an interrupted close without duplicating its record."""
+
+    @staticmethod
+    def _evidence_cases():
+        return (
+            verified_close.Evidence(
+                "verified", "code", "a" * 40,
+                resolved="rrnewton/hermit@" + "a" * 40, landing="landed",
+            ),
+            verified_close.Evidence(
+                "verified", "artifact", "ai_docs/result.md",
+                resolved="rrnewton/dev-hermit:ai_docs/result.md@" + "b" * 40,
+            ),
+            verified_close.Evidence(
+                "verified", "run", "123",
+                resolved="https://github.com/rrnewton/hermit/actions/runs/123",
+            ),
+            verified_close.Evidence(
+                "verified", "disposition", "review completed",
+                resolved="no-code-reference", landing="none",
+            ),
+            verified_close.Evidence(
+                "verified", "superseded", "c" * 40,
+                resolved="rrnewton/hermit@" + "c" * 40, landing="superseded",
+            ),
+        )
+
+    def test_retry_after_sqlite_517_closes_with_one_exact_record(self) -> None:
+        for evidence in self._evidence_cases():
+            with self.subTest(kind=evidence.kind):
+                runner = FakeRunner(tags='["review"]', status_failures=1)
+
+                first = verified_close.close_task("t", evidence, run=runner)
+                self.assertEqual(verified_close.UNVERIFIABLE, first)
+                self.assertEqual("IN_PROGRESS", runner.status)
+                self.assertEqual(1, len(runner.notes))
+
+                second = verified_close.close_task("t", evidence, run=runner)
+                self.assertEqual(verified_close.CLOSED, second)
+                self.assertEqual("CLOSED", runner.status)
+                self.assertEqual(1, len(runner.notes))
+                self.assertEqual(
+                    ["review", "landed"] if evidence.landing == "landed" else ["review"],
+                    json.loads(runner.tags),
+                )
+
+    def test_unreadable_record_check_refuses_before_any_write(self) -> None:
+        runner = FakeRunner(tags='["review"]')
+
+        def fail_record_read(command, **kwargs):
+            if command[:2] == ("tg", "sql") and "exact_note_count" in command[2]:
+                return completed(command, rc=1, stderr="database unavailable")
+            return runner(command, **kwargs)
+
+        evidence = self._evidence_cases()[1]
+        self.assertEqual(
+            verified_close.UNVERIFIABLE,
+            verified_close.close_task("t", evidence, run=fail_record_read),
+        )
+        self.assertEqual("IN_PROGRESS", runner.status)
+        self.assertEqual([], runner.task_mutations)
+
+    def test_a_different_closure_record_does_not_authorize_the_status_write(self) -> None:
+        runner = FakeRunner(tags='["review"]')
+        runner.notes.append(
+            "CLOSURE-RECORDED: kind=disposition reference=a different result "
+            "resolved=no-code-reference landing=none verifier=ci-hub/bin/close-task"
+        )
+        evidence = self._evidence_cases()[3]
+
+        self.assertEqual(
+            verified_close.CLOSED,
+            verified_close.close_task("t", evidence, run=runner),
+        )
+        self.assertEqual("CLOSED", runner.status)
+        self.assertEqual(2, len(runner.notes))
+        self.assertNotEqual(runner.notes[0], runner.notes[1])
+        self.assertEqual(1, runner.notes.count(runner.notes[-1]))
+
+    def test_check_only_recognizes_recovery_state_without_writing(self) -> None:
+        runner = FakeRunner(tags='["review"]', status_failures=1)
+        evidence = self._evidence_cases()[3]
+        self.assertEqual(
+            verified_close.UNVERIFIABLE,
+            verified_close.close_task("t", evidence, run=runner),
+        )
+        mutations_after_failure = list(runner.task_mutations)
+
+        self.assertEqual(
+            verified_close.CLOSED,
+            verified_close.close_task("t", evidence, run=runner, dry_run=True),
+        )
+        self.assertEqual(mutations_after_failure, runner.task_mutations)
+        self.assertEqual("IN_PROGRESS", runner.status)
+        self.assertEqual(1, len(runner.notes))
 
 
 class SupersededClosesALandedThenReplacedRow(unittest.TestCase):
@@ -1016,7 +1151,7 @@ class SupersededClosesALandedThenReplacedRow(unittest.TestCase):
         def run(command, cwd=None, **kw):
             import subprocess as _sp
             if command[:2] == ("tg", "sql"):
-                return _sp.CompletedProcess(list(command), 0, f"tags\n----\n{tags}\n\n(1 row)\n", "")
+                return task_sql_result(command, tags=tags)
             return _sp.CompletedProcess(list(command), 0, "", "")
         return run
 
@@ -1030,14 +1165,17 @@ class SupersededClosesALandedThenReplacedRow(unittest.TestCase):
 
     def test_superseded_records_the_replacing_commit_under_CLOSURE_VERIFIED(self) -> None:
         recorded = []
+        notes = []
         def run(command, cwd=None, **kw):
             import subprocess as _sp
             if command[:2] == ("tg", "sql"):
-                return _sp.CompletedProcess(list(command), 0, 'tags\n----\n["landed"]\n\n(1 row)\n', "")
+                return task_sql_result(command, tags='["landed"]', notes=notes)
             if command and str(command[0]).endswith("tg-note-verified") and "--file" in command:
                 path = list(command)[list(command).index("--file") + 1]
                 with open(path, encoding="utf-8") as h:
-                    recorded.append(h.read())
+                    content = h.read()
+                    notes.append(content)
+                    recorded.append(content)
             return _sp.CompletedProcess(list(command), 0, "", "")
         ev = verified_close.Evidence(
             "verified", "superseded", "abc", resolved="r@abc", landing="superseded",

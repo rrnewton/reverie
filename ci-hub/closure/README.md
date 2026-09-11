@@ -63,6 +63,15 @@ list it belongs to.
 a third party**: an agent asking "does this thing prove it landed?" previously
 had only prose to consult, and a rule that must be remembered is one that decays.
 
+`close-task` writes the closure record before it changes task status. If the
+status update is interrupted after the record is stored, rerun the **same
+`close-task` command with the same evidence arguments**. The gateway rechecks
+the evidence and all normal gates, recognizes the byte-identical existing
+record, and retries the missing tag or status write without recording it again.
+Do not recover with a raw `tg update --status closed`; that bypass remains
+refused. `--check-only` reports whether it would record a new closure record or
+reuse the existing one and never writes either the task or its notes.
+
 ## `--artifact`: the authority is `origin/main`, never your checkout
 
 A research-only task closes on a durable artifact rather than a PR. The gateway
