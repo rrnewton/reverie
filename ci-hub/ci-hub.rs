@@ -6529,6 +6529,7 @@ enum GreenDepth {
         matched_by: String,
         run_number: Option<u64>,
         git_depth: Option<i64>,
+        finished_at: String,
         window: usize,
         failed_on_record: usize,
         needs_rerun: usize,
@@ -6567,6 +6568,7 @@ impl GreenDepth {
                 matched_by,
                 run_number,
                 git_depth,
+                finished_at,
                 window,
                 failed_on_record,
                 needs_rerun,
@@ -6595,7 +6597,7 @@ impl GreenDepth {
                 };
                 format!(
                     "HERMIT COMMITS-SINCE-GREEN {depth} (history {history_ref} at {history_tip}; \
-                 last full green {run}, validated {validated_sha} {git_depth}, \
+                 last full green {run}, finished {finished_at}, validated {validated_sha} {git_depth}, \
                  {main_match} at first-parent depth {depth}; \
                  FAILED={failed_on_record} NEEDS-RERUN={needs_rerun} TRUNCATED={truncated} \
                  NO-RESULT={no_result} NOT-VALIDATED={not_validated} \
@@ -6646,6 +6648,7 @@ impl GreenDepth {
                 matched_by,
                 run_number,
                 git_depth,
+                finished_at,
                 window,
                 failed_on_record,
                 needs_rerun,
@@ -6661,6 +6664,7 @@ impl GreenDepth {
                 "green_matched_by": matched_by,
                 "green_run_number": run_number,
                 "green_git_depth": git_depth,
+                "green_finished_at": finished_at,
                 "history_ref": history_ref, "history_tip": history_tip,
                 "searched_commits": window,
                 "commits_failed_on_record": failed_on_record,
@@ -6714,8 +6718,8 @@ impl GreenDepth {
 /// Compute the standard-output green depth. Never returns `Err`: a reader that
 /// dies because a side metric could not be computed is worse than one that says
 /// so, and every failure path lands in `Unavailable` with its reason.
-fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
-    let repo = history_repo_path(root, Path::new("hermit"));
+fn standard_green_depth(tool_root: &Path, state_root: &Path, branch: &str) -> GreenDepth {
+    let repo = history_repo_path(state_root, Path::new("hermit"));
     if !repo.join(".git").exists() {
         return GreenDepth::Unavailable {
             why: format!("no hermit checkout at {}", repo.display()),
@@ -6735,7 +6739,7 @@ fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
         .first()
         .expect("branch_history_with_trees returns a nonempty history")
         .clone();
-    let floor = match query_effective_gate_floor(root, &repo, branch) {
+    let floor = match query_effective_gate_floor(tool_root, &repo, branch) {
         Ok(GateFloorResolution::Effective(floor)) => floor,
         Ok(GateFloorResolution::UnverifiableShallow {
             visible_depth,
@@ -6763,8 +6767,7 @@ fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
             }
         }
     };
-    let ledger = ledger_path(root);
-    let (rows, parse_failures) = match load_ledger_rows_reporting(&ledger) {
+    let (rows, parse_failures) = match load_standard_green_ledger(tool_root, state_root) {
         Ok(parsed) => parsed,
         Err(error) => {
             return GreenDepth::Unavailable {
@@ -6793,24 +6796,32 @@ fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
             &floor.sha,
             &commit_trees,
         ) {
-        NewestGreenOutcome::Found(report) => GreenDepth::Found {
-            history_ref: branch_ref,
-            history_tip,
-            depth: report.commits_after_green,
-            validated_sha: report.green.sha.clone(),
-            main_sha: report.green_branch_sha.clone(),
-            matched_by: report.green_matched_by.clone(),
-            run_number: report.green.run_number,
-            git_depth: report.green.git_depth,
-            window: report.branch_commits_in_range,
-            failed_on_record: report.commits_failed_on_record,
-            needs_rerun: report.commits_needing_rerun,
-            truncated: report.commits_truncated,
-            no_result: report.commits_with_no_result,
-            not_validated: report.commits_not_validated,
-            ledger_unreadable: report.commits_with_unreadable_record,
-            no_record: report.commits_without_any_record,
-        },
+        NewestGreenOutcome::Found(report) => {
+            let finished_at =
+                match green_finished_at(&report.green.sha, report.green.finished_at.as_deref()) {
+                    Ok(finished_at) => finished_at,
+                    Err(why) => return GreenDepth::Unavailable { why },
+                };
+            GreenDepth::Found {
+                history_ref: branch_ref,
+                history_tip,
+                depth: report.commits_after_green,
+                validated_sha: report.green.sha.clone(),
+                main_sha: report.green_branch_sha.clone(),
+                matched_by: report.green_matched_by.clone(),
+                run_number: report.green.run_number,
+                git_depth: report.green.git_depth,
+                finished_at,
+                window: report.branch_commits_in_range,
+                failed_on_record: report.commits_failed_on_record,
+                needs_rerun: report.commits_needing_rerun,
+                truncated: report.commits_truncated,
+                no_result: report.commits_with_no_result,
+                not_validated: report.commits_not_validated,
+                ledger_unreadable: report.commits_with_unreadable_record,
+                no_record: report.commits_without_any_record,
+            }
+        }
         NewestGreenOutcome::FailedOnly {
             commits_in_range,
             recorded,
@@ -6828,6 +6839,29 @@ fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
             recorded,
         },
     }
+}
+
+fn green_finished_at(sha: &str, finished_at: Option<&str>) -> Result<String, String> {
+    let finished_at = finished_at.ok_or_else(|| {
+        format!("last full green {sha} has no finished_at, so its date cannot be established")
+    })?;
+    chrono::DateTime::parse_from_rfc3339(finished_at).map_err(|_| {
+        format!(
+            "last full green {sha} has invalid finished_at {finished_at:?}, so its date cannot be established"
+        )
+    })?;
+    Ok(finished_at.to_string())
+}
+
+/// Read commits-since-green evidence with executable policy from `tool_root`
+/// and mutable records from `state_root`. The two roots often differ: using
+/// the state checkout's adapter makes a current command call an older command
+/// surface and was the source of the `status-input` refusal.
+fn load_standard_green_ledger(
+    tool_root: &Path,
+    state_root: &Path,
+) -> Result<(Vec<HistoryRow>, Vec<validate_status::LedgerParseFailure>), CiHubError> {
+    load_ledger_rows_reporting_with_tool(&ledger_path(state_root), tool_root)
 }
 
 /// The one test count the producer reports for this run.
@@ -8998,7 +9032,7 @@ fn print_recent_validate_history(
     // Computed for BOTH output modes: a number that only appears under --json
     // is a number the humans reading the default output never see, which is the
     // condition this metric exists to end.
-    let depth = standard_green_depth(state_root, "main");
+    let depth = standard_green_depth(tool_root, state_root, "main");
     let unassigned_unreadable_count = if args.commit_timeline {
         unassigned_commit_timeline_failures(parse_failures, repo)
     } else {
@@ -10640,6 +10674,7 @@ mod tests {
             matched_by: "commit".into(),
             run_number: Some(1570),
             git_depth: Some(2568),
+            finished_at: "2026-08-26T00:00:00Z".into(),
             window: 628,
             failed_on_record: 1,
             needs_rerun: 18,
@@ -10652,7 +10687,7 @@ mod tests {
         .line();
         assert_eq!(
             line,
-            "HERMIT COMMITS-SINCE-GREEN 365 (history origin/main at ffffffffffffffffffffffffffffffffffffffff; last full green RUN 1570, validated dee8cf49ce6a at git depth 2568, exact SHA on main at first-parent depth 365; FAILED=1 NEEDS-RERUN=18 TRUNCATED=2 NO-RESULT=0 NOT-VALIDATED=1 LEDGER-UNREADABLE=1 NO-RECORD=342; searched 628 commits)"
+            "HERMIT COMMITS-SINCE-GREEN 365 (history origin/main at ffffffffffffffffffffffffffffffffffffffff; last full green RUN 1570, finished 2026-08-26T00:00:00Z, validated dee8cf49ce6a at git depth 2568, exact SHA on main at first-parent depth 365; FAILED=1 NEEDS-RERUN=18 TRUNCATED=2 NO-RESULT=0 NOT-VALIDATED=1 LEDGER-UNREADABLE=1 NO-RECORD=342; searched 628 commits)"
         );
     }
 
@@ -10667,6 +10702,7 @@ mod tests {
             matched_by: "tree".into(),
             run_number: Some(1570),
             git_depth: Some(2568),
+            finished_at: "2026-08-26T00:00:00Z".into(),
             window: 12,
             failed_on_record: 1,
             needs_rerun: 1,
@@ -10695,6 +10731,7 @@ mod tests {
         assert_eq!(value["green_matched_by"], "tree");
         assert_eq!(value["green_run_number"], 1570);
         assert_eq!(value["green_git_depth"], 2568);
+        assert_eq!(value["green_finished_at"], "2026-08-26T00:00:00Z");
         assert_eq!(value["commits_with_records"], 5);
         assert_eq!(value["commits_without_any_record"], 1);
         assert_eq!(value["commits_without_record"], 2);
@@ -10702,6 +10739,25 @@ mod tests {
         assert_eq!(
             value["history_tip"],
             "ffffffffffffffffffffffffffffffffffffffff"
+        );
+    }
+
+    #[test]
+    fn commits_since_green_refuses_an_undated_or_malformed_green() {
+        let sha = "dee8cf49ce6a7e3e9e2c87c930f3aa55ae83da18";
+        assert_eq!(
+            green_finished_at(sha, Some("2026-09-08T11:44:06Z")).unwrap(),
+            "2026-09-08T11:44:06Z"
+        );
+        assert_eq!(
+            green_finished_at(sha, None).unwrap_err(),
+            format!("last full green {sha} has no finished_at, so its date cannot be established")
+        );
+        assert_eq!(
+            green_finished_at(sha, Some("three days ago")).unwrap_err(),
+            format!(
+                "last full green {sha} has invalid finished_at \"three days ago\", so its date cannot be established"
+            )
         );
     }
 
@@ -10833,6 +10889,7 @@ mod tests {
                 matched_by: "commit".into(),
                 run_number: None,
                 git_depth: None,
+                finished_at: "2026-08-26T00:00:00Z".into(),
                 window: 1,
                 failed_on_record: 0,
                 needs_rerun: 0,
@@ -15265,7 +15322,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_ledger_adapter_comes_from_tool_root_and_reads_state_root() {
+    fn commits_since_green_uses_status_input_from_tool_root_and_reads_state_root() {
         let directory = env::temp_dir().join(format!(
             "ci-hub-split-ledger-root-{}-{}",
             std::process::id(),
@@ -15274,22 +15331,30 @@ mod tests {
         let tool_root = directory.join("tool");
         let state_root = directory.join("state");
         let adapter = tool_root.join("ci-hub/ledger/validate_rows.py");
+        let stale_adapter = state_root.join("ci-hub/ledger/validate_rows.py");
         std::fs::create_dir_all(adapter.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(stale_adapter.parent().unwrap()).unwrap();
         std::fs::create_dir_all(state_root.join("ledger")).unwrap();
         std::fs::write(
             &adapter,
             r#"import os
+import sys
 from pathlib import Path
 
 assert Path.cwd() == Path(os.environ["DEV_HERMIT_PARENT"])
 assert Path(__file__).parents[2] == Path(os.environ["DEV_HERMIT_TOOL_ROOT"])
+assert sys.argv[1:] == ["status-input"]
 print('{"schema_version":1,"rows":[],"records":[]}')
 "#,
         )
         .unwrap();
+        std::fs::write(
+            &stale_adapter,
+            "raise SystemExit('the state-root adapter must not be used')\n",
+        )
+        .unwrap();
 
-        let (rows, failures) =
-            load_ledger_rows_reporting_with_tool(&state_root.join("ledger"), &tool_root).unwrap();
+        let (rows, failures) = load_standard_green_ledger(&tool_root, &state_root).unwrap();
         assert!(rows.is_empty());
         assert!(failures.is_empty());
 
