@@ -33,6 +33,7 @@ use crate::elf::GuestFileIdentity;
 use crate::elf::GuestFileIdentityEntry;
 use crate::elf::LoadedStaticElf;
 use crate::elf::STACK_LIMIT;
+use crate::elf::TASK_COMM_LEN;
 use crate::elf::load_static_elf;
 use crate::elf::resolve_executable_path;
 use crate::runtime::SyscallExecutor;
@@ -208,6 +209,8 @@ pub(crate) enum ProcessAction {
         clear_child_tid: Option<u64>,
         // TODO-HUMAN-REVIEW(PR-92): Review CLONE_CLEAR_SIGHAND child state.
         clear_sighand: bool,
+        // `vfork` and its clone variants share the parent's address space until exec.
+        share_address_space: bool,
     },
     // TODO-HUMAN-REVIEW(PR-132): Review cooperative single-vCPU thread cloning.
     Thread {
@@ -219,6 +222,7 @@ pub(crate) enum ProcessAction {
         tls: Option<u64>,
     },
     Exec {
+        executable_path: std::path::PathBuf,
         image: Vec<u8>,
         argv: Vec<String>,
         envp: Vec<String>,
@@ -685,7 +689,7 @@ fn execute_basic_syscall_with_output(
         return arch_prctl(memory, state, args);
     } else if number == libc::SYS_prctl as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        prctl(state, args)
+        prctl(memory, state, args)
     } else if number == libc::SYS_getxattr as u64
         || number == libc::SYS_lgetxattr as u64
         || number == libc::SYS_fgetxattr as u64
@@ -1283,7 +1287,8 @@ impl ElfExecutor {
             return Some(i64::from(self.state.tid));
         }
         if number == libc::SYS_fork as u64 || number == libc::SYS_vfork as u64 {
-            return Some(self.prepare_fork(None, None, None, None, false));
+            let share_address_space = number == libc::SYS_vfork as u64;
+            return Some(self.prepare_fork(None, None, None, None, false, share_address_space));
         }
         if number == libc::SYS_clone as u64 {
             return Some(self.prepare_clone(
@@ -1319,6 +1324,7 @@ impl ElfExecutor {
                         None,
                         None,
                         request.flags & CLONE_CLEAR_SIGHAND != 0,
+                        request.flags & libc::CLONE_VM as u64 != 0,
                     ),
                 },
                 Err(error) => error,
@@ -1374,6 +1380,7 @@ impl ElfExecutor {
             child_tid,
             clear_child_tid,
             flags & CLONE_CLEAR_SIGHAND != 0,
+            flags & libc::CLONE_VM as u64 != 0,
         )
     }
 
@@ -1420,6 +1427,7 @@ impl ElfExecutor {
         child_tid: Option<u64>,
         clear_child_tid: Option<u64>,
         clear_sighand: bool,
+        share_address_space: bool,
     ) -> i64 {
         if self.process_action.is_some() {
             return negative_errno(libc::EBUSY);
@@ -1435,6 +1443,7 @@ impl ElfExecutor {
             child_tid,
             clear_child_tid,
             clear_sighand,
+            share_address_space,
         });
         i64::from(child_pid)
     }
@@ -1507,6 +1516,7 @@ impl ElfExecutor {
         // resolution. The KVM ELF loader only maps ELF images, so a guest that
         // execs a `#!`-script must have its interpreter resolved here, as the
         // kernel's binfmt_script loader does.
+        let executable_path = path.clone();
         let (image, argv) = match resolve_exec_shebang(path, image, argv) {
             Ok((_interpreter, image, argv)) => (image, argv),
             Err(errno) => return errno,
@@ -1538,12 +1548,25 @@ impl ElfExecutor {
         if self.state.tid != self.state.pid {
             return negative_errno(libc::ENOSYS);
         }
-        self.process_action = Some(ProcessAction::Exec { image, argv, envp });
+        self.process_action = Some(ProcessAction::Exec {
+            executable_path,
+            image,
+            argv,
+            envp,
+        });
         0
     }
 
-    pub(crate) fn fork_child(&self, child_pid: i32, clear_sighand: bool) -> crate::Result<Self> {
+    pub(crate) fn fork_child(
+        &self,
+        child_pid: i32,
+        clear_sighand: bool,
+        share_address_space: bool,
+    ) -> crate::Result<Self> {
         let mut state = self.state.try_clone_for_fork(child_pid)?;
+        if share_address_space {
+            state.thp_disabled = self.state.thp_disabled.clone();
+        }
         state.dumpable = self.current_dumpable();
         if clear_sighand {
             state.signal_actions.retain(|_, action| {
@@ -1596,6 +1619,8 @@ impl ElfExecutor {
         state.is_traced_tree_root = self.state.is_traced_tree_root;
         state.dumpable = self.current_dumpable();
         state.signalfd_state = self.state.signalfd_state.clone();
+        state.thread_group_leader_name = self.state.thread_group_leader_name.clone();
+        state.thp_disabled = self.state.thp_disabled.clone();
         let task_generation = state
             .task_lifecycle
             .lock()
@@ -8032,14 +8057,35 @@ fn proc_locks_content(state: &LoadedStaticElf) -> Vec<u8> {
     rows.concat().into_bytes()
 }
 
-/// The kernel's `comm`: the program basename, capped at 15 bytes.
-fn proc_comm(state: &LoadedStaticElf) -> String {
-    let base = state
-        .argv0
-        .rsplit(|byte| *byte == b'/')
-        .next()
-        .unwrap_or(&state.argv0);
-    String::from_utf8_lossy(&base.iter().copied().take(15).collect::<Vec<u8>>()).into_owned()
+/// The thread-group leader's `comm`, without its terminating NUL byte.
+fn proc_comm(state: &LoadedStaticElf) -> Vec<u8> {
+    let name = state
+        .thread_group_leader_name
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let length = name
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(TASK_COMM_LEN);
+    name[..length].to_vec()
+}
+
+/// Format the thread-group leader's name for `/proc/self/status`.
+///
+/// Linux renders newline and backslash as two-byte escape sequences in the
+/// `Name` field. `/proc/self/stat` intentionally continues to use the raw
+/// bytes returned by [`proc_comm`].
+fn proc_status_comm(state: &LoadedStaticElf) -> Vec<u8> {
+    let raw = proc_comm(state);
+    let mut formatted = Vec::with_capacity(raw.len());
+    for byte in raw {
+        match byte {
+            b'\n' => formatted.extend_from_slice(b"\\n"),
+            b'\\' => formatted.extend_from_slice(b"\\\\"),
+            _ => formatted.push(byte),
+        }
+    }
+    formatted
 }
 
 fn proc_self_cmdline_content(state: &LoadedStaticElf) -> Vec<u8> {
@@ -8064,23 +8110,23 @@ fn proc_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
     // pid (comm) state ppid ... The fields after ppid are process-accounting
     // values reported as zero so no nondeterministic host state leaks. The real
     // file has 52 fields; pad with zeros so field-counting parsers are satisfied.
-    let mut line = format!(
-        "{} ({}) R {} 0 0 0 -1 0",
-        state.pid,
-        proc_comm(state),
-        state.ppid
-    );
+    let mut line = format!("{} (", state.pid).into_bytes();
+    line.extend_from_slice(&proc_comm(state));
+    line.extend_from_slice(format!(") R {} 0 0 0 -1 0", state.ppid).as_bytes());
     for _ in 0..44 {
-        line.push_str(" 0");
+        line.extend_from_slice(b" 0");
     }
-    line.push('\n');
-    line.into_bytes()
+    line.push(b'\n');
+    line
 }
 
 fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
-    format!(
-        "Name:\t{comm}\n\
-         Umask:\t{umask:04o}\n\
+    let mut content = b"Name:\t".to_vec();
+    content.extend_from_slice(&proc_status_comm(state));
+    content.push(b'\n');
+    content.extend_from_slice(
+        format!(
+            "Umask:\t{umask:04o}\n\
          State:\tR (running)\n\
          Tgid:\t{pid}\n\
          Ngid:\t0\n\
@@ -8091,12 +8137,13 @@ fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
          Gid:\t0\t0\t0\t0\n\
          FDSize:\t64\n\
          Threads:\t1\n",
-        comm = proc_comm(state),
-        umask = state.umask,
-        pid = state.pid,
-        ppid = state.ppid,
-    )
-    .into_bytes()
+            umask = state.umask,
+            pid = state.pid,
+            ppid = state.ppid,
+        )
+        .as_bytes(),
+    );
+    content
 }
 
 /// Back a synthesized /proc file with a memfd holding `content` and record it in
@@ -8765,8 +8812,41 @@ fn arch_prctl(
 // launchers can inspect and mutate their persona without touching supervisor
 // credentials.
 // TODO-HUMAN-REVIEW(PR-181): Review deterministic capability prctls.
-fn prctl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn prctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     match args[0] {
+        // TODO-HUMAN-REVIEW(PR-537): Review deterministic task-name state and lifecycle.
+        option if option == libc::PR_SET_NAME as u64 => set_prctl_name(memory, state, args[1]),
+        option if option == libc::PR_GET_NAME as u64 => memory
+            .write(args[1], &state.thread_name)
+            .map_or_else(|_| negative_errno(libc::EFAULT), |_| 0),
+        option if option == libc::PR_SET_PDEATHSIG as u64 => {
+            // Nonzero values require deterministic delivery when the modeled
+            // parent exits. Refuse them until that behavior is implemented.
+            if args[1] == 0 {
+                0
+            } else {
+                negative_errno(libc::ENOSYS)
+            }
+        }
+        option if option == libc::PR_GET_PDEATHSIG as u64 => memory
+            .write(args[1], &0_i32.to_ne_bytes())
+            .map_or_else(|_| negative_errno(libc::EFAULT), |_| 0),
+        // TODO-HUMAN-REVIEW(PR-537): Review deterministic transparent-hugepage state and lifecycle.
+        option if option == libc::PR_SET_THP_DISABLE as u64 => {
+            if args[2..5].iter().any(|argument| *argument != 0) {
+                negative_errno(libc::EINVAL)
+            } else {
+                state.thp_disabled.store(args[1] != 0, Ordering::SeqCst);
+                0
+            }
+        }
+        option if option == libc::PR_GET_THP_DISABLE as u64 => {
+            if args[1..5].iter().any(|argument| *argument != 0) {
+                negative_errno(libc::EINVAL)
+            } else {
+                i64::from(state.thp_disabled.load(Ordering::SeqCst))
+            }
+        }
         PR_CAPBSET_READ => {
             if args[1] <= GUEST_CAP_LAST_CAP {
                 i64::from(state.capability_bounding & (1_u64 << args[1]) != 0)
@@ -8827,6 +8907,31 @@ fn prctl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
         // Other prctl operations are not modeled yet.
         _ => negative_errno(libc::ENOSYS),
     }
+}
+
+fn set_prctl_name(memory: &GuestMemory, state: &mut LoadedStaticElf, address: u64) -> i64 {
+    let mut name = [0; TASK_COMM_LEN];
+    for (offset, slot) in name[..TASK_COMM_LEN - 1].iter_mut().enumerate() {
+        let Some(address) = address.checked_add(offset as u64) else {
+            return negative_errno(libc::EFAULT);
+        };
+        let mut byte = [0];
+        if memory.read(address, &mut byte).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
+        if byte[0] == 0 {
+            break;
+        }
+        *slot = byte[0];
+    }
+    state.thread_name = name;
+    if state.tid == state.pid {
+        *state
+            .thread_group_leader_name
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = name;
+    }
+    0
 }
 
 fn prctl_cap_ambient(state: &mut LoadedStaticElf, operation: u64, capability: u64) -> i64 {
@@ -11272,6 +11377,9 @@ mod tests {
             logical_clock_ns: 0,
             umask: 0o022,
             random_seed: 0,
+            thread_name: *b"test\0\0\0\0\0\0\0\0\0\0\0\0",
+            thread_group_leader_name: Arc::new(Mutex::new(*b"test\0\0\0\0\0\0\0\0\0\0\0\0")),
+            thp_disabled: Arc::new(AtomicBool::new(false)),
             keep_capabilities: false,
             capability_effective: GUEST_CAPABILITY_MASK,
             capability_permitted: GUEST_CAPABILITY_MASK,
@@ -11307,6 +11415,11 @@ mod tests {
                 },
             )),
         }
+    }
+
+    fn prctl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        super::prctl(&mut memory, state, args)
     }
 
     fn syscall_result(
@@ -12115,8 +12228,28 @@ mod tests {
 
         let fd = open_readonly(&mut memory, &mut state, "/proc/self/status");
         let status = String::from_utf8(read_fd_to_end(&mut memory, &mut state, fd)).unwrap();
+        assert!(status.contains("Name:\ttest\n"), "{status}");
         assert!(status.contains("Pid:\t1\n"), "{status}");
         assert!(status.contains("PPid:\t0\n"), "{status}");
+
+        write_c_string(&mut memory, 0x100, "worker-name");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_prctl,
+                [libc::PR_SET_NAME as u64, 0x100, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        let fd = open_readonly(&mut memory, &mut state, "/proc/self/stat");
+        let stat = String::from_utf8(read_fd_to_end(&mut memory, &mut state, fd)).unwrap();
+        assert!(stat.starts_with("1 (worker-name) R 0 "), "{stat}");
+        let fd = open_readonly(&mut memory, &mut state, "/proc/self/status");
+        let status = String::from_utf8(read_fd_to_end(&mut memory, &mut state, fd)).unwrap();
+        assert!(status.contains("Name:\tworker-name\n"), "{status}");
+        let fd = open_readonly(&mut memory, &mut state, "/proc/self/cmdline");
+        assert_eq!(read_fd_to_end(&mut memory, &mut state, fd), b"test\0");
 
         // /proc/<pid> aliases /proc/self for this guest's own pid.
         let fd = open_readonly(&mut memory, &mut state, "/proc/1/cmdline");
@@ -19165,7 +19298,7 @@ mod tests {
         assert!(thread.parent_pid().is_none());
 
         // A forked child does have a traced parent.
-        let child = executor.fork_child(5, false).unwrap();
+        let child = executor.fork_child(5, false, false).unwrap();
         assert_eq!(child.parent_pid(), Some(reverie::Pid::from_raw(3)));
     }
 
@@ -21655,10 +21788,12 @@ mod tests {
                 child_tid,
                 clear_child_tid,
                 clear_sighand,
+                share_address_space,
             }) => {
                 assert_eq!(child_pid, 2);
                 assert_eq!(child_stack, None);
                 assert!(!clear_sighand);
+                assert!(!share_address_space);
                 assert_eq!(parent_tid, Some(PARENT_TID));
                 assert_eq!(child_tid, Some(CHILD_TID));
                 assert_eq!(clear_child_tid, Some(CHILD_TID));
@@ -21893,14 +22028,18 @@ mod tests {
                 child_tid,
                 clear_child_tid,
                 clear_sighand,
+                share_address_space,
             }) => {
                 assert_eq!(child_pid, 2);
                 assert_eq!(child_stack, Some(CHILD_STACK + CHILD_STACK_SIZE));
                 assert!(clear_sighand);
+                assert!(share_address_space);
                 assert_eq!(parent_tid, None);
                 assert_eq!(child_tid, None);
                 assert_eq!(clear_child_tid, None);
-                let child = executor.fork_child(child_pid, clear_sighand).unwrap();
+                let child = executor
+                    .fork_child(child_pid, clear_sighand, share_address_space)
+                    .unwrap();
                 assert_eq!(
                     child.state.signal_actions.get(&libc::SIGUSR1),
                     Some(&ignored)
@@ -22809,7 +22948,7 @@ mod tests {
 
         let root = TestDir::new();
         let mut parent = ElfExecutor::new(test_state(&root.0), false);
-        let mut child = parent.fork_child(2, false).unwrap();
+        let mut child = parent.fork_child(2, false, false).unwrap();
         let mut thread = parent.thread_child(3).unwrap();
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
 
@@ -22904,7 +23043,7 @@ mod tests {
 
         let root = TestDir::new();
         let parent = ElfExecutor::new(test_state(&root.0), false);
-        let mut child = parent.fork_child(2, false).unwrap();
+        let mut child = parent.fork_child(2, false, false).unwrap();
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
 
         assert_eq!(
@@ -22965,7 +23104,7 @@ mod tests {
             ),
             negative_errno(libc::ESRCH)
         );
-        let replacement = parent.fork_child(2, false).unwrap();
+        let replacement = parent.fork_child(2, false, false).unwrap();
         // The exited executor may be destroyed after the tid has been reused;
         // its stale generation must not remove the replacement's entry.
         drop(child);
@@ -22992,7 +23131,7 @@ mod tests {
 
         let root = TestDir::new();
         let mut parent = ElfExecutor::new(test_state(&root.0), false);
-        let mut child = parent.fork_child(2, false).unwrap();
+        let mut child = parent.fork_child(2, false, false).unwrap();
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
         memory
             .write(HEAD_OUTPUT, &HEAD_SENTINEL.to_ne_bytes())
@@ -23154,7 +23293,7 @@ mod tests {
         memory.write(0x100, b"a").unwrap();
         memory.write(0x101, b"b").unwrap();
         let mut parent = ElfExecutor::new(state, true);
-        let mut child = parent.fork_child(2, false).unwrap();
+        let mut child = parent.fork_child(2, false, false).unwrap();
 
         assert_eq!(parent.parent_pid(), None);
         assert_eq!(child.parent_pid(), Some(reverie::Pid::from_raw(1)));
@@ -24232,8 +24371,327 @@ mod tests {
         );
         // Unmodeled prctl options remain ENOSYS.
         assert_eq!(
-            prctl(&mut state, &[libc::PR_GET_NAME as u64, 0, 0, 0, 0, 0]),
+            prctl(&mut state, &[u64::MAX, 0, 0, 0, 0, 0]),
             negative_errno(libc::ENOSYS)
+        );
+    }
+
+    #[test]
+    fn prctl_name_is_16_bytes_and_thread_local() {
+        const INPUT: u64 = 0x100;
+        const OUTPUT: u64 = 0x200;
+        const CHILD_INPUT: u64 = 0x300;
+        const PAGE_END_INPUT: u64 = PAGE_SIZE - (TASK_COMM_LEN as u64 - 1);
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory.write(INPUT, b"abcdefghijklmnopq").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_prctl,
+                [libc::PR_SET_NAME as u64, INPUT, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_prctl,
+                [libc::PR_GET_NAME as u64, OUTPUT, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        let mut name = [0; TASK_COMM_LEN];
+        memory.read(OUTPUT, &mut name).unwrap();
+        assert_eq!(name, *b"abcdefghijklmno\0");
+
+        memory.write(PAGE_END_INPUT, b"123456789abcdef").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_prctl,
+                [libc::PR_SET_NAME as u64, PAGE_END_INPUT, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_prctl,
+                [libc::PR_GET_NAME as u64, OUTPUT, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        memory.read(OUTPUT, &mut name).unwrap();
+        assert_eq!(name, *b"123456789abcdef\0");
+
+        let before_fault = state.thread_name;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_prctl,
+                [libc::PR_SET_NAME as u64, PAGE_END_INPUT + 1, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT),
+        );
+        assert_eq!(state.thread_name, before_fault);
+
+        let forked = state.try_clone_for_fork(2).unwrap();
+        assert_eq!(forked.thread_name, state.thread_name);
+        assert_eq!(proc_comm(&forked), b"123456789abcdef");
+        assert!(!Arc::ptr_eq(
+            &forked.thread_group_leader_name,
+            &state.thread_group_leader_name,
+        ));
+        let forked_leader_name = forked.thread_group_leader_name.clone();
+        let mut replacement = test_state(&root.0);
+        replacement.argv0 = b"arbitrary-argv-zero".to_vec();
+        replacement.thread_name =
+            crate::elf::initial_thread_name(std::path::Path::new("/resolved/new-program"));
+        *replacement
+            .thread_group_leader_name
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = replacement.thread_name;
+        replacement.inherit_process_state(forked);
+        assert_eq!(replacement.thread_name, *b"new-program\0\0\0\0\0");
+        assert_eq!(proc_comm(&replacement), b"new-program");
+        assert!(!Arc::ptr_eq(
+            &replacement.thread_group_leader_name,
+            &forked_leader_name,
+        ));
+
+        let mut leader = ElfExecutor::new(state, false);
+        let mut sibling = leader.thread_child(3).unwrap();
+        assert_eq!(sibling.state.thread_name, leader.state.thread_name);
+        assert_eq!(proc_comm(&sibling.state), b"123456789abcdef");
+        assert!(Arc::ptr_eq(
+            &sibling.state.thread_group_leader_name,
+            &leader.state.thread_group_leader_name,
+        ));
+        memory.write(CHILD_INPUT, b"child\0").unwrap();
+        assert_eq!(
+            super::prctl(
+                &mut memory,
+                &mut sibling.state,
+                &[libc::PR_SET_NAME as u64, CHILD_INPUT, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        let mut child_name = [0; TASK_COMM_LEN];
+        child_name[..5].copy_from_slice(b"child");
+        assert_eq!(sibling.state.thread_name, child_name);
+        assert_eq!(leader.state.thread_name, before_fault);
+        assert_eq!(proc_comm(&sibling.state), b"123456789abcdef");
+        let worker_fork = sibling.state.try_clone_for_fork(4).unwrap();
+        assert_eq!(proc_comm(&worker_fork), b"child");
+        assert!(!Arc::ptr_eq(
+            &worker_fork.thread_group_leader_name,
+            &sibling.state.thread_group_leader_name,
+        ));
+
+        memory.write(INPUT, &[0xff, b'\n', b'\\', b'L', 0]).unwrap();
+        assert_eq!(
+            super::prctl(
+                &mut memory,
+                &mut leader.state,
+                &[libc::PR_SET_NAME as u64, INPUT, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        assert_eq!(sibling.state.thread_name, child_name);
+        assert_eq!(proc_comm(&sibling.state), [0xff, b'\n', b'\\', b'L']);
+        let stat = proc_self_stat_content(&sibling.state);
+        assert!(stat.starts_with(b"1 (\xff\n\\L) R 0 "), "{stat:?}");
+        let status = proc_self_status_content(&sibling.state);
+        assert!(status.starts_with(b"Name:\t\xff\\n\\\\L\n"), "{status:?}");
+        assert_eq!(proc_comm(&replacement), b"new-program");
+        assert_eq!(proc_comm(&worker_fork), b"child");
+    }
+    #[test]
+    fn prctl_pdeathsig_reports_zero_and_refuses_unmodeled_delivery() {
+        const OUTPUT: u64 = 0x100;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let get = [libc::PR_GET_PDEATHSIG as u64, OUTPUT, 0, 0, 0, 0];
+        let set = |signal| [libc::PR_SET_PDEATHSIG as u64, signal, 0, 0, 0, 0];
+
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_prctl, get),
+            0,
+        );
+        assert_eq!(read_struct::<libc::c_int>(&memory, OUTPUT), 0);
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_prctl, set(0)),
+            0,
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_prctl,
+                set(libc::SIGUSR1 as u64),
+            ),
+            negative_errno(libc::ENOSYS),
+        );
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_prctl, get),
+            0,
+        );
+        assert_eq!(read_struct::<libc::c_int>(&memory, OUTPUT), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_prctl,
+                [libc::PR_GET_PDEATHSIG as u64, PAGE_SIZE, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT),
+        );
+    }
+
+    #[test]
+    fn prctl_thp_disable_validates_and_follows_process_lifecycle() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let get = [libc::PR_GET_THP_DISABLE as u64, 0, 0, 0, 0, 0];
+        let set = |value| [libc::PR_SET_THP_DISABLE as u64, value, 0, 0, 0, 0];
+
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_prctl, get),
+            0,
+        );
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_prctl, set(2)),
+            0,
+        );
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_prctl, get),
+            1,
+        );
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_prctl, set(u64::MAX),),
+            0,
+        );
+
+        for index in 2..5 {
+            let mut invalid = set(1);
+            invalid[index] = 1;
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, libc::SYS_prctl, invalid),
+                negative_errno(libc::EINVAL),
+            );
+        }
+        for index in 1..5 {
+            let mut invalid = get;
+            invalid[index] = 1;
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, libc::SYS_prctl, invalid),
+                negative_errno(libc::EINVAL),
+            );
+        }
+        let mut ignored_sixth_argument = set(1);
+        ignored_sixth_argument[5] = u64::MAX;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_prctl,
+                ignored_sixth_argument,
+            ),
+            0,
+        );
+        let mut ignored_sixth_argument = get;
+        ignored_sixth_argument[5] = u64::MAX;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_prctl,
+                ignored_sixth_argument,
+            ),
+            1,
+        );
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_prctl, get),
+            1,
+        );
+
+        let mut forked = state.try_clone_for_fork(2).unwrap();
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_prctl, set(0)),
+            0,
+        );
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_prctl, get),
+            0,
+        );
+        assert_eq!(
+            syscall_result(&mut memory, &mut forked, libc::SYS_prctl, get),
+            1,
+        );
+
+        let mut replacement = test_state(&root.0);
+        replacement.inherit_process_state(forked);
+        assert_eq!(
+            syscall_result(&mut memory, &mut replacement, libc::SYS_prctl, get),
+            1,
+        );
+
+        let mut leader = ElfExecutor::new(state, false);
+        let mut sibling = leader.thread_child(3).unwrap();
+        assert_eq!(
+            syscall_result(&mut memory, &mut sibling.state, libc::SYS_prctl, set(1),),
+            0,
+        );
+        assert_eq!(
+            syscall_result(&mut memory, &mut leader.state, libc::SYS_prctl, get),
+            1,
+        );
+        assert_eq!(
+            syscall_result(&mut memory, &mut leader.state, libc::SYS_prctl, set(0),),
+            0,
+        );
+        assert_eq!(
+            syscall_result(&mut memory, &mut sibling.state, libc::SYS_prctl, get),
+            0,
+        );
+
+        assert_eq!(
+            syscall_result(&mut memory, &mut leader.state, libc::SYS_prctl, set(1)),
+            0,
+        );
+        let mut shared_child = leader.fork_child(4, false, true).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut shared_child.state,
+                libc::SYS_prctl,
+                set(0),
+            ),
+            0,
+        );
+        assert_eq!(
+            syscall_result(&mut memory, &mut leader.state, libc::SYS_prctl, get),
+            0,
+        );
+        shared_child.replace_after_exec(test_state(&root.0));
+        assert_eq!(
+            syscall_result(&mut memory, &mut leader.state, libc::SYS_prctl, set(1)),
+            0,
+        );
+        assert_eq!(
+            syscall_result(&mut memory, &mut shared_child.state, libc::SYS_prctl, get,),
+            0,
         );
     }
 
