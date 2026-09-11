@@ -321,13 +321,14 @@ where
                     | ProcessExecutionContext::Lifecycle => match action {
                         ProcessAction::Exec {
                             executable_path,
+                            executable_file,
                             image,
                             argv,
                             envp,
                         } => {
                             self.backend.exec_process(
                                 self.executor,
-                                &executable_path,
+                                (&executable_path, executable_file),
                                 &image,
                                 &argv,
                                 &envp,

@@ -55,6 +55,1314 @@ use reverie_kvm::StraceTool;
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 
 #[test]
+fn leader_self_exec_output_permissions() {
+    if !leader_self_exec_bounded("leader_self_exec_output_permissions") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "running-image",
+        LEADER_SELF_EXEC_OUTPUT_PROGRAM,
+    );
+    leader_self_exec_guest(
+        &directory.0,
+        &program,
+        &[],
+        b"stat/readlink RW/RO/NONE exact errno and full4096=PASS\n",
+    );
+}
+
+const LEADER_SELF_EXEC_OUTPUT_PROGRAM: &str = r###"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+    if (argc != 1 || strlen(argv[0]) >= 4096) return 10;
+    int failures = 0;
+    for (int operation = 0; operation != 2; ++operation) {
+        for (int access = 0; access != 3; ++access) {
+            unsigned char *actual = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            unsigned char expected[4096];
+            if (actual == MAP_FAILED) return 11;
+            memset(actual, 0x5a, 4096); memset(expected, 0x5a, sizeof(expected));
+            if (!access) {
+                if (operation) memcpy(expected, argv[0], strlen(argv[0]));
+                else if (syscall(SYS_newfstatat, AT_FDCWD, argv[0], expected, 0)) return 12;
+            }
+            int protection = access == 0 ? PROT_READ | PROT_WRITE : access == 1 ? PROT_READ : PROT_NONE;
+            if (mprotect(actual, 4096, protection)) return 13;
+            errno = 0;
+            long result = operation ? syscall(SYS_readlink, "/proc/self/exe", actual, 4096) : syscall(SYS_newfstatat, AT_FDCWD, "/proc/self/exe", actual, 0);
+            int error = errno;
+            if (mprotect(actual, 4096, PROT_READ | PROT_WRITE)) return 14;
+            long expected_result = access ? -1 : operation ? (long)strlen(argv[0]) : 0;
+            int expected_error = access ? EFAULT : 0;
+            int equal = memcmp(actual, expected, sizeof(expected)) == 0;
+            if (result != expected_result || error != expected_error || !equal) {
+                printf("operation=%d access=%d result=%ld errno=%d full4096=%d expected_result=%ld expected_errno=%d\n", operation, access, result, error, equal, expected_result, expected_error);
+                ++failures;
+            }
+            if (munmap(actual, 4096)) return 15;
+        }
+    }
+    if (!failures) puts("stat/readlink RW/RO/NONE exact errno and full4096=PASS");
+    return failures ? 1 : 0;
+}
+"###;
+
+fn leader_self_exec_lifetime_control(test: &str, mode: &str, method: &str) {
+    if !leader_self_exec_bounded(test) {
+        return;
+    }
+    for with_tool in [false, true] {
+        let directory = TestDirectory::new();
+        let program = compile_c_program(
+            &directory.0,
+            "running-image",
+            LEADER_SELF_EXEC_LIFETIME_PROGRAM,
+        );
+        let image = std::fs::read(&program).unwrap();
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[program.to_str().unwrap(), mode, method],
+                &[],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = if with_tool {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        let expected: &[u8] = if mode == "fork" {
+            b"child-exec\nparent-after-child\n"
+        } else {
+            b"leader-after-thread-exec\n"
+        };
+        assert_eq!(
+            code,
+            0,
+            "mode={mode} method={method} tool={with_tool} stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        assert_eq!(
+            stdout, expected,
+            "mode={mode} method={method} tool={with_tool}"
+        );
+        assert!(
+            stderr.is_empty(),
+            "mode={mode} method={method} tool={with_tool} stderr={}",
+            String::from_utf8_lossy(&stderr)
+        );
+    }
+}
+
+#[test]
+fn leader_self_exec_lifetime_fork_0() {
+    leader_self_exec_lifetime_control("leader_self_exec_lifetime_fork_0", "fork", "0");
+}
+
+#[test]
+fn leader_self_exec_lifetime_fork_1() {
+    leader_self_exec_lifetime_control("leader_self_exec_lifetime_fork_1", "fork", "1");
+}
+
+#[test]
+fn leader_self_exec_lifetime_thread_0() {
+    leader_self_exec_lifetime_control("leader_self_exec_lifetime_thread_0", "thread", "0");
+}
+
+#[test]
+fn leader_self_exec_lifetime_thread_1() {
+    leader_self_exec_lifetime_control("leader_self_exec_lifetime_thread_1", "thread", "1");
+}
+
+const LEADER_SELF_EXEC_LIFETIME_PROGRAM: &str = r###"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/prctl.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static volatile unsigned image_value = 0x11223344;
+static int ready_pipe[2], stop_pipe[2];
+static long old_tid;
+static int name_is(const char *name) {
+    unsigned char actual[64], expected[64];
+    memset(actual, 0x5a, sizeof(actual));
+    memset(expected, 0x5a, sizeof(expected));
+    memset(expected, 0, 16);
+    memcpy(expected, name, strlen(name));
+    return prctl(PR_GET_NAME, actual) == 0 && !memcmp(actual, expected, sizeof(actual));
+}
+static void *sibling(void *unused) {
+    (void)unused;
+    old_tid = syscall(SYS_gettid);
+    if (write(ready_pipe[1], "R", 1) != 1) return (void *)1;
+    char stop;
+    return read(stop_pipe[0], &stop, 1) == 1 ? NULL : (void *)2;
+}
+int main(int argc, char **argv) {
+    const char *stage = getenv("LIFETIME_STAGE");
+    if (stage) {
+        if (argc != 2 || strcmp(argv[0], "different-argv-zero") || strcmp(argv[1], "after")) return 30;
+        if (image_value != 0x11223344 || !name_is("exe")) return 31;
+        if (getpid() != strtol(getenv("SAVED_PID"), NULL, 10) || getppid() != strtol(getenv("SAVED_PPID"), NULL, 10)) return 32;
+        struct stat actual;
+        if (stat("/proc/self/exe", &actual) || actual.st_dev != strtoull(getenv("SAVED_DEV"), NULL, 10) || actual.st_ino != strtoull(getenv("SAVED_INO"), NULL, 10)) return 33;
+        unsigned char link[4096], expected[4096];
+        memset(link, 0x5a, sizeof(link)); memset(expected, 0x5a, sizeof(expected));
+        const char *path = getenv("SAVED_LINK");
+        size_t length = strlen(path);
+        if (length >= sizeof(expected)) return 34;
+        memcpy(expected, path, length);
+        if (readlink("/proc/self/exe", (char *)link, sizeof(link)) != (ssize_t)length || memcmp(link, expected, sizeof(link))) return 35;
+        if (prctl(PR_SET_NAME, "changed-after") || !name_is("changed-after")) return 36;
+        if (!strcmp(stage, "thread")) {
+            errno = 0;
+            if (syscall(SYS_tgkill, getpid(), strtol(getenv("OLD_TID"), NULL, 10), 0) != -1 || errno != ESRCH) return 38;
+            return write(1, "leader-after-thread-exec\n", 25) == 25 ? 0 : 39;
+        }
+        return write(1, "child-exec\n", 11) == 11 ? 37 : 40;
+    }
+    if (argc != 3 || prctl(PR_SET_NAME, "parent-before") || !name_is("parent-before")) return 10;
+    int thread_case = !strcmp(argv[1], "thread");
+    struct stat original;
+    if (stat("/proc/self/exe", &original)) return 11;
+    image_value = 0x88776655;
+    pthread_t worker;
+    if (thread_case) {
+        if (pipe(ready_pipe) || pipe(stop_pipe) || pthread_create(&worker, NULL, sibling, NULL)) return 12;
+        unsigned char ready[16], expected[16];
+        memset(ready, 0x5a, sizeof(ready)); memset(expected, 0x5a, sizeof(expected)); expected[0] = 'R';
+        if (read(ready_pipe[0], ready, 1) != 1 || memcmp(ready, expected, sizeof(ready))) return 13;
+    } else {
+        pid_t child = fork();
+        if (child < 0) return 14;
+        if (child) {
+            int status = 0;
+            if (waitpid(child, &status, 0) != child || status != (37 << 8)) return 15;
+            if (image_value != 0x88776655 || !name_is("parent-before")) return 16;
+            errno = 0;
+            if (access(argv[0], F_OK) != -1 || errno != ENOENT) return 17;
+            return write(1, "parent-after-child\n", 19) == 19 ? 0 : 18;
+        }
+        if (unlink(argv[0])) return 19;
+    }
+    char setting[64], pid[64], parent[64], tid[64], device[64], inode[64], link[4200];
+    snprintf(setting, sizeof(setting), "LIFETIME_STAGE=%s", argv[1]);
+    snprintf(pid, sizeof(pid), "SAVED_PID=%d", getpid());
+    snprintf(parent, sizeof(parent), "SAVED_PPID=%d", getppid());
+    snprintf(tid, sizeof(tid), "OLD_TID=%ld", old_tid);
+    snprintf(device, sizeof(device), "SAVED_DEV=%llu", (unsigned long long)original.st_dev);
+    snprintf(inode, sizeof(inode), "SAVED_INO=%llu", (unsigned long long)original.st_ino);
+    if (snprintf(link, sizeof(link), "SAVED_LINK=%s%s", argv[0], thread_case ? "" : " (deleted)") >= (int)sizeof(link)) return 20;
+    char *environment[] = {setting, pid, parent, tid, device, inode, link, NULL};
+    char *arguments[] = {"different-argv-zero", "after", NULL};
+    if (atoi(argv[2])) syscall(SYS_execveat, AT_FDCWD, "/proc/self/exe", arguments, environment, 0);
+    else syscall(SYS_execve, "/proc/self/exe", arguments, environment);
+    int error = errno;
+    if (thread_case) {
+        void *result;
+        if (write(stop_pipe[1], "S", 1) != 1 || pthread_join(worker, &result) || result) return 21;
+    }
+    printf("exec returned errno=%d\n", error);
+    return 22;
+}
+"###;
+
+fn compile_assembly_program(directory: &std::path::Path, name: &str, source: &str) -> PathBuf {
+    let source_path = directory.join(format!("{name}.S"));
+    let executable_path = directory.join(name);
+    std::fs::write(&source_path, source).unwrap();
+    let output = std::process::Command::new("/usr/bin/gcc")
+        .args(["-nostdlib", "-static", "-Wl,--build-id=none"])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&executable_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "gcc failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    executable_path
+}
+
+#[test]
+fn self_exec_proc_aliases_use_loaded_image_after_unlink_or_replacement() {
+    if !leader_self_exec_bounded(
+        "self_exec_proc_aliases_use_loaded_image_after_unlink_or_replacement",
+    ) {
+        return;
+    }
+
+    const ROOT_PID: i32 = 37;
+    const ARGV0: &str = "preserved-argv0";
+    const ARGV1: &str = "after-exec";
+    const ENVP0: &str = "SELF_EXEC_ENV=preserved";
+    const IMAGE_MARKER: &str = "same-image\n";
+
+    for (case, (name, path, execveat)) in [
+        ("self-exec-proc-self-execve", "/proc/self/exe", false),
+        ("self-exec-proc-pid-execve", "/proc/37/exe", false),
+        (
+            "self-exec-proc-thread-self-execve",
+            "/proc/thread-self/exe",
+            false,
+        ),
+        (
+            "self-exec-proc-self-task-execve",
+            "/proc/self/task/37/exe",
+            false,
+        ),
+        (
+            "self-exec-proc-tgid-task-execve",
+            "/proc/37/task/37/exe",
+            false,
+        ),
+        ("self-exec-proc-self-execveat", "/proc/self/exe", true),
+        ("self-exec-proc-pid-execveat", "/proc/37/exe", true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let exec = if execveat {
+            // execveat(AT_FDCWD, path, argv, envp, 0)
+            r#"
+                mov %rdx, %r10
+                mov %rsi, %rdx
+                mov %rdi, %rsi
+                mov $-100, %rdi
+                xor %r8d, %r8d
+                mov $322, %eax
+                syscall
+            "#
+        } else {
+            // execve(path, argv, envp)
+            r#"
+                mov $59, %eax
+                syscall
+            "#
+        };
+        let source = format!(
+            r#"
+                .global _start
+                .text
+            _start:
+                cmpq $2, (%rsp)
+                je after_exec
+
+                lea self_path(%rip), %rdi
+                lea replacement_argv(%rip), %rsi
+                lea replacement_envp(%rip), %rdx
+                {exec}
+                neg %eax
+                mov %eax, %edi
+                mov $231, %eax
+                syscall
+
+            after_exec:
+                lea self_path(%rip), %rdi
+                lea link_buffer(%rip), %rsi
+                mov $4096, %edx
+                mov $89, %eax
+                syscall
+                test %rax, %rax
+                js exit_with_errno
+                mov %eax, %edx
+                mov $1, %edi
+                lea link_buffer(%rip), %rsi
+                mov $1, %eax
+                syscall
+                call write_newline
+
+                mov $1, %edi
+                lea image_marker(%rip), %rsi
+                mov ${image_marker_len}, %edx
+                mov $1, %eax
+                syscall
+
+                mov $1, %edi
+                mov 8(%rsp), %rsi
+                mov ${argv0_len}, %edx
+                mov $1, %eax
+                syscall
+                call write_newline
+
+                mov $1, %edi
+                mov 16(%rsp), %rsi
+                mov ${argv1_len}, %edx
+                mov $1, %eax
+                syscall
+                call write_newline
+
+                mov $1, %edi
+                mov 32(%rsp), %rsi
+                mov ${envp0_len}, %edx
+                mov $1, %eax
+                syscall
+                call write_newline
+
+                xor %edi, %edi
+                mov $231, %eax
+                syscall
+
+            exit_with_errno:
+                neg %eax
+                mov %eax, %edi
+                mov $231, %eax
+                syscall
+
+            write_newline:
+                mov $1, %edi
+                lea newline(%rip), %rsi
+                mov $1, %edx
+                mov $1, %eax
+                syscall
+                ret
+
+                .section .rodata
+            self_path:
+                .asciz "{path}"
+            replacement_argv0:
+                .asciz "{argv0}"
+            replacement_argv1:
+                .asciz "{argv1}"
+            replacement_envp0:
+                .asciz "{envp0}"
+            image_marker:
+                .ascii "same-image\n"
+            newline:
+                .ascii "\n"
+
+                .section .data
+                .align 8
+            replacement_argv:
+                .quad replacement_argv0, replacement_argv1, 0
+            replacement_envp:
+                .quad replacement_envp0, 0
+
+                .section .bss
+                .align 8
+            link_buffer:
+                .skip 4096
+            "#,
+            image_marker_len = IMAGE_MARKER.len(),
+            argv0_len = ARGV0.len(),
+            argv1_len = ARGV1.len(),
+            envp0_len = ENVP0.len(),
+            argv0 = ARGV0,
+            argv1 = ARGV1,
+            envp0 = ENVP0,
+        );
+
+        let root = TestDirectory::new();
+        let executable = compile_assembly_program(&root.0, name, &source);
+        let image = std::fs::read(&executable).unwrap();
+        let executable_name = executable.to_str().unwrap().to_owned();
+        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+        backend.set_root_pid(ROOT_PID).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable_name.as_str()],
+                &["INITIAL=1"],
+                &root.0,
+            )
+            .unwrap();
+        let mutation = if case.is_multiple_of(2) {
+            std::fs::remove_file(&executable).unwrap();
+            "unlinked"
+        } else {
+            let replacement = root.0.join(format!("{name}-replacement"));
+            std::fs::write(
+                &replacement,
+                static_elf(&[
+                    0xbf, 0x63, 0x00, 0x00, 0x00, // mov edi, 99
+                    0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+                    0x0f, 0x05, // syscall
+                    0x0f, 0x0b, // ud2
+                ]),
+            )
+            .unwrap();
+            std::fs::rename(replacement, &executable).unwrap();
+            "replaced"
+        };
+
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        let expected = format!(
+            "{} (deleted)\n{IMAGE_MARKER}{ARGV0}\n{ARGV1}\n{ENVP0}\n",
+            executable.display(),
+        );
+        assert_eq!(code, 0, "path={path} execveat={execveat} {mutation}");
+        assert_eq!(
+            stdout,
+            expected.as_bytes(),
+            "path={path} execveat={execveat} {mutation}"
+        );
+        assert!(
+            stderr.is_empty(),
+            "path={path} execveat={execveat} {mutation}"
+        );
+    }
+}
+
+#[test]
+fn exec_through_symlink_reports_the_opened_executable_and_preserves_argv0() {
+    if !leader_self_exec_bounded(
+        "exec_through_symlink_reports_the_opened_executable_and_preserves_argv0",
+    ) {
+        return;
+    }
+
+    const ARGV0: &str = "not-the-path";
+    let root = TestDirectory::new();
+    let target_source = format!(
+        r#"
+            .global _start
+            .text
+        _start:
+            lea self_path(%rip), %rdi
+            lea link_buffer(%rip), %rsi
+            mov $4096, %edx
+            mov $89, %eax
+            syscall
+            test %rax, %rax
+            js exit_with_errno
+
+            mov %eax, %edx
+            mov $1, %edi
+            lea link_buffer(%rip), %rsi
+            mov $1, %eax
+            syscall
+            call write_newline
+
+            mov $1, %edi
+            mov 8(%rsp), %rsi
+            mov ${argv0_len}, %edx
+            mov $1, %eax
+            syscall
+            call write_newline
+
+            xor %edi, %edi
+            mov $231, %eax
+            syscall
+
+        write_newline:
+            mov $1, %edi
+            lea newline(%rip), %rsi
+            mov $1, %edx
+            mov $1, %eax
+            syscall
+            ret
+
+        exit_with_errno:
+            neg %eax
+            mov %eax, %edi
+            mov $231, %eax
+            syscall
+
+            .section .rodata
+        self_path:
+            .asciz "/proc/self/exe"
+        newline:
+            .ascii "\n"
+
+            .section .bss
+            .align 8
+        link_buffer:
+            .skip 4096
+        "#,
+        argv0_len = ARGV0.len(),
+    );
+    let target = compile_assembly_program(&root.0, "actual-target", &target_source);
+    std::fs::create_dir(root.0.join("components")).unwrap();
+    let alias = root.0.join("exec-alias");
+    std::os::unix::fs::symlink("components/../actual-target", &alias).unwrap();
+
+    let root_source = format!(
+        r#"
+            .global _start
+            .text
+        _start:
+            lea exec_path(%rip), %rdi
+            lea replacement_argv(%rip), %rsi
+            xor %edx, %edx
+            mov $59, %eax
+            syscall
+            neg %eax
+            mov %eax, %edi
+            mov $231, %eax
+            syscall
+
+            .section .rodata
+        exec_path:
+            .asciz "{alias}"
+        replacement_argv0:
+            .asciz "{argv0}"
+
+            .section .data
+            .align 8
+        replacement_argv:
+            .quad replacement_argv0, 0
+        "#,
+        alias = alias.display(),
+        argv0 = ARGV0,
+    );
+    let launcher = compile_assembly_program(&root.0, "symlink-exec-launcher", &root_source);
+    let launcher_image = std::fs::read(&launcher).unwrap();
+    let launcher = launcher.to_str().unwrap();
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf_with_context(&launcher_image, &[launcher], &[], &root.0)
+        .unwrap();
+
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    let expected = format!("{}\n{ARGV0}\n", target.canonicalize().unwrap().display());
+    assert_eq!(code, 0);
+    assert_eq!(stdout, expected.as_bytes());
+    assert!(stderr.is_empty());
+}
+
+#[test]
+fn repeated_self_exec_preserves_executable_identity_argv_and_envp() {
+    if !leader_self_exec_bounded("repeated_self_exec_preserves_executable_identity_argv_and_envp") {
+        return;
+    }
+
+    const ROOT_PID: i32 = 37;
+    const FIRST_ARGV0: &str = "first-non-path-argv0";
+    const FIRST_ARGV1: &str = "stage-one-argument";
+    const FIRST_ENVP0: &str = "FIRST_ENV=preserved";
+    const SECOND_ARGV0: &str = "second-non-path-argv0";
+    const SECOND_ARGV1: &str = "stage-two-argument";
+    const SECOND_ARGV2: &str = "final-argument";
+    const SECOND_ENVP0: &str = "SECOND_ENV=preserved";
+    const STAGE_ONE_MARKER: &str = "stage-one\n";
+    const STAGE_TWO_MARKER: &str = "stage-two\n";
+
+    let source = r#"
+        .global _start
+        .text
+    _start:
+        cmpq $1, (%rsp)
+        je initial_exec
+        cmpq $2, (%rsp)
+        je after_first_exec
+        cmpq $3, (%rsp)
+        je after_second_exec
+        mov $99, %edi
+        jmp exit_with_code
+
+    initial_exec:
+        lea self_path(%rip), %rdi
+        lea first_argv(%rip), %rsi
+        lea first_envp(%rip), %rdx
+        mov $59, %eax
+        syscall
+        jmp exit_with_errno
+
+    after_first_exec:
+        lea stage_one_marker(%rip), %rsi
+        mov $10, %edx
+        call write_buffer
+        lea self_path(%rip), %rdi
+        call write_link
+        lea numeric_path(%rip), %rdi
+        call write_link
+
+        mov 8(%rsp), %rsi
+        mov $20, %edx
+        call write_buffer
+        call write_newline
+        mov 16(%rsp), %rsi
+        mov $18, %edx
+        call write_buffer
+        call write_newline
+        mov 32(%rsp), %rsi
+        mov $19, %edx
+        call write_buffer
+        call write_newline
+
+        lea numeric_path(%rip), %rdi
+        lea second_argv(%rip), %rsi
+        lea second_envp(%rip), %rdx
+        mov %rdx, %r10
+        mov %rsi, %rdx
+        mov %rdi, %rsi
+        mov $-100, %rdi
+        xor %r8d, %r8d
+        mov $322, %eax
+        syscall
+        jmp exit_with_errno
+
+    after_second_exec:
+        lea stage_two_marker(%rip), %rsi
+        mov $10, %edx
+        call write_buffer
+        lea self_path(%rip), %rdi
+        call write_link
+        lea numeric_path(%rip), %rdi
+        call write_link
+
+        mov 8(%rsp), %rsi
+        mov $21, %edx
+        call write_buffer
+        call write_newline
+        mov 16(%rsp), %rsi
+        mov $18, %edx
+        call write_buffer
+        call write_newline
+        mov 24(%rsp), %rsi
+        mov $14, %edx
+        call write_buffer
+        call write_newline
+        mov 40(%rsp), %rsi
+        mov $20, %edx
+        call write_buffer
+        call write_newline
+        xor %edi, %edi
+        jmp exit_with_code
+
+    write_link:
+        lea link_buffer(%rip), %rsi
+        mov $4096, %edx
+        mov $89, %eax
+        syscall
+        test %rax, %rax
+        js exit_with_errno
+        mov %eax, %edx
+        lea link_buffer(%rip), %rsi
+        call write_buffer
+        jmp write_newline
+
+    write_buffer:
+        mov $1, %edi
+        mov $1, %eax
+        syscall
+        ret
+
+    write_newline:
+        mov $1, %edi
+        lea newline(%rip), %rsi
+        mov $1, %edx
+        mov $1, %eax
+        syscall
+        ret
+
+    exit_with_errno:
+        neg %eax
+        mov %eax, %edi
+    exit_with_code:
+        mov $231, %eax
+        syscall
+
+        .section .rodata
+    self_path:
+        .asciz "/proc/self/exe"
+    numeric_path:
+        .asciz "/proc/37/exe"
+    first_argv0:
+        .asciz "first-non-path-argv0"
+    first_argv1:
+        .asciz "stage-one-argument"
+    first_envp0:
+        .asciz "FIRST_ENV=preserved"
+    second_argv0:
+        .asciz "second-non-path-argv0"
+    second_argv1:
+        .asciz "stage-two-argument"
+    second_argv2:
+        .asciz "final-argument"
+    second_envp0:
+        .asciz "SECOND_ENV=preserved"
+    stage_one_marker:
+        .ascii "stage-one\n"
+    stage_two_marker:
+        .ascii "stage-two\n"
+    newline:
+        .ascii "\n"
+
+        .section .data
+        .align 8
+    first_argv:
+        .quad first_argv0, first_argv1, 0
+    first_envp:
+        .quad first_envp0, 0
+    second_argv:
+        .quad second_argv0, second_argv1, second_argv2, 0
+    second_envp:
+        .quad second_envp0, 0
+
+        .section .bss
+        .align 8
+    link_buffer:
+        .skip 4096
+    "#;
+
+    let root = TestDirectory::new();
+    let executable = compile_assembly_program(&root.0, "repeated-self-exec", source);
+    let image = std::fs::read(&executable).unwrap();
+    let executable = executable.to_str().unwrap();
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend.set_root_pid(ROOT_PID).unwrap();
+    backend
+        .install_static_elf_with_context(&image, &[executable], &["INITIAL=1"], &root.0)
+        .unwrap();
+
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    let expected = format!(
+        "{STAGE_ONE_MARKER}{executable}\n{executable}\n{FIRST_ARGV0}\n{FIRST_ARGV1}\n{FIRST_ENVP0}\n\
+         {STAGE_TWO_MARKER}{executable}\n{executable}\n{SECOND_ARGV0}\n{SECOND_ARGV1}\n\
+         {SECOND_ARGV2}\n{SECOND_ENVP0}\n"
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, expected.as_bytes());
+    assert!(stderr.is_empty());
+}
+
+#[test]
+fn exec_comm_tracks_the_requested_filename_independently_of_exe_target_and_argv0() {
+    if !leader_self_exec_bounded(
+        "exec_comm_tracks_the_requested_filename_independently_of_exe_target_and_argv0",
+    ) {
+        return;
+    }
+
+    let root = TestDirectory::new();
+    let target = compile_c_program(
+        &root.0,
+        "actual-name",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+
+extern char **environ;
+
+static int write_all(const char *bytes, size_t length) {
+  while (length != 0) {
+    ssize_t written = write(STDOUT_FILENO, bytes, length);
+    if (written <= 0) return -1;
+    bytes += written;
+    length -= (size_t)written;
+  }
+  return 0;
+}
+
+static int print_identity(const char *argv0) {
+  char link[4096];
+  ssize_t link_length = readlink("/proc/self/exe", link, sizeof(link));
+  if (link_length < 0 || write_all(link, (size_t)link_length) != 0 ||
+      write_all("\n", 1) != 0) return -1;
+
+  int fd = open("/proc/self/stat", O_RDONLY);
+  char stat[4096];
+  ssize_t length = fd < 0 ? -1 : read(fd, stat, sizeof(stat) - 1);
+  if (fd >= 0) close(fd);
+  if (length <= 0) return -1;
+  stat[length] = 0;
+  char *left = strchr(stat, '(');
+  char *right = strrchr(stat, ')');
+  if (left == NULL || right == NULL || right <= left ||
+      write_all(left + 1, (size_t)(right - left - 1)) != 0 ||
+      write_all("\n", 1) != 0 || write_all(argv0, strlen(argv0)) != 0 ||
+      write_all("\n", 1) != 0) return -1;
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  if (print_identity(argv[0]) != 0) return 20;
+  if (argc == 1) {
+    char *next[] = {"second-argv-zero", "after-self-exec", NULL};
+    execve("/proc/self/exe", next, environ);
+    return errno;
+  }
+  return argc == 2 && strcmp(argv[1], "after-self-exec") == 0 ? 0 : 21;
+}
+"#,
+    );
+    let alias = root.0.join("alias-name");
+    std::os::unix::fs::symlink(&target, &alias).unwrap();
+    let launcher_source = format!(
+        r#"
+#include <errno.h>
+#include <unistd.h>
+
+int main(void) {{
+  char *argv[] = {{"not-the-path", NULL}};
+  char *envp[] = {{NULL}};
+  execve("{}", argv, envp);
+  return errno;
+}}
+"#,
+        alias.display(),
+    );
+    let launcher = compile_c_program(&root.0, "comm-launcher", &launcher_source);
+    let launcher = launcher.to_str().unwrap();
+    let (stdout, stderr) = run_host_program_captured(launcher, &[launcher], &root.0);
+    let target = target.canonicalize().unwrap();
+    let expected = format!(
+        "{target}\nalias-name\nnot-the-path\n{target}\nexe\nsecond-argv-zero\n",
+        target = target.display(),
+    );
+    assert_eq!(stdout, expected.as_bytes());
+    assert!(stderr.is_empty());
+}
+
+fn leader_self_exec_bounded(test: &str) -> bool {
+    if !kvm_available(test) {
+        return false;
+    }
+    if std::env::var("REVERIE_LEADER_EXEC_CHILD").as_deref() == Ok(test) {
+        return true;
+    }
+    let output = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "30s"])
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture"])
+        .env("REVERIE_LEADER_EXEC_CHILD", test)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{test}: status={:?} stdout={} stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    false
+}
+
+fn leader_self_exec_guest(
+    directory: &std::path::Path,
+    program: &std::path::Path,
+    arguments: &[&str],
+    expected: &[u8],
+) {
+    let image = std::fs::read(program).unwrap();
+    let mut argv = vec![program.to_str().unwrap()];
+    argv.extend_from_slice(arguments);
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(&image, &argv, &[], directory)
+        .unwrap();
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!(
+        code,
+        0,
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    );
+    assert_eq!(stdout, expected);
+    assert!(
+        stderr.is_empty(),
+        "stderr={}",
+        String::from_utf8_lossy(&stderr)
+    );
+}
+
+fn leader_self_exec_identity_control(test: &str, case: &str) {
+    if !leader_self_exec_bounded(test) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "running-image",
+        LEADER_SELF_EXEC_IDENTITY_PROGRAM,
+    );
+    compile_c_program(
+        &directory.0,
+        "running-image.replacement",
+        "int main(void) { return 77; }",
+    );
+    let expected = if case == "noexec" {
+        "exec_returned errno=13 comm_full16_preserved=1\n".to_owned()
+    } else {
+        format!(
+            "identity=1 link_full4096=1 argv=1 comm_full16=1 comm=657865{}\n",
+            "00".repeat(13)
+        )
+    };
+    leader_self_exec_guest(&directory.0, &program, &[case], expected.as_bytes());
+}
+
+fn leader_self_exec_name_control(test: &str, case: &str) {
+    if !leader_self_exec_bounded(test) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "actual-image-name-longer-than-15",
+        LEADER_SELF_EXEC_NAME_PROGRAM,
+    );
+    let invoked = match case {
+        "direct" => program.clone(),
+        "alias" => {
+            let alias = directory.0.join("chosen-alias");
+            std::os::unix::fs::symlink(&program, &alias).unwrap();
+            alias
+        }
+        "script" => {
+            use std::os::unix::fs::PermissionsExt;
+            let script = directory.0.join("chosen-script");
+            std::fs::write(&script, format!("#!{}\n", program.display())).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            script
+        }
+        _ => unreachable!(),
+    };
+    let name = invoked.file_name().unwrap().to_str().unwrap();
+    let mut expected_name = [0u8; 16];
+    let count = name.len().min(15);
+    expected_name[..count].copy_from_slice(&name.as_bytes()[..count]);
+    let hex = expected_name
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let expected = format!("comm_full16=1 comm={hex}\n");
+    leader_self_exec_guest(
+        &directory.0,
+        &program,
+        &[invoked.to_str().unwrap(), name],
+        expected.as_bytes(),
+    );
+}
+
+fn leader_self_exec_mutable_control(test: &str, method: &str, case: &str) {
+    if !leader_self_exec_bounded(test) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "running-image",
+        LEADER_SELF_EXEC_MUTABLE_PROGRAM,
+    );
+    compile_c_program(&directory.0, "replacement", "int main(void) { return 77; }");
+    let alias = directory.0.join("alias\n\\stage");
+    std::os::unix::fs::symlink(&program, &alias).unwrap();
+    let (mutation, request, name) = if case == "alias" {
+        ("normal", alias.to_str().unwrap(), "alias\n\\stage")
+    } else {
+        (case, "/proc/self/exe", "exe")
+    };
+    let expected = format!(
+        "method={method} mutation={mutation} name-reset argv-env image identity mutable-name thread checks=PASS\n"
+    );
+    leader_self_exec_guest(
+        &directory.0,
+        &program,
+        &[method, mutation, request, name, program.to_str().unwrap()],
+        expected.as_bytes(),
+    );
+}
+
+#[test]
+fn leader_self_exec_identity_plain() {
+    leader_self_exec_identity_control("leader_self_exec_identity_plain", "plain");
+}
+
+#[test]
+fn leader_self_exec_identity_unlink() {
+    leader_self_exec_identity_control("leader_self_exec_identity_unlink", "unlink");
+}
+
+#[test]
+fn leader_self_exec_identity_replace() {
+    leader_self_exec_identity_control("leader_self_exec_identity_replace", "replace");
+}
+
+#[test]
+fn leader_self_exec_identity_noexec() {
+    leader_self_exec_identity_control("leader_self_exec_identity_noexec", "noexec");
+}
+
+#[test]
+fn leader_self_exec_identity_execute_only() {
+    leader_self_exec_identity_control("leader_self_exec_identity_execute_only", "execute-only");
+}
+
+#[test]
+fn leader_self_exec_name_direct() {
+    leader_self_exec_name_control("leader_self_exec_name_direct", "direct");
+}
+
+#[test]
+fn leader_self_exec_name_alias() {
+    leader_self_exec_name_control("leader_self_exec_name_alias", "alias");
+}
+
+#[test]
+fn leader_self_exec_name_script() {
+    leader_self_exec_name_control("leader_self_exec_name_script", "script");
+}
+
+#[test]
+fn leader_self_exec_mutable_0_normal() {
+    leader_self_exec_mutable_control("leader_self_exec_mutable_0_normal", "0", "normal");
+}
+
+#[test]
+fn leader_self_exec_mutable_0_alias() {
+    leader_self_exec_mutable_control("leader_self_exec_mutable_0_alias", "0", "alias");
+}
+
+#[test]
+fn leader_self_exec_mutable_0_unlink() {
+    leader_self_exec_mutable_control("leader_self_exec_mutable_0_unlink", "0", "unlink");
+}
+
+#[test]
+fn leader_self_exec_mutable_0_replace() {
+    leader_self_exec_mutable_control("leader_self_exec_mutable_0_replace", "0", "replace");
+}
+
+#[test]
+fn leader_self_exec_mutable_1_normal() {
+    leader_self_exec_mutable_control("leader_self_exec_mutable_1_normal", "1", "normal");
+}
+
+#[test]
+fn leader_self_exec_mutable_1_alias() {
+    leader_self_exec_mutable_control("leader_self_exec_mutable_1_alias", "1", "alias");
+}
+
+#[test]
+fn leader_self_exec_mutable_1_unlink() {
+    leader_self_exec_mutable_control("leader_self_exec_mutable_1_unlink", "1", "unlink");
+}
+
+#[test]
+fn leader_self_exec_mutable_1_replace() {
+    leader_self_exec_mutable_control("leader_self_exec_mutable_1_replace", "1", "replace");
+}
+
+const LEADER_SELF_EXEC_IDENTITY_PROGRAM: &str = r###"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/prctl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+    const char *stage = getenv("W12_STAGE");
+    if (stage) {
+        struct stat actual;
+        if (stat("/proc/self/exe", &actual)) return 50;
+        int identity = (unsigned long long)actual.st_dev == strtoull(getenv("W12_DEV"), NULL, 10)
+            && (unsigned long long)actual.st_ino == strtoull(getenv("W12_INO"), NULL, 10);
+        unsigned char comm[16], expected_comm[16] = {'e','x','e',0};
+        memset(comm, 0x5a, sizeof(comm));
+        if (prctl(PR_GET_NAME, comm)) return 51;
+        unsigned char actual_link[PATH_MAX], expected_link[PATH_MAX];
+        memset(actual_link, 0x5a, sizeof(actual_link));
+        memset(expected_link, 0x5a, sizeof(expected_link));
+        const char *expected = getenv("W12_LINK");
+        size_t length = strlen(expected);
+        if (length >= sizeof(expected_link)) return 52;
+        memcpy(expected_link, expected, length);
+        ssize_t count = readlink("/proc/self/exe", (char *)actual_link, sizeof(actual_link));
+        int link_equal = count == (ssize_t)length && !memcmp(actual_link, expected_link, sizeof(actual_link));
+        int argv_equal = argc == 2 && !strcmp(argv[0], "not-the-image") && !strcmp(argv[1], "after");
+        int comm_equal = !memcmp(comm, expected_comm, sizeof(comm));
+        printf("identity=%d link_full4096=%d argv=%d comm_full16=%d comm=", identity, link_equal, argv_equal, comm_equal);
+        for (size_t index=0; index<sizeof(comm); ++index) printf("%02x", comm[index]);
+        putchar('\n');
+        return identity && link_equal && argv_equal && comm_equal ? 0 : 53;
+    }
+    if (argc != 2) return 10;
+    struct stat before;
+    if (stat("/proc/self/exe", &before)) return 11;
+    int deleted = !strcmp(argv[1], "unlink") || !strcmp(argv[1], "replace");
+    char link[PATH_MAX+32], dev[96], inode[96];
+    if (snprintf(link,sizeof(link),"W12_LINK=%s%s",argv[0],deleted ? " (deleted)" : "") >= (int)sizeof(link)) return 12;
+    snprintf(dev,sizeof(dev),"W12_DEV=%llu",(unsigned long long)before.st_dev);
+    snprintf(inode,sizeof(inode),"W12_INO=%llu",(unsigned long long)before.st_ino);
+    if (!strcmp(argv[1], "unlink") && unlink(argv[0])) return 13;
+    if (!strcmp(argv[1], "replace")) {
+        char replacement[PATH_MAX];
+        if (snprintf(replacement,sizeof(replacement),"%s.replacement",argv[0]) >= (int)sizeof(replacement)) return 14;
+        if (rename(replacement,argv[0])) return 15;
+    }
+    if (!strcmp(argv[1], "noexec") && chmod(argv[0],0600)) return 16;
+    if (!strcmp(argv[1], "execute-only") && chmod(argv[0],0100)) return 22;
+    if (prctl(PR_SET_NAME,"before-reexec")) return 17;
+    char *arguments[] = {"not-the-image", "after", NULL};
+    char *environment[] = {"W12_STAGE=1", dev, inode, link, NULL};
+    errno=0;
+    execve("/proc/self/exe", arguments, environment);
+    int error=errno;
+    unsigned char comm[16], expected_comm[16] = "before-reexec";
+    memset(comm,0x5a,sizeof(comm));
+    if (prctl(PR_GET_NAME,comm)) return 18;
+    int preserved=!memcmp(comm,expected_comm,sizeof(comm));
+    printf("exec_returned errno=%d comm_full16_preserved=%d\n",error,preserved);
+    if (!strcmp(argv[1], "noexec")) return error == EACCES && preserved ? 0 : 19;
+    return 20;
+}
+"###;
+
+const LEADER_SELF_EXEC_NAME_PROGRAM: &str = r###"
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/prctl.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+    const char *expected = getenv("W12_EXPECT_NAME");
+    if (expected) {
+        unsigned char actual[16], wanted[16] = {0};
+        size_t length = strlen(expected);
+        if (length > 15) length = 15;
+        memcpy(wanted, expected, length);
+        memset(actual,0x5a,sizeof(actual));
+        if (prctl(PR_GET_NAME,actual)) return 20;
+        int equal=!memcmp(actual,wanted,sizeof(actual));
+        printf("comm_full16=%d comm=",equal);
+        for (size_t index=0; index<sizeof(actual); ++index) printf("%02x",actual[index]);
+        putchar('\n');
+        return equal ? 0 : 21;
+    }
+    if (argc != 3) return 10;
+    if (prctl(PR_SET_NAME,"mutated-before")) return 11;
+    char setting[256];
+    if (snprintf(setting,sizeof(setting),"W12_EXPECT_NAME=%s",argv[2]) >= (int)sizeof(setting)) return 12;
+    char *arguments[] = {"misleading-argv0", "payload", NULL};
+    char *environment[] = {setting,NULL};
+    execve(argv[1],arguments,environment);
+    perror("execve");
+    return 13;
+}
+"###;
+
+const LEADER_SELF_EXEC_MUTABLE_PROGRAM: &str = r###"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+static volatile unsigned image_value = 0x12345678;
+static const char renamed[] = "after\n\\name";
+static int failures;
+static void require(int condition, const char *what) {
+    if (!condition) { printf("FAIL %s errno=%d\n", what, errno); ++failures; }
+}
+static int name_is(const char *name) {
+    unsigned char actual[64], expected[64];
+    memset(actual, 0x5a, sizeof(actual)); memset(expected, 0x5a, sizeof(expected));
+    memset(expected, 0, 16); memcpy(expected, name, strlen(name) < 15 ? strlen(name) : 15);
+    return prctl(PR_GET_NAME, actual, 0, 0, 0) == 0 && !memcmp(actual, expected, sizeof(actual));
+}
+static int status_name_is(const char *name) {
+    unsigned char actual[16384]; memset(actual, 0x5a, sizeof(actual));
+    char expected[128] = "Name:\t"; size_t expected_length = 6;
+    for (size_t index = 0; name[index] && index < 15; ++index) {
+        if (name[index] == '\n') { expected[expected_length++] = '\\'; expected[expected_length++] = 'n'; }
+        else if (name[index] == '\\') { expected[expected_length++] = '\\'; expected[expected_length++] = '\\'; }
+        else expected[expected_length++] = name[index];
+    }
+    expected[expected_length++] = '\n';
+    int descriptor = open("/proc/self/status", O_RDONLY | O_CLOEXEC);
+    if (descriptor < 0) return 0;
+    ssize_t count = read(descriptor, actual, sizeof(actual)); close(descriptor);
+    if (count < (ssize_t)expected_length || memcmp(actual, expected, expected_length)) return 0;
+    for (size_t index = (size_t)count; index < sizeof(actual); ++index) if (actual[index] != 0x5a) return 0;
+    return 1;
+}
+static void *thread_name(void *unused) {
+    (void)unused;
+    if (!name_is(renamed) || prctl(PR_SET_NAME, "worker-private", 0, 0, 0) || !name_is("worker-private") || !status_name_is(renamed)) return (void *)1;
+    return NULL;
+}
+static long execute(int method, const char *path, char **arguments, char **environment) {
+    if (method) return syscall(SYS_execveat, AT_FDCWD, path, arguments, environment, 0);
+    return syscall(SYS_execve, path, arguments, environment);
+}
+int main(int argc, char **argv) {
+    if (argc == 7 && !strcmp(argv[1], "after")) {
+        require(!strcmp(argv[0], "different-argv-zero") && !strcmp(argv[6], "argument-retained"), "argv bytes");
+        require(getenv("LEADER_TEST_ENV") && !strcmp(getenv("LEADER_TEST_ENV"), "preserved"), "environment");
+        require(image_value == 0x12345678, "new image data reset");
+        require(name_is(argv[3]), "native exec filename name reset");
+        require(status_name_is(argv[3]), "initial status name");
+        unsigned char actual[4096], expected[4096];
+        memset(actual, 0x5a, sizeof(actual)); memset(expected, 0x5a, sizeof(expected));
+        size_t expected_length = strlen(argv[4]); memcpy(expected, argv[4], expected_length);
+        if (strcmp(argv[5], "normal")) { memcpy(expected+expected_length, " (deleted)", 10); expected_length += 10; }
+        ssize_t length = readlink("/proc/self/exe", (char *)actual, sizeof(actual));
+        require(length == (ssize_t)expected_length && !memcmp(actual, expected, sizeof(actual)), "retained executable identity full4096");
+        require(prctl(PR_SET_NAME, renamed, 0, 0, 0) == 0 && name_is(renamed), "mutable name after exec full64");
+        require(status_name_is(renamed), "escaped status after exec");
+        pthread_t worker; void *result = (void *)1;
+        int created = pthread_create(&worker, NULL, thread_name, NULL);
+        require(created == 0, "post-exec thread creation");
+        if (!created) require(pthread_join(worker, &result) == 0 && result == NULL, "per-thread name and leader status");
+        require(name_is(renamed) && status_name_is(renamed), "leader name preserved after thread");
+        printf("method=%s mutation=%s name-reset argv-env image identity mutable-name thread checks=%s\n", argv[2], argv[5], failures ? "FAIL" : "PASS");
+        return failures ? 1 : 0;
+    }
+    if (argc != 6) return 90;
+    int method = atoi(argv[1]);
+    require(prctl(PR_SET_NAME, "before-exec", 0, 0, 0) == 0 && name_is("before-exec"), "pre-exec name");
+    image_value = 0x87654321;
+    char *environment[] = {"LEADER_TEST_ENV=preserved", "PATH=/usr/bin:/bin", NULL};
+    char *arguments[] = {"different-argv-zero", "after", argv[1], argv[4], argv[5], argv[2], "argument-retained", NULL};
+    if (!strcmp(argv[2], "unlink")) require(unlink(argv[5]) == 0, "unlink current image");
+    if (!strcmp(argv[2], "replace")) require(rename("replacement", argv[5]) == 0, "replace current image");
+    if (failures) return 91;
+    execute(method, argv[3], arguments, environment);
+    printf("FAIL exec returned method=%d errno=%d name-unchanged=%d\n", method, errno, name_is("before-exec"));
+    return 92;
+}
+"###;
+
+#[test]
 fn proc_root_retains_fchmodat2_native_control() {
     assert!(kvm_available("proc_root_retains_fchmodat2_native_control"));
     let directory = TestDirectory::new();

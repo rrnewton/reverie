@@ -226,6 +226,9 @@ pub(crate) struct LoadedStaticElf {
     pub mmap_base: u64,
     pub mmap_next: u64,
     pub mmap_limit: u64,
+    pub executable_path: PathBuf,
+    pub executable_file: Option<std::sync::Arc<std::fs::File>>,
+    pub executable_image: std::sync::Arc<[u8]>,
     pub argv0: Vec<u8>,
     pub cwd: PathBuf,
     pub cwd_fd: std::fs::File,
@@ -355,6 +358,9 @@ impl LoadedStaticElf {
             mmap_base: self.mmap_base,
             mmap_next: self.mmap_next,
             mmap_limit: self.mmap_limit,
+            executable_path: self.executable_path.clone(),
+            executable_file: self.executable_file.clone(),
+            executable_image: self.executable_image.clone(),
             argv0: self.argv0.clone(),
             cwd: self.cwd.clone(),
             cwd_fd: self.cwd_fd.try_clone()?,
@@ -732,7 +738,13 @@ fn load_executable(
     let executable_path =
         resolve_executable_path(argv0, envp, cwd).unwrap_or_else(|_| PathBuf::from(argv0));
     let thread_name = initial_thread_name(&executable_path);
-    let argv0 = executable_path.to_string_lossy().into_owned().into_bytes();
+    let executable_file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+        .open(&executable_path)
+        .ok()
+        .map(std::sync::Arc::new);
+    let argv0 = argv0.as_bytes().to_vec();
 
     Ok(LoadedStaticElf {
         entry_point,
@@ -743,6 +755,9 @@ fn load_executable(
         mmap_base: mmap_next,
         mmap_next,
         mmap_limit,
+        executable_path,
+        executable_file,
+        executable_image: std::sync::Arc::from(image),
         argv0,
         cwd: cwd.to_owned(),
         cwd_fd,

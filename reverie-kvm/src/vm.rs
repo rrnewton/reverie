@@ -7,6 +7,7 @@
  */
 
 use std::fs::File;
+use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::path::Path;
 use std::sync::Arc;
@@ -790,7 +791,7 @@ impl KvmBackend {
     pub(crate) fn exec_process(
         &mut self,
         executor: &mut ElfExecutor,
-        executable_path: &Path,
+        executable: (&Path, Option<Arc<File>>),
         image: &[u8],
         argv: &[String],
         envp: &[String],
@@ -809,6 +810,12 @@ impl KvmBackend {
         let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
         let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
         let mut loaded = load_static_elf(&mut self.memory, image, &argv, &envp, executor.cwd())?;
+        let (executable_path, executable_file) = executable;
+        loaded.executable_path = executable_file
+            .as_ref()
+            .and_then(|file| std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok())
+            .unwrap_or_else(|| executable_path.to_owned());
+        loaded.executable_file = executable_file;
         let thread_name = initial_thread_name(executable_path);
         loaded.thread_name = thread_name;
         *loaded
@@ -1060,6 +1067,7 @@ impl KvmBackend {
             }
             ProcessAction::Exec {
                 executable_path,
+                executable_file,
                 image,
                 argv,
                 envp,
@@ -1097,7 +1105,13 @@ impl KvmBackend {
                 // alive lets it execute stale instructions in the replacement
                 // image and can turn an otherwise successful exec into a fault.
                 self.cancel_guest_threads();
-                let result = self.exec_process(executor, &executable_path, &image, &argv, &envp);
+                let result = self.exec_process(
+                    executor,
+                    (&executable_path, executable_file),
+                    &image,
+                    &argv,
+                    &envp,
+                );
                 self.thread_group.rearm_after_exec();
                 result?;
             }
@@ -2037,6 +2051,7 @@ mod tests {
             &mut executor,
             ProcessAction::Exec {
                 executable_path: Path::new("/worker-exec-guard").to_owned(),
+                executable_file: None,
                 image,
                 argv: vec!["/worker-exec-guard".to_owned()],
                 envp: Vec::new(),

@@ -223,6 +223,7 @@ pub(crate) enum ProcessAction {
     },
     Exec {
         executable_path: std::path::PathBuf,
+        executable_file: Option<Arc<std::fs::File>>,
         image: Vec<u8>,
         argv: Vec<String>,
         envp: Vec<String>,
@@ -1476,37 +1477,13 @@ impl ElfExecutor {
             Ok(envp) => envp,
             Err(error) => return error,
         };
-        let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(path));
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-kvm-execve-path): PATH resolution for a
-        // slash-less execve program name. A bare name such as
-        // `execve("bash", ...)` must be searched on PATH the same way the
-        // initial ELF loader (elf::resolve_executable_path) and libc's execvp
-        // do; joining a bare name onto cwd yields ENOENT and breaks every
-        // KVM-backend corpus example launched by bare name (bash/python3).
-        // Under the ptrace backend the initial launcher resolves the program
-        // via execvp before the guest starts, so this restores parity for the
-        // initial exec that Detcore re-injects with a rewritten path pointer.
-        // Names that already contain a slash keep exact execve(2) semantics
-        // (absolute used as-is, relative resolved against cwd) and are NOT
-        // PATH-searched.
-        let path = if path.is_absolute() || path.components().count() > 1 {
-            if path.is_absolute() {
-                path
-            } else {
-                self.state.cwd.join(path)
-            }
-        } else {
-            let envp_refs = envp.iter().map(String::as_str).collect::<Vec<_>>();
-            match resolve_executable_path(&path.to_string_lossy(), &envp_refs, &self.state.cwd) {
-                Ok(resolved) => resolved,
-                Err(_) => return negative_errno(libc::ENOENT),
-            }
+        let executable = match resolve_guest_exec_image(&self.state, path, &envp) {
+            Ok(executable) => executable,
+            Err(error) => return error,
         };
-        let image = match std::fs::read(&path) {
-            Ok(image) => image,
-            Err(error) => return io_error(error),
-        };
+        let path = executable.path;
+        let image = executable.image;
+        let mut executable_file = executable.file;
         let argv = if argv.is_empty() {
             vec![path.to_string_lossy().into_owned()]
         } else {
@@ -1517,7 +1494,11 @@ impl ElfExecutor {
         // execs a `#!`-script must have its interpreter resolved here, as the
         // kernel's binfmt_script loader does.
         let executable_path = path.clone();
-        let (image, argv) = match resolve_exec_shebang(path, image, argv) {
+        let (image, argv) = match resolve_exec_shebang(path, image, argv, |interpreter| {
+            let resolved = read_executable_file(&self.state, interpreter)?;
+            executable_file = resolved.file;
+            Ok(resolved.image)
+        }) {
             Ok((_interpreter, image, argv)) => (image, argv),
             Err(errno) => return errno,
         };
@@ -1550,6 +1531,7 @@ impl ElfExecutor {
         }
         self.process_action = Some(ProcessAction::Exec {
             executable_path,
+            executable_file,
             image,
             argv,
             envp,
@@ -2263,6 +2245,92 @@ fn ensure_directory(file: &std::fs::File) -> Result<(), i64> {
     Ok(())
 }
 
+#[derive(Debug)]
+struct ResolvedExecutable {
+    path: std::path::PathBuf,
+    file: Option<Arc<std::fs::File>>,
+    image: Vec<u8>,
+}
+
+fn read_executable_file(
+    state: &LoadedStaticElf,
+    path: &std::path::Path,
+) -> Result<ResolvedExecutable, i64> {
+    use std::io::Read;
+    let pinned = open_metadata_path(state, libc::AT_FDCWD, path.as_os_str().as_bytes(), false)?;
+    let mut file =
+        std::fs::File::open(format!("/proc/self/fd/{}", pinned.as_raw_fd())).map_err(io_error)?;
+    let mut image = Vec::new();
+    file.read_to_end(&mut image).map_err(io_error)?;
+    Ok(ResolvedExecutable {
+        path: path.to_owned(),
+        file: Some(Arc::new(file)),
+        image,
+    })
+}
+
+fn resolve_guest_exec_image(
+    state: &LoadedStaticElf,
+    path: Vec<u8>,
+    envp: &[String],
+) -> Result<ResolvedExecutable, i64> {
+    match guest_proc_exe_path(state, &path) {
+        Some(true) => {
+            let file = state
+                .executable_file
+                .as_ref()
+                .ok_or_else(|| negative_errno(libc::ENOENT))?;
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_faccessat2,
+                    file.as_raw_fd(),
+                    c"".as_ptr(),
+                    libc::X_OK,
+                    libc::AT_EMPTY_PATH | libc::AT_EACCESS,
+                )
+            };
+            if result != 0 {
+                return Err(io_error(std::io::Error::last_os_error()));
+            }
+            return Ok(ResolvedExecutable {
+                path: std::path::PathBuf::from(std::ffi::OsString::from_vec(path)),
+                file: Some(file.clone()),
+                image: state.executable_image.to_vec(),
+            });
+        }
+        Some(false) => return Err(negative_errno(libc::ENOENT)),
+        None => {}
+    }
+    let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(path));
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-kvm-execve-path): PATH resolution for a
+    // slash-less execve program name. A bare name such as
+    // `execve("bash", ...)` must be searched on PATH the same way the
+    // initial ELF loader (elf::resolve_executable_path) and libc's execvp
+    // do; joining a bare name onto cwd yields ENOENT and breaks every
+    // KVM-backend corpus example launched by bare name (bash/python3).
+    // Under the ptrace backend the initial launcher resolves the program
+    // via execvp before the guest starts, so this restores parity for the
+    // initial exec that Detcore re-injects with a rewritten path pointer.
+    // Names that already contain a slash keep exact execve(2) semantics
+    // (absolute used as-is, relative resolved against cwd) and are NOT
+    // PATH-searched.
+    let path = if path.is_absolute() || path.components().count() > 1 {
+        if path.is_absolute() {
+            path
+        } else {
+            state.cwd.join(path)
+        }
+    } else {
+        let envp_refs = envp.iter().map(String::as_str).collect::<Vec<_>>();
+        match resolve_executable_path(&path.to_string_lossy(), &envp_refs, &state.cwd) {
+            Ok(resolved) => resolved,
+            Err(_) => return Err(negative_errno(libc::ENOENT)),
+        }
+    };
+    read_executable_file(state, &path)
+}
+
 /// Maximum `#!` interpreter indirection levels, matching the Linux kernel's
 /// `BINPRM_MAX_RECURSION` limit for chained script interpreters.
 const MAX_SHEBANG_DEPTH: usize = 4;
@@ -2280,6 +2348,7 @@ fn resolve_exec_shebang(
     mut path: std::path::PathBuf,
     mut image: Vec<u8>,
     mut argv: Vec<String>,
+    mut read_interpreter: impl FnMut(&std::path::Path) -> Result<Vec<u8>, i64>,
 ) -> Result<(std::path::PathBuf, Vec<u8>, Vec<String>), i64> {
     let mut depth = 0;
     while image.starts_with(b"#!") {
@@ -2320,7 +2389,7 @@ fn resolve_exec_shebang(
         argv = rewritten;
 
         path = interpreter;
-        image = std::fs::read(&path).map_err(io_error)?;
+        image = read_interpreter(&path)?;
     }
     Ok((path, image, argv))
 }
@@ -6805,9 +6874,23 @@ fn fstatat_impl(
         let stat = synthetic_guest_fd_symlink_stat(metadata.guest_fd);
         return write_struct(memory, output_address, &stat);
     }
+    let executable = if flags & libc::AT_SYMLINK_NOFOLLOW == 0 {
+        match guest_proc_exe_path(state, &path) {
+            Some(true) => match state.executable_file.as_ref() {
+                Some(file) => Some(file.as_raw_fd()),
+                None => return negative_errno(libc::ENOENT),
+            },
+            Some(false) => return negative_errno(libc::ENOENT),
+            None => None,
+        }
+    } else {
+        None
+    };
     let opened_file;
     let host_fd = if let Some(metadata) = guest_path {
         metadata.host_fd
+    } else if let Some(descriptor) = executable {
+        descriptor
     } else if path.is_empty() {
         let Ok((host_fd, _)) = host_dirfd_and_path(state, guest_dirfd, &path) else {
             return negative_errno(libc::EBADF);
@@ -6852,7 +6935,20 @@ fn fstatat_impl(
             sanitize_stat_timestamps(&mut stat);
         }
     }
-    write_struct(memory, output_address, &stat)
+    if executable.is_some() {
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::from_ref(&stat).cast::<u8>(),
+                std::mem::size_of::<libc::stat>(),
+            )
+        };
+        match memory.copy_to_user(output_address, bytes) {
+            Ok(()) => 0,
+            Err(_) => negative_errno(libc::EFAULT),
+        }
+    } else {
+        write_struct(memory, output_address, &stat)
+    }
 }
 
 fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -7895,6 +7991,49 @@ fn synthetic_proc_relative_path(
     let mut resolved = b"/proc/".to_vec();
     resolved.extend_from_slice(path);
     Some(resolved)
+}
+
+fn parse_proc_id(component: &[u8]) -> Option<i32> {
+    if component.is_empty() || !component.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    component.iter().try_fold(0_i32, |value, digit| {
+        value.checked_mul(10)?.checked_add(i32::from(*digit - b'0'))
+    })
+}
+
+fn live_thread_in_process(state: &LoadedStaticElf, tid: i32) -> bool {
+    state
+        .task_lifecycle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(tid)
+        .is_some_and(|task| task.tgid == state.pid)
+}
+
+/// Classify a procfs executable-link spelling. `Some(false)` is a syntactically
+/// valid guest proc link naming a task outside the current process; callers
+/// must refuse it rather than accidentally opening the supervisor's procfs.
+fn guest_proc_exe_path(state: &LoadedStaticElf, path: &[u8]) -> Option<bool> {
+    if path == b"/proc/self/exe" || path == b"/proc/thread-self/exe" {
+        return Some(true);
+    }
+    let components = path
+        .strip_prefix(b"/proc/")?
+        .split(|byte| *byte == b'/')
+        .collect::<Vec<_>>();
+    match components.as_slice() {
+        [task, b"exe"] => parse_proc_id(task).map(|tid| live_thread_in_process(state, tid)),
+        [b"self", b"task", task, b"exe"] => {
+            parse_proc_id(task).map(|tid| live_thread_in_process(state, tid))
+        }
+        [group, b"task", task, b"exe"] => {
+            let group = parse_proc_id(group)?;
+            let task = parse_proc_id(task)?;
+            Some(live_thread_in_process(state, group) && live_thread_in_process(state, task))
+        }
+        _ => None,
+    }
 }
 
 /// Rewrite a `/proc/<pid>` path (for this guest's own pid) to the canonical
@@ -10095,15 +10234,34 @@ fn readlink_at_impl(
     }
 
     let normalized = normalize_proc_path(state, &path);
-    let proc_link_target: Option<&[u8]> = match normalized.as_deref() {
-        Some(b"/proc/self/exe") => Some(&state.argv0),
-        Some(b"/proc/self/cwd") => Some(state.cwd.as_os_str().as_bytes()),
-        Some(b"/proc/self/root") => Some(b"/"),
-        _ => None,
+    let executable_target = match guest_proc_exe_path(state, &path) {
+        Some(true) => match state.executable_file.as_ref() {
+            Some(file) => match canonical_fd_path(file.as_raw_fd()) {
+                Ok(path) => Some(path.into_os_string().into_vec()),
+                Err(error) => return error,
+            },
+            None => Some(state.executable_path.as_os_str().as_bytes().to_vec()),
+        },
+        Some(false) => return negative_errno(libc::ENOENT),
+        None => None,
+    };
+    let proc_link_target: Option<&[u8]> = if let Some(target) = executable_target.as_deref() {
+        Some(target)
+    } else {
+        match normalized.as_deref() {
+            Some(b"/proc/self/cwd") => Some(state.cwd.as_os_str().as_bytes()),
+            Some(b"/proc/self/root") => Some(b"/"),
+            _ => None,
+        }
     };
     if let Some(target) = proc_link_target {
         let count = capacity.min(target.len());
-        return match memory.write(output_address, &target[..count]) {
+        let copied = if executable_target.is_some() {
+            memory.copy_to_user(output_address, &target[..count])
+        } else {
+            memory.write(output_address, &target[..count])
+        };
+        return match copied {
             Ok(()) => count as i64,
             Err(_) => negative_errno(libc::EFAULT),
         };
@@ -11378,6 +11536,9 @@ mod tests {
             mmap_base: BOOT_RESERVED_END + PAGE_SIZE,
             mmap_next: BOOT_RESERVED_END + PAGE_SIZE,
             mmap_limit: BOOT_RESERVED_END + 2 * PAGE_SIZE,
+            executable_path: std::path::PathBuf::from("test"),
+            executable_file: None,
+            executable_image: Arc::from([]),
             argv0: b"test".to_vec(),
             cwd: cwd.to_owned(),
             cwd_fd: std::fs::File::open(cwd).unwrap(),
@@ -24154,6 +24315,7 @@ mod tests {
             prog.clone(),
             FAKE_ELF.to_vec(),
             vec!["prog".to_owned(), "-a".to_owned()],
+            |path| std::fs::read(path).map_err(io_error),
         )
         .unwrap();
         assert_eq!(path, prog);
@@ -24173,6 +24335,7 @@ mod tests {
             script.clone(),
             script_body.into_bytes(),
             vec!["script".to_owned(), "arg1".to_owned()],
+            |path| std::fs::read(path).map_err(io_error),
         )
         .unwrap();
         assert_eq!(path, interp);
@@ -24197,8 +24360,13 @@ mod tests {
         std::fs::write(&a, format!("#!{}\n", b.display())).unwrap();
         std::fs::write(&b, format!("#!{}\n", a.display())).unwrap();
 
-        let err = resolve_exec_shebang(a.clone(), std::fs::read(&a).unwrap(), vec!["a".to_owned()])
-            .unwrap_err();
+        let err = resolve_exec_shebang(
+            a.clone(),
+            std::fs::read(&a).unwrap(),
+            vec!["a".to_owned()],
+            |path| std::fs::read(path).map_err(io_error),
+        )
+        .unwrap_err();
         assert_eq!(err, negative_errno(libc::ELOOP));
     }
 
