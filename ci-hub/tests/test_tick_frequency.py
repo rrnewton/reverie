@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 TICK_MINUTES = 30
+AGENT_SNAPSHOT_MINUTES = 5
 
 
 def read(relative: str) -> str:
@@ -31,6 +32,36 @@ def test_every_outer_tick_frequency_source_says_thirty_minutes() -> None:
         f"OnUnitActiveSec={TICK_MINUTES}min"
         in read("scripts/systemd/hermit-health-tick.timer")
     )
+
+
+def test_agent_snapshot_refresh_is_independent_and_inside_freshness_limit() -> None:
+    plugin = read(".orc/plugins/hermit-dev/index.ts")
+    operational_health = read("ci-hub/health/operational_health.py")
+
+    assert (
+        f"const AGENT_SNAPSHOT_INTERVAL_MS = {AGENT_SNAPSHOT_MINUTES} * 60 * 1000;"
+        in plugin
+    )
+    assert '"hermit-dev-agent-snapshot-5m-v1"' in plugin
+    assert 'const AGENT_SNAPSHOT_SCRIPT_NAME = "hermitCacheAgentSnapshot";' in plugin
+    assert "operational_health.py cache-agents" in plugin
+    assert "orc.registerScript(AGENT_SNAPSHOT_SCRIPT_NAME" in plugin
+    assert "orc.workflow(\n    agentSnapshotHeartbeat" in plugin
+    assert "await wf.sleep(AGENT_SNAPSHOT_INTERVAL_MS);" in plugin
+    assert "await reportAgentSnapshotFailure(failure);" in plugin
+    assert "Number(count[1]) !== agents.length" in plugin
+    assert "AGENT_SNAPSHOT_WARNING_INTERVAL_MS = 30 * 60 * 1000" in plugin
+    assert "hermitOperationalTick" not in plugin[
+        plugin.index("export async function agentSnapshotHeartbeat") :
+        plugin.index("export async function policyReloadHeartbeat")
+    ]
+
+    match = re.search(
+        r"DEFAULT_AGENT_SNAPSHOT_MAX_AGE_SECS\s*=\s*(\d+)\s*\*\s*60",
+        operational_health,
+    )
+    assert match is not None
+    assert AGENT_SNAPSHOT_MINUTES < int(match.group(1))
 
 
 def test_no_tick_hub_reminder_claims_a_faster_cadence_than_the_outer_tick() -> None:

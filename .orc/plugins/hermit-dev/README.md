@@ -24,6 +24,10 @@ registers it as the `hermit-dev` skill.
   The versioned config is `ci-hub/health/tick-hub.yaml`; the plugin only supplies the
   live `orc.listAgents()` snapshot, invokes `ci-hub/bin/health-tick`, and sends a
   `HARD WARNING` wakeup when the hub emits an action/error or fails.
+- Refresh `ignored/ci-hub/agent-snapshot.json` from the complete live
+  `orc.listAgents()` result every five minutes, independently of the heavier
+  operational poll. This stays inside the claim authority's ten-minute
+  freshness limit even when the operational poll times out.
 - Through that tick, gently fast-forward clean product primaries and publish a
   coherent parent gitlink snapshot; dirty or inconsistent state is preserved
   and surfaced as a hard warning.
@@ -83,8 +87,9 @@ interval, `ci-hub/health/tick-hub.yaml` config, and a non-null
 the advertised functions present, exercise the inert argv echo through
 `orc.scripts`, and exercise `globalThis.gchatSafe` on allowed and refused text.
 `orc.listWorkflows()` must show the sleeping
-`hermit-dev-operational-health-v1` and `hermit-dev-policy-reload-2h-v1`
-workflows and must not show `hermit-dev-pr-health` or `policy-reload-2h`.
+`hermit-dev-operational-health-v1`, `hermit-dev-agent-snapshot-5m-v1`, and
+`hermit-dev-policy-reload-2h-v1` workflows and must not show
+`hermit-dev-pr-health` or `policy-reload-2h`.
 
 ## Calling a registered script (read this before "fixing" an empty `$1`)
 

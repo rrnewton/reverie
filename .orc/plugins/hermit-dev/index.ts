@@ -113,6 +113,21 @@ const OPERATIONAL_TICK_COMMAND =
   './scripts/hermit-health-tick.sh --emit-output';
 const OPERATIONAL_TICK_INTERVAL_MS = 30 * 60 * 1000;
 const OPERATIONAL_TICK_WORKFLOW_NAME = "hermit-dev-operational-health-v1";
+// Claim ownership expires after ten minutes without a complete ORC snapshot.
+// Keep this producer independent of the heavier health tick and comfortably
+// inside that bound. The old design refreshed only at the start of a 30-minute
+// tick and then exhausted its workflow restarts when the tick exceeded ORC's
+// 180-second registered-script timeout.
+const AGENT_SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
+const AGENT_SNAPSHOT_WARNING_INTERVAL_MS = 30 * 60 * 1000;
+const AGENT_SNAPSHOT_WORKFLOW_NAME = "hermit-dev-agent-snapshot-5m-v1";
+const AGENT_SNAPSHOT_SCRIPT_NAME = "hermitCacheAgentSnapshot";
+const AGENT_SNAPSHOT_COMMAND =
+  'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
+  'HERMIT_AGENT_SNAPSHOT_JSON="$1" ' +
+  "/usr/bin/python3 ci-hub/health/operational_health.py cache-agents " +
+  '--snapshot-file "' + SHELL_WORKSPACE_ROOT +
+  '/ignored/ci-hub/agent-snapshot.json"';
 // MANDATORY before close+respawn. The mission mandate authorizes replacing a
 // broken agent with no permission, which pairs an UNVERIFIED alarm with an
 // IRREVERSIBLE action. This is the check that must sit between them, and it is
@@ -238,6 +253,7 @@ interface PolicyInjectionReceipt {
 }
 
 let resolvedSources: HermitDevSources | null = null;
+let lastAgentSnapshotWarningAt = 0;
 let lastSurfaceGap: string[] = [];
 let lastSelfTest: SelfTestResult | null = null;
 let lastPolicyInjection: PolicyInjectionReceipt | null = null;
@@ -637,6 +653,77 @@ export async function operationalHealthHeartbeat(wf: WfContext): Promise<void> {
       );
     }
     await wf.sleep(OPERATIONAL_TICK_INTERVAL_MS);
+  });
+}
+
+async function reportAgentSnapshotFailure(detail: string): Promise<void> {
+  try {
+    orc.log("error", "hermit-dev agent snapshot refresh failed: " + detail);
+  } catch (_err) {
+    // Logging is secondary to keeping the refresh loop alive.
+  }
+  const now = Date.now();
+  if (now - lastAgentSnapshotWarningAt < AGENT_SNAPSHOT_WARNING_INTERVAL_MS) {
+    return;
+  }
+  try {
+    await orc.sendWakeup(
+      [],
+      "HARD WARNING: agent snapshot refresh failed",
+      detail +
+        "; claim ownership and every dependent current-work answer remain unknown",
+    );
+    lastAgentSnapshotWarningAt = now;
+  } catch (err) {
+    // Delivery failure must not terminate this producer. A terminated workflow
+    // rapidly consumes its finite restart allowance and permanently stops the
+    // refreshes it exists to provide.
+    try {
+      orc.log(
+        "error",
+        "hermit-dev could not deliver the agent snapshot warning: " +
+          String(err),
+      );
+    } catch (_logError) {
+      // Neither reporting path may terminate the producer.
+    }
+  }
+}
+
+export async function agentSnapshotHeartbeat(wf: WfContext): Promise<void> {
+  await wf.loop(async () => {
+    let failure: string | null = null;
+    try {
+      const agents = await orc.listAgents();
+      const result = await callRegisteredScript(
+        AGENT_SNAPSHOT_SCRIPT_NAME,
+        [JSON.stringify(agents)],
+      );
+      const exitCode = Number(result.exitCode);
+      const stdout = String(result.stdout || "").trim();
+      const stderr = String(result.stderr || "").trim();
+      const count = stdout.match(/(?:^|\n)count=(\d+)(?:\n|$)/);
+      if (
+        exitCode !== 0 ||
+        !/(?:^|\n)state=ok(?:\n|$)/.test(stdout) ||
+        !/(?:^|\n)summary=agent-snapshot-cached(?:\n|$)/.test(stdout) ||
+        count === null ||
+        Number(count[1]) !== agents.length
+      ) {
+        failure =
+          "cache command did not confirm the complete listAgents snapshot " +
+          "(agents=" + agents.length + ", exit=" + exitCode + "): " +
+          ([stdout, stderr].filter(Boolean).join("\n") || "no output");
+      }
+    } catch (err) {
+      failure = "snapshot refresh threw: " + String(err);
+    }
+    if (failure !== null) {
+      await reportAgentSnapshotFailure(failure);
+    }
+    // Sleep even after a refusal. Retrying immediately turns one persistent
+    // fault into restart exhaustion and removes all chance of later recovery.
+    await wf.sleep(AGENT_SNAPSHOT_INTERVAL_MS);
   });
 }
 
@@ -1050,6 +1137,7 @@ async function verifyRegisteredSurface(): Promise<SelfTestResult> {
   }
   const requiredScripts = [
     OPERATIONAL_TICK_SCRIPT_NAME,
+    AGENT_SNAPSHOT_SCRIPT_NAME,
     AGENT_LIVENESS_SCRIPT_NAME,
     ARGV_ECHO_SCRIPT_NAME,
   ];
@@ -1180,6 +1268,10 @@ function hermitDevStatus() {
     operationalTickConfig: SHELL_WORKSPACE_ROOT +
       "/ci-hub/health/tick-hub.yaml",
     operationalTickIntervalMinutes: OPERATIONAL_TICK_INTERVAL_MS / 60000,
+    agentSnapshotWorkflow: AGENT_SNAPSHOT_WORKFLOW_NAME,
+    agentSnapshotIntervalMinutes: AGENT_SNAPSHOT_INTERVAL_MS / 60000,
+    agentSnapshotWarningIntervalMinutes:
+      AGENT_SNAPSHOT_WARNING_INTERVAL_MS / 60000,
     policyReloadWorkflow: POLICY_RELOAD_WORKFLOW_NAME,
     policyReloadIntervalMinutes: POLICY_RELOAD_INTERVAL_MS / 60000,
     agentLivenessCommand: AGENT_LIVENESS_COMMAND,
@@ -1265,6 +1357,13 @@ function registerPluginSurface(): void {
     script: OPERATIONAL_TICK_COMMAND,
     description: "Run the version-pinned dev-hermit tick-hub operational poll",
     timeoutSec: 180,
+  });
+
+  orc.registerScript(AGENT_SNAPSHOT_SCRIPT_NAME, {
+    script: AGENT_SNAPSHOT_COMMAND,
+    description:
+      "Cache the complete live ORC agent list for claim ownership readers",
+    timeoutSec: 60,
   });
 
   orc.registerScript(AGENT_LIVENESS_SCRIPT_NAME, {
@@ -1406,6 +1505,15 @@ function registerPluginSurface(): void {
     "Run tick-hub operational checks and hard-warn the coordinator on failures",
     {
       name: OPERATIONAL_TICK_WORKFLOW_NAME,
+      restartable: HEARTBEAT_RESTARTABLE,
+    },
+  );
+
+  orc.workflow(
+    agentSnapshotHeartbeat,
+    "Refresh the complete ORC agent snapshot inside its freshness window",
+    {
+      name: AGENT_SNAPSHOT_WORKFLOW_NAME,
       restartable: HEARTBEAT_RESTARTABLE,
     },
   );
