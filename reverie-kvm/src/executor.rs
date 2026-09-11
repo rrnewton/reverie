@@ -6422,6 +6422,9 @@ fn ioctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
         // TODO-HUMAN-REVIEW(PR-230): Review the no-guest-NIC ioctl model.
         SIOCETHTOOL => negative_errno(libc::ENODEV),
         // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-533): Review host FIONREAD query and guest copyback.
+        libc::FIONREAD => negative_errno(libc::ENOTTY),
+        // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-332): Report real terminal state to the guest.
         // The executor's inherited standard descriptors are the real host fds, so
         // forward the terminal-query ioctls to them (matching what the ptrace
