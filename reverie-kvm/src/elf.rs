@@ -12,7 +12,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 
 use goblin::elf::Elf;
@@ -23,6 +23,7 @@ use goblin::elf::header::ELFDATA2LSB;
 use goblin::elf::header::EM_X86_64;
 use goblin::elf::header::ET_DYN;
 use goblin::elf::header::ET_EXEC;
+use goblin::elf::program_header::PF_W;
 use goblin::elf::program_header::PF_X;
 use goblin::elf::program_header::PT_INTERP;
 use goblin::elf::program_header::PT_LOAD;
@@ -274,7 +275,7 @@ pub(crate) struct LoadedStaticElf {
     /// Process-address-space policy controlled by `PR_SET_THP_DISABLE`.
     /// Threads share this flag; fork takes an independent copy and exec keeps
     /// the existing value.
-    pub thp_disabled: std::sync::Arc<AtomicBool>,
+    pub thp_disabled: std::sync::Arc<AtomicU8>,
     // TODO-HUMAN-REVIEW(PR-181): Review virtual capability lifecycle state.
     pub keep_capabilities: bool,
     pub capability_effective: u64,
@@ -375,7 +376,7 @@ impl LoadedStaticElf {
             random_seed: self.random_seed,
             thread_name: self.thread_name,
             thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(self.thread_name)),
-            thp_disabled: std::sync::Arc::new(AtomicBool::new(
+            thp_disabled: std::sync::Arc::new(AtomicU8::new(
                 self.thp_disabled.load(Ordering::SeqCst),
             )),
             keep_capabilities: self.keep_capabilities,
@@ -425,9 +426,8 @@ impl LoadedStaticElf {
 
     // TODO-HUMAN-REVIEW(PR-136): Review live identity filtering across exec.
     pub(crate) fn inherit_process_state(&mut self, previous: Self) {
-        let thp_disabled = std::sync::Arc::new(AtomicBool::new(
-            previous.thp_disabled.load(Ordering::SeqCst),
-        ));
+        let thp_disabled =
+            std::sync::Arc::new(AtomicU8::new(previous.thp_disabled.load(Ordering::SeqCst)));
         let cloexec_fds = previous.cloexec_fds;
         let previous_signalfd_state = previous
             .signalfd_state
@@ -762,7 +762,7 @@ fn load_executable(
         random_seed: 0,
         thread_name,
         thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(thread_name)),
-        thp_disabled: std::sync::Arc::new(AtomicBool::new(false)),
+        thp_disabled: std::sync::Arc::new(AtomicU8::new(0)),
         keep_capabilities: false,
         capability_effective: GUEST_CAPABILITY_MASK,
         capability_permitted: GUEST_CAPABILITY_MASK,
@@ -1024,7 +1024,23 @@ fn load_segments(
         memory.zero_raw(zero_start, zero_len)?;
         let mapped_start = segment_start & !(PAGE_SIZE - 1);
         let mapped_end = align_up(segment_end, PAGE_SIZE)?;
-        memory.map_user_range(mapped_start, mapped_end - mapped_start, false)?;
+        let file_end = align_up(zero_start, PAGE_SIZE)?;
+        if header.p_filesz != 0 {
+            memory.map_user_permissions(
+                mapped_start,
+                file_end - mapped_start,
+                true,
+                header.p_flags & PF_W != 0,
+            )?;
+        }
+        if header.p_memsz > header.p_filesz {
+            let anonymous_start = if header.p_filesz == 0 {
+                mapped_start
+            } else {
+                file_end
+            };
+            memory.map_user_range(anonymous_start, mapped_end - anonymous_start, false)?;
+        }
 
         entry_is_executable |=
             header.p_flags & PF_X != 0 && (segment_start..segment_end).contains(&entry);

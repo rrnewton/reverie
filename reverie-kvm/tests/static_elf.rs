@@ -4284,13 +4284,9 @@ int main(void) {
     assert_eq!(native.stdout, expected, "native Linux format changed");
     assert!(native.stderr.is_empty());
 
-    match Kvm::new() {
-        Ok(_) => {}
-        Err(error) if kvm_is_unavailable(&error) => {
-            eprintln!("skipping KVM thread-name test: cannot open /dev/kvm: {error}");
-            return;
-        }
-        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    if !kvm_available("native_and_kvm_prctl_names_keep_worker_local_and_format_procfs_leader_bytes")
+    {
+        return;
     }
 
     let executable = executable.to_str().unwrap();
@@ -4359,13 +4355,8 @@ int main(void) {
     assert_eq!(native.stdout, expected);
     assert!(native.stderr.is_empty());
 
-    match Kvm::new() {
-        Ok(_) => {}
-        Err(error) if kvm_is_unavailable(&error) => {
-            eprintln!("skipping KVM prctl identity test: cannot open /dev/kvm: {error}");
-            return;
-        }
-        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    if !kvm_available("kvm_direct_and_tool_match_prctl_identity_cell") {
+        return;
     }
 
     let executable = executable.to_str().unwrap();
@@ -4417,13 +4408,8 @@ int main(void) {
     assert_eq!(native.stdout, expected);
     assert!(native.stderr.is_empty());
 
-    match Kvm::new() {
-        Ok(_) => {}
-        Err(error) if kvm_is_unavailable(&error) => {
-            eprintln!("skipping KVM THP state test: cannot open /dev/kvm: {error}");
-            return;
-        }
-        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    if !kvm_available("kvm_direct_and_tool_match_thp_disable_cell") {
+        return;
     }
 
     let executable = executable.to_str().unwrap();
@@ -4700,4 +4686,1175 @@ int main(void) {
         ],
         "the backend callback must describe every real terminal waitability transition",
     );
+}
+
+const PRCTL_REVIEW_REGRESSION: &str = r###"#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#define REQUIRE(expression) do { if (!(expression)) { fprintf(stderr, "line=%d errno=%d: %s\n", __LINE__, errno, #expression); return 91; } } while (0)
+
+static long call(unsigned long option, unsigned long second, unsigned long third,
+                 unsigned long fourth, unsigned long fifth, unsigned long sixth) {
+    errno = 0;
+    return syscall(SYS_prctl, option, second, third, fourth, fifth, sixth);
+}
+
+static int check_name(const unsigned char expected[16]) {
+    unsigned char actual[48], wanted[48];
+    memset(actual, 0xa5, sizeof(actual));
+    memset(wanted, 0xa5, sizeof(wanted));
+    memcpy(wanted + 16, expected, 16);
+    REQUIRE(call(PR_GET_NAME, (uintptr_t)(actual + 16), 17, 18, 19, UINT64_MAX) == 0);
+    REQUIRE(memcmp(actual, wanted, sizeof(actual)) == 0);
+    return 0;
+}
+
+static int names(int inspect_comm) {
+    unsigned char *pages = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    REQUIRE(pages != MAP_FAILED);
+    memset(pages, 'x', 8192);
+    REQUIRE(mprotect(pages + 4096, 4096, PROT_NONE) == 0);
+    memcpy(pages + 4096 - 15, "ABCDEFGHIJKLMNO", 15);
+    REQUIRE(call(PR_SET_NAME, (uintptr_t)(pages + 4096 - 15), 17, 18, 19, UINT64_MAX) == 0);
+    REQUIRE(check_name((unsigned char[16]){"ABCDEFGHIJKLMNO"}) == 0);
+    REQUIRE(call(PR_SET_NAME, (uintptr_t)(pages + 4096 - 14), 0, 0, 0, 0) == -1 && errno == EFAULT);
+    REQUIRE(check_name((unsigned char[16]){"ABCDEFGHIJKLMNO"}) == 0);
+    REQUIRE(call(PR_SET_NAME, (uintptr_t)(pages + 4096), 0, 0, 0, 0) == -1 && errno == EFAULT);
+    REQUIRE(check_name((unsigned char[16]){"ABCDEFGHIJKLMNO"}) == 0);
+    REQUIRE(call(PR_SET_NAME, UINT64_MAX, 0, 0, 0, 0) == -1 && errno == EFAULT);
+    REQUIRE(check_name((unsigned char[16]){"ABCDEFGHIJKLMNO"}) == 0);
+    pages[4095] = 0;
+    REQUIRE(call(PR_SET_NAME, (uintptr_t)(pages + 4095), 0, 0, 0, 0) == 0);
+    REQUIRE(check_name((unsigned char[16]){0}) == 0);
+    const unsigned char special[16] = {0xff, '\n', '\\', '\t', '\r', ')', 0};
+    REQUIRE(call(PR_SET_NAME, (uintptr_t)special, 0, 0, 0, 0) == 0);
+    REQUIRE(check_name(special) == 0);
+    unsigned char status[8192];
+    int descriptor = open("/proc/self/status", O_RDONLY);
+    REQUIRE(descriptor >= 0);
+    ssize_t count = read(descriptor, status, sizeof(status));
+    const unsigned char name_line[] = "Name:\t\xff\\n\\\\\t\r)\n";
+    REQUIRE(count >= (ssize_t)(sizeof(name_line)-1));
+    REQUIRE(memcmp(status, name_line, sizeof(name_line)-1) == 0);
+    REQUIRE(close(descriptor) == 0);
+    if (!inspect_comm) {
+        REQUIRE(munmap(pages, 8192) == 0);
+        puts("name truncation/fault atomicity/ignored args/proc escaping: PASS");
+        return 0;
+    }
+    descriptor = open("/proc/self/comm", O_RDONLY);
+    REQUIRE(descriptor >= 0);
+    unsigned char comm[32], wanted[32];
+    memset(comm, 0xa5, sizeof(comm));
+    memset(wanted, 0xa5, sizeof(wanted));
+    memcpy(wanted, special, 6);
+    wanted[6] = '\n';
+    REQUIRE(read(descriptor, comm, sizeof(comm)) == 7);
+    REQUIRE(memcmp(comm, wanted, sizeof(comm)) == 0);
+    REQUIRE(close(descriptor) == 0);
+    REQUIRE(mprotect(pages + 4096, 4096, PROT_READ | PROT_WRITE) == 0);
+    REQUIRE(munmap(pages, 8192) == 0);
+    puts("name truncation/fault atomicity/ignored args/proc escaping: PASS");
+    return 0;
+}
+
+static int copyout(int selection) {
+    unsigned char *pages = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    REQUIRE(pages != MAP_FAILED);
+    unsigned char wanted[8192];
+    memset(pages, 0xa5, 8192);
+    memset(wanted, 0xa5, sizeof(wanted));
+    REQUIRE(call(PR_SET_NAME, (uintptr_t)"ABCDEFGHIJKLMNO", 0, 0, 0, 0) == 0);
+    REQUIRE(call(PR_SET_PDEATHSIG, 0, 0, 0, 0, 0) == 0);
+    REQUIRE(mprotect(pages, 4096, PROT_READ) == 0);
+    for (unsigned option = 0; option < 2; ++option) {
+        if (selection >= 0 && option != (unsigned)selection) continue;
+        long result = call(option ? PR_GET_PDEATHSIG : PR_GET_NAME, (uintptr_t)(pages+100), 0, 0, 0, 0);
+        int saved_errno = errno;
+        unsigned changed = 0;
+        for (unsigned index = 0; index < sizeof(wanted); ++index) changed += pages[index] != wanted[index];
+        printf("copyout option=%u result=%ld errno=%d changed_bytes=%u\n", option ? PR_GET_PDEATHSIG : PR_GET_NAME, result, saved_errno, changed);
+        REQUIRE(result == -1 && saved_errno == EFAULT);
+        REQUIRE(memcmp(pages, wanted, sizeof(wanted)) == 0);
+    }
+    REQUIRE(mprotect(pages, 4096, PROT_READ | PROT_WRITE) == 0);
+    if (selection == 0 || selection == 1) {
+        REQUIRE(munmap(pages, 8192) == 0);
+        puts("read-only copyout exact EFAULT/full8192 unchanged: PASS");
+        return 0;
+    }
+    REQUIRE(mprotect(pages + 4096, 4096, PROT_NONE) == 0);
+    long result = call(PR_GET_NAME, (uintptr_t)(pages + 4096 - 8), 0, 0, 0, 0);
+    int saved = errno;
+    REQUIRE(result == -1 && saved == EFAULT);
+    REQUIRE(mprotect(pages + 4096, 4096, PROT_READ | PROT_WRITE) == 0);
+    printf("GET_NAME cross-page result=%ld errno=%d changed:", result, saved);
+    for (unsigned index = 0; index < 8192; ++index) if (pages[index] != wanted[index]) printf(" %u=%02x", index, pages[index]);
+    puts("");
+    memcpy(wanted + 4088, "ABCDEFGH", 8);
+    REQUIRE(memcmp(pages, wanted, sizeof(wanted)) == 0);
+    REQUIRE(munmap(pages, 8192) == 0);
+    puts("cross-page name copyout exact prefix/full8192 oracle: PASS");
+    return 0;
+}
+
+static int thp(void) {
+    const unsigned long flags[] = {0, 1, 2, 3, 4, 1UL << 32, UINT64_MAX};
+    for (unsigned disable = 0; disable < 2; ++disable) {
+        for (unsigned index = 0; index < sizeof(flags)/sizeof(flags[0]); ++index) {
+            REQUIRE(call(PR_SET_THP_DISABLE, 0, 0, 0, 0, 0) == 0);
+            long result = call(PR_SET_THP_DISABLE, disable, flags[index], 0, 0, UINT64_MAX);
+            int saved = errno;
+            long state = call(PR_GET_THP_DISABLE, 0, 0, 0, 0, UINT64_MAX);
+            printf("THP disable=%u flags=%lu result=%ld errno=%d state=%ld\n", disable, flags[index], result, saved, state);
+        }
+    }
+    REQUIRE(call(PR_SET_THP_DISABLE, 2, 0, 0, 0, UINT64_MAX) == 0);
+    REQUIRE(call(PR_GET_THP_DISABLE, 0, 0, 0, 0, UINT64_MAX) == 1);
+    for (unsigned argument = 1; argument < 5; ++argument) {
+        unsigned long args[5] = {PR_GET_THP_DISABLE, 0, 0, 0, 0};
+        args[argument] = 1;
+        REQUIRE(call(args[0], args[1], args[2], args[3], args[4], UINT64_MAX) == -1 && errno == EINVAL);
+        REQUIRE(call(PR_GET_THP_DISABLE, 0, 0, 0, 0, 0) == 1);
+    }
+    REQUIRE(call(PR_SET_THP_DISABLE, 0, 0, 0, 0, 0) == 0);
+    puts("THP ignored sixth/strict GET arguments/nonzero disable: PASS");
+    return 0;
+}
+
+static int modern_thp(void) {
+    REQUIRE(call(PR_SET_THP_DISABLE, 0, 0, 0, 0, 0) == 0);
+    REQUIRE(call(PR_SET_THP_DISABLE, 1, 2, 0, 0, UINT64_MAX) == 0);
+    REQUIRE(call(PR_GET_THP_DISABLE, 0, 0, 0, 0, UINT64_MAX) == 3);
+    REQUIRE(call(PR_SET_THP_DISABLE, 1, 1, 0, 0, 0) == -1 && errno == EINVAL);
+    REQUIRE(call(PR_GET_THP_DISABLE, 0, 0, 0, 0, 0) == 3);
+    REQUIRE(call(PR_SET_THP_DISABLE, 0, 0, 0, 0, 0) == 0);
+    REQUIRE(call(PR_GET_THP_DISABLE, 0, 0, 0, 0, 0) == 0);
+    puts("THP EXCEPT_ADVISED flag2 state3 and invalidflag atomicity: PASS");
+    return 0;
+}
+
+static void *worker(void *unused) {
+    (void)unused;
+    if (check_name((unsigned char[16]){"leader"}) != 0) return (void *)1;
+    if (call(PR_SET_NAME, (uintptr_t)"worker", 0, 0, 0, 0) != 0) return (void *)2;
+    if (check_name((unsigned char[16]){"worker"}) != 0) return (void *)3;
+    if (call(PR_SET_THP_DISABLE, 0, 0, 0, 0, 0) != 0) return (void *)4;
+    return NULL;
+}
+
+static int shared_process(void *unused) {
+    (void)unused;
+    if (check_name((unsigned char[16]){"leader"}) != 0) return 1;
+    if (call(PR_SET_NAME, (uintptr_t)"vm-child", 0, 0, 0, 0) != 0) return 2;
+    if (call(PR_SET_THP_DISABLE, 0, 0, 0, 0, 0) != 0) return 3;
+    return 0;
+}
+
+static int lifecycle(const char *executable) {
+    REQUIRE(call(PR_SET_NAME, (uintptr_t)"leader", 0, 0, 0, 0) == 0);
+    REQUIRE(call(PR_SET_THP_DISABLE, 1, 0, 0, 0, 0) == 0);
+    pthread_t thread;
+    REQUIRE(pthread_create(&thread, NULL, worker, NULL) == 0);
+    void *thread_result;
+    REQUIRE(pthread_join(thread, &thread_result) == 0 && thread_result == NULL);
+    REQUIRE(check_name((unsigned char[16]){"leader"}) == 0);
+    REQUIRE(call(PR_GET_THP_DISABLE, 0, 0, 0, 0, 0) == 0);
+    REQUIRE(call(PR_SET_THP_DISABLE, 1, 0, 0, 0, 0) == 0);
+    pid_t child = fork();
+    REQUIRE(child >= 0);
+    if (child == 0) _exit(shared_process(NULL));
+    int status;
+    REQUIRE(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    REQUIRE(call(PR_GET_THP_DISABLE, 0, 0, 0, 0, 0) == 1);
+    REQUIRE(check_name((unsigned char[16]){"leader"}) == 0);
+    void *stack = mmap(NULL, 65536, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    REQUIRE(stack != MAP_FAILED);
+    child = clone(shared_process, (char *)stack + 65536, CLONE_VM | CLONE_VFORK | SIGCHLD, NULL);
+    REQUIRE(child >= 0);
+    REQUIRE(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    REQUIRE(call(PR_GET_THP_DISABLE, 0, 0, 0, 0, 0) == 0);
+    REQUIRE(check_name((unsigned char[16]){"leader"}) == 0);
+    REQUIRE(munmap(stack, 65536) == 0);
+    REQUIRE(call(PR_SET_THP_DISABLE, 1, 0, 0, 0, 0) == 0);
+    child = fork();
+    REQUIRE(child >= 0);
+    if (child == 0) {
+        execl(executable, "fake-argv-zero", "after-exec", NULL);
+        _exit(92);
+    }
+    REQUIRE(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    REQUIRE(check_name((unsigned char[16]){"leader"}) == 0);
+    puts("thread-local name/mm THP sharing/fork isolation/exec inheritance: PASS");
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    REQUIRE(argc == 2);
+    if (strcmp(argv[1], "names") == 0) return names(1);
+    if (strcmp(argv[1], "names-core") == 0) return names(0);
+    if (strcmp(argv[1], "copyout") == 0) return copyout(-1);
+    if (strcmp(argv[1], "copyout-name") == 0) return copyout(0);
+    if (strcmp(argv[1], "copyout-pdeath") == 0) return copyout(1);
+    if (strcmp(argv[1], "copyout-partial") == 0) return copyout(2);
+    if (strcmp(argv[1], "thp") == 0) return thp();
+    if (strcmp(argv[1], "modern-thp") == 0) return modern_thp();
+    if (strcmp(argv[1], "lifecycle") == 0) return lifecycle(argv[0]);
+    if (strcmp(argv[1], "after-exec") == 0) {
+        REQUIRE(check_name((unsigned char[16]){"native-prctl"}) == 0);
+        REQUIRE(call(PR_GET_THP_DISABLE, 0, 0, 0, 0, 0) == 1);
+        return 0;
+    }
+    return 93;
+}
+"###;
+
+fn review_537_case(mode: &str) {
+    assert!(kvm_available("review_537_case"));
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(&directory.0, "native-prctl", PRCTL_REVIEW_REGRESSION);
+    let native = std::process::Command::new(&executable)
+        .arg(mode)
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    println!(
+        "NATIVE mode={mode} status={:?} stdout={} stderr={}",
+        native.status.code(),
+        String::from_utf8_lossy(&native.stdout),
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(native.status.code(), Some(0));
+    assert!(native.stderr.is_empty());
+    let image = std::fs::read(&executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable.to_str().unwrap(), mode],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    println!(
+        "KVM mode={mode} status={code} stdout={} stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    );
+    assert_eq!(code, 0);
+    assert_eq!(stdout, native.stdout);
+    assert!(stderr.is_empty());
+}
+
+#[test]
+fn review_537_name_core() {
+    review_537_case("names-core");
+}
+#[test]
+fn review_537_get_name_readonly() {
+    review_537_case("copyout-name");
+}
+#[test]
+fn review_537_get_pdeath_readonly() {
+    review_537_case("copyout-pdeath");
+}
+#[test]
+fn review_537_get_name_partial() {
+    review_537_case("copyout-partial");
+}
+#[test]
+fn review_537_modern_thp() {
+    review_537_case("modern-thp");
+}
+#[test]
+fn review_537_thread_mm_lifecycle() {
+    review_537_case("lifecycle");
+}
+
+const PRCTL_EXPANDED_REGRESSION: &str = r###"#define _GNU_SOURCE
+#include <errno.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#define REQUIRE(condition) do { if (!(condition)) { fprintf(stderr, "line %d errno %d: %s\n", __LINE__, errno, #condition); return 91; } } while (0)
+
+static long control(unsigned long option, unsigned long second, unsigned long third, unsigned long fourth, unsigned long fifth) {
+    errno = 0;
+    return syscall(SYS_prctl, option, second, third, fourth, fifth, UINT64_MAX);
+}
+
+static int boundaries(void) {
+    unsigned char *pages = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    REQUIRE(pages != MAP_FAILED);
+    REQUIRE(prctl(PR_SET_NAME, "ABCDEFGHIJKLMNO", 0, 0, 0) == 0);
+    REQUIRE(prctl(PR_SET_PDEATHSIG, 0, 0, 0, 0) == 0);
+    unsigned char wanted[8192];
+    const int protections[] = {PROT_READ, PROT_NONE};
+    const int options[] = {PR_GET_PDEATHSIG, PR_GET_NAME};
+    for (unsigned option = 0; option < 2; ++option) {
+        for (unsigned protection = 0; protection < 2; ++protection) {
+            for (unsigned offset = 4080; offset <= 4097; ++offset) {
+                memset(pages, 0xa5, 8192);
+                memset(wanted, 0xa5, sizeof(wanted));
+                REQUIRE(mprotect(pages + 4096, 4096, protections[protection]) == 0);
+                long result = control(options[option], (uintptr_t)(pages + offset), 0, 0, 0);
+                int error = errno;
+                REQUIRE(mprotect(pages + 4096, 4096, PROT_READ | PROT_WRITE) == 0);
+                unsigned length = option ? 16 : 4;
+                unsigned prefix = offset >= 4096 ? 0 : 4096 - offset;
+                if (prefix > length) prefix = length;
+                unsigned copied = option ? prefix : (prefix == length ? length : 0);
+                if (option) memcpy(wanted + offset, "ABCDEFGHIJKLMNO", copied);
+                else memset(wanted + offset, 0, copied);
+                REQUIRE(result == (prefix == length ? 0 : -1));
+                REQUIRE(error == (prefix == length ? 0 : EFAULT));
+                REQUIRE(memcmp(pages, wanted, sizeof(wanted)) == 0);
+            }
+        }
+    }
+    REQUIRE(control(PR_GET_NAME, UINT64_MAX, 0, 0, 0) == -1 && errno == EFAULT);
+    REQUIRE(control(PR_GET_PDEATHSIG, UINT64_MAX, 0, 0, 0) == -1 && errno == EFAULT);
+    REQUIRE(munmap(pages, 8192) == 0);
+    puts("72 scalar/name boundary full-buffer cases: PASS");
+    return 0;
+}
+
+static int thp_modes(void) {
+    const unsigned long disables[] = {0, 1, 2, UINT64_MAX};
+    const unsigned long flags[] = {0, 1, 2, 3, 4, 1UL << 32, UINT64_MAX};
+    for (unsigned disable = 0; disable < 4; ++disable) {
+        for (unsigned flag = 0; flag < 7; ++flag) {
+            REQUIRE(control(PR_SET_THP_DISABLE, 1, 2, 0, 0) == 0);
+            int valid = flags[flag] == 0 || (disables[disable] != 0 && flags[flag] == 2);
+            long result = control(PR_SET_THP_DISABLE, disables[disable], flags[flag], 0, 0);
+            REQUIRE(result == (valid ? 0 : -1));
+            REQUIRE(errno == (valid ? 0 : EINVAL));
+            long wanted = valid ? (disables[disable] ? 1 | flags[flag] : 0) : 3;
+            REQUIRE(control(PR_GET_THP_DISABLE, 0, 0, 0, 0) == wanted);
+        }
+    }
+    for (unsigned argument = 1; argument < 5; ++argument) {
+        unsigned long args[5] = {PR_GET_THP_DISABLE, 0, 0, 0, 0};
+        REQUIRE(control(PR_SET_THP_DISABLE, 1, 2, 0, 0) == 0);
+        args[argument] = UINT64_MAX;
+        REQUIRE(control(args[0], args[1], args[2], args[3], args[4]) == -1 && errno == EINVAL);
+        REQUIRE(control(PR_GET_THP_DISABLE, 0, 0, 0, 0) == 3);
+    }
+    REQUIRE(control(PR_SET_THP_DISABLE, 0, 0, 1, 0) == -1 && errno == EINVAL);
+    REQUIRE(control(PR_SET_THP_DISABLE, 0, 0, 0, 1) == -1 && errno == EINVAL);
+    REQUIRE(control(PR_GET_THP_DISABLE, 0, 0, 0, 0) == 3);
+    puts("THP 0/1/3 full-width matrix and ignored sixth: PASS");
+    return 0;
+}
+
+static int expect_output(unsigned char *pages, size_t length, int writable) {
+    unsigned char *wanted = malloc(length);
+    REQUIRE(wanted != NULL);
+    memcpy(wanted, pages, length);
+    long result = control(PR_GET_NAME, (uintptr_t)(pages + 128), 0, 0, 0);
+    REQUIRE(result == (writable ? 0 : -1));
+    REQUIRE(errno == (writable ? 0 : EFAULT));
+    if (writable) memcpy(wanted + 128, "ABCDEFGHIJKLMNO", 16);
+    REQUIRE(memcmp(pages, wanted, length) == 0);
+    free(wanted);
+    return 0;
+}
+
+static void *protect_worker(void *pages) {
+    if (mprotect(pages, 4096, PROT_READ) != 0) return (void *)1;
+    return NULL;
+}
+
+static int permissions(void) {
+    REQUIRE(prctl(PR_SET_NAME, "ABCDEFGHIJKLMNO", 0, 0, 0) == 0);
+    const int protections[] = {PROT_NONE, PROT_READ, PROT_WRITE, PROT_EXEC, PROT_READ | PROT_EXEC, PROT_READ | PROT_WRITE, PROT_READ | PROT_WRITE | PROT_EXEC};
+    unsigned char *pages = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    REQUIRE(pages != MAP_FAILED);
+    unsigned char wanted[8192];
+    for (unsigned index = 0; index < sizeof(protections) / sizeof(protections[0]); ++index) {
+        memset(pages, 0xa5, 8192);
+        memset(wanted, 0xa5, sizeof(wanted));
+        REQUIRE(mprotect(pages, 4096, protections[index]) == 0);
+        long result = control(PR_GET_NAME, (uintptr_t)(pages + 128), 0, 0, 0);
+        int error = errno;
+        int writable = (protections[index] & PROT_WRITE) != 0;
+        REQUIRE(mprotect(pages, 4096, PROT_READ | PROT_WRITE) == 0);
+        REQUIRE(result == (writable ? 0 : -1));
+        REQUIRE(error == (writable ? 0 : EFAULT));
+        if (writable) memcpy(wanted + 128, "ABCDEFGHIJKLMNO", 16);
+        REQUIRE(memcmp(pages, wanted, sizeof(wanted)) == 0);
+    }
+    REQUIRE(mprotect(pages, 4096, PROT_READ) == 0);
+    REQUIRE(expect_output(pages, 8192, 0) == 0);
+    REQUIRE(mmap(pages, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == pages);
+    REQUIRE(expect_output(pages, 8192, 1) == 0);
+    REQUIRE(mmap(pages, 4096, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == pages);
+    REQUIRE(expect_output(pages, 8192, 0) == 0);
+    REQUIRE(mprotect(pages, 4096, PROT_READ | PROT_WRITE) == 0);
+    pthread_t thread;
+    REQUIRE(pthread_create(&thread, NULL, protect_worker, pages) == 0);
+    void *thread_result = (void *)1;
+    REQUIRE(pthread_join(thread, &thread_result) == 0 && thread_result == NULL);
+    REQUIRE(expect_output(pages, 8192, 0) == 0);
+    pid_t child = fork();
+    REQUIRE(child >= 0);
+    if (child == 0) {
+        REQUIRE(expect_output(pages, 8192, 0) == 0);
+        REQUIRE(mprotect(pages, 4096, PROT_READ | PROT_WRITE) == 0);
+        REQUIRE(expect_output(pages, 8192, 1) == 0);
+        _exit(0);
+    }
+    int status;
+    REQUIRE(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    REQUIRE(expect_output(pages, 8192, 0) == 0);
+    REQUIRE(munmap(pages, 8192) == 0);
+    REQUIRE(mmap(pages, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == pages);
+    REQUIRE(expect_output(pages, 8192, 1) == 0);
+    REQUIRE(munmap(pages, 8192) == 0);
+    for (unsigned writable = 0; writable < 2; ++writable) {
+        pages = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        REQUIRE(pages != MAP_FAILED);
+        memset(pages, 0xa5, 4096);
+        REQUIRE(mprotect(pages, 4096, PROT_READ | (writable ? PROT_WRITE : 0)) == 0);
+        pages = mremap(pages, 4096, 8192, MREMAP_MAYMOVE);
+        REQUIRE(pages != MAP_FAILED);
+        REQUIRE(expect_output(pages, 8192, writable) == 0);
+        REQUIRE(expect_output(pages + 4096, 4096, writable) == 0);
+        pages = mremap(pages, 8192, 4096, MREMAP_MAYMOVE);
+        REQUIRE(pages != MAP_FAILED);
+        REQUIRE(expect_output(pages, 4096, writable) == 0);
+        REQUIRE(munmap(pages, 4096) == 0);
+    }
+    puts("mapping/mprotect/replacement/thread/fork/remap copyout: PASS");
+    return 0;
+}
+
+static void *mode_worker(void *unused) {
+    (void)unused;
+    if (control(PR_GET_THP_DISABLE, 0, 0, 0, 0) != 3) return (void *)1;
+    if (control(PR_SET_THP_DISABLE, 1, 0, 0, 0) != 0) return (void *)2;
+    return NULL;
+}
+
+static int mode_shared(void *unused) {
+    (void)unused;
+    if (control(PR_GET_THP_DISABLE, 0, 0, 0, 0) != 3) return 1;
+    if (control(PR_SET_THP_DISABLE, 0, 0, 0, 0) != 0) return 2;
+    return 0;
+}
+
+static int mode_lifetime(const char *executable) {
+    REQUIRE(control(PR_SET_THP_DISABLE, 1, 2, 0, 0) == 0);
+    pthread_t thread;
+    REQUIRE(pthread_create(&thread, NULL, mode_worker, NULL) == 0);
+    void *result = (void *)1;
+    REQUIRE(pthread_join(thread, &result) == 0 && result == NULL);
+    REQUIRE(control(PR_GET_THP_DISABLE, 0, 0, 0, 0) == 1);
+    REQUIRE(control(PR_SET_THP_DISABLE, 1, 2, 0, 0) == 0);
+    pid_t child = fork();
+    REQUIRE(child >= 0);
+    if (child == 0) {
+        REQUIRE(control(PR_GET_THP_DISABLE, 0, 0, 0, 0) == 3);
+        REQUIRE(control(PR_SET_THP_DISABLE, 0, 0, 0, 0) == 0);
+        _exit(0);
+    }
+    int status;
+    REQUIRE(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    REQUIRE(control(PR_GET_THP_DISABLE, 0, 0, 0, 0) == 3);
+    unsigned char *stack = mmap(NULL, 65536, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    REQUIRE(stack != MAP_FAILED);
+    child = clone(mode_shared, stack + 65536, CLONE_VM | CLONE_VFORK | SIGCHLD, NULL);
+    REQUIRE(child >= 0);
+    REQUIRE(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    REQUIRE(control(PR_GET_THP_DISABLE, 0, 0, 0, 0) == 0);
+    REQUIRE(munmap(stack, 65536) == 0);
+    REQUIRE(control(PR_SET_THP_DISABLE, 1, 2, 0, 0) == 0);
+    child = fork();
+    REQUIRE(child >= 0);
+    if (child == 0) {
+        execl(executable, "unrelated-argv-zero", "mode-after-exec", NULL);
+        _exit(92);
+    }
+    REQUIRE(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    REQUIRE(control(PR_GET_THP_DISABLE, 0, 0, 0, 0) == 3);
+    puts("THP mode3 thread/VM sharing, fork isolation, exec: PASS");
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    REQUIRE(argc == 2);
+    if (strcmp(argv[1], "boundaries") == 0) return boundaries();
+    if (strcmp(argv[1], "thp-modes") == 0) return thp_modes();
+    if (strcmp(argv[1], "permissions") == 0) return permissions();
+    if (strcmp(argv[1], "mode-lifetime") == 0) return mode_lifetime(argv[0]);
+    if (strcmp(argv[1], "mode-after-exec") == 0) {
+        REQUIRE(control(PR_GET_THP_DISABLE, 0, 0, 0, 0) == 3);
+        return 0;
+    }
+    return 93;
+}
+"###;
+
+fn run_expanded_prctl(mode: &str) {
+    assert!(kvm_available("run_expanded_prctl"));
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(&directory.0, "expanded-prctl", PRCTL_EXPANDED_REGRESSION);
+    let native = std::process::Command::new(&executable)
+        .arg(mode)
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "native mode={mode}: {native:?}"
+    );
+    assert!(native.stderr.is_empty());
+    let executable = executable.to_str().unwrap();
+    let (stdout, stderr) = run_host_program_captured(executable, &[executable, mode], &directory.0);
+    assert_eq!(stdout, native.stdout);
+    assert!(stderr.is_empty());
+    let (stdout, stderr) =
+        run_host_program_with_tool_captured(executable, &[executable, mode], &directory.0);
+    assert_eq!(stdout, native.stdout);
+    assert!(stderr.is_empty());
+}
+
+#[test]
+fn repair_prctl_scalar_and_name_boundaries() {
+    run_expanded_prctl("boundaries");
+}
+#[test]
+fn repair_prctl_full_thp_modes() {
+    run_expanded_prctl("thp-modes");
+}
+#[test]
+fn repair_prctl_permissions_and_lifetime() {
+    run_expanded_prctl("permissions");
+}
+#[test]
+fn repair_prctl_mode_three_lifetime() {
+    run_expanded_prctl("mode-lifetime");
+}
+
+const PRCTL_DENY_KVM: &str = r###"#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdarg.h>
+#include <string.h>
+#include <sys/types.h>
+
+static int open_forward(const char *symbol, const char *path, int flags, va_list arguments) {
+    if (strcmp(path, "/dev/kvm") == 0) {
+        errno = EACCES;
+        return -1;
+    }
+    int (*next)(const char *, int, ...) = dlsym(RTLD_NEXT, symbol);
+    if (!next) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if ((flags & O_CREAT) || (flags & O_TMPFILE) == O_TMPFILE) {
+        mode_t mode = va_arg(arguments, unsigned int);
+        return next(path, flags, mode);
+    }
+    return next(path, flags);
+}
+
+int open(const char *path, int flags, ...) {
+    va_list arguments;
+    va_start(arguments, flags);
+    int result = open_forward("open", path, flags, arguments);
+    va_end(arguments);
+    return result;
+}
+
+int open64(const char *path, int flags, ...) {
+    va_list arguments;
+    va_start(arguments, flags);
+    int result = open_forward("open64", path, flags, arguments);
+    va_end(arguments);
+    return result;
+}
+"###;
+
+fn prctl_elf_copyout_image(kind: &str, writable: bool, name: bool, output_offset: u64) -> Vec<u8> {
+    fn immediate(code: &mut Vec<u8>, register: u8, value: u64) {
+        code.extend_from_slice(&[0x48, register]);
+        code.extend_from_slice(&value.to_le_bytes());
+    }
+    fn write_page(code: &mut Vec<u8>, address: u64) {
+        immediate(code, 0xb8, 1);
+        immediate(code, 0xbf, 1);
+        immediate(code, 0xbe, address);
+        immediate(code, 0xba, 4096);
+        code.extend_from_slice(&[0x0f, 0x05]);
+    }
+    fn write_result(code: &mut Vec<u8>) {
+        code.push(0x50);
+        immediate(code, 0xb8, 1);
+        immediate(code, 0xbf, 1);
+        code.extend_from_slice(&[0x48, 0x89, 0xe6]);
+        immediate(code, 0xba, 8);
+        code.extend_from_slice(&[0x0f, 0x05, 0x58]);
+    }
+    let address = LOAD_ADDRESS + 0x4000;
+    let succeeds = writable || kind.starts_with("bss");
+    let mut code = Vec::new();
+    write_page(&mut code, address);
+    if succeeds {
+        immediate(&mut code, 0xbf, address);
+        immediate(&mut code, 0xb9, 4096);
+        immediate(&mut code, 0xb8, 0x5a);
+        code.extend_from_slice(&[0xfc, 0xf3, 0xaa]);
+    }
+    write_page(&mut code, address);
+    immediate(&mut code, 0xb8, libc::SYS_prctl as u64);
+    immediate(
+        &mut code,
+        0xbf,
+        if name {
+            libc::PR_SET_NAME
+        } else {
+            libc::PR_SET_PDEATHSIG
+        } as u64,
+    );
+    let name_operand = code.len() + 2;
+    immediate(&mut code, 0xbe, 0);
+    code.extend_from_slice(&[0x0f, 0x05]);
+    write_result(&mut code);
+    immediate(&mut code, 0xb8, libc::SYS_prctl as u64);
+    immediate(
+        &mut code,
+        0xbf,
+        if name {
+            libc::PR_GET_NAME
+        } else {
+            libc::PR_GET_PDEATHSIG
+        } as u64,
+    );
+    immediate(&mut code, 0xbe, address + output_offset);
+    code.extend_from_slice(&[0x0f, 0x05]);
+    write_result(&mut code);
+    write_page(&mut code, address);
+    immediate(&mut code, 0xb8, 60);
+    immediate(&mut code, 0xbf, 0);
+    code.extend_from_slice(&[0x0f, 0x05]);
+    if name {
+        let name_address = LOAD_ADDRESS + code.len() as u64;
+        code[name_operand..name_operand + 8].copy_from_slice(&name_address.to_le_bytes());
+        code.extend_from_slice(b"ABCDEFGHIJKLMNO\0");
+    }
+    let mut image = static_elf(&code);
+    image.resize(0x4000, 0);
+    image[0x2000..0x4000].fill(if kind.starts_with("bss") { 0 } else { 0x5a });
+    if kind == "file-bss" {
+        image[0x3800..0x4000].fill(0);
+    }
+    let overlap = kind != "single";
+    put_u16(&mut image, 56, if overlap { 3 } else { 2 });
+    for index in 1..=if overlap { 2 } else { 1 } {
+        let second = index == 2;
+        let split = second && (kind == "file-split" || kind == "bss-split");
+        let bss = second && kind.starts_with("bss");
+        let file_tail = second && kind == "file-bss";
+        let flags = if second || !overlap {
+            writable
+        } else {
+            !writable
+        };
+        let offset = if second { 0x3000 } else { 0x2000 } + if split { 0x800 } else { 0 };
+        let size = if split { 0x800 } else { 0x1000 };
+        let header = 64 + index * 56;
+        put_u32(&mut image, header, 1);
+        put_u32(&mut image, header + 4, if flags { 6 } else { 4 });
+        for (field, value) in [
+            (8, offset),
+            (16, address + if split { 0x800 } else { 0 }),
+            (24, address + if split { 0x800 } else { 0 }),
+            (
+                32,
+                if bss {
+                    0
+                } else if file_tail {
+                    0x800
+                } else {
+                    size
+                },
+            ),
+            (40, size),
+            (48, 0x1000),
+        ] {
+            put_u64(&mut image, header + field, value);
+        }
+    }
+    image
+}
+
+fn check_prctl_elf_copyout(kind: &str, writable: bool, name: bool, output_offset: u64) {
+    assert!(kvm_available("check_prctl_elf_copyout"));
+    let image = prctl_elf_copyout_image(kind, writable, name, output_offset);
+    let executable = TestExecutable::new(&image);
+    std::fs::set_permissions(&executable.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let native = std::process::Command::new(&executable.0).output().unwrap();
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "native {kind}/{writable}/{name}/{output_offset}: {native:?}"
+    );
+    assert!(native.stderr.is_empty());
+    let mut initial = vec![if kind.starts_with("bss") { 0 } else { 0x5a }; 4096];
+    if kind == "file-bss" {
+        initial[2048..].fill(0);
+    }
+    let succeeds = writable || kind.starts_with("bss");
+    let before = if succeeds {
+        vec![0x5a; 4096]
+    } else {
+        initial.clone()
+    };
+    let mut after = before.clone();
+    let offset = usize::try_from(output_offset).unwrap();
+    if succeeds {
+        if name {
+            after[offset..offset + 16].copy_from_slice(b"ABCDEFGHIJKLMNO\0");
+        } else {
+            after[offset..offset + 4].fill(0);
+        }
+        assert_ne!(after, before);
+    }
+    let mut expected = initial;
+    expected.extend_from_slice(&before);
+    expected.extend_from_slice(&0_i64.to_le_bytes());
+    expected.extend_from_slice(
+        &(if succeeds {
+            0_i64
+        } else {
+            -i64::from(libc::EFAULT)
+        })
+        .to_le_bytes(),
+    );
+    expected.extend_from_slice(&after);
+    assert_eq!(expected.len(), 3 * 4096 + 16);
+    assert_eq!(
+        native.stdout, expected,
+        "fixed native oracle {kind}/{writable}/{name}/{output_offset}"
+    );
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf(&image, "prctl-elf-copyout")
+        .unwrap();
+    let (status, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!(status, 0);
+    assert!(stderr.is_empty());
+    assert_eq!(stdout.len(), expected.len());
+    assert!(
+        stdout == expected,
+        "{kind}/{writable}/{name}/{output_offset} first differing byte {:?}",
+        stdout
+            .iter()
+            .zip(&expected)
+            .position(|(actual, expected)| actual != expected)
+    );
+}
+
+macro_rules! prctl_elf_copyout_case {
+    ($test:ident, $kind:literal, $writable:literal, $name:literal, $offset:literal) => {
+        #[test]
+        fn $test() {
+            check_prctl_elf_copyout($kind, $writable, $name, $offset);
+        }
+    };
+}
+
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_single_r_pdeath_lower,
+    "single",
+    false,
+    false,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_single_r_pdeath_upper,
+    "single",
+    false,
+    false,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_single_r_name_lower,
+    "single",
+    false,
+    true,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_single_r_name_upper,
+    "single",
+    false,
+    true,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_single_rw_pdeath_lower,
+    "single",
+    true,
+    false,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_single_rw_pdeath_upper,
+    "single",
+    true,
+    false,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_single_rw_name_lower,
+    "single",
+    true,
+    true,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_single_rw_name_upper,
+    "single",
+    true,
+    true,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_full_r_pdeath_lower,
+    "file-full",
+    false,
+    false,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_full_r_pdeath_upper,
+    "file-full",
+    false,
+    false,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_full_r_name_lower,
+    "file-full",
+    false,
+    true,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_full_r_name_upper,
+    "file-full",
+    false,
+    true,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_full_rw_pdeath_lower,
+    "file-full",
+    true,
+    false,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_full_rw_pdeath_upper,
+    "file-full",
+    true,
+    false,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_full_rw_name_lower,
+    "file-full",
+    true,
+    true,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_full_rw_name_upper,
+    "file-full",
+    true,
+    true,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_split_r_pdeath_lower,
+    "file-split",
+    false,
+    false,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_split_r_pdeath_upper,
+    "file-split",
+    false,
+    false,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_split_r_name_lower,
+    "file-split",
+    false,
+    true,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_split_r_name_upper,
+    "file-split",
+    false,
+    true,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_split_rw_pdeath_lower,
+    "file-split",
+    true,
+    false,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_split_rw_pdeath_upper,
+    "file-split",
+    true,
+    false,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_split_rw_name_lower,
+    "file-split",
+    true,
+    true,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_split_rw_name_upper,
+    "file-split",
+    true,
+    true,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_full_r_pdeath_lower,
+    "bss-full",
+    false,
+    false,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_full_r_pdeath_upper,
+    "bss-full",
+    false,
+    false,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_full_r_name_lower,
+    "bss-full",
+    false,
+    true,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_full_r_name_upper,
+    "bss-full",
+    false,
+    true,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_full_rw_pdeath_lower,
+    "bss-full",
+    true,
+    false,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_full_rw_pdeath_upper,
+    "bss-full",
+    true,
+    false,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_full_rw_name_lower,
+    "bss-full",
+    true,
+    true,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_full_rw_name_upper,
+    "bss-full",
+    true,
+    true,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_split_r_pdeath_lower,
+    "bss-split",
+    false,
+    false,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_split_r_pdeath_upper,
+    "bss-split",
+    false,
+    false,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_split_r_name_lower,
+    "bss-split",
+    false,
+    true,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_split_r_name_upper,
+    "bss-split",
+    false,
+    true,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_split_rw_pdeath_lower,
+    "bss-split",
+    true,
+    false,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_split_rw_pdeath_upper,
+    "bss-split",
+    true,
+    false,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_split_rw_name_lower,
+    "bss-split",
+    true,
+    true,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_bss_split_rw_name_upper,
+    "bss-split",
+    true,
+    true,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_bss_r_pdeath_lower,
+    "file-bss",
+    false,
+    false,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_bss_r_pdeath_upper,
+    "file-bss",
+    false,
+    false,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_bss_r_name_lower,
+    "file-bss",
+    false,
+    true,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_bss_r_name_upper,
+    "file-bss",
+    false,
+    true,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_bss_rw_pdeath_lower,
+    "file-bss",
+    true,
+    false,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_bss_rw_pdeath_upper,
+    "file-bss",
+    true,
+    false,
+    2304
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_bss_rw_name_lower,
+    "file-bss",
+    true,
+    true,
+    128
+);
+prctl_elf_copyout_case!(
+    prctl_elf_copyout_file_bss_rw_name_upper,
+    "file-bss",
+    true,
+    true,
+    2304
+);
+
+#[test]
+fn repair_prctl_required_kvm_is_not_optional() {
+    let directory = TestDirectory::new();
+    let library = compile_c_program_with_args(
+        &directory.0,
+        "deny-kvm.so",
+        PRCTL_DENY_KVM,
+        &["-shared", "-fPIC", "-ldl"],
+    );
+    for test in [
+        "native_and_kvm_prctl_names_keep_worker_local_and_format_procfs_leader_bytes",
+        "kvm_direct_and_tool_match_prctl_identity_cell",
+        "kvm_direct_and_tool_match_thp_disable_cell",
+    ] {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([test, "--exact", "--test-threads=1", "--nocapture"])
+            .env("LD_PRELOAD", &library)
+            .env("REVERIE_REQUIRE_KVM", "1")
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(101),
+            "required test {test}: {output:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("requires usable /dev/kvm"),
+            "{output:?}"
+        );
+    }
 }
