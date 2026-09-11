@@ -4955,58 +4955,17 @@ fn epoll_wait(
     if byte_length > MAX_HOST_IO {
         return negative_errno(libc::EINVAL);
     }
-    if !range_is_valid(memory, args[1], byte_length as u64) {
-        return negative_errno(libc::EFAULT);
-    }
-    let event_size = std::mem::size_of::<libc::epoll_event>();
-    let writable_events = memory
-        .user_writable_prefix(args[1], byte_length)
-        .unwrap_or(0)
-        / event_size;
-    if writable_events == 0 {
-        // A null host output validates that this is an epoll descriptor without
-        // consuming a ready event: Linux returns zero when it is empty, EFAULT
-        // when an event is ready, EINVAL for a descriptor of the wrong type,
-        // and EBADF for a closed descriptor. In the EFAULT case Linux retains
-        // one-shot and edge-triggered events for a later writable call.
-        // SAFETY: epoll_wait accepts an inaccessible events pointer and reports
-        // EFAULT if it needs to copy an event there.
-        let result = unsafe { libc::epoll_wait(epoll_fd, std::ptr::null_mut(), 1, 0) };
-        if result < 0 {
-            return io_error(std::io::Error::last_os_error());
+    match memory.with_epoll_output(args[1], max_events, |output| {
+        let ready = unsafe { libc::epoll_wait(epoll_fd, output, max_events, 0) };
+        if ready < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(ready)
         }
-        return i64::from(result);
+    }) {
+        Ok(ready) => i64::from(ready),
+        Err(error) => io_error(error),
     }
-    let host_count = count.min(writable_events);
-    let mut events = vec![libc::epoll_event { events: 0, u64: 0 }; host_count];
-    // A real-time host timeout is not a deterministic guest clock. Readiness
-    // for already-available descriptor events is preserved with a zero timeout.
-    // Guest signal masks are modeled in guest state and must not alter the
-    // supervisor thread. With a zero timeout there is no guest blocking window.
-    // SAFETY: the event array is writable for host_count entries.
-    let ready =
-        unsafe { libc::epoll_wait(epoll_fd, events.as_mut_ptr(), host_count as libc::c_int, 0) };
-    if ready < 0 {
-        return io_error(std::io::Error::last_os_error());
-    }
-    let ready = ready as usize;
-    for (index, event) in events[..ready].iter().enumerate() {
-        let Some(address) = args[1].checked_add((index * event_size) as u64) else {
-            return index as i64;
-        };
-        // SAFETY: event points to one initialized epoll_event value.
-        let bytes = unsafe {
-            std::slice::from_raw_parts((event as *const libc::epoll_event).cast::<u8>(), event_size)
-        };
-        if memory.copy_to_user(address, bytes).is_err() {
-            return if index == 0 {
-                negative_errno(libc::EFAULT)
-            } else {
-                index as i64
-            };
-        }
-    }
-    ready as i64
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.

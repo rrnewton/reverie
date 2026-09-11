@@ -55,6 +55,150 @@ use reverie_kvm::StraceTool;
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 
 #[test]
+fn native_and_kvm_epoll_output_errors_and_patterns() {
+    if !leader_self_exec_bounded("native_and_kvm_epoll_output_errors_and_patterns") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program_with_args(
+        &directory.0,
+        "epoll-output-controls",
+        EPOLL_OUTPUT_CONTROLS,
+        &["-std=c11", "-Wall", "-Wextra", "-Werror"],
+    );
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "10s"])
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "native output controls: {native:?}"
+    );
+    assert!(native.stderr.is_empty());
+    assert_eq!(native.stdout, b"24 pattern/error controls passed; full8192/full64/full64\n45 descriptor/count/address controls passed\n");
+    let program = executable.to_str().unwrap();
+    let (stdout, stderr) = run_host_program_captured(program, &[program], &directory.0);
+    assert_eq!(stdout, native.stdout);
+    assert!(stderr.is_empty());
+}
+
+const EPOLL_OUTPUT_CONTROLS: &str = r#"#define _GNU_SOURCE
+#include <errno.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+static void full_check(const void *actual, const void *expected, size_t length) {
+    if (memcmp(actual, expected, length)) abort();
+}
+
+static void qualify_error(int descriptor, int expected_error, int fill) {
+    unsigned char *mapping = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mapping == MAP_FAILED) abort();
+    unsigned char expected[8192];
+    memset(mapping, fill, 8192);
+    memset(expected, fill, 8192);
+    if (mprotect(mapping + 4096, 4096, PROT_READ)) abort();
+    for (int translated = 0; translated < 2; ++translated) {
+        errno = 0;
+        int result = epoll_wait(descriptor, (struct epoll_event *)(mapping + 4092), 1, 0);
+        if (result != (expected_error ? -1 : 0) || errno != expected_error) abort();
+        full_check(mapping, expected, 8192);
+
+    }
+    if (munmap(mapping, 8192)) abort();
+}
+
+static void qualify_pattern(int fill, uint64_t data) {
+    unsigned char *mapping = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mapping == MAP_FAILED) abort();
+    unsigned char expected[8192];
+    memset(expected, fill, 8192);
+    uint32_t bits = EPOLLIN;
+    memcpy(expected + 4092, &bits, sizeof(bits));
+    for (int translated = 0; translated < 2; ++translated) {
+        if (mprotect(mapping, 8192, PROT_READ | PROT_WRITE)) abort();
+        memset(mapping, fill, 8192);
+        if (mprotect(mapping + 4096, 4096, PROT_READ)) abort();
+        int descriptor = epoll_create1(EPOLL_CLOEXEC);
+        int event = eventfd(1, EFD_CLOEXEC | EFD_NONBLOCK);
+        struct epoll_event registration = {.events = EPOLLIN | EPOLLONESHOT | EPOLLET, .data.u64 = data};
+        if (descriptor < 0 || event < 0 || epoll_ctl(descriptor, EPOLL_CTL_ADD, event, &registration)) abort();
+        errno = 0;
+        int result = epoll_wait(descriptor, (struct epoll_event *)(mapping + 4092), 1, 0);
+        if (result != -1 || errno != EFAULT) abort();
+        full_check(mapping, expected, 8192);
+        unsigned char retry[64], retry_expected[64];
+        memset(retry, fill, sizeof(retry));
+        memset(retry_expected, fill, sizeof(retry_expected));
+        struct epoll_event delivered = {.events = EPOLLIN, .data.u64 = data};
+        memcpy(retry_expected, &delivered, sizeof(delivered));
+        errno = 0;
+        result = epoll_wait(descriptor, (struct epoll_event *)retry, 1, 0);
+        if (result != 1 || errno) abort();
+        full_check(retry, retry_expected, sizeof(retry));
+        memset(retry, fill, sizeof(retry));
+        memset(retry_expected, fill, sizeof(retry_expected));
+        result = epoll_wait(descriptor, (struct epoll_event *)retry, 1, 0);
+        if (result != 0) abort();
+        full_check(retry, retry_expected, sizeof(retry));
+        if (close(event) || close(descriptor)) abort();
+    }
+    if (munmap(mapping, 8192)) abort();
+}
+
+static int pattern_controls(void) {
+    int empty = epoll_create1(EPOLL_CLOEXEC);
+    int wrong_type = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (empty < 0 || wrong_type < 0) abort();
+    const int fills[] = {0, 1, 0x5a, 0xff};
+    const uint64_t data[] = {0, UINT64_MAX, UINT64_C(0x123456789abcdef0)};
+    for (size_t fill = 0; fill < sizeof(fills) / sizeof(fills[0]); ++fill) {
+        qualify_error(empty, 0, fills[fill]);
+        qualify_error(wrong_type, EINVAL, fills[fill]);
+        qualify_error(-1, EBADF, fills[fill]);
+        for (size_t value = 0; value < sizeof(data) / sizeof(data[0]); ++value) qualify_pattern(fills[fill], data[value]);
+    }
+    if (close(wrong_type) || close(empty)) abort();
+    puts("24 pattern/error controls passed; full8192/full64/full64");
+    return 0;
+}
+
+int main(void) {
+    if (pattern_controls()) return 90;
+    int empty = epoll_create1(EPOLL_CLOEXEC);
+    int wrong = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (empty < 0 || wrong < 0) return 91;
+    const int descriptors[] = {empty, wrong, -1};
+    const uintptr_t addresses[] = {0, 1, UINTPTR_MAX, UINT64_C(0x8000000000000000), UINT64_C(0x40000000)};
+    const int counts[] = {0, -1, 1};
+    for (size_t descriptor = 0; descriptor < 3; ++descriptor) {
+        for (size_t address = 0; address < 5; ++address) {
+            for (size_t count = 0; count < 3; ++count) {
+                int expected_error = descriptor == 2 ? EBADF : counts[count] <= 0 ? EINVAL : address == 2 || address == 3 ? EFAULT : descriptor == 1 ? EINVAL : 0;
+                errno = 0;
+                long result = syscall(SYS_epoll_wait, descriptors[descriptor], addresses[address], counts[count], 0);
+                int error = errno;
+                if (result != (expected_error ? -1 : 0) || error != expected_error) {
+                    printf("fd=%zu address=%zu count=%d actual=%ld/%d expected=%d/%d\n",descriptor,address,counts[count],result,error,expected_error ? -1 : 0,expected_error);
+                    return 92;
+                }
+            }
+        }
+    }
+    if (close(empty) || close(wrong)) return 93;
+    puts("45 descriptor/count/address controls passed");
+    return 0;
+}
+"#;
+
+#[test]
 fn native_and_kvm_epoll_partial_records_preserve_events() {
     if !leader_self_exec_bounded("native_and_kvm_epoll_partial_records_preserve_events") {
         return;
@@ -2802,6 +2946,170 @@ static NEXT_TEST_EXECUTABLE: AtomicU64 = AtomicU64::new(0);
 
 struct TestExecutable(PathBuf);
 
+struct NativeTestExecutable(std::fs::File);
+
+impl NativeTestExecutable {
+    fn writer() -> std::fs::File {
+        use std::os::fd::FromRawFd;
+        let descriptor = unsafe {
+            libc::memfd_create(
+                c"native-executable".as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
+        };
+        assert!(descriptor >= 0, "{}", std::io::Error::last_os_error());
+        unsafe { std::fs::File::from_raw_fd(descriptor) }
+    }
+
+    fn publish(mut writer: std::fs::File, image: &[u8], mode: u32) -> Self {
+        use std::io::Write;
+        use std::os::fd::AsRawFd;
+        writer.write_all(image).unwrap();
+        writer
+            .set_permissions(std::fs::Permissions::from_mode(mode))
+            .unwrap();
+        assert_eq!(
+            unsafe {
+                libc::fcntl(
+                    writer.as_raw_fd(),
+                    libc::F_ADD_SEALS,
+                    libc::F_SEAL_WRITE
+                        | libc::F_SEAL_GROW
+                        | libc::F_SEAL_SHRINK
+                        | libc::F_SEAL_SEAL,
+                )
+            },
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        Self(std::fs::File::open(format!("/proc/self/fd/{}", writer.as_raw_fd())).unwrap())
+    }
+
+    fn new(image: &[u8], mode: u32) -> Self {
+        Self::publish(Self::writer(), image, mode)
+    }
+
+    fn path(&self) -> PathBuf {
+        use std::os::fd::AsRawFd;
+        PathBuf::from(format!("/proc/self/fd/{}", self.0.as_raw_fd()))
+    }
+}
+
+#[test]
+fn native_executable_publication_survives_inherited_writer() {
+    use std::os::fd::AsRawFd;
+    let test = "native_executable_publication_survives_inherited_writer";
+    if std::env::var("REVERIE_NATIVE_PUBLICATION_CHILD").as_deref() != Ok(test) {
+        let output = std::process::Command::new("timeout")
+            .args(["--kill-after=2s", "30s"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env("REVERIE_NATIVE_PUBLICATION_CHILD", test)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
+    let image = static_elf(&[0xb8, 0x3c, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]);
+    let writer = NativeTestExecutable::writer();
+    let writer_fd = writer.as_raw_fd();
+    assert_eq!(
+        unsafe { libc::fcntl(writer_fd, libc::F_GETFD) } & libc::FD_CLOEXEC,
+        libc::FD_CLOEXEC
+    );
+    let mut release = [-1; 2];
+    assert_eq!(
+        unsafe { libc::pipe2(release.as_mut_ptr(), libc::O_CLOEXEC) },
+        0
+    );
+    let holder = unsafe { libc::fork() };
+    assert!(holder >= 0);
+    if holder == 0 {
+        unsafe {
+            libc::close(release[1]);
+            let mut byte = 0_u8;
+            let count = libc::read(release[0], (&raw mut byte).cast(), 1);
+            let closed = libc::close(writer_fd);
+            libc::_exit(if count == 1 && byte == 1 && closed == 0 {
+                0
+            } else {
+                91
+            });
+        }
+    }
+    unsafe {
+        libc::close(release[0]);
+    }
+    let executable = NativeTestExecutable::publish(writer, &image, 0o700);
+    let held = std::process::Command::new(executable.path()).output();
+    assert_eq!(
+        unsafe { libc::write(release[1], [1_u8].as_ptr().cast(), 1) },
+        1
+    );
+    unsafe {
+        libc::close(release[1]);
+    }
+    let mut status = -1;
+    assert_eq!(unsafe { libc::waitpid(holder, &raw mut status, 0) }, holder);
+    assert_eq!(status, 0);
+    let released = std::process::Command::new(executable.path())
+        .output()
+        .unwrap();
+    assert_eq!(released.status.code(), Some(0));
+    assert!(released.stdout.is_empty());
+    assert!(released.stderr.is_empty());
+    assert_eq!(std::fs::read(executable.path()).unwrap(), image);
+    assert_eq!(
+        executable.0.metadata().unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let positive = NativeTestExecutable::new(&image, 0o755);
+    assert_eq!(
+        positive.0.metadata().unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    assert_eq!(
+        std::process::Command::new(positive.path())
+            .status()
+            .unwrap()
+            .code(),
+        Some(0)
+    );
+    positive
+        .0
+        .set_permissions(std::fs::Permissions::from_mode(0o600))
+        .unwrap();
+    assert_eq!(
+        std::process::Command::new(positive.path())
+            .output()
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::EACCES)
+    );
+    let held = held.expect("execution must succeed while inherited CLOEXEC writer remains open");
+    assert_eq!(held.status.code(), Some(0));
+    assert!(held.stdout.is_empty());
+    assert!(held.stderr.is_empty());
+    assert_eq!(
+        unsafe { libc::fcntl(executable.0.as_raw_fd(), libc::F_GET_SEALS) },
+        libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL
+    );
+    let reopened_writer = std::fs::OpenOptions::new()
+        .write(true)
+        .open(executable.path())
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::pwrite(reopened_writer.as_raw_fd(), [0_u8].as_ptr().cast(), 1, 0) },
+        -1
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EPERM)
+    );
+    assert_eq!(std::fs::read(executable.path()).unwrap(), image);
+}
+
 impl TestExecutable {
     fn new(image: &[u8]) -> Self {
         let id = NEXT_TEST_EXECUTABLE.fetch_add(1, Ordering::Relaxed);
@@ -4842,12 +5150,11 @@ fn kvm_initial_rbp_and_rflags_match_native_linux_process_entry() {
         0x0f, 0x0b, // ud2
     ];
     let image = static_elf(&code);
-    let executable = TestExecutable::new(&image);
-    let mut permissions = std::fs::metadata(&executable.0).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&executable.0, permissions).unwrap();
+    let executable = NativeTestExecutable::new(&image, 0o755);
 
-    let native = std::process::Command::new(&executable.0).output().unwrap();
+    let native = std::process::Command::new(executable.path())
+        .output()
+        .unwrap();
     assert!(
         native.status.success(),
         "native entry-register fixture failed: {native:?}",
@@ -7502,9 +7809,10 @@ fn prctl_elf_copyout_image(kind: &str, writable: bool, name: bool, output_offset
 fn check_prctl_elf_copyout(kind: &str, writable: bool, name: bool, output_offset: u64) {
     assert!(kvm_available("check_prctl_elf_copyout"));
     let image = prctl_elf_copyout_image(kind, writable, name, output_offset);
-    let executable = TestExecutable::new(&image);
-    std::fs::set_permissions(&executable.0, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let native = std::process::Command::new(&executable.0).output().unwrap();
+    let executable = NativeTestExecutable::new(&image, 0o700);
+    let native = std::process::Command::new(executable.path())
+        .output()
+        .unwrap();
     assert_eq!(
         native.status.code(),
         Some(0),

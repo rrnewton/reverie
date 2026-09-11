@@ -52,6 +52,90 @@ enum UserPageState {
     NoAccess,
 }
 
+struct TemporaryOutput {
+    pointer: NonNull<u8>,
+    length: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEMPORARY_OUTPUT_FAILURE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    static TEMPORARY_OUTPUT_RECORD: std::cell::RefCell<Vec<(bool, i32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn temporary_output_failure(point: u8) -> bool {
+    TEMPORARY_OUTPUT_FAILURE.with(|failure| {
+        if failure.get() == point {
+            failure.set(0);
+            true
+        } else {
+            false
+        }
+    })
+}
+
+impl TemporaryOutput {
+    fn new(length: usize) -> io::Result<Self> {
+        #[cfg(test)]
+        if temporary_output_failure(1) {
+            return Err(io::Error::from_raw_os_error(libc::ENOMEM));
+        }
+        let pointer = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                length,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        if pointer == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        #[cfg(test)]
+        TEMPORARY_OUTPUT_RECORD.with(|record| record.borrow_mut().push((true, 0)));
+        Ok(Self {
+            pointer: NonNull::new(pointer.cast()).expect("mmap returned a null output mapping"),
+            length,
+        })
+    }
+
+    fn protect_from(&self, offset: usize) -> io::Result<()> {
+        #[cfg(test)]
+        if temporary_output_failure(2) {
+            return Err(io::Error::from_raw_os_error(libc::EACCES));
+        }
+        assert!(offset < self.length && offset.is_multiple_of(PAGE_SIZE));
+        let result = unsafe {
+            libc::mprotect(
+                self.pointer.as_ptr().add(offset).cast(),
+                self.length - offset,
+                libc::PROT_NONE,
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for TemporaryOutput {
+    fn drop(&mut self) {
+        let result = release_temporary_output(self.pointer.as_ptr(), self.length);
+        debug_assert_eq!(result, 0);
+    }
+}
+
+fn release_temporary_output(pointer: *mut u8, length: usize) -> i32 {
+    let result = unsafe { libc::munmap(pointer.cast(), length) };
+    #[cfg(test)]
+    TEMPORARY_OUTPUT_RECORD.with(|record| record.borrow_mut().push((false, result)));
+    result
+}
+
 // SAFETY: Mapping owns an mmap allocation, not a Rust reference. Host access
 // is serialized by host_access, and the KVM backend exposes handles only while
 // its single vCPU is stopped at an exit.
@@ -419,6 +503,107 @@ impl GuestMemory {
 
     pub(crate) fn put_user_i16(&self, guest_address: u64, value: i16) -> Result<()> {
         self.write_user(guest_address, &value.to_ne_bytes(), false)
+    }
+
+    pub(crate) fn with_epoll_output(
+        &self,
+        guest_address: u64,
+        max_events: i32,
+        operation: impl FnOnce(*mut libc::epoll_event) -> io::Result<i32>,
+    ) -> io::Result<i32> {
+        let invalid = || io::Error::from_raw_os_error(libc::EINVAL);
+        let count = usize::try_from(max_events).map_err(|_| invalid())?;
+        let length = count
+            .checked_mul(std::mem::size_of::<libc::epoll_event>())
+            .ok_or_else(invalid)?;
+        if length == 0 || length > 16 * 1024 * 1024 {
+            return Err(invalid());
+        }
+        let probe = unsafe {
+            libc::epoll_wait(
+                self.mapping.backing.as_raw_fd(),
+                guest_address as *mut libc::epoll_event,
+                max_events,
+                0,
+            )
+        };
+        let validation = io::Error::last_os_error();
+        assert_eq!(
+            probe, -1,
+            "guest RAM backing must not be an epoll descriptor"
+        );
+        if validation.raw_os_error() != Some(libc::EINVAL) {
+            return Err(validation);
+        }
+        let access = self
+            .mapping
+            .user_access
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        let _host = self
+            .mapping
+            .host_access
+            .lock()
+            .expect("guest memory lock poisoned");
+        let mut prefix = 0;
+        if self.checked_offset(guest_address, 1).is_ok() {
+            let end = guest_address
+                .checked_add(length as u64)
+                .ok_or_else(|| io::Error::from_raw_os_error(libc::EFAULT))?
+                .min(self.guest_end());
+            let mut cursor = guest_address;
+            while cursor < end {
+                if access.enabled
+                    && !matches!(
+                        access.pages.get(&(cursor / PAGE_SIZE as u64)),
+                        Some(UserPageState::Accessible { writable: true })
+                    )
+                {
+                    break;
+                }
+                cursor = ((cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64).min(end);
+            }
+            prefix = usize::try_from(cursor - guest_address).expect("output prefix fits usize");
+        }
+        let offset = (guest_address % PAGE_SIZE as u64) as usize;
+        let allocation = offset
+            .checked_add(length)
+            .and_then(|size| size.checked_add(PAGE_SIZE - 1))
+            .ok_or_else(invalid)?
+            & !(PAGE_SIZE - 1);
+        let output = TemporaryOutput::new(allocation)?;
+        let pointer = unsafe { output.pointer.as_ptr().add(offset) };
+        let guest_offset = if prefix != 0 {
+            Some(
+                self.checked_offset(guest_address, prefix)
+                    .map_err(|_| io::Error::from_raw_os_error(libc::EFAULT))?,
+            )
+        } else {
+            None
+        };
+        if let Some(guest_offset) = guest_offset {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    self.mapping.mapping.as_ptr().add(guest_offset),
+                    pointer,
+                    prefix,
+                )
+            };
+        }
+        if prefix < length {
+            output.protect_from(if prefix == 0 { 0 } else { offset + prefix })?;
+        }
+        let result = operation(pointer.cast());
+        if let Some(guest_offset) = guest_offset {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    pointer,
+                    self.mapping.mapping.as_ptr().add(guest_offset),
+                    prefix,
+                )
+            };
+        }
+        result
     }
 
     pub(crate) fn user_writable_prefix(&self, guest_address: u64, length: usize) -> Result<usize> {
@@ -1450,6 +1635,226 @@ mod tests {
         let mut actual = [0; PAGE_SIZE * 3];
         memory.read_raw(0, &mut actual).unwrap();
         assert_eq!(actual, expected);
+    }
+
+    fn temporary_output_epoll(memory: &GuestMemory, address: u64) -> io::Result<i32> {
+        let epoll = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+        assert!(epoll >= 0);
+        let epoll = unsafe { OwnedFd::from_raw_fd(epoll) };
+        let event = unsafe { libc::eventfd(1, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+        assert!(event >= 0);
+        let event = unsafe { OwnedFd::from_raw_fd(event) };
+        let mut registration = libc::epoll_event {
+            events: (libc::EPOLLIN | libc::EPOLLONESHOT | libc::EPOLLET) as u32,
+            u64: 0x123456789abcdef0,
+        };
+        assert_eq!(
+            unsafe {
+                libc::epoll_ctl(
+                    epoll.as_raw_fd(),
+                    libc::EPOLL_CTL_ADD,
+                    event.as_raw_fd(),
+                    &mut registration,
+                )
+            },
+            0
+        );
+        memory.with_epoll_output(address, 1, |output| {
+            assert!(memory.mapping.user_access.try_lock().is_err());
+            assert!(memory.mapping.host_access.try_lock().is_err());
+            let result = unsafe { libc::epoll_wait(epoll.as_raw_fd(), output, 1, 0) };
+            if result < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(result)
+            }
+        })
+    }
+
+    #[test]
+    fn temporary_output_uses_shared_permissions_and_keeps_privileged_writes() {
+        let mut memory = GuestMemory::new(0, PAGE_SIZE * 3).unwrap();
+        memory.write_raw(0, &[0xa5; PAGE_SIZE * 3]).unwrap();
+        memory
+            .map_user_range(0, (PAGE_SIZE * 3) as u64, false)
+            .unwrap();
+        memory.enable_user_access();
+        let snapshot = memory.snapshot().unwrap();
+        let shared = memory.clone();
+        shared
+            .map_user_permissions(PAGE_SIZE as u64, PAGE_SIZE as u64, true, false)
+            .unwrap();
+        assert_eq!(
+            temporary_output_epoll(&memory, PAGE_SIZE as u64 - 4)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EFAULT)
+        );
+        let mut expected = [0xa5; PAGE_SIZE * 3];
+        expected[PAGE_SIZE - 4..PAGE_SIZE].copy_from_slice(&(libc::EPOLLIN as u32).to_ne_bytes());
+        let mut actual = [0; PAGE_SIZE * 3];
+        memory.read_raw(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            temporary_output_epoll(&snapshot, PAGE_SIZE as u64 - 4).unwrap(),
+            1
+        );
+        let mut snapshot_expected = expected;
+        snapshot_expected[PAGE_SIZE..PAGE_SIZE + 8]
+            .copy_from_slice(&0x123456789abcdef0_u64.to_ne_bytes());
+        snapshot.read_raw(0, &mut actual).unwrap();
+        assert_eq!(actual, snapshot_expected);
+        memory.write(PAGE_SIZE as u64, b"privileged").unwrap();
+        expected[PAGE_SIZE..PAGE_SIZE + 10].copy_from_slice(b"privileged");
+        memory.read_raw(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+        memory
+            .remap_user_range(
+                PAGE_SIZE as u64,
+                PAGE_SIZE as u64,
+                (PAGE_SIZE * 2) as u64,
+                PAGE_SIZE as u64,
+            )
+            .unwrap();
+        for address in [PAGE_SIZE as u64, (PAGE_SIZE * 2) as u64] {
+            assert_eq!(
+                temporary_output_epoll(&memory, address)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EFAULT)
+            );
+            memory.read_raw(0, &mut actual).unwrap();
+            assert_eq!(actual, expected);
+        }
+        memory
+            .map_user_range((PAGE_SIZE * 2) as u64, PAGE_SIZE as u64, false)
+            .unwrap();
+        assert_eq!(
+            temporary_output_epoll(&memory, (PAGE_SIZE * 2) as u64).unwrap(),
+            1
+        );
+        expected[PAGE_SIZE * 2..PAGE_SIZE * 2 + 4]
+            .copy_from_slice(&(libc::EPOLLIN as u32).to_ne_bytes());
+        expected[PAGE_SIZE * 2 + 4..PAGE_SIZE * 2 + 12]
+            .copy_from_slice(&0x123456789abcdef0_u64.to_ne_bytes());
+        memory
+            .unmap_user_range((PAGE_SIZE * 2) as u64, PAGE_SIZE as u64)
+            .unwrap();
+        assert_eq!(
+            temporary_output_epoll(&memory, (PAGE_SIZE * 2) as u64)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EFAULT)
+        );
+        memory.read_raw(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn temporary_output_checks_bounds_before_call_and_cleans_every_setup_failure() {
+        let memory = GuestMemory::new(0, PAGE_SIZE * 2).unwrap();
+        memory.write_raw(0, &[0x5a; PAGE_SIZE * 2]).unwrap();
+        memory.map_user_range(0, PAGE_SIZE as u64, false).unwrap();
+        memory
+            .map_user_range(PAGE_SIZE as u64, PAGE_SIZE as u64, true)
+            .unwrap();
+        memory.enable_user_access();
+        for (address, count, error) in [
+            (0, 0, libc::EINVAL),
+            (0, -1, libc::EINVAL),
+            (0, i32::MAX, libc::EINVAL),
+            (u64::MAX, 1, libc::EFAULT),
+        ] {
+            assert_eq!(
+                memory
+                    .with_epoll_output(address, count, |_| panic!(
+                        "invalid arguments reached the host operation"
+                    ))
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(error)
+            );
+        }
+        for (failure, expected_error, expected_mapping) in
+            [(1, libc::ENOMEM, false), (2, libc::EACCES, true)]
+        {
+            TEMPORARY_OUTPUT_RECORD.with(|record| record.borrow_mut().clear());
+            TEMPORARY_OUTPUT_FAILURE.with(|point| point.set(failure));
+            assert_eq!(
+                memory
+                    .with_epoll_output(PAGE_SIZE as u64 - 4, 1, |_| panic!(
+                        "failed setup reached the host operation"
+                    ))
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(expected_error)
+            );
+            TEMPORARY_OUTPUT_RECORD.with(|record| {
+                assert_eq!(
+                    *record.borrow(),
+                    if expected_mapping {
+                        vec![(true, 0), (false, 0)]
+                    } else {
+                        vec![]
+                    }
+                )
+            });
+            let mut actual = [0; PAGE_SIZE * 2];
+            memory.read_raw(0, &mut actual).unwrap();
+            assert_eq!(actual, [0x5a; PAGE_SIZE * 2]);
+        }
+        TEMPORARY_OUTPUT_RECORD.with(|record| record.borrow_mut().clear());
+        let result =
+            memory.with_epoll_output(0, 1, |_| Err(io::Error::from_raw_os_error(libc::EINTR)));
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EINTR));
+        TEMPORARY_OUTPUT_RECORD
+            .with(|record| assert_eq!(*record.borrow(), vec![(true, 0), (false, 0)]));
+        let mut actual = [0; PAGE_SIZE * 2];
+        memory.read_raw(0, &mut actual).unwrap();
+        assert_eq!(actual, [0x5a; PAGE_SIZE * 2]);
+    }
+
+    #[test]
+    fn temporary_output_unwind_releases_private_mapping() {
+        let memory = GuestMemory::new(0, PAGE_SIZE).unwrap();
+        TEMPORARY_OUTPUT_RECORD.with(|record| record.borrow_mut().clear());
+        let result = std::panic::catch_unwind(|| {
+            memory.with_epoll_output(0, 1, |_| panic!("output callback control"))
+        });
+        assert!(result.is_err());
+        TEMPORARY_OUTPUT_RECORD
+            .with(|record| assert_eq!(*record.borrow(), vec![(true, 0), (false, 0)]));
+    }
+
+    #[test]
+    fn temporary_output_unmapped_addresses_never_target_host_memory() {
+        let memory = GuestMemory::new(0, PAGE_SIZE).unwrap();
+        let actual = [0xa5; 64];
+        let address = actual.as_ptr() as u64;
+        assert!(address >= memory.guest_end());
+        assert_eq!(
+            temporary_output_epoll(&memory, address)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EFAULT)
+        );
+        assert_eq!(actual, [0xa5; 64]);
+        let max_events = (16 * 1024 * 1024 / std::mem::size_of::<libc::epoll_event>()) as i32;
+        assert_eq!(
+            memory
+                .with_epoll_output(PAGE_SIZE as u64 - 1, max_events, |_| Ok(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            memory
+                .with_epoll_output(0, max_events + 1, |_| panic!(
+                    "oversize output reached the host operation"
+                ))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EINVAL)
+        );
     }
 
     #[test]
