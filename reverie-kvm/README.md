@@ -61,6 +61,39 @@ tool state, run subscribed syscall and lifecycle callbacks, and contribute to
 the root tool's shared `GlobalState`. `CLONE_THREAD` workers still execute
 through the KVM personality without per-thread tool lifecycle callbacks.
 
+## Task names and prctl state
+
+`PR_SET_NAME` retains up to 15 bytes plus a terminating NUL for each guest
+thread. `PR_GET_NAME` returns all 16 bytes, including padding; a failed name
+import leaves the previous name intact. Threads inherit then independently
+change their names, while the synthetic process status uses the leader's name
+with procfs escaping. Exec initializes the name from the executable basename,
+not a replacement `argv[0]`.
+
+`PR_SET_THP_DISABLE` and `PR_GET_THP_DISABLE` model per-address-space policy:
+0 means enabled, 1 means disabled, and 3 means disabled except when explicitly
+advised (`PR_THP_DISABLE_EXCEPT_ADVISED`, flag 2). Threads and `CLONE_VM`
+children share this state; fork copies it independently and exec inherits it.
+Invalid flags or required-zero arguments fail without changing state. These
+are virtual guest policy values, not changes to supervisor THP policy or a
+claim that the guest RAM uses physical huge pages.
+
+`PR_SET_PDEATHSIG` accepts zero; nonzero requests return `ENOSYS` because
+deterministic parent-death signal delivery is not implemented. The getter
+returns a four-byte zero. These two getters check guest writable-page state:
+NAME may copy a writable prefix before reporting `EFAULT`, whereas PDEATHSIG
+uses a scalar store and leaves the output unchanged when that store faults.
+The strict eight-byte NAME boundary control is qualified on the tested x86-64
+FSRM host, not a promise about every Linux architecture's partial-copy size.
+This does not change privileged Tool/loader writes, repair other syscall
+copyouts, or enforce permissions in the vCPU's hardware page tables.
+
+This does not fix ELF overlapping-page contents. The loader still differs
+from Linux for split file-backed overlapping pages, split pure-BSS pages,
+and readonly partial file tails. The getter permission checks do not repair
+those initial bytes; their tests do not establish ELF initial-content or
+whole-program parity for those layouts.
+
 ## Typed syscall decoding
 
 Every valid x86-64 syscall number is decoded through Reverie's complete typed

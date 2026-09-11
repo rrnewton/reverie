@@ -8817,8 +8817,9 @@ fn prctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
         // TODO-HUMAN-REVIEW(PR-537): Review deterministic task-name state and lifecycle.
         option if option == libc::PR_SET_NAME as u64 => set_prctl_name(memory, state, args[1]),
         option if option == libc::PR_GET_NAME as u64 => memory
-            .write(args[1], &state.thread_name)
+            .copy_to_user(args[1], &state.thread_name)
             .map_or_else(|_| negative_errno(libc::EFAULT), |_| 0),
+        // TODO-HUMAN-REVIEW(PR-537): Review virtual parent-death signal state and copyout.
         option if option == libc::PR_SET_PDEATHSIG as u64 => {
             // Nonzero values require deterministic delivery when the modeled
             // parent exits. Refuse them until that behavior is implemented.
@@ -8829,14 +8830,18 @@ fn prctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
             }
         }
         option if option == libc::PR_GET_PDEATHSIG as u64 => memory
-            .write(args[1], &0_i32.to_ne_bytes())
+            .put_user_i32(args[1], 0)
             .map_or_else(|_| negative_errno(libc::EFAULT), |_| 0),
         // TODO-HUMAN-REVIEW(PR-537): Review deterministic transparent-hugepage state and lifecycle.
         option if option == libc::PR_SET_THP_DISABLE as u64 => {
-            if args[2..5].iter().any(|argument| *argument != 0) {
+            if args[3..5].iter().any(|argument| *argument != 0)
+                || args[2] & !2 != 0
+                || (args[1] == 0 && args[2] != 0)
+            {
                 negative_errno(libc::EINVAL)
             } else {
-                state.thp_disabled.store(args[1] != 0, Ordering::SeqCst);
+                let mode = if args[1] == 0 { 0 } else { 1 | args[2] as u8 };
+                state.thp_disabled.store(mode, Ordering::SeqCst);
                 0
             }
         }
@@ -9309,7 +9314,12 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
         return negative_errno(libc::EFAULT);
     }
     if memory
-        .map_user_range(address, length as u64, args[2] == libc::PROT_NONE as u64)
+        .map_user_permissions(
+            address,
+            length as u64,
+            args[2] != libc::PROT_NONE as u64,
+            args[2] & libc::PROT_WRITE as u64 != 0,
+        )
         .is_err()
     {
         return negative_errno(libc::ENOMEM);
@@ -9391,7 +9401,12 @@ fn mprotect(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     if !range_is_valid(memory, address, length) || !memory.user_range_is_mapped(address, length) {
         return negative_errno(libc::ENOMEM);
     }
-    match memory.map_user_range(address, length, protection == libc::PROT_NONE as u64) {
+    match memory.map_user_permissions(
+        address,
+        length,
+        protection != libc::PROT_NONE as u64,
+        protection & libc::PROT_WRITE as u64 != 0,
+    ) {
         Ok(()) => 0,
         Err(_) => negative_errno(libc::ENOMEM),
     }
@@ -11379,7 +11394,7 @@ mod tests {
             random_seed: 0,
             thread_name: *b"test\0\0\0\0\0\0\0\0\0\0\0\0",
             thread_group_leader_name: Arc::new(Mutex::new(*b"test\0\0\0\0\0\0\0\0\0\0\0\0")),
-            thp_disabled: Arc::new(AtomicBool::new(false)),
+            thp_disabled: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             keep_capabilities: false,
             capability_effective: GUEST_CAPABILITY_MASK,
             capability_permitted: GUEST_CAPABILITY_MASK,

@@ -48,7 +48,7 @@ struct UserAccess {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UserPageState {
-    Accessible,
+    Accessible { writable: bool },
     NoAccess,
 }
 
@@ -213,13 +213,23 @@ impl GuestMemory {
         length: u64,
         no_access: bool,
     ) -> Result<()> {
+        self.map_user_permissions(guest_address, length, !no_access, !no_access)
+    }
+
+    pub(crate) fn map_user_permissions(
+        &self,
+        guest_address: u64,
+        length: u64,
+        accessible: bool,
+        writable: bool,
+    ) -> Result<()> {
         let Some((first_page, last_page)) = self.checked_page_range(guest_address, length)? else {
             return Ok(());
         };
-        let state = if no_access {
-            UserPageState::NoAccess
+        let state = if accessible {
+            UserPageState::Accessible { writable }
         } else {
-            UserPageState::Accessible
+            UserPageState::NoAccess
         };
         let mut access = self
             .mapping
@@ -399,6 +409,56 @@ impl GuestMemory {
         self.write_raw(guest_address, source)
     }
 
+    pub(crate) fn copy_to_user(&self, guest_address: u64, source: &[u8]) -> Result<()> {
+        self.write_user(guest_address, source, true)
+    }
+
+    pub(crate) fn put_user_i32(&self, guest_address: u64, value: i32) -> Result<()> {
+        self.write_user(guest_address, &value.to_ne_bytes(), false)
+    }
+
+    fn write_user(&self, guest_address: u64, source: &[u8], partial: bool) -> Result<()> {
+        if source.is_empty() {
+            return Ok(());
+        }
+        self.checked_offset(guest_address, 1)?;
+        let requested_end = guest_address.checked_add(source.len() as u64).ok_or(
+            Error::GuestMemoryAccessDenied {
+                address: guest_address,
+                length: source.len(),
+            },
+        )?;
+        let end = requested_end.min(self.guest_end());
+        let access = self
+            .mapping
+            .user_access
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        let mut cursor = guest_address;
+        while cursor < end {
+            if access.enabled
+                && !matches!(
+                    access.pages.get(&(cursor / PAGE_SIZE as u64)),
+                    Some(UserPageState::Accessible { writable: true })
+                )
+            {
+                break;
+            }
+            cursor = ((cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64).min(end);
+        }
+        let length = usize::try_from(cursor - guest_address).expect("copyout prefix fits usize");
+        if length == source.len() || (partial && length != 0) {
+            self.write_raw(guest_address, &source[..length])?;
+        }
+        if length != source.len() {
+            return Err(Error::GuestMemoryAccessDenied {
+                address: guest_address,
+                length: source.len(),
+            });
+        }
+        Ok(())
+    }
+
     // TODO-HUMAN-REVIEW(PR-132): Review internal copies that bypass the user map.
     pub(crate) fn write_raw(&self, guest_address: u64, source: &[u8]) -> Result<()> {
         let offset = self.checked_offset(guest_address, source.len())?;
@@ -559,7 +619,10 @@ impl GuestMemory {
 
         let mut cursor = guest_address;
         while cursor < end {
-            if access.pages.get(&(cursor / PAGE_SIZE as u64)) != Some(&UserPageState::Accessible) {
+            if !matches!(
+                access.pages.get(&(cursor / PAGE_SIZE as u64)),
+                Some(UserPageState::Accessible { .. })
+            ) {
                 break;
             }
             let next_page = (cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64;
@@ -1120,6 +1183,124 @@ mod tests {
         let mut bytes = [0; 6];
         parent.read(PAGE_SIZE as u64, &mut bytes).unwrap();
         assert_eq!(&bytes, b"mapped");
+    }
+
+    #[test]
+    fn prctl_copyout_keeps_privileged_write_and_scalar_contracts() {
+        let mut memory = GuestMemory::new(0, PAGE_SIZE * 2).unwrap();
+        memory.write_raw(0, &[0xa5; PAGE_SIZE * 2]).unwrap();
+        memory.map_user_range(0, PAGE_SIZE as u64, false).unwrap();
+        memory
+            .map_user_permissions(PAGE_SIZE as u64, PAGE_SIZE as u64, true, false)
+            .unwrap();
+        memory.enable_user_access();
+        assert!(memory.put_user_i32(PAGE_SIZE as u64 - 2, 0).is_err());
+        let mut expected = [0xa5; PAGE_SIZE * 2];
+        let mut actual = [0; PAGE_SIZE * 2];
+        memory.read_raw(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+        assert!(
+            memory
+                .copy_to_user(PAGE_SIZE as u64 - 8, b"ABCDEFGHIJKLMNO\0")
+                .is_err()
+        );
+        expected[PAGE_SIZE - 8..PAGE_SIZE].copy_from_slice(b"ABCDEFGH");
+        memory.read_raw(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+        assert!(memory.copy_to_user(PAGE_SIZE as u64, b"denied").is_err());
+        memory.write(PAGE_SIZE as u64, b"loader").unwrap();
+        expected[PAGE_SIZE..PAGE_SIZE + 6].copy_from_slice(b"loader");
+        memory.write_raw(PAGE_SIZE as u64 + 8, b"raw").unwrap();
+        expected[PAGE_SIZE + 8..PAGE_SIZE + 11].copy_from_slice(b"raw");
+        memory.read_raw(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn prctl_copyout_permissions_survive_snapshot_fallback_and_shared_clone() {
+        let memory = GuestMemory::new(0, PAGE_SIZE * 3).unwrap();
+        memory.write_raw(0, &[0xa5; PAGE_SIZE * 3]).unwrap();
+        memory
+            .map_user_permissions(0, PAGE_SIZE as u64, true, false)
+            .unwrap();
+        memory
+            .map_user_range(PAGE_SIZE as u64, PAGE_SIZE as u64, false)
+            .unwrap();
+        memory
+            .map_user_range((PAGE_SIZE * 2) as u64, PAGE_SIZE as u64, true)
+            .unwrap();
+        memory.enable_user_access();
+        for snapshot in [
+            memory.snapshot().unwrap(),
+            memory
+                .snapshot_with_sparse_copy(|_, _, _| {
+                    Err(io::Error::from_raw_os_error(libc::ENOSYS))
+                })
+                .unwrap(),
+        ] {
+            assert!(snapshot.put_user_i32(0, 0).is_err());
+            assert!(snapshot.put_user_i32((PAGE_SIZE * 2) as u64, 0).is_err());
+            snapshot.put_user_i32(PAGE_SIZE as u64, 0).unwrap();
+            snapshot.map_user_range(0, PAGE_SIZE as u64, false).unwrap();
+            snapshot.put_user_i32(0, 0).unwrap();
+            assert!(memory.put_user_i32(0, 0).is_err());
+            let mut expected = [0xa5; PAGE_SIZE * 3];
+            expected[..4].fill(0);
+            expected[PAGE_SIZE..PAGE_SIZE + 4].fill(0);
+            let mut actual = [0; PAGE_SIZE * 3];
+            snapshot.read_raw(0, &mut actual).unwrap();
+            assert_eq!(actual, expected);
+            memory.read_raw(0, &mut actual).unwrap();
+            assert_eq!(actual, [0xa5; PAGE_SIZE * 3]);
+        }
+        let shared = memory.clone();
+        shared.map_user_range(0, PAGE_SIZE as u64, false).unwrap();
+        memory.put_user_i32(0, 0).unwrap();
+        shared
+            .map_user_permissions(0, PAGE_SIZE as u64, true, false)
+            .unwrap();
+        assert!(memory.put_user_i32(0, 0).is_err());
+    }
+
+    #[test]
+    fn prctl_copyout_permissions_follow_remap_unmap_and_reset() {
+        let memory = GuestMemory::new(0, PAGE_SIZE * 8).unwrap();
+        memory.map_user_range(0, PAGE_SIZE as u64, false).unwrap();
+        memory
+            .map_user_permissions(PAGE_SIZE as u64, PAGE_SIZE as u64, true, false)
+            .unwrap();
+        memory.enable_user_access();
+        memory
+            .remap_user_range(
+                0,
+                (PAGE_SIZE * 2) as u64,
+                (PAGE_SIZE * 3) as u64,
+                (PAGE_SIZE * 3) as u64,
+            )
+            .unwrap();
+        assert!(memory.put_user_i32(0, 0).is_err());
+        memory.put_user_i32((PAGE_SIZE * 3) as u64, 0).unwrap();
+        assert!(memory.put_user_i32((PAGE_SIZE * 4) as u64, 0).is_err());
+        assert!(memory.put_user_i32((PAGE_SIZE * 5) as u64, 0).is_err());
+        memory
+            .unmap_user_range((PAGE_SIZE * 3) as u64, PAGE_SIZE as u64)
+            .unwrap();
+        assert!(memory.put_user_i32((PAGE_SIZE * 3) as u64, 0).is_err());
+        memory
+            .map_user_range((PAGE_SIZE * 4) as u64, PAGE_SIZE as u64, false)
+            .unwrap();
+        memory.put_user_i32((PAGE_SIZE * 4) as u64, 0).unwrap();
+        memory.clear_user_access();
+        memory
+            .map_user_permissions(0, PAGE_SIZE as u64, true, false)
+            .unwrap();
+        memory
+            .map_user_range(PAGE_SIZE as u64, PAGE_SIZE as u64, false)
+            .unwrap();
+        memory.enable_user_access();
+        assert!(memory.put_user_i32((PAGE_SIZE * 4) as u64, 0).is_err());
+        assert!(memory.put_user_i32(0, 0).is_err());
+        memory.put_user_i32(PAGE_SIZE as u64, 0).unwrap();
     }
 
     #[test]
