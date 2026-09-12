@@ -7,10 +7,14 @@
 #
 # PATH shim for `tg`: refuse inline `tg note` content, require the verified path.
 #
-# INSTALLED AS A COPY at /home/newton/orc-bin/tg, which precedes /usr/local/bin
-# on PATH (position 6 vs 13). THIS FILE IS THE SOURCE OF TRUTH; refresh with
+# OPTIONAL DEPLOYMENT TARGET: /home/newton/orc-bin/tg, ahead of /usr/local/bin
+# on the intended PATH. THIS FILE IS THE SOURCE OF TRUTH; its presence in the
+# repository does not prove that the copy exists or is selected. Verify both
+# `command -v tg` and byte identity before claiming these guards are active.
+# Even then, an explicit `/usr/local/bin/tg` invocation bypasses this PATH shim.
+# Refresh an existing deployment with
 #     cp ci-hub/bin/tg-guard-shim /home/newton/orc-bin/tg
-# and REMOVE THE ENFORCEMENT ENTIRELY with
+# and remove that deployment with
 #     rm /home/newton/orc-bin/tg
 # A copy rather than a symlink on purpose: a dangling symlink in PATH would take
 # `tg` out for every agent at once, which is a worse failure than drift.
@@ -49,7 +53,9 @@ if [ "${1:-}" = "note" ] && [ "$#" -ge 3 ] && [ -z "${TG_NOTE_VERIFIED:-}" ]; th
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CLOSURE GUARD: `tg update <task> --status closed` must go through the verifier.
+# CONDITIONAL CLOSURE GUARD: when this shim is the resolved `tg`,
+# `tg update <task> --status closed` must go through the verifier. This section
+# describes the shim's behavior; it is not evidence that the shim is deployed.
 #
 # WHY, MEASURED 2026-08-25. Of 535 tasks closed that day only 60 carried a
 # CLOSURE-VERIFIED note -- close-task was bypassed on ~89% of closures. This was
@@ -84,18 +90,17 @@ if [ "${1:-}" = "update" ] && [ -z "${CLOSE_TASK_VERIFIED:-}" ]; then
     done
     if [ -n "$blocked" ]; then
         printf '%s\n' \
-"tg: REFUSED -- closing a task directly bypasses the closure verifier." \
+"tg: REFUSED -- while this optional shim is active, direct closure bypasses the closure verifier." \
 "" \
 "  Measured 2026-08-25: 535 tasks closed, only 60 recorded any closure evidence." \
-"  A task closed this way keeps its landing debt invisible -- it leaves ready," \
-"  active AND the drain in one step, and no later audit can tell a landed task" \
-"  from an abandoned one. That is why this refuses rather than warns." \
+"  Closed status alone proves neither who closed the task nor whether code landed." \
+"  This shim requires the gateway to classify the closure and record its evidence." \
 "" \
-"  IF THE WORK LANDED, name what landed:" \
+"  IF THE TASK HAS CODE TO RECORD, whether implemented or landed, name it:" \
 "    /home/newton/work/dev-hermit/ci-hub/bin/close-task $task \\\\" \
 "        --code <PR-or-40-hex> --repo <owner/repo> --source <checkout>" \
-"  It verifies the reference resolves and is an ancestor of freshly-fetched main," \
-"  then closes the task itself. You do not need a second command." \
+"  It records a resolvable unlanded product change as implemented-unlanded, or" \
+"  verifies landed code against freshly-fetched main, then closes the task itself." \
 "" \
 "  IF THERE IS NOTHING TO LAND -- a review lane, a duplicate, a question answered:" \
 "    /home/newton/work/dev-hermit/ci-hub/bin/close-task $task \\\\" \
@@ -112,8 +117,8 @@ fi
 # THE SAME CLOSURE RULE, VIA `tg import`.
 #
 # ⚠️ GUARDING ONE ROUTE TO A STATE IS NOT GUARDING THE STATE. The guard above
-# covers `tg update --status closed`, which is the route CLAUDE.md documents and
-# the one every agent types. Measured 2026-08-25, immediately after installing it,
+# covers `tg update --status closed`, the direct route measured in the initial
+# 2026-08-25 deployment. Immediately after that installation,
 # `tg import` still closed live tasks by two other routes and reported success:
 #
 #     {"ops":[{"close":{"id":"T"}}]}                      -> T becomes CLOSED

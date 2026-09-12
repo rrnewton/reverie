@@ -41,7 +41,7 @@ list it belongs to.
 
 | source | what it really says |
 |---|---|
-| `tg` status `closed` | a coordinator closed the task |
+| `tg` status `closed` | an actor changed tracker state; it identifies neither the actor nor landing |
 | `tg` `implemented` tag | published, explicitly **not** landed |
 | a task note | one agent's unverified belief |
 | PR `MERGED` flag | merged at some point — a later force-push **orphans** the replay SHA (~12 PRs, 2026-08-03) |
@@ -51,11 +51,13 @@ list it belongs to.
 | a pushed branch | a proposal |
 | merge-queue position | the opposite of having landed |
 
-## Where this is already enforced
+## Where this is checked, and the optional enforcement boundary
 
-- **`verified_close.py`** (the `close-task` gateway) fetches the remote, then
+- **`verified_close.py`** (the `close-task` gateway), when invoked, fetches the remote, then
   tests `mergeCommit.oid` ancestry, returning `CLOSED` / `REFUSED` /
-  `UNVERIFIABLE`. No close happens without it.
+  `UNVERIFIABLE`. The tracked `tg-guard-shim` can force bare `tg` closures through
+  this gateway only when its copy is installed and selected through `PATH`;
+  source presence does not prove deployment, and `/usr/local/bin/tg` bypasses it.
 - **`ci-hub/directives/`** — `check.py` reports `satisfied` only on
   freshly-fetched ancestry; its README states the same rule for obligations.
 
@@ -68,9 +70,11 @@ status update is interrupted after the record is stored, rerun the **same
 `close-task` command with the same evidence arguments**. The gateway rechecks
 the evidence and all normal gates, recognizes the byte-identical existing
 record, and retries the missing tag or status write without recording it again.
-Do not recover with a raw `tg update --status closed`; that bypass remains
-refused. `--check-only` reports whether it would record a new closure record or
-reuse the existing one and never writes either the task or its notes.
+Recover with the same `close-task` command, not a raw status update: the raw
+command skips the gateway's idempotent recovery. When the optional PATH shim is
+active, it also refuses that raw command. `--check-only` reports whether it would
+record a new closure record or reuse the existing one and never writes either
+the task or its notes.
 
 ## `--artifact`: the authority is `origin/main`, never your checkout
 

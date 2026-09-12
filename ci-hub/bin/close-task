@@ -2,15 +2,17 @@
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 
-# The `tg` PATH shim refuses `tg update --status closed` unless this is set,
-# because a bare close hides landing debt. THIS wrapper is the verifier's own
-# entry point, so the exemption is granted here rather than by the guard.
+# When the optional `tg` PATH shim is installed and selected through PATH, it
+# refuses `tg update --status closed` unless this is set. THIS wrapper is the
+# verifier's own entry point, so it grants the exemption unconditionally; the
+# variable does not prove that the shim is installed. An explicit
+# `/usr/local/bin/tg` invocation bypasses a PATH shim even when one is installed.
 #
 # `verified_close.py` also sets it internally (see its `_run`), and that is the
 # authoritative copy. It is repeated here because the failure it prevents is a
-# VERSION SKEW, not a missing line: the shim is deployed centrally from current
-# main, while agents invoke close-task from whatever checkout they are standing
-# in. Measured 2026-08-25 on a checkout 287 commits behind main -- the shim
+# VERSION SKEW, not a missing line: a centrally deployed shim can be newer than
+# the close-task checkout an agent invokes. Measured 2026-08-25 with the shim
+# deployed and a checkout 287 commits behind main -- the shim
 # refused, and because the CLOSURE-VERIFIED note is written BEFORE the status
 # update, the task was left OPEN carrying full closure evidence. Three tasks
 # reached that state and every retry appended another anchor.

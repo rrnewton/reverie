@@ -76,13 +76,14 @@ def _run(
         try:
             resolution = taskgraph_db.resolve(env=env)
             env = taskgraph_db.child_env(resolution, env=env)
-            # Mark this child as coming FROM the verifier. The `tg` PATH shim
-            # refuses `tg update --status closed` for everyone else, which is what
-            # makes the verified path the only path rather than the recommended
-            # one. Set here, at the single helper every `tg` call in this module
-            # goes through, so a future call site cannot forget it and lock the
-            # verifier out of its own closure step -- the exact regression the
-            # `tg note` guard caused when it first shipped.
+            # Mark this child as coming FROM the verifier. When the optional `tg`
+            # PATH shim is installed and selected, it refuses direct closure for
+            # callers without this marker. The marker does not prove deployment,
+            # and an explicit `/usr/local/bin/tg` invocation bypasses the shim.
+            # Set it here, at the single helper every `tg` call in this module goes
+            # through, so a future call site cannot lock the verifier out of its
+            # own closure step -- the exact regression the `tg note` guard caused
+            # when it first shipped.
             env["CLOSE_TASK_VERIFIED"] = "1"
             # The closure note is staged through tempfile.NamedTemporaryFile, so
             # its path is random and created O_EXCL -- no other agent can have

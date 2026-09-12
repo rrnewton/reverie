@@ -171,11 +171,13 @@ problems under one alarm; turning `actions_enabled` off clears all 7 markers and
 `gh-merge-verified`, `git-push-verified`, `publication-exempt`, `review-attest`, `tg-dup-scan`,
 `tg-guard-shim`, `tg-note-verified`, `who-am-i`, plus three `*-test` harnesses.
 
-These refuse at the point of use, which means **they are bypassed by not calling them**. Two are
-installed as PATH shims and therefore harder to miss (`tg-guard-shim` is copied to
-`/home/newton/orc-bin/tg`, position 3, ahead of `/usr/local/bin` at position 20); the rest are
-opt-in by typing the wrapper name instead of the bare tool. `gh-merge-verified` in particular
-cannot intercept a plain `gh pr merge`.
+These refuse at the point of use, which means **they are bypassed by not calling them**. At this
+report's 2026-08-26 measurement, two were installed as PATH shims and therefore harder to miss:
+`tg-guard-shim` was copied to `/home/newton/orc-bin/tg`, position 3, ahead of `/usr/local/bin` at
+position 20. That dated observation is not a continuing deployment guarantee; resolve the live
+command and compare the copy before claiming enforcement, and note that explicit
+`/usr/local/bin/tg` bypasses any PATH shim. The rest are opt-in by typing the wrapper name instead
+of the bare tool. `gh-merge-verified` in particular cannot intercept a plain `gh pr merge`.
 
 ## Layer 7 — `scripts/check*` (18)
 

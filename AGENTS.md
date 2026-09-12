@@ -305,11 +305,13 @@ found by `tg-note-verified` refusing to confirm a note, not by reading this
 section. A guarantee stated in prose is the thing being checked, not the check.
 
 The tool is not ours to repair: `/usr/local/bin/tg` is an installed ELF binary
-from the taskgraph project with no local source. `/home/newton/orc-bin/tg` is
-only a guard shim and its own `printf` uses are `printf '%s\n'`, and
-`tg-note-verified` passes the content as a single argv element -- both clean. So
-the collapse happens inside the binary and this repository cannot reach it.
-Worth filing upstream; until then, verify the readback.
+from the taskgraph project with no local source. When deployed,
+`/home/newton/orc-bin/tg` is only a PATH guard shim and its own `printf` uses are
+`printf '%s\n'`; `tg-note-verified` passes the content as a single argv element --
+both clean. The tracked shim source does not prove that deployment exists, and
+an explicit `/usr/local/bin/tg` bypasses it. So the collapse happens inside the
+binary and this repository cannot reach it. Worth filing upstream; until then,
+verify the readback.
 
 # You are a SKEPTIC
 
