@@ -330,6 +330,8 @@ static bool test_backend_failure;
 static bool test_backend_failure_sender_lookup_miss;
 static bool test_reused_tid;
 static bool test_thread_clone_process_exit;
+static bool test_thread_start_write;
+static uint64_t test_thread_start_write_address;
 static _Atomic bool test_reused_tid_exercised;
 static _Atomic bool test_reused_tid_waited;
 // Typed backend-statistics sink path. When the launcher passes
@@ -1454,7 +1456,7 @@ static int32_t in_tree_parent_pid(void) {
 }
 
 // TODO-HUMAN-REVIEW(PR-131): Review the child entry-block scheduling gate.
-static void start_pending_thread(void) {
+static void try_start_pending_thread(void) {
   void *drcontext = dr_get_current_drcontext();
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
@@ -1503,13 +1505,17 @@ static void start_pending_thread(void) {
   }
   counters->virtual_tid = mapped_virtual_tid;
 
-  evidence_callback_enter();
-  int32_t init_result = reverie_dbt_runtime_thread_init(
-      counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
-      (int32_t)dr_get_process_id(), in_tree_parent_pid(),
-      atomic_load_explicit(&branch_count, memory_order_relaxed), 0,
-      invoke_syscall, read_registers, write_registers);
-  evidence_callback_leave();
+  int32_t init_result = 0;
+  if (!has_copied_runtime() ||
+      (runtime_uses_external_global() && !is_copied_vfork_process())) {
+    evidence_callback_enter();
+    init_result = reverie_dbt_runtime_thread_init(
+        counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
+        (int32_t)dr_get_process_id(), in_tree_parent_pid(),
+        atomic_load_explicit(&branch_count, memory_order_relaxed), 0,
+        invoke_syscall, read_registers, write_registers);
+    evidence_callback_leave();
+  }
   // TODO-HUMAN-REVIEW(PR-134): Confirm retryable native child startup.
   if (init_result > 0) {
     counters->pending_thread_start = 2;
@@ -1523,6 +1529,18 @@ static void start_pending_thread(void) {
   }
   counters->pending_thread_start = 0;
   atomic_fetch_sub_explicit(&pending_thread_starts, 1, memory_order_release);
+}
+
+static void start_pending_thread(void) {
+  prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
+      dr_get_current_drcontext(), thread_state_index);
+  // This is also an entry-block clean call. Returning a retry to DynamoRIO
+  // would let the child execute guest instructions before its Tool admits it.
+  while (counters != NULL && counters->pending_thread_start != 0) {
+    try_start_pending_thread();
+    if (counters->pending_thread_start != 0)
+      dr_sleep(1);
+  }
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -2004,6 +2022,14 @@ static bool prepare_clone_identity(prototype_counters_t *counters, int sysnum,
     }
   }
   if ((flags & CLONE_THREAD) != 0) {
+    if (test_thread_start_write &&
+        (sysnum != SYS_clone ||
+         !read_app((const void *)(uintptr_t)args[1],
+                   &test_thread_start_write_address,
+                   sizeof(test_thread_start_write_address)))) {
+      exit_runtime_tree(95);
+      return false;
+    }
     atomic_fetch_add_explicit(pending_thread_clones_for(counters->virtual_pid),
                               1, memory_order_acq_rel);
     if (test_thread_clone_process_exit &&
@@ -2066,6 +2092,21 @@ static int32_t complete_clone_identity(prototype_counters_t *counters,
       }
       atomic_store_explicit(&test_reused_tid_exercised, true,
                             memory_order_release);
+      if (test_thread_start_write) {
+        int written = -1;
+        dr_sleep(20);
+        bool readable = read_app(
+            (const void *)(uintptr_t)test_thread_start_write_address,
+            &written, sizeof(written));
+        if (!readable || written != 0) {
+          dr_fprintf(diagnostic_file,
+                     "reverie-dbt: child wrote memory before thread admission "
+                     "readable=%d written=%d\n", readable, written);
+          exit_runtime_tree(95);
+          return 0;
+        }
+        dr_fprintf(diagnostic_file, "THREAD_START_WRITE_TEST blocked=1\n");
+      }
     }
     /* The parent allocated virtual_child before clone. It remains
      * authoritative when Linux reuses a host TID whose old mapping is still in
@@ -3810,7 +3851,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
    * thread-init event has returned so the parent post-clone callback can
    * register it. */
   // TODO-HUMAN-REVIEW(PR-134): Confirm the delayed-flush syscall fallback.
-  while (!has_copied_runtime() && counters->pending_thread_start != 0) {
+  while (counters->pending_thread_start != 0) {
     start_pending_thread();
     if (counters->pending_thread_start != 0)
       dr_sleep(1);
@@ -4077,10 +4118,10 @@ static void thread_init(void *drcontext) {
   }
 
   int32_t pending_thread_start =
-      !has_copied_runtime() &&
       dr_get_thread_id(drcontext) != dr_get_process_id() &&
-      reverie_dbt_runtime_ready(
-          atomic_load_explicit(&image_generation, memory_order_acquire));
+      (has_copied_runtime() ||
+       reverie_dbt_runtime_ready(
+           atomic_load_explicit(&image_generation, memory_order_acquire)));
 
   // Publish stable process identities before entering Rust. A new thread's
   // virtual TID remains zero until the clone parent publishes the mapping.
@@ -4439,6 +4480,10 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
       test_reused_tid = true;
     else if (strcmp(argv[i], "-test-thread-clone-process-exit") == 0)
       test_thread_clone_process_exit = true;
+    else if (strcmp(argv[i], "-test-thread-start-write") == 0) {
+      test_thread_start_write = true;
+      test_reused_tid = true;
+    }
     else if (strcmp(argv[i], "-diagnostic_fd") == 0) {
       int fd;
       DR_ASSERT(++i < argc);
@@ -4552,6 +4597,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
              strcmp(argv[i], "-test-thread-exit-evidence") == 0 ||
              strcmp(argv[i], "-test-reused-tid") == 0 ||
              strcmp(argv[i], "-test-thread-clone-process-exit") == 0 ||
+             strcmp(argv[i], "-test-thread-start-write") == 0 ||
              strcmp(argv[i],
                     "-test-leave-process-clone-result-pending") == 0 ||
              strcmp(argv[i], "-test-backend-failure") == 0 ||
