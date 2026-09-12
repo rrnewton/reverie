@@ -1589,8 +1589,10 @@ static dr_emit_flags_t instrument_instruction(void *drcontext, void *tag,
                                               instr_t *instruction,
                                               bool for_trace, bool translating,
                                               void *user_data) {
-  if (instr_is_app(instruction) && instruction == instrlist_first_app(bb) &&
-      atomic_load_explicit(&pending_thread_starts, memory_order_acquire) != 0) {
+  // A shared fragment can be compiled before any thread clone is pending.
+  // Always retain the runtime check: thread-init's mcontext PC is not a valid
+  // application entry address on Linux, so it cannot flush an older fragment.
+  if (instr_is_app(instruction) && instruction == instrlist_first_app(bb)) {
     dr_insert_clean_call_ex(
         drcontext, bb, instruction, (void *)start_pending_thread,
         DR_CLEANCALL_READS_APP_CONTEXT | DR_CLEANCALL_WRITES_APP_CONTEXT,
@@ -3862,7 +3864,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
    * a syscall through an inherited fragment, start it here after the
    * thread-init event has returned so the parent post-clone callback can
    * register it. */
-  // TODO-HUMAN-REVIEW(PR-134): Confirm the delayed-flush syscall fallback.
+  // TODO-HUMAN-REVIEW(PR-134): Confirm the syscall entry fallback.
   while (counters->pending_thread_start != 0) {
     start_pending_thread();
     if (counters->pending_thread_start != 0)
@@ -4178,10 +4180,7 @@ static void thread_init(void *drcontext) {
 
   counters->pending_thread_start = (uint64_t)pending_thread_start;
   if (pending_thread_start != 0) {
-    dr_mcontext_t context = {sizeof(context), DR_MC_CONTROL};
     atomic_fetch_add_explicit(&pending_thread_starts, 1, memory_order_release);
-    DR_ASSERT(dr_get_mcontext(drcontext, &context));
-    DR_ASSERT(dr_delay_flush_region(context.pc, 1, 0, NULL));
   }
 }
 
