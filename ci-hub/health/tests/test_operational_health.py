@@ -655,6 +655,16 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertEqual([item.id for item in waiting.claimed], ["claimed"])
         self.assertEqual(waiting.actually_active, ())
 
+        spawning = operational_health.reconcile_active_work(
+            [task("claimed", "Claimed", "worker", ())],
+            [agent("worker", "spawning", "claimed")],
+        )
+        self.assertEqual([item.id for item in spawning.claimed], ["claimed"])
+        self.assertEqual(
+            [item.id for item in spawning.actually_active], ["claimed"]
+        )
+        self.assertEqual(spawning.orphaned, ())
+
         moved = operational_health.reconcile_active_work(
             [
                 task("claimed", "Claimed", "worker", ()),
@@ -891,6 +901,30 @@ class OperationalHealthTest(unittest.TestCase):
             + "\n",
             "shared validation must not rewrite the existing snapshot bytes",
         )
+
+    def test_cache_agent_snapshot_persists_spawning_agent(self) -> None:
+        snapshot = (
+            '[{"name":"coordinator","status":"managed","current_task":null,'
+            '"tmux_pane_id":null},'
+            '{"name":"worker","status":"spawning","current_task":"task",'
+            '"tmux_pane_id":"%7"}]'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agents.json"
+            result, output = self.capture(
+                operational_health.cache_agent_snapshot,
+                snapshot,
+                snapshot_file=path,
+                now=1000,
+            )
+            envelope = json.loads(path.read_text())
+
+        self.assertEqual(result, 0)
+        self.assertIn("state=ok", output)
+        self.assertIn("count=2", output)
+        self.assertEqual(envelope["captured_at"], 1000)
+        self.assertEqual(envelope["agents"], json.loads(snapshot))
+        self.assertEqual(envelope["agents"][1]["status"], "spawning")
 
     def test_cache_agents_command_dispatches_to_the_snapshot_writer(self) -> None:
         with mock.patch.object(

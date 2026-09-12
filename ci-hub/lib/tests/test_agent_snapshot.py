@@ -41,6 +41,14 @@ class AgentSnapshotTests(unittest.TestCase):
         self.assertFalse(meaning.live)
         self.assertTrue(meaning.broken)
 
+    def test_spawning_is_live_and_busy(self) -> None:
+        document = agent_snapshot.parse_snapshot_bytes(self.snapshot("spawning"))
+        self.assertEqual(document["agents"][0]["status"], "spawning")
+        meaning = agent_snapshot.status_semantics("spawning")
+        self.assertTrue(meaning.live)
+        self.assertTrue(meaning.busy)
+        self.assertFalse(meaning.broken)
+
     def test_missing_and_unknown_status_fail_by_name(self) -> None:
         missing = json.loads(self.snapshot())
         del missing["agents"][0]["status"]

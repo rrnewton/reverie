@@ -35,6 +35,7 @@ pub enum AgentStatus {
     NeedsInput,
     Retired,
     Running,
+    Spawning,
     Stuck,
     Terminated,
     Unreachable,
@@ -61,6 +62,7 @@ impl AgentStatus {
             "needs-input" => Self::NeedsInput,
             "retired" => Self::Retired,
             "running" => Self::Running,
+            "spawning" => Self::Spawning,
             "stuck" => Self::Stuck,
             "terminated" => Self::Terminated,
             "unreachable" => Self::Unreachable,
@@ -88,6 +90,7 @@ impl AgentStatus {
             Self::NeedsInput => "needs-input",
             Self::Retired => "retired",
             Self::Running => "running",
+            Self::Spawning => "spawning",
             Self::Stuck => "stuck",
             Self::Terminated => "terminated",
             Self::Unreachable => "unreachable",
@@ -106,6 +109,7 @@ impl AgentStatus {
             | Self::Managed
             | Self::NeedsInput
             | Self::Running
+            | Self::Spawning
             | Self::Working => true,
             Self::Closed
             | Self::Crashed
@@ -124,7 +128,12 @@ impl AgentStatus {
 
     pub fn is_busy(&self) -> bool {
         match self {
-            Self::Active | Self::Busy | Self::InProgress | Self::Running | Self::Working => true,
+            Self::Active
+            | Self::Busy
+            | Self::InProgress
+            | Self::Running
+            | Self::Spawning
+            | Self::Working => true,
             Self::Closed
             | Self::Crashed
             | Self::Dead
@@ -165,6 +174,7 @@ impl AgentStatus {
             | Self::NeedsInput
             | Self::Retired
             | Self::Running
+            | Self::Spawning
             | Self::Terminated
             | Self::Working => false,
         }
@@ -383,6 +393,9 @@ mod tests {
     fn shared_status_semantics_cover_current_disagreement() {
         assert!(AgentStatus::Busy.is_live());
         assert!(AgentStatus::Busy.is_busy());
+        assert!(AgentStatus::Spawning.is_live());
+        assert!(AgentStatus::Spawning.is_busy());
+        assert!(!AgentStatus::Spawning.is_broken());
         assert!(!AgentStatus::Unreachable.is_live());
         assert!(AgentStatus::Unreachable.is_broken());
         assert!(!AgentStatus::Stuck.is_live());
