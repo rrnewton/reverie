@@ -37,6 +37,11 @@ if [[ $command == validate-status ]]; then
                         executed_nodes=2
                         gates='[{"name":"Cross-client skill discovery","result":"pass"},{"name":"Build workspace","result":"pass"},{"name":"Test regular workspace cases","result":"pass"},{"name":"Documentation tests","result":"pass"},{"name":"Clippy","result":"pass"},{"name":"Rustfmt","result":"pass"}]'
                         ;;
+                    reverie-local-validation/v5)
+                        planned=2
+                        executed_nodes=2
+                        gates='[{"name":"Cross-client skill discovery","result":"pass"},{"name":"Build workspace","result":"pass"},{"name":"DBT virtual identity and pidfd_open policy","result":"pass"},{"name":"Backend maturity","result":"pass"},{"name":"Test regular workspace cases","result":"pass"},{"name":"Documentation tests","result":"pass"},{"name":"Clippy","result":"pass"},{"name":"Rustfmt","result":"pass"}]'
+                        ;;
                     reverie-local-validation/v4)
                         planned=3
                         executed_nodes=3
@@ -274,6 +279,16 @@ run_reverie_local_only_case 0 "Reverie local-only preserves qualifying seven-gat
    $last_output == *"HOSTED=not_consulted"* ]] || {
     echo "FAIL: Reverie local-only green did not preserve its seven-gate v3 authority" >&2; exit 1;
 }
+run_reverie_local_only_case 0 "Reverie local-only admits qualifying eight-gate v5 authority" \
+    env LOCAL_STATE=green HOSTED_STATE=red REVERIE_POLICY=reverie-local-validation/v5
+[[ $last_output == *"AUTHORITY=local "* && \
+   $last_output == *"LOCAL_COVERAGE=full-eight-gate-v5"* && \
+   $last_output == *"REQUIRED_COVERAGE=local:full-eight-gate-v5"* && \
+   $last_output == *"HOSTED=not_consulted"* ]] || {
+    echo "FAIL: Reverie local-only green did not select its eight-gate v5 authority" >&2; exit 1;
+}
+run_reverie_local_only_case 4 "Reverie v5 refuses incomplete test coverage" \
+    env LOCAL_STATE=green HOSTED_STATE=green REVERIE_POLICY=reverie-local-validation/v5 LOCAL_COVERAGE=partial
 run_reverie_local_only_case 0 "Reverie local-only preserves qualifying six-gate v2 authority" \
     env LOCAL_STATE=green HOSTED_STATE=red REVERIE_POLICY=reverie-local-validation/v2
 [[ $last_output == *"AUTHORITY=local "* && \
@@ -316,4 +331,4 @@ env CI_HUB_BIN="$tmp/ci-hub" VERIFY_RECEIPT_BIN="$tmp/verify-receipt" \
     >/dev/null 2>&1 || rc=$?
 [[ $rc -eq 2 ]] || { echo "FAIL: mutually exclusive authority selectors were accepted" >&2; exit 1; }
 
-echo "PASS: historical local/hosted OR positives=5; Hermit local-only positive=1 negatives=3; Reverie local-only positives=4 negatives=3; hosted-only positive=1 negatives=4; cancellation no-results=2; red/partial/stale/unbound/count/coverage/policy negatives=14"
+echo "PASS: historical local/hosted OR positives=5; Hermit local-only positive=1 negatives=3; Reverie local-only positives=5 negatives=4; hosted-only positive=1 negatives=4; cancellation no-results=2; red/partial/stale/unbound/count/coverage/policy negatives=14"

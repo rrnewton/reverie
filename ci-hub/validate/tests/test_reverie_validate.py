@@ -69,6 +69,7 @@ class ReverieValidateTest(unittest.TestCase):
         *,
         validate_exit: int,
         legacy_v3: bool = False,
+        maturity_v5: bool = False,
         regular_executed: int = 12,
         aggregate_executed: int | None = None,
         expect_record: bool = True,
@@ -97,6 +98,8 @@ class ReverieValidateTest(unittest.TestCase):
         expected_gates = (
             reverie_node.V3_GATES if legacy_v3 else reverie_node.EXPECTED_GATES
         )
+        if maturity_v5:
+            expected_gates = reverie_node.V5_GATES
         gates = []
         for name in expected_gates:
             gate = {"name": name}
@@ -115,7 +118,7 @@ class ReverieValidateTest(unittest.TestCase):
             "executed_tests": (
                 aggregate_executed
                 if aggregate_executed is not None
-                else regular_executed + 5 + (0 if legacy_v3 else 17)
+                else regular_executed + 5 + (0 if legacy_v3 or maturity_v5 else 17)
             ),
             "filtered_tests": 4,
             "gates": gates,
@@ -420,6 +423,44 @@ class ReverieValidateTest(unittest.TestCase):
                 self.assertEqual(status, "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n")
                 self.assertIn(detail, stderr.getvalue())
 
+    def test_reverie_node_records_v5_without_inventing_maturity_test_counts(self) -> None:
+        for validate_exit, expected in ((0, "PASSED"), (1, "FAILED"), (75, "COULD_NOT_RUN")):
+            with self.subTest(validate_exit=validate_exit), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                checkout = root / "reverie"
+                checkout.mkdir()
+                rc, status, row = self.run_reverie_node(
+                    root, checkout, validate_exit=validate_exit, maturity_v5=True
+                )
+            self.assertEqual(rc, validate_exit)
+            self.assertEqual(status, f"FINAL_VALIDATE_STATUS: {expected}\n")
+            self.assertEqual(row["reverie_validation_policy"], "reverie-local-validation/v5")
+            self.assertEqual(row["gates_expected"], 8)
+            self.assertEqual(row["executed_tests"], 17)
+            self.assertEqual(row["filtered_tests"], 4)
+            self.assertEqual(row["coverage"]["planned_test_nodes"], 2)
+            self.assertEqual(row["coverage"]["executed_test_nodes"], 2)
+            self.assertEqual(row["gates"][3], {"name": "Backend maturity"})
+
+    def test_reverie_node_refuses_v5_count_and_coverage_gaps(self) -> None:
+        for options, detail in (
+            ({"aggregate_executed": 18}, "aggregate test counts disagree"),
+            ({"regular_executed": 0}, "requires both counted test gates"),
+        ):
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                checkout = root / "reverie"
+                checkout.mkdir()
+                stderr = StringIO()
+                with redirect_stderr(stderr):
+                    rc, status, _ = self.run_reverie_node(
+                        root, checkout, validate_exit=0, maturity_v5=True,
+                        expect_record=False, **options,
+                    )
+                self.assertEqual(rc, 75)
+                self.assertEqual(status, "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n")
+                self.assertIn(detail, stderr.getvalue())
+
     def test_reverie_node_refusal_publishes_could_not_run(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -604,6 +645,32 @@ class ReverieValidateTest(unittest.TestCase):
             with self.subTest(case=case):
                 with self.assertRaisesRegex(reverie_node.Refusal, "gate set drifted"):
                     reverie_node.require_expected_gate_set(gates)
+
+    def test_v5_gate_contract_requires_exact_maturity_placement(self) -> None:
+        names = (
+            "Cross-client skill discovery", "Build workspace",
+            "DBT virtual identity and pidfd_open policy", "Backend maturity",
+            "Test regular workspace cases", "Documentation tests", "Clippy", "Rustfmt",
+        )
+        self.assertEqual(reverie_node.V5_GATES, names)
+        gates = [{"name": name} for name in names]
+        self.assertEqual(
+            reverie_node.require_expected_gate_set(gates),
+            ("reverie-local-validation/v5", names, reverie_node.V3_TEST_GATES),
+        )
+        invalid = {
+            "duplicate maturity": gates[:4] + [gates[3]] + gates[4:],
+            "late maturity": gates[:3] + gates[4:] + [gates[3]],
+            "missing existing gate": gates[:4] + gates[5:],
+            "v4 plus maturity": [{"name": name} for name in reverie_node.V4_GATES]
+            + [gates[3]],
+            "unknown gate": gates[:3] + [{"name": "Other maturity"}] + gates[4:],
+        }
+        for label, rows in invalid.items():
+            with self.subTest(label=label), self.assertRaisesRegex(
+                reverie_node.Refusal, "gate set drifted"
+            ):
+                reverie_node.require_expected_gate_set(rows)
 
     def test_safe_ci_cgroup_refuses_unboxed_and_accepts_step_scope(self) -> None:
         with mock.patch.object(Path, "read_text", return_value="0::/user.slice/agent.scope\n"):

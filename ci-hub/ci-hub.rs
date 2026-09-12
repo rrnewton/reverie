@@ -2342,7 +2342,9 @@ fn ci_mode_status(root: &Path, args: CiModeStatusArgs) -> Result<i32, CiHubError
             );
         }
         if any_error {
-            println!("WARNING: at least one projection query failed; drift is undetermined for those repos.");
+            println!(
+                "WARNING: at least one projection query failed; drift is undetermined for those repos."
+            );
         }
     }
 
@@ -3774,7 +3776,7 @@ fn load_validation_ledger_reporting_with_tool(
             return Err(CiHubError::LedgerRead {
                 path: path.to_path_buf(),
                 source,
-            })
+            });
         }
     };
     let (rows, failures) = validate_status::parse_ledger(&buf);
@@ -4569,6 +4571,7 @@ fn reverie_safe_ci_step_cgroup(cgroup: &str, step: &str) -> bool {
 fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingReceipt> {
     // Preserve every immutable historical contract. v4 adds three distinct
     // owned-public-instruction gates to v3 and counts its execution gate.
+    // v5 adds backend maturity to v3; maturity is not a libtest count source.
     const V1_GATES: [&str; 7] = [
         "Cross-client skill discovery",
         "Merge-gate policy",
@@ -4607,6 +4610,16 @@ fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRece
         "Clippy",
         "Rustfmt",
     ];
+    const V5_GATES: [&str; 8] = [
+        "Cross-client skill discovery",
+        "Build workspace",
+        "DBT virtual identity and pidfd_open policy",
+        "Backend maturity",
+        "Test regular workspace cases",
+        "Documentation tests",
+        "Clippy",
+        "Rustfmt",
+    ];
     if row.schema_version? < 5
         || !row_matches_validation_repo(row, CANONICAL_REVERIE_REPO)
         || row.commit.as_deref() != Some(sha)
@@ -4627,16 +4640,27 @@ fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRece
     {
         return None;
     }
-    let (gates, expected_test_nodes, coverage_basis, require_v4_counts): (
+    let (gates, expected_test_nodes, coverage_basis, counted_gate_range): (
         &[&str],
         u64,
         &str,
-        bool,
+        Option<(usize, usize)>,
     ) = match extra_str(row, "reverie_validation_policy")? {
-        "reverie-local-validation/v1" => (&V1_GATES, 2, "reverie-declared-two-test-gates", false),
-        "reverie-local-validation/v2" => (&V2_GATES, 2, "reverie-declared-two-test-gates", false),
-        "reverie-local-validation/v3" => (&V3_GATES, 2, "reverie-declared-two-test-gates", false),
-        "reverie-local-validation/v4" => (&V4_GATES, 3, "reverie-declared-three-test-gates", true),
+        "reverie-local-validation/v1" => (&V1_GATES, 2, "reverie-declared-two-test-gates", None),
+        "reverie-local-validation/v2" => (&V2_GATES, 2, "reverie-declared-two-test-gates", None),
+        "reverie-local-validation/v3" => (&V3_GATES, 2, "reverie-declared-two-test-gates", None),
+        "reverie-local-validation/v4" => (
+            &V4_GATES,
+            3,
+            "reverie-declared-three-test-gates",
+            Some((5, 3)),
+        ),
+        "reverie-local-validation/v5" => (
+            &V5_GATES,
+            2,
+            "reverie-declared-two-test-gates",
+            Some((4, 2)),
+        ),
         _ => return None,
     };
     // Match the Hermit receipt contract: both absent and malformed trees are
@@ -4674,16 +4698,18 @@ fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRece
     {
         return None;
     }
-    if require_v4_counts {
+    if let Some((first, count)) = counted_gate_range {
         let mut per_gate_executed = 0i64;
         let mut per_gate_filtered = 0i64;
-        for (index, gate) in row.gates.iter().enumerate().skip(5).take(3) {
+        for gate in row.gates.iter().skip(first).take(count) {
             let gate_executed = gate.extra.get("executed_tests")?.as_i64()?;
             let gate_filtered = gate.extra.get("filtered_tests")?.as_i64()?;
             if gate_executed <= 0 || gate_filtered < 0 {
                 return None;
             }
-            if index == 5 && (gate_executed != 17 || gate_filtered != 0) {
+            if gate.name == "Test all owned public instruction cases"
+                && (gate_executed != 17 || gate_filtered != 0)
+            {
                 return None;
             }
             per_gate_executed = per_gate_executed.checked_add(gate_executed)?;
@@ -5226,7 +5252,7 @@ fn ledger_stamp(path: &Path) -> Result<(u64, u128), CiHubError> {
             return Err(CiHubError::LedgerRead {
                 path: path.to_path_buf(),
                 source,
-            })
+            });
         }
     };
     if metadata.is_dir() {
@@ -5338,7 +5364,7 @@ fn retain_cell_evidence(root: &Path, rows: &mut [HistoryRow]) -> Result<(), CiHu
             return Err(CiHubError::HistoryQuery(format!(
                 "read cell-evidence cache {}: {source}",
                 path.display()
-            )))
+            )));
         }
     };
     let indexed: std::collections::BTreeSet<(&str, Option<&str>)> = cache
@@ -5598,7 +5624,10 @@ fn run_newest_green(root: &Path, args: NewestGreenArgs) -> Result<i32, CiHubErro
                     serde_json::json!({"schema_version": 2, "verdict": "FAILED", "exit_code": 3, "branch": args.query.branch, "branch_tip": branch_tip, "gate_schema": floor_policy, "gate_schema_floor": effective_floor.sha, "branch_commits_in_range": commits_in_range, "trustworthy_recorded_commits": recorded, "full_green_commits_in_range": 0})
                 );
             } else {
-                println!("NEWEST-GREEN FAILED branch={} tip={branch_tip} floor-policy={floor_policy} effective-floor={} window-commits={commits_in_range} full-green=0 -- {recorded} eligible branch commit(s) have clean anchored records, but none has a latest PASS", args.query.branch, effective_floor.sha);
+                println!(
+                    "NEWEST-GREEN FAILED branch={} tip={branch_tip} floor-policy={floor_policy} effective-floor={} window-commits={commits_in_range} full-green=0 -- {recorded} eligible branch commit(s) have clean anchored records, but none has a latest PASS",
+                    args.query.branch, effective_floor.sha
+                );
             }
             Ok(3)
         }
@@ -5613,7 +5642,10 @@ fn run_newest_green(root: &Path, args: NewestGreenArgs) -> Result<i32, CiHubErro
                     serde_json::json!({"schema_version": 2, "verdict": "NOT-VALIDATED", "exit_code": 4, "branch": args.query.branch, "branch_tip": branch_tip, "gate_schema": floor_policy, "gate_schema_floor": effective_floor.sha, "branch_commits_in_range": commits_in_range, "trustworthy_recorded_commits": recorded, "full_green_commits_in_range": 0})
                 );
             } else {
-                println!("NEWEST-GREEN NOT-VALIDATED branch={} tip={branch_tip} floor-policy={floor_policy} effective-floor={} window-commits={commits_in_range} trustworthy-recorded={recorded} full-green=0 -- no qualifying at-or-after-floor clean commit-anchored branch validation record exists", args.query.branch, effective_floor.sha);
+                println!(
+                    "NEWEST-GREEN NOT-VALIDATED branch={} tip={branch_tip} floor-policy={floor_policy} effective-floor={} window-commits={commits_in_range} trustworthy-recorded={recorded} full-green=0 -- no qualifying at-or-after-floor clean commit-anchored branch validation record exists",
+                    args.query.branch, effective_floor.sha
+                );
             }
             Ok(4)
         }
@@ -5658,7 +5690,9 @@ fn assess_diff_plausibility(files: &[String], source_node: Option<&str>) -> Stri
     if files.iter().all(|path| path.starts_with(".github/")) {
         return format!(
             "implausible: the commit changes only GitHub workflow files, which local validate{} does not execute",
-            source_node.map(|node| format!(" cell {node}")) .unwrap_or_default()
+            source_node
+                .map(|node| format!(" cell {node}"))
+                .unwrap_or_default()
         );
     }
     if files.iter().all(|path| {
@@ -5700,7 +5734,9 @@ fn print_first_bad(report: &history_queries::FirstBadReport, json: bool) {
         report.first_bad_commit_has_mixed_outcomes,
     );
     if report.first_bad_commit_has_mixed_outcomes {
-        println!("FLAKE-SIGNAL: the same first-bad SHA has both PASS and FAIL records for this cell; the failure is real evidence but not a deterministic commit regression");
+        println!(
+            "FLAKE-SIGNAL: the same first-bad SHA has both PASS and FAIL records for this cell; the failure is real evidence but not a deterministic commit regression"
+        );
     }
     for refusal in &report.tree_match_refusals {
         println!("TREE-MATCH-REFUSED {refusal}");
@@ -5719,7 +5755,9 @@ fn print_first_bad(report: &history_queries::FirstBadReport, json: bool) {
         report.load_context.as_deref().unwrap_or("not retained")
     );
     if report.error_excerpt.is_empty() {
-        println!("ERROR-DETAIL not retained (ledger has the outcome but its referenced log is absent or has no canonical error line)");
+        println!(
+            "ERROR-DETAIL not retained (ledger has the outcome but its referenced log is absent or has no canonical error line)"
+        );
     } else {
         println!("ERROR-DETAIL");
         for line in &report.error_excerpt {
@@ -5864,7 +5902,10 @@ fn run_first_bad(root: &Path, args: FirstBadArgs) -> Result<i32, CiHubError> {
                     serde_json::json!({"schema_version": 2, "verdict": "FAILED", "exit_code": 3, "branch": args.query.branch, "query": query, "matched_name": matched_name, "failure": failure, "matched_by": matched_by, "tree_match_refusals": tree_match_refusals, "reason": "failure exists but no earlier PASS is retained"})
                 );
             } else {
-                println!("FIRST-BAD FAILED cell={matched_name} sha={} matched-by={matched_by} -- failure exists but no earlier PASS is retained", failure.sha);
+                println!(
+                    "FIRST-BAD FAILED cell={matched_name} sha={} matched-by={matched_by} -- failure exists but no earlier PASS is retained",
+                    failure.sha
+                );
                 for refusal in &tree_match_refusals {
                     println!("TREE-MATCH-REFUSED {refusal}");
                 }
@@ -5882,7 +5923,9 @@ fn run_first_bad(root: &Path, args: FirstBadArgs) -> Result<i32, CiHubError> {
                     serde_json::json!({"schema_version": 2, "verdict": "NOT-VALIDATED", "exit_code": 4, "branch": args.query.branch, "query": query, "suggestions": available_names, "tree_match_refusals": tree_match_refusals, "reason": "no retained cell/gate record"})
                 );
             } else {
-                println!("FIRST-BAD NOT-VALIDATED cell={query} -- no retained cell/gate record; absence is not PASS");
+                println!(
+                    "FIRST-BAD NOT-VALIDATED cell={query} -- no retained cell/gate record; absence is not PASS"
+                );
                 if !available_names.is_empty() {
                     println!("SUGGESTIONS {}", available_names.join(" | "));
                 }
@@ -5904,7 +5947,9 @@ fn run_first_bad(root: &Path, args: FirstBadArgs) -> Result<i32, CiHubError> {
                     serde_json::json!({"schema_version": 2, "verdict": "NOT-VALIDATED", "exit_code": 4, "branch": args.query.branch, "query": query, "matched_name": matched_name, "observations": observations, "tree_match_refusals": tree_match_refusals, "reason": "no retained PASS-to-FAIL transition"})
                 );
             } else {
-                println!("FIRST-BAD NOT-VALIDATED cell={matched_name} observations={observations} -- no retained PASS-to-FAIL transition");
+                println!(
+                    "FIRST-BAD NOT-VALIDATED cell={matched_name} observations={observations} -- no retained PASS-to-FAIL transition"
+                );
                 for refusal in &tree_match_refusals {
                     println!("TREE-MATCH-REFUSED {refusal}");
                 }
@@ -6590,9 +6635,7 @@ impl GreenDepth {
                 let run = run_number
                     .map(|number| format!("RUN {number}"))
                     .unwrap_or_else(|| "run number absent".into());
-                let validated_sha = validated_sha
-                    .get(..12)
-                    .unwrap_or(validated_sha.as_str());
+                let validated_sha = validated_sha.get(..12).unwrap_or(validated_sha.as_str());
                 let git_depth = git_depth
                     .map(|value| format!("at git depth {value}"))
                     .unwrap_or_else(|| "with git depth absent".into());
@@ -6741,7 +6784,7 @@ fn standard_green_depth(tool_root: &Path, state_root: &Path, branch: &str) -> Gr
         Err(error) => {
             return GreenDepth::Unavailable {
                 why: format!("{branch_ref}: {error}"),
-            }
+            };
         }
     };
     let history_tip = history
@@ -6760,12 +6803,12 @@ fn standard_green_depth(tool_root: &Path, state_root: &Path, branch: &str) -> Gr
                 history_tip,
                 visible_depth,
                 required_depth,
-            }
+            };
         }
         Err(error) => {
             return GreenDepth::Unavailable {
                 why: format!("gate floor: {error}"),
-            }
+            };
         }
     };
     let commits = match history_at_or_after_gate_floor(history, &branch_ref, &floor.sha) {
@@ -6773,7 +6816,7 @@ fn standard_green_depth(tool_root: &Path, state_root: &Path, branch: &str) -> Gr
         Err(error) => {
             return GreenDepth::Unavailable {
                 why: format!("gate floor window: {error}"),
-            }
+            };
         }
     };
     let (rows, parse_failures) = match load_standard_green_ledger(tool_root, state_root) {
@@ -6781,7 +6824,7 @@ fn standard_green_depth(tool_root: &Path, state_root: &Path, branch: &str) -> Gr
         Err(error) => {
             return GreenDepth::Unavailable {
                 why: format!("ledger: {error}"),
-            }
+            };
         }
     };
     let rows = rows
@@ -7315,13 +7358,13 @@ fn live_validate_runs_from(
     let entries = match std::fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(LiveValidateRunScan::default())
+            return Ok(LiveValidateRunScan::default());
         }
         Err(error) => {
             return Err(CiHubError::ValidateStatus(format!(
                 "cannot read validation run handles in {}: {error}",
                 directory.display()
-            )))
+            )));
         }
     };
     let mut paths = entries
@@ -7833,7 +7876,9 @@ fn current_main_status_json(
     let next_action = if answer_known {
         serde_json::Value::Null
     } else {
-        serde_json::json!("inspect the listed run handle and validate-lock admission-status for this exact SHA; repair or finish the handle before retrying")
+        serde_json::json!(
+            "inspect the listed run handle and validate-lock admission-status for this exact SHA; repair or finish the handle before retrying"
+        )
     };
     serde_json::json!({
         "sha": sha,
@@ -10333,7 +10378,7 @@ fn run_apply_local_label(
         _ => {
             return Err(CiHubError::ValidateStatus(
                 "exactly one of --pr or --all-open is required".into(),
-            ))
+            ));
         }
     };
 
@@ -13885,6 +13930,24 @@ mod tests {
         value
     }
 
+    fn reverie_v5_receipt_value() -> serde_json::Value {
+        let mut value = reverie_receipt_value();
+        value["reverie_validation_policy"] = serde_json::json!("reverie-local-validation/v5");
+        for field in ["checks", "gates_run", "gates_expected"] {
+            value[field] = serde_json::json!(8);
+        }
+        let gates = value["gates"].as_array_mut().unwrap();
+        gates.insert(
+            3,
+            serde_json::json!({"name": "Backend maturity", "result": "pass", "exit_code": 0}),
+        );
+        gates[4]["executed_tests"] = serde_json::json!(60);
+        gates[4]["filtered_tests"] = serde_json::json!(15);
+        gates[5]["executed_tests"] = serde_json::json!(40);
+        gates[5]["filtered_tests"] = serde_json::json!(5);
+        value
+    }
+
     fn history_row(value: serde_json::Value) -> HistoryRow {
         serde_json::from_value(value).expect("valid history fixture")
     }
@@ -14246,6 +14309,80 @@ mod tests {
     }
 
     #[test]
+    fn reverie_v5_receipt_requires_maturity_and_exact_test_counts() {
+        let positive = reverie_v5_receipt_value();
+        let receipt = qualify_reverie_receipt(&history_row(positive.clone()), RECEIPT_SHA)
+            .expect("complete v5 evidence must qualify");
+        assert_eq!(receipt.coverage_basis, "reverie-declared-two-test-gates");
+        assert_eq!(receipt.row.executed_tests, Some(100));
+
+        for missing in 0..8 {
+            let mut value = positive.clone();
+            value["gates"].as_array_mut().unwrap().remove(missing);
+            for field in ["checks", "gates_run", "gates_expected"] {
+                value[field] = serde_json::json!(7);
+            }
+            assert!(qualify_reverie_receipt(&history_row(value), RECEIPT_SHA).is_none());
+        }
+        for index in 0..7 {
+            let mut value = positive.clone();
+            value["gates"]
+                .as_array_mut()
+                .unwrap()
+                .swap(index, index + 1);
+            assert!(qualify_reverie_receipt(&history_row(value), RECEIPT_SHA).is_none());
+        }
+        for (field, replacement) in [
+            ("result", serde_json::json!("fail")),
+            ("result", serde_json::json!("no-result")),
+            ("exit_code", serde_json::json!(2)),
+            ("name", serde_json::json!("Build workspace")),
+        ] {
+            let mut value = positive.clone();
+            value["gates"][3][field] = replacement;
+            assert!(qualify_reverie_receipt(&history_row(value), RECEIPT_SHA).is_none());
+        }
+        for index in [4, 5] {
+            for field in ["executed_tests", "filtered_tests"] {
+                for replacement in [
+                    serde_json::Value::Null,
+                    serde_json::json!(-1),
+                    serde_json::json!(true),
+                ] {
+                    let mut value = positive.clone();
+                    value["gates"][index][field] = replacement;
+                    assert!(qualify_reverie_receipt(&history_row(value), RECEIPT_SHA).is_none());
+                }
+            }
+            let mut value = positive.clone();
+            value["gates"][index]["executed_tests"] = serde_json::json!(0);
+            value["executed_tests"] = serde_json::json!(if index == 4 { 40 } else { 60 });
+            assert!(qualify_reverie_receipt(&history_row(value), RECEIPT_SHA).is_none());
+        }
+        let mut inflated = positive.clone();
+        inflated["executed_tests"] = serde_json::json!(1099);
+        inflated["gates"][3]["executed_tests"] = serde_json::json!(999);
+        assert!(qualify_reverie_receipt(&history_row(inflated), RECEIPT_SHA).is_none());
+        for policy in ["reverie-local-validation/v3", "reverie-local-validation/v4"] {
+            let mut mixed = positive.clone();
+            mixed["reverie_validation_policy"] = serde_json::json!(policy);
+            assert!(qualify_reverie_receipt(&history_row(mixed), RECEIPT_SHA).is_none());
+        }
+        let mut extra = positive.clone();
+        extra["gates"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "name": "Test all owned public instruction cases", "result": "pass", "exit_code": 0,
+                "executed_tests": 17, "filtered_tests": 0
+            }));
+        for field in ["checks", "gates_run", "gates_expected"] {
+            extra[field] = serde_json::json!(9);
+        }
+        assert!(qualify_reverie_receipt(&history_row(extra), RECEIPT_SHA).is_none());
+    }
+
+    #[test]
     fn reverie_receipt_requires_central_safe_ci_and_repo_binding() {
         let positive = history_row(reverie_receipt_value());
         let assessment = assess_canonical_receipts(
@@ -14274,8 +14411,9 @@ mod tests {
         );
 
         let mut legacy_safe_ci_scope = reverie_receipt_value();
-        legacy_safe_ci_scope["safe_ci"]["cgroup"] =
-            serde_json::json!("/user.slice/user-212630.slice/user@212630.service/safe.slice/safe-ci.slice/safe-ci-123.scope/step-validate.reverie-full");
+        legacy_safe_ci_scope["safe_ci"]["cgroup"] = serde_json::json!(
+            "/user.slice/user-212630.slice/user@212630.service/safe.slice/safe-ci.slice/safe-ci-123.scope/step-validate.reverie-full"
+        );
         assert!(
             qualify_reverie_receipt(&history_row(legacy_safe_ci_scope), RECEIPT_SHA).is_some(),
             "legacy safe-ci step scope stopped qualifying"

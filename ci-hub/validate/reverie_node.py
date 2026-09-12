@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import bounded_capture  # noqa: E402
 
 
-# Keep each published contract immutable.  The central producer accepts either
+# Keep each published contract immutable.  The central producer accepts each
 # exact list so deploying parent support does not invalidate a still-current v3
 # checkout; it emits the version selected by the source row's ordered gates.
 V3_GATES = (
@@ -60,11 +60,24 @@ V4_TEST_GATES = (
 V4_OWNED_PUBLIC_GATE = "Test all owned public instruction cases"
 V4_OWNED_PUBLIC_COUNTS = (17, 0)
 
-# The unqualified names remain the current producer contract for callers and
-# tests which construct a source row, not an alias that changes historical v3.
+V5_GATES = (
+    "Cross-client skill discovery",
+    "Build workspace",
+    "DBT virtual identity and pidfd_open policy",
+    "Backend maturity",
+    "Test regular workspace cases",
+    "Documentation tests",
+    "Clippy",
+    "Rustfmt",
+)
+V5_TEST_GATES = V3_TEST_GATES
+
+# Preserve the v4 defaults for callers constructing a source row. Production
+# selects the contract from the exact ordered source gates below.
 EXPECTED_GATES = V4_GATES
 TEST_GATES = V4_TEST_GATES
 GATE_CONTRACTS = (
+    ("reverie-local-validation/v5", V5_GATES, V5_TEST_GATES),
     ("reverie-local-validation/v4", V4_GATES, V4_TEST_GATES),
     ("reverie-local-validation/v3", V3_GATES, V3_TEST_GATES),
 )
@@ -398,6 +411,11 @@ def main(argv: list[str] | None = None) -> int:
         if policy == "reverie-local-validation/v4" and (zero or absent):
             raise Refusal(
                 "Reverie v4 requires all three counted test gates to execute: "
+                f"zero={zero!r} absent={absent!r}"
+            )
+        if policy == "reverie-local-validation/v5" and (zero or absent):
+            raise Refusal(
+                "Reverie v5 requires both counted test gates to execute: "
                 f"zero={zero!r} absent={absent!r}"
             )
         canonical = dict(source)
