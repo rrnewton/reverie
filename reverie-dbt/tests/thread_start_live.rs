@@ -117,3 +117,15 @@ fn a_copied_process_thread_uses_its_parents_published_identity() {
         "the copied thread's stale host-TID mapping was not exercised: {output:?}"
     );
 }
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run explicitly with --ignored"]
+fn a_precompiled_entry_cannot_bypass_thread_admission() {
+    let output = run_fixture("thread_start_write_precompiled", "-test-thread-start-write");
+    assert!(output.status.success(), "guest failed: {output:?}");
+    assert_eq!(output.stdout, b"precompiled-thread-start-write=ok\n");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("THREAD_START_WRITE_TEST blocked=1"),
+        "the pre-admission write check was not exercised: {output:?}"
+    );
+}
