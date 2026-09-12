@@ -93,3 +93,27 @@ fn a_failed_thread_clone_does_not_block_the_next_thread_start() {
     assert!(output.status.success(), "guest failed: {output:?}");
     assert_eq!(output.stdout, b"failed-thread-clone=ok tid=5\n");
 }
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run explicitly with --ignored"]
+fn a_new_thread_cannot_write_memory_before_admission() {
+    let output = run_fixture("thread_start_write", "-test-thread-start-write");
+    assert!(output.status.success(), "guest failed: {output:?}");
+    assert_eq!(output.stdout, b"thread-start-write=ok\n");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("THREAD_START_WRITE_TEST blocked=1"),
+        "the pre-admission write check was not exercised: {output:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run explicitly with --ignored"]
+fn a_copied_process_thread_uses_its_parents_published_identity() {
+    let output = run_fixture("copied_thread_identity", "-test-reused-tid");
+    assert!(output.status.success(), "guest failed: {output:?}");
+    assert_eq!(output.stdout, b"copied-thread-identity=ok pid=4 tid=5\n");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("REUSED_TID_TEST exercised=1"),
+        "the copied thread's stale host-TID mapping was not exercised: {output:?}"
+    );
+}
