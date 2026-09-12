@@ -15,6 +15,9 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 readonly ROOT_DIR
 cd "$ROOT_DIR" || exit 1
 
+# Check that known failures cannot become passing maturity rows.
+python3 -I "$ROOT_DIR/scripts/test-backend-maturity.py" || exit 1
+
 ARTIFACT_ROOT=${CARGO_TARGET_DIR:-"$ROOT_DIR/target"}
 PROFILE=${BACKEND_MATURITY_PROFILE:-debug}
 REPEATS=${BACKEND_MATURITY_REPEATS:-2}
@@ -604,7 +607,7 @@ def digest(item):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 sha256 = digest(path)
 outputs = json.loads((work / (producer + ".outputs.json")).read_text())
-assert outputs[str(resolved)] == dict(sha256=sha256, mode=path.stat().st_mode), "artifact changed after producing command"
+assert outputs[str(resolved)] == dict(sha256=sha256, mode=path.stat().st_mode), f"artifact changed after producing command: {producer}: {path}"
 retained = work / "artifacts" / (sha256 + "-" + str(path.stat().st_mode))
 if not retained.exists():
     shutil.copy2(path, retained)
@@ -1033,7 +1036,7 @@ run_test_binary() {
 
 run_cargo_test() {
     local label=$1 target=$2 selected=$3 binary
-    binary=$(test_binary_from_case "prepare-test-$target" "$target") || return
+    binary=$(test_binary_from_case prepare-examples "$target") || return
     run_test_binary "$label" "$binary" "$selected" normal
 }
 
@@ -1203,6 +1206,13 @@ dbt_paths() {
     export DBT_CLIENT DBT_DRRUN DBT_HOME
 }
 
+# StraceTool logs decoded arguments before tail injection and deliberately has
+# no return value. The echo witness writes eleven bytes to stdout; the pointer
+# must be non-null, while its address is not a deterministic comparison field.
+verify_dbt_strace() {
+    LC_ALL=C grep -Eq '^\[dbt strace pid [1-9][0-9]*\] write\(1, 0x[1-9a-f][0-9a-f]*, 11\) = \?$' "$1"
+}
+
 measure_dbt() {
     local fixture="$WORK_DIR/dbt-chaos" data="$WORK_DIR/dbt-chaos.txt"
     printf 'CHAOS-ONE-BYTE-AT-A-TIME\n' >"$data"
@@ -1290,20 +1300,20 @@ measure_dbt() {
             problems+="strace[$i] exit=$(case_status "dbt-strace-$i"); "
         fi
         if ! exact_stdout "$WORK_DIR/dbt-strace-$i.stdout" "dbt-strace" ||
-            ! grep -q 'dbt strace' "$WORK_DIR/dbt-strace-$i.stderr"; then
+            ! verify_dbt_strace "$WORK_DIR/dbt-strace-$i.stderr"; then
             ok=0
             comparison_failed
-            problems+="strace[$i] guest stdout or semantic trace missing; "
+            problems+="strace[$i] guest stdout or decoded stdout write event missing; "
         fi
     done
     if ((ok == 1)); then
         record dbt B1.5 pass "$REPEATS" compared compared compared compared \
             not_measured not_measured not_measured not_measured \
-            'exit status + exact guest stdout + stable exact counter totals + semantic syscall trace' \
+            'exit status + exact guest stdout + stable exact counter totals + decoded write arguments (trace return unavailable)' \
             "counter1=$counter1; counter2=$counter2"
     else
         record_b15_failure dbt dbt- \
-            'exit status + exact guest stdout + stable exact counter totals + semantic syscall trace' \
+            'exit status + exact guest stdout + stable exact counter totals + decoded write arguments (trace return unavailable)' \
             "$problems"
     fi
 }
@@ -1396,7 +1406,7 @@ measure_liteinst() {
             'LiteInst Chaos action was not proved'
         return
     fi
-    if ! preload=$(cargo_artifact prepare-test-liteinst reverie_examples .so reverie-examples); then
+    if ! preload=$(cargo_artifact prepare-examples reverie_examples .so reverie-examples); then
         record liteinst B1.5 unmeasurable 0 missing missing missing missing \
             not_measured not_measured not_measured not_measured \
             'repeated exact counter1/counter2/strace execution' \
@@ -1468,8 +1478,8 @@ measure_liteinst() {
 }
 
 e9patch_paths() {
-    E9TOOL=$(native_build_artifact prepare-test-e9patch_direct reverie-e9patch e9patch-build/e9tool) || return
-    E9PATCH=$(native_build_artifact prepare-test-e9patch_direct reverie-e9patch e9patch-build/e9patch) || return
+    E9TOOL=$(native_build_artifact prepare-examples reverie-e9patch e9patch-build/e9tool) || return
+    E9PATCH=$(native_build_artifact prepare-examples reverie-e9patch e9patch-build/e9patch) || return
     export E9TOOL E9PATCH
 }
 
@@ -1487,7 +1497,7 @@ measure_e9patch() {
             'e9tool/e9patch pair + direct Tool action' 'required built pair is unavailable'
         return
     fi
-    if ! E9_EXAMPLES_TEST=$(test_binary_from_case prepare-test-e9patch_direct e9patch_direct); then
+    if ! E9_EXAMPLES_TEST=$(test_binary_from_case prepare-examples e9patch_direct); then
         record e9patch B1 unmeasurable 0 missing missing missing not_applicable \
             not_measured not_measured not_measured not_measured \
             'e9patch direct Tool tests' 'required test executables could not be built'
@@ -1566,14 +1576,24 @@ for backend_package in \
         measure_b0 "${backend_package%%:*}" "${backend_package#*:}"
 done
 
-# Runtime binaries are deliberately built after the independent release-build
+# Runtime binaries are deliberately built after the release-build
 # rows. A failed preparation cannot retroactively turn a release-build failure
 # into a pass.
 PREPARED=1
 PREPARED_OUTCOME=pass
 if [[ $SKIP_PREPARE != 1 ]]; then
     if selected ptrace || selected kvm || selected liteinst || selected e9patch; then
-        run_case prepare-examples cargo build --locked --message-format=json -p reverie-examples --bins --lib || PREPARED=0
+        # One Cargo invocation resolves the binaries and integration tests
+        # together. Separate builds can overwrite unversioned dependency rlibs
+        # with different bytes before their original producer is bound.
+        example_targets=(--bins --lib)
+        for backend_target in kvm:kvm_cli liteinst:liteinst e9patch:e9patch_direct; do
+            if selected "${backend_target%%:*}"; then
+                example_targets+=(--test "${backend_target#*:}")
+            fi
+        done
+        run_case prepare-examples cargo build --locked --message-format=json \
+            -p reverie-examples "${example_targets[@]}" || PREPARED=0
     fi
     if selected dbt; then
         # DynamoRIO's client stack cannot safely host debug Rust frames. Match
@@ -1585,12 +1605,6 @@ if [[ $SKIP_PREPARE != 1 ]]; then
     if selected sabre; then
         run_case prepare-sabre cargo build --locked --message-format=json -p reverie-sabre-strace || PREPARED=0
     fi
-    for backend_target in kvm:kvm_cli liteinst:liteinst e9patch:e9patch_direct; do
-        if selected "${backend_target%%:*}"; then
-            run_case "prepare-test-${backend_target#*:}" cargo test --locked --message-format=json \
-                -p reverie-examples --test "${backend_target#*:}" --no-run || PREPARED=0
-        fi
-    done
     if ((PREPARED == 1)); then
         if selected ptrace || selected kvm || selected liteinst || selected e9patch; then
             bind_cargo_outputs prepare-examples || exit 2
@@ -1605,15 +1619,14 @@ if [[ $SKIP_PREPARE != 1 ]]; then
         fi
         for backend_target in kvm:kvm_cli liteinst:liteinst e9patch:e9patch_direct; do
             if selected "${backend_target%%:*}"; then
-                bind_cargo_outputs "prepare-test-${backend_target#*:}" || exit 2
-                test_binary_from_case "prepare-test-${backend_target#*:}" "${backend_target#*:}" >"$WORK_DIR/${backend_target#*:}.binary" || exit 2
+                test_binary_from_case prepare-examples "${backend_target#*:}" >"$WORK_DIR/${backend_target#*:}.binary" || exit 2
             fi
         done
         if selected liteinst; then
-            check_test_preload prepare-test-liteinst liteinst || exit 2
+            check_test_preload prepare-examples liteinst || exit 2
         fi
         if selected e9patch; then
-            check_test_preload prepare-test-e9patch_direct e9patch_direct || exit 2
+            check_test_preload prepare-examples e9patch_direct || exit 2
             e9patch_paths || exit 2
         fi
         retain_runtime_dependencies || exit 2
