@@ -15,6 +15,7 @@
 //! self and foreign-child pidfds target the mapped host process rather than
 //! merely proving that some file descriptor was returned.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -40,10 +41,23 @@ fn pidfd_open_targets_virtual_self_and_foreign_child_identities() {
     let fixture = directory.path().join("pidfd-identity");
     compile_fixture(&fixture);
 
-    let runner = DbtRunner::from_env()
-        .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
+    // A native runtime stall may prevent the guest alarm from being delivered.
+    // Bound the launcher process group independently, including its children.
+    let launcher = directory.path().join("bounded-drrun");
+    std::fs::write(
+        &launcher,
+        b"#!/bin/sh\nexec timeout --signal=TERM --kill-after=2s 15s \"$REVERIE_DBT_TEST_DRRUN\" \"$@\"\n",
+    )
+    .expect("write bounded launcher");
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))
+        .expect("make bounded launcher executable");
+    let client = std::env::var_os("REVERIE_DBT_CLIENT")
+        .expect("REVERIE_DBT_CLIENT must point to the built native client");
+    let runner = DbtRunner::new(launcher, client)
+        .expect("create bounded native runner")
         .client_argument("-test-wait-for-background");
     let mut guest = Command::new(fixture);
+    guest.env("REVERIE_DBT_TEST_DRRUN", reverie_dbt::bundled_drrun_path());
     guest.env("HERMIT_DBT_NOOP", "1");
     let output = runner
         .output(&guest)
