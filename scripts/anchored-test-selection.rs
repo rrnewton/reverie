@@ -9,7 +9,7 @@
 //!   1. ANCHOR on a previous FULL GREEN result.
 //!   2. DIFF the paths changed since that anchor.
 //!   3. MAP changed paths -> the DAG STEP(S) they hit.
-//!   4. RUN ONLY those steps (emit a dependency-closed subset DAG).
+//!   4. RUN ONLY those steps through validate's constructed-plan selector.
 //!
 //! Soundness rests entirely on the anchor: everything untouched since a full
 //! green was already proven green AT that anchor, so it need not run again.
@@ -49,7 +49,7 @@
 //!   git diff --name-only A..B | scripts/anchored-test-selection.rs --files -
 //!   scripts/anchored-test-selection.rs --anchor <sha> --files ...   # fixed anchor
 //!   scripts/anchored-test-selection.rs --format json
-//!   scripts/anchored-test-selection.rs --emit-dag portable --out /tmp/sub.json
+//!   scripts/anchored-test-selection.rs --files detcore-dbi/src/lib.rs --run
 //!   scripts/anchored-test-selection.rs --self-test
 //!
 //! ```cargo
@@ -121,7 +121,7 @@ fn matches_any(globs: &[&str], file: &str) -> bool {
 
 // ---------------------------------------------------------------------------
 // DAG universe: read the REAL node names + deps + duration hints from the CI
-// graph. Node identity is lane-qualified ("portable:test.dbi_parity") because
+// graph. Node identity is lane-qualified ("portable:test.dbt_parity") because
 // several job names (e2e.metadata, e2e.manifest_backend_parity_c, ...) exist in
 // BOTH lanes and mean different things.
 // ---------------------------------------------------------------------------
@@ -136,11 +136,13 @@ struct Node {
 
 struct Dag {
     nodes: BTreeMap<String, Node>,
+    lane_order: BTreeMap<String, Vec<String>>,
 }
 
 impl Dag {
     fn load(hermit: &Path) -> Dag {
         let mut nodes = BTreeMap::new();
+        let mut lane_order = BTreeMap::new();
         for lane in ["portable", "privileged"] {
             let path = hermit.join(format!("ci/dag/{lane}.json"));
             let raw = std::fs::read_to_string(&path)
@@ -154,6 +156,10 @@ impl Dag {
                     s["job"].as_str().unwrap_or("")
                 );
                 let id = format!("{lane}:{job}");
+                lane_order
+                    .entry(lane.to_string())
+                    .or_insert_with(Vec::new)
+                    .push(job.clone());
                 let deps = s["deps"]
                     .as_array()
                     .map(|a| {
@@ -177,7 +183,7 @@ impl Dag {
         if nodes.is_empty() {
             fail("no DAG nodes loaded (is --hermit pointing at a Hermit checkout?)");
         }
-        Dag { nodes }
+        Dag { nodes, lane_order }
     }
 
     fn all_ids(&self) -> BTreeSet<String> {
@@ -254,7 +260,7 @@ fn kvm_steps() -> Vec<String> {
 }
 fn dbi_steps() -> Vec<String> {
     vec![
-        "portable:test.dbi_parity".into(),
+        "portable:test.dbt_parity".into(),
         "portable:e2e.manifest_backend_parity_c".into(),
     ]
 }
@@ -937,50 +943,6 @@ fn emit_json(dag: &Dag, anchor: &Option<Anchor>, files: &[String], sel: &Selecti
     println!("{}", serde_json::to_string_pretty(&obj).unwrap());
 }
 
-/// Write a dependency-closed subset of ci/dag/<lane>.json containing only the
-/// selected nodes of that lane (with deps pruned to survivors) so run-dag.sh can
-/// execute exactly the selection via RUN_DAG_FILE_OVERRIDE. Returns node count.
-fn emit_dag(hermit: &Path, lane: &str, sel: &Selection, out: &Path) -> usize {
-    let path = hermit.join(format!("ci/dag/{lane}.json"));
-    let raw = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| fail(&format!("cannot read {}: {e}", path.display())));
-    let mut v: Value = serde_json::from_str(&raw)
-        .unwrap_or_else(|e| fail(&format!("invalid JSON in {}: {e}", path.display())));
-    let keep: BTreeSet<String> = sel
-        .selected
-        .iter()
-        .filter_map(|id| id.strip_prefix(&format!("{lane}:")).map(String::from))
-        .collect();
-    let steps = v["steps"].as_array().cloned().unwrap_or_default();
-    let kept: Vec<Value> = steps
-        .into_iter()
-        .filter_map(|mut s| {
-            let job = format!(
-                "{}.{}",
-                s["group"].as_str().unwrap_or(""),
-                s["job"].as_str().unwrap_or("")
-            );
-            if !keep.contains(&job) {
-                return None;
-            }
-            if let Some(deps) = s["deps"].as_array() {
-                let pruned: Vec<Value> = deps
-                    .iter()
-                    .filter(|d| d.as_str().map(|d| keep.contains(d)).unwrap_or(false))
-                    .cloned()
-                    .collect();
-                s["deps"] = Value::Array(pruned);
-            }
-            Some(s)
-        })
-        .collect();
-    let n = kept.len();
-    v["steps"] = Value::Array(kept);
-    std::fs::write(out, serde_json::to_string_pretty(&v).unwrap())
-        .unwrap_or_else(|e| fail(&format!("cannot write {}: {e}", out.display())));
-    n
-}
-
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -992,11 +954,13 @@ fn fail(msg: &str) -> ! {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "-h" || a == "--help") {
+    if parent_flag_before_passthrough(&args, "-h")
+        || parent_flag_before_passthrough(&args, "--help")
+    {
         print_help();
         return;
     }
-    if args.iter().any(|a| a == "--self-test") {
+    if parent_flag_before_passthrough(&args, "--self-test") {
         self_test();
         return;
     }
@@ -1008,12 +972,9 @@ fn main() {
     let mut explicit_files: Option<Vec<String>> = None;
     let mut anchor_override: Option<String> = None;
     let mut no_fetch = false;
-    let mut emit_dag_lane: Option<String> = None;
-    let mut out_path: Option<PathBuf> = None;
     let mut reverie = PathBuf::from("reverie");
     let mut run = false;
-    let mut verb = "run".to_string();
-    let mut run_dag: Option<PathBuf> = None;
+    let mut validate: Option<PathBuf> = None;
     let mut passthrough: Vec<String> = Vec::new();
 
     let mut i = 0;
@@ -1043,14 +1004,6 @@ fn main() {
                 format = need(&args, i);
                 i += 2;
             }
-            "--emit-dag" => {
-                emit_dag_lane = Some(need(&args, i));
-                i += 2;
-            }
-            "--out" => {
-                out_path = Some(PathBuf::from(need(&args, i)));
-                i += 2;
-            }
             "--reverie" => {
                 reverie = PathBuf::from(need(&args, i));
                 i += 2;
@@ -1059,12 +1012,8 @@ fn main() {
                 run = true;
                 i += 1;
             }
-            "--verb" => {
-                verb = need(&args, i);
-                i += 2;
-            }
-            "--run-dag" => {
-                run_dag = Some(PathBuf::from(need(&args, i)));
+            "--validate" => {
+                validate = Some(PathBuf::from(need(&args, i)));
                 i += 2;
             }
             "--" => {
@@ -1147,167 +1096,575 @@ fn main() {
         eprintln!("anchored-test-selection: {n}");
     }
 
-    finish(
-        &dag,
-        &hermit,
-        &anchor,
-        &files,
-        &sel,
-        &format,
-        &emit_dag_lane,
-        &out_path,
-    );
+    finish(&dag, &anchor, &files, &sel, &format);
 
-    // --run: actually EXECUTE the selection through run-dag.sh so CI consumes the
-    // subset. This closes the loop anchor -> diff -> subset DAG -> run-dag runs
-    // ONLY that subset. Without --run the tool is report-only (back-compatible).
+    // --run: execute through validate's selected constructed-plan interface. A
+    // FULL decision selects every tag from the complete constructed lane,
+    // including generated downstream checks; a SELECTIVE decision uses the
+    // exact narrowed tags. The driver attaches explicit result ownership before
+    // either plan verification or execution; no raw lane JSON crosses this
+    // boundary.
     if run {
-        let run_dag = run_dag.unwrap_or_else(|| hermit.join("ci/run-dag.sh"));
-        if !run_dag.is_file() {
+        let validate = validate.unwrap_or_else(|| hermit.join("scripts/validate.rs"));
+        if !validate.is_file() {
             fail(&format!(
-                "--run: run-dag.sh not found at {}",
-                run_dag.display()
+                "--run: validate.rs not found at {}; pass --validate <path> or point --hermit \
+                 at a checkout containing scripts/validate.rs",
+                validate.display()
             ));
         }
-        let rc = run_selection(&hermit, &run_dag, &verb, &sel, &passthrough);
+        let hermit = hermit
+            .canonicalize()
+            .unwrap_or_else(|e| fail(&format!("cannot resolve {}: {e}", hermit.display())));
+        let validate = validate
+            .canonicalize()
+            .unwrap_or_else(|e| fail(&format!("cannot resolve {}: {e}", validate.display())));
+        let rc = run_selection(&dag, &hermit, &validate, &sel, &passthrough);
         std::process::exit(rc);
     }
 }
 
-/// Execute the selection through run-dag.sh, one invocation per lane that has at
-/// least one selected node. This is the consumer wiring: for a Selective
-/// decision we emit a dependency-closed subset DAG per lane and hand it to
-/// run-dag.sh via RUN_DAG_FILE_OVERRIDE, so the runner executes ONLY that slice;
-/// a lane with zero selected nodes is NOT invoked at all (the whole lane is
-/// skipped — that is where the wall-time win comes from). Full runs both lanes
-/// with no override; Skip runs nothing. Every lane invocation is wall-timed and
-/// reported, so an under-run or a lane that was silently skipped is observable.
+/// Execute one validate-owned constructed plan per nonempty lane.
+///
+/// FULL selects every tag from the complete constructed lane, including
+/// generated downstream checks that are not named in the raw DAG, and requires
+/// the selected output to equal that complete plan. This uses validate's
+/// supported off-record admission path; an unselected portable full-cost run is
+/// correctly reserved for ci-hub. For SELECTIVE, the selected tags are already
+/// dependency-closed over the shipped lane; the validator repeats closure over
+/// its constructed plan, adding its canonical preflight nodes. It attaches an
+/// explicit `result_manifests` list to every step before execution. We first
+/// export and inspect the exact plan; a missing/added selected tag, changed
+/// canonical order, dangling dependency, or absent declaration refuses the run.
+/// No raw lane JSON and no `RUN_DAG_FILE_OVERRIDE` cross this boundary.
 fn run_selection(
+    dag: &Dag,
     hermit: &Path,
-    run_dag: &Path,
-    verb: &str,
+    validate: &Path,
     sel: &Selection,
     passthrough: &[String],
 ) -> i32 {
     const LANES: [&str; 2] = ["portable", "privileged"];
-    let mut overall_rc = 0;
+    if let Err(error) = validate_execution_passthrough(passthrough) {
+        eprintln!("anchored-test-selection: cannot build validate command: {error}");
+        return 2;
+    }
+    if sel.decision == Decision::Skip {
+        eprintln!(
+            "anchored-test-selection: [SKIP] all changes inert -> 0 lanes invoked (nothing to run)"
+        );
+        return 0;
+    }
 
-    match sel.decision {
-        Decision::Skip => {
+    let mut overall_rc = 0;
+    for lane in LANES {
+        let selected = selected_lane_jobs(dag, sel, lane);
+        if selected.is_empty() {
             eprintln!(
-                "anchored-test-selection: [SKIP] all changes inert -> 0 lanes invoked (nothing to run)"
+                "anchored-test-selection: [{}] lane '{lane}': 0 selected nodes -> WHOLE LANE SKIPPED (not invoked)",
+                decision_str(sel.decision).to_ascii_uppercase()
             );
-            return 0;
+            continue;
         }
-        Decision::Full => {
-            eprintln!(
-                "anchored-test-selection: [FULL] running BOTH lanes with no override (conservative full suite)"
-            );
-            for lane in LANES {
-                let start = std::time::Instant::now();
-                let rc = exec_run_dag(run_dag, lane, verb, None, passthrough);
-                let secs = start.elapsed().as_secs_f64();
+        let verified = match sel.decision {
+            Decision::Full => construct_and_verify_full(hermit, validate, lane),
+            Decision::Selective => construct_and_verify_subset(hermit, validate, lane, &selected),
+            Decision::Skip => unreachable!("Skip returned before lane execution"),
+        };
+        let verified = match verified {
+            Ok(verified) => verified,
+            Err(error) => {
                 eprintln!(
-                    "anchored-test-selection: lane '{lane}' {verb} -> rc={rc} wall={secs:.1}s"
+                    "anchored-test-selection: refusing lane '{lane}' before execution: {error}"
                 );
-                if rc != 0 {
-                    overall_rc = rc;
-                }
+                return 2;
             }
-        }
-        Decision::Selective => {
-            for lane in LANES {
-                let prefix = format!("{lane}:");
-                let n = sel
-                    .selected
-                    .iter()
-                    .filter(|id| id.starts_with(&prefix))
-                    .count();
-                if n == 0 {
-                    eprintln!(
-                        "anchored-test-selection: [SELECTIVE] lane '{lane}': 0 selected nodes -> \
-                         WHOLE LANE SKIPPED (not invoked)"
-                    );
-                    continue;
-                }
-                let out = std::env::temp_dir().join(format!("anchored-subset-{lane}.json"));
-                let emitted = emit_dag(hermit, lane, sel, &out);
-                eprintln!(
-                    "anchored-test-selection: [SELECTIVE] lane '{lane}': {emitted} node(s) -> {}",
-                    out.display()
-                );
-                let start = std::time::Instant::now();
-                let rc = exec_run_dag(run_dag, lane, verb, Some(&out), passthrough);
-                let secs = start.elapsed().as_secs_f64();
-                eprintln!(
-                    "anchored-test-selection: lane '{lane}' {verb} -> rc={rc} wall={secs:.1}s"
-                );
-                if rc != 0 {
-                    overall_rc = rc;
-                }
-            }
+        };
+        let plan_kind = if sel.decision == Decision::Full {
+            "complete"
+        } else {
+            "selected"
+        };
+        eprintln!(
+            "anchored-test-selection: [{}] lane '{lane}': {} raw lane node(s), {constructed} {plan_kind} constructed step(s), all with explicit result manifests",
+            decision_str(sel.decision).to_ascii_uppercase(),
+            selected.len(),
+            constructed = verified.constructed_steps,
+        );
+        let start = std::time::Instant::now();
+        let rc = exec_validate(hermit, validate, lane, &verified.validate_tags, passthrough);
+        let secs = start.elapsed().as_secs_f64();
+        let execution = if sel.decision == Decision::Full {
+            "--selected (complete constructed plan)"
+        } else {
+            "--selected"
+        };
+        eprintln!(
+            "anchored-test-selection: lane '{lane}' validate {execution} -> rc={rc} wall={secs:.1}s"
+        );
+        if rc != 0 {
+            overall_rc = rc;
         }
     }
     overall_rc
 }
 
-/// One run-dag.sh invocation. `override_dag` (when set) is passed as
-/// RUN_DAG_FILE_OVERRIDE so the runner executes exactly that subset DAG while
-/// still labeling the lane. A non-`run` verb (list/ascii/dot/json) is forwarded
-/// as run-dag.sh's first positional so it can inspect without executing.
-fn exec_run_dag(
-    run_dag: &Path,
+fn selected_lane_jobs(dag: &Dag, sel: &Selection, lane: &str) -> Vec<String> {
+    dag.lane_order
+        .get(lane)
+        .into_iter()
+        .flatten()
+        .filter(|job| sel.selected.contains(&format!("{lane}:{job}")))
+        .cloned()
+        .collect()
+}
+
+fn lane_validate_arg(lane: &str) -> Result<&'static str, String> {
+    match lane {
+        "portable" => Ok("portable-only"),
+        "privileged" => Ok("--privileged-only"),
+        other => Err(format!("unsupported validation lane {other:?}")),
+    }
+}
+
+fn parent_flag_before_passthrough(args: &[String], flag: &str) -> bool {
+    args.iter()
+        .take_while(|argument| argument.as_str() != "--")
+        .any(|argument| argument == flag)
+}
+
+fn validate_execution_passthrough(passthrough: &[String]) -> Result<(), String> {
+    let mut index = 0;
+    while index < passthrough.len() {
+        let argument = passthrough[index].as_str();
+        let takes_value = matches!(argument, "-j" | "--run-timeout" | "--verbosity");
+        let is_flag = matches!(
+            argument,
+            "-k" | "--keep-going" | "--verbose" | "--ignore-cache" | "--allow-cgroup-failure"
+        );
+        if !takes_value && !is_flag {
+            return Err(format!(
+                "passthrough argument {argument:?} is not an execution-only validate option; \
+                 use only -j, --run-timeout, --verbosity, -k/--keep-going, --verbose, \
+                 --ignore-cache, or --allow-cgroup-failure. Run validate query, plan, help, \
+                 and self-test modes separately"
+            ));
+        }
+        if takes_value {
+            let value = passthrough.get(index + 1).ok_or_else(|| {
+                format!(
+                    "passthrough argument {argument:?} needs a value; provide it after the option"
+                )
+            })?;
+            if value.starts_with('-') {
+                return Err(format!(
+                    "passthrough argument {argument:?} needs a value, got option {value:?}"
+                ));
+            }
+            index += 1;
+        }
+        index += 1;
+    }
+    Ok(())
+}
+
+fn selected_validate_args(
     lane: &str,
-    verb: &str,
-    override_dag: Option<&Path>,
+    selected: &[String],
+    constructed_out: Option<&Path>,
+    passthrough: &[String],
+) -> Result<Vec<String>, String> {
+    if selected.is_empty() {
+        return Err(format!("lane {lane:?} has no selected tags"));
+    }
+    validate_execution_passthrough(passthrough)?;
+    let mut args = vec![
+        lane_validate_arg(lane)?.to_string(),
+        "--selected".into(),
+        selected.join(","),
+    ];
+    if let Some(out) = constructed_out {
+        args.push("--write-constructed-dag".into());
+        args.push(out.to_string_lossy().into_owned());
+    } else {
+        args.push("--allow-local-off-the-record-run".into());
+        args.extend(passthrough.iter().cloned());
+    }
+    Ok(args)
+}
+
+fn execution_validate_args(
+    lane: &str,
+    selected: &[String],
+    passthrough: &[String],
+) -> Result<Vec<String>, String> {
+    validate_execution_passthrough(passthrough)?;
+    if selected.is_empty() {
+        return Err(format!("lane {lane:?} has no selected tags"));
+    }
+    let mut args = vec![
+        lane_validate_arg(lane)?.to_string(),
+        "--selected".into(),
+        selected.join(","),
+    ];
+    args.push("--allow-local-off-the-record-run".into());
+    args.extend(passthrough.iter().cloned());
+    Ok(args)
+}
+
+fn configured_validate_command(validate: &Path, hermit: &Path, args: &[String]) -> Command {
+    let mut cmd = Command::new(validate);
+    cmd.current_dir(hermit)
+        .args(args)
+        .env_remove("RUN_DAG_FILE_OVERRIDE")
+        .env_remove("VALIDATE_LEVEL")
+        .env_remove("VALIDATE_FORCE_FULL");
+    cmd
+}
+
+fn exec_validate(
+    hermit: &Path,
+    validate: &Path,
+    lane: &str,
+    selected: &[String],
     passthrough: &[String],
 ) -> i32 {
-    let mut cmd = Command::new("bash");
-    cmd.arg(run_dag).arg(lane);
-    if verb != "run" {
-        cmd.arg(verb);
-    }
-    cmd.args(passthrough);
-    if let Some(o) = override_dag {
-        cmd.env("RUN_DAG_FILE_OVERRIDE", o);
-    }
+    let args = match execution_validate_args(lane, selected, passthrough) {
+        Ok(args) => args,
+        Err(error) => {
+            eprintln!("anchored-test-selection: cannot build validate command: {error}");
+            return 2;
+        }
+    };
+    let mut cmd = configured_validate_command(validate, hermit, &args);
     match cmd.status() {
         Ok(s) => s.code().unwrap_or(1),
         Err(e) => {
             eprintln!(
                 "anchored-test-selection: cannot exec {}: {e}",
-                run_dag.display()
+                validate.display()
             );
             2
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn finish(
-    dag: &Dag,
-    hermit: &Path,
-    anchor: &Option<Anchor>,
-    files: &[String],
-    sel: &Selection,
-    format: &str,
-    emit_dag_lane: &Option<String>,
-    out_path: &Option<PathBuf>,
-) {
-    if let Some(lane) = emit_dag_lane {
-        let out = out_path
-            .clone()
-            .unwrap_or_else(|| PathBuf::from(format!("/tmp/anchored-{lane}.json")));
-        let n = emit_dag(hermit, lane, sel, &out);
-        eprintln!(
-            "anchored-test-selection: wrote {n}-node {lane} subset DAG to {}",
-            out.display()
-        );
-        eprintln!(
-            "  run it with: RUN_DAG_FILE_OVERRIDE={} ./ci/run-dag.sh {lane}",
-            out.display()
-        );
+fn constructed_step_tag(step: &Value) -> Option<String> {
+    Some(format!(
+        "{}.{}",
+        step.get("group")?.as_str()?,
+        step.get("job")?.as_str()?
+    ))
+}
+
+#[derive(Debug)]
+struct ConstructedStep {
+    tag: String,
+    deps: Vec<String>,
+    result_manifests: Vec<Value>,
+}
+
+fn inspect_constructed_plan(json: &str) -> Result<Vec<ConstructedStep>, String> {
+    let value: Value = serde_json::from_str(json)
+        .map_err(|error| format!("constructed plan is not valid JSON: {error}"))?;
+    let steps = value
+        .get("steps")
+        .and_then(Value::as_array)
+        .ok_or("constructed plan has no steps array")?;
+    if steps.is_empty() {
+        return Err("constructed plan has no steps".into());
     }
+
+    let mut inspected = Vec::with_capacity(steps.len());
+    let mut seen = BTreeSet::new();
+    for (index, step) in steps.iter().enumerate() {
+        let tag = constructed_step_tag(step)
+            .ok_or_else(|| format!("constructed step {index} has no string group/job identity"))?;
+        if !seen.insert(tag.clone()) {
+            return Err(format!("constructed plan repeats step {tag}"));
+        }
+        let result_manifests = step
+            .get("result_manifests")
+            .and_then(Value::as_array)
+            .cloned()
+            .ok_or_else(|| {
+                format!("constructed step {tag} lacks an explicit result_manifests array")
+            })?;
+        let deps = step
+            .get("deps")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("constructed step {tag} has no deps array"))?;
+        let deps =
+            deps.iter()
+                .map(|dependency| {
+                    dependency.as_str().map(str::to_string).ok_or_else(|| {
+                        format!("constructed step {tag} has a non-string dependency")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+        inspected.push(ConstructedStep {
+            tag,
+            deps,
+            result_manifests,
+        });
+    }
+    for step in &inspected {
+        for dependency in &step.deps {
+            if !seen.contains(dependency) {
+                return Err(format!(
+                    "constructed step {} has dangling dependency {dependency}",
+                    step.tag
+                ));
+            }
+        }
+    }
+    Ok(inspected)
+}
+
+const STRICT_COMPAT_PLACEHOLDER: &str = "test.strict_compat";
+
+fn normalize_selected_tags(
+    selected: &[String],
+    full: &[ConstructedStep],
+) -> Result<Vec<String>, String> {
+    let available: BTreeSet<&str> = full.iter().map(|step| step.tag.as_str()).collect();
+    let mut normalized = Vec::new();
+    for raw in selected {
+        let candidate = if available.contains(raw.as_str()) {
+            raw.as_str()
+        } else {
+            // Plan construction deduplicates these raw lane nodes onto the
+            // earlier canonical preflight nodes. Carry the selected work to the
+            // survivor instead of asking --selected for a tag that no longer
+            // exists. Every other missing tag is a drift refusal.
+            match raw.as_str() {
+                "check.reverie_pin" if available.contains("pre.reverie_pin") => "pre.reverie_pin",
+                "e2e.metadata" if available.contains("gate.manifest") => "gate.manifest",
+                STRICT_COMPAT_PLACEHOLDER
+                    if full.iter().any(|step| step.tag.starts_with("compat.")) =>
+                {
+                    STRICT_COMPAT_PLACEHOLDER
+                }
+                _ => {
+                    return Err(format!(
+                        "selected raw lane tag {raw} has no constructed-plan identity"
+                    ));
+                }
+            }
+        };
+        if !normalized.iter().any(|tag| tag == candidate) {
+            normalized.push(candidate.to_string());
+        }
+    }
+    Ok(normalized)
+}
+
+fn expected_constructed_tags(
+    full: &[ConstructedStep],
+    selected: &[String],
+) -> Result<BTreeSet<String>, String> {
+    let dependencies: BTreeMap<&str, &[String]> = full
+        .iter()
+        .map(|step| (step.tag.as_str(), step.deps.as_slice()))
+        .collect();
+    let mut keep = BTreeSet::new();
+    for tag in selected {
+        if tag == STRICT_COMPAT_PLACEHOLDER {
+            keep.extend(
+                full.iter()
+                    .filter(|step| {
+                        step.tag.starts_with("compat.") || step.tag == "compatprep.fixtures"
+                    })
+                    .map(|step| step.tag.clone()),
+            );
+        } else if dependencies.contains_key(tag.as_str()) {
+            keep.insert(tag.clone());
+        } else {
+            return Err(format!(
+                "normalized selected tag {tag} is absent from the constructed plan"
+            ));
+        }
+    }
+    let mut pending: Vec<String> = keep.iter().cloned().collect();
+    while let Some(tag) = pending.pop() {
+        for dependency in dependencies.get(tag.as_str()).into_iter().flat_map(|v| *v) {
+            if keep.insert(dependency.clone()) {
+                pending.push(dependency.clone());
+            }
+        }
+    }
+    Ok(keep)
+}
+
+fn verify_constructed_subset(
+    json: &str,
+    full: &[ConstructedStep],
+    selected: &[String],
+) -> Result<usize, String> {
+    let inspected = inspect_constructed_plan(json)?;
+    let expected = expected_constructed_tags(full, selected)?;
+    let expected_order: Vec<&str> = full
+        .iter()
+        .filter(|step| expected.contains(&step.tag))
+        .map(|step| step.tag.as_str())
+        .collect();
+    let actual_order: Vec<&str> = inspected.iter().map(|step| step.tag.as_str()).collect();
+    if actual_order != expected_order {
+        return Err(format!(
+            "constructed selection changed cells/order: expected={expected_order:?} actual={actual_order:?}"
+        ));
+    }
+    for (actual, expected) in inspected
+        .iter()
+        .zip(full.iter().filter(|step| expected.contains(&step.tag)))
+    {
+        if actual.deps != expected.deps {
+            return Err(format!(
+                "constructed step {} changed dependencies: expected={:?} actual={:?}",
+                actual.tag, expected.deps, actual.deps
+            ));
+        }
+        if actual.result_manifests != expected.result_manifests {
+            return Err(format!(
+                "constructed step {} changed result_manifests: expected={:?} actual={:?}",
+                actual.tag, expected.result_manifests, actual.result_manifests
+            ));
+        }
+    }
+
+    let strict_selected = selected
+        .iter()
+        .any(|tag| tag == STRICT_COMPAT_PLACEHOLDER || tag.starts_with("compat."));
+    let strict_present = inspected
+        .iter()
+        .any(|step| step.tag == STRICT_COMPAT_PLACEHOLDER);
+    let compat_count = inspected
+        .iter()
+        .filter(|step| step.tag.starts_with("compat."))
+        .count();
+    if strict_selected && (strict_present || compat_count == 0) {
+        return Err(format!(
+            "constructed strict-compat selection was not expanded: placeholder_present={strict_present} compat_nodes={compat_count}"
+        ));
+    }
+    if !strict_selected && (strict_present || compat_count != 0) {
+        return Err(format!(
+            "constructed plan added unselected strict-compat work: placeholder_present={strict_present} compat_nodes={compat_count}"
+        ));
+    }
+    Ok(inspected.len())
+}
+
+struct VerifiedSelection {
+    validate_tags: Vec<String>,
+    constructed_steps: usize,
+}
+
+fn write_constructed_plan(
+    hermit: &Path,
+    validate: &Path,
+    lane: &str,
+    selected: Option<&[String]>,
+    out: &Path,
+) -> Result<String, String> {
+    match std::fs::remove_file(out) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "cannot clear prior constructed plan {}: {error}",
+                out.display()
+            ));
+        }
+    }
+    let args = match selected {
+        Some(selected) => selected_validate_args(lane, selected, Some(out), &[])?,
+        None => vec![
+            lane_validate_arg(lane)?.to_string(),
+            "--write-constructed-dag".into(),
+            out.to_string_lossy().into_owned(),
+        ],
+    };
+    let output = configured_validate_command(validate, hermit, &args)
+        .output()
+        .map_err(|error| format!("cannot construct selected plan: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "validate could not construct {lane} plan ({}): {}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    std::fs::read_to_string(out).map_err(|error| {
+        format!(
+            "validate reported success but {} is unreadable: {error}",
+            out.display()
+        )
+    })
+}
+
+fn construct_and_verify_subset(
+    hermit: &Path,
+    validate: &Path,
+    lane: &str,
+    raw_selected: &[String],
+) -> Result<VerifiedSelection, String> {
+    let stem = format!("anchored-constructed-{}-{lane}", std::process::id());
+    let full_out = std::env::temp_dir().join(format!("{stem}-full.json"));
+    let selected_out = std::env::temp_dir().join(format!("{stem}-selected.json"));
+    let result = (|| {
+        let full_json = write_constructed_plan(hermit, validate, lane, None, &full_out)?;
+        let full = inspect_constructed_plan(&full_json)?;
+        let validate_tags = normalize_selected_tags(raw_selected, &full)?;
+        let selected_json =
+            write_constructed_plan(hermit, validate, lane, Some(&validate_tags), &selected_out)?;
+        let constructed_steps = verify_constructed_subset(&selected_json, &full, &validate_tags)?;
+        Ok(VerifiedSelection {
+            validate_tags,
+            constructed_steps,
+        })
+    })();
+    let _ = std::fs::remove_file(&full_out);
+    let _ = std::fs::remove_file(&selected_out);
+    result
+}
+
+fn construct_and_verify_full(
+    hermit: &Path,
+    validate: &Path,
+    lane: &str,
+) -> Result<VerifiedSelection, String> {
+    let stem = format!("anchored-constructed-{}-{lane}-full", std::process::id());
+    let full_out = std::env::temp_dir().join(format!("{stem}.json"));
+    let selected_out = std::env::temp_dir().join(format!("{stem}-selected.json"));
+    let result = (|| {
+        let full_json = write_constructed_plan(hermit, validate, lane, None, &full_out)?;
+        let full = inspect_constructed_plan(&full_json)?;
+        let validate_tags = full.iter().map(|step| step.tag.clone()).collect::<Vec<_>>();
+        let selected_json =
+            write_constructed_plan(hermit, validate, lane, Some(&validate_tags), &selected_out)?;
+        let constructed_steps = verify_constructed_subset(&selected_json, &full, &validate_tags)?;
+        let full_value: Value = serde_json::from_str(&full_json)
+            .map_err(|error| format!("complete constructed plan is not valid JSON: {error}"))?;
+        let selected_value: Value = serde_json::from_str(&selected_json)
+            .map_err(|error| format!("selected complete plan is not valid JSON: {error}"))?;
+        if selected_value != full_value {
+            return Err(
+                "selecting every complete constructed tag changed the complete plan".into(),
+            );
+        }
+        Ok(VerifiedSelection {
+            validate_tags,
+            constructed_steps,
+        })
+    })();
+    let _ = std::fs::remove_file(&full_out);
+    let _ = std::fs::remove_file(&selected_out);
+    result
+}
+
+fn finish(dag: &Dag, anchor: &Option<Anchor>, files: &[String], sel: &Selection, format: &str) {
     match format {
         "human" => emit_human(dag, anchor, files, sel),
         "json" => emit_json(dag, anchor, files, sel),
@@ -1343,17 +1700,19 @@ steps SELECTED and SKIPPED. Conservative: any unmapped path -> full suite.
   --files <paths…>   classify an explicit path list (space-separated)
   --files -          read the path list from stdin (one per line)
   --format <fmt>     human (default) | json
-  --emit-dag <lane>  write a dependency-closed subset DAG for <lane>
-                     (portable|privileged) so run-dag.sh can execute it
-  --out <path>       output path for --emit-dag (default /tmp/anchored-<lane>.json)
   --reverie <dir>    reverie checkout for cross-repo diff (default: reverie)
-  --run              EXECUTE the selection: run each lane with >=1 selected node
-                     through run-dag.sh with a subset-DAG override; a lane with 0
-                     selected nodes is not invoked. Report-only without this flag.
-  --verb <v>         run-dag verb: run (default) | list | ascii | dot | json
-  --run-dag <path>   run-dag.sh to invoke (default: <hermit>/ci/run-dag.sh)
-  --                 everything after is forwarded verbatim to run-dag.sh
-                     (e.g. -- -j 8 --max-mem 32G)
+  --run              EXECUTE through validate's constructed-plan --selected
+                     interface. FULL selects every complete constructed tag,
+                     including generated downstream checks; SELECTIVE uses the
+                     narrowed tags. A lane with 0 selected nodes is not invoked.
+                     Before execution, the constructed plan is checked for exact
+                     selected order and explicit result manifests on every step.
+  --validate <path>  validate.rs to invoke (default: <hermit>/scripts/validate.rs)
+  --                 forward execution-only validate options: -j N,
+                     --run-timeout SEC, --verbosity N, -k/--keep-going,
+                     --verbose, --ignore-cache, and --allow-cgroup-failure
+                     (explicit UNBOXED relaxation). Query, plan, help, self-test,
+                     and selection-changing options are refused.
   --self-test        run built-in unit tests and exit non-zero on failure
 
 CROSS-REPO DIFF: with an anchor and no explicit --files, paths changed since the
@@ -1414,8 +1773,8 @@ fn self_test() {
             s.contains(&"privileged:e2e.manifest_backend_parity_c".to_string()),
         );
         check(
-            "reverie-kvm -> NO portable dbi step",
-            !s.contains(&"portable:test.dbi_parity".to_string()),
+            "reverie-kvm -> NO portable dbt step",
+            !s.contains(&"portable:test.dbt_parity".to_string()),
         );
     }
     check(
@@ -1550,9 +1909,17 @@ fn self_test() {
         "reverie-kvm does NOT run portable strict_compat",
         !kvm.selected.contains("portable:test.strict_compat"),
     );
+    let excludes_portable_dbt =
+        |selected: &BTreeSet<String>| !selected.contains("portable:test.dbt_parity");
     check(
-        "reverie-kvm does NOT run portable dbi_parity",
-        !kvm.selected.contains("portable:test.dbi_parity"),
+        "reverie-kvm does NOT run portable dbt_parity",
+        excludes_portable_dbt(&kvm.selected),
+    );
+    let mut kvm_with_dbt = kvm.selected.clone();
+    kvm_with_dbt.insert("portable:test.dbt_parity".into());
+    check(
+        "reverie-kvm DBT exclusion catches insertion of the live dbt_parity tag",
+        !excludes_portable_dbt(&kvm_with_dbt),
     );
     check("reverie-kvm is a strict subset", kvm.selected.len() < n_all);
     check(
@@ -1572,8 +1939,8 @@ fn self_test() {
     let dbi = select(&dag, &vec!["detcore-dbi/src/lib.rs".into()]);
     check("dbi diff => selective", dbi.decision == Decision::Selective);
     check(
-        "dbi selects portable dbi_parity",
-        dbi.selected.contains("portable:test.dbi_parity"),
+        "dbi selects portable dbt_parity",
+        dbi.selected.contains("portable:test.dbt_parity"),
     );
     check(
         "dbi does NOT select privileged kvm parity",
@@ -1706,6 +2073,235 @@ source = \"git+https://github.com/rrnewton/reverie.git?rev=79517704abc1234def567
     check(
         "override malformed output => REFUSE",
         interpret_validate_status("whatever", "not json at all").is_err(),
+    );
+
+    // --- constructed-plan execution boundary ---
+    let kvm_privileged = selected_lane_jobs(&dag, &kvm, "privileged");
+    let expected_kvm_privileged: Vec<String> = dag
+        .lane_order
+        .get("privileged")
+        .unwrap()
+        .iter()
+        .filter(|tag| kvm.selected.contains(&format!("privileged:{tag}")))
+        .cloned()
+        .collect();
+    check(
+        "selected lane tags preserve canonical DAG order",
+        kvm_privileged == expected_kvm_privileged,
+    );
+
+    let command = execution_validate_args(
+        "portable",
+        &["build.a".into(), "test.b".into()],
+        &["-j".into(), "4".into()],
+    );
+    check(
+        "selected execution uses validate's exact off-record tag interface",
+        command.as_deref()
+            == Ok(&[
+                "portable-only".to_string(),
+                "--selected".to_string(),
+                "build.a,test.b".to_string(),
+                "--allow-local-off-the-record-run".to_string(),
+                "-j".to_string(),
+                "4".to_string(),
+            ][..]),
+    );
+    let complete_tags = [
+        "pre.submodules".to_string(),
+        "test.b".to_string(),
+        "scorecard.compatibility".to_string(),
+    ];
+    let full_command = execution_validate_args("portable", &complete_tags, &[]);
+    check(
+        "full execution selects every complete constructed tag including downstream checks",
+        full_command.as_deref()
+            == Ok(&[
+                "portable-only".to_string(),
+                "--selected".to_string(),
+                "pre.submodules,test.b,scorecard.compatibility".to_string(),
+                "--allow-local-off-the-record-run".to_string(),
+            ][..]),
+    );
+    check(
+        "cgroup-failure relaxation is appended without changing anchored selection",
+        execution_validate_args(
+            "portable",
+            &["build.a".into(), "test.b".into()],
+            &["--allow-cgroup-failure".into()],
+        )
+        .as_deref()
+            == Ok(&[
+                "portable-only".to_string(),
+                "--selected".to_string(),
+                "build.a,test.b".to_string(),
+                "--allow-local-off-the-record-run".to_string(),
+                "--allow-cgroup-failure".to_string(),
+            ][..]),
+    );
+    check(
+        "passthrough cannot replace the anchored selection",
+        execution_validate_args(
+            "portable",
+            &["test.b".into()],
+            &["--selected".into(), "test.other".into()],
+        )
+        .is_err(),
+    );
+    for argument in [
+        "--probe-host-capability",
+        "--probe-host-capability=cpuid-faulting",
+        "--show-plan",
+        "--show-plan-json",
+        "--write-constructed-dag",
+        "--self-test",
+        "--help",
+        "-h",
+    ] {
+        check(
+            &format!("passthrough {argument} cannot return success without selected work"),
+            execution_validate_args("portable", &["test.b".into()], &[argument.into()]).is_err(),
+        );
+    }
+    check(
+        "execution passthrough refuses a missing option value",
+        execution_validate_args("portable", &["test.b".into()], &["--run-timeout".into()]).is_err(),
+    );
+    let before_delimiter = vec!["--self-test".into(), "--".into(), "--help".into()];
+    check(
+        "parent self-test is recognized before the passthrough delimiter",
+        parent_flag_before_passthrough(&before_delimiter, "--self-test"),
+    );
+    check(
+        "passthrough help is not consumed as parent help",
+        !parent_flag_before_passthrough(&before_delimiter, "--help"),
+    );
+    let after_delimiter = vec!["--".into(), "--self-test".into(), "-h".into()];
+    check(
+        "passthrough self-test is not consumed as parent self-test",
+        !parent_flag_before_passthrough(&after_delimiter, "--self-test"),
+    );
+    check(
+        "passthrough short help is not consumed as parent help",
+        !parent_flag_before_passthrough(&after_delimiter, "-h"),
+    );
+
+    let selected = vec!["build.a".to_string(), "test.b".to_string()];
+    let declared = r#"{"steps":[
+        {"group":"pre","job":"submodules","deps":[],"result_manifests":[]},
+        {"group":"build","job":"a","deps":["pre.submodules"],"result_manifests":[]},
+        {"group":"test","job":"b","deps":["build.a"],"result_manifests":[{"kind":"structured-test-results","schema":2,"path_env":"DAGRUN_TEST_COUNTS_PATH","owner":"test.b"}]}
+    ]}"#;
+    let full = inspect_constructed_plan(declared).unwrap();
+    check(
+        "constructed subset keeps selected cells/order and explicit result manifests",
+        verify_constructed_subset(declared, &full, &selected) == Ok(3),
+    );
+    let generated_downstream_json = r#"{"steps":[
+            {"group":"pre","job":"submodules","deps":[],"result_manifests":[]},
+            {"group":"test","job":"b","deps":["pre.submodules"],"result_manifests":[]},
+            {"group":"scorecard","job":"compatibility","deps":["test.b"],"result_manifests":[]}
+        ]}"#;
+    let generated_downstream = inspect_constructed_plan(generated_downstream_json).unwrap();
+    let predecessor_only =
+        expected_constructed_tags(&generated_downstream, &["test.b".to_string()]).unwrap();
+    check(
+        "full execution cannot use predecessor-only selection that omits generated downstream checks",
+        generated_downstream
+            .iter()
+            .any(|step| step.tag == "scorecard.compatibility")
+            && !predecessor_only.contains("scorecard.compatibility"),
+    );
+    check(
+        "selecting every constructed tag reproduces the complete plan including downstream checks",
+        verify_constructed_subset(
+            generated_downstream_json,
+            &generated_downstream,
+            &complete_tags,
+        ) == Ok(3),
+    );
+    check(
+        "constructed subset refuses an unselected lane cell",
+        verify_constructed_subset(declared, &full, &["build.a".to_string()]).is_err(),
+    );
+    let legacy = r#"{"steps":[
+        {"group":"build","job":"a","deps":[]},
+        {"group":"test","job":"b","deps":["build.a"],"result_manifests":null}
+    ]}"#;
+    check(
+        "constructed subset refuses legacy absent/null result ownership",
+        verify_constructed_subset(legacy, &full, &selected).is_err(),
+    );
+    let declared_value: Value = serde_json::from_str(declared).unwrap();
+    let mut dropped_dependency = declared_value.clone();
+    dropped_dependency["steps"][2]["deps"] = serde_json::json!([]);
+    check(
+        "constructed subset refuses a dropped dependency edge",
+        verify_constructed_subset(&dropped_dependency.to_string(), &full, &selected)
+            .is_err_and(|error| error.contains("changed dependencies")),
+    );
+    let mut rewired_dependency = declared_value.clone();
+    rewired_dependency["steps"][2]["deps"] = serde_json::json!(["pre.submodules"]);
+    check(
+        "constructed subset refuses a rewired valid dependency edge",
+        verify_constructed_subset(&rewired_dependency.to_string(), &full, &selected)
+            .is_err_and(|error| error.contains("changed dependencies")),
+    );
+    let mut removed_result_manifest = declared_value.clone();
+    removed_result_manifest["steps"][2]["result_manifests"] = serde_json::json!([]);
+    check(
+        "constructed subset refuses removal of a producer result manifest",
+        verify_constructed_subset(&removed_result_manifest.to_string(), &full, &selected)
+            .is_err_and(|error| error.contains("changed result_manifests")),
+    );
+    let mut changed_result_kind = declared_value.clone();
+    changed_result_kind["steps"][2]["result_manifests"][0]["kind"] = serde_json::json!("future");
+    check(
+        "constructed subset refuses a changed result-manifest kind",
+        verify_constructed_subset(&changed_result_kind.to_string(), &full, &selected)
+            .is_err_and(|error| error.contains("changed result_manifests")),
+    );
+    let mut changed_result_owner = declared_value;
+    changed_result_owner["steps"][2]["result_manifests"][0]["owner"] =
+        serde_json::json!("test.other");
+    check(
+        "constructed subset refuses a changed result-manifest owner",
+        verify_constructed_subset(&changed_result_owner.to_string(), &full, &selected)
+            .is_err_and(|error| error.contains("changed result_manifests")),
+    );
+    let dangling = r#"{"steps":[
+        {"group":"build","job":"a","deps":["pre.missing"],"result_manifests":[]}
+    ]}"#;
+    check(
+        "constructed subset refuses dangling dependencies",
+        inspect_constructed_plan(dangling).is_err(),
+    );
+    let strict = r#"{"steps":[
+        {"group":"pre","job":"submodules","deps":[],"result_manifests":[]},
+        {"group":"compatprep","job":"fixtures","deps":["pre.submodules"],"result_manifests":[]},
+        {"group":"compat","job":"smoke","deps":["compatprep.fixtures"],"result_manifests":[]}
+    ]}"#;
+    let strict_full = inspect_constructed_plan(strict).unwrap();
+    check(
+        "constructed subset accepts canonical strict-compat expansion",
+        verify_constructed_subset(strict, &strict_full, &["test.strict_compat".to_string()])
+            .is_ok(),
+    );
+    let fused = inspect_constructed_plan(
+        r#"{"steps":[
+            {"group":"pre","job":"reverie_pin","deps":[],"result_manifests":[]},
+            {"group":"gate","job":"manifest","deps":["pre.reverie_pin"],"result_manifests":[]}
+        ]}"#,
+    )
+    .unwrap();
+    check(
+        "raw duplicate tags map to their constructed-plan survivors",
+        normalize_selected_tags(
+            &["check.reverie_pin".to_string(), "e2e.metadata".to_string()],
+            &fused,
+        )
+        .as_deref()
+            == Ok(&["pre.reverie_pin".to_string(), "gate.manifest".to_string()][..]),
     );
 
     drop(check);
