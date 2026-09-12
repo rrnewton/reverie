@@ -1036,7 +1036,7 @@ run_test_binary() {
 
 run_cargo_test() {
     local label=$1 target=$2 selected=$3 binary
-    binary=$(test_binary_from_case prepare-examples "$target") || return
+    binary=$(test_binary_from_case prepare-runtime "$target") || return
     run_test_binary "$label" "$binary" "$selected" normal
 }
 
@@ -1079,7 +1079,7 @@ measure_ptrace() {
 
         repeat="ptrace-counter2-$i"
         run_case "$repeat" "$TARGET_DIR/$PROFILE/counter2" \
-            --no-host-envs -- /bin/sh -c '/bin/true & wait' || { ok=0; comparison_failed; }
+            --no-host-envs -- /bin/sh -c '/bin/true & child=$!; wait "$child"' || { ok=0; comparison_failed; }
         [[ ! -s $WORK_DIR/$repeat.stdout ]] || { ok=0; comparison_failed; }
         value=$(sed -n 's/.*Total system calls in process tree: \([0-9][0-9]*\), from \([0-9][0-9]*\) processes, \([0-9][0-9]*\) thread(s).*/\1 \2 \3/p' \
             "$WORK_DIR/$repeat.stderr" | tail -1)
@@ -1240,8 +1240,12 @@ measure_dbt() {
 
     local i ok=1 counter1='' counter2='' problems=''
     for ((i = 1; i <= REPEATS; i++)); do
-        if ! run_case "dbt-counter1-$i" env HERMIT_DBT_COUNTER1_EXACT=1 "$DBT_DRRUN" \
-            -quiet -disable_rseq -stack_size 2M -c "$DBT_CLIENT" -- /bin/echo dbt-counter1; then
+        # Coreutils closes stderr before process-exit callbacks run. Preserve
+        # the same diagnostic descriptor used by the public DbtRunner.
+        if ! run_case "dbt-counter1-$i" bash -c 'exec 198>&2; exec "$@"' dbt-counter1 \
+            env HERMIT_DBT_COUNTER1_EXACT=1 "$DBT_DRRUN" \
+            -quiet -disable_rseq -stack_size 2M -c "$DBT_CLIENT" \
+            -diagnostic_fd 198 -- /bin/echo dbt-counter1; then
             ok=0
             comparison_failed
             problems+="counter1[$i] exit=$(case_status "dbt-counter1-$i"); "
@@ -1310,7 +1314,7 @@ measure_dbt() {
         record dbt B1.5 pass "$REPEATS" compared compared compared compared \
             not_measured not_measured not_measured not_measured \
             'exit status + exact guest stdout + stable exact counter totals + decoded write arguments (trace return unavailable)' \
-            "counter1=$counter1; counter2=$counter2"
+            "counter1=$counter1; counter2=$counter2; prototype GlobalTool totals cover this single process; copied children do not run the Rust Tool"
     else
         record_b15_failure dbt dbt- \
             'exit status + exact guest stdout + stable exact counter totals + decoded write arguments (trace return unavailable)' \
@@ -1319,9 +1323,9 @@ measure_dbt() {
 }
 
 sabre_paths() {
-    SABRE_RUNNER=$(cargo_artifact prepare-sabre reverie-sabre-strace executable reverie-sabre-strace) || return
-    SABRE_PLUGIN=$(cargo_artifact prepare-sabre reverie_sabre_strace_plugin .so reverie-sabre-strace) || return
-    SABRE_LOADER=$(native_build_artifact prepare-sabre experimental/reverie-sabre sabre-build-v4/sabre) || return
+    SABRE_RUNNER=$(cargo_artifact prepare-runtime reverie-sabre-strace executable reverie-sabre-strace) || return
+    SABRE_PLUGIN=$(cargo_artifact prepare-runtime reverie_sabre_strace_plugin .so reverie-sabre-strace) || return
+    SABRE_LOADER=$(native_build_artifact prepare-runtime experimental/reverie-sabre sabre-build-v4/sabre) || return
     export SABRE_RUNNER SABRE_PLUGIN SABRE_LOADER
 }
 
@@ -1367,7 +1371,7 @@ measure_sabre() {
         counter1=$value
 
         run_sabre "sabre-counter2-$i" counter2-exact /bin/sh -c \
-            '/bin/true & wait' || { ok=0; comparison_failed; }
+            '/bin/true & child=$!; wait "$child"' || { ok=0; comparison_failed; }
         [[ ! -s $WORK_DIR/sabre-counter2-$i.stdout ]] || { ok=0; comparison_failed; }
         value=$(sed -n \
             -e 's/.*Total system calls in process tree: \([0-9][0-9]*\), from \([0-9][0-9]*\) processes, \([0-9][0-9]*\) thread(s).*/\1 \2 \3/p' \
@@ -1406,7 +1410,7 @@ measure_liteinst() {
             'LiteInst Chaos action was not proved'
         return
     fi
-    if ! preload=$(cargo_artifact prepare-examples reverie_examples .so reverie-examples); then
+    if ! preload=$(cargo_artifact prepare-runtime reverie_examples .so reverie-examples); then
         record liteinst B1.5 unmeasurable 0 missing missing missing missing \
             not_measured not_measured not_measured not_measured \
             'repeated exact counter1/counter2/strace execution' \
@@ -1447,7 +1451,7 @@ measure_liteinst() {
         env REVERIE_LITEINST_STRADDLER_STALENESS_TICKS=20000 \
         "$TARGET_DIR/$PROFILE/reverie-liteinst-examples" --tool counter2 \
         --preload "$preload" -- \
-        /bin/sh -c '/bin/true & wait'; then
+        /bin/sh -c '/bin/true & child=$!; wait "$child"'; then
         local tree_value
         tree_value=$(sed -n 's/.*Total system calls in process tree: \([0-9][0-9]*\), from \([0-9][0-9]*\) processes, \([0-9][0-9]*\) thread(s).*/\1 \2 \3/p' \
             "$WORK_DIR/liteinst-process-tree.stderr" | tail -1)
@@ -1478,8 +1482,8 @@ measure_liteinst() {
 }
 
 e9patch_paths() {
-    E9TOOL=$(native_build_artifact prepare-examples reverie-e9patch e9patch-build/e9tool) || return
-    E9PATCH=$(native_build_artifact prepare-examples reverie-e9patch e9patch-build/e9patch) || return
+    E9TOOL=$(native_build_artifact prepare-runtime reverie-e9patch e9patch-build/e9tool) || return
+    E9PATCH=$(native_build_artifact prepare-runtime reverie-e9patch e9patch-build/e9patch) || return
     export E9TOOL E9PATCH
 }
 
@@ -1497,7 +1501,7 @@ measure_e9patch() {
             'e9tool/e9patch pair + direct Tool action' 'required built pair is unavailable'
         return
     fi
-    if ! E9_EXAMPLES_TEST=$(test_binary_from_case prepare-examples e9patch_direct); then
+    if ! E9_EXAMPLES_TEST=$(test_binary_from_case prepare-runtime e9patch_direct); then
         record e9patch B1 unmeasurable 0 missing missing missing not_applicable \
             not_measured not_measured not_measured not_measured \
             'e9patch direct Tool tests' 'required test executables could not be built'
@@ -1582,18 +1586,25 @@ done
 PREPARED=1
 PREPARED_OUTCOME=pass
 if [[ $SKIP_PREPARE != 1 ]]; then
+    runtime_packages=()
+    runtime_targets=(--bins --lib)
     if selected ptrace || selected kvm || selected liteinst || selected e9patch; then
-        # One Cargo invocation resolves the binaries and integration tests
-        # together. Separate builds can overwrite unversioned dependency rlibs
-        # with different bytes before their original producer is bound.
-        example_targets=(--bins --lib)
+        runtime_packages+=(-p reverie-examples)
         for backend_target in kvm:kvm_cli liteinst:liteinst e9patch:e9patch_direct; do
             if selected "${backend_target%%:*}"; then
-                example_targets+=(--test "${backend_target#*:}")
+                runtime_targets+=(--test "${backend_target#*:}")
             fi
         done
-        run_case prepare-examples cargo build --locked --message-format=json \
-            -p reverie-examples "${example_targets[@]}" || PREPARED=0
+    fi
+    if selected sabre; then
+        runtime_packages+=(-p reverie-sabre-strace)
+    fi
+    if ((${#runtime_packages[@]} != 0)); then
+        # Resolve all debug runtime packages and integration tests together.
+        # Separate builds can overwrite shared unversioned dependency rlibs
+        # before the original producing command is bound.
+        run_case prepare-runtime cargo build --locked --message-format=json \
+            "${runtime_packages[@]}" "${runtime_targets[@]}" || PREPARED=0
     fi
     if selected dbt; then
         # DynamoRIO's client stack cannot safely host debug Rust frames. Match
@@ -1602,31 +1613,27 @@ if [[ $SKIP_PREPARE != 1 ]]; then
         run_case prepare-dbt env PROFILE=release \
             "$ROOT_DIR/reverie-dbt/scripts/build-client.sh" || PREPARED=0
     fi
-    if selected sabre; then
-        run_case prepare-sabre cargo build --locked --message-format=json -p reverie-sabre-strace || PREPARED=0
-    fi
     if ((PREPARED == 1)); then
-        if selected ptrace || selected kvm || selected liteinst || selected e9patch; then
-            bind_cargo_outputs prepare-examples || exit 2
+        if ((${#runtime_packages[@]} != 0)); then
+            bind_cargo_outputs prepare-runtime || exit 2
         fi
         if selected dbt; then
             bind_cargo_outputs prepare-dbt-rust || exit 2
             dbt_paths || exit 2
         fi
         if selected sabre; then
-            bind_cargo_outputs prepare-sabre || exit 2
             sabre_paths || exit 2
         fi
         for backend_target in kvm:kvm_cli liteinst:liteinst e9patch:e9patch_direct; do
             if selected "${backend_target%%:*}"; then
-                test_binary_from_case prepare-examples "${backend_target#*:}" >"$WORK_DIR/${backend_target#*:}.binary" || exit 2
+                test_binary_from_case prepare-runtime "${backend_target#*:}" >"$WORK_DIR/${backend_target#*:}.binary" || exit 2
             fi
         done
         if selected liteinst; then
-            check_test_preload prepare-examples liteinst || exit 2
+            check_test_preload prepare-runtime liteinst || exit 2
         fi
         if selected e9patch; then
-            check_test_preload prepare-examples e9patch_direct || exit 2
+            check_test_preload prepare-runtime e9patch_direct || exit 2
             e9patch_paths || exit 2
         fi
         retain_runtime_dependencies || exit 2

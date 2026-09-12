@@ -129,6 +129,16 @@ for name, status, denied, output, counter_fail, expected in (
     config = f'WORK_DIR={shlex.quote(str(work.resolve()))}\nTREE_STATUS={status}\nTREE_DENIED={denied}\nTREE_OUTPUT={shlex.quote(output)}\nCOUNTER_FAIL={counter_fail}\n'
     execute(name, 'set -uo pipefail\n' + functions + config + stub, 0, [f'ROW:liteinst:B1.5:{expected}:'])
 
+# The actual process-tree workload must propagate a failed child. Argumentless
+# shell wait returns success even after its child fails, hiding backend errors.
+tree_commands = re.findall(r"/bin/sh -c\s*(?:\\\s*)?'([^']+)'", source)
+for backend, command in zip(('ptrace', 'sabre', 'liteinst'), tree_commands, strict=True):
+    for program, expected in (('/bin/true', 0), ('/bin/false', 1)):
+        execute(backend + '-tree-child-' + Path(program).name,
+                '/bin/sh -c ' + shlex.quote(command.replace('/bin/true', program)) + '\n',
+                expected)
+
+
 dbt_stub = r'''
 REPEATS=2
 TARGET_DIR=/unused
