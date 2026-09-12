@@ -7,6 +7,11 @@
 //! serde_json = "1"
 //! ```
 
+// rust-script keys its compiled cache on this entrypoint, but does not notice
+// changes in the #[path] dependency below. Keep this marker synchronized with
+// status-contract changes so a deployed contract cannot keep using old code.
+const CONTRACT_SOURCE_REVISION: &str = "schema-1-statuses-v2";
+
 #[path = "agent_snapshot.rs"]
 mod agent_snapshot;
 
@@ -29,6 +34,7 @@ fn die(message: &str) -> ! {
 }
 
 fn main() {
+    let _contract_source_revision = CONTRACT_SOURCE_REVISION;
     let arguments: Vec<String> = env::args().skip(1).collect();
     match arguments.as_slice() {
         [argument] if argument == "-h" || argument == "--help" => print!("{USAGE}"),
