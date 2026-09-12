@@ -1704,6 +1704,17 @@ static bool translate_identity_arguments(int sysnum, uint64_t *args) {
   case SYS_sched_getscheduler:
   case SYS_sched_setscheduler:
     return translate_identity_argument(&args[0]);
+  case SYS_rt_sigqueueinfo:
+  case SYS_rt_tgsigqueueinfo:
+    // Let the kernel validate siginfo and target identity in its own order.
+    // An unknown virtual PID must never address an unrelated host process;
+    // using an impossible PID preserves EFAULT/EPERM before ESRCH as well.
+    if (!translate_identity_argument(&args[0]))
+      args[0] = INT32_MAX;
+    if (sysnum == SYS_rt_tgsigqueueinfo &&
+        !translate_identity_argument(&args[1]))
+      args[1] = INT32_MAX;
+    return true;
   case SYS_tgkill:
     return translate_identity_argument(&args[0]) &&
            translate_identity_argument(&args[1]);
@@ -1767,6 +1778,7 @@ static int64_t virtualize_identity_result(prototype_counters_t *counters,
   case SYS_clone:
   case SYS_clone3:
   case SYS_wait4:
+  case SYS_getpgrp:
   case SYS_getpgid:
   case SYS_getsid:
   case SYS_set_tid_address:
