@@ -30,6 +30,9 @@
     unused_variables,
     unused_must_use
 )]
+// rust-script does not track #[path] dependencies in its cache key. Keep this
+// marker synchronized with agent_snapshot.rs status-contract changes.
+// agent-snapshot-schema-1-statuses-v2
 #[allow(dead_code)]
 #[path = "../../scripts/agent_snapshot.rs"]
 mod agent_snapshot;
