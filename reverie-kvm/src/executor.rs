@@ -26541,6 +26541,43 @@ mod tests {
     }
 
     #[test]
+    fn wait4_preserves_non_core_sigterm_identity() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state
+            .children
+            .insert(7, ExitStatus::Signaled(Signal::SIGTERM, false));
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let buffer_address = 0xf0;
+        let status_address = buffer_address + 16;
+        memory.write(buffer_address, &[0xa5; 64]).unwrap();
+
+        assert_eq!(
+            wait4(&mut memory, &mut state, &[7, status_address, 0, 0, 0, 0]),
+            7,
+        );
+        let mut status = [0; std::mem::size_of::<libc::c_int>()];
+        memory.read(status_address, &mut status).unwrap();
+        let status = libc::c_int::from_le_bytes(status);
+        assert!(libc::WIFSIGNALED(status));
+        assert_eq!(libc::WTERMSIG(status), libc::SIGTERM);
+        assert!(!libc::WCOREDUMP(status));
+        assert_eq!(status, libc::SIGTERM);
+        let mut expected = [0xa5; 64];
+        expected[16..20].copy_from_slice(&libc::SIGTERM.to_le_bytes());
+        let mut actual = [0; 64];
+        memory.read(buffer_address, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+        assert!(state.children.is_empty());
+        assert_eq!(
+            wait4(&mut memory, &mut state, &[7, status_address, 0, 0, 0, 0]),
+            negative_errno(libc::ECHILD),
+        );
+        memory.read(buffer_address, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn wait4_preserves_core_dumping_signal_identity() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
@@ -27828,6 +27865,7 @@ mod tests {
         memory.read(OUTPUT, &mut raw_status).unwrap();
         let raw_status = libc::c_int::from_le_bytes(raw_status);
         assert!(libc::WIFSIGNALED(raw_status));
+        assert_eq!(libc::WTERMSIG(raw_status), libc::SIGABRT);
         assert!(!libc::WCOREDUMP(raw_status));
 
         executor.state.children.insert(8, status);
