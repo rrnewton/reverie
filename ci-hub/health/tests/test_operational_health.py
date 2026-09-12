@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1069,6 +1070,146 @@ class OperationalHealthTest(unittest.TestCase):
         cache.assert_called_once_with(
             filesystem_path=operational_health.DEFAULT_DISK_FILESYSTEM_PATH,
             state_file=operational_health.DEFAULT_DISK_STATE,
+        )
+
+    def test_disk_population_records_partial_compsize_result(self) -> None:
+        measured = SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "Processed 10 files, 9 regular extents (10 refs), 1 inline.\n"
+                "Type Perc Disk Usage Uncompressed Referenced\n"
+                "TOTAL 50% 123456 246912 246912\n"
+            ),
+            stderr="/root/unreadable: Permission denied\n",
+        )
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            operational_health.subprocess, "run", return_value=measured
+        ) as run:
+            path = Path(directory)
+            result = operational_health._measure_disk_population(
+                "fixture", (path,), timeout=12
+            )
+
+        self.assertEqual(result["state"], "partial")
+        self.assertEqual(result["physical_bytes"], 123456)
+        self.assertEqual(result["diagnostics"], ["/root/unreadable: Permission denied"])
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "nice",
+                "-n",
+                "19",
+                "ionice",
+                "-c3",
+                "compsize",
+                "-b",
+                "-x",
+                str(path),
+            ],
+        )
+        self.assertEqual(run.call_args.kwargs["timeout"], 12)
+
+    def test_default_disk_populations_are_bounded_and_named(self) -> None:
+        root = Path("/state/root")
+        home = Path("/users/example")
+        populations = operational_health._disk_path_populations(root, home=home)
+
+        self.assertEqual(
+            [name for name, _paths in populations],
+            [
+                "registered_slots",
+                "validation_checkouts",
+                "shared_checkouts",
+                "parent_git",
+                "home_caches",
+            ],
+        )
+        self.assertEqual(populations[0][1], (root / "worktrees" / "slots",))
+        self.assertIn(root / "hermit", populations[2][1])
+        self.assertIn(root / ".git", populations[3][1])
+        self.assertIn(home / ".cache", populations[4][1])
+
+    def test_disk_population_timeout_is_unavailable_not_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            operational_health.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(["compsize"], 5),
+        ):
+            result = operational_health._measure_disk_population(
+                "fixture", (Path(directory),), timeout=5
+            )
+
+        self.assertEqual(result["state"], "unavailable")
+        self.assertIsNone(result["physical_bytes"])
+        self.assertEqual(result["diagnostics"], ["timed out after 5s"])
+
+    def test_cache_disk_paths_retains_previous_and_brackets_measurement(self) -> None:
+        def population_result(
+            name: str, paths: tuple[Path, ...], *, timeout: float
+        ) -> dict[str, object]:
+            self.assertEqual(timeout, 9)
+            return {
+                "name": name,
+                "paths": [str(path) for path in paths],
+                "state": "complete" if name == "one" else "partial",
+                "physical_bytes": 100 if name == "one" else 200,
+                "elapsed_seconds": 0.25,
+                "diagnostics": [] if name == "one" else ["unreadable"],
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = root / "disk-paths.json"
+            previous = root / "disk-paths.previous.json"
+            old = b'{"captured_at": 100}\n'
+            current.write_bytes(old)
+            populations = (("one", (root,)), ("two", (root,)))
+            with mock.patch.object(
+                operational_health,
+                "_fresh_btrfs_reading",
+                side_effect=[(700, 1000), (680, 1000)],
+            ) as filesystem_reading, mock.patch.object(
+                operational_health,
+                "_measure_disk_population",
+                side_effect=population_result,
+            ):
+                result, output = self.capture(
+                    operational_health.cache_disk_paths,
+                    state_root=root,
+                    state_file=current,
+                    previous_state_file=previous,
+                    population_timeout=9,
+                    now=1000.5,
+                    populations=populations,
+                )
+            document = json.loads(current.read_text())
+            previous_bytes = previous.read_bytes()
+
+        self.assertEqual(result, 0)
+        self.assertIn("state=partial", output)
+        self.assertIn("summary=disk-paths-cached", output)
+        self.assertEqual(previous_bytes, old)
+        self.assertEqual(filesystem_reading.call_count, 2)
+        self.assertEqual(document["captured_at"], 1000.5)
+        self.assertEqual(document["instrument"], "compsize -b -x")
+        self.assertFalse(document["values_are_additive"])
+        self.assertEqual(document["filesystem"]["free_bytes_before"], 700)
+        self.assertEqual(document["filesystem"]["free_bytes_after"], 680)
+        self.assertEqual(
+            document["counts"], {"complete": 1, "partial": 1, "unavailable": 0}
+        )
+
+    def test_cache_disk_paths_command_dispatches_to_the_writer(self) -> None:
+        with mock.patch.object(
+            operational_health, "cache_disk_paths", return_value=7
+        ) as cache:
+            result = operational_health.main(["cache-disk-paths"])
+        self.assertEqual(result, 7)
+        cache.assert_called_once_with(
+            state_root=operational_health.STATE_ROOT,
+            state_file=operational_health.DEFAULT_DISK_PATH_STATE,
+            previous_state_file=operational_health.DEFAULT_DISK_PATH_PREVIOUS_STATE,
+            population_timeout=operational_health.DEFAULT_DISK_PATH_TIMEOUT_SECS,
         )
 
     def test_taskgraph_query_parses_exact_tag_array(self) -> None:

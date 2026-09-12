@@ -1139,6 +1139,7 @@ async function verifyRegisteredSurface(): Promise<SelfTestResult> {
     OPERATIONAL_TICK_SCRIPT_NAME,
     AGENT_SNAPSHOT_SCRIPT_NAME,
     DISK_FREE_SCRIPT_NAME,
+    DISK_PATH_SCRIPT_NAME,
     AGENT_LIVENESS_SCRIPT_NAME,
     ARGV_ECHO_SCRIPT_NAME,
   ];
@@ -1275,6 +1276,8 @@ function hermitDevStatus() {
       AGENT_SNAPSHOT_WARNING_INTERVAL_MS / 60000,
     diskFreeWorkflow: DISK_FREE_WORKFLOW_NAME,
     diskFreeIntervalMinutes: DISK_FREE_INTERVAL_MS / 60000,
+    diskPathWorkflow: DISK_PATH_WORKFLOW_NAME,
+    diskPathIntervalMinutes: DISK_PATH_INTERVAL_MS / 60000,
     policyReloadWorkflow: POLICY_RELOAD_WORKFLOW_NAME,
     policyReloadIntervalMinutes: POLICY_RELOAD_INTERVAL_MS / 60000,
     agentLivenessCommand: AGENT_LIVENESS_COMMAND,
@@ -1294,6 +1297,18 @@ const DISK_FREE_COMMAND =
   '--filesystem-path "' + SHELL_WORKSPACE_ROOT + '" ' +
   '--state-file "' + SHELL_WORKSPACE_ROOT +
   '/ignored/ops-state/disk.json"';
+
+const DISK_PATH_INTERVAL_MS = 15 * 60 * 1000;
+const DISK_PATH_WORKFLOW_NAME = "hermit-dev-disk-paths-15m-v1";
+const DISK_PATH_SCRIPT_NAME = "hermitCacheDiskPaths";
+const DISK_PATH_COMMAND =
+  'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
+  "./ci-hub/health/operational_health.py cache-disk-paths " +
+  '--state-root "' + SHELL_WORKSPACE_ROOT + '" ' +
+  '--state-file "' + SHELL_WORKSPACE_ROOT +
+  '/ignored/ops-state/disk-paths.json" ' +
+  '--previous-state-file "' + SHELL_WORKSPACE_ROOT +
+  '/ignored/ops-state/disk-paths.previous.json"';
 
 export async function diskFreeHeartbeat(wf: WfContext): Promise<void> {
   await wf.loop(async () => {
@@ -1321,6 +1336,36 @@ export async function diskFreeHeartbeat(wf: WfContext): Promise<void> {
       orc.log("error", "hermit-dev disk free-space writer failed: " + failure);
     }
     await wf.sleep(DISK_FREE_INTERVAL_MS);
+  });
+}
+
+export async function diskPathHeartbeat(wf: WfContext): Promise<void> {
+  await wf.loop(async () => {
+    let failure: string | null = null;
+    try {
+      const result = await callRegisteredScript(DISK_PATH_SCRIPT_NAME, []);
+      const exitCode = Number(result.exitCode);
+      const stdout = String(result.stdout || "").trim();
+      const stderr = String(result.stderr || "").trim();
+      const state = stdout.match(/(?:^|\n)state=(ok|partial)(?:\n|$)/);
+      if (
+        exitCode !== 0 ||
+        state === null ||
+        !/(?:^|\n)populations=[1-9][0-9]*(?:\n|$)/.test(stdout) ||
+        !/(?:^|\n)summary=disk-paths-cached(?:\n|$)/.test(stdout)
+      ) {
+        failure =
+          "disk path writer did not confirm a physical per-path reading " +
+          "(exit=" + exitCode + "): " +
+          ([stdout, stderr].filter(Boolean).join("\n") || "no output");
+      }
+    } catch (err) {
+      failure = "disk path writer threw: " + String(err);
+    }
+    if (failure !== null) {
+      orc.log("error", "hermit-dev disk path writer failed: " + failure);
+    }
+    await wf.sleep(DISK_PATH_INTERVAL_MS);
   });
 }
 
@@ -1412,6 +1457,12 @@ function registerPluginSurface(): void {
     script: DISK_FREE_COMMAND,
     description: "Publish a fresh btrfs free-space reading for the disk watcher",
     timeoutSec: 60,
+  });
+
+  orc.registerScript(DISK_PATH_SCRIPT_NAME, {
+    script: DISK_PATH_COMMAND,
+    description: "Publish bounded physical usage for top-level disk populations",
+    timeoutSec: 240,
   });
 
   orc.registerScript(AGENT_LIVENESS_SCRIPT_NAME, {
@@ -1571,6 +1622,15 @@ function registerPluginSurface(): void {
     "Publish a fresh btrfs free-space reading every fifteen minutes",
     {
       name: DISK_FREE_WORKFLOW_NAME,
+      restartable: HEARTBEAT_RESTARTABLE,
+    },
+  );
+
+  orc.workflow(
+    diskPathHeartbeat,
+    "Publish physical usage for top-level disk populations every fifteen minutes",
+    {
+      name: DISK_PATH_WORKFLOW_NAME,
       restartable: HEARTBEAT_RESTARTABLE,
     },
   );

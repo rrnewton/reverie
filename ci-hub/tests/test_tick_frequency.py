@@ -82,6 +82,23 @@ def test_disk_free_writer_has_an_independent_fifteen_minute_schedule() -> None:
     assert "await wf.sleep(DISK_FREE_INTERVAL_MS);" in plugin
 
 
+def test_disk_path_writer_has_an_independent_fifteen_minute_schedule() -> None:
+    plugin = read(".orc/plugins/hermit-dev/index.ts")
+
+    assert (
+        f"const DISK_PATH_INTERVAL_MS = {DISK_FREE_MINUTES} * 60 * 1000;"
+        in plugin
+    )
+    assert 'const DISK_PATH_WORKFLOW_NAME = "hermit-dev-disk-paths-15m-v1";' in plugin
+    assert 'const DISK_PATH_SCRIPT_NAME = "hermitCacheDiskPaths";' in plugin
+    assert "./ci-hub/health/operational_health.py cache-disk-paths" in plugin
+    assert "/ignored/ops-state/disk-paths.json" in plugin
+    assert "/ignored/ops-state/disk-paths.previous.json" in plugin
+    assert "orc.registerScript(DISK_PATH_SCRIPT_NAME" in plugin
+    assert "orc.workflow(\n    diskPathHeartbeat" in plugin
+    assert "await wf.sleep(DISK_PATH_INTERVAL_MS);" in plugin
+
+
 def test_no_tick_hub_reminder_claims_a_faster_cadence_than_the_outer_tick() -> None:
     config = read("ci-hub/health/tick-hub.yaml")
     cadences = [

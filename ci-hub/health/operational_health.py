@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import re
@@ -121,11 +122,20 @@ DEFAULT_AGENT_SNAPSHOT = STATE_ROOT / "ignored" / "ci-hub" / "agent-snapshot.jso
 DEFAULT_DISK_STATE = STATE_ROOT / "ignored" / "ops-state" / "disk.json"
 DEFAULT_DISK_FILESYSTEM_PATH = STATE_ROOT
 DISK_FREE_INSTRUMENT = "btrfs filesystem usage -b"
+DEFAULT_DISK_PATH_STATE = STATE_ROOT / "ignored" / "ops-state" / "disk-paths.json"
+DEFAULT_DISK_PATH_PREVIOUS_STATE = (
+    STATE_ROOT / "ignored" / "ops-state" / "disk-paths.previous.json"
+)
+DISK_PATH_INSTRUMENT = "compsize -b -x"
+DEFAULT_DISK_PATH_TIMEOUT_SECS = 180.0
 _BTRFS_FREE_ESTIMATED = re.compile(
     r"^\s*Free \(estimated\):\s*([0-9]+)(?:\s|$)", re.MULTILINE
 )
 _BTRFS_DEVICE_SIZE = re.compile(
     r"^\s*Device size:\s*([0-9]+)(?:\s|$)", re.MULTILINE
+)
+_COMPSIZE_TOTAL = re.compile(
+    r"^TOTAL\s+\S+\s+([0-9]+)(?:\s|$)", re.MULTILINE
 )
 
 
@@ -1132,6 +1142,224 @@ def _persist_disk_state(
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _disk_path_populations(
+    state_root: Path, *, home: Path | None = None
+) -> tuple[tuple[str, tuple[Path, ...]], ...]:
+    """Return the bounded top-level populations used for disk attribution."""
+    home_root = Path.home() if home is None else home
+    return (
+        ("registered_slots", (state_root / "worktrees" / "slots",)),
+        ("validation_checkouts", (state_root / "worktrees" / "validate",)),
+        (
+            "shared_checkouts",
+            (
+                state_root / "hermit",
+                state_root / "reverie",
+                state_root / "liteinst2",
+            ),
+        ),
+        ("parent_git", (state_root / ".git",)),
+        (
+            "home_caches",
+            tuple(
+                home_root / name for name in (".cache", ".cargo", ".rustup", ".codex")
+            ),
+        ),
+    )
+
+
+def _measure_disk_population(
+    name: str, paths: tuple[Path, ...], *, timeout: float
+) -> dict[str, object]:
+    started = time.monotonic()
+    existing: list[Path] = []
+    diagnostics: list[str] = []
+    for path in paths:
+        try:
+            existing.append(path.resolve(strict=True))
+        except OSError as error:
+            diagnostics.append(f"{path}: {error}")
+
+    command = [
+        "nice",
+        "-n",
+        "19",
+        "ionice",
+        "-c3",
+        "compsize",
+        "-b",
+        "-x",
+        *(str(path) for path in existing),
+    ]
+    if not existing:
+        return {
+            "name": name,
+            "paths": [str(path) for path in paths],
+            "state": "unavailable",
+            "physical_bytes": None,
+            "elapsed_seconds": time.monotonic() - started,
+            "diagnostics": diagnostics or ["no configured path exists"],
+        }
+
+    try:
+        measured = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except subprocess.TimeoutExpired:
+        diagnostics.append(f"timed out after {timeout:g}s")
+        return {
+            "name": name,
+            "paths": [str(path) for path in paths],
+            "state": "unavailable",
+            "physical_bytes": None,
+            "elapsed_seconds": time.monotonic() - started,
+            "diagnostics": diagnostics,
+        }
+    except OSError as error:
+        diagnostics.append(str(error))
+        return {
+            "name": name,
+            "paths": [str(path) for path in paths],
+            "state": "unavailable",
+            "physical_bytes": None,
+            "elapsed_seconds": time.monotonic() - started,
+            "diagnostics": diagnostics,
+        }
+
+    diagnostics.extend(line for line in measured.stderr.splitlines() if line.strip())
+    totals = _COMPSIZE_TOTAL.findall(measured.stdout)
+    physical_bytes: int | None = int(totals[0]) if len(totals) == 1 else None
+    if len(totals) != 1:
+        diagnostics.append(
+            f"compsize output contained {len(totals)} TOTAL physical-byte values"
+        )
+    if measured.returncode != 0:
+        diagnostics.append(f"compsize exited {measured.returncode}")
+
+    if physical_bytes is None:
+        state = "unavailable"
+    elif diagnostics:
+        state = "partial"
+    else:
+        state = "complete"
+    return {
+        "name": name,
+        "paths": [str(path) for path in paths],
+        "state": state,
+        "physical_bytes": physical_bytes,
+        "elapsed_seconds": time.monotonic() - started,
+        "diagnostics": diagnostics,
+    }
+
+
+def _fresh_btrfs_reading(filesystem_path: Path) -> tuple[int, int]:
+    measured = subprocess.run(
+        ["btrfs", "filesystem", "usage", "-b", str(filesystem_path)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    if measured.returncode != 0:
+        detail = measured.stderr.strip() or measured.stdout.strip() or "no output"
+        raise RuntimeError(
+            f"{DISK_FREE_INSTRUMENT} exited {measured.returncode}: {detail}"
+        )
+    return _parse_btrfs_usage_bytes(measured.stdout)
+
+
+def _persist_rolling_state(path: Path, previous_path: Path, document: object) -> None:
+    encoded = (json.dumps(document, sort_keys=True) + "\n").encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    previous_path.parent.mkdir(parents=True, exist_ok=True)
+    current_temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    previous_temporary = previous_path.with_name(
+        f".{previous_path.name}.{os.getpid()}.tmp"
+    )
+    try:
+        current_temporary.write_bytes(encoded)
+        if path.exists():
+            previous_temporary.write_bytes(path.read_bytes())
+            os.replace(previous_temporary, previous_path)
+        os.replace(current_temporary, path)
+    finally:
+        current_temporary.unlink(missing_ok=True)
+        previous_temporary.unlink(missing_ok=True)
+
+
+def cache_disk_paths(
+    *,
+    state_root: Path = STATE_ROOT,
+    state_file: Path = DEFAULT_DISK_PATH_STATE,
+    previous_state_file: Path = DEFAULT_DISK_PATH_PREVIOUS_STATE,
+    population_timeout: float = DEFAULT_DISK_PATH_TIMEOUT_SECS,
+    now: float | None = None,
+    populations: tuple[tuple[str, tuple[Path, ...]], ...] | None = None,
+) -> int:
+    """Publish bounded physical path measurements and retain the prior reading."""
+    started = time.monotonic()
+    try:
+        resolved_root = state_root.resolve(strict=True)
+        free_before, device_size_before = _fresh_btrfs_reading(resolved_root)
+        selected = populations or _disk_path_populations(resolved_root)
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, len(selected))
+        ) as executor:
+            readings = list(
+                executor.map(
+                    lambda item: _measure_disk_population(
+                        item[0], item[1], timeout=population_timeout
+                    ),
+                    selected,
+                )
+            )
+        free_after, device_size_after = _fresh_btrfs_reading(resolved_root)
+        if device_size_before != device_size_after:
+            raise RuntimeError("btrfs device size changed during path measurement")
+        counts = {
+            state: sum(reading["state"] == state for reading in readings)
+            for state in ("complete", "partial", "unavailable")
+        }
+        document = {
+            "schema_version": 1,
+            "captured_at": time.time() if now is None else now,
+            "elapsed_seconds": time.monotonic() - started,
+            "instrument": DISK_PATH_INSTRUMENT,
+            "values_are_additive": False,
+            "filesystem": {
+                "path": str(resolved_root),
+                "instrument": DISK_FREE_INSTRUMENT,
+                "device_size_bytes": device_size_before,
+                "free_bytes_before": free_before,
+                "free_bytes_after": free_after,
+            },
+            "counts": counts,
+            "populations": readings,
+        }
+        _persist_rolling_state(state_file, previous_state_file, document)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        _emit({"state": "unknown", "summary": f"cannot-cache-disk-paths:{error}"})
+        return 1
+
+    usable = counts["complete"] + counts["partial"]
+    state = "ok" if counts["partial"] == counts["unavailable"] == 0 else "partial"
+    _emit(
+        {
+            "state": state,
+            "populations": len(readings),
+            "complete": counts["complete"],
+            "partial": counts["partial"],
+            "unavailable": counts["unavailable"],
+            "summary": "disk-paths-cached",
+        }
+    )
+    return 0 if usable else 1
 
 
 def cache_disk_free(
@@ -2247,6 +2475,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="destination for the disk reading (default: %(default)s)",
     )
 
+    cache_disk_paths_parser = subparsers.add_parser(
+        "cache-disk-paths",
+        help="publish bounded physical usage for top-level disk populations",
+        description="Publish bounded physical usage for top-level disk populations.",
+    )
+    cache_disk_paths_parser.add_argument(
+        "--state-root",
+        type=Path,
+        default=STATE_ROOT,
+        help="dev-hermit parent whose populations are measured (default: %(default)s)",
+    )
+    cache_disk_paths_parser.add_argument(
+        "--state-file",
+        type=Path,
+        default=DEFAULT_DISK_PATH_STATE,
+        help="destination for the current path reading (default: %(default)s)",
+    )
+    cache_disk_paths_parser.add_argument(
+        "--previous-state-file",
+        type=Path,
+        default=DEFAULT_DISK_PATH_PREVIOUS_STATE,
+        help="destination for the preceding path reading (default: %(default)s)",
+    )
+    cache_disk_paths_parser.add_argument(
+        "--population-timeout",
+        type=float,
+        default=DEFAULT_DISK_PATH_TIMEOUT_SECS,
+        help="per-population compsize timeout in seconds (default: %(default)s)",
+    )
+    cache_disk_paths_parser.set_defaults(_command_parser=cache_disk_paths_parser)
+
     pull_requests = subparsers.add_parser(
         "pull-requests",
         help="report pull-request validation and queue health",
@@ -2300,6 +2559,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return cache_disk_free(
             filesystem_path=parsed.filesystem_path,
             state_file=parsed.state_file,
+        )
+    if parsed.command == "cache-disk-paths":
+        if parsed.population_timeout <= 0:
+            parsed._command_parser.error("--population-timeout must be positive")
+        return cache_disk_paths(
+            state_root=parsed.state_root,
+            state_file=parsed.state_file,
+            previous_state_file=parsed.previous_state_file,
+            population_timeout=parsed.population_timeout,
         )
     if parsed.command == "pull-requests":
         return pull_request_gate(census_cache_dir=parsed.census_cache_dir)

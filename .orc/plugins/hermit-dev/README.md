@@ -28,6 +28,9 @@ registers it as the `hermit-dev` skill.
   `orc.listAgents()` result every five minutes, independently of the heavier
   operational poll. This stays inside the claim authority's ten-minute
   freshness limit even when the operational poll times out.
+- Publish the Btrfs whole-filesystem free-space reading every fifteen minutes,
+  and independently publish current and previous `compsize -b -x` readings for
+  the bounded top-level path populations on the same cadence.
 - Through that tick, gently fast-forward clean product primaries and publish a
   coherent parent gitlink snapshot; dirty or inconsistent state is preserved
   and surfaced as a hard warning.
@@ -83,11 +86,12 @@ HERMIT_AGENT_SNAPSHOT_JSON='[]' ./ci-hub/bin/health-tick --no-header
 A live session's `orc.hermitDevStatus()` must report the thirty-minute tick
 interval, `ci-hub/health/tick-hub.yaml` config, and a non-null
 `lastPolicyContextInjection` receipt with `contextInjected: true`.
-`await orc.hermitDevSelfTest()` must report the three registered scripts and
+`await orc.hermitDevSelfTest()` must report all registered scripts and
 the advertised functions present, exercise the inert argv echo through
 `orc.scripts`, and exercise `globalThis.gchatSafe` on allowed and refused text.
 `orc.listWorkflows()` must show the sleeping
-`hermit-dev-operational-health-v1`, `hermit-dev-agent-snapshot-5m-v1`, and
+`hermit-dev-operational-health-v1`, `hermit-dev-agent-snapshot-5m-v1`,
+`hermit-dev-disk-free-15m-v1`, `hermit-dev-disk-paths-15m-v1`, and
 `hermit-dev-policy-reload-2h-v1` workflows and must not show
 `hermit-dev-pr-health` or `policy-reload-2h`.
 

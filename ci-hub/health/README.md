@@ -79,6 +79,30 @@ parent `main`. A dirty checkout, detached or stale branch, Hermit/Reverie pin
 mismatch, or parent-main race is preserved and hard-warned instead. Green ticks
 stay quiet; an `ACTION:` or `ERROR:` wakes the coordinator with a `HARD WARNING`.
 
+Two independent ORC workflows publish disk evidence every fifteen minutes.
+`hermit-dev-disk-free-15m-v1` writes the fresh whole-filesystem Btrfs allocator
+reading to `ignored/ops-state/disk.json`. `hermit-dev-disk-paths-15m-v1` writes
+bounded `compsize -b -x` readings for the main top-level populations to
+`ignored/ops-state/disk-paths.json` and retains the preceding published run at
+`ignored/ops-state/disk-paths.previous.json`. The path scan runs at idle I/O
+and lowest normal CPU priority, with a 180-second bound per concurrently
+measured population.
+
+The five populations are registered slots, disposable validation checkouts,
+the shared Hermit/Reverie/LiteInst2 checkouts, the parent Git object database,
+and the home cache directories. They are deliberately a bounded sample rather
+than a whole-home walk. A whole-filesystem delta that these rows do not explain
+is evidence that the change occurred outside the sampled paths.
+
+Every path row says `complete`, `partial`, or `unavailable` and retains its
+diagnostics. A number from a partial row describes only what `compsize` could
+read; it must not be presented as the whole population. The file also brackets
+the scans with fresh `btrfs filesystem usage -b` free-space readings. Separate
+path values are deliberately marked non-additive because reflink-shared extents
+can appear in more than one population. Compare current and previous deltas to
+the bracketed whole-filesystem change; any unexplained difference remains a
+measured gap rather than being assigned to a path by inference.
+
 ### Scope: what the hub may and may not watch
 
 Owner directive, 2026-08-08: *"tick hub should not be used for interfering with
