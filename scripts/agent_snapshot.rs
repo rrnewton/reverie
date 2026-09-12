@@ -33,6 +33,7 @@ pub enum AgentStatus {
     InProgress,
     Managed,
     NeedsInput,
+    NeedsPermission,
     Retired,
     Running,
     Spawning,
@@ -60,6 +61,7 @@ impl AgentStatus {
             "in_progress" => Self::InProgress,
             "managed" => Self::Managed,
             "needs-input" => Self::NeedsInput,
+            "needs-permission" => Self::NeedsPermission,
             "retired" => Self::Retired,
             "running" => Self::Running,
             "spawning" => Self::Spawning,
@@ -88,6 +90,7 @@ impl AgentStatus {
             Self::InProgress => "in_progress",
             Self::Managed => "managed",
             Self::NeedsInput => "needs-input",
+            Self::NeedsPermission => "needs-permission",
             Self::Retired => "retired",
             Self::Running => "running",
             Self::Spawning => "spawning",
@@ -108,6 +111,7 @@ impl AgentStatus {
             | Self::InProgress
             | Self::Managed
             | Self::NeedsInput
+            | Self::NeedsPermission
             | Self::Running
             | Self::Spawning
             | Self::Working => true,
@@ -145,6 +149,7 @@ impl AgentStatus {
             | Self::Idle
             | Self::Managed
             | Self::NeedsInput
+            | Self::NeedsPermission
             | Self::Retired
             | Self::Stuck
             | Self::Terminated
@@ -172,6 +177,7 @@ impl AgentStatus {
             | Self::InProgress
             | Self::Managed
             | Self::NeedsInput
+            | Self::NeedsPermission
             | Self::Retired
             | Self::Running
             | Self::Spawning
@@ -396,6 +402,9 @@ mod tests {
         assert!(AgentStatus::Spawning.is_live());
         assert!(AgentStatus::Spawning.is_busy());
         assert!(!AgentStatus::Spawning.is_broken());
+        assert!(AgentStatus::NeedsPermission.is_live());
+        assert!(!AgentStatus::NeedsPermission.is_busy());
+        assert!(!AgentStatus::NeedsPermission.is_broken());
         assert!(!AgentStatus::Unreachable.is_live());
         assert!(AgentStatus::Unreachable.is_broken());
         assert!(!AgentStatus::Stuck.is_live());

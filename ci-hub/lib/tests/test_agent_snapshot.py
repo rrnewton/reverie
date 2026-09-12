@@ -49,6 +49,16 @@ class AgentSnapshotTests(unittest.TestCase):
         self.assertTrue(meaning.busy)
         self.assertFalse(meaning.broken)
 
+    def test_needs_permission_is_live_but_waiting(self) -> None:
+        document = agent_snapshot.parse_snapshot_bytes(
+            self.snapshot("needs-permission")
+        )
+        self.assertEqual(document["agents"][0]["status"], "needs-permission")
+        meaning = agent_snapshot.status_semantics("needs-permission")
+        self.assertTrue(meaning.live)
+        self.assertFalse(meaning.busy)
+        self.assertFalse(meaning.broken)
+
     def test_missing_and_unknown_status_fail_by_name(self) -> None:
         missing = json.loads(self.snapshot())
         del missing["agents"][0]["status"]

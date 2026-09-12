@@ -655,6 +655,16 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertEqual([item.id for item in waiting.claimed], ["claimed"])
         self.assertEqual(waiting.actually_active, ())
 
+        needs_permission = operational_health.reconcile_active_work(
+            [task("claimed", "Claimed", "worker", ())],
+            [agent("worker", "needs-permission", "claimed")],
+        )
+        self.assertEqual(
+            [item.id for item in needs_permission.claimed], ["claimed"]
+        )
+        self.assertEqual(needs_permission.actually_active, ())
+        self.assertEqual(needs_permission.orphaned, ())
+
         spawning = operational_health.reconcile_active_work(
             [task("claimed", "Claimed", "worker", ())],
             [agent("worker", "spawning", "claimed")],
