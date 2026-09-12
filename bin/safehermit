@@ -275,7 +275,9 @@ if [ "$systemd_ok" = 1 ]; then
     # hard-coded index -- "${runner[@]:0:5}" ... "${runner[@]:5}" -- which silently
     # means something different the moment a flag is added or removed above it, as
     # removing --collect just did. Nothing here depends on position now.
-    runner=(systemd-run --user "--unit=$unit" --quiet
+    # Guest arguments can contain shell expressions intended for the guest.
+    # systemd-run otherwise expands $VAR/${VAR} and collapses $$ before exec.
+    runner=(systemd-run --user "--unit=$unit" --quiet --expand-environment=no
             "--property=MemoryMax=$mem_max" "--property=MemorySwapMax=0")
     [ "$no_deadline" = 1 ] || runner+=("--property=RuntimeMaxSec=$deadline")
     runner+=("--working-directory=$PWD" "${setenv_args[@]}" --pipe --wait --)
