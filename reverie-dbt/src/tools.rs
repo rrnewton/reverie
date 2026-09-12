@@ -211,6 +211,9 @@ static COUNTER1_EXACT_GLOBAL: LazyLock<ExactCounter1Global> =
 static COUNTER2_EXACT_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(COUNTER2_EXACT_ENV));
 static COUNTER2_EXACT_TOOL: LazyLock<ExactCounter2Tool> = LazyLock::new(|| {
     <ExactCounter2Tool as Tool>::new(reverie::Pid::from_raw(unsafe { libc::getpid() }), &())
+        .with_thread_exit_reporter(|tid, syscalls| {
+            emit_line(&format!("counter2-local thread={tid} syscalls={syscalls}"));
+        })
 });
 static COUNTER2_EXACT_GLOBAL: LazyLock<ExactCounter2Global> =
     LazyLock::new(ExactCounter2Global::default);
@@ -289,11 +292,18 @@ pub(crate) fn counter2_exact_global() -> &'static ExactCounter2Global {
     &COUNTER2_EXACT_GLOBAL
 }
 
-/// Emits the exact counter2 process-local summary through DynamoRIO.
+/// Emits exact counter2 local and GlobalTool totals through DynamoRIO.
 pub(crate) fn emit_counter2_exact_summary() {
     let (syscalls, threads) = COUNTER2_EXACT_TOOL.process_totals();
     emit_line(&format!(
         " [counter2 exact] Process-local system calls: {syscalls}, exited threads: {threads}"
+    ));
+    // on_exit_process has already sent the real shared Tool contribution. The
+    // prototype owns this GlobalTool in-process; copied children do not run its
+    // Rust callbacks, so this summary does not establish process-tree coverage.
+    let (syscalls, processes, threads) = COUNTER2_EXACT_GLOBAL.totals();
+    emit_line(&format!(
+        "Total system calls in process tree: {syscalls}, from {processes} processes, {threads} thread(s)."
     ));
 }
 

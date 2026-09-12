@@ -57,9 +57,20 @@ impl CounterGlobal {
 pub struct CounterLocal {
     proc_syscalls: AtomicU64,
     exited_threads: AtomicU64,
+    thread_exit_reporter: Option<fn(Tid, u64)>,
 }
 
 impl CounterLocal {
+    /// Selects where this backend writes the existing thread-exit diagnostic.
+    ///
+    /// Injected backends must use their runtime output path because the guest
+    /// may close its own stderr before the lifecycle callback runs.
+    #[allow(dead_code)]
+    pub fn with_thread_exit_reporter(mut self, reporter: fn(Tid, u64)) -> Self {
+        self.thread_exit_reporter = Some(reporter);
+        self
+    }
+
     /// Returns the process-local syscall and exited-thread totals.
     #[allow(dead_code)]
     pub fn process_totals(&self) -> (u64, u64) {
@@ -75,6 +86,7 @@ impl Clone for CounterLocal {
         CounterLocal {
             proc_syscalls: AtomicU64::new(self.proc_syscalls.load(Ordering::SeqCst)),
             exited_threads: AtomicU64::new(self.exited_threads.load(Ordering::SeqCst)),
+            thread_exit_reporter: self.thread_exit_reporter,
         }
     }
 }
@@ -137,7 +149,11 @@ impl Tool for CounterLocal {
         self.proc_syscalls
             .fetch_add(thread_syscalls, Ordering::SeqCst);
         self.exited_threads.fetch_add(1, Ordering::SeqCst);
-        eprintln!("counter2-local thread={} syscalls={}", tid, thread_syscalls);
+        if let Some(report) = self.thread_exit_reporter {
+            report(tid, thread_syscalls);
+        } else {
+            eprintln!("counter2-local thread={} syscalls={}", tid, thread_syscalls);
+        }
         Ok(())
     }
 
