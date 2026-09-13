@@ -13709,3 +13709,146 @@ fn sibling_signal_before_first_instruction_with_tool() {
         }
     }
 }
+
+#[derive(Default)]
+struct PipeFionreadLog {
+    calls: AtomicU64,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for PipeFionreadLog {
+    type Request = ();
+    type Response = ();
+    type Config = ();
+    async fn receive_rpc(&self, _from: Pid, _: ()) {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Clone, Default)]
+struct PipeFionreadTool;
+
+#[reverie::tool]
+impl Tool for PipeFionreadTool {
+    type GlobalState = PipeFionreadLog;
+    type ThreadState = ();
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        if matches!(syscall, Syscall::Ioctl(_)) {
+            guest.send_rpc(()).await;
+        }
+        guest.tail_inject(syscall).await
+    }
+}
+
+#[test]
+fn pipe_fionread_native_and_kvm_complete_contract() {
+    const TEST: &str = "pipe_fionread_native_and_kvm_complete_contract";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    for mode in ["supported", "excluded", "capture"] {
+        for runner in ["native", "plain", "tool"] {
+            if mode == "capture" && runner == "native" {
+                // Capture is a backend capability refusal; its native backing
+                // count is measured in the separate subprocess executor test.
+                continue;
+            }
+            let directory = TestDirectory::new();
+            let executable = compile_c_program(
+                &directory.0,
+                "pipe-fionread",
+                include_str!("fixtures/pipe_fionread.c"),
+            );
+            if let Some(artifacts) = std::env::var_os("REVERIE_PIPE_FIONREAD_ARTIFACTS") {
+                let artifacts = PathBuf::from(artifacts);
+                std::fs::create_dir_all(&artifacts).unwrap();
+                std::fs::copy(&executable, artifacts.join(format!("{mode}-{runner}"))).unwrap();
+                std::fs::copy(
+                    executable.with_extension("c"),
+                    artifacts.join(format!("{mode}-{runner}.c")),
+                )
+                .unwrap();
+            }
+            let argument = match (mode, runner) {
+                ("excluded", "native") => "native-excluded",
+                ("excluded", _) => "kvm-excluded",
+                _ => mode,
+            };
+            let expected: &[u8] = match argument {
+                "supported" => b"pipe-fionread-supported-checked\n",
+                "native-excluded" => b"excluded-native-behavior-checked\n",
+                "kvm-excluded" => b"excluded-kvm-refusals-checked\n",
+                "capture" => b"",
+                _ => unreachable!(),
+            };
+            if runner == "native" {
+                let output = std::process::Command::new("timeout")
+                    .args(["--kill-after=2s", "15s"])
+                    .arg(&executable)
+                    .arg(argument)
+                    .current_dir(&directory.0)
+                    .output()
+                    .unwrap();
+                eprintln!(
+                    "pipe FIONREAD mode={mode} runner={runner} status={:?}",
+                    output.status
+                );
+                assert!(
+                    output.status.success(),
+                    "stdout={} stderr={}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert_eq!(output.stdout, expected);
+                assert!(output.stderr.is_empty(), "{output:?}");
+                continue;
+            }
+            let program = executable.to_str().unwrap();
+            let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+            backend
+                .install_static_elf_file_with_context(
+                    std::fs::File::open(&executable).unwrap(),
+                    &[program, argument],
+                    &[],
+                    &directory.0,
+                )
+                .unwrap();
+            let (code, stdout, stderr) = if runner == "plain" {
+                backend.run_static_elf_captured().unwrap()
+            } else {
+                let (log, code, stdout, stderr) = futures::executor::block_on(
+                    backend.run_static_elf_with_tool::<PipeFionreadTool>((), true),
+                )
+                .unwrap();
+                let calls = log.calls.load(Ordering::SeqCst);
+                let expected_calls = match mode {
+                    "supported" => 54,
+                    "excluded" => 24,
+                    "capture" => 12,
+                    _ => unreachable!(),
+                };
+                eprintln!("pipe FIONREAD mode={mode} actual Tool ioctl callbacks={calls}");
+                assert_eq!(calls, expected_calls, "actual ioctl Tool callbacks");
+                (code, stdout, stderr)
+            };
+            eprintln!("pipe FIONREAD mode={mode} runner={runner} code={code}");
+            assert_eq!(
+                code,
+                0,
+                "mode={mode} runner={runner} stdout={} stderr={}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            );
+            assert_eq!(stdout, expected);
+            assert!(
+                stderr.is_empty(),
+                "mode={mode} runner={runner} stderr={}",
+                String::from_utf8_lossy(&stderr)
+            );
+        }
+    }
+}
