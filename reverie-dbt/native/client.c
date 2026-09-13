@@ -312,11 +312,12 @@ extern void reverie_dbt_runtime_totals(uint64_t *branches, uint64_t *syscalls,
 
 static _Atomic uint64_t branch_count __attribute__((aligned(64)));
 static _Atomic uint64_t stdin_read_count;
-static _Atomic uint64_t pending_thread_starts;
 static _Atomic int32_t runtime_background_state;
 static _Atomic uint64_t image_generation;
 static _Atomic bool runtime_backend_failure;
 static int thread_state_index;
+static reg_id_t admission_state_tls_register;
+static uint admission_state_tls_offset;
 static int compat_gateway_index;
 static ptr_uint_t cpuid_marker_note;
 static ptr_uint_t rdtsc_marker_note;
@@ -331,6 +332,7 @@ static bool test_backend_failure_sender_lookup_miss;
 static bool test_reused_tid;
 static bool test_thread_clone_process_exit;
 static bool test_thread_start_write;
+static bool test_stalled_thread_start;
 static uint64_t test_thread_start_write_address;
 static _Atomic bool test_reused_tid_exercised;
 static _Atomic bool test_reused_tid_waited;
@@ -1456,6 +1458,16 @@ static int32_t in_tree_parent_pid(void) {
 }
 
 // TODO-HUMAN-REVIEW(PR-131): Review the child entry-block scheduling gate.
+static void set_pending_thread_start(prototype_counters_t *counters,
+                                     uint64_t pending) {
+  counters->pending_thread_start = pending;
+  /* Every caller runs in the thread whose admission state is being updated.
+   * The raw TLS copy makes the basic-block check a single direct TLS load. */
+  uint64_t *slots = (uint64_t *)((byte *)dr_get_dr_segment_base(
+      admission_state_tls_register) + admission_state_tls_offset);
+  slots[0] = pending;
+}
+
 static void try_start_pending_thread(void) {
   void *drcontext = dr_get_current_drcontext();
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
@@ -1493,7 +1505,7 @@ static void try_start_pending_thread(void) {
     mapping_found = lookup_virtual_identity(
         (int32_t)dr_get_thread_id(drcontext), &mapped_virtual_tid);
   if (pending_thread_clones != 0 || !mapping_found) {
-    counters->pending_thread_start = 2;
+    set_pending_thread_start(counters, 2);
     return;
   }
   if (test_reused_tid && mapped_virtual_tid == TEST_REUSED_TID_STALE) {
@@ -1518,7 +1530,7 @@ static void try_start_pending_thread(void) {
   }
   // TODO-HUMAN-REVIEW(PR-134): Confirm retryable native child startup.
   if (init_result > 0) {
-    counters->pending_thread_start = 2;
+    set_pending_thread_start(counters, 2);
     return;
   }
   if (init_result < 0) {
@@ -1527,19 +1539,62 @@ static void try_start_pending_thread(void) {
     exit_runtime_tree(101);
     return;
   }
-  counters->pending_thread_start = 0;
-  atomic_fetch_sub_explicit(&pending_thread_starts, 1, memory_order_release);
+  set_pending_thread_start(counters, 0);
 }
 
 static void start_pending_thread(void) {
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       dr_get_current_drcontext(), thread_state_index);
+  struct timespec started;
+  const uint64_t timeout_ms = test_stalled_thread_start ? 100 : 60000;
+  if (counters == NULL || counters->pending_thread_start == 0)
+    return;
+  if (clock_gettime(CLOCK_MONOTONIC, &started) != 0) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: cannot read thread admission deadline clock\n");
+    exit_runtime_tree(97);
+    return;
+  }
   // This is also an entry-block clean call. Returning a retry to DynamoRIO
   // would let the child execute guest instructions before its Tool admits it.
-  while (counters != NULL && counters->pending_thread_start != 0) {
+  while (counters->pending_thread_start != 0) {
     try_start_pending_thread();
-    if (counters->pending_thread_start != 0)
-      dr_sleep(1);
+    if (counters->pending_thread_start == 0)
+      return;
+    // The runtime may block inside its Tool thread-start hook until the
+    // scheduler admits the child. Check only a returned retry: a successful
+    // admission must not fail because the Tool legitimately waited longer.
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+      dr_fprintf(diagnostic_file,
+                 "reverie-dbt: cannot read thread admission deadline clock\n");
+      exit_runtime_tree(97);
+      return;
+    }
+    uint64_t elapsed_ms =
+        (uint64_t)(now.tv_sec - started.tv_sec) * 1000;
+    if (now.tv_nsec >= started.tv_nsec)
+      elapsed_ms += (uint64_t)(now.tv_nsec - started.tv_nsec) / 1000000;
+    else
+      elapsed_ms -= (uint64_t)(started.tv_nsec - now.tv_nsec + 999999) /
+                    1000000;
+    if (elapsed_ms >= timeout_ms) {
+      uint64_t pending = atomic_load_explicit(
+          pending_thread_clones_for(counters->virtual_pid),
+          memory_order_acquire);
+      dr_fprintf(diagnostic_file,
+                 "reverie-dbt: thread admission timed out: virtual_pid=%d "
+                 "host_tid=%d pending_clones=%llu pending_start=%llu "
+                 "timeout_ms=%llu\n",
+                 counters->virtual_pid,
+                 (int)dr_get_thread_id(dr_get_current_drcontext()),
+                 (unsigned long long)pending,
+                 (unsigned long long)counters->pending_thread_start,
+                 (unsigned long long)timeout_ms);
+      exit_runtime_tree(96);
+      return;
+    }
+    dr_sleep(1);
   }
 }
 
@@ -1584,6 +1639,66 @@ static dr_emit_flags_t analyze_syscall_gateway(
   return DR_EMIT_DEFAULT;
 }
 
+static bool admission_registers_available(void *drcontext, bool restored) {
+  reg_id_t reg = DR_REG_NULL;
+  for (;;) {
+    drreg_reserve_info_t info = {sizeof(info)};
+    if (drreg_reservation_info_ex(drcontext, reg, &info) != DRREG_SUCCESS ||
+        info.reserved || (restored && !info.holds_app_value))
+      return false;
+    if (reg == DR_REG_STOP_GPR)
+      return true;
+    reg = reg == DR_REG_NULL ? DR_REG_START_GPR : reg + 1;
+  }
+}
+
+static void insert_thread_admission(void *drcontext, instrlist_t *bb,
+                                     instr_t *instruction) {
+  const dr_cleancall_save_t context_flags =
+      DR_CLEANCALL_READS_APP_CONTEXT | DR_CLEANCALL_WRITES_APP_CONTEXT;
+  /* drreg cannot combine MULTIPATH with WRITES_APP_CONTEXT. Materialize all
+   * unreserved application values before branching, so skipping the call cannot
+   * skip a lazy restore or an update to a live spill. If another instrumenter
+   * owns a register, keep the original unconditional call instead. */
+  if (!admission_registers_available(drcontext, false)) {
+    dr_insert_clean_call_ex(drcontext, bb, instruction,
+                            (void *)start_pending_thread, context_flags, 0);
+    return;
+  }
+  DR_ASSERT(drreg_restore_all(drcontext, bb, instruction) == DRREG_SUCCESS);
+  if (!admission_registers_available(drcontext, true)) {
+    dr_insert_clean_call_ex(drcontext, bb, instruction,
+                            (void *)start_pending_thread, context_flags, 0);
+    return;
+  }
+
+  instr_t *skip = INSTR_CREATE_label(drcontext);
+  instr_t *call = INSTR_CREATE_label(drcontext);
+  instr_t *restore = INSTR_CREATE_label(drcontext);
+  /* The pending path restores the application register before the clean call
+   * and saves its possibly updated value afterward. Both paths then execute
+   * the same final restore. The saved slot is valid at every linear decoder
+   * position even when the call is skipped. No instruction here changes flags. */
+  dr_save_reg(drcontext, bb, instruction, DR_REG_XCX, SPILL_SLOT_1);
+  dr_insert_read_raw_tls(drcontext, bb, instruction,
+                         admission_state_tls_register,
+                         admission_state_tls_offset, DR_REG_XCX);
+  instrlist_meta_preinsert(bb, instruction,
+      INSTR_CREATE_jecxz(drcontext, opnd_create_instr(skip)));
+  instrlist_meta_preinsert(bb, instruction,
+      INSTR_CREATE_jmp(drcontext, opnd_create_instr(call)));
+  instrlist_meta_preinsert(bb, instruction, skip);
+  instrlist_meta_preinsert(bb, instruction,
+      INSTR_CREATE_jmp(drcontext, opnd_create_instr(restore)));
+  instrlist_meta_preinsert(bb, instruction, call);
+  dr_restore_reg(drcontext, bb, instruction, DR_REG_XCX, SPILL_SLOT_1);
+  dr_insert_clean_call_ex(drcontext, bb, instruction,
+                          (void *)start_pending_thread, context_flags, 0);
+  dr_save_reg(drcontext, bb, instruction, DR_REG_XCX, SPILL_SLOT_1);
+  instrlist_meta_preinsert(bb, instruction, restore);
+  dr_restore_reg(drcontext, bb, instruction, DR_REG_XCX, SPILL_SLOT_1);
+}
+
 static dr_emit_flags_t instrument_instruction(void *drcontext, void *tag,
                                               instrlist_t *bb,
                                               instr_t *instruction,
@@ -1593,10 +1708,7 @@ static dr_emit_flags_t instrument_instruction(void *drcontext, void *tag,
   // Always retain the runtime check: thread-init's mcontext PC is not a valid
   // application entry address on Linux, so it cannot flush an older fragment.
   if (instr_is_app(instruction) && instruction == instrlist_first_app(bb)) {
-    dr_insert_clean_call_ex(
-        drcontext, bb, instruction, (void *)start_pending_thread,
-        DR_CLEANCALL_READS_APP_CONTEXT | DR_CLEANCALL_WRITES_APP_CONTEXT,
-        0);
+    insert_thread_admission(drcontext, bb, instruction);
   }
   // The INITIAL guest-stack scrub runs HERE -- at the first application
   // instruction -- and not, as it once did, at the first application syscall.
@@ -2152,7 +2264,10 @@ static int32_t complete_clone_identity(prototype_counters_t *counters,
     }
   }
   if ((flags & CLONE_THREAD) != 0 && result != 0) {
-    finish_pending_thread_clone(counters->virtual_pid);
+    if (test_stalled_thread_start && result > 0)
+      dr_fprintf(diagnostic_file, "STALLED_THREAD_START_TEST exercised=1\n");
+    else
+      finish_pending_thread_clone(counters->virtual_pid);
   } else if ((flags & CLONE_THREAD) == 0 &&
              (result <= 0 || (flags & CLONE_VM) == 0)) {
     release_clone_identity_handoff(virtual_child);
@@ -3865,10 +3980,8 @@ static bool pre_syscall(void *drcontext, int sysnum) {
    * thread-init event has returned so the parent post-clone callback can
    * register it. */
   // TODO-HUMAN-REVIEW(PR-134): Confirm the syscall entry fallback.
-  while (counters->pending_thread_start != 0) {
+  if (counters->pending_thread_start != 0) {
     start_pending_thread();
-    if (counters->pending_thread_start != 0)
-      dr_sleep(1);
   }
 
   for (i = 0; i != 6; ++i)
@@ -4178,10 +4291,7 @@ static void thread_init(void *drcontext) {
     release_clone_identity_handoff(pending_child);
   }
 
-  counters->pending_thread_start = (uint64_t)pending_thread_start;
-  if (pending_thread_start != 0) {
-    atomic_fetch_add_explicit(&pending_thread_starts, 1, memory_order_release);
-  }
+  set_pending_thread_start(counters, (uint64_t)pending_thread_start);
 }
 
 static void complete_runtime_thread_exit(prototype_counters_t *counters,
@@ -4375,6 +4485,7 @@ static void event_exit(void) {
   drx_exit();
   drmgr_unregister_tls_field(compat_gateway_index);
   drmgr_unregister_tls_field(thread_state_index);
+  DR_ASSERT(dr_raw_tls_cfree(admission_state_tls_offset, 1));
   drreg_exit();
   drmgr_exit();
 }
@@ -4491,6 +4602,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
       test_reused_tid = true;
     else if (strcmp(argv[i], "-test-thread-clone-process-exit") == 0)
       test_thread_clone_process_exit = true;
+    else if (strcmp(argv[i], "-test-stalled-thread-start") == 0)
+      test_stalled_thread_start = true;
     else if (strcmp(argv[i], "-test-thread-start-write") == 0) {
       test_thread_start_write = true;
       test_reused_tid = true;
@@ -4608,6 +4721,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
              strcmp(argv[i], "-test-thread-exit-evidence") == 0 ||
              strcmp(argv[i], "-test-reused-tid") == 0 ||
              strcmp(argv[i], "-test-thread-clone-process-exit") == 0 ||
+             strcmp(argv[i], "-test-stalled-thread-start") == 0 ||
              strcmp(argv[i], "-test-thread-start-write") == 0 ||
              strcmp(argv[i],
                     "-test-leave-process-clone-result-pending") == 0 ||
@@ -4677,6 +4791,9 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   thread_state_index = drmgr_register_tls_field();
   compat_gateway_index = drmgr_register_tls_field();
   if (thread_state_index == -1 || compat_gateway_index == -1)
+    DR_ASSERT(false);
+  if (!dr_raw_tls_calloc(&admission_state_tls_register,
+                         &admission_state_tls_offset, 1, 0))
     DR_ASSERT(false);
   drmgr_register_exit_event(event_exit);
   if (!drmgr_register_module_load_event(module_load) ||
