@@ -8,8 +8,9 @@ already exist on `main`:
 
   1. the full safe-ci-dag-runner log (`[<node.tag>] `-prefixed child stdout +
      `[<node.tag>] ✓ PASS/✗ FAIL` terminal lines), and
-  2. the PLANNED test-node set, read from the DAG manifests AT THE EXACT COMMIT
-     via `git show <sha>:ci/dag/{portable,privileged}.json`.
+  2. the PLANNED test-node set, read from the sole canonical DAG AT THE EXACT
+     COMMIT via `git show <sha>:ci/dag/validate.json` and selected with its
+     committed `full` label.
 
 Reading the manifest at the commit — WITHOUT running that branch's validation driver
 — is what makes this main-reachable and version-independent: the planned set is
@@ -72,7 +73,8 @@ DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 #: `producer.known` of ci-hub/validate/qualifying-receipt.json -- an unregistered
 #: slug is refused exactly like an absent one once the epoch is flipped.
 PRODUCER = "ci-hub-finalize-receipt"
-MANIFESTS = ("ci/dag/portable.json", "ci/dag/privileged.json")
+CANONICAL_MANIFEST = "ci/dag/validate.json"
+FULL_LABEL = "full"
 REVERIE_SOURCE_RE = re.compile(
     r"git\+https://github\.com/(?:rrnewton|facebookexperimental)/reverie\.git"
     r"\?rev=([0-9a-f]{40})(?:#[0-9a-f]{40})?"
@@ -230,32 +232,143 @@ def build_base_evidence(
     }
 
 
-def planned_test_nodes(hermit_checkout: str, sha: str) -> set[str]:
-    """Union of `test.<job>` tags from the DAG manifests AT `sha`.
+def _canonical_full_test_producers(data: object) -> set[str]:
+    """Return the canonical full plan's structured test-result producers.
 
-    Reads each manifest with `git -C <checkout> show <sha>:<manifest>`; a manifest
-    absent at that commit (or a checkout without git) is skipped, never fatal, so
-    a lane that ships only one manifest still yields its planned set. A TEST node
-    is a manifest step with `group == "test"`; its runner tag is `test.<job>`.
+    This is the small read-only subset of dagrun's selection contract needed by
+    the historical receipt finalizer: select every step carrying the ``full``
+    label, include its dependency ancestry, then apply Hermit's established
+    test-group naming rule.  Every selected test node must own exactly one
+    structured result declaration for its own tag.  Missing, malformed, or
+    ambiguous declarations are evidence defects, not an empty planned set.
     """
-    planned: set[str] = set()
-    for manifest in MANIFESTS:
-        try:
-            proc = bounded_capture.git(
-                ["show", f"{sha}:{manifest}"], cwd=hermit_checkout
+    if not isinstance(data, dict) or not isinstance(data.get("steps"), list):
+        raise RuntimeError(
+            "canonical validation DAG must be an object with a steps list"
+        )
+
+    steps_by_tag: dict[str, dict] = {}
+    selected: set[str] = set()
+    for index, step in enumerate(data["steps"]):
+        if not isinstance(step, dict):
+            raise RuntimeError(
+                f"canonical validation DAG step {index} is not an object"
             )
-        except OSError:
+        group = step.get("group")
+        job = step.get("job")
+        if (
+            not isinstance(group, str)
+            or not group
+            or not isinstance(job, str)
+            or not job
+        ):
+            raise RuntimeError(
+                f"canonical validation DAG step {index} has a missing or malformed group/job"
+            )
+        tag = f"{group}.{job}"
+        if tag in steps_by_tag:
+            raise RuntimeError(f"canonical validation DAG has duplicate step tag {tag}")
+        labels = step.get("labels", [])
+        deps = step.get("deps", [])
+        if (
+            not isinstance(labels, list)
+            or any(not isinstance(label, str) or not label for label in labels)
+            or not isinstance(deps, list)
+            or any(not isinstance(dep, str) or not dep for dep in deps)
+        ):
+            raise RuntimeError(
+                f"canonical validation DAG step {tag} has malformed labels/deps"
+            )
+        steps_by_tag[tag] = step
+        if FULL_LABEL in labels:
+            selected.add(tag)
+
+    if not selected:
+        raise RuntimeError(
+            f"canonical validation DAG has no {FULL_LABEL!r}-labelled steps"
+        )
+
+    pending = list(selected)
+    while pending:
+        tag = pending.pop()
+        for dependency in steps_by_tag[tag].get("deps", []):
+            if dependency not in steps_by_tag:
+                raise RuntimeError(
+                    f"canonical validation DAG step {tag} has unknown dependency {dependency}"
+                )
+            if dependency not in selected:
+                selected.add(dependency)
+                pending.append(dependency)
+
+    planned: set[str] = set()
+    for tag in sorted(selected):
+        group = steps_by_tag[tag]["group"]
+        if not (group == "test" or group.endswith("-test") or group.endswith(":test")):
             continue
-        if proc.returncode != 0:
-            continue
-        try:
-            data = json.loads(proc.stdout)
-        except json.JSONDecodeError:
-            continue
-        for step in data.get("steps", []):
-            if step.get("group") == "test":
-                planned.add(f"test.{step.get('job')}")
+        manifests = steps_by_tag[tag].get("result_manifests")
+        if not isinstance(manifests, list):
+            raise RuntimeError(
+                f"canonical validation DAG test producer {tag} has no result_manifests list"
+            )
+        if any(not isinstance(manifest, dict) for manifest in manifests):
+            raise RuntimeError(
+                f"canonical validation DAG test producer {tag} has a malformed result manifest"
+            )
+        structured = [
+            manifest
+            for manifest in manifests
+            if manifest.get("kind") == "structured-test-results"
+        ]
+        if len(structured) != 1:
+            raise RuntimeError(
+                f"canonical validation DAG test producer {tag} must declare exactly one "
+                "structured-test-results manifest"
+            )
+        declaration = structured[0]
+        if declaration.get("owner") != tag:
+            raise RuntimeError(
+                f"canonical validation DAG test producer {tag} has mismatched result owner "
+                f"{declaration.get('owner')!r}"
+            )
+        if (
+            not isinstance(declaration.get("schema"), int)
+            or isinstance(declaration.get("schema"), bool)
+            or declaration["schema"] <= 0
+            or not isinstance(declaration.get("path_env"), str)
+            or not declaration["path_env"]
+        ):
+            raise RuntimeError(
+                f"canonical validation DAG test producer {tag} has a malformed result manifest"
+            )
+        planned.add(tag)
+
+    if not planned:
+        raise RuntimeError("canonical full validation plan has no test producers")
     return planned
+
+
+def planned_test_nodes(hermit_checkout: str, sha: str) -> set[str]:
+    """Read canonical ``ci/dag/validate.json`` at ``sha`` and select full tests."""
+    try:
+        proc = bounded_capture.git(
+            ["show", f"{sha}:{CANONICAL_MANIFEST}"], cwd=hermit_checkout
+        )
+    except OSError as error:
+        raise RuntimeError(
+            f"cannot read canonical validation DAG {CANONICAL_MANIFEST}: {error}"
+        ) from error
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or f"git show exited {proc.returncode}"
+        raise RuntimeError(
+            f"cannot read canonical validation DAG {CANONICAL_MANIFEST} at {sha}: {detail}"
+        )
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f"canonical validation DAG {CANONICAL_MANIFEST} at {sha} is malformed JSON: {error}"
+        ) from error
+    return _canonical_full_test_producers(data)
 
 
 def build_coverage(log_text: str, planned: set[str]) -> dict:
@@ -562,12 +675,23 @@ def scan_and_finalize(
             }
         with open(log, errors="replace") as log_handle:
             log_text = log_handle.read()
-        planned = planned_test_nodes(hermit_checkout, sha)
+        try:
+            planned = planned_test_nodes(hermit_checkout, sha)
+        except RuntimeError as error:
+            return {
+                "sha": sha,
+                "satisfied": False,
+                "reason": "no-manifest",
+                "detail": str(error),
+                "exit_code": 1,
+                "appended": 0,
+            }
         if not planned:
             return {
                 "sha": sha,
                 "satisfied": False,
                 "reason": "no-manifest",
+                "detail": "canonical full validation plan has no test producers",
                 "exit_code": 1,
                 "appended": 0,
             }
@@ -797,7 +921,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"finalize_receipt: cannot read log {args.log!r}: {exc}", file=sys.stderr)
         return 2
 
-    planned = planned_test_nodes(args.hermit_checkout, args.sha)
+    try:
+        planned = planned_test_nodes(args.hermit_checkout, args.sha)
+    except RuntimeError as exc:
+        print(
+            f"finalize_receipt: cannot read canonical validation plan: {exc}",
+            file=sys.stderr,
+        )
+        return 2
     fields = build_coverage(log_text, planned)
     try:
         fields.update(build_base_evidence(

@@ -63,6 +63,35 @@ def _passing_node(tag: str, n: int) -> str:
     )
 
 
+def _structured_result(owner: str) -> dict:
+    return {
+        "kind": "structured-test-results",
+        "schema": 2,
+        "path_env": "DAGRUN_TEST_COUNTS_PATH",
+        "owner": owner,
+    }
+
+
+def _canonical_step(
+    group: str,
+    job: str,
+    *,
+    labels: list[str] | None = None,
+    deps: list[str] | None = None,
+    result_manifests: list[dict] | None = None,
+) -> dict:
+    tag = f"{group}.{job}"
+    return {
+        "group": group,
+        "job": job,
+        "labels": ["full"] if labels is None else labels,
+        "deps": [] if deps is None else deps,
+        "result_manifests": (
+            [_structured_result(tag)] if result_manifests is None else result_manifests
+        ),
+    }
+
+
 # --- N=13 all-passing -> SATISFIES ------------------------------------------
 
 def test_thirteen_nodes_all_pass_satisfies():
@@ -240,8 +269,10 @@ def test_schema6_clone_preserves_cell_results_without_downgrade():
 def test_writer_records_exact_base_and_reverie_tree(tmp_path):
     env = {
         **os.environ,
-        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
-        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e",
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@e",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@e",
     }
 
     def git(repo: Path, *args: str) -> str:
@@ -303,11 +334,37 @@ def test_in_place_ledger_rewrite_is_refused(tmp_path):
 # --- CLI emit-only ----------------------------------------------------------
 
 def test_cli_emit_only_refuses_without_replayable_base(tmp_path):
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e",
+    }
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True, env=env)
+    manifest = tmp_path / "ci/dag/validate.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"steps": [_canonical_step("test", "a")]}) + "\n")
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "add", "ci/dag/validate.json"],
+        check=True,
+        env=env,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-qm", "canonical plan"],
+        check=True,
+        env=env,
+    )
+    sha = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    ).stdout.strip()
     log = tmp_path / "dag.log"
     log.write_text(_passing_node("test.a", 3))
     proc = subprocess.run(
         [sys.executable, str(MODULE), "--log", str(log),
-         "--sha", "e" * 40, "--hermit-checkout", str(tmp_path), "--emit-only"],
+         "--sha", sha, "--hermit-checkout", str(tmp_path), "--emit-only"],
         capture_output=True, text=True,
     )
     assert proc.returncode == 2
@@ -856,11 +913,113 @@ def test_scan_wrapper_selects_exact_digest_and_propagates_refusals(tmp_path):
     assert ledger.read_text() == before
 
 
-# --- planned_test_nodes reads real manifests at a real SHA ------------------
+# --- planned_test_nodes reads the one canonical DAG at an exact SHA ---------
+
+
+def test_canonical_full_plan_selects_test_producers_and_dependency_ancestry():
+    data = {
+        "steps": [
+            _canonical_step("test", "direct"),
+            _canonical_step("test", "dependency", labels=[]),
+            _canonical_step(
+                "gate", "consumer", deps=["test.dependency"], result_manifests=[]
+            ),
+            _canonical_step("test", "host_only", labels=["hosted-portable"]),
+            _canonical_step(
+                "e2e",
+                "not_a_test_group",
+                result_manifests=[_structured_result("e2e.not_a_test_group")],
+            ),
+            _canonical_step("privileged-test", "suffix"),
+            _canonical_step("compat:test", "colon_suffix"),
+        ]
+    }
+
+    assert fr._canonical_full_test_producers(data) == {
+        "test.direct",
+        "test.dependency",
+        "privileged-test.suffix",
+        "compat:test.colon_suffix",
+    }
+
+
+def test_canonical_manifest_missing_and_malformed_refuse(monkeypatch):
+    calls = []
+
+    def missing(args, *, cwd):
+        calls.append((args, cwd))
+        return subprocess.CompletedProcess(args, 128, "", "missing")
+
+    monkeypatch.setattr(fr.bounded_capture, "git", missing)
+    with pytest.raises(RuntimeError, match="ci/dag/validate.json"):
+        fr.planned_test_nodes("/fixture/hermit", "a" * 40)
+    assert calls == [
+        (["show", f"{'a' * 40}:ci/dag/validate.json"], "/fixture/hermit")
+    ]
+
+    monkeypatch.setattr(
+        fr.bounded_capture,
+        "git",
+        lambda _args, *, cwd: subprocess.CompletedProcess(
+            _args, 0, "{not-json", ""
+        ),
+    )
+    with pytest.raises(RuntimeError, match="malformed JSON"):
+        fr.planned_test_nodes("/fixture/hermit", "b" * 40)
+
+
+def test_canonical_manifest_duplicate_step_tag_refuses():
+    duplicate = _canonical_step("test", "same")
+    with pytest.raises(RuntimeError, match="duplicate step tag test.same"):
+        fr._canonical_full_test_producers({"steps": [duplicate, dict(duplicate)]})
+
+
+def test_canonical_test_producer_missing_result_manifests_refuses():
+    step = _canonical_step("test", "one")
+    del step["result_manifests"]
+    with pytest.raises(RuntimeError, match="has no result_manifests list"):
+        fr._canonical_full_test_producers({"steps": [step]})
+
+
+@pytest.mark.parametrize(
+    "result_manifests, message",
+    [
+        ([], "exactly one structured-test-results"),
+        ([{"lane": "full"}], "exactly one structured-test-results"),
+        (
+            [_structured_result("test.one"), "not-an-object"],
+            "malformed result manifest",
+        ),
+        (
+            [_structured_result("test.one"), _structured_result("test.one")],
+            "exactly one structured-test-results",
+        ),
+        ([_structured_result("test.someone_else")], "mismatched result owner"),
+        (
+            [
+                {
+                    "kind": "structured-test-results",
+                    "schema": "2",
+                    "path_env": "DAGRUN_TEST_COUNTS_PATH",
+                    "owner": "test.one",
+                }
+            ],
+            "malformed result manifest",
+        ),
+    ],
+)
+def test_canonical_test_producer_result_manifest_controls(result_manifests, message):
+    data = {
+        "steps": [_canonical_step("test", "one", result_manifests=result_manifests)]
+    }
+    with pytest.raises(RuntimeError, match=message):
+        fr._canonical_full_test_producers(data)
 
 def test_planned_from_real_hermit_manifest_at_head():
-    """Positive control that planned_test_nodes dereferences the manifests via
-    `git show <sha>:...`. Skips cleanly if the primary hermit checkout is absent.
+    """Positive control that the exact Hermit HEAD canonical plan is readable.
+
+    This was RED after the single-DAG cutover because the finalizer still read
+    deleted portable/privileged files and returned an empty set.
     """
     hermit = HERE.parent.parent / "hermit"
     if not (hermit / ".git").exists() and not (hermit / ".git").is_file():
@@ -873,7 +1032,10 @@ def test_planned_from_real_hermit_manifest_at_head():
         pytest.skip("hermit checkout has no HEAD")
     sha = head.stdout.strip()
     planned = fr.planned_test_nodes(str(hermit), sha)
-    # Every planned tag is a test.* tag; the portable lane defines many.
-    assert all(t.startswith("test.") for t in planned)
     assert "test.detcore_unit" in planned
-    print(f"\n[planned-control] {len(planned)} planned test.* nodes at hermit HEAD {sha[:12]}")
+    assert "privileged-test.cli_kvm" in planned
+    assert "test.cli_on_host" not in planned
+    assert len(planned) == 20
+    print(
+        f"\n[planned-control] {len(planned)} planned test.* nodes at hermit HEAD {sha[:12]}"
+    )
