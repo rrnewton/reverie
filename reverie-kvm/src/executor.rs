@@ -3897,6 +3897,15 @@ fn vectored_io(
     }
     if virtual_signalfd {
         debug_assert!(reading && current_position);
+        // These flags require capabilities that signalfd does not provide.
+        // Import and validate the vectors first, and preserve Linux's zero-byte
+        // success without consuming a signal or changing the destination.
+        if number == libc::SYS_preadv2
+            && total != 0
+            && args[5] as libc::c_int & (libc::RWF_ATOMIC | libc::RWF_DONTCACHE) != 0
+        {
+            return negative_errno(libc::EOPNOTSUPP);
+        }
         return signalfd_read_stream(
             memory,
             state,
