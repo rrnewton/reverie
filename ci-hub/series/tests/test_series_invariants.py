@@ -1971,6 +1971,111 @@ class CellResultProjection(unittest.TestCase):
             "errored",
         )
 
+    def test_prelaunch_timeout_cell_preserves_the_failed_producer_result(self):
+        for mode in ("verify", "replay", "chaos"):
+            for error_kind in ("cpu-timeout", "wall-timeout"):
+                with self.subTest(mode=mode, error_kind=error_kind):
+                    cell = self._cell(0, outcome="ERROR")
+                    cell.update({
+                        "mode": mode,
+                        "result": "timeout",
+                        "failure_class": "no_result",
+                        "error_kind": error_kind,
+                    })
+                    attempt = self._attempt("no_result", timed_out=True)
+                    attempt.update({"signal": None, "error_kind": error_kind})
+                    cell["attempts"] = [attempt]
+                    original = json.dumps(cell, sort_keys=True)
+                    self.assertEqual(series._cell_outcome(cell), "timeout")
+                    evidence = series._no_verdict_evidence(cell, "timeout")
+                    self.assertEqual(evidence["attempts"], [{
+                        "index": "1",
+                        "kind": "not_run",
+                        "attempt_outcome": "ERROR",
+                        "disposition": "timeout",
+                        "error_kind": error_kind,
+                        "status": None,
+                        "signal": None,
+                        "timed_out": True,
+                        "verification_report_sha256": attempt[
+                            "verification_report_sha256"
+                        ],
+                    }])
+                    self.assertEqual(json.dumps(cell, sort_keys=True), original)
+                    for mutation in (
+                        {"outcome": "PASS"},
+                        {"outcome": "HOST-INAPPLICABLE"},
+                        {"failure_class": "product_failure"},
+                        {"result": "pass", "failure_class": None},
+                    ):
+                        with self.subTest(mutation=mutation):
+                            with self.assertRaises(series.MalformedRow):
+                                series._cell_outcome({**cell, **mutation})
+
+    def test_launched_timeout_without_a_report_keeps_its_process_disposition(self):
+        for error_kind in ("cpu-timeout", "wall-timeout"):
+            for status, signal in ((124, None), (None, 15)):
+                with self.subTest(error_kind=error_kind, status=status, signal=signal):
+                    cell = self._cell(0, outcome="ERROR")
+                    cell.update({
+                        "result": "timeout",
+                        "failure_class": "no_result",
+                        "error_kind": error_kind,
+                    })
+                    attempt = self._attempt("no_result", timed_out=True)
+                    attempt.update({
+                        "error_kind": error_kind,
+                        "status": status,
+                        "signal": signal,
+                        "verification_report": None,
+                        "verification_report_sha256": None,
+                    })
+                    cell["attempts"] = [attempt]
+                    self.assertEqual(series._cell_outcome(cell), "timeout")
+                    retained = series._no_verdict_evidence(cell, "timeout")["attempts"][0]
+                    self.assertEqual(retained["kind"], "missing_report_timeout")
+                    self.assertEqual(retained["attempt_outcome"], "ERROR")
+                    self.assertEqual(retained["disposition"], "timeout")
+                    self.assertEqual((retained["status"], retained["signal"]), (status, signal))
+                    self.assertIsNone(retained["verification_report_sha256"])
+                    attempt.update({"status": None, "signal": None})
+                    with self.assertRaisesRegex(series.MalformedRow, "did not time out"):
+                        series._cell_outcome(cell)
+
+    def test_prelaunch_timeout_accepts_only_the_recorded_error_kinds(self):
+        for error_kind in (
+            "incomplete-verification-evidence", "cpu-timeout", "wall-timeout",
+        ):
+            attempt = self._attempt("no_result", timed_out=True)
+            attempt.update({"signal": None, "error_kind": error_kind})
+            with self.subTest(error_kind=error_kind):
+                self.assertEqual(
+                    series._typed_comparison_attempt(attempt, mode="verify", index=1),
+                    "timeout",
+                )
+
+        for error_kind in ("cpu-timeout", "wall-timeout"):
+            for label, mutation in (
+                ("not timed out", {"timed_out": False}),
+                ("wrong attempt outcome", {"outcome": "FAIL"}),
+                ("unrelated cause", {"error_kind": "infrastructure"}),
+                ("missing cause", {"error_kind": None}),
+                ("array cause", {"error_kind": ["cpu-timeout"]}),
+                ("object cause", {"error_kind": {"kind": "cpu-timeout"}}),
+                ("zero exit status", {"status": 0}),
+                ("negative exit status", {"status": -1}),
+                ("zero signal", {"signal": 0}),
+                ("negative signal", {"signal": -9}),
+                ("wrong report identity", {"verification_report_sha256": "0" * 64}),
+                ("missing report", {"verification_report": None}),
+            ):
+                attempt = self._attempt("no_result", timed_out=True)
+                attempt.update({"signal": None, "error_kind": error_kind})
+                attempt.update(mutation)
+                with self.subTest(error_kind=error_kind, label=label):
+                    with self.assertRaises(series.MalformedRow):
+                        series._typed_comparison_attempt(attempt, mode="verify", index=1)
+
     def test_comparison_cell_outcome_refuses_malformed_or_reidentified_reports(self):
         malformed = self._cell(0)
         malformed["attempts"][0]["verification_report"] = "{"

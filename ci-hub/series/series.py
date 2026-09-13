@@ -853,7 +853,7 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
             and attempt.get("status") is None
             and attempt.get("signal") is None
             and attempt.get("error_kind")
-            == "incomplete-verification-evidence"
+            in ("incomplete-verification-evidence", "cpu-timeout", "wall-timeout")
         )
         if kind == "not_run":
             if (
@@ -938,7 +938,7 @@ def _cell_outcome(row: dict) -> str:
             ("parity-failure", "product_failure"): ("diverged", {"FAIL"}),
             ("replay-failure", "product_failure"): ("diverged", {"FAIL"}),
             ("crash-error", "product_failure"): ("errored", {"FAIL"}),
-            ("timeout", "no_result"): ("timeout", {"FAIL"}),
+            ("timeout", "no_result"): ("timeout", {"FAIL", "ERROR"}),
             ("oom", "no_result"): ("no_result", {"FAIL"}),
             (None, "understood_infrastructure_failure"): ("errored", {"ERROR"}),
             (None, "understood_prerequisite_failure"): (
