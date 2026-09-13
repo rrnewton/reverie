@@ -45,15 +45,19 @@ published.
 from __future__ import annotations
 
 import copy
+import contextlib
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
+import stat
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from collections.abc import Iterable, Mapping, Sequence
@@ -791,79 +795,371 @@ def _canonical_rows_bytes(rows: Sequence[dict]) -> bytes:
     ).encode()
 
 
-def _read_snapshot_source(path: Path) -> tuple[bytes, list[dict]]:
-    """Read one local spool source once and refuse mutable path tricks."""
-    if path.is_symlink() or not path.is_file():
-        raise SeriesError(f"series snapshot source is not a regular file: {path}")
-    payload = path.read_bytes()
-    if payload and not payload.endswith(b"\n"):
-        raise MalformedEvent(
-            f"{path}: final line has no newline terminator — the batch is truncated"
-        )
+def _stat_signature(status: os.stat_result) -> tuple[int, ...]:
+    """Fields that must remain stable while immutable evidence is consumed."""
+    return (
+        status.st_dev,
+        status.st_ino,
+        status.st_mode,
+        status.st_nlink,
+        status.st_size,
+        status.st_mtime_ns,
+        status.st_ctime_ns,
+    )
+
+
+def _read_held_fd(descriptor: int) -> bytes:
+    """Read from an already-bound descriptor without reopening its pathname."""
+    chunks = []
+    offset = 0
+    while True:
+        chunk = os.pread(descriptor, 1024 * 1024, offset)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        offset += len(chunk)
+
+
+def _lstat_at(directory_fd: int, name: str, display: str) -> os.stat_result:
     try:
-        text = payload.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise MalformedEvent(f"{path}: batch is not UTF-8: {error}") from error
-    rows = [parse_line(line) for line in text.splitlines() if line.strip()]
-    return payload, validate_read_rows(rows)
+        return os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as error:
+        raise SeriesError(
+            f"series snapshot path changed or is unavailable: {display}: {error}"
+        ) from error
 
 
-def _local_snapshot_rows(parent: Path) -> tuple[list[dict], list[dict[str, Any]]]:
-    """Capture exact local live/retained inputs for one projection snapshot.
+@dataclass
+class _HeldSnapshotSource:
+    """One source whose descriptor and directory entry stay bound until publish."""
 
-    ``.append.lock`` is the existing serialization domain for projected cell
-    rows.  The before/after path check also refuses a concurrent publication
-    move rather than silently presenting a partially old local frontier.
-    """
-    spool = spool_dir(parent)
-    if not spool.exists():
-        return [], []
-    if spool.is_symlink() or not spool.is_dir():
-        raise SeriesError(f"series spool is not a regular directory: {spool}")
+    kind: str
+    relative: str
+    directory_fd: int
+    name: str
+    descriptor: int
+    signature: tuple[int, ...]
+    sha256: str
+    size: int
+    rows: list[dict]
 
-    lock_path = spool / ".append.lock"
-    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
+    def verify(self) -> None:
+        display = self.relative
+        current = os.fstat(self.descriptor)
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or _stat_signature(current) != self.signature
+        ):
+            raise SeriesError(f"series snapshot source changed while held open: {display}")
+        current_path = _lstat_at(self.directory_fd, self.name, display)
+        if (
+            not stat.S_ISREG(current_path.st_mode)
+            or _stat_signature(current_path) != self.signature
+        ):
+            raise SeriesError(
+                f"series snapshot source pathname changed while held open: {display}"
+            )
+        if hashlib.sha256(_read_held_fd(self.descriptor)).hexdigest() != self.sha256:
+            raise SeriesError(
+                f"series snapshot source content changed while held open: {display}"
+            )
+
+    def close(self) -> None:
+        os.close(self.descriptor)
+
+
+def _open_snapshot_source(
+    directory_fd: int, name: str, *, kind: str, relative: str,
+) -> _HeldSnapshotSource:
+    """Open and parse one source through its held parent directory descriptor."""
+    flags = os.O_RDONLY | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        lock_fd = os.open(lock_path, flags, 0o644)
+        descriptor = os.open(name, flags, dir_fd=directory_fd)
     except OSError as error:
-        raise SeriesError(f"cannot open series snapshot lock {lock_path}: {error}") from error
+        raise SeriesError(
+            f"cannot open regular series snapshot source {relative}: {error}"
+        ) from error
     try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise SeriesError(f"series snapshot source is not a regular file: {relative}")
+        path_status = _lstat_at(directory_fd, name, relative)
+        if (
+            not stat.S_ISREG(path_status.st_mode)
+            or (path_status.st_dev, path_status.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            raise SeriesError(
+                f"series snapshot source pathname does not name its opened file: {relative}"
+            )
+        payload = _read_held_fd(descriptor)
+        signature = _stat_signature(before)
+        after = os.fstat(descriptor)
+        if _stat_signature(after) != signature:
+            raise SeriesError(f"series snapshot source changed while being read: {relative}")
+        digest = hashlib.sha256(payload).hexdigest()
+        if payload and not payload.endswith(b"\n"):
+            raise MalformedEvent(
+                f"{relative}: final line has no newline terminator — the batch is truncated"
+            )
+        try:
+            text = payload.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise MalformedEvent(f"{relative}: batch is not UTF-8: {error}") from error
+        rows = validate_read_rows(
+            [parse_line(line) for line in text.splitlines() if line.strip()]
+        )
+        source = _HeldSnapshotSource(
+            kind=kind,
+            relative=relative,
+            directory_fd=directory_fd,
+            name=name,
+            descriptor=descriptor,
+            signature=signature,
+            sha256=digest,
+            size=len(payload),
+            rows=rows,
+        )
+        source.verify()
+        return source
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _jsonl_names(directory_fd: int) -> list[str]:
+    return sorted(name for name in os.listdir(directory_fd) if name.endswith(".jsonl"))
+
+
+@dataclass
+class _LocalSnapshotCapture:
+    """Held local frontier, including its writer lock and every source inode."""
+
+    spool: Path
+    spool_fd: int
+    spool_identity: tuple[int, int]
+    lock_fd: int
+    lock_signature: tuple[int, ...]
+    published_fd: int | None
+    published_signature: tuple[int, ...] | None
+    source_keys: list[tuple[str, str]]
+    sources: list[_HeldSnapshotSource]
+
+    def _verify_directory(self) -> None:
+        held = os.fstat(self.spool_fd)
+        try:
+            named = os.lstat(self.spool)
+        except OSError as error:
+            raise SeriesError(f"series spool changed while snapshot was held: {error}") from error
+        identity = (held.st_dev, held.st_ino)
+        if (
+            not stat.S_ISDIR(held.st_mode)
+            or not stat.S_ISDIR(named.st_mode)
+            or identity != self.spool_identity
+            or (named.st_dev, named.st_ino) != self.spool_identity
+        ):
+            raise SeriesError("series spool pathname changed while snapshot was held")
+
+        held_lock = os.fstat(self.lock_fd)
+        named_lock = _lstat_at(
+            self.spool_fd, ".append.lock", str(self.spool / ".append.lock")
+        )
+        if (
+            not stat.S_ISREG(held_lock.st_mode)
+            or not stat.S_ISREG(named_lock.st_mode)
+            or _stat_signature(held_lock) != self.lock_signature
+            or _stat_signature(named_lock) != self.lock_signature
+        ):
+            raise SeriesError("series snapshot writer lock changed while held")
+
+        if self.published_fd is None:
+            try:
+                os.stat("published", dir_fd=self.spool_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return
+            except OSError as error:
+                raise SeriesError(
+                    f"retained series directory changed while snapshot was held: {error}"
+                ) from error
+            raise SeriesError("retained series directory appeared while snapshot was held")
+
+        held_published = os.fstat(self.published_fd)
+        named_published = _lstat_at(
+            self.spool_fd, "published", str(self.spool / "published")
+        )
+        if (
+            not stat.S_ISDIR(held_published.st_mode)
+            or not stat.S_ISDIR(named_published.st_mode)
+            or _stat_signature(held_published) != self.published_signature
+            or _stat_signature(named_published) != self.published_signature
+        ):
+            raise SeriesError("retained series directory changed while snapshot was held")
+
+    def verify(self) -> None:
+        self._verify_directory()
+        current = [("live", name) for name in _jsonl_names(self.spool_fd)]
+        if self.published_fd is not None:
+            current.extend(
+                ("published-retained", f"published/{name}")
+                for name in _jsonl_names(self.published_fd)
+            )
+        if current != self.source_keys:
+            raise SeriesError("series spool changed while its projection snapshot was held")
+        for source in self.sources:
+            source.verify()
+
+    def close(self) -> None:
+        for source in reversed(self.sources):
+            source.close()
+        if self.published_fd is not None:
+            os.close(self.published_fd)
+        try:
+            fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(self.lock_fd)
+            os.close(self.spool_fd)
+
+
+@contextlib.contextmanager
+def _local_snapshot_capture(parent: Path):
+    """Hold the local series frontier stable through output publication."""
+    spool = spool_dir(parent)
+    spool.mkdir(parents=True, exist_ok=True)
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    try:
+        spool_fd = os.open(spool, directory_flags)
+    except OSError as error:
+        raise SeriesError(
+            f"cannot open regular series spool directory {spool}: {error}"
+        ) from error
+    lock_fd = -1
+    published_fd: int | None = None
+    sources: list[_HeldSnapshotSource] = []
+    capture: _LocalSnapshotCapture | None = None
+    try:
+        spool_status = os.fstat(spool_fd)
+        named_spool = os.lstat(spool)
+        if (
+            not stat.S_ISDIR(spool_status.st_mode)
+            or not stat.S_ISDIR(named_spool.st_mode)
+            or (spool_status.st_dev, spool_status.st_ino)
+            != (named_spool.st_dev, named_spool.st_ino)
+        ):
+            raise SeriesError(
+                f"series spool pathname does not name its opened directory: {spool}"
+            )
+
+        lock_flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            lock_flags |= os.O_NOFOLLOW
+        lock_fd = os.open(".append.lock", lock_flags, 0o644, dir_fd=spool_fd)
+        lock_status = os.fstat(lock_fd)
+        if not stat.S_ISREG(lock_status.st_mode):
+            raise SeriesError(
+                f"series snapshot lock is not a regular file: {spool / '.append.lock'}"
+            )
         fcntl.flock(lock_fd, fcntl.LOCK_SH)
 
-        def paths() -> list[tuple[str, Path]]:
-            return [
-                *(('live', path) for path in sorted(spool.glob("*.jsonl"))),
-                *(
-                    ('published-retained', path)
-                    for path in sorted((spool / "published").glob("*.jsonl"))
-                ),
-            ]
-
-        before = paths()
-        rows: list[dict] = []
-        sources: list[dict[str, Any]] = []
-        for kind, path in before:
-            payload, source_rows = _read_snapshot_source(path)
-            rows.extend(source_rows)
-            relative = path.relative_to(spool).as_posix()
-            sources.append({
-                "kind": kind,
-                "path": relative,
-                "rows": len(source_rows),
-                "size": len(payload),
-                "sha256": hashlib.sha256(payload).hexdigest(),
-            })
-        after = paths()
-        if before != after:
+        try:
+            published_fd = os.open("published", directory_flags, dir_fd=spool_fd)
+        except FileNotFoundError:
+            published_fd = None
+        except OSError as error:
             raise SeriesError(
-                "series spool changed while its projection snapshot was being read"
+                f"cannot open regular retained series directory {spool / 'published'}: {error}"
+            ) from error
+
+        source_keys = [("live", name) for name in _jsonl_names(spool_fd)]
+        if published_fd is not None:
+            source_keys.extend(
+                ("published-retained", f"published/{name}")
+                for name in _jsonl_names(published_fd)
             )
-        return rows, sources
+        capture = _LocalSnapshotCapture(
+            spool=spool,
+            spool_fd=spool_fd,
+            spool_identity=(spool_status.st_dev, spool_status.st_ino),
+            lock_fd=lock_fd,
+            lock_signature=_stat_signature(lock_status),
+            published_fd=published_fd,
+            published_signature=(
+                _stat_signature(os.fstat(published_fd))
+                if published_fd is not None else None
+            ),
+            source_keys=source_keys,
+            sources=sources,
+        )
+        for kind, relative in source_keys:
+            if kind == "live":
+                directory_fd, name = spool_fd, relative
+            else:
+                assert published_fd is not None
+                directory_fd, name = published_fd, Path(relative).name
+            sources.append(
+                _open_snapshot_source(
+                    directory_fd, name, kind=kind, relative=relative,
+                )
+            )
+        capture.verify()
+        yield capture
     finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        os.close(lock_fd)
+        if capture is not None:
+            capture.close()
+        else:
+            for source in reversed(sources):
+                source.close()
+            if published_fd is not None:
+                os.close(published_fd)
+            if lock_fd >= 0:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(lock_fd)
+            os.close(spool_fd)
+
+
+@contextlib.contextmanager
+def _scorecard_projection_capture(parent: Any):
+    """Build a snapshot while retaining every mutable source descriptor."""
+    parent = Path(parent).resolve()
+    published = published_snapshot(parent)
+    source_tree = _series_tree_at(parent, published.commit)
+    with _local_snapshot_capture(parent) as local:
+        local_rows = [row for source in local.sources for row in source.rows]
+        try:
+            rows = union_events([*published.rows, *local_rows])
+        except LedgerError as error:
+            raise SeriesError(f"cannot form canonical series snapshot: {error}") from error
+        rows_bytes = _canonical_rows_bytes(rows)
+        snapshot = {
+            "schema": SCORECARD_SNAPSHOT_SCHEMA,
+            "source": {
+                "path": SCORECARD_SNAPSHOT_SOURCE,
+                "commit": published.commit,
+                "tree": source_tree,
+                "published_rows": len(published.rows),
+                "local_sources": [
+                    {
+                        "kind": source.kind,
+                        "path": source.relative,
+                        "device": source.signature[0],
+                        "inode": source.signature[1],
+                        "rows": len(source.rows),
+                        "size": source.size,
+                        "sha256": source.sha256,
+                    }
+                    for source in local.sources
+                ],
+            },
+            "rows_read": len(rows),
+            "rows_sha256": hashlib.sha256(rows_bytes).hexdigest(),
+            "rows": rows,
+        }
+        local.verify()
+        yield snapshot, local
 
 
 def scorecard_projection_snapshot(parent: Any) -> dict[str, Any]:
@@ -873,28 +1169,9 @@ def scorecard_projection_snapshot(parent: Any) -> dict[str, Any]:
     published revision never falls back to the tracked files in the caller's
     checkout, which may be arbitrarily stale.
     """
-    parent = Path(parent).resolve()
-    published = published_snapshot(parent)
-    source_tree = _series_tree_at(parent, published.commit)
-    local_rows, local_sources = _local_snapshot_rows(parent)
-    try:
-        rows = union_events([*published.rows, *local_rows])
-    except LedgerError as error:
-        raise SeriesError(f"cannot form canonical series snapshot: {error}") from error
-    rows_bytes = _canonical_rows_bytes(rows)
-    return {
-        "schema": SCORECARD_SNAPSHOT_SCHEMA,
-        "source": {
-            "path": SCORECARD_SNAPSHOT_SOURCE,
-            "commit": published.commit,
-            "tree": source_tree,
-            "published_rows": len(published.rows),
-            "local_sources": local_sources,
-        },
-        "rows_read": len(rows),
-        "rows_sha256": hashlib.sha256(rows_bytes).hexdigest(),
-        "rows": rows,
-    }
+    with _scorecard_projection_capture(parent) as (snapshot, local):
+        local.verify()
+        return snapshot
 
 
 def _snapshot_bytes(snapshot: Mapping[str, Any]) -> bytes:
@@ -904,16 +1181,10 @@ def _snapshot_bytes(snapshot: Mapping[str, Any]) -> bytes:
     ).encode()
 
 
-def read_scorecard_projection_snapshot(
-    path: Any, *, expected_sha256: str
+def _validate_snapshot_payload(
+    payload: bytes, *, expected_sha256: str,
 ) -> dict[str, Any]:
-    """Read and validate an immutable projection snapshot by exact byte digest."""
-    path = Path(path)
-    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256 or "") is None:
-        raise SeriesError("scorecard snapshot expected_sha256 must be 64 lowercase hex")
-    if path.is_symlink() or not path.is_file():
-        raise SeriesError(f"scorecard snapshot is not a regular file: {path}")
-    payload = path.read_bytes()
+    """Validate exact snapshot bytes after a caller binds their inode."""
     actual_sha256 = hashlib.sha256(payload).hexdigest()
     if actual_sha256 != expected_sha256:
         raise SeriesError(
@@ -949,7 +1220,7 @@ def read_scorecard_projection_snapshot(
     ordered_sources = []
     for item in local_sources:
         if not isinstance(item, dict) or set(item) != {
-            "kind", "path", "rows", "size", "sha256",
+            "kind", "path", "device", "inode", "rows", "size", "sha256",
         }:
             raise SeriesError("scorecard snapshot has an invalid local source")
         relative = item.get("path")
@@ -960,6 +1231,10 @@ def read_scorecard_projection_snapshot(
             or Path(relative).is_absolute()
             or ".." in Path(relative).parts
             or relative in seen_paths
+            or type(item.get("device")) is not int
+            or item["device"] < 0
+            or type(item.get("inode")) is not int
+            or item["inode"] <= 0
             or type(item.get("rows")) is not int
             or item["rows"] < 0
             or type(item.get("size")) is not int
@@ -1000,58 +1275,374 @@ def read_scorecard_projection_snapshot(
     return snapshot
 
 
+def _verify_named_descriptor(
+    directory_fd: int,
+    name: str,
+    descriptor: int,
+    signature: tuple[int, ...],
+    display: str,
+) -> None:
+    current = os.fstat(descriptor)
+    named = _lstat_at(directory_fd, name, display)
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or not stat.S_ISREG(named.st_mode)
+        or _stat_signature(current) != signature
+        or _stat_signature(named) != signature
+    ):
+        raise SeriesError(f"scorecard snapshot pathname changed while held open: {display}")
+
+
+def _read_scorecard_projection_snapshot_at(
+    directory_fd: int,
+    name: str,
+    *,
+    display: str,
+    expected_sha256: str,
+) -> dict[str, Any]:
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(name, flags, dir_fd=directory_fd)
+    except OSError as error:
+        raise SeriesError(
+            f"scorecard snapshot is not a regular file: {display}: {error}"
+        ) from error
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            raise SeriesError(f"scorecard snapshot is not a regular file: {display}")
+        signature = _stat_signature(status)
+        _verify_named_descriptor(directory_fd, name, descriptor, signature, display)
+        payload = _read_held_fd(descriptor)
+        _verify_named_descriptor(directory_fd, name, descriptor, signature, display)
+        snapshot = _validate_snapshot_payload(
+            payload, expected_sha256=expected_sha256,
+        )
+        _verify_named_descriptor(directory_fd, name, descriptor, signature, display)
+        return snapshot
+    finally:
+        os.close(descriptor)
+
+
+def _directory_identity(path: Path, descriptor: int) -> tuple[int, int]:
+    held = os.fstat(descriptor)
+    try:
+        named = os.lstat(path)
+    except OSError as error:
+        raise SeriesError(f"scorecard snapshot directory changed: {path}: {error}") from error
+    if (
+        not stat.S_ISDIR(held.st_mode)
+        or not stat.S_ISDIR(named.st_mode)
+        or (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)
+    ):
+        raise SeriesError(f"scorecard snapshot directory pathname changed: {path}")
+    return held.st_dev, held.st_ino
+
+
+def read_scorecard_projection_snapshot(
+    path: Any, *, expected_sha256: str
+) -> dict[str, Any]:
+    """Read one exact snapshot from a held no-follow descriptor."""
+    path = Path(path)
+    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256 or "") is None:
+        raise SeriesError("scorecard snapshot expected_sha256 must be 64 lowercase hex")
+    if not path.name:
+        raise SeriesError(f"scorecard snapshot path has no filename: {path}")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    try:
+        directory_fd = os.open(path.parent, directory_flags)
+    except OSError as error:
+        raise SeriesError(
+            f"scorecard snapshot parent is not a regular directory: {path.parent}: {error}"
+        ) from error
+    try:
+        identity = _directory_identity(path.parent, directory_fd)
+        snapshot = _read_scorecard_projection_snapshot_at(
+            directory_fd,
+            path.name,
+            display=str(path),
+            expected_sha256=expected_sha256,
+        )
+        if _directory_identity(path.parent, directory_fd) != identity:
+            raise SeriesError(f"scorecard snapshot directory changed: {path.parent}")
+        return snapshot
+    finally:
+        os.close(directory_fd)
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    offset = 0
+    while offset < len(payload):
+        written = os.write(descriptor, payload[offset:])
+        if written <= 0:
+            raise SeriesError("scorecard snapshot staging write made no progress")
+        offset += written
+
+
+def _open_anonymous_snapshot_stage(directory_fd: int) -> int:
+    if not hasattr(os, "O_TMPFILE"):
+        raise OSError(errno.EOPNOTSUPP, "O_TMPFILE is unavailable")
+    return os.open(
+        ".", os.O_RDWR | os.O_CLOEXEC | os.O_TMPFILE, 0o600, dir_fd=directory_fd,
+    )
+
+
+def _open_named_snapshot_stage(directory_fd: int, output_name: str) -> tuple[int, str]:
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    while True:
+        name = f".{output_name}.staging-{os.getpid()}-{secrets.token_hex(16)}"
+        try:
+            return os.open(name, flags, 0o600, dir_fd=directory_fd), name
+        except FileExistsError:
+            continue
+
+
+def _link_anonymous_noreplace(
+    descriptor: int, directory_fd: int, output_name: str,
+) -> None:
+    """Publish an O_TMPFILE inode with linkat(AT_EMPTY_PATH), never replacing."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    linkat = getattr(libc, "linkat", None)
+    if linkat is None:
+        raise OSError(errno.ENOSYS, "linkat is unavailable")
+    result = linkat(
+        ctypes.c_int(descriptor),
+        ctypes.c_char_p(b""),
+        ctypes.c_int(directory_fd),
+        ctypes.c_char_p(os.fsencode(output_name)),
+        ctypes.c_int(0x1000),  # AT_EMPTY_PATH
+    )
+    if result != 0:
+        number = ctypes.get_errno()
+        raise OSError(number, os.strerror(number), output_name)
+
+
+def _rename_noreplace(
+    directory_fd: int, source_name: str, output_name: str,
+) -> None:
+    """Move a named stage into place atomically without replacing an output."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise OSError(errno.ENOSYS, "renameat2 is unavailable")
+    result = renameat2(
+        ctypes.c_int(directory_fd),
+        ctypes.c_char_p(os.fsencode(source_name)),
+        ctypes.c_int(directory_fd),
+        ctypes.c_char_p(os.fsencode(output_name)),
+        ctypes.c_uint(1),  # RENAME_NOREPLACE
+    )
+    if result != 0:
+        number = ctypes.get_errno()
+        raise OSError(number, os.strerror(number), output_name)
+
+
+def _validate_staged_snapshot(
+    descriptor: int,
+    payload: bytes,
+    digest: str,
+    *,
+    directory_fd: int,
+    stage_name: str | None,
+    display: str,
+) -> tuple[int, ...]:
+    _write_all(descriptor, payload)
+    os.fsync(descriptor)
+    status = os.fstat(descriptor)
+    if not stat.S_ISREG(status.st_mode):
+        raise SeriesError("scorecard snapshot staging descriptor is not a regular file")
+    signature = _stat_signature(status)
+    if stage_name is not None:
+        _verify_named_descriptor(
+            directory_fd, stage_name, descriptor, signature, display,
+        )
+    readback = _read_held_fd(descriptor)
+    if _stat_signature(os.fstat(descriptor)) != signature:
+        raise SeriesError("scorecard snapshot staging file changed during readback")
+    _validate_snapshot_payload(readback, expected_sha256=digest)
+    if stage_name is not None:
+        _verify_named_descriptor(
+            directory_fd, stage_name, descriptor, signature, display,
+        )
+    return signature
+
+
+def _existing_snapshot(
+    directory_fd: int, output_name: str, output: Path, digest: str,
+) -> bool:
+    try:
+        status = os.stat(output_name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise SeriesError(f"cannot inspect scorecard snapshot output {output}: {error}") from error
+    if not stat.S_ISREG(status.st_mode):
+        raise SeriesError(
+            f"scorecard snapshot output already exists with different content: {output}"
+        )
+    try:
+        _read_scorecard_projection_snapshot_at(
+            directory_fd,
+            output_name,
+            display=str(output),
+            expected_sha256=digest,
+        )
+    except SeriesError as error:
+        raise SeriesError(
+            f"scorecard snapshot output already exists with different content: {output}: {error}"
+        ) from error
+    return True
+
+
+def _finish_snapshot_publication(
+    directory_fd: int, output: Path, digest: str,
+) -> dict[str, Any]:
+    os.fsync(directory_fd)
+    return _read_scorecard_projection_snapshot_at(
+        directory_fd,
+        output.name,
+        display=str(output),
+        expected_sha256=digest,
+    )
+
+
+def _publish_snapshot_payload(
+    directory_fd: int, output: Path, payload: bytes, digest: str,
+) -> dict[str, Any]:
+    """Publish exact bytes without any failure-path unlink by pathname."""
+    if _existing_snapshot(directory_fd, output.name, output, digest):
+        return _finish_snapshot_publication(directory_fd, output, digest)
+
+    unsupported = {
+        errno.EINVAL, errno.EISDIR, errno.ENOENT, errno.ENOSYS,
+        errno.EOPNOTSUPP, errno.EPERM,
+    }
+    anonymous_fd: int | None = None
+    try:
+        try:
+            anonymous_fd = _open_anonymous_snapshot_stage(directory_fd)
+        except OSError as error:
+            if error.errno not in unsupported:
+                raise SeriesError(
+                    f"cannot create anonymous scorecard snapshot stage: {error}"
+                ) from error
+        else:
+            _validate_staged_snapshot(
+                anonymous_fd,
+                payload,
+                digest,
+                directory_fd=directory_fd,
+                stage_name=None,
+                display="anonymous scorecard snapshot stage",
+            )
+            try:
+                _link_anonymous_noreplace(
+                    anonymous_fd, directory_fd, output.name,
+                )
+            except FileExistsError:
+                if not _existing_snapshot(directory_fd, output.name, output, digest):
+                    raise AssertionError("existing snapshot disappeared during inspection")
+                return _finish_snapshot_publication(directory_fd, output, digest)
+            except OSError as error:
+                if error.errno not in unsupported:
+                    raise
+            else:
+                return _finish_snapshot_publication(directory_fd, output, digest)
+    finally:
+        if anonymous_fd is not None:
+            os.close(anonymous_fd)
+
+    stage_fd, stage_name = _open_named_snapshot_stage(directory_fd, output.name)
+    stage_moved = False
+    try:
+        signature = _validate_staged_snapshot(
+            stage_fd,
+            payload,
+            digest,
+            directory_fd=directory_fd,
+            stage_name=stage_name,
+            display=str(output.parent / stage_name),
+        )
+        _verify_named_descriptor(
+            directory_fd,
+            stage_name,
+            stage_fd,
+            signature,
+            str(output.parent / stage_name),
+        )
+        try:
+            _rename_noreplace(directory_fd, stage_name, output.name)
+            stage_moved = True
+        except FileExistsError:
+            if not _existing_snapshot(directory_fd, output.name, output, digest):
+                raise AssertionError("existing snapshot disappeared during inspection")
+        except OSError as error:
+            if error.errno != errno.ENOSYS:
+                raise
+            try:
+                os.link(
+                    stage_name,
+                    output.name,
+                    src_dir_fd=directory_fd,
+                    dst_dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
+                if not _existing_snapshot(directory_fd, output.name, output, digest):
+                    raise AssertionError("existing snapshot disappeared during inspection")
+        return _finish_snapshot_publication(directory_fd, output, digest)
+    except Exception as error:
+        if not stage_moved:
+            raise SeriesError(
+                f"{error}; named staging pathname was left in place: "
+                f"{output.parent / stage_name}"
+            ) from error
+        raise
+    finally:
+        os.close(stage_fd)
+
+
 def write_scorecard_projection_snapshot(parent: Any, output: Any) -> dict[str, Any]:
     """Atomically publish one run-scoped snapshot without replacing evidence."""
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    if output.parent.is_symlink() or not output.parent.is_dir():
-        raise SeriesError(f"scorecard snapshot parent is not a regular directory: {output.parent}")
-    snapshot = scorecard_projection_snapshot(parent)
-    payload = _snapshot_bytes(snapshot)
-    digest = hashlib.sha256(payload).hexdigest()
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{output.name}.", suffix=".tmp", dir=output.parent
-    )
-    temporary = Path(temporary_name)
-    linked = False
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
     try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        read_scorecard_projection_snapshot(temporary, expected_sha256=digest)
-        try:
-            os.link(temporary, output)
-            linked = True
-        except FileExistsError:
-            if output.is_symlink() or not output.is_file() or output.read_bytes() != payload:
+        directory_fd = os.open(output.parent, directory_flags)
+    except OSError as error:
+        raise SeriesError(
+            f"scorecard snapshot parent is not a regular directory: {output.parent}: {error}"
+        ) from error
+    try:
+        directory_identity = _directory_identity(output.parent, directory_fd)
+        with _scorecard_projection_capture(parent) as (snapshot, local):
+            payload = _snapshot_bytes(snapshot)
+            digest = hashlib.sha256(payload).hexdigest()
+            local.verify()
+            _publish_snapshot_payload(directory_fd, output, payload, digest)
+            local.verify()
+            if _directory_identity(output.parent, directory_fd) != directory_identity:
                 raise SeriesError(
-                    f"scorecard snapshot output already exists with different content: {output}"
+                    f"scorecard snapshot directory changed during publication: {output.parent}"
                 )
-        directory = os.open(output.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-        read_scorecard_projection_snapshot(output, expected_sha256=digest)
-    except Exception:
-        if linked:
-            try:
-                if output.stat().st_ino == temporary.stat().st_ino:
-                    output.unlink()
-            except OSError:
-                pass
-        raise
+            return {
+                "state": "available",
+                "path": str(output.absolute()),
+                "sha256": digest,
+                "source_commit": snapshot["source"]["commit"],
+                "source_tree": snapshot["source"]["tree"],
+                "rows_read": snapshot["rows_read"],
+            }
     finally:
-        temporary.unlink(missing_ok=True)
-    return {
-        "state": "available",
-        "path": str(output.resolve()),
-        "sha256": digest,
-        "source_commit": snapshot["source"]["commit"],
-        "source_tree": snapshot["source"]["tree"],
-        "rows_read": snapshot["rows_read"],
-    }
+        os.close(directory_fd)
 
 
 def test_id(row: dict) -> str | None:

@@ -196,9 +196,17 @@ The command fetches and resolves parent `origin/main` once, records the exact
 commit and `series/` tree, combines that published snapshot with the local live
 and published-retained spool, validates and orders every row through the
 canonical series union, and records the row count and digest. Each local input
-is named by a relative path, byte size, and digest. The output is fsynced and
-linked into place without replacing an existing different file, then read back
-through the strict digest-checking reader before success is reported.
+is opened through its parent directory with symlinks forbidden, named by its
+relative path, device, inode, byte size, and digest, and held open under the
+existing series writer lock through publication and readback. A changed source
+name, inode, byte sequence, or source set makes the snapshot unavailable.
+
+The output is fsynced in an unnamed temporary inode where supported, linked
+into place without replacing an existing file, then read back through a held
+no-follow descriptor before success is reported. The named fallback uses an
+exclusive unpredictable staging name and an atomic no-replace move. A failure
+after publication leaves the final evidence in place for inspection; no error
+path unlinks a pathname that another process could have replaced.
 
 This command is an additive input provider only. It does not change selection
 or observation authority, does not write or separate the tracked

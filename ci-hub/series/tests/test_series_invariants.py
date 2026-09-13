@@ -13,8 +13,11 @@ whose negative case is untested is indistinguishable from one that returns
 this repository has hit repeatedly.
 """
 
+import errno
+import fcntl
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -1190,6 +1193,9 @@ class ScorecardProjectionSnapshot(unittest.TestCase):
             ["live.jsonl", "published/duplicate.jsonl"],
             [item["path"] for item in snapshot["source"]["local_sources"]],
         )
+        for item in snapshot["source"]["local_sources"]:
+            self.assertGreaterEqual(item["device"], 0)
+            self.assertGreater(item["inode"], 0)
         self.assertEqual(report["rows_read"], snapshot["rows_read"])
         self.assertEqual(report["source_commit"], self.commit)
         self.assertEqual(report["source_tree"], self.tree)
@@ -1208,16 +1214,65 @@ class ScorecardProjectionSnapshot(unittest.TestCase):
         self.assertEqual(b"foreign\n", output.read_bytes())
         self.assertNotEqual(original, output.read_bytes())
 
-    def test_failed_post_link_readback_removes_only_the_new_output(self):
+    def test_failed_post_publish_readback_leaves_replacement_untouched(self):
         output = Path(self.temporary.name) / "snapshot.json"
+        foreign = output.with_name("foreign.json")
+        foreign.write_text("foreign\n")
+        original_finish = series._finish_snapshot_publication
+
+        def replace_then_fail(directory_fd, published, digest):
+            os.replace(foreign, published)
+            return original_finish(directory_fd, published, digest)
+
+        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
+            series, "_finish_snapshot_publication", side_effect=replace_then_fail,
+        ):
+            with self.assertRaisesRegex(series.SeriesError, "digest mismatch"):
+                series.write_scorecard_projection_snapshot(self.repo, output)
+        self.assertEqual(b"foreign\n", output.read_bytes())
+
+    def test_writer_lock_is_held_through_output_readback(self):
+        output = Path(self.temporary.name) / "snapshot.json"
+        local = row(
+            event_id="01J000000000000000000000AB",
+            run_id="campaign-2",
+            series={"run_index": 1},
+        )
+        self._write_local("live.jsonl", local)
+        original_finish = series._finish_snapshot_publication
+
+        def require_lock(directory_fd, published, digest):
+            lock_path = series.spool_dir(self.repo) / ".append.lock"
+            with lock_path.open("rb") as contender:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return original_finish(directory_fd, published, digest)
+
+        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
+            series, "_finish_snapshot_publication", side_effect=require_lock,
+        ):
+            series.write_scorecard_projection_snapshot(self.repo, output)
+
+    def test_named_stage_replacement_refuses_without_deleting_foreign_file(self):
+        output = Path(self.temporary.name) / "snapshot.json"
+        original_rename = series._rename_noreplace
+
+        def replace_stage_then_rename(directory_fd, stage_name, output_name):
+            foreign = output.parent / "replacement"
+            foreign.write_text("foreign staging replacement\n")
+            os.replace(foreign, output.parent / stage_name)
+            original_rename(directory_fd, stage_name, output_name)
+
         with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
             series,
-            "read_scorecard_projection_snapshot",
-            side_effect=[{}, series.SeriesError("readback failed")],
+            "_open_anonymous_snapshot_stage",
+            side_effect=OSError(errno.EOPNOTSUPP, "forced named stage"),
+        ), mock.patch.object(
+            series, "_rename_noreplace", side_effect=replace_stage_then_rename,
         ):
-            with self.assertRaisesRegex(series.SeriesError, "readback failed"):
+            with self.assertRaisesRegex(series.SeriesError, "digest mismatch"):
                 series.write_scorecard_projection_snapshot(self.repo, output)
-        self.assertFalse(output.exists())
+        self.assertEqual(b"foreign staging replacement\n", output.read_bytes())
 
     def test_consumer_refuses_tampered_bytes_and_row_digest(self):
         output = Path(self.temporary.name) / "snapshot.json"
@@ -1260,17 +1315,89 @@ class ScorecardProjectionSnapshot(unittest.TestCase):
         )
         self._write_local("first.jsonl", first)
         output = Path(self.temporary.name) / "snapshot.json"
-        original = series._read_snapshot_source
+        original = series._open_snapshot_source
 
-        def add_source_after_read(path):
-            captured = original(path)
+        def add_source_after_read(directory_fd, name, *, kind, relative):
+            captured = original(
+                directory_fd, name, kind=kind, relative=relative,
+            )
             self._write_local("second.jsonl", second)
             return captured
 
         with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
-            series, "_read_snapshot_source", side_effect=add_source_after_read
+            series, "_open_snapshot_source", side_effect=add_source_after_read
         ):
             with self.assertRaisesRegex(series.SeriesError, "spool changed"):
+                series.write_scorecard_projection_snapshot(self.repo, output)
+        self.assertFalse(output.exists())
+
+    def test_local_source_symlink_is_refused_without_output(self):
+        local = row(
+            event_id="01J000000000000000000000AB",
+            run_id="campaign-2",
+            series={"run_index": 1},
+        )
+        target = self._write_local("real", local)
+        linked = target.with_name("linked.jsonl")
+        linked.symlink_to(target.name)
+        output = Path(self.temporary.name) / "snapshot.json"
+
+        with mock.patch.object(series, "refresh_origin_main"):
+            with self.assertRaisesRegex(
+                series.SeriesError, "cannot open regular series snapshot source"
+            ):
+                series.write_scorecard_projection_snapshot(self.repo, output)
+        self.assertFalse(output.exists())
+
+    def test_local_source_symlink_replacement_is_refused_without_output(self):
+        local = row(
+            event_id="01J000000000000000000000AB",
+            run_id="campaign-2",
+            series={"run_index": 1},
+        )
+        target = self._write_local("live.jsonl", local)
+        output = Path(self.temporary.name) / "snapshot.json"
+        original = series._open_snapshot_source
+
+        def replace_with_symlink(directory_fd, name, *, kind, relative):
+            captured = original(
+                directory_fd, name, kind=kind, relative=relative,
+            )
+            saved = target.with_name("saved-source")
+            target.rename(saved)
+            target.symlink_to(saved.name)
+            return captured
+
+        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
+            series, "_open_snapshot_source", side_effect=replace_with_symlink,
+        ):
+            with self.assertRaisesRegex(series.SeriesError, "changed"):
+                series.write_scorecard_projection_snapshot(self.repo, output)
+        self.assertFalse(output.exists())
+
+    def test_local_source_inode_replacement_is_refused_without_output(self):
+        local = row(
+            event_id="01J000000000000000000000AB",
+            run_id="campaign-2",
+            series={"run_index": 1},
+        )
+        target = self._write_local("live.jsonl", local)
+        output = Path(self.temporary.name) / "snapshot.json"
+        original = series._open_snapshot_source
+
+        def replace_after_open(directory_fd, name, *, kind, relative):
+            captured = original(
+                directory_fd, name, kind=kind, relative=relative,
+            )
+            replacement = target.with_name("replacement")
+            replacement.write_bytes(target.read_bytes())
+            os.replace(replacement, target)
+            return captured
+
+        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
+            series, "_open_snapshot_source", side_effect=replace_after_open,
+        ):
+            with self.assertRaisesRegex(series.SeriesError, "changed"):
                 series.write_scorecard_projection_snapshot(self.repo, output)
         self.assertFalse(output.exists())
 
