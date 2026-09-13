@@ -13855,3 +13855,6 @@ fn pipe_fionread_native_and_kvm_complete_contract() {
 
 #[path = "support/terminal_cancellation.rs"]
 mod terminal_cancellation;
+
+#[path = "support/exec_worker_error_diagnostic.rs"]
+mod exec_worker_error_diagnostic;
