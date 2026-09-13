@@ -65,6 +65,7 @@ use crate::vm::ProcessActionOutcome;
 const STACK_CAPACITY: usize = TOOL_STACK_SIZE as usize;
 
 enum HandlerSignal {
+    ThreadCancelled,
     TailInjected {
         result: std::result::Result<i64, Errno>,
         image_replaced: bool,
@@ -809,6 +810,11 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         std::future::pending().await
     }
 
+    async fn cancel_current_thread(&mut self) -> Never {
+        self.signal_handler(HandlerSignal::ThreadCancelled);
+        std::future::pending().await
+    }
+
     fn set_timer(&mut self, _schedule: TimerSchedule) -> std::result::Result<(), reverie::Error> {
         Ok(())
     }
@@ -1008,12 +1014,19 @@ impl MemoryAccess for KvmStack {
 
 enum HandlerOutcome<T> {
     Returned(T),
+    ThreadCancelled,
     TailInjected {
         result: std::result::Result<i64, Errno>,
         image_replaced: bool,
         process_exited: bool,
     },
     RuntimeError(Error),
+}
+
+/// A callback can terminate the thread without selecting a guest continuation.
+enum CallbackOutcome<T> {
+    Completed(T),
+    ThreadCancelled,
 }
 
 async fn drive_handler<T>(
@@ -1030,6 +1043,9 @@ async fn drive_handler<T>(
                 .expect("KVM handler signal lock poisoned")
                 .take();
             match handler_signal {
+                Some(HandlerSignal::ThreadCancelled) => {
+                    return Poll::Ready(HandlerOutcome::ThreadCancelled);
+                }
                 Some(HandlerSignal::TailInjected {
                     result,
                     image_replaced,
@@ -1104,7 +1120,7 @@ async fn run_post_exec_handler<T>(
     config: &<T::GlobalState as GlobalTool>::Config,
     subscriptions: &Subscription,
     stack_checked_out: &Arc<AtomicBool>,
-) -> Result<()>
+) -> Result<CallbackOutcome<()>>
 where
     T: Tool + 'static,
     T::ThreadState: 'static,
@@ -1158,19 +1174,23 @@ where
             drive_handler(
                 tool.handle_post_exec(&mut guest),
                 handler_signal,
-                pending_child_starts,
+                pending_child_starts.clone(),
             )
             .await
         };
         hide_tool_scratch(memory, tool_stack_top)?;
         match outcome {
-            HandlerOutcome::Returned(Ok(())) => return Ok(()),
+            HandlerOutcome::Returned(Ok(())) => return Ok(CallbackOutcome::Completed(())),
             HandlerOutcome::Returned(Err(error)) => return Err(Error::PostExec(error)),
+            HandlerOutcome::ThreadCancelled => {
+                backend.start_pending_tool_children(executor, &pending_child_starts)?;
+                return Ok(CallbackOutcome::ThreadCancelled);
+            }
             HandlerOutcome::RuntimeError(error) => return Err(error),
             HandlerOutcome::TailInjected {
                 process_exited: true,
                 ..
-            } => return Ok(()),
+            } => return Ok(CallbackOutcome::Completed(())),
             HandlerOutcome::TailInjected {
                 image_replaced: true,
                 ..
@@ -1224,7 +1244,7 @@ async fn run_initial_exec_handler<T>(
     config: &<T::GlobalState as GlobalTool>::Config,
     subscriptions: &Subscription,
     stack_checked_out: &Arc<AtomicBool>,
-) -> Result<()>
+) -> Result<CallbackOutcome<()>>
 where
     T: Tool + 'static,
     T::ThreadState: 'static,
@@ -1274,30 +1294,36 @@ where
         drive_handler(
             tool.handle_syscall_event(&mut guest, syscall),
             handler_signal,
-            pending_child_starts,
+            pending_child_starts.clone(),
         )
         .await
     };
     hide_tool_scratch(memory, tool_stack_top)?;
 
     match outcome {
-        HandlerOutcome::Returned(result) => result.map(|_| ()).map_err(Error::Reverie),
+        HandlerOutcome::Returned(result) => result
+            .map(|_| CallbackOutcome::Completed(()))
+            .map_err(Error::Reverie),
         HandlerOutcome::TailInjected {
             result: Ok(_),
             process_exited: true,
             ..
-        } => Ok(()),
+        } => Ok(CallbackOutcome::Completed(())),
         HandlerOutcome::TailInjected {
             result: Ok(_),
             image_replaced: true,
             ..
-        } => Ok(()),
+        } => Ok(CallbackOutcome::Completed(())),
         HandlerOutcome::TailInjected {
             result: Err(error), ..
         } => Err(Error::Reverie(error.into())),
         HandlerOutcome::TailInjected { .. } => Err(Error::UnexpectedVcpuExit(
             "initial exec handler tail-injected without completing exec".to_owned(),
         )),
+        HandlerOutcome::ThreadCancelled => {
+            backend.start_pending_tool_children(executor, &pending_child_starts)?;
+            Ok(CallbackOutcome::ThreadCancelled)
+        }
         HandlerOutcome::RuntimeError(error) => Err(error),
     }
 }
@@ -1346,6 +1372,38 @@ async fn notify_tool_exit<T: Tool>(
 }
 
 impl KvmBackend {
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_cancelled_tool_thread<T: Tool>(
+        &mut self,
+        executor: &mut ElfExecutor,
+        tool: Arc<T>,
+        identity: (Pid, Pid),
+        global_state: &T::GlobalState,
+        config: &<T::GlobalState as GlobalTool>::Config,
+        thread_state: T::ThreadState,
+    ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+        // Retire the exact generation before a consuming exit hook can wake a
+        // peer or make the identity observable again. No syscall or return-frame
+        // update is needed for this already terminal thread.
+        let exit = executor.cancel_current_thread();
+        if exit.group {
+            self.request_guest_thread_group_exit(exit.status);
+        }
+        self.release_thread_slot();
+        self.clear_registered_worker_tid_before_exit(executor);
+        self.notify_tool_exit(
+            tool,
+            identity,
+            global_state,
+            config,
+            thread_state,
+            exit.status,
+        )
+        .await?;
+        let (stdout, stderr) = executor.take_output();
+        Ok((exit.status, stdout, stderr))
+    }
+
     /// Releases a worker's reusable slot before its exit becomes visible to
     /// the scheduler. A newly admitted guest thread can then make the same
     /// first-free choice independent of host-thread destruction timing.
@@ -1368,7 +1426,7 @@ impl KvmBackend {
         // or scratch page after a terminal exit has been observed. Release it
         // before on_exit_thread can wake and admit another guest thread.
         self.release_thread_slot();
-        notify_tool_exit(
+        let result = notify_tool_exit(
             tool,
             pid,
             tid,
@@ -1380,7 +1438,17 @@ impl KvmBackend {
                 process_exited: pid == tid,
             },
         )
-        .await
+        .await;
+        // Run the owner's consuming hooks even when an earlier worker failed.
+        // Intermediate joins retain errors, so no earlier caller can silently
+        // turn the final process result into success.
+        match (result, self.guest_worker_teardown_result()) {
+            (Ok(()), workers) => workers,
+            (Err(error), Ok(())) => Err(error),
+            (Err(error), Err(workers)) => Err(Error::UnexpectedVcpuExit(format!(
+                "KVM owner exit failed: {error}; {workers}"
+            ))),
+        }
     }
 
     /// Runs the installed guest program through a shared Reverie `Tool`.
@@ -1445,6 +1513,18 @@ impl KvmBackend {
         hide_tool_scratch(&memory, tool_stack_top)?;
         match start_outcome {
             HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
+            HandlerOutcome::ThreadCancelled => {
+                self.notify_tool_exit(
+                    tool,
+                    (pid, pid),
+                    &global_state,
+                    &config,
+                    thread_state,
+                    ExitStatus::SUCCESS,
+                )
+                .await?;
+                return Ok(global_state);
+            }
             HandlerOutcome::RuntimeError(error) => return Err(error),
             HandlerOutcome::TailInjected { .. } => {}
         }
@@ -1513,6 +1593,18 @@ impl KvmBackend {
                                 }
                                 HandlerOutcome::TailInjected { result, .. } => {
                                     result_to_raw(result)
+                                }
+                                HandlerOutcome::ThreadCancelled => {
+                                    self.notify_tool_exit(
+                                        tool,
+                                        (pid, pid),
+                                        &global_state,
+                                        &config,
+                                        thread_state,
+                                        ExitStatus::SUCCESS,
+                                    )
+                                    .await?;
+                                    return Ok(global_state);
                                 }
                                 HandlerOutcome::RuntimeError(error) => return Err(error),
                             };
@@ -1633,7 +1725,7 @@ impl KvmBackend {
         subscriptions: &Subscription,
         stack_checked_out: &Arc<AtomicBool>,
         thread_entry: bool,
-    ) -> Result<Option<PendingSignal>>
+    ) -> Result<CallbackOutcome<Option<PendingSignal>>>
     where
         T: Tool + 'static,
         T::ThreadState: 'static,
@@ -1666,8 +1758,10 @@ impl KvmBackend {
                     thread_entry,
                 )
                 .await?;
-            if pending.is_some()
-                || executor.has_pending_exit()
+            if matches!(
+                pending,
+                CallbackOutcome::ThreadCancelled | CallbackOutcome::Completed(Some(_))
+            ) || executor.has_pending_exit()
                 || !executor.has_eligible_pending_signal()
             {
                 return Ok(pending);
@@ -1697,7 +1791,7 @@ impl KvmBackend {
         stack_checked_out: &Arc<AtomicBool>,
         fault: Option<&PageZeroFault>,
         thread_entry: bool,
-    ) -> Result<Option<PendingSignal>>
+    ) -> Result<CallbackOutcome<Option<PendingSignal>>>
     where
         T: Tool + 'static,
         T::ThreadState: 'static,
@@ -1711,7 +1805,7 @@ impl KvmBackend {
                 .take_pending_signal_for_delivery()
                 .map_err(|errno| Error::Reverie(errno.into()))?
             else {
-                return Ok(None);
+                return Ok(CallbackOutcome::Completed(None));
             };
             pending
         };
@@ -1780,6 +1874,10 @@ impl KvmBackend {
                 );
                 return Err(error);
             }
+            HandlerOutcome::ThreadCancelled => {
+                self.start_pending_tool_children(executor, &pending_child_starts)?;
+                return Ok(CallbackOutcome::ThreadCancelled);
+            }
             HandlerOutcome::RuntimeError(error) => {
                 return Err(self.cleanup_unstarted_tool_children_after_error(
                     executor,
@@ -1817,12 +1915,12 @@ impl KvmBackend {
                     executor.signal_disposition(pending.event.signal())
                         == crate::executor::SignalDisposition::Ignore
                 }) {
-                    Ok(None)
+                    Ok(CallbackOutcome::Completed(None))
                 } else {
-                    Ok(pending)
+                    Ok(CallbackOutcome::Completed(pending))
                 }
             }
-            None => Ok(None),
+            None => Ok(CallbackOutcome::Completed(None)),
         }
     }
 
@@ -1890,12 +1988,25 @@ impl KvmBackend {
             drive_handler(
                 tool.handle_thread_start(&mut guest),
                 handler_signal,
-                pending_child_starts,
+                pending_child_starts.clone(),
             )
             .await
         };
         hide_tool_scratch(&memory, tool_stack_top)?;
         match start_outcome {
+            HandlerOutcome::ThreadCancelled => {
+                self.start_pending_tool_children(executor, &pending_child_starts)?;
+                return self
+                    .finish_cancelled_tool_thread(
+                        executor,
+                        tool,
+                        (pid, tid),
+                        global_state.as_ref(),
+                        config,
+                        thread_state,
+                    )
+                    .await;
+            }
             HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
             HandlerOutcome::RuntimeError(error) => return Err(error),
             HandlerOutcome::TailInjected { .. } => {}
@@ -1951,7 +2062,7 @@ impl KvmBackend {
                 .iter_syscalls()
                 .any(|number| number == reverie::syscalls::Sysno::execve)
             {
-                run_initial_exec_handler(
+                let initial_outcome = run_initial_exec_handler(
                     self,
                     &tool,
                     pid,
@@ -1965,6 +2076,18 @@ impl KvmBackend {
                     &stack_checked_out,
                 )
                 .await?;
+                if matches!(initial_outcome, CallbackOutcome::ThreadCancelled) {
+                    return self
+                        .finish_cancelled_tool_thread(
+                            executor,
+                            tool,
+                            (pid, tid),
+                            global_state.as_ref(),
+                            config,
+                            thread_state,
+                        )
+                        .await;
+                }
                 auxv = executor.auxv().to_vec();
                 if let Some(exit) = executor.take_exit() {
                     if exit.group {
@@ -1987,7 +2110,7 @@ impl KvmBackend {
                     return Ok((exit.status, stdout, stderr));
                 }
             }
-            let post_exec_error = run_post_exec_handler(
+            let post_exec_outcome = run_post_exec_handler(
                 self,
                 &tool,
                 pid,
@@ -2000,8 +2123,23 @@ impl KvmBackend {
                 subscriptions,
                 &stack_checked_out,
             )
-            .await
-            .err();
+            .await;
+            let post_exec_error = match post_exec_outcome {
+                Ok(CallbackOutcome::ThreadCancelled) => {
+                    return self
+                        .finish_cancelled_tool_thread(
+                            executor,
+                            tool,
+                            (pid, tid),
+                            global_state.as_ref(),
+                            config,
+                            thread_state,
+                        )
+                        .await;
+                }
+                Ok(CallbackOutcome::Completed(())) => None,
+                Err(error) => Some(error),
+            };
             if let Some(error) = post_exec_error {
                 self.clear_registered_worker_tid_before_exit(executor);
                 self.notify_tool_exit(
@@ -2043,6 +2181,21 @@ impl KvmBackend {
                     true,
                 )
                 .await?;
+            let pending = match pending {
+                CallbackOutcome::Completed(pending) => pending,
+                CallbackOutcome::ThreadCancelled => {
+                    return self
+                        .finish_cancelled_tool_thread(
+                            executor,
+                            tool,
+                            (pid, tid),
+                            global_state.as_ref(),
+                            config,
+                            thread_state,
+                        )
+                        .await;
+                }
+            };
             if !executor.has_pending_exit()
                 && let Some(pending) = pending
             {
@@ -2153,6 +2306,21 @@ impl KvmBackend {
                             false,
                         )
                         .await?;
+                    let pending = match pending {
+                        CallbackOutcome::Completed(pending) => pending,
+                        CallbackOutcome::ThreadCancelled => {
+                            return self
+                                .finish_cancelled_tool_thread(
+                                    executor,
+                                    tool,
+                                    (pid, tid),
+                                    global_state.as_ref(),
+                                    config,
+                                    thread_state,
+                                )
+                                .await;
+                        }
+                    };
                     if let Some((segment, address)) = executor.take_segment() {
                         set_user_segment_base(&self.vcpu, segment, address)?;
                     }
@@ -2236,6 +2404,21 @@ impl KvmBackend {
                             false,
                         )
                         .await?;
+                    let pending = match pending {
+                        CallbackOutcome::Completed(pending) => pending,
+                        CallbackOutcome::ThreadCancelled => {
+                            return self
+                                .finish_cancelled_tool_thread(
+                                    executor,
+                                    tool,
+                                    (pid, tid),
+                                    global_state.as_ref(),
+                                    config,
+                                    thread_state,
+                                )
+                                .await;
+                        }
+                    };
                     if let Some((segment, address)) = executor.take_segment() {
                         set_user_segment_base(&self.vcpu, segment, address)?;
                     }
@@ -2398,6 +2581,19 @@ impl KvmBackend {
                                 handler_process_completed,
                                 false,
                             ),
+                            HandlerOutcome::ThreadCancelled => {
+                                self.start_pending_tool_children(executor, &pending_child_starts)?;
+                                return self
+                                    .finish_cancelled_tool_thread(
+                                        executor,
+                                        tool,
+                                        (pid, tid),
+                                        global_state.as_ref(),
+                                        config,
+                                        thread_state,
+                                    )
+                                    .await;
+                            }
                             HandlerOutcome::RuntimeError(error) => {
                                 return Err(self.cleanup_unstarted_tool_children_after_error(
                                     executor,
@@ -2472,7 +2668,7 @@ impl KvmBackend {
             }
             if replaced_image {
                 auxv = executor.auxv().to_vec();
-                let post_exec_error = run_post_exec_handler(
+                let post_exec_outcome = run_post_exec_handler(
                     self,
                     &tool,
                     pid,
@@ -2485,8 +2681,23 @@ impl KvmBackend {
                     subscriptions,
                     &stack_checked_out,
                 )
-                .await
-                .err();
+                .await;
+                let post_exec_error = match post_exec_outcome {
+                    Ok(CallbackOutcome::ThreadCancelled) => {
+                        return self
+                            .finish_cancelled_tool_thread(
+                                executor,
+                                tool,
+                                (pid, tid),
+                                global_state.as_ref(),
+                                config,
+                                thread_state,
+                            )
+                            .await;
+                    }
+                    Ok(CallbackOutcome::Completed(())) => None,
+                    Err(error) => Some(error),
+                };
                 if let Some(error) = post_exec_error {
                     self.clear_registered_worker_tid_before_exit(executor);
                     self.notify_tool_exit(
@@ -2524,6 +2735,21 @@ impl KvmBackend {
                         false,
                     )
                     .await?;
+                let pending = match pending {
+                    CallbackOutcome::Completed(pending) => pending,
+                    CallbackOutcome::ThreadCancelled => {
+                        return self
+                            .finish_cancelled_tool_thread(
+                                executor,
+                                tool,
+                                (pid, tid),
+                                global_state.as_ref(),
+                                config,
+                                thread_state,
+                            )
+                            .await;
+                    }
+                };
                 if let Some((segment, address)) = executor.take_segment() {
                     set_user_segment_base(&self.vcpu, segment, address)?;
                 }
@@ -3181,6 +3407,9 @@ mod tests {
             }
             HandlerOutcome::RuntimeError(error) => panic!("unexpected tail refusal: {error}"),
             HandlerOutcome::TailInjected { .. } => panic!("tail injection unexpectedly ran"),
+            HandlerOutcome::ThreadCancelled => {
+                panic!("tail injection unexpectedly cancelled the thread")
+            }
             HandlerOutcome::Returned(_) => panic!("tail injection unexpectedly returned"),
         }
     }
@@ -3406,3 +3635,7 @@ mod tests {
         let _second = KvmStack::new(memory, TOOL_STACK_TOP, checked_out);
     }
 }
+
+#[cfg(test)]
+#[path = "terminal_runtime_tests.rs"]
+mod terminal_tests;

@@ -13852,3 +13852,6 @@ fn pipe_fionread_native_and_kvm_complete_contract() {
         }
     }
 }
+
+#[path = "support/terminal_cancellation.rs"]
+mod terminal_cancellation;
