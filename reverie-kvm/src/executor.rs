@@ -2370,25 +2370,203 @@ impl ElfExecutor {
         Ok(())
     }
 
+    fn validate_child_exit_signal_event(
+        &self,
+        event: reverie::SignalEvent,
+    ) -> Result<(), (reverie::ChildExitSignalErrorKind, reverie::syscalls::Errno)> {
+        use reverie::ChildExitSignalErrorKind::Invalid;
+        use reverie::ChildExitSignalErrorKind::Unsupported;
+        use reverie::syscalls::Errno;
+
+        let info = event.siginfo();
+        let code = i32::from_ne_bytes(info[8..12].try_into().expect("siginfo code"));
+        if event.signal() != libc::SIGCHLD || code != libc::CLD_EXITED {
+            return Err((Unsupported, Errno::ENOSYS));
+        }
+        let reverie::SignalTarget::Process { pid } = event.target() else {
+            return Err((Unsupported, Errno::ENOSYS));
+        };
+        if pid.as_raw() <= 0 || pid.as_raw() != self.state.pid {
+            return Err((Invalid, Errno::ESRCH));
+        }
+        let errno = i32::from_ne_bytes(info[4..8].try_into().expect("siginfo errno"));
+        let child = i32::from_ne_bytes(info[16..20].try_into().expect("siginfo child pid"));
+        let status = i32::from_ne_bytes(info[24..28].try_into().expect("siginfo child status"));
+        let user_time = i64::from_ne_bytes(info[32..40].try_into().expect("siginfo child utime"));
+        let system_time = i64::from_ne_bytes(info[40..48].try_into().expect("siginfo child stime"));
+        if errno != 0
+            || child <= 0
+            || !(0..=255).contains(&status)
+            || user_time < 0
+            || system_time < 0
+        {
+            return Err((Invalid, Errno::EINVAL));
+        }
+        Ok(())
+    }
+
+    /// Publishes a Tool-selected normal child-exit event into its process's
+    /// pending set. The Tool owns child identity/status provenance; the backend
+    /// owns receiver validation, coalescing, and the later delivery boundary.
+    pub(crate) fn queue_child_exit_signal(
+        &mut self,
+        event: reverie::SignalEvent,
+    ) -> reverie::ChildExitSignalOutcome {
+        use reverie::ChildExitSignalDisposition::Ignored;
+        use reverie::ChildExitSignalDisposition::PendingBlocked;
+        use reverie::ChildExitSignalDisposition::PendingEligible;
+        use reverie::ChildExitSignalErrorKind::Backend;
+        use reverie::ChildExitSignalErrorKind::Invalid;
+        use reverie::ChildExitSignalErrorKind::Unsupported;
+        use reverie::ChildExitSignalOutcome::Accepted;
+        use reverie::ChildExitSignalOutcome::FailedAfterCommit;
+        use reverie::ChildExitSignalOutcome::RejectedBeforeCommit;
+        use reverie::syscalls::Errno;
+
+        if let Err((kind, errno)) = self.validate_child_exit_signal_event(event) {
+            return RejectedBeforeCommit { kind, errno };
+        }
+        if self.has_pending_exit() {
+            return RejectedBeforeCommit {
+                kind: Invalid,
+                errno: Errno::ESRCH,
+            };
+        }
+        let (disposition, pending_generation, coalesced, matching_fds) = {
+            // Keep lifecycle -> process signal -> thread signal lock order.
+            // No task retirement or sibling registration may cross publication.
+            let lifecycle = self
+                .state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !lifecycle.get(self.state.tid).is_some_and(|task| {
+                task.generation == self.task_generation && task.tgid == self.state.pid
+            }) {
+                return RejectedBeforeCommit {
+                    kind: Invalid,
+                    errno: Errno::ESRCH,
+                };
+            }
+            if !self.is_thread_group_leader()
+                || lifecycle.has_live_sibling(self.state.tid, self.state.pid)
+                || matches!(&self.process_action, Some(ProcessAction::Thread { .. }))
+            {
+                return RejectedBeforeCommit {
+                    kind: Unsupported,
+                    errno: Errno::ENOSYS,
+                };
+            }
+            let mut process = self
+                .state
+                .process_signals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let generation = process.pending_generation(libc::SIGCHLD);
+            if process
+                .dispositions
+                .get(&libc::SIGCHLD)
+                .is_some_and(|action| action.is_ignored())
+            {
+                // Linux do_notify_parent suppresses explicit SIG_IGN even
+                // when blocked. SIG_DFL and SA_NOCLDWAIT do not do so.
+                return Accepted {
+                    disposition: Ignored,
+                    pending_generation: generation,
+                    coalesced: false,
+                };
+            }
+            let blocked = self
+                .state
+                .thread_signals
+                .lock()
+                .blocked
+                .contains(libc::SIGCHLD);
+            let matching_fds = process
+                .signalfd_masks
+                .iter()
+                .filter_map(|(&fd, mask)| mask.contains(libc::SIGCHLD).then_some(fd))
+                .collect::<Vec<_>>();
+            if matching_fds
+                .iter()
+                .any(|fd| !self.state.files.contains_key(fd))
+            {
+                return RejectedBeforeCommit {
+                    kind: Backend,
+                    errno: Errno::EBADF,
+                };
+            }
+            let inserted = match process.shared_pending.enqueue(event, generation) {
+                Ok(inserted) => inserted,
+                Err(errno) => {
+                    return RejectedBeforeCommit {
+                        kind: Backend,
+                        errno,
+                    };
+                }
+            };
+            (
+                if blocked {
+                    PendingBlocked
+                } else {
+                    PendingEligible
+                },
+                generation,
+                !inserted,
+                matching_fds,
+            )
+        };
+        // The pending operation has committed. Keep all state locks released
+        // over bounded eventfd I/O and preserve this distinction on failure.
+        for fd in matching_fds {
+            let file = self
+                .state
+                .files
+                .get(&fd)
+                .expect("preflighted signalfd disappeared");
+            if let Err(error) = set_signalfd_ready(file, true) {
+                return FailedAfterCommit {
+                    errno: Errno::new(i32::try_from(-error).unwrap_or(libc::EIO)),
+                    pending_generation,
+                };
+            }
+        }
+        Accepted {
+            disposition,
+            pending_generation,
+            coalesced,
+        }
+    }
+
     /// Resolves the exact event returned by a Tool hook for this boundary.
     ///
-    /// If the replacement is blocked, preserve it in this selected thread's
-    /// pending set and end the boundary. Otherwise return it directly so the
+    /// If the replacement is blocked, preserve its thread or process pending
+    /// ownership and end the boundary. Otherwise return it directly so the
     /// delivery path cannot accidentally dequeue a different unfiltered event.
     pub(crate) fn prepare_filtered_signal_delivery(
         &mut self,
         event: reverie::SignalEvent,
     ) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
-        self.validate_deferred_signal_event(event)?;
+        let child_exit = event.signal() == libc::SIGCHLD;
+        if child_exit {
+            self.validate_child_exit_signal_event(event)
+                .map_err(|(_, errno)| errno)?;
+        } else {
+            self.validate_deferred_signal_event(event)?;
+        }
         if signal_is_blocked(&self.state, event.signal()) {
-            queue_signal_event(&mut self.state, event, false).map_err(|raw| {
+            queue_signal_event(&mut self.state, event, child_exit).map_err(|raw| {
                 reverie::syscalls::Errno::new(i32::try_from(-raw).unwrap_or(libc::EIO))
             })?;
             return Ok(None);
         }
         Ok(Some(PendingSignal {
             event,
-            domain: PendingSignalDomain::Thread,
+            domain: if child_exit {
+                PendingSignalDomain::Process
+            } else {
+                PendingSignalDomain::Thread
+            },
         }))
     }
 
@@ -6211,6 +6389,12 @@ fn encode_signalfd_siginfo(event: reverie::SignalEvent) -> [u8; SIGNALFD_RECORD_
         let value = u64::from_ne_bytes(raw[24..32].try_into().expect("siginfo timer value"));
         info.ssi_ptr = value;
         info.ssi_int = value as i32;
+    } else if info.ssi_signo == libc::SIGCHLD as u32 && info.ssi_code == libc::CLD_EXITED {
+        info.ssi_pid = u32::from_ne_bytes(raw[16..20].try_into().expect("siginfo child pid"));
+        info.ssi_uid = u32::from_ne_bytes(raw[20..24].try_into().expect("siginfo child uid"));
+        info.ssi_status = i32::from_ne_bytes(raw[24..28].try_into().expect("siginfo child status"));
+        info.ssi_utime = u64::from_ne_bytes(raw[32..40].try_into().expect("siginfo child utime"));
+        info.ssi_stime = u64::from_ne_bytes(raw[40..48].try_into().expect("siginfo child stime"));
     } else {
         // SI_USER, SI_TKILL, and the accepted SIGALRM/SI_KERNEL producer use
         // the kill-style pid/uid arm of siginfo_t.
@@ -13137,6 +13321,7 @@ mod tests {
     static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(0);
 
     include!("pipe_fionread_tests.rs");
+    include!("child_exit_signal_tests.rs");
 
     #[test]
     fn proc_root_identity_requires_qualified_mount_and_directory() {

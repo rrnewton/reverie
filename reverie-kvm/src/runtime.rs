@@ -228,6 +228,13 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
         Err(Errno::ENOSYS)
     }
 
+    fn queue_child_exit_signal(&mut self, _event: SignalEvent) -> reverie::ChildExitSignalOutcome {
+        reverie::ChildExitSignalOutcome::RejectedBeforeCommit {
+            kind: reverie::ChildExitSignalErrorKind::Unsupported,
+            errno: Errno::ENOSYS,
+        }
+    }
+
     fn ordinary_injection_allowed(&self, _request: &SyscallRequest) -> bool {
         true
     }
@@ -440,6 +447,21 @@ where
             // Initial-start/post-exec callbacks do not have that transport.
             // Refuse rather than silently delaying until an unrelated syscall.
             _ => Err(Errno::ENOSYS),
+        }
+    }
+
+    fn queue_child_exit_signal(&mut self, event: SignalEvent) -> reverie::ChildExitSignalOutcome {
+        match self.process_context {
+            ProcessExecutionContext::SignalBoundary(_)
+            | ProcessExecutionContext::FaultBoundary(_)
+            | ProcessExecutionContext::SyscallBoundary(_)
+            | ProcessExecutionContext::ThreadEntrySignal => {
+                self.executor.queue_child_exit_signal(event)
+            }
+            _ => reverie::ChildExitSignalOutcome::RejectedBeforeCommit {
+                kind: reverie::ChildExitSignalErrorKind::Unsupported,
+                errno: Errno::ENOSYS,
+            },
         }
     }
 
@@ -724,6 +746,13 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         self.executor
             .defer_signal_delivery(event)
             .map_err(Into::into)
+    }
+
+    async fn queue_child_exit_signal(
+        &mut self,
+        event: SignalEvent,
+    ) -> reverie::ChildExitSignalOutcome {
+        self.executor.queue_child_exit_signal(event)
     }
 
     async fn stack(&mut self) -> Self::Stack {
@@ -3727,3 +3756,7 @@ mod tests {
 #[cfg(test)]
 #[path = "terminal_runtime_tests.rs"]
 mod terminal_tests;
+
+#[cfg(test)]
+#[path = "child_exit_runtime_tests.rs"]
+mod child_exit_tests;
