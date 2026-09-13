@@ -13858,3 +13858,6 @@ mod terminal_cancellation;
 
 #[path = "support/exec_worker_error_diagnostic.rs"]
 mod exec_worker_error_diagnostic;
+
+#[path = "support/child_exit_signals.rs"]
+mod child_exit_signals;
