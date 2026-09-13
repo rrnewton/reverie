@@ -3605,7 +3605,7 @@ fn decode_guest_iovecs(
     memory: &GuestMemory,
     address: u64,
     raw_count: u64,
-) -> Result<(Vec<GuestIoVec>, usize), i64> {
+) -> Result<(Vec<GuestIoVec>, usize, usize), i64> {
     let Ok(count) = usize::try_from(raw_count) else {
         return Err(negative_errno(libc::EINVAL));
     };
@@ -3659,7 +3659,7 @@ fn decode_guest_iovecs(
         });
         total += length;
     }
-    Ok((vectors, total))
+    Ok((vectors, total, kernel_total))
 }
 
 fn validate_positioned_vectored_offset(number: libc::c_long, args: &[u64; 6]) -> Result<(), i64> {
@@ -3888,7 +3888,7 @@ fn vectored_io(
         return error;
     }
 
-    let (guest_iovecs, total) = match decode_guest_iovecs(memory, args[1], args[2]) {
+    let (guest_iovecs, total, kernel_total) = match decode_guest_iovecs(memory, args[1], args[2]) {
         Ok(decoded) => decoded,
         Err(error) => return error,
     };
@@ -3935,6 +3935,19 @@ fn vectored_io(
         );
     }
     let host_fd = descriptor.expect("validated guest descriptor disappeared");
+    if kernel_total > total {
+        let flags = match fd_status_flags(host_fd) {
+            Ok(flags) => flags,
+            Err(error) => return error,
+        };
+        if flags & libc::O_DIRECT != 0 {
+            // The private staging cap must not turn an originally unaligned
+            // length or trailing vector into a valid direct-I/O request. Larger
+            // O_DIRECT operations are unsupported until the full kernel-sized
+            // vector shape can be preserved. Refuse before any data transfer.
+            return negative_errno(libc::EOPNOTSUPP);
+        }
+    }
     let staging_alignment = direct_io_memory_alignment(host_fd);
 
     // Give the host one iovec for every bounded guest iovec, with the same
@@ -16451,8 +16464,9 @@ mod tests {
         // address validation. The independent 16 MiB supervisor bound then
         // retains that prefix without inventing EINVAL.
         write_guest_iovecs(&mut memory, IOV, &[(DATA, isize::MAX as usize), (DATA, 1)]);
-        let (bounded, total) = decode_guest_iovecs(&memory, IOV, 2).unwrap();
+        let (bounded, total, kernel_total) = decode_guest_iovecs(&memory, IOV, 2).unwrap();
         assert_eq!(total, MAX_HOST_IO);
+        assert_eq!(kernel_total, MAX_RW_COUNT);
         assert_eq!(
             bounded
                 .iter()
@@ -16468,8 +16482,9 @@ mod tests {
             IOV,
             &[(DATA, MAX_HOST_IO), (DATA, 1), (X86_64_GUEST_USER_LIMIT, 0)],
         );
-        let (bounded, total) = decode_guest_iovecs(&memory, IOV, 3).unwrap();
+        let (bounded, total, kernel_total) = decode_guest_iovecs(&memory, IOV, 3).unwrap();
         assert_eq!(total, MAX_HOST_IO);
+        assert_eq!(kernel_total, MAX_HOST_IO + 1);
         assert_eq!(bounded.len(), 3);
         assert_eq!(
             bounded
@@ -34304,6 +34319,66 @@ mod tests {
                 [0xFFFF_FFFF, 0, 0, 0, 0, 0],
             ),
             negative_errno(libc::ECHILD)
+        );
+    }
+    #[test]
+    fn vectored_direct_io_above_staging_limit_is_refused_without_effects() {
+        const IOV: u64 = 0x1000;
+        const DATA: u64 = 0x10000;
+        let root = TestDir::new();
+        let seed = vec![b'f'; 8192];
+        let sentinel = vec![b'm'; MAX_HOST_IO + PAGE_SIZE as usize];
+        let mut observed = Vec::new();
+        for number in [
+            libc::SYS_readv,
+            libc::SYS_writev,
+            libc::SYS_preadv,
+            libc::SYS_pwritev,
+            libc::SYS_preadv2,
+            libc::SYS_pwritev2,
+        ] {
+            for separate_tail in [false, true] {
+                let path = root.0.join(format!("direct-cap-{number}-{separate_tail}"));
+                std::fs::write(&path, &seed).unwrap();
+                let mut file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .custom_flags(libc::O_DIRECT)
+                    .open(&path)
+                    .unwrap();
+                file.seek(SeekFrom::Start(4096)).unwrap();
+                let mut state = test_state(&root.0);
+                state.files.insert(3, file);
+                let mut memory = GuestMemory::new(0, DATA as usize + sentinel.len()).unwrap();
+                memory.write(DATA, &sentinel).unwrap();
+                let vectors = if separate_tail {
+                    vec![(DATA, MAX_HOST_IO), (DATA + MAX_HOST_IO as u64, 1)]
+                } else {
+                    vec![(DATA, MAX_HOST_IO + 1)]
+                };
+                write_guest_iovecs(&mut memory, IOV, &vectors);
+                let result = syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [3, IOV, vectors.len() as u64, 0, 0, 0],
+                );
+                let mut bytes = vec![0; sentinel.len()];
+                memory.read(DATA, &mut bytes).unwrap();
+                let position = state.files.get_mut(&3).unwrap().stream_position().unwrap();
+                let file_unchanged = std::fs::read(&path).unwrap() == seed;
+                let memory_unchanged = bytes == sentinel;
+                eprintln!(
+                    "number={number} separate_tail={separate_tail} result={result} position={position} file_unchanged={file_unchanged} memory_unchanged={memory_unchanged}"
+                );
+                observed.push((result, position, file_unchanged, memory_unchanged));
+                drop(state);
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+        assert_eq!(
+            observed,
+            vec![(negative_errno(libc::EOPNOTSUPP), 4096, true, true); 12]
         );
     }
 }
