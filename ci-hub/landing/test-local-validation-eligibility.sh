@@ -53,6 +53,7 @@ neg_total=0
 pos_admitted=0
 pos_total=0
 fail=0
+check_index=0
 # Sub-tallies for the label-independence pair reported in the legacy summary
 # line that ci-hub/tests/test_operational_bounds.py asserts on.
 unbacked_refused=0
@@ -68,7 +69,7 @@ pass_row() {
     profile: "full", selection_mode: "full", result: "pass", raw_result: "pass",
     exit_code: 0, checks: 1, failures: 0, gates_run: 1, gates_expected: 1,
     gates: [{name: "fixture", result: "pass", exit_code: 0}],
-    executed_tests: 42, filtered_tests: 0,
+    executed_tests: 42, passed_tests: 42, filtered_tests: 0,
     producer: "hermit-validate-sh",
     admission: "ci-hub-validate-lock",
     concurrent_validates: 0,
@@ -111,10 +112,14 @@ tampered_row() { pass_row "$HEAD_SHA" | jq -c "$1"; }
 # exported CI_HUB_VALIDATE_STATUS_BIN) and records the outcome on the right side.
 check() {
   local side=$1 expected_rc=$2 expected_verdict=$3 name=$4; shift 5
-  local output rc verdict status=OK
-  rm -rf -- "$canonical_root/ledger"
-  mkdir -p -- "$canonical_root"
-  ROOT="$root" CANONICAL_ROOT="$canonical_root" RAW_LEDGER="$ledger" python3 -c '
+  local output rc verdict status=OK check_root
+  check_index=$((check_index + 1))
+  check_root=$canonical_root/check-$check_index
+  mkdir -p -- "$check_root"
+  # Every bracket gets its own canonical root. The event writer stores live
+  # rows outside ledger/, so deleting only that published path let a preceding
+  # same-SHA negative contaminate the following positive control.
+  ROOT="$root" CANONICAL_ROOT="$check_root" RAW_LEDGER="$ledger" python3 -c '
 import json, os, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(os.environ["ROOT"]) / "ci-hub" / "ledger"))
@@ -127,7 +132,7 @@ if source.is_file():
 '
   set +e
   output=$(HERMIT_VALIDATE_STOP_TEST_MODE=1 \
-    CI_HUB_VALIDATE_LEDGER_TEST_ROOT="$canonical_root" \
+    CI_HUB_VALIDATE_LEDGER_TEST_ROOT="$check_root" \
     "$helper" "$@" 2>&1)
   rc=$?
   set -e
@@ -195,19 +200,29 @@ profile=fast|.profile = "fast"
 selection_mode=affected|.selection_mode = "affected"
 result=fail (bare)|.result = "fail"
 executed_tests=0|.executed_tests = 0
-executed_tests absent|del(.executed_tests)
+executed_tests absent|del(.executed_tests) | del(.passed_tests)
+passed_tests absent|del(.passed_tests)
+passed_tests null|.passed_tests = null
+passed_tests mismatched|.passed_tests = 41
 coverage absent|del(.coverage)
 coverage.zero_executed_nodes|.coverage.zero_executed_nodes = ["detcore"]
 coverage.absent_nodes|.coverage.absent_nodes = ["detcore"]
 coverage.planned_test_nodes=0|.coverage.planned_test_nodes = 0
 failures=1|.failures = 1
 base_sha absent|del(.base_sha)
-schema 3, counts stripped|.schema_version = 3 | del(.executed_tests) | del(.filtered_tests)
+schema 3, counts stripped|.schema_version = 3 | del(.executed_tests) | del(.passed_tests) | del(.filtered_tests)
 CASES
 
 # --- KNOWN-FAILING: a durable clean full-coverage FAIL for the exact head ---
 fail_row "$HEAD_SHA" >"$ledger"
 check NEG 3 ELIGIBILITY=KNOWN_FAILED "durable FAIL for head + label PLANTED" -- \
+  "$HEAD_SHA" "locally-validated"
+
+# A qualifying PASS does not erase a durable failure for the same exact SHA.
+# Keep this separate from the positive foreign-row bracket below: the two
+# controls exercise failure latching and exact-head selection respectively.
+{ fail_row "$HEAD_SHA"; pass_row "$HEAD_SHA"; } >"$ledger"
+check NEG 3 ELIGIBILITY=KNOWN_FAILED "same-SHA failure remains latched beside pass" -- \
   "$HEAD_SHA" "locally-validated"
 
 # --- malformed input: refused before any ledger is consulted ---------------
@@ -244,12 +259,11 @@ check POS 0 ELIGIBILITY=VALIDATED "backed head, label present" -- \
 [ "$LAST_STATUS" = OK ] && backed_admitted=$((backed_admitted + 1))
 check POS 0 ELIGIBILITY=VALIDATED "backed head, unrelated labels only" -- \
   "$HEAD_SHA" "mechanism:landing,post-facto-human-review"
-# The green must survive being surrounded by foreign and superseded records.
-# NOTE (designed, pinned here so a change is visible): a same-commit durable
-# FAIL does NOT veto a qualifying pass — the ledger does not latch, and the fail
-# is reported as a flake signal instead.
-{ pass_row "$OTHER_SHA"; fail_row "$HEAD_SHA"; pass_row "$HEAD_SHA"; pass_row "$THIRD_SHA"; } >"$ledger"
-check POS 0 ELIGIBILITY=VALIDATED "backed head amid foreign + superseded-fail rows" -- \
+# The exact-head green must survive being surrounded by foreign PASS and FAIL
+# records. Keep the durable failure on a distinct SHA: this bracket tests
+# exact-head selection, not the separate same-SHA failure-latching policy.
+{ pass_row "$OTHER_SHA"; fail_row "$THIRD_SHA"; pass_row "$HEAD_SHA"; } >"$ledger"
+check POS 0 ELIGIBILITY=VALIDATED "backed head amid foreign pass/fail rows" -- \
   "$HEAD_SHA" "locally-validated"
 
 echo

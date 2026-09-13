@@ -159,6 +159,7 @@ make_receipt() {
         ],
         failures: 0,
         executed_tests: $executed,
+        passed_tests: $executed,
         filtered_tests: 0,
         log_file: "/tmp/validate.log"
       }
@@ -214,7 +215,7 @@ write_comments() {
 # normalized. So the anchor compares CANONICAL CONTENT (`jq -S -c`), which is
 # what "the mutation changed the receipt" actually means.
 mutation_anchor_failures=0
-mutation_anchors_total=34
+mutation_anchors_total=35
 assert_mutated() { # assert_mutated <base> <mutant> <label>
     local a b
     a=$(jq -S -c . "$1" 2>/dev/null) || a="<unparseable:$1>"
@@ -943,6 +944,7 @@ jq -cn --arg sha "$sha" --arg log "$strong_log" --arg cwd "$producer_repo" '{
   raw_result: "pass",
   exit_code: 0,
   executed_tests: 12,
+  passed_tests: 12,
   filtered_tests: 3,
   checks: 2,
   gates_run: 2,
@@ -992,6 +994,18 @@ if ! "$verifier" --sha "$sha" --comments "$tmp/comments.json" \
     echo "FAIL: strong-row -> artifact-digest -> marker chain was refused" >&2
     exit 1
 fi
+
+# Current landing evidence must carry the framework-owned pass count. Refresh
+# the selected-row identity and outer artifact digest so refusal is attributable
+# only to the missing field, not to stale identity bytes.
+jq 'del(.ledger_record.passed_tests)' \
+    "$tmp/strong-artifact.json" >"$tmp/strong-no-passed-raw.json"
+assert_mutated "$tmp/strong-artifact.json" "$tmp/strong-no-passed-raw.json" \
+    "COUNT current receipt omitted passed_tests"
+refresh_selected_identity "$tmp/strong-no-passed-raw.json" \
+    "$tmp/strong-no-passed.json"
+verify_file "$tmp/strong-no-passed.json" fail \
+    "current receipt omitted passed_tests" '[coordinator, gpt-5.6-sol]'
 
 # A typed empty-manifest omission accounts for one planned node without adding
 # an executed gate or a PASS. Unknown reasons and dependency skips remain red.
@@ -1126,4 +1140,4 @@ if [[ $mutation_anchor_failures -ne 0 ]]; then
     exit 1
 fi
 
-echo "PASS: 2/2 legitimate exact-head landing receipts accepted; production primary 1/1, outgoing bounded legacy 1/1, synthetic lifecycle receipt positives 7/7, and second-rotation promoted-map resolution 1/1 accepted; two crossed + tampered + missing + extra + different-key + malformed + reversed + expired + two version-bounded replay negatives (11/11) refused; outgoing-at-current/previous/tampered/missing-wrapper/wrong-head production definitions (5/5), 2/2 additional identity/compatibility receipts, ${#valid_role_tags[@]}/${#valid_role_tags[@]} valid and ${#invalid_role_tags[@]}/${#invalid_role_tags[@]} malformed role tags, derived-enum positive 1/1 and underivable-enum negatives 3/3, current-tagged identity omission, malformed legacy identity, tampered selected-row digest after outer rehash, current-tagged weak row, stale-head, forged, tampered, zero-executed, host-mismatch, host-absent, five incomplete schema5 coverage controls and 1/1 missing-base control refused; all ${mutation_anchors_total} mutation anchors changed canonical content; fixture plant deleted cleanly"
+echo "PASS: 2/2 legitimate exact-head landing receipts accepted; production primary 1/1, outgoing bounded legacy 1/1, synthetic lifecycle receipt positives 7/7, and second-rotation promoted-map resolution 1/1 accepted; two crossed + tampered + missing + extra + different-key + malformed + reversed + expired + two version-bounded replay negatives (11/11) refused; outgoing-at-current/previous/tampered/missing-wrapper/wrong-head production definitions (5/5), 2/2 additional identity/compatibility receipts, ${#valid_role_tags[@]}/${#valid_role_tags[@]} valid and ${#invalid_role_tags[@]}/${#invalid_role_tags[@]} malformed role tags, derived-enum positive 1/1 and underivable-enum negatives 3/3, current-tagged identity omission, malformed legacy identity, tampered selected-row digest after outer rehash, current-tagged weak row, current receipt missing passed_tests, stale-head, forged, tampered, zero-executed, host-mismatch, host-absent, five incomplete schema5 coverage controls and 1/1 missing-base control refused; all ${mutation_anchors_total} mutation anchors changed canonical content; fixture plant deleted cleanly"

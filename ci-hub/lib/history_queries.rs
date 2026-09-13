@@ -1187,6 +1187,7 @@ mod tests {
             "tree_dirty": false,
             "result": result,
             "executed_tests": 36,
+            "passed_tests": 36,
             "filtered_tests": 0,
             "gates": []
         });

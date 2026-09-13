@@ -57,6 +57,7 @@ def _qualifying_row() -> dict[str, object]:
         "result": "pass",
         "failures": 0,
         "executed_tests": 427,
+        "passed_tests": 427,
         "filtered_tests": 0,
         "checks": 1,
         "gates_run": 1,

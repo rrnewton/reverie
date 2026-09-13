@@ -402,6 +402,7 @@ def _qualifying_schema5_row(sha: str) -> dict:
     row.update(
         schema_version=5,
         executed_tests=6,
+        passed_tests=6,
         filtered_tests=0,
         coverage={
             "planned_test_nodes": 1,
@@ -424,6 +425,7 @@ def _counted_schema5_source(sha: str, log_path: str = "/already-evicted") -> dic
     row.update(
         schema_version=5,
         executed_tests=862,
+        passed_tests=862,
         filtered_tests=693,
         coverage={
             "planned_test_nodes": 19,
@@ -453,8 +455,8 @@ def test_schema5_idempotency_guard_uses_canonical_coverage_authority():
     assert fr._has_satisfied_schema5(tampered) is False
 
 
-def test_exact_row_only_mints_one_and_preserves_every_other_byte(tmp_path, monkeypatch):
-    """Two same-SHA sources and a foreign sentinel bracket exact selection."""
+def test_countless_exact_row_refuses_and_preserves_every_byte(tmp_path, monkeypatch):
+    """A log replay cannot manufacture the framework-owned pass count."""
     sha = "a" * 40
     selected_log = tmp_path / "selected.log"
     selected_log.write_text(_passing_node("test.only", 6))
@@ -482,27 +484,11 @@ def test_exact_row_only_mints_one_and_preserves_every_other_byte(tmp_path, monke
         str(ledger), str(tmp_path), sha, selected_digest
     )
 
-    assert result["satisfied"] and result["sha"] == sha
-    assert result["reason"] == "minted" and result["appended"] == 1
+    assert result["satisfied"] is False and result["sha"] == sha
+    assert result["reason"] == "insufficient-source-row"
+    assert result["appended"] == 0
     out_lines = [l for l in ledger.read_text().splitlines() if l.strip()]
-    assert out_lines[:3] == original_lines
-    assert len(out_lines) == 4
-    minted = json.loads(out_lines[3])
-    assert minted["schema_version"] == 5
-    assert minted["commit"] == sha
-    assert minted["source_marker"] == "selected"
-    assert minted["executed_tests"] == 6
-    assert minted["coverage"]["planned_test_nodes"] == 1
-    assert minted["coverage"]["zero_executed_nodes"] == []
-    assert minted["coverage"]["absent_nodes"] == []
-    assert minted["producer"] == "ci-hub-finalize-receipt"
-    assert minted["finalized_from"] == {
-        "digest_algorithm": "sha256",
-        "canonicalization": fr.RECEIPT_CANONICALIZATION,
-        "digest": selected_digest,
-        "producer": "hermit-validate-sh",
-    }
-    assert minted["commit_anchored"] is True and minted["profile"] == "full"
+    assert out_lines == original_lines
 
 
 def test_counted_schema5_source_preserves_measurement_and_adds_only_base(
@@ -567,14 +553,11 @@ def test_counted_schema5_source_without_admission_remains_refused(
 
 def test_file_registry_does_not_block_finalization(tmp_path, monkeypatch):
     sha = "f" * 40
-    log = tmp_path / "run.log"
-    log.write_text(_passing_node("test.only", 6))
     ledger = tmp_path / "ledger.jsonl"
-    source = _countless_green_row(sha, str(log))
+    source = _counted_schema5_source(sha)
     before = json.dumps(source) + "\n"
     ledger.write_text(before)
     digest = fr.canonical_row_sha256(source, sha)
-    monkeypatch.setattr(fr, "planned_test_nodes", lambda c, s: {"test.only"})
     monkeypatch.setattr(fr, "build_base_evidence", lambda *a: dict(BASE_FIELDS))
 
     def refuse(*_args, **_kwargs):
@@ -589,12 +572,9 @@ def test_file_registry_does_not_block_finalization(tmp_path, monkeypatch):
 
 def test_exact_row_finalization_is_idempotent(tmp_path, monkeypatch):
     sha = "c" * 40
-    log = tmp_path / "run.log"
-    log.write_text(_passing_node("test.only", 4))
     ledger = tmp_path / "l.jsonl"
-    monkeypatch.setattr(fr, "planned_test_nodes", lambda c, s: {"test.only"})
     monkeypatch.setattr(fr, "build_base_evidence", lambda *a: dict(BASE_FIELDS))
-    source = _countless_green_row(sha, str(log))
+    source = _counted_schema5_source(sha)
     ledger.write_text(json.dumps(source) + "\n")
     digest = fr.canonical_row_sha256(source, sha)
 
@@ -610,12 +590,9 @@ def test_exact_row_finalization_is_idempotent(tmp_path, monkeypatch):
 
 def test_exact_row_dry_run_writes_nothing(tmp_path, monkeypatch):
     sha = "d" * 40
-    log = tmp_path / "run.log"
-    log.write_text(_passing_node("test.only", 8))
     ledger = tmp_path / "l.jsonl"
-    monkeypatch.setattr(fr, "planned_test_nodes", lambda c, s: {"test.only"})
     monkeypatch.setattr(fr, "build_base_evidence", lambda *a: dict(BASE_FIELDS))
-    source = _countless_green_row(sha, str(log))
+    source = _counted_schema5_source(sha)
     before = json.dumps(source) + "\n"
     ledger.write_text(before)
     digest = fr.canonical_row_sha256(source, sha)

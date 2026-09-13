@@ -29,6 +29,7 @@ if [[ $command == validate-status ]]; then
     case ${LOCAL_STATE:-no_result} in
         green)
             qualifying_count=${LOCAL_COUNT:-1}
+            schema_version=${LOCAL_SCHEMA_VERSION:-5}
             if [[ $repo == rrnewton/reverie ]]; then
                 reverie_policy=${REVERIE_POLICY:-reverie-local-validation/v4}
                 case $reverie_policy in
@@ -62,7 +63,15 @@ if [[ $command == validate-status ]]; then
             if [[ ${LOCAL_COVERAGE:-full} == partial ]]; then
                 executed_nodes=$((planned - 1))
             fi
-            printf '{"repo":"%s","sha":"%s","verdict":"VALIDATED","exit_code":0,"qualifying_count":%s,"newest_qualifying":{"sha":"%s","profile":"full","selection_mode":"full","coverage_satisfied":true,"coverage_status":"satisfied","coverage":{"planned_test_nodes":%s,"executed_test_nodes":%s,"absent_nodes":[],"zero_executed_nodes":[]},"reverie_validation_policy":"%s","gates":%s,"failures":0,"executed_tests":862,"filtered_tests":350}}\n' "$repo" "$observed_sha" "$qualifying_count" "$observed_sha" "$planned" "$executed_nodes" "$reverie_policy" "$gates"
+            case ${LOCAL_PASSED_TESTS:-exact} in
+                exact) passed_field=',"passed_tests":862' ;;
+                missing) passed_field= ;;
+                null) passed_field=',"passed_tests":null' ;;
+                mismatch) passed_field=',"passed_tests":861' ;;
+                malformed) passed_field=',"passed_tests":"862"' ;;
+                *) exit 2 ;;
+            esac
+            printf '{"repo":"%s","sha":"%s","verdict":"VALIDATED","exit_code":0,"qualifying_count":%s,"newest_qualifying":{"sha":"%s","schema_version":%s,"profile":"full","selection_mode":"full","coverage_satisfied":true,"coverage_status":"satisfied","coverage":{"planned_test_nodes":%s,"executed_test_nodes":%s,"absent_nodes":[],"zero_executed_nodes":[]},"reverie_validation_policy":"%s","gates":%s,"failures":0,"executed_tests":862%s,"filtered_tests":350}}\n' "$repo" "$observed_sha" "$qualifying_count" "$observed_sha" "$schema_version" "$planned" "$executed_nodes" "$reverie_policy" "$gates" "$passed_field"
             exit 0 ;;
         red)
             printf '{"repo":"%s","sha":"%s","verdict":"FAILED","exit_code":3,"qualifying_count":0,"newest_qualifying":null}\n' "$repo" "$observed_sha"
@@ -279,6 +288,10 @@ run_reverie_local_only_case 0 "Reverie local-only preserves qualifying seven-gat
    $last_output == *"HOSTED=not_consulted"* ]] || {
     echo "FAIL: Reverie local-only green did not preserve its seven-gate v3 authority" >&2; exit 1;
 }
+run_reverie_local_only_case 0 "Reverie local-only preserves pre-schema-4 passed-count semantics" \
+    env LOCAL_STATE=green HOSTED_STATE=red \
+    REVERIE_POLICY=reverie-local-validation/v3 \
+    LOCAL_SCHEMA_VERSION=3 LOCAL_PASSED_TESTS=missing
 run_reverie_local_only_case 0 "Reverie local-only admits qualifying eight-gate v5 authority" \
     env LOCAL_STATE=green HOSTED_STATE=red REVERIE_POLICY=reverie-local-validation/v5
 [[ $last_output == *"AUTHORITY=local "* && \
@@ -287,6 +300,16 @@ run_reverie_local_only_case 0 "Reverie local-only admits qualifying eight-gate v
    $last_output == *"HOSTED=not_consulted"* ]] || {
     echo "FAIL: Reverie local-only green did not select its eight-gate v5 authority" >&2; exit 1;
 }
+for schema_version in 4 5; do
+    for passed_shape in missing null mismatch malformed; do
+        run_reverie_local_only_case 4 \
+            "Reverie schema-${schema_version} local-only refuses ${passed_shape} passed_tests" \
+            env LOCAL_STATE=green HOSTED_STATE=red \
+            REVERIE_POLICY=reverie-local-validation/v5 \
+            LOCAL_SCHEMA_VERSION="$schema_version" \
+            LOCAL_PASSED_TESTS="$passed_shape"
+    done
+done
 run_reverie_local_only_case 4 "Reverie v5 refuses incomplete test coverage" \
     env LOCAL_STATE=green HOSTED_STATE=green REVERIE_POLICY=reverie-local-validation/v5 LOCAL_COVERAGE=partial
 run_reverie_local_only_case 0 "Reverie local-only preserves qualifying six-gate v2 authority" \
@@ -331,4 +354,4 @@ env CI_HUB_BIN="$tmp/ci-hub" VERIFY_RECEIPT_BIN="$tmp/verify-receipt" \
     >/dev/null 2>&1 || rc=$?
 [[ $rc -eq 2 ]] || { echo "FAIL: mutually exclusive authority selectors were accepted" >&2; exit 1; }
 
-echo "PASS: historical local/hosted OR positives=5; Hermit local-only positive=1 negatives=3; Reverie local-only positives=5 negatives=4; hosted-only positive=1 negatives=4; cancellation no-results=2; red/partial/stale/unbound/count/coverage/policy negatives=14"
+echo "PASS: historical local/hosted OR positives=5; Hermit local-only positive=1 negatives=3; Reverie local-only positives=6 negatives=12; hosted-only positive=1 negatives=4; cancellation no-results=2; red/partial/stale/unbound/count/coverage/policy negatives=22"

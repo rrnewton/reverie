@@ -34,7 +34,9 @@ PREDICATE = {
         "executed_tests_min": 1,
     },
     "counts_schema": 5,
+    "passed_tests": {"applies_at_schema_min": 4},
     "coverage": {"applies_at_schema_min": 5, "per_node": True},
+    "cell_results": {"applies_at_schema_min": 6, "supported_schema_max": 7},
     "producer": {
         "required": True,
         "applies_from_finished_at": None,
@@ -60,7 +62,12 @@ def _row(**over: object) -> dict:
         "selection_mode": "full",
         "result": "pass",
         "failures": 0,
+        "checks": 1,
+        "gates_run": 1,
+        "gates_expected": 1,
+        "gates": [{"name": "test", "result": "pass", "exit_code": 0}],
         "executed_tests": 100,
+        "passed_tests": 100,
         "schema_version": 5,
         "producer": "hermit-validate-sh",
         "base_sha": "b" * 40,
@@ -107,7 +114,7 @@ def test_count_capable_receipt_without_executed_tests_is_refused() -> None:
     is a defect rather than an old producer."""
     ok, reason = A.row_qualifies(_row(executed_tests=None), PREDICATE)
     assert ok is False
-    assert reason == "count-capable receipt missing executed_tests"
+    assert reason == "passed_tests != executed_tests for passing row"
 
 
 def test_pre_count_receipt_without_executed_tests_is_refused() -> None:
@@ -119,7 +126,13 @@ def test_pre_count_receipt_without_executed_tests_is_refused() -> None:
     # it set would still refuse the row but for the WRONG reason, so this clause
     # would go untested while looking green.
     ok, reason = A.row_qualifies(
-        _row(schema_version=1, executed_tests=None, coverage=None), PREDICATE
+        _row(
+            schema_version=1,
+            executed_tests=None,
+            passed_tests=None,
+            coverage=None,
+        ),
+        PREDICATE,
     )
     assert ok is False
     assert reason == "pre-count receipt cannot prove nonzero execution"

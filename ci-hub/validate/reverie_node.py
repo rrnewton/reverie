@@ -58,7 +58,7 @@ V4_TEST_GATES = (
     "Documentation tests",
 )
 V4_OWNED_PUBLIC_GATE = "Test all owned public instruction cases"
-V4_OWNED_PUBLIC_COUNTS = (17, 0)
+V4_OWNED_PUBLIC_COUNTS = (17, 17, 0)
 
 V5_GATES = (
     "Cross-client skill discovery",
@@ -264,7 +264,7 @@ def load_source_row(root: Path, target: str, checkout: Path, log: Path, started:
 
 def recorded_gate_coverage(
     source: dict[str, Any], test_gates: tuple[str, ...] = TEST_GATES
-) -> tuple[int, int, list[str], list[str]]:
+) -> tuple[int, int, int, list[str], list[str]]:
     """Read the counts each test gate wrote at the gate boundary."""
     gates = source.get("gates")
     if not isinstance(gates, list) or not all(isinstance(gate, dict) for gate in gates):
@@ -273,45 +273,60 @@ def recorded_gate_coverage(
     absent = [gate for gate in test_gates if gate not in by_name]
     zero: list[str] = []
     executed = 0
+    passed = 0
     filtered = 0
     for name in test_gates:
         gate = by_name.get(name)
         if gate is None:
             continue
-        values: list[int] = []
-        for field in ("executed_tests", "filtered_tests"):
-            value = gate.get(field)
-            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                raise Refusal(
-                    f"Reverie source row gate {name!r} {field} must be a "
-                    f"nonnegative integer, got {value!r}"
-                )
-            values.append(value)
+        values = _recorded_test_counts(
+            gate, context=f"Reverie source row gate {name!r}"
+        )
         if name == V4_OWNED_PUBLIC_GATE and tuple(values) != V4_OWNED_PUBLIC_COUNTS:
             raise Refusal(
                 f"Reverie source row gate {name!r} must record exactly "
                 f"executed_tests={V4_OWNED_PUBLIC_COUNTS[0]} and "
-                f"filtered_tests={V4_OWNED_PUBLIC_COUNTS[1]}, got "
-                f"executed_tests={values[0]} and filtered_tests={values[1]}"
+                f"passed_tests={V4_OWNED_PUBLIC_COUNTS[1]} and "
+                f"filtered_tests={V4_OWNED_PUBLIC_COUNTS[2]}, got "
+                f"executed_tests={values[0]}, passed_tests={values[1]}, "
+                f"and filtered_tests={values[2]}"
             )
         executed += values[0]
-        filtered += values[1]
+        passed += values[1]
+        filtered += values[2]
         if values[0] == 0:
             zero.append(name)
-    return executed, filtered, zero, absent
+    return executed, passed, filtered, zero, absent
 
 
-def recorded_test_counts(source: dict[str, Any]) -> tuple[int, int]:
-    """Read the aggregate counts written by Reverie's validation framework."""
+def _recorded_test_counts(
+    record: dict[str, Any], *, context: str
+) -> tuple[int, int, int]:
     values: list[int] = []
-    for field in ("executed_tests", "filtered_tests"):
-        value = source.get(field)
+    for field in ("executed_tests", "passed_tests", "filtered_tests"):
+        value = record.get(field)
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise Refusal(
-                f"Reverie source row {field} must be a nonnegative integer, got {value!r}"
+                f"{context} {field} must be a nonnegative integer, got {value!r}"
             )
         values.append(value)
-    return values[0], values[1]
+    executed, passed, filtered = values
+    if passed > executed:
+        raise Refusal(
+            f"{context} passed_tests must not exceed executed_tests, "
+            f"got {passed} > {executed}"
+        )
+    if record.get("result") == "pass" and passed != executed:
+        raise Refusal(
+            f"passing {context} requires passed_tests == executed_tests, "
+            f"got {passed} != {executed}"
+        )
+    return executed, passed, filtered
+
+
+def recorded_test_counts(source: dict[str, Any]) -> tuple[int, int, int]:
+    """Read the aggregate counts written by Reverie's validation framework."""
+    return _recorded_test_counts(source, context="Reverie source row")
 
 
 def require_expected_gate_set(
@@ -399,14 +414,19 @@ def main(argv: list[str] | None = None) -> int:
         source = load_source_row(root, args.target, checkout, log, started)
         gates = source.get("gates")
         policy, expected_gates, test_gates = require_expected_gate_set(gates)
-        executed, filtered = recorded_test_counts(source)
-        gate_executed, gate_filtered, zero, absent = recorded_gate_coverage(
-            source, test_gates
+        executed, passed, filtered = recorded_test_counts(source)
+        gate_executed, gate_passed, gate_filtered, zero, absent = (
+            recorded_gate_coverage(source, test_gates)
         )
-        if (gate_executed, gate_filtered) != (executed, filtered):
+        if (gate_executed, gate_passed, gate_filtered) != (
+            executed,
+            passed,
+            filtered,
+        ):
             raise Refusal(
                 "Reverie aggregate test counts disagree with per-gate records: "
-                f"aggregate={(executed, filtered)!r} per_gate={(gate_executed, gate_filtered)!r}"
+                f"aggregate={(executed, passed, filtered)!r} "
+                f"per_gate={(gate_executed, gate_passed, gate_filtered)!r}"
             )
         if policy == "reverie-local-validation/v4" and (zero or absent):
             raise Refusal(
@@ -429,6 +449,7 @@ def main(argv: list[str] | None = None) -> int:
                 "gates_run": source.get("checks"),
                 "gates_expected": len(expected_gates),
                 "executed_tests": executed,
+                "passed_tests": passed,
                 "filtered_tests": filtered,
                 "coverage": {
                     "planned_test_nodes": len(test_gates),

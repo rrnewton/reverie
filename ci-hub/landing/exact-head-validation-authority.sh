@@ -11,6 +11,7 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd -- "$script_dir/../.." && pwd)
 ci_hub=${CI_HUB_BIN:-$root/ci-hub/ci-hub}
 receipt_verifier=${VERIFY_RECEIPT_BIN:-$root/ci-hub/validation/verify_receipt.sh}
+qualifying_predicate=${QUALIFYING_RECEIPT_PREDICATE:-$root/ci-hub/validate/qualifying-receipt.json}
 repo=rrnewton/hermit
 sha=
 comments=
@@ -79,6 +80,17 @@ authority_tmp=$(mktemp -d)
 local_report=$authority_tmp/local.json
 hosted_report=$authority_tmp/hosted.json
 trap 'rm -rf -- "$authority_tmp"' EXIT
+
+passed_tests_schema_min=
+if [[ $hosted_only -eq 0 ]]; then
+    passed_tests_schema_min=$(jq -er '
+        .passed_tests.applies_at_schema_min
+        | select(type == "number" and floor == . and . >= 0)
+    ' "$qualifying_predicate" 2>/dev/null) || {
+        echo "exact-head authority cannot read passed_tests schema policy" >&2
+        exit 2
+    }
+fi
 
 github_api() {
     if [[ -n ${EXACT_HEAD_GH_BIN:-} ]]; then
@@ -178,7 +190,9 @@ else
     local_rc=0
     "$ci_hub" validate-status --sha "$sha" --repo "$repo" --json \
         >"$local_report" 2>/dev/null || local_rc=$?
-    if [[ $local_rc -eq 0 ]] && jq -e --arg repo "$repo" --arg sha "$sha" '
+    if [[ $local_rc -eq 0 ]] && jq -e \
+        --arg repo "$repo" --arg sha "$sha" \
+        --argjson passed_tests_schema_min "$passed_tests_schema_min" '
     .newest_qualifying as $row
     | $row.coverage as $coverage
     | .repo == $repo and .sha == $sha and .verdict == "VALIDATED"
@@ -195,6 +209,11 @@ else
     and all($row.gates[]; .result == "pass")
     and ($row.failures | type == "number" and . == 0)
     and ($row.executed_tests | type == "number" and . > 0)
+    and (($row.schema_version == null)
+        or ($row.schema_version | type == "number" and floor == . and . >= 0))
+    and (($row.schema_version // 0) < $passed_tests_schema_min
+            or ($row.passed_tests | type == "number"
+                and floor == . and . == $row.executed_tests))
     and ($row.filtered_tests | type == "number" and . >= 0)
 ' "$local_report" >/dev/null 2>&1; then
         local_state=green

@@ -2,6 +2,10 @@
   "_comment": "SINGLE canonical qualifying-receipt predicate. All consumers (Rust validate_status.rs + history_queries.rs via assess, Python query.py + publish_receipt.py + anchor_select.py + finalize_receipt.py, bash/jq verify_receipt.sh) MUST read this file instead of an inline copy, so tightening the floor is ONE edit here. Colocated with rebase-base-floors.json / gate_floors.py. Drift resolutions per task one-shared-qualifying-receipt-predicate-five-consumers-bypass-the-registry (design note 2026-08-04 18:17); source sweep ai_docs/2026-08-04-floor-consumer-sweep.md.",
   "_completeness_is_coverage_not_count": "For a count-capable receipt (schema_version >= counts_schema), every declared outer gate must be accounted for and per-test-node COVERAGE must be satisfied (planned_test_nodes > 0 AND no zero_executed_nodes AND no absent_nodes). The executed_tests COUNT is not a completeness discriminator: it is a proxy in BOTH directions (landed dev-hermit d05874e; proof ee303899: 8 PASS rows at executed=427 but coverage 4/19 planned nodes, 15 absent -> legitimately NOT full green). executed_tests_min below is ONLY the surviving zero-execution floor (a run that executed nothing is never green); old-schema receipts that predate coverage fall back to it because it is the strongest thing they can prove.",
   "counts_schema": 5,
+  "_passed_tests_is_framework_owned": "Schema-4 and newer passing rows must carry the test framework's passed_tests count and it must exactly equal executed_tests. Missing, null, malformed, or unequal values are contradictory or absent green evidence and refuse qualification. Pre-schema-4 history retains the former optional-field semantics.",
+  "passed_tests": {
+    "applies_at_schema_min": 4
+  },
   "require": {
     "commit_anchored": true,
     "tree_dirty": false,

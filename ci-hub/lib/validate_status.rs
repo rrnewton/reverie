@@ -1015,6 +1015,16 @@ pub fn parse_ledger(buf: &str) -> (Vec<HistoryRow>, Vec<LedgerParseFailure>) {
             Ok(row) => rows.push(row),
             Err(error) => {
                 let salvaged = serde_json::from_str::<serde_json::Value>(line).ok();
+                let error = salvaged
+                    .as_ref()
+                    .and_then(|value| {
+                        crate::qualifying_receipt::raw_current_schema_count_type_refusal(
+                            value,
+                            crate::qualifying_receipt::active(),
+                        )
+                    })
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| error.to_string());
                 let field = |name: &str| {
                     salvaged
                         .as_ref()
@@ -1030,7 +1040,7 @@ pub fn parse_ledger(buf: &str) -> (Vec<HistoryRow>, Vec<LedgerParseFailure>) {
                 };
                 failures.push(LedgerParseFailure {
                     line_number: index + 1,
-                    error: error.to_string(),
+                    error,
                     record_id: field("record_id"),
                     commit: field("commit"),
                     run_id: field("run_id"),
@@ -2086,6 +2096,7 @@ mod tests {
             let mut r = clean_full_pass(PASS_SHA);
             r.schema_version = Some(COUNTS_SCHEMA);
             r.executed_tests = Some(executed);
+            r.passed_tests = Some(executed);
             r.filtered_tests = Some(filtered);
             r.coverage = Some(sat_coverage(13));
             let a = assess(&[r], PASS_SHA);
@@ -2109,6 +2120,7 @@ mod tests {
         let mut absent = clean_full_pass(PASS_SHA);
         absent.schema_version = Some(COUNTS_SCHEMA);
         absent.executed_tests = Some(749);
+        absent.passed_tests = Some(749);
         absent.filtered_tests = Some(693);
         absent.coverage = Some(CoverageRow {
             planned_test_nodes: 13,
@@ -2125,6 +2137,7 @@ mod tests {
         let mut inert = clean_full_pass(PASS_SHA);
         inert.schema_version = Some(COUNTS_SCHEMA);
         inert.executed_tests = Some(749);
+        inert.passed_tests = Some(749);
         inert.filtered_tests = Some(693);
         inert.coverage = Some(CoverageRow {
             planned_test_nodes: 13,
@@ -2138,6 +2151,7 @@ mod tests {
         let mut empty = clean_full_pass(PASS_SHA);
         empty.schema_version = Some(COUNTS_SCHEMA);
         empty.executed_tests = Some(749);
+        empty.passed_tests = Some(749);
         empty.filtered_tests = Some(693);
         empty.coverage = Some(sat_coverage(0));
         assert_eq!(assess(&[empty], PASS_SHA).verdict, Verdict::NotValidated);
@@ -2152,6 +2166,7 @@ mod tests {
         let mut r = clean_full_pass(PASS_SHA);
         r.schema_version = Some(COUNTS_SCHEMA);
         r.executed_tests = Some(749);
+        r.passed_tests = Some(749);
         r.filtered_tests = Some(693);
         r.coverage = None;
         let a = assess(&[r], PASS_SHA);
@@ -2182,6 +2197,7 @@ mod tests {
             let mut r = clean_full_pass(PASS_SHA);
             r.schema_version = Some(sv);
             r.executed_tests = executed;
+            r.passed_tests = if sv >= 4 { executed } else { None };
             r.filtered_tests = filtered;
             r.coverage = coverage;
             let a = assess(&[r], PASS_SHA);
@@ -2257,6 +2273,51 @@ mod tests {
         assert!(
             !failures[0].error.is_empty(),
             "the serde error must be retained, not discarded"
+        );
+    }
+
+    #[test]
+    fn parse_ledger_names_malformed_current_schema_count_types() {
+        for field in ["executed_tests", "passed_tests"] {
+            let row = serde_json::json!({
+                "schema_version": 4,
+                "commit": PASS_SHA,
+                "result": "pass",
+                "executed_tests": 7,
+                "passed_tests": 7,
+            });
+            for malformed in [
+                serde_json::json!("7"),
+                serde_json::json!(true),
+                serde_json::json!(7.0),
+            ] {
+                let mut malformed_row = row.clone();
+                malformed_row[field] = malformed;
+                let (rows, failures) = parse_ledger(&malformed_row.to_string());
+                assert!(rows.is_empty());
+                assert_eq!(failures.len(), 1);
+                assert_eq!(
+                    failures[0].error,
+                    crate::qualifying_receipt::PASSED_TESTS_REFUSAL_REASON,
+                    "current malformed {field} must use the shared refusal reason"
+                );
+            }
+        }
+
+        let legacy = serde_json::json!({
+            "schema_version": 3,
+            "commit": PASS_SHA,
+            "result": "pass",
+            "executed_tests": 7,
+            "passed_tests": "7",
+        });
+        let (rows, failures) = parse_ledger(&legacy.to_string());
+        assert!(rows.is_empty());
+        assert_eq!(failures.len(), 1);
+        assert_ne!(
+            failures[0].error,
+            crate::qualifying_receipt::PASSED_TESTS_REFUSAL_REASON,
+            "pre-4 malformed counts must retain their prior serde error"
         );
     }
 

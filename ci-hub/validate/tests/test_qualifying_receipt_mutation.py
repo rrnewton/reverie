@@ -24,7 +24,7 @@ value across scenarios. For each scenario it asserts the whole panel agrees:
     evidence its schema predates.
   * ZERO-exec negative (live): executed_tests==0 is refused by EVERY consumer.
 
-Consumers driven (seven certifier sites, six panel legs, three languages):
+Consumers driven (nine certifier sites, eight panel legs, three languages):
   - Rust `validate_status.rs`   via `ci-hub validate-status --sha S`, with the
     canonical ledger adapter pointed at an isolated test root.
   - Rust `history_queries.rs`   routes through the SAME `assess()` ->
@@ -34,6 +34,9 @@ Consumers driven (seven certifier sites, six panel legs, three languages):
   - Python `publish_receipt.py` via `selected_record` shared-policy consistency.
   - Python `anchor_select.py`   via real ledger/ancestry anchor selection.
   - Python `finalize_receipt.py` via its schema-5 idempotency consumer.
+  - Python `main_soft_green.py` via its canonical exact-main state consumer.
+  - Rust `receipt-digest --require-canonical-qualifying`, the current landing
+    receipt boundary.
   - bash/jq `verify_receipt.sh` via its receipt gate (`--fixture-receipts`).
 """
 
@@ -61,6 +64,7 @@ QUERY_PY = CI_HUB / "history" / "query.py"
 PUBLISH_PY = CI_HUB / "validation" / "publish_receipt.py"
 ANCHOR_PY = CI_HUB / "validate" / "anchor_select.py"
 FINALIZE_PY = CI_HUB / "validate" / "finalize_receipt.py"
+MAIN_SOFT_PY = CI_HUB / "landing" / "main_soft_green.py"
 VERIFY_SH = CI_HUB / "validation" / "verify_receipt.sh"
 
 sys.path.insert(0, str(CI_HUB))
@@ -139,7 +143,6 @@ def _grandfathered_schema4_row(sha: str) -> dict:
     row = _green_row(sha)
     row["schema_version"] = 4
     row.pop("coverage")
-    row.pop("passed_tests")
     row.pop("producer")
     row.pop("admission")
     row.pop("concurrent_validates")
@@ -534,6 +537,52 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         )
         return self._python_accepts(driver, row, predicate)
 
+    def _main_soft_accepts(self, row: dict, predicate: Path | None) -> bool:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _record_canonical_fixture(root, row)
+            driver = (
+                "import pathlib,sys;"
+                f"sys.path[:0]=[{str(CI_HUB)!r},{str(MAIN_SOFT_PY.parent)!r}];"
+                "import main_soft_green;"
+                f"state,_=main_soft_green.canonical_state(pathlib.Path({str(REPO_ROOT)!r}),{row['commit']!r});"
+                "print('ACCEPT' if state == 'HARD_GREEN' else 'REJECT')"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-c", driver],
+                env=_canonical_ledger_env(root, predicate),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        out = proc.stdout.strip().splitlines()
+        self.assertTrue(
+            out and out[-1] in ("ACCEPT", "REJECT"),
+            f"main-soft-green consumer gave no verdict: rc={proc.returncode} "
+            f"stdout={proc.stdout!r} stderr={proc.stderr[-800:]}",
+        )
+        return out[-1] == "ACCEPT"
+
+    def _canonical_digest_accepts(self, row: dict, predicate: Path | None) -> bool:
+        proc = subprocess.run(
+            [
+                "rust-script",
+                "--force",
+                str(CI_HUB_RS),
+                "receipt-digest",
+                "--sha",
+                row["commit"],
+                "--require-canonical-qualifying",
+            ],
+            input=json.dumps(row),
+            cwd=REPO_ROOT,
+            env=_env(predicate),
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        return proc.returncode == 0
+
     def _python_accepts(self, driver: str, row: dict, predicate: Path | None) -> bool:
         proc = subprocess.run(
             [sys.executable, "-c", driver],
@@ -611,7 +660,20 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             "publish_receipt.py": self._publish_accepts(row, predicate),
             "anchor_select.py": self._anchor_accepts(row, predicate),
             "finalize_receipt.py": self._finalizer_accepts(row, predicate),
+            "main_soft_green.py": self._main_soft_accepts(row, predicate),
+            "receipt-digest canonical": self._canonical_digest_accepts(row, predicate),
             "verify_receipt.sh": self._verify_sh_accepts(row, predicate),
+        }
+
+    @staticmethod
+    def _passed_count_panel(schema: int, panel: dict[str, bool]) -> dict[str, bool]:
+        """Exclude the schema-5-only finalizer when exercising schema 4."""
+        if schema >= 5:
+            return panel
+        return {
+            name: accepted
+            for name, accepted in panel.items()
+            if name != "finalize_receipt.py"
         }
 
     # -- scenarios: each asserts unanimity across the whole panel.
@@ -621,7 +683,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         panel = self._panel(_green_row(SHA), predicate=None)
         print(
             "\nADMISSION POSITIVE: "
-            f"legs={sum(panel.values())}/{len(panel)} certifier-sites=7/7 panel={panel}"
+            f"legs={sum(panel.values())}/{len(panel)} certifier-sites=9/9 panel={panel}"
         )
         self.assertTrue(all(panel.values()),
                         f"a genuine green must be accepted by every consumer: {panel}")
@@ -633,7 +695,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         print(
             "\nADMISSION NEGATIVE: "
             f"refused={refused}/{len(panel)} legs certifier-sites="
-            f"{7 if refused == len(panel) else 0}/7 panel={panel}"
+            f"{9 if refused == len(panel) else 0}/9 panel={panel}"
         )
         self.assertEqual(
             refused,
@@ -652,7 +714,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         print(
             "\nCOVERAGE SCHEMA NEGATIVE: "
             f"refused={refused}/{len(panel)} legs certifier-sites="
-            f"{7 if refused == len(panel) else 0}/7 status={verdict.value} "
+            f"{9 if refused == len(panel) else 0}/9 status={verdict.value} "
             f"panel={panel}"
         )
         self.assertIs(
@@ -748,7 +810,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                 refused = sum(not accepted for accepted in panel.values())
                 print(
                     f"\nADMISSION CLAUSE {condition}: refused={refused}/{len(panel)} "
-                    f"legs certifier-sites={7 if refused == len(panel) else 0}/7 "
+                    f"legs certifier-sites={9 if refused == len(panel) else 0}/9 "
                     f"panel={panel}"
                 )
                 self.assertEqual(
@@ -833,7 +895,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         )
 
     def test_live_rejects_unreported_coverage_lists_unanimously(self) -> None:
-        """Missing is UNKNOWN, not empty, in all six consumer legs."""
+        """Missing is UNKNOWN, not empty, in all eight consumer legs."""
         for field in ("zero_executed_nodes", "absent_nodes"):
             with self.subTest(field=field):
                 panel = self._panel(
@@ -910,40 +972,132 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         self.assertFalse(any(panel.values()),
                          f"a zero-execution run must be rejected by every consumer: {panel}")
 
-    def test_present_passed_count_must_match_green_execution_unanimously(self) -> None:
-        """A green row may omit the historical field or report exact equality.
-
-        Lower, higher, negative, and non-integer values are contradictory or
-        malformed evidence and every receipt consumer must refuse them.
-        """
-        matched = _green_row(SHA)
-        self.assertTrue(
-            all(self._panel(matched, predicate=None).values()),
-            "matching passed/executed counts must preserve a green receipt",
-        )
-
-        absent = _green_row(SHA)
-        absent.pop("passed_tests")
-        self.assertTrue(
-            all(self._panel(absent, predicate=None).values()),
-            "historical rows with no passed_tests field must remain readable",
-        )
-
-        for label, value in (
-            ("lower", 739),
-            ("higher", 741),
-            ("negative", -1),
-            ("string", "740"),
-            ("boolean", True),
+    def test_schema4_and_newer_passed_count_contract_directly(self) -> None:
+        """Both shared predicates use one reason for every current-row defect."""
+        predicate = qualifying_receipt.active()
+        self.assertEqual(predicate["passed_tests"]["applies_at_schema_min"], 4)
+        for schema, base in (
+            (4, _grandfathered_schema4_row(SHA)),
+            (5, _green_row(SHA)),
         ):
-            with self.subTest(label=label):
-                contradictory = _green_row(SHA)
-                contradictory["passed_tests"] = value
-                panel = self._panel(contradictory, predicate=None)
-                self.assertFalse(
-                    any(panel.values()),
-                    f"{label} passed_tests must be refused everywhere: {panel}",
+            with self.subTest(schema=schema, shape="exact"):
+                self.assertEqual(
+                    qualifying_receipt.row_qualification(base, SHA, predicate),
+                    (True, "qualifies"),
                 )
+            for label, value in (
+                ("missing", _MISSING),
+                ("null", None),
+                ("lower", 739),
+                ("higher", 741),
+                ("negative", -1),
+                ("string", "740"),
+                ("boolean", True),
+                ("float", 740.0),
+                ("above-i64", 1 << 63),
+            ):
+                with self.subTest(schema=schema, shape=label):
+                    row = copy.deepcopy(base)
+                    if value is _MISSING:
+                        row.pop("passed_tests")
+                    else:
+                        row["passed_tests"] = value
+                    self.assertEqual(
+                        qualifying_receipt.row_qualification(row, SHA, predicate),
+                        (False, qualifying_receipt.PASSED_TESTS_REFUSAL_REASON),
+                    )
+
+            for label, value, matching_passed in (
+                ("missing-executed", _MISSING, 740),
+                ("null-executed", None, 740),
+                ("boolean-executed", True, 1),
+                ("float-executed", 740.0, 740.0),
+                ("above-i64-executed", 1 << 63, 1 << 63),
+            ):
+                with self.subTest(schema=schema, shape=label):
+                    row = copy.deepcopy(base)
+                    if value is _MISSING:
+                        row.pop("executed_tests")
+                    else:
+                        row["executed_tests"] = value
+                    row["passed_tests"] = matching_passed
+                    self.assertEqual(
+                        qualifying_receipt.row_qualification(row, SHA, predicate),
+                        (False, qualifying_receipt.PASSED_TESTS_REFUSAL_REASON),
+                    )
+
+        old = _grandfathered_schema4_row(SHA)
+        old["schema_version"] = 3
+        self.assertEqual(
+            qualifying_receipt.row_qualification(old, SHA, predicate),
+            (True, "qualifies"),
+            "pre-4 exact passed_tests must retain its qualification semantics",
+        )
+        old.pop("passed_tests")
+        self.assertEqual(
+            qualifying_receipt.row_qualification(old, SHA, predicate),
+            (True, "qualifies"),
+            "pre-4 missing passed_tests must retain its qualification semantics",
+        )
+        old["passed_tests"] = None
+        self.assertEqual(
+            qualifying_receipt.row_qualification(old, SHA, predicate),
+            (True, "qualifies"),
+            "pre-4 null passed_tests must retain its qualification semantics",
+        )
+        old["passed_tests"] = 739
+        self.assertEqual(
+            qualifying_receipt.row_qualification(old, SHA, predicate),
+            (False, qualifying_receipt.PASSED_TESTS_REFUSAL_REASON),
+            "pre-4 contradictory passed_tests must retain its refusal",
+        )
+
+    def test_current_schema_missing_passed_count_refuses_unanimously(self) -> None:
+        """Missing and null counts refuse schema 4 and 5 in every consumer."""
+        for schema, base in (
+            (4, _grandfathered_schema4_row(SHA)),
+            (5, _green_row(SHA)),
+        ):
+            exact = self._passed_count_panel(
+                schema, self._panel(base, predicate=None)
+            )
+            self.assertTrue(
+                all(exact.values()),
+                f"schema-{schema} exact passed/executed counts must qualify: {exact}",
+            )
+            for shape in ("missing", "null"):
+                with self.subTest(schema=schema, shape=shape):
+                    row = copy.deepcopy(base)
+                    if shape == "missing":
+                        row.pop("passed_tests")
+                    else:
+                        row["passed_tests"] = None
+                    panel = self._passed_count_panel(
+                        schema, self._panel(row, predicate=None)
+                    )
+                    self.assertFalse(
+                        any(panel.values()),
+                        f"schema-{schema} {shape} passed_tests must refuse everywhere: {panel}",
+                    )
+
+    def test_malformed_or_mismatched_passed_count_refuses_unanimously(self) -> None:
+        """Schema 4 and 5 consumers refuse mismatched and malformed counts."""
+        for schema, base in (
+            (4, _grandfathered_schema4_row(SHA)),
+            (5, _green_row(SHA)),
+        ):
+            for label, value in (("mismatch", 739), ("malformed", "740")):
+                with self.subTest(schema=schema, shape=label):
+                    contradictory = copy.deepcopy(base)
+                    contradictory["passed_tests"] = value
+                    panel = self._passed_count_panel(
+                        schema, self._panel(contradictory, predicate=None)
+                    )
+                    self.assertFalse(
+                        any(panel.values()),
+                        f"schema-{schema} {label} passed_tests must be refused "
+                        f"everywhere: {panel}",
+                    )
 
     def test_live_accepts_hard_and_rejects_soft_rebase_only_unanimously(self) -> None:
         """The class policy moves every consumer, including the Rust authority."""

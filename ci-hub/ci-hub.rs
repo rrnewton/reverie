@@ -4229,6 +4229,35 @@ fn positive_executed_tests(row: &HistoryRow) -> Option<i64> {
     row.executed_tests.filter(|count| *count > 0)
 }
 
+fn receipt_digest_raw_count_type_refusal(
+    input: &str,
+    published_receipt: bool,
+    ledger_event_input: bool,
+    pred: &qualifying_receipt::QualifyingPredicate,
+) -> Option<&'static str> {
+    let value: serde_json::Value = serde_json::from_str(input).ok()?;
+    let row = if published_receipt {
+        if value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(u64::from(published_receipt::SCHEMA_VERSION))
+        {
+            return None;
+        }
+        value.get("ledger_record")?
+    } else if ledger_event_input {
+        if value.get("schema").and_then(serde_json::Value::as_str) != Some(ledger_event::SCHEMA)
+            || value.get("event_type").and_then(serde_json::Value::as_str) != Some("run.result")
+        {
+            return None;
+        }
+        value.get("legacy_row")?
+    } else {
+        &value
+    };
+    qualifying_receipt::raw_current_schema_count_type_refusal(row, pred)
+}
+
 fn history_row_from_ledger_event(event: &LedgerEvent) -> Result<HistoryRow, String> {
     event.validate()?;
     match event.event_type {
@@ -4244,6 +4273,12 @@ fn history_row_from_ledger_event(event: &LedgerEvent) -> Result<HistoryRow, Stri
         .legacy_row
         .clone()
         .ok_or_else(|| "receipt-digest run.result event omitted legacy_row".to_string())?;
+    if let Some(reason) = qualifying_receipt::raw_current_schema_count_type_refusal(
+        &value,
+        qualifying_receipt::active(),
+    ) {
+        return Err(reason.to_string());
+    }
     let row: HistoryRow = serde_json::from_value(value).map_err(|error| {
         format!("receipt-digest run.result legacy_row is not a HistoryRow: {error}")
     })?;
@@ -4274,6 +4309,14 @@ fn run_receipt_digest(args: ReceiptDigestArgs) -> Result<i32, CiHubError> {
         io::stdin().read_to_string(&mut input).map_err(|error| {
             CiHubError::ValidateStatus(format!("cannot read HistoryRow: {error}"))
         })?;
+    }
+    if let Some(reason) = receipt_digest_raw_count_type_refusal(
+        &input,
+        args.published_receipt,
+        args.ledger_event,
+        qualifying_receipt::active(),
+    ) {
+        return Err(CiHubError::ValidateStatus(reason.to_string()));
     }
     let published = args
         .published_receipt
@@ -4644,15 +4687,33 @@ fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRece
     {
         return None;
     }
+    if !qualifying_receipt::passed_tests_satisfy_schema(row, qualifying_receipt::active()) {
+        return None;
+    }
     let (gates, expected_test_nodes, coverage_basis, counted_gate_range): (
         &[&str],
         u64,
         &str,
         Option<(usize, usize)>,
     ) = match extra_str(row, "reverie_validation_policy")? {
-        "reverie-local-validation/v1" => (&V1_GATES, 2, "reverie-declared-two-test-gates", None),
-        "reverie-local-validation/v2" => (&V2_GATES, 2, "reverie-declared-two-test-gates", None),
-        "reverie-local-validation/v3" => (&V3_GATES, 2, "reverie-declared-two-test-gates", None),
+        "reverie-local-validation/v1" => (
+            &V1_GATES,
+            2,
+            "reverie-declared-two-test-gates",
+            Some((3, 2)),
+        ),
+        "reverie-local-validation/v2" => (
+            &V2_GATES,
+            2,
+            "reverie-declared-two-test-gates",
+            Some((2, 2)),
+        ),
+        "reverie-local-validation/v3" => (
+            &V3_GATES,
+            2,
+            "reverie-declared-two-test-gates",
+            Some((3, 2)),
+        ),
         "reverie-local-validation/v4" => (
             &V4_GATES,
             3,
@@ -4692,6 +4753,7 @@ fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRece
         return None;
     }
     let executed_tests = row.executed_tests?;
+    let passed_tests = row.passed_tests?;
     let filtered_tests = row.filtered_tests?;
     let coverage = row.coverage.as_ref()?;
     if executed_tests <= 0
@@ -4704,22 +4766,33 @@ fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRece
     }
     if let Some((first, count)) = counted_gate_range {
         let mut per_gate_executed = 0i64;
+        let mut per_gate_passed = 0i64;
         let mut per_gate_filtered = 0i64;
         for gate in row.gates.iter().skip(first).take(count) {
             let gate_executed = gate.extra.get("executed_tests")?.as_i64()?;
+            let gate_passed = gate.extra.get("passed_tests")?.as_i64()?;
             let gate_filtered = gate.extra.get("filtered_tests")?.as_i64()?;
-            if gate_executed <= 0 || gate_filtered < 0 {
+            if gate_executed <= 0
+                || gate_passed < 0
+                || gate_passed > gate_executed
+                || (gate.result.as_deref() == Some("pass") && gate_passed != gate_executed)
+                || gate_filtered < 0
+            {
                 return None;
             }
             if gate.name == "Test all owned public instruction cases"
-                && (gate_executed != 17 || gate_filtered != 0)
+                && (gate_executed != 17 || gate_passed != 17 || gate_filtered != 0)
             {
                 return None;
             }
             per_gate_executed = per_gate_executed.checked_add(gate_executed)?;
+            per_gate_passed = per_gate_passed.checked_add(gate_passed)?;
             per_gate_filtered = per_gate_filtered.checked_add(gate_filtered)?;
         }
-        if per_gate_executed != executed_tests || per_gate_filtered != filtered_tests {
+        if per_gate_executed != executed_tests
+            || per_gate_passed != passed_tests
+            || per_gate_filtered != filtered_tests
+        {
             return None;
         }
     }
@@ -13883,6 +13956,7 @@ mod tests {
             "raw_result": "pass",
             "exit_code": 0,
             "executed_tests": 786,
+            "passed_tests": 786,
             "filtered_tests": 693,
             "checks": 2,
             "gates_run": 2,
@@ -13919,7 +13993,7 @@ mod tests {
     }
 
     fn reverie_receipt_value() -> serde_json::Value {
-        let gates = [
+        let mut gates = [
             "Cross-client skill discovery",
             "Build workspace",
             "DBT virtual identity and pidfd_open policy",
@@ -13931,6 +14005,12 @@ mod tests {
         .into_iter()
         .map(|name| serde_json::json!({"name": name, "result": "pass", "exit_code": 0}))
         .collect::<Vec<_>>();
+        gates[3]["executed_tests"] = serde_json::json!(60);
+        gates[3]["passed_tests"] = serde_json::json!(60);
+        gates[3]["filtered_tests"] = serde_json::json!(15);
+        gates[4]["executed_tests"] = serde_json::json!(40);
+        gates[4]["passed_tests"] = serde_json::json!(40);
+        gates[4]["filtered_tests"] = serde_json::json!(5);
         serde_json::json!({
             "schema_version": 5,
             "producer": "ci-hub-reverie-validate-run",
@@ -13951,6 +14031,7 @@ mod tests {
             "raw_result": "pass",
             "exit_code": 0,
             "executed_tests": 100,
+            "passed_tests": 100,
             "filtered_tests": 20,
             "coverage": {
                 "planned_test_nodes": 2,
@@ -14034,12 +14115,15 @@ mod tests {
                 "result": "pass",
                 "exit_code": 0,
                 "executed_tests": 17,
+                "passed_tests": 17,
                 "filtered_tests": 0
             }),
         );
         gates[6]["executed_tests"] = serde_json::json!(60);
+        gates[6]["passed_tests"] = serde_json::json!(60);
         gates[6]["filtered_tests"] = serde_json::json!(15);
         gates[7]["executed_tests"] = serde_json::json!(23);
+        gates[7]["passed_tests"] = serde_json::json!(23);
         gates[7]["filtered_tests"] = serde_json::json!(5);
         value
     }
@@ -14056,8 +14140,10 @@ mod tests {
             serde_json::json!({"name": "Backend maturity", "result": "pass", "exit_code": 0}),
         );
         gates[4]["executed_tests"] = serde_json::json!(60);
+        gates[4]["passed_tests"] = serde_json::json!(60);
         gates[4]["filtered_tests"] = serde_json::json!(15);
         gates[5]["executed_tests"] = serde_json::json!(40);
+        gates[5]["passed_tests"] = serde_json::json!(40);
         gates[5]["filtered_tests"] = serde_json::json!(5);
         value
     }
@@ -14429,6 +14515,7 @@ mod tests {
             .expect("complete v5 evidence must qualify");
         assert_eq!(receipt.coverage_basis, "reverie-declared-two-test-gates");
         assert_eq!(receipt.row.executed_tests, Some(100));
+        assert_eq!(receipt.row.passed_tests, Some(100));
 
         for missing in 0..8 {
             let mut value = positive.clone();
@@ -14457,11 +14544,12 @@ mod tests {
             assert!(qualify_reverie_receipt(&history_row(value), RECEIPT_SHA).is_none());
         }
         for index in [4, 5] {
-            for field in ["executed_tests", "filtered_tests"] {
+            for field in ["executed_tests", "passed_tests", "filtered_tests"] {
                 for replacement in [
                     serde_json::Value::Null,
                     serde_json::json!(-1),
                     serde_json::json!(true),
+                    serde_json::json!("not-a-count"),
                 ] {
                     let mut value = positive.clone();
                     value["gates"][index][field] = replacement;
@@ -14470,11 +14558,27 @@ mod tests {
             }
             let mut value = positive.clone();
             value["gates"][index]["executed_tests"] = serde_json::json!(0);
+            value["gates"][index]["passed_tests"] = serde_json::json!(0);
             value["executed_tests"] = serde_json::json!(if index == 4 { 40 } else { 60 });
+            value["passed_tests"] = serde_json::json!(if index == 4 { 40 } else { 60 });
             assert!(qualify_reverie_receipt(&history_row(value), RECEIPT_SHA).is_none());
+        }
+        for index in [4, 5] {
+            let mut missing = positive.clone();
+            missing["gates"][index]
+                .as_object_mut()
+                .unwrap()
+                .remove("passed_tests");
+            assert!(qualify_reverie_receipt(&history_row(missing), RECEIPT_SHA).is_none());
+
+            let mut mismatch = positive.clone();
+            let executed = mismatch["gates"][index]["executed_tests"].as_i64().unwrap();
+            mismatch["gates"][index]["passed_tests"] = serde_json::json!(executed - 1);
+            assert!(qualify_reverie_receipt(&history_row(mismatch), RECEIPT_SHA).is_none());
         }
         let mut inflated = positive.clone();
         inflated["executed_tests"] = serde_json::json!(1099);
+        inflated["passed_tests"] = serde_json::json!(1099);
         inflated["gates"][3]["executed_tests"] = serde_json::json!(999);
         assert!(qualify_reverie_receipt(&history_row(inflated), RECEIPT_SHA).is_none());
         for policy in ["reverie-local-validation/v3", "reverie-local-validation/v4"] {
@@ -14488,7 +14592,7 @@ mod tests {
             .unwrap()
             .push(serde_json::json!({
                 "name": "Test all owned public instruction cases", "result": "pass", "exit_code": 0,
-                "executed_tests": 17, "filtered_tests": 0
+                "executed_tests": 17, "passed_tests": 17, "filtered_tests": 0
             }));
         for field in ["checks", "gates_run", "gates_expected"] {
             extra[field] = serde_json::json!(9);
@@ -14707,6 +14811,102 @@ mod tests {
     }
 
     #[test]
+    fn reverie_canonical_receipt_requires_exact_passed_test_count() {
+        let exact = reverie_receipt_value();
+        let assessment = assess_canonical_receipts(
+            Path::new("."),
+            &[history_row(exact.clone())],
+            RECEIPT_SHA,
+            CANONICAL_REVERIE_REPO,
+        )
+        .unwrap();
+        assert_eq!(assessment.verdict, validate_status::Verdict::Validated);
+        assert_eq!(assessment.qualifying.len(), 1);
+
+        let mut missing = exact.clone();
+        missing.as_object_mut().unwrap().remove("passed_tests");
+        let mut null = exact.clone();
+        null["passed_tests"] = serde_json::Value::Null;
+        let mut mismatch = exact.clone();
+        mismatch["passed_tests"] = serde_json::json!(99);
+        for (label, value) in [("missing", missing), ("null", null), ("mismatch", mismatch)] {
+            let assessment = assess_canonical_receipts(
+                Path::new("."),
+                &[history_row(value)],
+                RECEIPT_SHA,
+                CANONICAL_REVERIE_REPO,
+            )
+            .unwrap();
+            assert_eq!(
+                assessment.verdict,
+                validate_status::Verdict::NotValidated,
+                "Reverie {label} passed_tests must not validate"
+            );
+            assert!(assessment.qualifying.is_empty());
+        }
+
+        let mut malformed = exact;
+        malformed["passed_tests"] = serde_json::json!("100");
+        let raw = malformed.to_string();
+        let (rows, failures) = validate_status::parse_ledger(&raw);
+        assert!(rows.is_empty());
+        assert_eq!(failures.len(), 1);
+        assert_eq!(
+            failures[0].error,
+            qualifying_receipt::PASSED_TESTS_REFUSAL_REASON
+        );
+        assert_eq!(
+            receipt_digest_raw_count_type_refusal(&raw, false, false, qualifying_receipt::active(),),
+            Some(qualifying_receipt::PASSED_TESTS_REFUSAL_REASON)
+        );
+    }
+
+    #[test]
+    fn reverie_v3_current_schema_requires_exact_per_gate_count_triplets() {
+        let exact = reverie_receipt_value();
+        assert!(
+            qualify_reverie_receipt(&history_row(exact.clone()), RECEIPT_SHA).is_some(),
+            "schema-5/v3 exact aggregate and per-gate triplets must qualify"
+        );
+
+        for (label, mutation) in [
+            ("missing", "missing"),
+            ("null", "null"),
+            ("malformed", "malformed"),
+            ("mismatch", "mismatch"),
+            ("aggregate-sum", "aggregate-sum"),
+            ("aggregate-filtered-sum", "aggregate-filtered-sum"),
+        ] {
+            let mut value = exact.clone();
+            match mutation {
+                "missing" => {
+                    value["gates"][3]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("passed_tests");
+                }
+                "null" => value["gates"][3]["passed_tests"] = serde_json::Value::Null,
+                "malformed" => value["gates"][3]["passed_tests"] = serde_json::json!("60"),
+                "mismatch" => value["gates"][3]["passed_tests"] = serde_json::json!(59),
+                // Keep the top-level counts exact to each other and every gate
+                // internally exact so only aggregate/per-gate agreement moves.
+                "aggregate-sum" => {
+                    value["executed_tests"] = serde_json::json!(99);
+                    value["passed_tests"] = serde_json::json!(99);
+                }
+                "aggregate-filtered-sum" => {
+                    value["filtered_tests"] = serde_json::json!(19);
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                qualify_reverie_receipt(&history_row(value), RECEIPT_SHA).is_none(),
+                "schema-5/v3 {label} count evidence qualified"
+            );
+        }
+    }
+
+    #[test]
     fn reverie_v4_receipt_requires_exact_ten_gates_and_three_counted_gates() {
         let receipt =
             qualify_reverie_receipt(&history_row(reverie_v4_receipt_value()), RECEIPT_SHA)
@@ -14715,6 +14915,12 @@ mod tests {
 
         for (name, mutate) in [
             ("missing dedicated count", "missing-count"),
+            ("missing dedicated passed count", "missing-passed-count"),
+            (
+                "mismatched dedicated passed count",
+                "mismatched-passed-count",
+            ),
+            ("malformed dedicated passed count", "malformed-passed-count"),
             ("missing dedicated filtered count", "missing-filtered-count"),
             ("zero dedicated tests", "zero"),
             ("sixteen dedicated tests", "sixteen"),
@@ -14737,18 +14943,47 @@ mod tests {
                         .unwrap()
                         .remove("executed_tests");
                 }
+                "missing-passed-count" => {
+                    value["gates"][5]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("passed_tests");
+                }
+                "mismatched-passed-count" => {
+                    value["gates"][5]["passed_tests"] = serde_json::json!(16);
+                }
+                "malformed-passed-count" => {
+                    value["gates"][5]["passed_tests"] = serde_json::json!("17");
+                }
                 "missing-filtered-count" => {
                     value["gates"][5]
                         .as_object_mut()
                         .unwrap()
                         .remove("filtered_tests");
                 }
-                "zero" => value["gates"][5]["executed_tests"] = serde_json::json!(0),
-                "sixteen" => value["gates"][5]["executed_tests"] = serde_json::json!(16),
-                "eighteen" => value["gates"][5]["executed_tests"] = serde_json::json!(18),
+                "zero" => {
+                    value["gates"][5]["executed_tests"] = serde_json::json!(0);
+                    value["gates"][5]["passed_tests"] = serde_json::json!(0);
+                }
+                "sixteen" => {
+                    value["gates"][5]["executed_tests"] = serde_json::json!(16);
+                    value["gates"][5]["passed_tests"] = serde_json::json!(16);
+                }
+                "eighteen" => {
+                    value["gates"][5]["executed_tests"] = serde_json::json!(18);
+                    value["gates"][5]["passed_tests"] = serde_json::json!(18);
+                }
                 "filtered" => value["gates"][5]["filtered_tests"] = serde_json::json!(1),
-                "zero-regular" => value["gates"][6]["executed_tests"] = serde_json::json!(0),
-                "aggregate" => value["executed_tests"] = serde_json::json!(99),
+                "zero-regular" => {
+                    value["gates"][6]["executed_tests"] = serde_json::json!(0);
+                    value["gates"][6]["passed_tests"] = serde_json::json!(0);
+                    value["executed_tests"] = serde_json::json!(40);
+                    value["passed_tests"] = serde_json::json!(40);
+                }
+                "aggregate" => {
+                    value["executed_tests"] = serde_json::json!(99);
+                    value["passed_tests"] = serde_json::json!(99);
+                }
                 "coverage" => {
                     value["coverage"]["executed_test_nodes"] = serde_json::json!(2);
                     value["coverage"]["zero_executed_nodes"] =
@@ -14827,10 +15062,56 @@ mod tests {
         let first = history_row(schema4_receipt_value());
         let mut changed = schema4_receipt_value();
         changed["executed_tests"] = serde_json::json!(787);
+        changed["passed_tests"] = serde_json::json!(787);
         let second = history_row(changed);
         let first = qualify_canonical_receipt(&first, RECEIPT_SHA).unwrap();
         let second = qualify_canonical_receipt(&second, RECEIPT_SHA).unwrap();
         assert_ne!(first.canonical_sha256, second.canonical_sha256);
+    }
+
+    #[test]
+    fn receipt_digest_raw_boundary_names_malformed_counts_in_all_input_shapes() {
+        let pred = qualifying_receipt::QualifyingPredicate::parse(
+            qualifying_receipt::EMBEDDED,
+            "embedded",
+        )
+        .unwrap();
+        for field in ["executed_tests", "passed_tests"] {
+            let mut row = schema4_receipt_value();
+            row[field] = serde_json::json!("not-an-integer");
+            let inputs = [
+                (false, false, row.clone()),
+                (
+                    true,
+                    false,
+                    serde_json::json!({
+                        "schema_version": published_receipt::SCHEMA_VERSION,
+                        "ledger_record": row.clone(),
+                    }),
+                ),
+                (
+                    false,
+                    true,
+                    serde_json::json!({
+                        "schema": ledger_event::SCHEMA,
+                        "event_type": "run.result",
+                        "legacy_row": row.clone(),
+                    }),
+                ),
+            ];
+            for (published, event, input) in inputs {
+                assert_eq!(
+                    receipt_digest_raw_count_type_refusal(
+                        &input.to_string(),
+                        published,
+                        event,
+                        &pred,
+                    ),
+                    Some(qualifying_receipt::PASSED_TESTS_REFUSAL_REASON),
+                    "malformed {field} must have the shared reason for published={published} event={event}"
+                );
+            }
+        }
     }
 
     #[test]

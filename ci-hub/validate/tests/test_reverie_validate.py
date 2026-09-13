@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -21,6 +22,9 @@ import reverie_node
 import reverie_safe_ci
 import service_result
 import start_unit
+
+
+DEFAULT_PASSED = object()
 
 
 class ReverieValidateTest(unittest.TestCase):
@@ -72,6 +76,10 @@ class ReverieValidateTest(unittest.TestCase):
         maturity_v5: bool = False,
         regular_executed: int = 12,
         aggregate_executed: int | None = None,
+        regular_passed: object = DEFAULT_PASSED,
+        aggregate_passed: object = DEFAULT_PASSED,
+        regular_result: str = "pass",
+        mutate_source: Callable[[dict], None] | None = None,
         expect_record: bool = True,
     ) -> tuple[int, str, dict]:
         target = "b" * 40
@@ -104,25 +112,56 @@ class ReverieValidateTest(unittest.TestCase):
         for name in expected_gates:
             gate = {"name": name}
             if name == "Test all owned public instruction cases":
-                gate.update({"executed_tests": 17, "filtered_tests": 0})
+                gate.update(
+                    {
+                        "result": "pass",
+                        "executed_tests": 17,
+                        "passed_tests": 17,
+                        "filtered_tests": 0,
+                    }
+                )
             elif name == "Test regular workspace cases":
                 gate.update(
-                    {"executed_tests": regular_executed, "filtered_tests": 3}
+                    {
+                        "result": regular_result,
+                        "executed_tests": regular_executed,
+                        "passed_tests": (
+                            regular_executed
+                            if regular_passed is DEFAULT_PASSED
+                            else regular_passed
+                        ),
+                        "filtered_tests": 3,
+                    }
                 )
             elif name == "Documentation tests":
-                gate.update({"executed_tests": 5, "filtered_tests": 1})
+                gate.update(
+                    {
+                        "result": "pass",
+                        "executed_tests": 5,
+                        "passed_tests": 5,
+                        "filtered_tests": 1,
+                    }
+                )
             gates.append(gate)
+        executed_tests = (
+            aggregate_executed
+            if aggregate_executed is not None
+            else regular_executed + 5 + (0 if legacy_v3 or maturity_v5 else 17)
+        )
         source = {
             "result": "pass" if validate_exit == 0 else "fail",
             "checks": len(expected_gates),
-            "executed_tests": (
-                aggregate_executed
-                if aggregate_executed is not None
-                else regular_executed + 5 + (0 if legacy_v3 or maturity_v5 else 17)
+            "executed_tests": executed_tests,
+            "passed_tests": (
+                executed_tests
+                if aggregate_passed is DEFAULT_PASSED
+                else aggregate_passed
             ),
             "filtered_tests": 4,
             "gates": gates,
         }
+        if mutate_source is not None:
+            mutate_source(source)
         recorded: list[dict] = []
         with (
             mock.patch.object(reverie_node, "git", side_effect=fake_git),
@@ -360,6 +399,7 @@ class ReverieValidateTest(unittest.TestCase):
                 self.assertEqual(rc, expected_rc)
                 self.assertEqual(status, expected_status)
                 self.assertEqual(row["executed_tests"], 34)
+                self.assertEqual(row["passed_tests"], 34)
                 self.assertEqual(row["filtered_tests"], 4)
                 self.assertEqual(
                     row["reverie_validation_policy"], "reverie-local-validation/v4"
@@ -390,6 +430,7 @@ class ReverieValidateTest(unittest.TestCase):
         )
         self.assertEqual(row["gates_expected"], 7)
         self.assertEqual(row["executed_tests"], 17)
+        self.assertEqual(row["passed_tests"], 17)
         self.assertEqual(row["coverage"]["planned_test_nodes"], 2)
         self.assertEqual(row["coverage"]["executed_test_nodes"], 2)
 
@@ -404,6 +445,11 @@ class ReverieValidateTest(unittest.TestCase):
                 "two of three test gates",
                 {"regular_executed": 0},
                 "requires all three counted test gates",
+            ),
+            (
+                "passing aggregate count disagrees",
+                {"aggregate_passed": 33},
+                "requires passed_tests == executed_tests",
             ),
         ):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as raw:
@@ -437,6 +483,7 @@ class ReverieValidateTest(unittest.TestCase):
             self.assertEqual(row["reverie_validation_policy"], "reverie-local-validation/v5")
             self.assertEqual(row["gates_expected"], 8)
             self.assertEqual(row["executed_tests"], 17)
+            self.assertEqual(row["passed_tests"], 17)
             self.assertEqual(row["filtered_tests"], 4)
             self.assertEqual(row["coverage"]["planned_test_nodes"], 2)
             self.assertEqual(row["coverage"]["executed_test_nodes"], 2)
@@ -446,6 +493,10 @@ class ReverieValidateTest(unittest.TestCase):
         for options, detail in (
             ({"aggregate_executed": 18}, "aggregate test counts disagree"),
             ({"regular_executed": 0}, "requires both counted test gates"),
+            (
+                {"aggregate_passed": 16},
+                "requires passed_tests == executed_tests",
+            ),
         ):
             with self.subTest(options=options), tempfile.TemporaryDirectory() as raw:
                 root = Path(raw)
@@ -460,6 +511,114 @@ class ReverieValidateTest(unittest.TestCase):
                 self.assertEqual(rc, 75)
                 self.assertEqual(status, "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n")
                 self.assertIn(detail, stderr.getvalue())
+
+    def test_reverie_node_refuses_missing_or_malformed_passed_counts(self) -> None:
+        def remove_aggregate(source: dict) -> None:
+            del source["passed_tests"]
+
+        def remove_regular_gate(source: dict) -> None:
+            regular = next(
+                gate
+                for gate in source["gates"]
+                if gate["name"] == "Test regular workspace cases"
+            )
+            del regular["passed_tests"]
+
+        for maturity_v5 in (False, True):
+            for label, options, detail in (
+                (
+                    "missing aggregate",
+                    {"mutate_source": remove_aggregate},
+                    "source row passed_tests",
+                ),
+                (
+                    "null aggregate",
+                    {"aggregate_passed": None},
+                    "source row passed_tests",
+                ),
+                (
+                    "malformed aggregate",
+                    {"aggregate_passed": "17"},
+                    "source row passed_tests",
+                ),
+                (
+                    "missing per-gate",
+                    {"mutate_source": remove_regular_gate},
+                    "Test regular workspace cases.*passed_tests",
+                ),
+            ):
+                with (
+                    self.subTest(maturity_v5=maturity_v5, label=label),
+                    tempfile.TemporaryDirectory() as raw,
+                ):
+                    root = Path(raw)
+                    checkout = root / "reverie"
+                    checkout.mkdir()
+                    stderr = StringIO()
+                    with redirect_stderr(stderr):
+                        rc, status, _ = self.run_reverie_node(
+                            root,
+                            checkout,
+                            validate_exit=0,
+                            maturity_v5=maturity_v5,
+                            expect_record=False,
+                            **options,
+                        )
+                    self.assertEqual(rc, 75)
+                    self.assertEqual(
+                        status, "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n"
+                    )
+                    self.assertRegex(stderr.getvalue(), detail)
+
+    def test_reverie_node_compares_aggregate_and_per_gate_passed_counts(self) -> None:
+        for maturity_v5, passed in ((False, 33), (True, 16)):
+            with (
+                self.subTest(maturity_v5=maturity_v5),
+                tempfile.TemporaryDirectory() as raw,
+            ):
+                root = Path(raw)
+                checkout = root / "reverie"
+                checkout.mkdir()
+                stderr = StringIO()
+                with redirect_stderr(stderr):
+                    rc, status, _ = self.run_reverie_node(
+                        root,
+                        checkout,
+                        validate_exit=1,
+                        maturity_v5=maturity_v5,
+                        aggregate_passed=passed,
+                        expect_record=False,
+                    )
+                self.assertEqual(rc, 75)
+                self.assertEqual(status, "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n")
+                self.assertIn("aggregate test counts disagree", stderr.getvalue())
+
+    def test_reverie_node_records_failed_test_counts_without_invention(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            checkout = root / "reverie"
+            checkout.mkdir()
+            rc, status, row = self.run_reverie_node(
+                root,
+                checkout,
+                validate_exit=1,
+                regular_passed=11,
+                aggregate_passed=33,
+                regular_result="fail",
+            )
+        self.assertEqual(rc, 1)
+        self.assertEqual(status, "FINAL_VALIDATE_STATUS: FAILED\n")
+        self.assertEqual(row["result"], "fail")
+        self.assertEqual(row["executed_tests"], 34)
+        self.assertEqual(row["passed_tests"], 33)
+        regular = next(
+            gate
+            for gate in row["gates"]
+            if gate["name"] == "Test regular workspace cases"
+        )
+        self.assertEqual(regular["executed_tests"], 12)
+        self.assertEqual(regular["passed_tests"], 11)
+        self.assertEqual(regular["result"], "fail")
 
     def test_reverie_node_refusal_publishes_could_not_run(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -494,12 +653,16 @@ class ReverieValidateTest(unittest.TestCase):
             "gates": [
                 {
                     "name": "Test regular workspace cases",
+                    "result": "pass",
                     "executed_tests": 10,
+                    "passed_tests": 10,
                     "filtered_tests": 3,
                 },
                 {
                     "name": "Documentation tests",
+                    "result": "pass",
                     "executed_tests": 4,
+                    "passed_tests": 4,
                     "filtered_tests": 0,
                 },
             ]
@@ -508,21 +671,22 @@ class ReverieValidateTest(unittest.TestCase):
             reverie_node.recorded_gate_coverage(
                 complete, reverie_node.V3_TEST_GATES
             ),
-            (14, 3, [], []),
+            (14, 14, 3, [], []),
         )
         complete["gates"][1]["executed_tests"] = 0
+        complete["gates"][1]["passed_tests"] = 0
         self.assertEqual(
             reverie_node.recorded_gate_coverage(
                 complete, reverie_node.V3_TEST_GATES
             ),
-            (10, 3, ["Documentation tests"], []),
+            (10, 10, 3, ["Documentation tests"], []),
         )
         missing = {"gates": complete["gates"][:1]}
         self.assertEqual(
             reverie_node.recorded_gate_coverage(
                 missing, reverie_node.V3_TEST_GATES
             ),
-            (10, 3, [], ["Documentation tests"]),
+            (10, 10, 3, [], ["Documentation tests"]),
         )
 
     def test_missing_per_gate_count_refuses_by_field_name(self) -> None:
@@ -530,10 +694,17 @@ class ReverieValidateTest(unittest.TestCase):
             "gates": [
                 {
                     "name": "Test regular workspace cases",
+                    "result": "pass",
                     "executed_tests": 10,
+                    "passed_tests": 10,
                     "filtered_tests": 3,
                 },
-                {"name": "Documentation tests", "filtered_tests": 0},
+                {
+                    "name": "Documentation tests",
+                    "result": "pass",
+                    "passed_tests": 0,
+                    "filtered_tests": 0,
+                },
             ]
         }
         with self.assertRaisesRegex(
@@ -543,55 +714,177 @@ class ReverieValidateTest(unittest.TestCase):
                 source, reverie_node.V3_TEST_GATES
             )
 
-    def test_v4_owned_public_gate_requires_exact_counts(self) -> None:
-        def source(executed: int, filtered: int) -> dict:
+    def test_per_gate_passed_counts_are_typed_and_consistent(self) -> None:
+        def source(*, result: str = "pass", passed: object = 10) -> dict:
             return {
                 "gates": [
                     {
-                        "name": "Test all owned public instruction cases",
-                        "executed_tests": executed,
-                        "filtered_tests": filtered,
-                    },
-                    {
                         "name": "Test regular workspace cases",
-                        "executed_tests": 12,
+                        "result": result,
+                        "executed_tests": 10,
+                        "passed_tests": passed,
                         "filtered_tests": 3,
                     },
                     {
                         "name": "Documentation tests",
+                        "result": "pass",
+                        "executed_tests": 4,
+                        "passed_tests": 4,
+                        "filtered_tests": 0,
+                    },
+                ]
+            }
+
+        for value in (None, "10", True, -1):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    reverie_node.Refusal,
+                    "Test regular workspace cases.*passed_tests",
+                ):
+                    reverie_node.recorded_gate_coverage(
+                        source(passed=value), reverie_node.V3_TEST_GATES
+                    )
+        missing = source()
+        del missing["gates"][0]["passed_tests"]
+        with self.assertRaisesRegex(
+            reverie_node.Refusal, "Test regular workspace cases.*passed_tests"
+        ):
+            reverie_node.recorded_gate_coverage(
+                missing, reverie_node.V3_TEST_GATES
+            )
+        with self.assertRaisesRegex(reverie_node.Refusal, "must not exceed"):
+            reverie_node.recorded_gate_coverage(
+                source(result="fail", passed=11), reverie_node.V3_TEST_GATES
+            )
+        with self.assertRaisesRegex(
+            reverie_node.Refusal, "requires passed_tests == executed_tests"
+        ):
+            reverie_node.recorded_gate_coverage(
+                source(passed=9), reverie_node.V3_TEST_GATES
+            )
+        self.assertEqual(
+            reverie_node.recorded_gate_coverage(
+                source(result="fail", passed=9), reverie_node.V3_TEST_GATES
+            ),
+            (14, 13, 3, [], []),
+        )
+
+    def test_v4_owned_public_gate_requires_exact_counts(self) -> None:
+        def source(executed: int, passed: int, filtered: int) -> dict:
+            return {
+                "gates": [
+                    {
+                        "name": "Test all owned public instruction cases",
+                        "result": "pass",
+                        "executed_tests": executed,
+                        "passed_tests": passed,
+                        "filtered_tests": filtered,
+                    },
+                    {
+                        "name": "Test regular workspace cases",
+                        "result": "pass",
+                        "executed_tests": 12,
+                        "passed_tests": 12,
+                        "filtered_tests": 3,
+                    },
+                    {
+                        "name": "Documentation tests",
+                        "result": "pass",
                         "executed_tests": 5,
+                        "passed_tests": 5,
                         "filtered_tests": 1,
                     },
                 ]
             }
 
         self.assertEqual(
-            reverie_node.recorded_gate_coverage(source(17, 0)),
-            (34, 4, [], []),
+            reverie_node.recorded_gate_coverage(source(17, 17, 0)),
+            (34, 34, 4, [], []),
         )
         for executed, filtered in ((16, 0), (18, 0), (17, 1), (0, 0)):
             with self.subTest(executed=executed, filtered=filtered):
                 with self.assertRaisesRegex(
                     reverie_node.Refusal, "must record exactly executed_tests=17"
                 ):
-                    reverie_node.recorded_gate_coverage(source(executed, filtered))
+                    reverie_node.recorded_gate_coverage(
+                        source(executed, executed, filtered)
+                    )
+        with self.assertRaisesRegex(
+            reverie_node.Refusal, "requires passed_tests == executed_tests"
+        ):
+            reverie_node.recorded_gate_coverage(source(17, 16, 0))
 
     def test_aggregate_counts_come_from_the_framework_row(self) -> None:
         self.assertEqual(
             reverie_node.recorded_test_counts(
-                {"executed_tests": 17, "filtered_tests": 4}
+                {
+                    "result": "pass",
+                    "executed_tests": 17,
+                    "passed_tests": 17,
+                    "filtered_tests": 4,
+                }
             ),
-            (17, 4),
+            (17, 17, 4),
         )
         for field, value in (
             ("executed_tests", None),
             ("executed_tests", "17"),
+            ("executed_tests", True),
             ("executed_tests", -1),
+            ("passed_tests", None),
+            ("passed_tests", "17"),
+            ("passed_tests", True),
+            ("passed_tests", -1),
             ("filtered_tests", None),
         ):
-            row = {"executed_tests": 17, "filtered_tests": 4, field: value}
+            row = {
+                "result": "pass",
+                "executed_tests": 17,
+                "passed_tests": 17,
+                "filtered_tests": 4,
+                field: value,
+            }
             with self.assertRaisesRegex(reverie_node.Refusal, field):
                 reverie_node.recorded_test_counts(row)
+
+        missing = {
+            "result": "pass",
+            "executed_tests": 17,
+            "filtered_tests": 4,
+        }
+        with self.assertRaisesRegex(reverie_node.Refusal, "passed_tests"):
+            reverie_node.recorded_test_counts(missing)
+        with self.assertRaisesRegex(reverie_node.Refusal, "must not exceed"):
+            reverie_node.recorded_test_counts(
+                {
+                    "result": "fail",
+                    "executed_tests": 17,
+                    "passed_tests": 18,
+                    "filtered_tests": 4,
+                }
+            )
+        with self.assertRaisesRegex(
+            reverie_node.Refusal, "requires passed_tests == executed_tests"
+        ):
+            reverie_node.recorded_test_counts(
+                {
+                    "result": "pass",
+                    "executed_tests": 17,
+                    "passed_tests": 16,
+                    "filtered_tests": 4,
+                }
+            )
+        self.assertEqual(
+            reverie_node.recorded_test_counts(
+                {
+                    "result": "fail",
+                    "executed_tests": 17,
+                    "passed_tests": 16,
+                    "filtered_tests": 4,
+                }
+            ),
+            (17, 16, 4),
+        )
 
     def test_versioned_gate_contracts_are_exact(self) -> None:
         self.assertEqual(

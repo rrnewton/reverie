@@ -60,6 +60,10 @@ pub const PREDICATE_REL: &str = "ci-hub/validate/qualifying-receipt.json";
 /// consumer at a tightened copy without touching the live file.
 pub const PREDICATE_ENV: &str = "QUALIFYING_RECEIPT_PREDICATE";
 
+/// Shared with the Python predicate so every current-schema passing row reports
+/// the same failed condition for an absent, malformed, or contradictory count.
+pub const PASSED_TESTS_REFUSAL_REASON: &str = "passed_tests != executed_tests for passing row";
+
 /// Compile-time snapshot of the live file (fallback only; see module docs).
 pub const EMBEDDED: &str = include_str!("../validate/qualifying-receipt.json");
 
@@ -82,6 +86,12 @@ pub struct RequireClause {
 pub struct CoverageClause {
     pub applies_at_schema_min: u32,
     pub per_node: bool,
+}
+
+/// Framework-owned passing-test count and the schema at which it is mandatory.
+#[derive(Clone, Debug, Deserialize)]
+pub struct PassedTestsClause {
+    pub applies_at_schema_min: u32,
 }
 
 /// Receipt-carried base evidence. Semantics live in the same Python authority
@@ -259,6 +269,7 @@ pub struct QualifyingPredicate {
     /// cache and must agree with that derivation.
     #[serde(default = "default_accepts_green_class")]
     pub accepts_green_class: Vec<String>,
+    pub passed_tests: PassedTestsClause,
     pub coverage: CoverageClause,
     /// Exact base/provenance evidence and its merge-boundary policy.
     pub base: BaseClause,
@@ -284,6 +295,47 @@ impl QualifyingPredicate {
     pub fn parse(text: &str, origin: &str) -> Result<Self, String> {
         serde_json::from_str(text)
             .map_err(|e| format!("{origin}: malformed qualifying predicate: {e}"))
+    }
+}
+
+/// Classify malformed count types before deserializing a current-schema pass
+/// row into [`HistoryRow`]. Missing and null values deliberately remain on the
+/// normal typed predicate path, as do numeric mismatches. Rows before the
+/// policy cutoff retain their historical deserialization behavior.
+pub fn raw_current_schema_count_type_refusal(
+    row: &serde_json::Value,
+    pred: &QualifyingPredicate,
+) -> Option<&'static str> {
+    if row.get("result").and_then(serde_json::Value::as_str) != Some(pred.require.result.as_str()) {
+        return None;
+    }
+    let schema = row
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|schema| u32::try_from(schema).ok())?;
+    if schema < pred.passed_tests.applies_at_schema_min {
+        return None;
+    }
+    let malformed = ["executed_tests", "passed_tests"].iter().any(|field| {
+        row.get(field)
+            .is_some_and(|value| !value.is_null() && value.as_i64().is_none())
+    });
+    malformed.then_some(PASSED_TESTS_REFUSAL_REASON)
+}
+
+/// Apply the versioned passed-test count contract to an already typed row.
+/// Schema-4+ rows require both counts and exact equality; older rows retain
+/// the historical rule that an absent count is allowed but a present mismatch
+/// is contradictory evidence.
+pub fn passed_tests_satisfy_schema(row: &HistoryRow, pred: &QualifyingPredicate) -> bool {
+    let schema = row.schema_version.unwrap_or(0);
+    let exact = row
+        .passed_tests
+        .is_some_and(|passed| Some(passed) == row.executed_tests);
+    if schema >= pred.passed_tests.applies_at_schema_min {
+        exact
+    } else {
+        row.passed_tests.is_none() || exact
     }
 }
 
@@ -809,8 +861,9 @@ fn shared_evidence_outcome(row: &HistoryRow, pred: &QualifyingPredicate) -> Boun
 ///     malformed and must not qualify.
 ///   * a demonstrated zero-test run (`executed_tests == Some(0)`) is never a
 ///     green at any schema — never grandfathered.
-///   * when a passing row carries `passed_tests`, it must equal
-///     `executed_tests`; a partial pass count is contradictory green evidence.
+///   * schema-4+ passing rows must carry `passed_tests` and it must equal
+///     `executed_tests`; older rows retain the historical optional-field rule,
+///     under which a present partial pass count is contradictory green evidence.
 ///   * if `gate_filtered_tests`, additionally require `filtered_tests == 0`.
 ///   * COUNT-CAPABLE receipts (`schema_version >= counts_schema`) are held to the
 ///     FULL contract: every planned outer gate is accounted for,
@@ -916,16 +969,13 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
     if row.executed_tests == Some(0) {
         return Qualification::refused("executed_tests == 0");
     }
-    if row
-        .passed_tests
-        .is_some_and(|passed| Some(passed) != row.executed_tests)
-    {
-        return Qualification::refused("passed_tests != executed_tests for passing row");
+    let schema = row.schema_version.unwrap_or(0);
+    if !passed_tests_satisfy_schema(row, pred) {
+        return Qualification::refused(PASSED_TESTS_REFUSAL_REASON);
     }
     if pred.gate_filtered_tests && row.filtered_tests != Some(0) {
         return Qualification::refused("filtered_tests != 0");
     }
-    let schema = row.schema_version.unwrap_or(0);
     let count_capable = schema >= pred.counts_schema;
     if count_capable && !gate_accounting_complete(row) {
         return Qualification::refused("outer gate accounting incomplete");
@@ -1108,7 +1158,7 @@ mod tests {
         serde_json::from_str(&format!(
             r#"{{"schema_version":5,"profile":"full","selection_mode":"full","commit":"{sha}",
                 "commit_anchored":true,"tree_dirty":false,"result":"pass","failures":0,
-                "executed_tests":427,"filtered_tests":0,"coverage":{coverage},
+                "executed_tests":427,"passed_tests":427,"filtered_tests":0,"coverage":{coverage},
                 "checks":1,"gates_run":1,"gates_expected":1,
                 "gates":[{{"name":"test","result":"pass","exit_code":0}}],
                 "producer":"hermit-validate-sh","admission":"ci-hub-validate-lock",
@@ -1132,7 +1182,7 @@ mod tests {
         serde_json::from_str(&format!(
             r#"{{"schema_version":5,"profile":"full","selection_mode":"full","commit":"{sha}",
                 "commit_anchored":true,"tree_dirty":false,"result":"pass","failures":0,
-                "executed_tests":427,"filtered_tests":0,"finished_at":"{finished_at}",
+                "executed_tests":427,"passed_tests":427,"filtered_tests":0,"finished_at":"{finished_at}",
                 "checks":1,"gates_run":1,"gates_expected":1,
                 "gates":[{{"name":"test","result":"pass","exit_code":0}}],
                 "coverage":{{"planned_test_nodes":19,"executed_test_nodes":19,
@@ -1248,21 +1298,157 @@ mod tests {
     }
 
     #[test]
-    fn passing_receipt_requires_any_present_passed_count_to_match_execution() {
+    fn raw_current_schema_count_type_errors_share_the_passed_count_reason() {
+        let pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
+        for schema in [4, 5] {
+            let current = serde_json::json!({
+                "schema_version": schema,
+                "result": "pass",
+                "executed_tests": 427,
+                "passed_tests": 427,
+            });
+
+            for field in ["executed_tests", "passed_tests"] {
+                for malformed in [
+                    serde_json::json!("427"),
+                    serde_json::json!(true),
+                    serde_json::json!(427.0),
+                    serde_json::Value::from(1_u64 << 63),
+                ] {
+                    let mut row = current.clone();
+                    row[field] = malformed;
+                    assert_eq!(
+                        raw_current_schema_count_type_refusal(&row, &pred),
+                        Some(PASSED_TESTS_REFUSAL_REASON),
+                        "schema-{schema} {field} type must have the shared refusal reason"
+                    );
+
+                    row["schema_version"] = serde_json::json!(3);
+                    assert_eq!(
+                        raw_current_schema_count_type_refusal(&row, &pred),
+                        None,
+                        "pre-4 {field} must retain its prior typed-reader behavior"
+                    );
+                }
+            }
+
+            for (field, value) in [
+                ("passed_tests", serde_json::Value::Null),
+                ("passed_tests", serde_json::json!(426)),
+                ("executed_tests", serde_json::Value::Null),
+            ] {
+                let mut row = current.clone();
+                row[field] = value;
+                assert_eq!(
+                    raw_current_schema_count_type_refusal(&row, &pred),
+                    None,
+                    "{field} missing/null/mismatch belongs to the typed predicate path"
+                );
+            }
+            let mut missing = current;
+            missing.as_object_mut().unwrap().remove("passed_tests");
+            assert_eq!(
+                raw_current_schema_count_type_refusal(&missing, &pred),
+                None,
+                "missing passed_tests belongs to the typed predicate path"
+            );
+        }
+    }
+
+    #[test]
+    fn schema4_and_newer_passing_receipts_require_exact_passed_count() {
         let sha = "b".repeat(40);
         let pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
-        let mut row = row_with_producer(&sha, "2026-08-08T09:00:00Z", Some("hermit-validate-sh"));
+        let current = row_with_producer(&sha, "2026-08-08T09:00:00Z", Some("hermit-validate-sh"));
 
-        assert!(row_qualifies(&row, &sha, &pred));
-        row.passed_tests = row.executed_tests;
-        assert!(row_qualifies(&row, &sha, &pred));
+        for schema in [4, 5] {
+            let mut exact = current.clone();
+            exact.schema_version = Some(schema);
+            if schema == 4 {
+                exact.coverage = None;
+            }
+            assert!(row_qualifies(&exact, &sha, &pred));
 
-        for contradictory in [Some(-1), Some(0), Some(426), Some(428)] {
-            row.passed_tests = contradictory;
+            for label in ["missing", "null"] {
+                let mut value = serde_json::to_value(&exact).unwrap();
+                if label == "missing" {
+                    value.as_object_mut().unwrap().remove("passed_tests");
+                } else {
+                    value["passed_tests"] = serde_json::Value::Null;
+                }
+                let row: HistoryRow = serde_json::from_value(value).unwrap();
+                assert_eq!(
+                    row_qualification(&row, &sha, &pred),
+                    Qualification::refused(PASSED_TESTS_REFUSAL_REASON),
+                    "schema-{schema} {label} passed_tests must refuse"
+                );
+            }
+
+            for contradictory in [-1, 0, 426, 428] {
+                let mut row = exact.clone();
+                row.passed_tests = Some(contradictory);
+                assert_eq!(
+                    row_qualification(&row, &sha, &pred),
+                    Qualification::refused(PASSED_TESTS_REFUSAL_REASON),
+                    "schema-{schema} passed_tests={contradictory} must refuse"
+                );
+            }
+        }
+
+        let mut old_value = serde_json::to_value(&current).unwrap();
+        old_value["schema_version"] = serde_json::json!(3);
+        old_value.as_object_mut().unwrap().remove("coverage");
+        let exact_old: HistoryRow = serde_json::from_value(old_value.clone()).unwrap();
+        assert_eq!(
+            row_qualification(&exact_old, &sha, &pred),
+            Qualification::CountsOnlyGrandfathered { schema: 3 },
+            "pre-4 exact passed_tests retains its qualification semantics"
+        );
+        for label in ["missing", "null"] {
+            let mut value = old_value.clone();
+            if label == "missing" {
+                value.as_object_mut().unwrap().remove("passed_tests");
+            } else {
+                value["passed_tests"] = serde_json::Value::Null;
+            }
+            let row: HistoryRow = serde_json::from_value(value).unwrap();
             assert_eq!(
                 row_qualification(&row, &sha, &pred),
-                Qualification::refused("passed_tests != executed_tests for passing row")
+                Qualification::CountsOnlyGrandfathered { schema: 3 },
+                "pre-4 {label} passed_tests retains its qualification semantics"
             );
+        }
+
+        let mut old: HistoryRow = serde_json::from_value(old_value).unwrap();
+        old.passed_tests = Some(426);
+        assert_eq!(
+            row_qualification(&old, &sha, &pred),
+            Qualification::refused(PASSED_TESTS_REFUSAL_REASON),
+            "pre-4 present contradictory evidence remains refused"
+        );
+
+        for schema in [4, 5] {
+            for malformed in [
+                serde_json::json!("427"),
+                serde_json::json!(true),
+                serde_json::json!(427.0),
+            ] {
+                let mut value = serde_json::to_value(&row_with_producer(
+                    &sha,
+                    "2026-08-08T09:00:00Z",
+                    Some("hermit-validate-sh"),
+                ))
+                .unwrap();
+                value["schema_version"] = serde_json::json!(schema);
+                if schema == 4 {
+                    value.as_object_mut().unwrap().remove("coverage");
+                }
+                value["passed_tests"] = malformed;
+                assert!(
+                    serde_json::from_value::<HistoryRow>(value).is_err(),
+                    "the typed Rust row must reject malformed schema-{schema} passed_tests"
+                );
+            }
         }
     }
 
@@ -1645,7 +1831,7 @@ mod tests {
         let row: HistoryRow = serde_json::from_str(&format!(
             r#"{{"schema_version":5,"profile":"full","selection_mode":"full","commit":"{sha}",
                 "commit_anchored":true,"tree_dirty":false,"result":"pass","failures":0,
-                "executed_tests":427,"filtered_tests":0}}"#
+                "executed_tests":427,"passed_tests":427,"filtered_tests":0}}"#
         ))
         .unwrap();
         assert!(matches!(
@@ -1666,6 +1852,7 @@ mod tests {
     fn embedded_snapshot_parses() {
         let pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
         assert!(pred.counts_schema >= 1);
+        assert_eq!(pred.passed_tests.applies_at_schema_min, 4);
         assert!(pred.require.executed_tests_min >= 1);
     }
 
@@ -1696,7 +1883,7 @@ mod tests {
         let row: HistoryRow = serde_json::from_str(&format!(
             r#"{{"schema_version":5,"profile":"full","selection_mode":"full","commit":"{sha}",
                 "commit_anchored":true,"tree_dirty":false,"result":"pass","failures":0,
-                "executed_tests":740,"filtered_tests":3,
+                "executed_tests":740,"passed_tests":740,"filtered_tests":3,
                 "checks":1,"gates_run":1,"gates_expected":1,
                 "gates":[{{"name":"test","result":"pass","exit_code":0}}],
                 "coverage":{{"planned_test_nodes":4,"executed_test_nodes":4,
@@ -1741,6 +1928,7 @@ mod tests {
             "result": "pass",
             "failures": 0,
             "executed_tests": 740,
+            "passed_tests": 740,
             "filtered_tests": 3,
             "checks": 1,
             "gates_run": 1,

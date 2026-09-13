@@ -48,6 +48,9 @@ import bounded_capture  # noqa: E402
 from gate_completeness import gates_complete  # noqa: E402
 
 
+PASSED_TESTS_REFUSAL_REASON = "passed_tests != executed_tests for passing row"
+I64_MIN = -(1 << 63)
+I64_MAX = (1 << 63) - 1
 U64_MAX = (1 << 64) - 1
 
 PREDICATE_ENV = "QUALIFYING_RECEIPT_PREDICATE"
@@ -444,6 +447,7 @@ def load() -> dict[str, Any]:
     for key in (
         "counts_schema",
         "require",
+        "passed_tests",
         "coverage",
         "cell_results",
         "base",
@@ -465,6 +469,10 @@ def load() -> dict[str, Any]:
     for key in ("applies_at_schema_min", "per_node"):
         if key not in pred["coverage"]:
             raise RuntimeError(f"{path}: qualifying predicate missing coverage.{key}")
+    if "applies_at_schema_min" not in pred["passed_tests"]:
+        raise RuntimeError(
+            f"{path}: qualifying predicate missing passed_tests.applies_at_schema_min"
+        )
     for key in ("applies_at_schema_min", "supported_schema_max"):
         if key not in pred["cell_results"]:
             raise RuntimeError(f"{path}: qualifying predicate missing cell_results.{key}")
@@ -665,6 +673,14 @@ def _nonblank(value: Any) -> bool:
 
 def _u64(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= U64_MAX
+
+
+def _i64(value: Any) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and I64_MIN <= value <= I64_MAX
+    )
 
 
 def _sha256(value: Any) -> bool:
@@ -1369,16 +1385,29 @@ def _row_qualification_without_class(
     # A demonstrated zero-test run is never a full green, at any schema.
     if row.get("executed_tests") == 0:
         return False, "executed_tests==0"
+    schema = row.get("schema_version") or 0
+    executed = row.get("executed_tests")
     passed = row.get("passed_tests")
-    if passed is not None and (
+    current_passed_tests_match = (
+        _i64(executed)
+        and _i64(passed)
+        and passed == executed
+    )
+    legacy_passed_tests_mismatch = passed is not None and (
         not isinstance(passed, int)
         or isinstance(passed, bool)
-        or passed != row.get("executed_tests")
+        or passed != executed
+    )
+    if (
+        schema >= pred["passed_tests"]["applies_at_schema_min"]
+        and not current_passed_tests_match
+    ) or (
+        schema < pred["passed_tests"]["applies_at_schema_min"]
+        and legacy_passed_tests_mismatch
     ):
-        return False, "passed_tests!=executed_tests for passing row"
+        return False, PASSED_TESTS_REFUSAL_REASON
     if pred.get("gate_filtered_tests") and row.get("filtered_tests") != 0:
         return False, "filtered_tests!=0"
-    schema = row.get("schema_version") or 0
     if schema >= pred["counts_schema"]:
         gates_ok, gates_reason = gates_complete(row)
         if not gates_ok:

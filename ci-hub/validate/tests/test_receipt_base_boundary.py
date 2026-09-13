@@ -59,6 +59,7 @@ def row_for(
         "exit_code": 0,
         "failures": 0,
         "executed_tests": 1,
+        "passed_tests": 1,
         "filtered_tests": 0,
         "schema_version": 5,
         "repo": "hermit",
@@ -160,6 +161,16 @@ def test_merge_boundary_brackets_both_ways_and_preserves_schema4(tmp_path: Path)
     assert running_consumer(
         positive, hermit, current_base, reverie, current_reverie
     ).returncode == 0
+
+    missing_passed = dict(positive)
+    missing_passed.pop("passed_tests")
+    assert qr.row_qualification(missing_passed, pr_head, pred) == (
+        False,
+        qr.PASSED_TESTS_REFUSAL_REASON,
+    )
+    assert running_consumer(
+        missing_passed, hermit, current_base, reverie, current_reverie
+    ).returncode != 0
 
     # A recorded Reverie base remains current while it is on live main's
     # history. This is the same stable ancestry policy used by Hermit's pin

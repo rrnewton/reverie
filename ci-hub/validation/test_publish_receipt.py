@@ -99,6 +99,7 @@ class ReceiptTests(unittest.TestCase):
             ),
             "failures": 0,
             "executed_tests": 0 if weak else executed,
+            "passed_tests": 0 if weak else executed,
             "filtered_tests": 0 if weak else 3,
             "host": host,
             "slot": "fixture-slot",
