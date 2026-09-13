@@ -659,8 +659,10 @@ drreg_insert_respill_all(void *drcontext, per_thread_t *pt, instrlist_t *bb,
                  pt->aflags.xchg == reg)) {
                 uint tmp_slot = MAX_SPILLS;
                 if (pt->aflags.xchg == reg) {
-                    /* Bail on keeping the flags in the reg. */
-                    drreg_move_aflags_from_reg(drcontext, bb, inst, pt, true);
+                    /* The flags were just re-spilled at next. Move them at the
+                     * same post-call point before restoring application xax. */
+                    drreg_move_aflags_from_reg(drcontext, bb,
+                                               force_respill ? next : inst, pt, true);
                     continue;
                 }
                 if (pt->reg[GPR_IDX(reg)].xchg != DR_REG_NULL) {
@@ -693,8 +695,12 @@ drreg_insert_respill_all(void *drcontext, per_thread_t *pt, instrlist_t *bb,
                 if (restored_for_read[GPR_IDX(reg)]) {
                     ASSERT(instr_get_prev(next) != NULL,
                            "missing tool value restore after app read");
+                    /* Clean-call insertion passes the first tool restore as
+                     * next. Re-spill after the call, before that restore. The
+                     * ordinary application-instruction path keeps its existing
+                     * insertion point. */
                     spill_reg(drcontext, pt, reg, pt->reg[GPR_IDX(reg)].slot, bb,
-                              instr_get_prev(next));
+                              force_respill ? next : instr_get_prev(next));
                 } else {
                     spill_reg(drcontext, pt, reg, pt->reg[GPR_IDX(reg)].slot, bb,
                               next /*after*/);
@@ -798,6 +804,12 @@ drreg_event_clean_call_insertion(void *drcontext, instrlist_t *ilist, instr_t *w
         }
         return;
     }
+    per_thread_t *pt = get_tls_data(drcontext);
+    drreg_bb_properties_t original_properties = pt->bb_props;
+    /* The saves are inserted before the call while their restores are after
+     * it. A later allocation in this callback must respect those pending
+     * restore operands even after their slots have been released in metadata. */
+    pt->bb_props |= DRREG_HANDLE_MULTI_PHASE_SLOT_RESERVATIONS;
     bool restored_for_read[DR_NUM_GPR_REGS];
     drreg_status_t res;
     if (TEST(DR_CLEANCALL_READS_APP_CONTEXT, call_flags)) {
@@ -824,9 +836,9 @@ drreg_event_clean_call_insertion(void *drcontext, instrlist_t *ilist, instr_t *w
             drreg_report_error(DRREG_ERROR_FEATURE_NOT_AVAILABLE,
                                "combining DR_CLEANCALL_WRITES_APP_CONTEXT and "
                                "DR_CLEANCALL_MULTIPATH is not supported");
+            pt->bb_props = original_properties;
             return;
         }
-        per_thread_t *pt = get_tls_data(drcontext);
         LOG(drcontext, DR_LOG_ALL, 3, "%s: updating after cleancall wrote app regs\n",
             __FUNCTION__);
         res = drreg_insert_respill_all(drcontext, pt, ilist, where, instr_get_next(where),
@@ -834,6 +846,7 @@ drreg_event_clean_call_insertion(void *drcontext, instrlist_t *ilist, instr_t *w
         if (res != DRREG_SUCCESS)
             drreg_report_error(res, "failed to update for clean call");
     }
+    pt->bb_props = original_properties;
 }
 
 /***************************************************************************
