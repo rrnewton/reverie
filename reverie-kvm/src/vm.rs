@@ -1620,7 +1620,8 @@ impl KvmBackend {
                 // alive lets it execute stale instructions in the replacement
                 // image and can turn an otherwise successful exec into a fault.
                 self.cancel_guest_threads();
-                self.guest_worker_teardown_result()?;
+                self.guest_worker_teardown_result()
+                    .map_err(|error| Error::ExecWorkerTeardown(Box::new(error)))?;
                 let result = self.exec_process(
                     executor,
                     (&executable_path, executable_file),
@@ -1740,11 +1741,22 @@ impl KvmBackend {
         starts: &SharedChildStarts,
         primary: Error,
     ) -> Error {
-        match self.discard_unstarted_tool_children(executor, starts) {
+        // Preserve the fatal exec disposition if cancelling an unstarted child
+        // adds a second diagnostic. Its owner still owes consuming Tool hooks.
+        let (exec_teardown, primary) = match primary {
+            Error::ExecWorkerTeardown(primary) => (true, *primary),
+            primary => (false, primary),
+        };
+        let result = match self.discard_unstarted_tool_children(executor, starts) {
             Ok(()) => primary,
             Err(cleanup) => Error::UnexpectedVcpuExit(format!(
                 "KVM Tool callback failed: {primary}; unstarted-child cleanup also failed: {cleanup}"
             )),
+        };
+        if exec_teardown {
+            Error::ExecWorkerTeardown(Box::new(result))
+        } else {
+            result
         }
     }
 
@@ -5806,6 +5818,50 @@ mod tests {
         assert!(!executor.has_pending_child_process(52));
         first_release_sender.send(()).unwrap();
         backend.thread_group.join_workers();
+    }
+
+    #[test]
+    fn exec_teardown_disposition_survives_unstarted_child_cleanup() {
+        let Some((mut backend, mut executor, _)) = backend_at_completed_tool_boundary() else {
+            return;
+        };
+        for exec_teardown in [false, true] {
+            for failed_cleanup in [false, true] {
+                let starts = Arc::new(Mutex::new(Vec::new()));
+                let (sender, receiver) = std::sync::mpsc::channel();
+                if failed_cleanup {
+                    // The gate can be cancelled, but its child is deliberately
+                    // absent from the registry: preserve that cleanup error.
+                    starts.lock().unwrap().push(PendingChildStart::tool_thread(
+                        99,
+                        ChildStartGate::new(sender),
+                    ));
+                }
+                let primary = Error::Reverie(reverie::syscalls::Errno::EIO.into());
+                let original = primary.to_string();
+                let primary = if exec_teardown {
+                    Error::ExecWorkerTeardown(Box::new(primary))
+                } else {
+                    primary
+                };
+                let error = backend.cleanup_unstarted_tool_children_after_error(
+                    &mut executor,
+                    &starts,
+                    primary,
+                );
+                assert_eq!(matches!(error, Error::ExecWorkerTeardown(_)), exec_teardown);
+                let message = error.to_string();
+                assert_eq!(message.matches(&original).count(), 1, "{message}");
+                assert!(starts.lock().unwrap().is_empty());
+                if failed_cleanup {
+                    assert_eq!(receiver.recv().unwrap(), ChildStartCommand::Cancel);
+                    assert!(message.contains("unstarted-child cleanup also failed"));
+                    assert!(message.contains("guest thread 99 was not registered"));
+                } else {
+                    assert_eq!(message, original);
+                }
+            }
+        }
     }
 
     #[test]
