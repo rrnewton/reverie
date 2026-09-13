@@ -1512,6 +1512,167 @@ class CellResultProjection(unittest.TestCase):
         cell["detcore_tree"] = self.detcore_tree
         return cell
 
+    def _comparison_no_result_cell(self, reason, *, mode="verify"):
+        cell = self._validate_no_verdict_cell(1, timed_out=False, backend="ptrace")
+        cell["mode"] = mode
+        report = json.loads(cell["attempts"][0]["verification_report"])
+        report["no_result_reason"] = reason
+        self._replace_comparison_report(cell["attempts"][0], report)
+        return cell
+
+    @staticmethod
+    def _replace_comparison_report(attempt, report):
+        raw = json.dumps(report, sort_keys=True, separators=(",", ":"))
+        attempt["verification_report"] = raw
+        attempt["verification_report_sha256"] = hashlib.sha256(raw.encode()).hexdigest()
+
+    def test_unspecified_and_refused_comparisons_preserve_evidence(self):
+        detail = "  second log exceeded its bound: left\\right\nπ  "
+        for reason, expected_kind in (
+            (None, "unspecified"),
+            ({"kind": "comparison_refused", "detail": detail}, "comparison_refused"),
+        ):
+            for mode in ("verify", "replay", "chaos"):
+                for producer in ("validate", "pressure-test"):
+                    for signaled in (False, True):
+                        with self.subTest(kind=expected_kind, mode=mode,
+                                          producer=producer, signaled=signaled):
+                            cell = self._comparison_no_result_cell(reason, mode=mode)
+                            if producer == "pressure-test":
+                                cell["run_index"] = 0
+                            attempt = cell["attempts"][0]
+                            if signaled:
+                                attempt.update(status=None, signal=11)
+                            original = json.dumps(cell, sort_keys=True)
+                            rows = self._project([cell], producer=producer)
+                            self.assertEqual(len(rows), 1)
+                            payload = rows[0]["series"]
+                            self.assertEqual(payload["outcome"], "no_result")
+                            self.assertIsNone(payload["result"])
+                            self.assertEqual(payload["failure_class"], "no_result")
+                            evidence = payload["no_verdict_evidence"]
+                            retained = evidence["attempts"][0]
+                            self.assertEqual(retained["kind"], expected_kind)
+                            self.assertEqual(retained.get("detail"),
+                                             detail if reason is not None else None)
+                            for field in ("error_kind", "status", "signal", "timed_out",
+                                          "verification_report_sha256"):
+                                self.assertEqual(retained[field], attempt[field])
+                            self.assertEqual(retained["attempt_outcome"], "ERROR")
+                            self.assertEqual(retained["disposition"], "no_result")
+                            self.assertEqual(evidence["evidence_sha256"],
+                                             series._cell_result_evidence_sha256(cell))
+                            if producer == "pressure-test":
+                                pressure = payload["pressure_evidence"]
+                                self.assertEqual(pressure["evidence_sha256"],
+                                                 evidence["evidence_sha256"])
+                                self.assertEqual(pressure["attempts"][0]["comparison"], {
+                                    "verdict": "no_result",
+                                    "canonical": False,
+                                    "report_sha256": attempt["verification_report_sha256"],
+                                    "no_result_kind": expected_kind,
+                                })
+                            self.assertEqual(json.dumps(cell, sort_keys=True), original)
+
+    def test_new_no_result_reasons_refuse_incomplete_or_contradictory_evidence(self):
+        for reason in (None, {"kind": "comparison_refused", "detail": "truncated log"}):
+            for mode in ("verify", "replay", "chaos"):
+                cell = self._comparison_no_result_cell(reason, mode=mode)
+                original = cell["attempts"][0]
+                for mutation in (
+                    {"outcome": "PASS"}, {"outcome": "FAIL"},
+                    {"error_kind": None}, {"error_kind": " "},
+                    {"status": 0}, {"status": None}, {"status": True},
+                    {"signal": 11}, {"status": None, "signal": False},
+                    {"timed_out": True}, {"timed_out": None},
+                    {"verification_report_sha256": "0" * 64},
+                ):
+                    with self.subTest(reason=reason, mode=mode, mutation=mutation):
+                        attempt = {**original, **mutation}
+                        with self.assertRaises(series.MalformedRow):
+                            series._typed_comparison_attempt(attempt, mode=mode, index=1)
+                report = json.loads(original["verification_report"])
+                for field, value in (
+                    ("verified", True), ("bitwise_parity", True),
+                    ("comparison", {}), ("compared_log_messages", {"left": 1, "right": 1}),
+                    ("infrastructure_error", {"kind": "skid_overshoot", "count": 1}),
+                    ("first_divergent_record", 1),
+                    ("guest_exit_code", True), ("guest_exit_code", -1),
+                    ("guest_signal", 0), ("guest_signal", 2**31),
+                    ("no_result_reason", {"kind": "unknown"}),
+                    ("no_result_reason", {"kind": "unspecified"}),
+                    ("no_result_reason", {"kind": []}),
+                    ("no_result_reason", {"kind": "comparison_refused"}),
+                    ("no_result_reason", {"kind": "comparison_refused", "detail": " "}),
+                    ("no_result_reason", {"kind": "comparison_refused", "detail": 1}),
+                ):
+                    with self.subTest(reason=reason, mode=mode, field=field, value=value):
+                        attempt = dict(original)
+                        self._replace_comparison_report(attempt, {**report, field: value})
+                        with self.assertRaises(series.MalformedRow):
+                            series._typed_comparison_attempt(attempt, mode=mode, index=1)
+                for field in report:
+                    with self.subTest(reason=reason, mode=mode, omitted=field):
+                        if field == "runtime":
+                            continue  # Runtime is not part of the current report contract.
+                        omitted = dict(report)
+                        del omitted[field]
+                        attempt = dict(original)
+                        self._replace_comparison_report(attempt, omitted)
+                        with self.assertRaises(series.MalformedRow):
+                            series._typed_comparison_attempt(attempt, mode=mode, index=1)
+                other_error = {**original, "error_kind": "cli-error"}
+                if reason is None:
+                    self.assertEqual(series._typed_comparison_attempt(
+                        other_error, mode=mode, index=1), "no_result")
+                else:
+                    with self.assertRaises(series.MalformedRow):
+                        series._typed_comparison_attempt(other_error, mode=mode, index=1)
+
+    def test_ten_refused_or_unspecified_comparisons_cannot_qualify(self):
+        for reason in (None, {"kind": "comparison_refused", "detail": "truncated log"}):
+            cells = []
+            for index in range(1, 11):
+                cell = self._comparison_no_result_cell(reason)
+                cell["run_index"] = index
+                cells.append(cell)
+            rows = self._project(cells)
+            name = series._cell_name(cells[0])
+            result = series.classify_pressure_sample(rows, [name], "pressure-one")[name]
+            self.assertEqual(result["classification"], "no-result")
+            self.assertEqual(result["no_results"], 10)
+            self.assertEqual(result["terminal_passes"], 0)
+            self.assertFalse(result["promotion_candidate"])
+
+    def test_current_no_result_reports_refuse_duplicate_fields(self):
+        for reason in (None, {"kind": "comparison_refused", "detail": "truncated log"}):
+            attempt = self._comparison_no_result_cell(reason)["attempts"][0]
+            raw = attempt["verification_report"]
+            encoded_reason = json.dumps(reason, separators=(",", ":"))
+            replacements = [
+                ('"verified":false', '"verified":true,"verified":false'),
+                ('"verified":false', '"verified":false,"verified":false'),
+                ('"no_result_reason":',
+                 '"no_result_reason":{"kind":"not_run"},"no_result_reason":'),
+                ('"no_result_reason":',
+                 '"no_result_reason":' + encoded_reason + ',"no_result_reason":'),
+            ]
+            if reason is not None:
+                replacements.extend([
+                    ('"detail":"truncated log"', '"detail":" ","detail":"truncated log"'),
+                    ('"detail":"truncated log"',
+                     '"detail":"truncated log","detail":"truncated log"'),
+                ])
+            for old, new in replacements:
+                with self.subTest(reason=reason, repeated=old, values=new):
+                    self.assertEqual(raw.count(old), 1)
+                    duplicated = raw.replace(old, new, 1)
+                    changed = {**attempt, "verification_report": duplicated,
+                               "verification_report_sha256": hashlib.sha256(
+                                   duplicated.encode()).hexdigest()}
+                    with self.assertRaisesRegex(series.MalformedRow, "duplicate"):
+                        series._typed_comparison_attempt(changed, mode="verify", index=1)
+
     def _diverged_cell(
         self,
         run_index,

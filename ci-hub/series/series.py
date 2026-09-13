@@ -1082,7 +1082,8 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
             or report.get("comparison") is not None
             or report.get("compared_log_messages") is not None
             or report.get("infrastructure_error") is not None
-            or not isinstance(reason, dict)
+            or "no_result_reason" not in report
+            or (reason is not None and not isinstance(reason, dict))
             or any(report.get(field) is not None for field in contradiction_fields)
             or any(attempt.get(field) is not None for field in contradiction_fields[:-1])
             or attempt.get("outcome") not in {"FAIL", "ERROR"}
@@ -1090,7 +1091,7 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
             raise MalformedRow(
                 f"cell attempt {index} no_result report is internally inconsistent"
             )
-        kind = reason.get("kind")
+        kind = "unspecified" if reason is None else reason.get("kind")
         no_process_timeout = (
             kind == "not_run"
             and attempt.get("timed_out") is True
@@ -1099,7 +1100,68 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
             and attempt.get("error_kind")
             in ("incomplete-verification-evidence", "cpu-timeout", "wall-timeout")
         )
-        if kind == "not_run":
+        if reason is None or kind == "comparison_refused":
+            # These current-producer cases distinguish an explicit null cause
+            # from missing evidence. Older typed reasons retain their existing
+            # historical-reader rules below.
+            def current_fields(pairs):
+                fields = {}
+                for name, value in pairs:
+                    if name in fields:
+                        raise MalformedRow(
+                            f"cell attempt {index} current no_result report has duplicate field {name!r}"
+                        )
+                    fields[name] = value
+                return fields
+
+            # Inspect the original bytes: an ordinary dict has already lost
+            # duplicate keys, including contradictory values and nested detail.
+            report = json.loads(raw, object_pairs_hook=current_fields)
+            reason = report["no_result_reason"]
+            for field in (
+                "verified", "bitwise_parity", "verdict", "infrastructure_error",
+                "comparison", "no_result_reason", "compared_log_messages",
+                "guest_exit_code", "guest_signal",
+                "first_divergent_scheduler_turn", "first_divergent_virtual_nanoseconds",
+                "first_divergent_record", "first_divergent_syscall",
+                "first_divergent_left_message", "first_divergent_right_message",
+            ):
+                if field not in report:
+                    raise MalformedRow(
+                        f"cell attempt {index} current no_result report omitted {field!r}"
+                    )
+            for field, minimum in (("guest_exit_code", 0), ("guest_signal", 1)):
+                value = report[field]
+                if value is not None and (
+                    not isinstance(value, int) or isinstance(value, bool)
+                    or not minimum <= value <= 2**31 - 1
+                ):
+                    raise MalformedRow(
+                        f"cell attempt {index} current no_result report has invalid {field}"
+                    )
+            if report["guest_exit_code"] is not None and report["guest_signal"] is not None:
+                raise MalformedRow(
+                    f"cell attempt {index} current no_result report has contradictory guest disposition"
+                )
+            if (
+                attempt.get("outcome") != "ERROR"
+                or attempt.get("timed_out") is not False
+                or not isinstance(attempt.get("error_kind"), str)
+                or not attempt["error_kind"].strip()
+                or not _has_nonzero_process_disposition(attempt)
+            ):
+                raise MalformedRow(
+                    f"cell attempt {index} {kind} disposition is incomplete"
+                )
+            if kind == "comparison_refused" and (
+                not isinstance(reason.get("detail"), str)
+                or not reason["detail"].strip()
+                or attempt["error_kind"] != "incomplete-verification-evidence"
+            ):
+                raise MalformedRow(
+                    f"cell attempt {index} comparison_refused detail or error kind is incomplete"
+                )
+        elif kind == "not_run":
             if (
                 report.get("guest_exit_code") is not None
                 or report.get("guest_signal") is not None
@@ -1426,7 +1488,8 @@ def _no_verdict_kind(attempt: dict, disposition: str) -> str:
     report = json.loads(raw)
     verdict = report.get("verdict")
     if verdict == "no_result":
-        return report["no_result_reason"]["kind"]
+        reason = report["no_result_reason"]
+        return "unspecified" if reason is None else reason["kind"]
     if verdict == "infrastructure_error":
         return "infrastructure_error"
     if verdict in {"matched", "diverged"} and disposition == "no_result":
@@ -1500,7 +1563,7 @@ def _pressure_evidence(row: dict) -> dict | None:
                     "canonical": canonical,
                     "report_sha256": attempt["verification_report_sha256"],
                     "no_result_kind": (
-                        report["no_result_reason"]["kind"]
+                        _no_verdict_kind(attempt, disposition)
                         if verdict == "no_result" else None
                     ),
                 }
@@ -1575,7 +1638,7 @@ def _no_verdict_evidence(row: dict, projected_outcome: str) -> dict | None:
             raise MalformedRow(
                 f"cell attempt {ordinal} has invalid verification report identity"
             )
-        dispositions.append({
+        retained = {
             "index": index,
             "kind": _no_verdict_kind(attempt, kind),
             "attempt_outcome": attempt.get("outcome"),
@@ -1585,7 +1648,11 @@ def _no_verdict_evidence(row: dict, projected_outcome: str) -> dict | None:
             "signal": signal,
             "timed_out": timed_out,
             "verification_report_sha256": report_sha,
-        })
+        }
+        if retained["kind"] == "comparison_refused":
+            report = json.loads(attempt["verification_report"])
+            retained["detail"] = report["no_result_reason"]["detail"]
+        dispositions.append(retained)
     if not dispositions:
         if projected_outcome == "errored" and row.get("result") == "crash-error":
             return None
