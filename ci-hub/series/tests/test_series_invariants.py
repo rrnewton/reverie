@@ -21,6 +21,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1274,6 +1275,58 @@ class ScorecardProjectionSnapshot(unittest.TestCase):
                 series.write_scorecard_projection_snapshot(self.repo, output)
         self.assertEqual(b"foreign staging replacement\n", output.read_bytes())
 
+    def test_hardlink_fallback_reports_non_success_and_retains_staging(self):
+        output = Path(self.temporary.name) / "snapshot.json"
+        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
+            series,
+            "_open_anonymous_snapshot_stage",
+            side_effect=OSError(errno.EOPNOTSUPP, "forced named stage"),
+        ), mock.patch.object(
+            series,
+            "_rename_noreplace",
+            side_effect=OSError(errno.ENOSYS, "forced hardlink fallback"),
+        ):
+            with self.assertRaisesRegex(
+                series.SeriesError, "refusing success with named staging residue"
+            ):
+                series.write_scorecard_projection_snapshot(self.repo, output)
+
+        stages = list(output.parent.glob(f".{output.name}.staging-*"))
+        self.assertTrue(output.is_file())
+        self.assertEqual(len(stages), 1)
+        self.assertEqual(output.read_bytes(), stages[0].read_bytes())
+        self.assertEqual(output.stat().st_ino, stages[0].stat().st_ino)
+
+    def test_identical_concurrent_output_does_not_hide_named_staging_residue(self):
+        output = Path(self.temporary.name) / "snapshot.json"
+
+        def link_then_report_exists(directory_fd, stage_name, output_name):
+            os.link(
+                stage_name,
+                output_name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            raise FileExistsError(errno.EEXIST, "simulated concurrent output")
+
+        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
+            series,
+            "_open_anonymous_snapshot_stage",
+            side_effect=OSError(errno.EOPNOTSUPP, "forced named stage"),
+        ), mock.patch.object(
+            series, "_rename_noreplace", side_effect=link_then_report_exists,
+        ):
+            with self.assertRaisesRegex(
+                series.SeriesError, "refusing success because the staging pathname"
+            ):
+                series.write_scorecard_projection_snapshot(self.repo, output)
+
+        stages = list(output.parent.glob(f".{output.name}.staging-*"))
+        self.assertTrue(output.is_file())
+        self.assertEqual(len(stages), 1)
+        self.assertEqual(output.stat().st_ino, stages[0].stat().st_ino)
+
     def test_consumer_refuses_tampered_bytes_and_row_digest(self):
         output = Path(self.temporary.name) / "snapshot.json"
         with mock.patch.object(series, "refresh_origin_main"):
@@ -1418,6 +1471,109 @@ class ScorecardProjectionSnapshot(unittest.TestCase):
         self.assertEqual("", stdout.getvalue())
         self.assertIn("snapshot unavailable", stderr.getvalue())
         self.assertIn("no new snapshot was published", stderr.getvalue())
+
+    def test_publication_and_reap_cannot_cross_an_old_snapshot_boundary(self):
+        local = row(
+            event_id="01J000000000000000000000AB",
+            run_id="campaign-2",
+            series={"run_index": 1},
+        )
+        live = self._write_local("live.jsonl", local)
+        output = Path(self.temporary.name) / "snapshot.json"
+        publisher_started = threading.Event()
+        transition_entered = threading.Event()
+        thread_errors = []
+        thread = None
+
+        def publish_transition(*_args, **_kwargs):
+            transition_entered.set()
+            retained = live.parent / "published" / live.name
+            retained.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(live, retained)
+            retained.unlink()
+            return {"published": 1, "reaped_retained": 1}
+
+        def run_publisher():
+            publisher_started.set()
+            try:
+                publisher.publish(
+                    Path("/unused-publisher-checkout"),
+                    live.parent,
+                    store="series",
+                )
+            except Exception as error:  # pragma: no cover - asserted below
+                thread_errors.append(error)
+
+        def bind_old_commit(_parent):
+            nonlocal thread
+            thread = threading.Thread(target=run_publisher)
+            thread.start()
+            self.assertTrue(publisher_started.wait(1))
+            self.assertFalse(
+                transition_entered.wait(0.1),
+                "series publication entered while snapshot held the shared lock",
+            )
+            return series.PublishedSnapshot(self.commit, [self.published])
+
+        with mock.patch.object(
+            series, "published_snapshot", side_effect=bind_old_commit,
+        ), mock.patch.object(
+            publisher,
+            "_publish_with_transition_lock_held",
+            side_effect=publish_transition,
+        ):
+            report = series.write_scorecard_projection_snapshot(self.repo, output)
+            assert thread is not None
+            thread.join(2)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(thread_errors, [])
+        self.assertTrue(transition_entered.is_set())
+        snapshot = series.read_scorecard_projection_snapshot(
+            output, expected_sha256=report["sha256"]
+        )
+        self.assertEqual(
+            [self.published["event_id"], local["event_id"]],
+            [item["event_id"] for item in snapshot["rows"]],
+            "old published commit plus publish/reap omitted the local row",
+        )
+
+    def test_independent_series_reap_uses_the_exclusive_transition_lock(self):
+        spool = series.spool_dir(self.repo)
+        spool.mkdir(parents=True, exist_ok=True)
+        reaper_started = threading.Event()
+        reap_entered = threading.Event()
+        thread_errors = []
+
+        def reap_transition(*_args, **_kwargs):
+            reap_entered.set()
+            return 0
+
+        def run_reaper():
+            reaper_started.set()
+            try:
+                publisher.reap_retained(spool, self.repo, store="series")
+            except Exception as error:  # pragma: no cover - asserted below
+                thread_errors.append(error)
+
+        with mock.patch.object(
+            publisher,
+            "_reap_retained_with_transition_lock_held",
+            side_effect=reap_transition,
+        ):
+            with series.series_spool_transition_lock(spool, exclusive=False):
+                thread = threading.Thread(target=run_reaper)
+                thread.start()
+                self.assertTrue(reaper_started.wait(1))
+                self.assertFalse(
+                    reap_entered.wait(0.1),
+                    "series reaping entered while a snapshot lock was held",
+                )
+            thread.join(2)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(thread_errors, [])
+        self.assertTrue(reap_entered.is_set())
 
 
 class WriteBoundaryCli(unittest.TestCase):

@@ -933,25 +933,21 @@ def _jsonl_names(directory_fd: int) -> list[str]:
 
 
 @dataclass
-class _LocalSnapshotCapture:
-    """Held local frontier, including its writer lock and every source inode."""
+class _SeriesSpoolLock:
+    """One owner for the series spool lock and its bound directory inode."""
 
     spool: Path
     spool_fd: int
     spool_identity: tuple[int, int]
     lock_fd: int
     lock_signature: tuple[int, ...]
-    published_fd: int | None
-    published_signature: tuple[int, ...] | None
-    source_keys: list[tuple[str, str]]
-    sources: list[_HeldSnapshotSource]
 
-    def _verify_directory(self) -> None:
+    def verify(self) -> None:
         held = os.fstat(self.spool_fd)
         try:
             named = os.lstat(self.spool)
         except OSError as error:
-            raise SeriesError(f"series spool changed while snapshot was held: {error}") from error
+            raise SeriesError(f"series spool changed while lock was held: {error}") from error
         identity = (held.st_dev, held.st_ino)
         if (
             not stat.S_ISDIR(held.st_mode)
@@ -959,7 +955,7 @@ class _LocalSnapshotCapture:
             or identity != self.spool_identity
             or (named.st_dev, named.st_ino) != self.spool_identity
         ):
-            raise SeriesError("series spool pathname changed while snapshot was held")
+            raise SeriesError("series spool pathname changed while lock was held")
 
         held_lock = os.fstat(self.lock_fd)
         named_lock = _lstat_at(
@@ -973,47 +969,7 @@ class _LocalSnapshotCapture:
         ):
             raise SeriesError("series snapshot writer lock changed while held")
 
-        if self.published_fd is None:
-            try:
-                os.stat("published", dir_fd=self.spool_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                return
-            except OSError as error:
-                raise SeriesError(
-                    f"retained series directory changed while snapshot was held: {error}"
-                ) from error
-            raise SeriesError("retained series directory appeared while snapshot was held")
-
-        held_published = os.fstat(self.published_fd)
-        named_published = _lstat_at(
-            self.spool_fd, "published", str(self.spool / "published")
-        )
-        if (
-            not stat.S_ISDIR(held_published.st_mode)
-            or not stat.S_ISDIR(named_published.st_mode)
-            or _stat_signature(held_published) != self.published_signature
-            or _stat_signature(named_published) != self.published_signature
-        ):
-            raise SeriesError("retained series directory changed while snapshot was held")
-
-    def verify(self) -> None:
-        self._verify_directory()
-        current = [("live", name) for name in _jsonl_names(self.spool_fd)]
-        if self.published_fd is not None:
-            current.extend(
-                ("published-retained", f"published/{name}")
-                for name in _jsonl_names(self.published_fd)
-            )
-        if current != self.source_keys:
-            raise SeriesError("series spool changed while its projection snapshot was held")
-        for source in self.sources:
-            source.verify()
-
     def close(self) -> None:
-        for source in reversed(self.sources):
-            source.close()
-        if self.published_fd is not None:
-            os.close(self.published_fd)
         try:
             fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
         finally:
@@ -1022,9 +978,13 @@ class _LocalSnapshotCapture:
 
 
 @contextlib.contextmanager
-def _local_snapshot_capture(parent: Path):
-    """Hold the local series frontier stable through output publication."""
-    spool = spool_dir(parent)
+def series_spool_transition_lock(spool: Any, *, exclusive: bool):
+    """Serialize series writers/publishers or hold a stable reader frontier.
+
+    This is the sole lock owner. Callers that already hold it must use their
+    ``*_locked`` helper instead of recursively opening the same lock pathname.
+    """
+    spool = Path(spool)
     spool.mkdir(parents=True, exist_ok=True)
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
@@ -1036,9 +996,7 @@ def _local_snapshot_capture(parent: Path):
             f"cannot open regular series spool directory {spool}: {error}"
         ) from error
     lock_fd = -1
-    published_fd: int | None = None
-    sources: list[_HeldSnapshotSource] = []
-    capture: _LocalSnapshotCapture | None = None
+    held: _SeriesSpoolLock | None = None
     try:
         spool_status = os.fstat(spool_fd)
         named_spool = os.lstat(spool)
@@ -1061,8 +1019,103 @@ def _local_snapshot_capture(parent: Path):
             raise SeriesError(
                 f"series snapshot lock is not a regular file: {spool / '.append.lock'}"
             )
-        fcntl.flock(lock_fd, fcntl.LOCK_SH)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        held = _SeriesSpoolLock(
+            spool=spool,
+            spool_fd=spool_fd,
+            spool_identity=(spool_status.st_dev, spool_status.st_ino),
+            lock_fd=lock_fd,
+            lock_signature=_stat_signature(lock_status),
+        )
+        held.verify()
+        yield held
+        held.verify()
+    finally:
+        if held is not None:
+            held.close()
+        else:
+            if lock_fd >= 0:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(lock_fd)
+            os.close(spool_fd)
 
+
+@dataclass
+class _LocalSnapshotCapture:
+    """Held local frontier and every source inode under one shared lock."""
+
+    lock: _SeriesSpoolLock
+    published_fd: int | None
+    published_signature: tuple[int, ...] | None
+    source_keys: list[tuple[str, str]]
+    sources: list[_HeldSnapshotSource]
+
+    def _verify_directory(self) -> None:
+        self.lock.verify()
+
+        if self.published_fd is None:
+            try:
+                os.stat(
+                    "published",
+                    dir_fd=self.lock.spool_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                return
+            except OSError as error:
+                raise SeriesError(
+                    f"retained series directory changed while snapshot was held: {error}"
+                ) from error
+            raise SeriesError("retained series directory appeared while snapshot was held")
+
+        held_published = os.fstat(self.published_fd)
+        named_published = _lstat_at(
+            self.lock.spool_fd,
+            "published",
+            str(self.lock.spool / "published"),
+        )
+        if (
+            not stat.S_ISDIR(held_published.st_mode)
+            or not stat.S_ISDIR(named_published.st_mode)
+            or _stat_signature(held_published) != self.published_signature
+            or _stat_signature(named_published) != self.published_signature
+        ):
+            raise SeriesError("retained series directory changed while snapshot was held")
+
+    def verify(self) -> None:
+        self._verify_directory()
+        current = [("live", name) for name in _jsonl_names(self.lock.spool_fd)]
+        if self.published_fd is not None:
+            current.extend(
+                ("published-retained", f"published/{name}")
+                for name in _jsonl_names(self.published_fd)
+            )
+        if current != self.source_keys:
+            raise SeriesError("series spool changed while its projection snapshot was held")
+        for source in self.sources:
+            source.verify()
+
+    def close(self) -> None:
+        for source in reversed(self.sources):
+            source.close()
+        if self.published_fd is not None:
+            os.close(self.published_fd)
+
+
+@contextlib.contextmanager
+def _local_snapshot_capture(lock: _SeriesSpoolLock):
+    """Bind local sources while the caller owns the shared series lock."""
+    spool = lock.spool
+    spool_fd = lock.spool_fd
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    published_fd: int | None = None
+    sources: list[_HeldSnapshotSource] = []
+    capture: _LocalSnapshotCapture | None = None
+    try:
         try:
             published_fd = os.open("published", directory_flags, dir_fd=spool_fd)
         except FileNotFoundError:
@@ -1079,11 +1132,7 @@ def _local_snapshot_capture(parent: Path):
                 for name in _jsonl_names(published_fd)
             )
         capture = _LocalSnapshotCapture(
-            spool=spool,
-            spool_fd=spool_fd,
-            spool_identity=(spool_status.st_dev, spool_status.st_ino),
-            lock_fd=lock_fd,
-            lock_signature=_stat_signature(lock_status),
+            lock=lock,
             published_fd=published_fd,
             published_signature=(
                 _stat_signature(os.fstat(published_fd))
@@ -1113,53 +1162,52 @@ def _local_snapshot_capture(parent: Path):
                 source.close()
             if published_fd is not None:
                 os.close(published_fd)
-            if lock_fd >= 0:
-                try:
-                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                finally:
-                    os.close(lock_fd)
-            os.close(spool_fd)
 
 
 @contextlib.contextmanager
 def _scorecard_projection_capture(parent: Any):
     """Build a snapshot while retaining every mutable source descriptor."""
     parent = Path(parent).resolve()
-    published = published_snapshot(parent)
-    source_tree = _series_tree_at(parent, published.commit)
-    with _local_snapshot_capture(parent) as local:
-        local_rows = [row for source in local.sources for row in source.rows]
-        try:
-            rows = union_events([*published.rows, *local_rows])
-        except LedgerError as error:
-            raise SeriesError(f"cannot form canonical series snapshot: {error}") from error
-        rows_bytes = _canonical_rows_bytes(rows)
-        snapshot = {
-            "schema": SCORECARD_SNAPSHOT_SCHEMA,
-            "source": {
-                "path": SCORECARD_SNAPSHOT_SOURCE,
-                "commit": published.commit,
-                "tree": source_tree,
-                "published_rows": len(published.rows),
-                "local_sources": [
-                    {
-                        "kind": source.kind,
-                        "path": source.relative,
-                        "device": source.signature[0],
-                        "inode": source.signature[1],
-                        "rows": len(source.rows),
-                        "size": source.size,
-                        "sha256": source.sha256,
-                    }
-                    for source in local.sources
-                ],
-            },
-            "rows_read": len(rows),
-            "rows_sha256": hashlib.sha256(rows_bytes).hexdigest(),
-            "rows": rows,
-        }
-        local.verify()
-        yield snapshot, local
+    with series_spool_transition_lock(spool_dir(parent), exclusive=False) as lock:
+        # LOCK ORDER: series spool first, then remote fetch/ref binding, then
+        # local file descriptors, and finally output publication. The series
+        # publisher takes the same lock exclusively before it binds or changes
+        # the remote commit and never recursively reacquires it.
+        published = published_snapshot(parent)
+        source_tree = _series_tree_at(parent, published.commit)
+        with _local_snapshot_capture(lock) as local:
+            local_rows = [row for source in local.sources for row in source.rows]
+            try:
+                rows = union_events([*published.rows, *local_rows])
+            except LedgerError as error:
+                raise SeriesError(f"cannot form canonical series snapshot: {error}") from error
+            rows_bytes = _canonical_rows_bytes(rows)
+            snapshot = {
+                "schema": SCORECARD_SNAPSHOT_SCHEMA,
+                "source": {
+                    "path": SCORECARD_SNAPSHOT_SOURCE,
+                    "commit": published.commit,
+                    "tree": source_tree,
+                    "published_rows": len(published.rows),
+                    "local_sources": [
+                        {
+                            "kind": source.kind,
+                            "path": source.relative,
+                            "device": source.signature[0],
+                            "inode": source.signature[1],
+                            "rows": len(source.rows),
+                            "size": source.size,
+                            "sha256": source.sha256,
+                        }
+                        for source in local.sources
+                    ],
+                },
+                "rows_read": len(rows),
+                "rows_sha256": hashlib.sha256(rows_bytes).hexdigest(),
+                "rows": rows,
+            }
+            local.verify()
+            yield snapshot, local
 
 
 def scorecard_projection_snapshot(parent: Any) -> dict[str, Any]:
@@ -1569,6 +1617,9 @@ def _publish_snapshot_payload(
             stage_name=stage_name,
             display=str(output.parent / stage_name),
         )
+        # Make the fallback's quarantine name durable before any operation
+        # that might have to preserve it for inspection.
+        os.fsync(directory_fd)
         _verify_named_descriptor(
             directory_fd,
             stage_name,
@@ -1582,6 +1633,11 @@ def _publish_snapshot_payload(
         except FileExistsError:
             if not _existing_snapshot(directory_fd, output.name, output, digest):
                 raise AssertionError("existing snapshot disappeared during inspection")
+            raise SeriesError(
+                "an identical scorecard snapshot appeared while a named staging "
+                "file was held; refusing success because the staging pathname "
+                "cannot be removed by inode"
+            )
         except OSError as error:
             if error.errno != errno.ENOSYS:
                 raise
@@ -1596,6 +1652,16 @@ def _publish_snapshot_payload(
             except FileExistsError:
                 if not _existing_snapshot(directory_fd, output.name, output, digest):
                     raise AssertionError("existing snapshot disappeared during inspection")
+                raise SeriesError(
+                    "an identical scorecard snapshot appeared while the no-replace "
+                    "move was unavailable; refusing success with named staging residue"
+                )
+            os.fsync(directory_fd)
+            raise SeriesError(
+                "scorecard snapshot was linked without replacement, but the atomic "
+                "move primitive is unavailable; refusing success with named staging "
+                "residue"
+            )
         return _finish_snapshot_publication(directory_fd, output, digest)
     except Exception as error:
         if not stage_moved:

@@ -24,6 +24,13 @@ this module exists to prevent.
 **No row is ever rewritten.** `verify_append_only` runs against the remote
 content before each push. If our proposed content is not a line-for-line
 extension of what is published, the publish is refused rather than forced.
+
+**A series snapshot cannot miss a row during publication.** Series publish and
+retained-row reaping hold the spool's `.append.lock` exclusively before they
+bind or change published state. The scorecard snapshot holds that same lock in
+shared mode before binding its published commit and through output readback.
+The public operation owns the lock; its internal drain and reap helpers never
+reacquire it.
 """
 
 from __future__ import annotations
@@ -512,7 +519,55 @@ def publish(
     source_root: str | os.PathLike[str] | None = None,
     store: str = "ledger",
 ) -> dict:
-    """Publish one store's spool; drain only once ancestry proves it.
+    """Publish under the series transition lock when the series store moves."""
+    if store != "series":
+        return _publish_with_transition_lock_held(
+            repo,
+            spool_dir,
+            remote=remote,
+            branch=branch,
+            attempts=attempts,
+            fetch=fetch,
+            serialized_writer=serialized_writer,
+            attribution=attribution,
+            source_root=source_root,
+            store=store,
+        )
+    series_store = _series_store()
+    try:
+        with series_store.series_spool_transition_lock(
+            spool_dir, exclusive=True,
+        ):
+            return _publish_with_transition_lock_held(
+                repo,
+                spool_dir,
+                remote=remote,
+                branch=branch,
+                attempts=attempts,
+                fetch=fetch,
+                serialized_writer=serialized_writer,
+                attribution=attribution,
+                source_root=source_root,
+                store=store,
+            )
+    except series_store.SeriesError as error:
+        raise PublishRefused(f"cannot hold series transition lock: {error}") from error
+
+
+def _publish_with_transition_lock_held(
+    repo: str | os.PathLike[str],
+    spool_dir: str | os.PathLike[str],
+    *,
+    remote: str = DEFAULT_REMOTE,
+    branch: str = DEFAULT_BRANCH,
+    attempts: int = DEFAULT_ATTEMPTS,
+    fetch: bool = True,
+    serialized_writer: str | os.PathLike[str] | None = None,
+    attribution: str | None = None,
+    source_root: str | os.PathLike[str] | None = None,
+    store: str = "ledger",
+) -> dict:
+    """Publish one store's spool; series callers already own its sole lock.
 
     Returns evidence, not a boolean: the commit written, how many attempts the
     push needed, and the ancestry check that authorised draining the spool.
@@ -554,7 +609,12 @@ def publish(
     # Reap first: batches the PRODUCING root can now read for itself are done
     # being retained. Doing it here means every publish run also collects what
     # the previous run left behind, with no separate schedule to forget.
-    reaped = reap_retained(spool_dir, Path(source_root), store=store) if source_root else 0
+    reaped = (
+        _reap_retained_with_transition_lock_held(
+            spool_dir, Path(source_root), store=store,
+        )
+        if source_root else 0
+    )
 
     pending, snapshot_files = _store_snapshot(store, spool_dir)
     if not pending:
@@ -689,6 +749,26 @@ def _source_root_event_ids(source_root: Path, *, store: str = "ledger") -> set[s
 
 
 def reap_retained(
+    spool_dir: str | os.PathLike[str], source_root: Path, *, store: str = "ledger"
+) -> int:
+    """Reap retained series rows under the same lock as publish/snapshot."""
+    if store != "series":
+        return _reap_retained_with_transition_lock_held(
+            spool_dir, source_root, store=store,
+        )
+    series_store = _series_store()
+    try:
+        with series_store.series_spool_transition_lock(
+            spool_dir, exclusive=True,
+        ):
+            return _reap_retained_with_transition_lock_held(
+                spool_dir, source_root, store=store,
+            )
+    except series_store.SeriesError as error:
+        raise PublishRefused(f"cannot hold series transition lock: {error}") from error
+
+
+def _reap_retained_with_transition_lock_held(
     spool_dir: str | os.PathLike[str], source_root: Path, *, store: str = "ledger"
 ) -> int:
     """Delete retained batches now durably readable from the source root.

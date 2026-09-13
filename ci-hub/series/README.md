@@ -200,13 +200,21 @@ is opened through its parent directory with symlinks forbidden, named by its
 relative path, device, inode, byte size, and digest, and held open under the
 existing series writer lock through publication and readback. A changed source
 name, inode, byte sequence, or source set makes the snapshot unavailable.
+The snapshot takes that shared lock before resolving the published commit.
+Series publication and retained-row reaping take it exclusively before reading
+or moving spool entries, so an old published commit cannot be paired with a
+post-reap local spool. The outer operation owns the lock; its internal drain
+and reap helpers never reacquire it.
 
 The output is fsynced in an unnamed temporary inode where supported, linked
 into place without replacing an existing file, then read back through a held
 no-follow descriptor before success is reported. The named fallback uses an
 exclusive unpredictable staging name and an atomic no-replace move. A failure
 after publication leaves the final evidence in place for inspection; no error
-path unlinks a pathname that another process could have replaced.
+path unlinks a pathname that another process could have replaced. If the
+kernel lacks the no-replace move and a hardlink fallback leaves two names, the
+operation preserves both and reports non-success instead of claiming a clean
+publication with staging residue.
 
 This command is an additive input provider only. It does not change selection
 or observation authority, does not write or separate the tracked
