@@ -20792,6 +20792,29 @@ mod tests {
 
     #[test]
     fn received_rights_reservation_and_rewrite_failures_are_transactional() {
+        const TEST: &str =
+            "executor::tests::received_rights_reservation_and_rewrite_failures_are_transactional";
+        const CHILD_ENV: &str = "REVERIE_RECEIVED_RIGHTS_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new("timeout")
+                .args(["--kill-after=2s", "10s"])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .output()
+                .expect("failed to run isolated received-rights regression");
+            assert!(
+                output.status.success(),
+                "isolated received-rights regression failed with {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        // Create the endpoints after exec in this exact-test subprocess. A
+        // concurrently spawned library-test child can otherwise inherit even
+        // CLOEXEC sockets until its own exec, hiding an immediate peer EOF.
         const PAIR_FDS: u64 = 0x100;
 
         let root = TestDir::new();
