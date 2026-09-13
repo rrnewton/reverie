@@ -84,6 +84,8 @@ ENVELOPE_VERSION = "stress-series/v3"
 SCORECARD_SNAPSHOT_SCHEMA = "scorecard-series-snapshot/v1"
 SCORECARD_SNAPSHOT_SOURCE = "series"
 SERIES_SPOOL_LOCK_TIMEOUT_SECONDS = 5.0
+SCORECARD_SNAPSHOT_MAX_LOCAL_SOURCES = 4096
+SCORECARD_SNAPSHOT_IDENTITY_TIMEOUT_SECONDS = 1.0
 READABLE_ENVELOPE_VERSIONS = frozenset({
     LEGACY_ENVELOPE_VERSION,
     HOST_FACTS_ENVELOPE_VERSION,
@@ -1145,7 +1147,8 @@ class _LocalSnapshotCapture:
         ):
             raise SeriesError("retained series directory changed while snapshot was held")
 
-    def verify(self) -> None:
+    def identity_generation(self) -> tuple[Any, ...]:
+        """Exact source set and inode metadata, without rereading source bytes."""
         self._verify_directory()
         current = [("live", name) for name in _jsonl_names(self.spool_fd)]
         if self.published_fd is not None:
@@ -1155,20 +1158,33 @@ class _LocalSnapshotCapture:
             )
         if current != self.source_keys:
             raise SeriesError("series spool changed while its projection snapshot was held")
+        identities = []
         for source in self.sources:
-            source.verify()
-
-    def generation(self) -> tuple[Any, ...]:
-        """Exact source set, inode identities, and content digests."""
-        self.verify()
+            held = os.fstat(source.descriptor)
+            named = _lstat_at(source.directory_fd, source.name, source.relative)
+            if (
+                not stat.S_ISREG(held.st_mode)
+                or not stat.S_ISREG(named.st_mode)
+                or _stat_signature(held) != source.signature
+                or _stat_signature(named) != source.signature
+            ):
+                raise SeriesError(
+                    f"series snapshot source pathname changed while held open: "
+                    f"{source.relative}"
+                )
+            identities.append(
+                (source.kind, source.relative, source.signature)
+            )
         return (
             self.spool_identity,
             self.published_signature,
-            tuple(
-                (source.kind, source.relative, source.signature, source.sha256)
-                for source in self.sources
-            ),
+            tuple(identities),
         )
+
+    def verify(self) -> None:
+        self.identity_generation()
+        for source in self.sources:
+            source.verify()
 
     def close(self) -> None:
         for source in reversed(self.sources):
@@ -1258,10 +1274,135 @@ def _local_snapshot_capture(parent: Path):
             os.close(spool_fd)
 
 
-def _snapshot_source_generation(parent: Path) -> tuple[Any, ...]:
-    """Recompute the exact local source generation without trusting the lock."""
-    with _local_snapshot_capture(parent) as capture:
-        return capture.generation()
+def _snapshot_source_generation(lock: _SeriesSpoolLock) -> tuple[Any, ...]:
+    """Measure names and inode metadata within one bounded shared-lock phase."""
+    started = time.monotonic()
+    deadline = started + SCORECARD_SNAPSHOT_IDENTITY_TIMEOUT_SECONDS
+    lock_path = lock.spool / ".append.lock"
+
+    def check_deadline() -> None:
+        if time.monotonic() > deadline:
+            raise SeriesError(
+                "scorecard source identity phase exceeded "
+                f"{SCORECARD_SNAPSHOT_IDENTITY_TIMEOUT_SECONDS:.3f}s while holding "
+                f"shared series spool lock {lock_path}"
+            )
+
+    lock.verify()
+    check_deadline()
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    published_fd: int | None = None
+    published_signature: tuple[int, ...] | None = None
+    try:
+        try:
+            published_status = os.stat(
+                "published", dir_fd=lock.spool_fd, follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            published_status = None
+        except OSError as error:
+            raise SeriesError(
+                f"cannot inspect retained series directory {lock.spool / 'published'}: "
+                f"{error}"
+            ) from error
+        if published_status is not None:
+            if not stat.S_ISDIR(published_status.st_mode):
+                raise SeriesError(
+                    f"retained series path is not a directory: {lock.spool / 'published'}"
+                )
+            try:
+                published_fd = os.open(
+                    "published", directory_flags, dir_fd=lock.spool_fd,
+                )
+            except OSError as error:
+                raise SeriesError(
+                    f"cannot open regular retained series directory "
+                    f"{lock.spool / 'published'}: {error}"
+                ) from error
+            opened = os.fstat(published_fd)
+            if _stat_signature(opened) != _stat_signature(published_status):
+                raise SeriesError(
+                    "retained series directory changed while its identity was measured"
+                )
+            published_signature = _stat_signature(opened)
+
+        source_keys = [("live", name) for name in _jsonl_names(lock.spool_fd)]
+        if published_fd is not None:
+            source_keys.extend(
+                ("published-retained", f"published/{name}")
+                for name in _jsonl_names(published_fd)
+            )
+        check_deadline()
+        if len(source_keys) > SCORECARD_SNAPSHOT_MAX_LOCAL_SOURCES:
+            raise SeriesError(
+                "scorecard source identity phase found "
+                f"{len(source_keys)} local sources, exceeding the explicit maximum "
+                f"of {SCORECARD_SNAPSHOT_MAX_LOCAL_SOURCES} while holding "
+                f"shared series spool lock {lock_path}"
+            )
+
+        identities = []
+        for kind, relative in source_keys:
+            if kind == "live":
+                directory_fd, name = lock.spool_fd, relative
+            else:
+                assert published_fd is not None
+                directory_fd, name = published_fd, Path(relative).name
+            status = _lstat_at(directory_fd, name, relative)
+            if not stat.S_ISREG(status.st_mode):
+                raise SeriesError(
+                    f"series snapshot source is not a regular file: {relative}"
+                )
+            identities.append((kind, relative, _stat_signature(status)))
+            check_deadline()
+
+        current_keys = [("live", name) for name in _jsonl_names(lock.spool_fd)]
+        if published_fd is not None:
+            current_keys.extend(
+                ("published-retained", f"published/{name}")
+                for name in _jsonl_names(published_fd)
+            )
+        if current_keys != source_keys:
+            raise SeriesError(
+                "series source set changed while its identity was measured"
+            )
+        for kind, relative, expected in identities:
+            if kind == "live":
+                directory_fd, name = lock.spool_fd, relative
+            else:
+                assert published_fd is not None
+                directory_fd, name = published_fd, Path(relative).name
+            status = _lstat_at(directory_fd, name, relative)
+            if not stat.S_ISREG(status.st_mode) or _stat_signature(status) != expected:
+                raise SeriesError(
+                    f"series snapshot source changed while its identity was measured: "
+                    f"{relative}"
+                )
+            check_deadline()
+        if published_fd is not None:
+            held = os.fstat(published_fd)
+            named = _lstat_at(
+                lock.spool_fd, "published", str(lock.spool / "published")
+            )
+            if (
+                _stat_signature(held) != published_signature
+                or _stat_signature(named) != published_signature
+            ):
+                raise SeriesError(
+                    "retained series directory changed while its identity was measured"
+                )
+        lock.verify()
+        check_deadline()
+        return (
+            lock.spool_identity,
+            published_signature,
+            tuple(identities),
+        )
+    finally:
+        if published_fd is not None:
+            os.close(published_fd)
 
 
 def _origin_main_commit(parent: Path) -> str:
@@ -1289,11 +1430,18 @@ def _scorecard_projection_capture(parent: Any):
     published = published_snapshot_at(parent, published_commit)
     source_tree = _series_tree_at(parent, published.commit)
     with contextlib.ExitStack() as held_sources:
-        with series_spool_transition_lock(spool_dir(parent), exclusive=False):
-            before = _snapshot_source_generation(parent)
-            local = held_sources.enter_context(_local_snapshot_capture(parent))
-            captured = local.generation()
-            after = _snapshot_source_generation(parent)
+        with series_spool_transition_lock(
+            spool_dir(parent), exclusive=False,
+        ) as lock:
+            before = _snapshot_source_generation(lock)
+
+        local = held_sources.enter_context(_local_snapshot_capture(parent))
+        captured = local.identity_generation()
+
+        with series_spool_transition_lock(
+            spool_dir(parent), exclusive=False,
+        ) as lock:
+            after = _snapshot_source_generation(lock)
             if before != captured or captured != after:
                 raise SeriesError(
                     "series source generation changed during scorecard snapshot capture"
@@ -1307,13 +1455,15 @@ def _scorecard_projection_capture(parent: Any):
                 f"{published_commit} -> {refreshed_commit}"
             )
 
-        with series_spool_transition_lock(spool_dir(parent), exclusive=False):
-            final_generation = _snapshot_source_generation(parent)
+        with series_spool_transition_lock(
+            spool_dir(parent), exclusive=False,
+        ) as lock:
+            final_generation = _snapshot_source_generation(lock)
             if final_generation != captured:
                 raise SeriesError(
                     "series source generation changed after published-ref verification"
                 )
-            local.verify()
+        local.verify()
 
         local_rows = [row for source in local.sources for row in source.rows]
         try:

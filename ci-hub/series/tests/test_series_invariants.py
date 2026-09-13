@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1411,7 +1412,7 @@ class ScorecardProjectionSnapshot(unittest.TestCase):
 
         with mock.patch.object(series, "refresh_origin_main"):
             with self.assertRaisesRegex(
-                series.SeriesError, "cannot open regular series snapshot source"
+                series.SeriesError, "series snapshot source is not a regular file"
             ):
                 series.write_scorecard_projection_snapshot(self.repo, output)
         self.assertFalse(output.exists())
@@ -1501,6 +1502,102 @@ class ScorecardProjectionSnapshot(unittest.TestCase):
                     poll_seconds=0.005,
                 ):
                     self.fail("contended lock unexpectedly admitted")
+
+    def test_source_identity_count_limit_refuses_and_names_the_lock(self):
+        first = row(
+            event_id="01J000000000000000000000AB",
+            run_id="campaign-2",
+            series={"run_index": 1},
+        )
+        second = row(
+            event_id="01J000000000000000000000AC",
+            run_id="campaign-3",
+            series={"run_index": 2},
+        )
+        self._write_local("first.jsonl", first)
+        self._write_local("second.jsonl", second)
+        output = Path(self.temporary.name) / "snapshot.json"
+        lock_path = series.spool_dir(self.repo) / ".append.lock"
+
+        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
+            series, "SCORECARD_SNAPSHOT_MAX_LOCAL_SOURCES", 1,
+        ):
+            with self.assertRaisesRegex(
+                series.SeriesError,
+                rf"2 local sources.*maximum of 1.*{re.escape(str(lock_path))}",
+            ):
+                series.write_scorecard_projection_snapshot(self.repo, output)
+        self.assertFalse(output.exists())
+
+    def test_source_identity_deadline_refuses_and_names_the_lock(self):
+        spool = series.spool_dir(self.repo)
+        spool.mkdir(parents=True, exist_ok=True)
+        with series.series_spool_transition_lock(spool, exclusive=False) as lock:
+            with mock.patch.object(
+                series.time, "monotonic", side_effect=[10.0, 12.0]
+            ):
+                with self.assertRaisesRegex(
+                    series.SeriesError,
+                    rf"identity phase exceeded 1\.000s.*{re.escape(str(spool / '.append.lock'))}",
+                ):
+                    series._snapshot_source_generation(lock)
+
+    def test_slow_row_validation_does_not_block_append(self):
+        original = row(
+            event_id="01J000000000000000000000AB",
+            run_id="campaign-2",
+            series={"run_index": 1},
+        )
+        appended = row(
+            event_id="01J000000000000000000000AC",
+            run_id="campaign-3",
+            series={"run_index": 2},
+        )
+        self._write_local("first.jsonl", original)
+        append_path = series.spool_dir(self.repo) / "second.jsonl"
+        output = Path(self.temporary.name) / "snapshot.json"
+        checker_entered = threading.Event()
+        release_checker = threading.Event()
+        snapshot_errors = []
+        calls = 0
+        original_validate = series.validate_read_rows
+
+        def slow_local_validation(rows):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                checker_entered.set()
+                if not release_checker.wait(2):
+                    raise AssertionError("test did not release the slow checker")
+            return original_validate(rows)
+
+        def run_snapshot():
+            try:
+                series.write_scorecard_projection_snapshot(self.repo, output)
+            except Exception as error:  # pragma: no cover - asserted below
+                snapshot_errors.append(error)
+
+        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
+            series, "validate_read_rows", side_effect=slow_local_validation,
+        ):
+            thread = threading.Thread(target=run_snapshot)
+            thread.start()
+            try:
+                self.assertTrue(checker_entered.wait(2))
+                self.assertEqual(
+                    series.append_cell_rows(self.repo, append_path, [appended]), 1,
+                    "append EX did not complete while row validation was paused",
+                )
+            finally:
+                release_checker.set()
+            thread.join(2)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(snapshot_errors), 1)
+        self.assertIsInstance(snapshot_errors[0], series.SeriesError)
+        self.assertIn("spool changed", str(snapshot_errors[0]))
+        self.assertEqual(series.read_shard(append_path), [appended])
+        self.assertFalse(output.exists())
 
     def test_move_between_pre_generation_and_capture_refuses(self):
         local = row(

@@ -201,13 +201,16 @@ local input is opened through its parent directory with symlinks forbidden,
 named by its relative path, device, inode, byte size, and digest, and held open
 through publication and readback.
 
-Local capture uses only short bounded shared-lock phases; both network refreshes
-run without the lock. The source set, inode identities, and content digests are
-recomputed before and after capture and again after the second refresh. A
-publisher transition, append, changed source name, changed inode, changed byte
-sequence, or changed source set makes the snapshot unavailable instead of
-combining a stale published commit with an incomplete local spool. This command
-does not alter publisher retention or reaping.
+Local capture uses only short bounded shared-lock phases; both network refreshes,
+source reads, parsing, validation, hashing, and output publication run without
+the lock. Each lock phase has an explicit source-count limit and monotonic
+deadline and measures only names and file metadata. That exact identity is
+checked before and after the outside-lock content capture and again after the
+second refresh. The held descriptors and content digests are then verified
+through output readback. A publisher transition, append, changed source name,
+changed inode, changed byte sequence, or changed source set makes the snapshot
+unavailable instead of combining a stale published commit with an incomplete
+local spool. This command does not alter publisher retention or reaping.
 
 The output is fsynced in an unnamed temporary inode where supported, linked
 into place without replacing an existing file, then read back through a held
