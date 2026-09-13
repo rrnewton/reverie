@@ -275,6 +275,108 @@ def case(landed: str, expect_code: int, expect_text: str, name: str) -> None:
         )
 
 
+def tree_content_cases() -> None:
+    """Verify deletions, literal path names, modes, and failed Git reads."""
+    unusual = "nested/[*]\tline\rbreak\n.txt"
+    # Values contain the file bytes and executable bit; omitted paths are absent.
+    old = ("base\n", False)
+    new = ("head\n", False)
+    cases = (
+        ("deletion arrived", {"gone": old}, {}, {}, 0, ["gone"], [], []),
+        ("deletion absent", {"gone": old}, {}, {"gone": old}, 3, [], ["gone"], []),
+        ("deleted path replaced", {"gone": old}, {}, {"gone": new}, 3, [], [], ["gone"]),
+        ("addition absent", {}, {"new": new}, {}, 3, [], ["new"], []),
+        ("literal path arrived", {unusual: old}, {unusual: new}, {unusual: new},
+         0, [unusual], [], []),
+        ("mode change absent", {"script": old}, {"script": (old[0], True)},
+         {"script": old}, 3, [], ["script"], []),
+        ("mode change arrived", {"script": old}, {"script": (old[0], True)},
+         {"script": (old[0], True)}, 0, ["script"], [], []),
+        ("rename retained source", {"old.txt": old}, {"new.txt": old},
+         {"old.txt": old, "new.txt": old}, 3, ["new.txt"], ["old.txt"], []),
+    )
+    for name, base_files, head_files, main_files, expected, arrived, absent, moved in cases:
+        with tempfile.TemporaryDirectory(prefix="gh-merge-verified-content-") as tmp:
+            root = Path(tmp)
+            origin = root / "origin"
+            origin.mkdir()
+            git(origin, "init", "--quiet", "--initial-branch=main", ".")
+            git(origin, "config", "core.fileMode", "true")
+            git(origin, "config", "diff.renames", "true")
+            paths = set(base_files) | set(head_files) | set(main_files)
+
+            def commit_files(files: dict, message: str) -> None:
+                for name in paths:
+                    path = origin / name
+                    if name in files:
+                        content, executable = files[name]
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text(content)
+                        path.chmod(0o755 if executable else 0o644)
+                    elif path.exists():
+                        path.unlink()
+                git(origin, "add", "--all")
+                git(origin, "commit", "--quiet", "--allow-empty", "-m", message)
+
+            commit_files(base_files, "base")
+            git(origin, "checkout", "--quiet", "-b", "feature")
+            commit_files(head_files, "branch")
+            head = git_output(origin, "rev-parse", "HEAD")
+            git(origin, "update-ref", "refs/pull/1/head", head)
+            git(origin, "checkout", "--quiet", "main")
+            commit_files(main_files, "independent main")
+            work = root / "work"
+            subprocess.run(["git", "clone", "--quiet", str(origin), str(work)],
+                           check=True, capture_output=True)
+            bindir, log = tripwire_dir(root)
+            receipt = root / "receipt.json"
+            env = {
+                **os.environ,
+                "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+                "GH_MERGE_VERIFIED_REMOTE": str(origin),
+            }
+            code, out = run(
+                [sys.executable, str(TOOL), "1", "--repo", "fixture/repo", "--verify-only",
+                 "--expect-head", head, "--receipt", str(receipt)], cwd=work, env=env,
+            )
+            check(f"{name}: exit {expected}", code == expected, f"exit {code}\n{out}")
+            record = json.loads(receipt.read_text()) if receipt.exists() else {}
+            for field, wanted in (("arrived", arrived), ("absent", absent), ("moved_on", moved),
+                                  ("files", sorted(arrived + absent + moved))):
+                check(f"{name}: exact {field}", record.get(field) == sorted(wanted),
+                      f"expected {wanted!r}, got {record.get(field)!r}\n{out}")
+            check(f"{name}: no gh call", log.read_text() == "", log.read_text())
+
+    for failing_command in ("ls-tree", "diff"):
+        with tempfile.TemporaryDirectory(prefix="gh-merge-verified-read-failure-") as tmp:
+            root = Path(tmp)
+            origin, work = build_fixture(root, "arrived")
+            bindir, log = tripwire_dir(root)
+            git_wrapper = bindir / "git"
+            git_wrapper.write_text(
+                f"#!{sys.executable}\nimport os, sys\n"
+                f"if {failing_command!r} in sys.argv[1:]:\n"
+                "    print('injected Git read failure', file=sys.stderr)\n"
+                "    sys.exit(66)\n"
+                f"os.execv({shutil.which('git')!r}, ['git', *sys.argv[1:]])\n"
+            )
+            git_wrapper.chmod(0o755)
+            receipt = root / "receipt.json"
+            code, out = run(
+                [sys.executable, str(TOOL), "1", "--repo", "fixture/repo", "--verify-only",
+                 "--receipt", str(receipt)], cwd=work, env={
+                    **os.environ,
+                    "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+                    "GH_MERGE_VERIFIED_REMOTE": str(origin),
+                },
+            )
+            check(f"failed {failing_command}: inconclusive", code == 4, f"exit {code}\n{out}")
+            check(f"failed {failing_command}: names Git failure",
+                  "COULD NOT DETERMINE" in out and "injected Git read failure" in out, out)
+            check(f"failed {failing_command}: no receipt", not receipt.exists(), out)
+            check(f"failed {failing_command}: no gh call", log.read_text() == "", log.read_text())
+
+
 def load_tool():
     """Import the tool as a module so its helpers can be tested directly."""
     import importlib.util
@@ -1045,6 +1147,7 @@ def main() -> int:
     # ancestry cannot answer this question and content-identity can.
     case("arrived", 0, "VERIFIED", "a squash landing that did arrive")
 
+    tree_content_cases()
     unit_cases()
     self_change_cases()
     race_cases()

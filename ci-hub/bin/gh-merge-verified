@@ -282,6 +282,32 @@ def run(args: list[str]) -> tuple[int, str, str]:
     return p.returncode, p.stdout, p.stderr
 
 
+def git_bytes(args: list[str]) -> bytes:
+    """Read NUL-delimited Git output without translating bytes in path names."""
+    result = subprocess.run(["git", *args], capture_output=True)
+    if result.returncode != 0:
+        die(4, "gh-merge-verified: COULD NOT DETERMINE — Git content read failed",
+            os.fsdecode(result.stderr).strip())
+    return result.stdout
+
+
+def tree_entry(revision: str, path: str) -> tuple[bytes, bytes, bytes] | None:
+    """Return mode, type and object ID; only a successful empty read means absent."""
+    output = git_bytes(["--literal-pathspecs", "ls-tree", "--full-tree", "-z",
+                        revision, "--", path])
+    if not output:
+        return None
+    try:
+        record, terminator = output.split(b"\0")
+        metadata, found_path = record.split(b"\t", 1)
+        mode, kind, oid = metadata.split()
+        if terminator or os.fsdecode(found_path) != path:
+            raise ValueError("unexpected tree path")
+    except ValueError:
+        die(4, f"gh-merge-verified: COULD NOT DETERMINE — invalid tree entry for {path!r}")
+    return mode, kind, oid
+
+
 def write_receipt(path, record: dict) -> None:
     """Write the landing receipt, or refuse to write one that overclaims.
 
@@ -1225,8 +1251,10 @@ def main() -> None:
     if rc != 0 or not base:
         die(4, f"gh-merge-verified: COULD NOT DETERMINE — no merge base between PR {pr} and main")
 
-    rc, names, _ = run(["git", "diff", "--name-only", f"{base}..{head}"])
-    files = [f for f in names.splitlines() if f.strip()]
+    # Disable rename folding so both the removed source and added destination
+    # must arrive. NUL separation keeps literal whitespace and glob characters.
+    names = git_bytes(["diff", "--no-renames", "--name-only", "-z", f"{base}..{head}"])
+    files = [os.fsdecode(path) for path in names.split(b"\0") if path]
     if not files:
         die(4, f"gh-merge-verified: COULD NOT DETERMINE — PR {pr} changes no files against its own",
             "  merge base, so there is nothing whose presence could be checked.")
@@ -1237,7 +1265,10 @@ def main() -> None:
     # then had one of its files edited hours later by a different change -- the
     # two-state check called it unlanded.
     #
-    # The base blob is what discriminates:
+    # Compare complete tree entries, including their mode. A missing entry is
+    # also a value: a deletion has arrived when head and main both lack it.
+    # A Git read failure is not absence and must leave the result undetermined.
+    # The base entry is what discriminates:
     #   main == head  -> ARRIVED. The change is present.
     #   main == base  -> ABSENT.  Main still holds the pre-change content, so
     #                             this file's change definitely did not land.
@@ -1247,15 +1278,12 @@ def main() -> None:
     absent: list[str] = []
     moved: list[str] = []
     for f in files:
-        _, a, _ = run(["git", "rev-parse", f"{head}:{f}"])
-        rc_b, b, _ = run(["git", "rev-parse", f"{main_sha}:{f}"])
-        rc_c, c, _ = run(["git", "rev-parse", f"{base}:{f}"])
-        a, b, c = a.strip(), b.strip(), c.strip()
-        if rc_b == 0 and a == b:
+        a = tree_entry(head, f)
+        b = tree_entry(main_sha, f)
+        c = tree_entry(base, f)
+        if a == b:
             arrived.append(f)
-        elif rc_c == 0 and rc_b == 0 and b == c:
-            absent.append(f)
-        elif rc_b != 0 and rc_c != 0:
+        elif b == c:
             absent.append(f)
         else:
             moved.append(f)
