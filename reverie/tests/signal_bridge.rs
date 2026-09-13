@@ -273,3 +273,27 @@ fn structured_hook_can_replace_signal_with_coherent_explicit_siginfo() {
     assert_eq!(output.siginfo()[127], input.siginfo()[127] ^ 0xff);
     assert_eq!(output.target(), input.target());
 }
+
+#[test]
+fn child_exit_signal_default_refuses_before_publication() {
+    let mut guest = TestGuest::default();
+    let mut info = event(libc::SIGCHLD).siginfo();
+    info[8..12].copy_from_slice(&libc::CLD_EXITED.to_ne_bytes());
+    info[16..20].copy_from_slice(&41_i32.to_ne_bytes());
+    info[24..28].copy_from_slice(&37_i32.to_ne_bytes());
+    let input = SignalEvent::new(
+        libc::SIGCHLD,
+        info,
+        SignalTarget::Process {
+            pid: Pid::from_raw(2),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        ready(<TestGuest as Guest<StructuredTool>>::queue_child_exit_signal(&mut guest, input)),
+        reverie::ChildExitSignalOutcome::RejectedBeforeCommit {
+            kind: reverie::ChildExitSignalErrorKind::Unsupported,
+            errno: Errno::ENOSYS,
+        }
+    );
+}
