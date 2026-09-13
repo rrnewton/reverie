@@ -1461,7 +1461,7 @@ class ScorecardProjectionSnapshot(unittest.TestCase):
         output = Path(self.temporary.name) / "snapshot.json"
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch.object(
-            series, "published_snapshot", side_effect=series.SeriesError("fetch failed")
+            series, "refresh_origin_main", side_effect=series.SeriesError("fetch failed")
         ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             rc = series.main([
                 "snapshot", "--parent", str(self.repo), "--output", str(output)
@@ -1504,7 +1504,7 @@ class ScorecardProjectionSnapshot(unittest.TestCase):
             except Exception as error:  # pragma: no cover - asserted below
                 thread_errors.append(error)
 
-        def bind_old_commit(_parent):
+        def bind_old_commit(_parent, _published_ref):
             nonlocal thread
             thread = threading.Thread(target=run_publisher)
             thread.start()
@@ -1515,11 +1515,11 @@ class ScorecardProjectionSnapshot(unittest.TestCase):
             )
             return series.PublishedSnapshot(self.commit, [self.published])
 
-        with mock.patch.object(
-            series, "published_snapshot", side_effect=bind_old_commit,
+        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
+            series, "published_snapshot_at", side_effect=bind_old_commit,
         ), mock.patch.object(
             publisher,
-            "_publish_with_transition_lock_held",
+            "_publish_prepared",
             side_effect=publish_transition,
         ):
             report = series.write_scorecard_projection_snapshot(self.repo, output)
@@ -1541,6 +1541,7 @@ class ScorecardProjectionSnapshot(unittest.TestCase):
     def test_independent_series_reap_uses_the_exclusive_transition_lock(self):
         spool = series.spool_dir(self.repo)
         spool.mkdir(parents=True, exist_ok=True)
+        self._git("update-ref", series.SERIES_SNAPSHOT_REF, self.commit)
         reaper_started = threading.Event()
         reap_entered = threading.Event()
         thread_errors = []
@@ -1574,6 +1575,199 @@ class ScorecardProjectionSnapshot(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(thread_errors, [])
         self.assertTrue(reap_entered.is_set())
+
+    def test_lock_timeout_is_bounded_and_names_the_lock(self):
+        spool = series.spool_dir(self.repo)
+        spool.mkdir(parents=True, exist_ok=True)
+        errors = []
+
+        def contend():
+            try:
+                with series.series_spool_transition_lock(
+                    spool,
+                    exclusive=False,
+                    timeout_seconds=0.05,
+                    poll_seconds=0.005,
+                ):
+                    raise AssertionError("contended lock unexpectedly admitted")
+            except Exception as error:  # pragma: no cover - asserted below
+                errors.append(error)
+
+        with series.series_spool_transition_lock(spool, exclusive=True):
+            thread = threading.Thread(target=contend)
+            thread.start()
+            thread.join(1)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], series.SeriesError)
+        self.assertIn("timed out after 0.050s", str(errors[0]))
+        self.assertIn(str(spool / ".append.lock"), str(errors[0]))
+
+    def test_final_drain_marker_overrides_a_stale_prelock_refresh(self):
+        local = row(
+            event_id="01J000000000000000000000AB",
+            run_id="campaign-2",
+            series={"run_index": 1},
+        )
+        live = self._write_local("live.jsonl", local)
+        shard = self.repo / "series/hermit/devbig014/2026-08.jsonl"
+        with shard.open("a") as output_stream:
+            output_stream.write(json.dumps(local, sort_keys=True) + "\n")
+        self._git("add", "series")
+        self._git(
+            "-c", "user.name=t", "-c", "user.email=t@invalid",
+            "commit", "-q", "-m", "published local row",
+        )
+        published_commit = self._git("rev-parse", "HEAD")
+        self._git("update-ref", "refs/remotes/origin/main", self.commit)
+        output = Path(self.temporary.name) / "snapshot.json"
+
+        def stale_refresh_then_final_drain(_parent, _repository):
+            # The network refresh observed the old commit. Before the snapshot
+            # can take SH, final publication takes EX, installs the exact local
+            # marker, and removes the now-published live source.
+            with series.series_spool_transition_lock(
+                live.parent, exclusive=True,
+            ):
+                publisher._publish_series_snapshot_marker_locked(
+                    self.repo, published_commit, series,
+                )
+                live.unlink()
+
+        with mock.patch.object(
+            series, "refresh_origin_main", side_effect=stale_refresh_then_final_drain,
+        ):
+            report = series.write_scorecard_projection_snapshot(self.repo, output)
+
+        snapshot = series.read_scorecard_projection_snapshot(
+            output, expected_sha256=report["sha256"]
+        )
+        self.assertEqual(snapshot["source"]["commit"], published_commit)
+        self.assertIn(local["event_id"], [item["event_id"] for item in snapshot["rows"]])
+
+    def test_paused_publish_allows_append_and_snapshot_then_drain_waits(self):
+        original = row(
+            event_id="01J000000000000000000000AB",
+            run_id="campaign-2",
+            series={"run_index": 1},
+        )
+        appended = row(
+            event_id="01J000000000000000000000AC",
+            run_id="campaign-3",
+            series={"run_index": 2},
+        )
+        live = self._write_local("live.jsonl", original)
+        output = Path(self.temporary.name) / "snapshot.json"
+        network_paused = threading.Event()
+        release_network = threading.Event()
+        snapshot_paused = threading.Event()
+        release_snapshot = threading.Event()
+        finalization_started = threading.Event()
+        publisher_done = threading.Event()
+        publisher_results = []
+        snapshot_results = []
+        errors = []
+        original_finish_snapshot = series._finish_snapshot_publication
+
+        def paused_publish(*_args, **kwargs):
+            network_paused.set()
+            if not release_network.wait(2):
+                raise AssertionError("test did not release paused publication")
+            finalization_started.set()
+            retained_count, reaped, changed, marker = (
+                publisher._finish_series_publication(
+                    live.parent,
+                    kwargs["prepared_files"],
+                    source_root=self.repo,
+                    published_commit=self.commit,
+                    durable_event_ids={self.published["event_id"]},
+                )
+            )
+            return {
+                "published": 1,
+                "retained": retained_count,
+                "reaped_retained": reaped,
+                "changed_sources": changed,
+                "series_snapshot_commit": marker,
+            }
+
+        def pause_snapshot_readback(directory_fd, published, digest):
+            snapshot_paused.set()
+            if not release_snapshot.wait(2):
+                raise AssertionError("test did not release snapshot readback")
+            return original_finish_snapshot(directory_fd, published, digest)
+
+        def run_publisher():
+            try:
+                publisher_results.append(
+                    publisher.publish(
+                        Path("/unused-publisher-checkout"),
+                        live.parent,
+                        source_root=self.repo,
+                        store="series",
+                    )
+                )
+            except Exception as error:  # pragma: no cover - asserted below
+                errors.append(error)
+            finally:
+                publisher_done.set()
+
+        def run_snapshot():
+            try:
+                snapshot_results.append(
+                    series.write_scorecard_projection_snapshot(self.repo, output)
+                )
+            except Exception as error:  # pragma: no cover - asserted below
+                errors.append(error)
+
+        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
+            publisher, "_publish_prepared", side_effect=paused_publish,
+        ), mock.patch.object(
+            series, "_finish_snapshot_publication", side_effect=pause_snapshot_readback,
+        ):
+            publish_thread = threading.Thread(target=run_publisher)
+            publish_thread.start()
+            self.assertTrue(network_paused.wait(2))
+
+            # This append takes the same EX lock and therefore proves the
+            # publisher released its phase-one lock before network work.
+            self.assertEqual(
+                series.append_cell_rows(self.repo, live, [appended]), 1,
+            )
+
+            snapshot_thread = threading.Thread(target=run_snapshot)
+            snapshot_thread.start()
+            self.assertTrue(snapshot_paused.wait(2))
+            release_network.set()
+            self.assertTrue(finalization_started.wait(2))
+            self.assertFalse(
+                publisher_done.wait(0.1),
+                "final drain crossed a snapshot that still held the shared lock",
+            )
+            release_snapshot.set()
+            snapshot_thread.join(2)
+            publish_thread.join(2)
+
+        self.assertFalse(snapshot_thread.is_alive())
+        self.assertFalse(publish_thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(snapshot_results), 1)
+        self.assertEqual(len(publisher_results), 1)
+        self.assertEqual(publisher_results[0]["retained"], 0)
+        self.assertEqual(publisher_results[0]["changed_sources"], [str(live)])
+        self.assertTrue(live.is_file(), "new append was drained with the old batch")
+        self.assertEqual(
+            [original["event_id"], appended["event_id"]],
+            [item["event_id"] for item in series.read_shard(live)],
+        )
+        snapshot = series.read_scorecard_projection_snapshot(
+            output, expected_sha256=snapshot_results[0]["sha256"]
+        )
+        self.assertEqual(
+            [self.published["event_id"], original["event_id"], appended["event_id"]],
+            [item["event_id"] for item in snapshot["rows"]],
+        )
 
 
 class WriteBoundaryCli(unittest.TestCase):

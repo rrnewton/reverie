@@ -51,6 +51,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -58,6 +59,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from collections.abc import Iterable, Mapping, Sequence
@@ -81,6 +83,8 @@ HOST_FACTS_ENVELOPE_VERSION = "stress-series/v2"
 ENVELOPE_VERSION = "stress-series/v3"
 SCORECARD_SNAPSHOT_SCHEMA = "scorecard-series-snapshot/v1"
 SCORECARD_SNAPSHOT_SOURCE = "series"
+SERIES_SNAPSHOT_REF = "refs/ci-hub/series/published"
+SERIES_SPOOL_LOCK_TIMEOUT_SECONDS = 5.0
 READABLE_ENVELOPE_VERSIONS = frozenset({
     LEGACY_ENVELOPE_VERSION,
     HOST_FACTS_ENVELOPE_VERSION,
@@ -620,9 +624,7 @@ def append_cell_rows(parent: Any, path: Any, rows: Iterable[dict]) -> int:
     path = Path(path)
     checked = validate_rows(rows)
     path.parent.mkdir(parents=True, exist_ok=True)
-    lock_fd = os.open(path.parent / ".append.lock", os.O_WRONLY | os.O_CREAT, 0o644)
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    with series_spool_transition_lock(path.parent, exclusive=True):
         # Check both the live spool and published shards. Once a batch has been
         # published and its spool removed, re-emitting it must still be a no-op.
         existing = union(store_paths(parent))
@@ -654,8 +656,6 @@ def append_cell_rows(parent: Any, path: Any, rows: Iterable[dict]) -> int:
                     f"event_id {event_id!r} already records a different row; refusing rewrite"
                 )
         return append_events(path, pending) if pending else 0
-    finally:
-        os.close(lock_fd)
 
 
 def store_paths(parent: Any) -> list[Path]:
@@ -978,14 +978,35 @@ class _SeriesSpoolLock:
 
 
 @contextlib.contextmanager
-def series_spool_transition_lock(spool: Any, *, exclusive: bool):
+def series_spool_transition_lock(
+    spool: Any,
+    *,
+    exclusive: bool,
+    timeout_seconds: float = SERIES_SPOOL_LOCK_TIMEOUT_SECONDS,
+    poll_seconds: float = 0.05,
+):
     """Serialize series writers/publishers or hold a stable reader frontier.
 
     This is the sole lock owner. Callers that already hold it must use their
     ``*_locked`` helper instead of recursively opening the same lock pathname.
     """
+    if (
+        not math.isfinite(timeout_seconds)
+        or timeout_seconds < 0
+        or not math.isfinite(poll_seconds)
+        or poll_seconds <= 0
+    ):
+        raise SeriesError(
+            "series spool lock timeout must be finite and nonnegative and poll "
+            "interval must be finite and positive"
+        )
     spool = Path(spool)
-    spool.mkdir(parents=True, exist_ok=True)
+    try:
+        spool.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise SeriesError(
+            f"cannot create series spool for lock {spool / '.append.lock'}: {error}"
+        ) from error
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         directory_flags |= os.O_NOFOLLOW
@@ -1013,13 +1034,38 @@ def series_spool_transition_lock(spool: Any, *, exclusive: bool):
         lock_flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
         if hasattr(os, "O_NOFOLLOW"):
             lock_flags |= os.O_NOFOLLOW
-        lock_fd = os.open(".append.lock", lock_flags, 0o644, dir_fd=spool_fd)
+        try:
+            lock_fd = os.open(
+                ".append.lock", lock_flags, 0o644, dir_fd=spool_fd,
+            )
+        except OSError as error:
+            raise SeriesError(
+                f"cannot open series spool lock {spool / '.append.lock'}: {error}"
+            ) from error
         lock_status = os.fstat(lock_fd)
         if not stat.S_ISREG(lock_status.st_mode):
             raise SeriesError(
                 f"series snapshot lock is not a regular file: {spool / '.append.lock'}"
             )
-        fcntl.flock(lock_fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                fcntl.flock(lock_fd, mode | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as error:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    kind = "exclusive" if exclusive else "shared"
+                    raise SeriesError(
+                        f"timed out after {timeout_seconds:.3f}s "
+                        f"acquiring {kind} series spool lock {spool / '.append.lock'}"
+                    ) from error
+                time.sleep(min(poll_seconds, remaining))
+            except OSError as error:
+                raise SeriesError(
+                    f"cannot acquire series spool lock {spool / '.append.lock'}: {error}"
+                ) from error
         held = _SeriesSpoolLock(
             spool=spool,
             spool_fd=spool_fd,
@@ -1168,12 +1214,56 @@ def _local_snapshot_capture(lock: _SeriesSpoolLock):
 def _scorecard_projection_capture(parent: Any):
     """Build a snapshot while retaining every mutable source descriptor."""
     parent = Path(parent).resolve()
+    # Network work is outside the spool lock. The local ref is bound only after
+    # the shared lock is held, so a publisher either leaves its batch visible
+    # locally or finishes the exclusive drain before this commit is selected.
+    refresh_origin_main(parent, "parent")
     with series_spool_transition_lock(spool_dir(parent), exclusive=False) as lock:
         # LOCK ORDER: series spool first, then remote fetch/ref binding, then
         # local file descriptors, and finally output publication. The series
         # publisher takes the same lock exclusively before it binds or changes
         # the remote commit and never recursively reacquires it.
-        published = published_snapshot(parent)
+        origin_ref = "refs/remotes/origin/main"
+        origin = _git(parent, [
+            "--no-replace-objects", "rev-parse", "--verify", f"{origin_ref}^{{commit}}",
+        ])
+        marker = _git(parent, [
+            "--no-replace-objects",
+            "rev-parse",
+            "--verify",
+            f"{SERIES_SNAPSHOT_REF}^{{commit}}",
+        ])
+        if origin.returncode != 0:
+            raise SeriesError(
+                "cannot bind parent origin/main for scorecard snapshot: "
+                + (origin.stderr.strip() or "no output")
+            )
+        selected = origin.stdout.strip()
+        if marker.returncode == 0:
+            marked = marker.stdout.strip()
+            marker_before_origin = _git(parent, [
+                "--no-replace-objects",
+                "merge-base",
+                "--is-ancestor",
+                marked,
+                selected,
+            ])
+            if marker_before_origin.returncode == 0:
+                pass
+            else:
+                origin_before_marker = _git(parent, [
+                    "--no-replace-objects",
+                    "merge-base",
+                    "--is-ancestor",
+                    selected,
+                    marked,
+                ])
+                if origin_before_marker.returncode != 0:
+                    raise SeriesError(
+                        "series snapshot marker and parent origin/main are not comparable"
+                    )
+                selected = marked
+        published = published_snapshot_at(parent, selected)
         source_tree = _series_tree_at(parent, published.commit)
         with _local_snapshot_capture(lock) as local:
             local_rows = [row for source in local.sources for row in source.rows]
@@ -3055,6 +3145,8 @@ __all__ = [
     "HOST_FACTS_ENVELOPE_VERSION",
     "LEGACY_ENVELOPE_VERSION",
     "READABLE_ENVELOPE_VERSIONS",
+    "SERIES_SNAPSHOT_REF",
+    "SERIES_SPOOL_LOCK_TIMEOUT_SECONDS",
     "MalformedRow",
     "SeriesError",
     "append_rows",
@@ -3073,6 +3165,7 @@ __all__ = [
     "rows_from_cell_results",
     "scorecard_projection_snapshot",
     "series_for",
+    "series_spool_transition_lock",
     "shared_parent_root",
     "shard_path",
     "spool_dir",

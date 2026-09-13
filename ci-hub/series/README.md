@@ -200,11 +200,22 @@ is opened through its parent directory with symlinks forbidden, named by its
 relative path, device, inode, byte size, and digest, and held open under the
 existing series writer lock through publication and readback. A changed source
 name, inode, byte sequence, or source set makes the snapshot unavailable.
-The snapshot takes that shared lock before resolving the published commit.
-Series publication and retained-row reaping take it exclusively before reading
-or moving spool entries, so an old published commit cannot be paired with a
-post-reap local spool. The outer operation owns the lock; its internal drain
-and reap helpers never reacquire it.
+After refreshing outside the lock, the snapshot takes the bounded shared lock
+before resolving the published commit and keeps it through readback. Series
+publication takes a short bounded exclusive lock to copy the exact pending file
+set and bytes, releases it before validation and every Git/network operation,
+then takes another bounded exclusive lock to retain only files whose inode and
+digest are unchanged. New appends therefore proceed during publication and are
+never swept into the completed batch.
+
+Before that final drain, the publisher records the exact published commit in a
+local Git ref while holding the exclusive lock. A snapshot binds the newer of
+that marker and its refreshed `origin/main` while holding the shared lock. Thus
+even when refresh happened before final drain, every row is in the bound commit
+or remains in the live/retained spool. Independent reaping uses a short bounded
+exclusive lock and removes only rows present in both the marker commit and the
+producer's exact `HEAD`. Internal drain and reap helpers never reacquire the
+lock.
 
 The output is fsynced in an unnamed temporary inode where supported, linked
 into place without replacing an existing file, then read back through a held
