@@ -17,8 +17,11 @@
 #
 # WHY THIS SURFACE IS EXACT (and the slot surface was not):
 #   tg has an explicit `owner` column AND the live fleet is directly
-#   enumerable — every live agent is a tmux window on orc's isolated socket.
-#   So "owner no longer exists" is an EXACT set-membership test, not a proxy.
+#   enumerable. NOTE, corrected 2026-09-13: an agent is a tmux PANE, not a tmux
+#   WINDOW, and a window can hold several panes whose names differ from the
+#   agents in them. Window names alone are therefore a PROXY and they missed a
+#   live lane. The fleet is now the union of window names and ORC's agent
+#   registry, which is the only place the agent-name to pane mapping is recorded.
 #   The worktree-gc orphan column had to fall back to an idle-hours (source
 #   mtime) heuristic precisely because worktree-state.json has no owner field
 #   and no liveness link; there, an agent mid-thought looks idle and the signal
@@ -139,6 +142,47 @@ if (( live_count == 0 )); then
     exit 3
 fi
 
+# --- ORC's agent registry, unioned in. WHY THIS IS NEEDED ---------------------
+# Window names are not agent names. ORC places an agent in a PANE, and a window
+# holds several panes, so an agent whose pane sits in a window named after
+# something else never appears in the window-name set. Measured 2026-09-13:
+# agent dev-hermit was live in pane %89, 20.3h into its goal, with agents_v
+# updated 153s earlier -- and its window was named "codex", so the window-name
+# read omitted it and its IN_PROGRESS task was reported ORPHANED. Pane TITLES do
+# not fix it either: they carry an agent name for some panes and the agent's
+# current task for others.
+#
+# So the agent-name to pane mapping exists only in ORC's own registry. Union it
+# in; never subtract from the window set. This can only ADD names, so it can only
+# reduce false orphans, which is the same conservative direction the window read
+# already chose. 'managed' rows are ORC's own sessions rather than agents, so
+# they are excluded: adding them would pad the fleet with names no task can own.
+#
+# An unreadable registry is NOT silently treated as "no further agents": that
+# would restore the omission this exists to prevent. It is announced, so a reader
+# knows the fleet may be under-counted.
+AGENTS_DB=""
+for _d in "$HOME"/.orc/sessions/*/agents_v*.db; do
+    [[ -f $_d ]] || continue
+    if [[ -z $AGENTS_DB || $_d -nt $AGENTS_DB ]]; then AGENTS_DB="$_d"; fi
+done
+registry_added=0
+registry_state="unavailable"
+if [[ -n $AGENTS_DB ]] && command -v sqlite3 >/dev/null 2>&1; then
+    if REG_OUT=$(sqlite3 "$AGENTS_DB" \
+        "SELECT name FROM agents_v WHERE name IS NOT NULL AND TRIM(name) <> '' \
+         AND LOWER(status) NOT IN ('closed','dead','exited','unreachable','managed');" 2>&1); then
+        registry_state="read"
+        while IFS= read -r a; do
+            [[ -z $a ]] && continue
+            if [[ -z ${LIVE[$a]+x} ]]; then registry_added=$((registry_added+1)); fi
+            LIVE[$a]=1
+        done <<< "$REG_OUT"
+    else
+        registry_state="unreadable"
+    fi
+fi
+
 # --- Owned, non-terminal tasks from the tg DB. Sentinel prefix 'ROW|' makes ---
 # --- parsing immune to the sql header/separator/'(N rows)' footer.           ---
 STATUS_FILTER="status='IN_PROGRESS'"
@@ -159,7 +203,11 @@ if ! QUERY_OUT=$(tg sql "$QUERY" 2>&1); then
 fi
 
 now=$(date +%s)
-echo "orphaned-task-detector: live fleet = ${#LIVE[@]} windows on $SOCK"
+echo "orphaned-task-detector: live fleet = ${#LIVE[@]} names on $SOCK (windows + ORC registry)"
+echo "  fleet basis: window names, plus agent registry ${registry_state} (${registry_added} name(s) only the registry knew)"
+if [[ $registry_state != "read" ]]; then
+    echo "  WARNING: the agent registry could not be read, so this fleet may be under-counted" >&2
+fi
 echo "  live agents: $(printf '%s ' "${!LIVE[@]}" | tr ' ' '\n' | sort | grep -v '^$' | tr '\n' ' ')"
 echo "  task graph: $TG_DB_PATH"
 echo "  scanning ${STATUS_FILTER}  [REPORT ONLY — no task is reassigned or closed]"
