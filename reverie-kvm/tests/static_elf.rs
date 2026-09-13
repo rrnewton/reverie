@@ -11831,3 +11831,263 @@ int main(void) {
         assert_eq!(stderr, native.stderr, "tool_owned={tool_owned}");
     }
 }
+
+type ProcessToolLifecycleEvent = (u8, i32, i32, u64, u64);
+
+#[derive(Default)]
+struct ProcessToolLifecycleLog {
+    events: Mutex<Vec<ProcessToolLifecycleEvent>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for ProcessToolLifecycleLog {
+    type Request = ProcessToolLifecycleEvent;
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Pid, event: Self::Request) {
+        self.events.lock().unwrap().push(event);
+    }
+}
+
+#[derive(Default)]
+struct ProcessToolLifecycle {
+    pid: i32,
+    started: AtomicU64,
+    exited: AtomicU64,
+}
+
+#[reverie::tool]
+impl Tool for ProcessToolLifecycle {
+    type GlobalState = ProcessToolLifecycleLog;
+    type ThreadState = (i32, i32);
+
+    fn new(pid: Pid, _config: &()) -> Self {
+        Self {
+            pid: pid.as_raw(),
+            ..Self::default()
+        }
+    }
+
+    fn init_thread_state(
+        &self,
+        tid: Pid,
+        _parent: Option<(Pid, &Self::ThreadState)>,
+    ) -> Self::ThreadState {
+        (self.pid, tid.as_raw())
+    }
+
+    async fn handle_thread_start<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+    ) -> Result<(), reverie::Error> {
+        assert_eq!(self.pid, guest.pid().as_raw());
+        assert_eq!(*guest.thread_state(), (self.pid, guest.tid().as_raw()));
+        self.started.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        assert_eq!(self.pid, guest.pid().as_raw());
+        guest.tail_inject(syscall).await
+    }
+
+    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+        &self,
+        tid: Pid,
+        global: &G,
+        state: Self::ThreadState,
+        _status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        assert_eq!(state, (self.pid, tid.as_raw()));
+        let exited = self.exited.fetch_add(1, Ordering::SeqCst) + 1;
+        global
+            .send_rpc((
+                0,
+                self.pid,
+                tid.as_raw(),
+                self.started.load(Ordering::SeqCst),
+                exited,
+            ))
+            .await;
+        Ok(())
+    }
+
+    async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
+        self,
+        pid: Pid,
+        global: &G,
+        _status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        assert_eq!(self.pid, pid.as_raw());
+        let started = self.started.load(Ordering::SeqCst);
+        let exited = self.exited.load(Ordering::SeqCst);
+        assert_eq!(
+            started, exited,
+            "process exit must follow every thread exit callback"
+        );
+        global
+            .send_rpc((1, self.pid, pid.as_raw(), started, exited))
+            .await;
+        Ok(())
+    }
+}
+
+#[test]
+fn process_tool_state_and_thread_group_exit_lifecycle() {
+    const TEST: &str = "process_tool_state_and_thread_group_exit_lifecycle";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "process-tool-lifecycle",
+        r#"#define _GNU_SOURCE
+#include <errno.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <unistd.h>
+static _Atomic int entered, release_workers, completed;
+static void *waiter(void *opaque) {
+  atomic_fetch_add(&entered, 1);
+  while (!atomic_load(&release_workers)) sched_yield();
+  if ((intptr_t)opaque == 1) syscall(SYS_exit_group, 41);
+  atomic_fetch_add(&completed, 1);
+  return (void *)(intptr_t)37;
+}
+static void *finish(void *opaque) { return opaque; }
+static int quick_thread(void) {
+  pthread_t thread; void *result = NULL;
+  if (pthread_create(&thread, NULL, finish, (void *)(intptr_t)37)) return 2;
+  if (pthread_join(thread, &result) || result != (void *)(intptr_t)37) return 3;
+  return 0;
+}
+int main(int argc, char **argv) {
+  if (argc != 2) return 4;
+  if (!strcmp(argv[1], "fork")) {
+    if (quick_thread()) return 5;
+    pid_t child = fork();
+    if (child < 0) return 6;
+    if (!child) _exit(quick_thread() || quick_thread() ? 7 : 0);
+    int status = -1;
+    if (waitpid(child, &status, 0) != child || status != 0) return 8;
+    puts("separate-process-tool-state");
+    return 0;
+  }
+  pthread_t first, second;
+  if (pthread_create(&first, NULL, waiter, NULL)) return 9;
+  while (atomic_load(&entered) != 1) sched_yield();
+  if (!strcmp(argv[1], "survive")) {
+    if (quick_thread()) return 10;
+    if (atomic_load(&completed)) return 11;
+    char *args[] = {"missing", NULL};
+    char *env[] = {NULL};
+    errno = 0;
+    if (execve("/reverie-no-such-process-tool-lifecycle-image", args, env) != -1 || errno != ENOENT) return 12;
+    if (atomic_load(&completed)) return 13;
+    atomic_store(&release_workers, 1);
+    void *result = NULL;
+    if (pthread_join(first, &result) || result != (void *)(intptr_t)37 || atomic_load(&completed) != 1) return 14;
+    puts("sibling-and-tool-state-preserved");
+    return 0;
+  }
+  int worker_group = !strcmp(argv[1], "worker-group");
+  if (!worker_group && strcmp(argv[1], "root-group")) return 15;
+  if (pthread_create(&second, NULL, waiter, (void *)(intptr_t)worker_group)) return 16;
+  while (atomic_load(&entered) != 2) sched_yield();
+  if (!worker_group) syscall(SYS_exit_group, 37);
+  atomic_store(&release_workers, 1);
+  for (;;) sched_yield();
+}
+"#,
+    );
+    let image = std::fs::read(&executable).unwrap();
+    for (mode, expected_code, expected_stdout, mut expected_threads) in [
+        (
+            "survive",
+            0,
+            b"sibling-and-tool-state-preserved\n".as_slice(),
+            vec![3],
+        ),
+        (
+            "fork",
+            0,
+            b"separate-process-tool-state\n".as_slice(),
+            vec![2, 3],
+        ),
+        ("root-group", 37, b"".as_slice(), vec![3]),
+        ("worker-group", 41, b"".as_slice(), vec![3]),
+    ] {
+        let native = std::process::Command::new("timeout")
+            .args(["--signal=TERM", "--kill-after=2s", "15s"])
+            .arg(&executable)
+            .arg(mode)
+            .output()
+            .unwrap();
+        assert_eq!(
+            native.status.code(),
+            Some(expected_code),
+            "native {mode}: {native:?}"
+        );
+        assert_eq!(native.stdout, expected_stdout, "native {mode}");
+        assert!(native.stderr.is_empty(), "native {mode}: {native:?}");
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable.to_str().unwrap(), mode],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (log, code, stdout, stderr) = futures::executor::block_on(
+            backend.run_static_elf_with_tool::<ProcessToolLifecycle>((), true),
+        )
+        .unwrap();
+        assert_eq!(
+            code, expected_code,
+            "{mode}: stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert_eq!(stdout, native.stdout, "{mode}");
+        assert_eq!(stderr, native.stderr, "{mode}");
+        let events = log.events.lock().unwrap();
+        let mut processes = std::collections::BTreeMap::new();
+        let mut exits = std::collections::BTreeMap::<i32, std::collections::BTreeSet<i32>>::new();
+        for &(kind, pid, tid, started, exited) in events.iter() {
+            if kind == 0 {
+                assert!(
+                    !processes.contains_key(&pid),
+                    "late thread callback: {events:?}"
+                );
+                assert!(
+                    exits.entry(pid).or_default().insert(tid),
+                    "duplicate thread callback: {events:?}"
+                );
+            } else {
+                assert_eq!(kind, 1);
+                assert!(
+                    processes.insert(pid, started).is_none(),
+                    "duplicate process callback: {events:?}"
+                );
+                assert_eq!(started, exited, "{events:?}");
+                assert_eq!(exits.get(&pid).unwrap().len() as u64, started, "{events:?}");
+            }
+        }
+        let mut actual_threads: Vec<u64> = processes.values().copied().collect();
+        actual_threads.sort_unstable();
+        expected_threads.sort_unstable();
+        assert_eq!(actual_threads, expected_threads, "{mode}: {events:?}");
+        eprintln!("{mode}: code={code} lifecycle={events:?}");
+    }
+}

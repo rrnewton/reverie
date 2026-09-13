@@ -208,6 +208,8 @@ pub(crate) struct ToolContext<'a, T: Tool> {
     /// The thread identity of the thread issuing the action. Equals `pid` for a
     /// process leader; differs for a CLONE_THREAD worker.
     pub(crate) tid: Pid,
+    /// Process Tool state shared by every CLONE_THREAD worker.
+    pub(crate) process_state: Arc<T>,
     pub(crate) thread_state: &'a T::ThreadState,
     // TODO-HUMAN-REVIEW(PR-235): Review shared GlobalTool ownership across KVM forks.
     pub(crate) global_state: Option<Arc<T::GlobalState>>,
@@ -575,6 +577,7 @@ impl<G: GlobalTool> GlobalRPC<G> for KvmGlobal<'_, G> {
 struct KvmGuest<'a, T: Tool> {
     pid: Pid,
     tid: Pid,
+    process_state: Arc<T>,
     memory: GuestMemory,
     auxv: &'a [(libc::c_ulong, libc::c_ulong)],
     registers: libc::user_regs_struct,
@@ -595,6 +598,7 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
     fn new(
         pid: Pid,
         tid: Pid,
+        process_state: Arc<T>,
         memory: GuestMemory,
         auxv: &'a [(libc::c_ulong, libc::c_ulong)],
         registers: libc::user_regs_struct,
@@ -612,6 +616,7 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
         Self {
             pid,
             tid,
+            process_state,
             memory,
             auxv,
             registers,
@@ -729,6 +734,7 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
             let context = ToolContext {
                 pid: self.pid,
                 tid: self.tid,
+                process_state: self.process_state.clone(),
                 thread_state: self.thread_state,
                 global_state: self.shared_global_state.clone(),
                 config: self.config.clone(),
@@ -1067,7 +1073,7 @@ fn hide_tool_scratch(memory: &GuestMemory, tool_stack_top: u64) -> Result<()> {
 #[allow(clippy::too_many_arguments)]
 async fn run_post_exec_handler<T>(
     backend: &mut KvmBackend,
-    tool: &T,
+    tool: &Arc<T>,
     pid: Pid,
     memory: &GuestMemory,
     auxv: &mut Vec<(libc::c_ulong, libc::c_ulong)>,
@@ -1113,6 +1119,7 @@ where
                 // A process leader (root, fork child, or the post-exec thread
                 // that became the new leader) has tid == pid.
                 pid,
+                tool.clone(),
                 memory.clone(),
                 auxv,
                 registers,
@@ -1186,7 +1193,7 @@ fn initial_exec_request(memory: &GuestMemory, stack_pointer: u64) -> Result<Sysc
 #[allow(clippy::too_many_arguments)]
 async fn run_initial_exec_handler<T>(
     backend: &mut KvmBackend,
-    tool: &T,
+    tool: &Arc<T>,
     pid: Pid,
     memory: &GuestMemory,
     auxv: &[(libc::c_ulong, libc::c_ulong)],
@@ -1228,6 +1235,7 @@ where
             pid,
             // The initial exec runs on the root thread, where tid == pid.
             pid,
+            tool.clone(),
             memory.clone(),
             auxv,
             registers,
@@ -1279,7 +1287,7 @@ struct ToolExit {
     process_exited: bool,
 }
 async fn notify_tool_exit<T: Tool>(
-    tool: T,
+    tool: Arc<T>,
     pid: Pid,
     tid: Pid,
     global_state: &T::GlobalState,
@@ -1306,6 +1314,11 @@ async fn notify_tool_exit<T: Tool>(
         state: global_state,
         config,
     };
+    // Every worker has completed its exit callback and dropped its process
+    // reference before the leader reaches this consuming hook.
+    let tool = Arc::try_unwrap(tool).map_err(|_| {
+        Error::UnexpectedVcpuExit("KVM worker retained process Tool state after exit".to_owned())
+    })?;
     tool.on_exit_process(pid, &process_global, exit.status)
         .await
         .map_err(Error::Reverie)
@@ -1317,7 +1330,7 @@ impl KvmBackend {
     /// first-free choice independent of host-thread destruction timing.
     pub(crate) async fn notify_tool_exit<T: Tool>(
         &mut self,
-        tool: T,
+        tool: Arc<T>,
         identity: (Pid, Pid),
         global_state: &T::GlobalState,
         config: &<T::GlobalState as GlobalTool>::Config,
@@ -1325,6 +1338,11 @@ impl KvmBackend {
         status: ExitStatus,
     ) -> Result<()> {
         let (pid, tid) = identity;
+        if pid == tid {
+            // This also covers a terminal lifecycle-hook error, whose caller
+            // may not already have joined the workers.
+            self.cancel_guest_threads();
+        }
         // No guest execution or Tool callback can use this backend's transport
         // or scratch page after a terminal exit has been observed. Release it
         // before on_exit_thread can wake and admit another guest thread.
@@ -1362,7 +1380,7 @@ impl KvmBackend {
         let tool_stack_top = self.tool_stack_top();
         let pid = Pid::from_raw(self.root_pid);
         let global_state = T::GlobalState::init_global_state(&config).await;
-        let tool = T::new(pid, &config);
+        let tool = Arc::new(T::new(pid, &config));
         let subscriptions = T::subscriptions(&config);
         let mut thread_state = tool.init_thread_state(pid, None);
         let memory = self.memory.clone();
@@ -1381,6 +1399,7 @@ impl KvmBackend {
                 pid,
                 // run_with_tool drives a single root thread (tid == pid).
                 pid,
+                tool.clone(),
                 memory.clone(),
                 &auxv,
                 registers,
@@ -1441,6 +1460,7 @@ impl KvmBackend {
                                     pid,
                                     // run_with_tool drives a single root thread.
                                     pid,
+                                    tool.clone(),
                                     memory.clone(),
                                     &auxv,
                                     kvm_registers(registers, request.number()),
@@ -1549,7 +1569,7 @@ impl KvmBackend {
         // is why the KVM backend no longer needs the caller to opt threads in.
         self.resolve_thread_ownership(T::thread_ownership(&config));
         let global_state = Arc::new(T::GlobalState::init_global_state(&config).await);
-        let tool = T::new(pid, &config);
+        let tool = Arc::new(T::new(pid, &config));
         let subscriptions = T::subscriptions(&config);
         let thread_state = tool.init_thread_state(pid, None);
         let mut executor = ElfExecutor::new(loaded, capture_output);
@@ -1580,7 +1600,7 @@ impl KvmBackend {
         executor: &mut ElfExecutor,
         pid: Pid,
         tid: Pid,
-        tool: &T,
+        tool: &Arc<T>,
         memory: &GuestMemory,
         auxv: &[(libc::c_ulong, libc::c_ulong)],
         registers: kvm_regs,
@@ -1641,7 +1661,7 @@ impl KvmBackend {
         executor: &mut ElfExecutor,
         pid: Pid,
         tid: Pid,
-        tool: &T,
+        tool: &Arc<T>,
         memory: &GuestMemory,
         auxv: &[(libc::c_ulong, libc::c_ulong)],
         registers: kvm_regs,
@@ -1698,6 +1718,7 @@ impl KvmBackend {
             let mut guest = KvmGuest::<T>::new(
                 pid,
                 tid,
+                tool.clone(),
                 memory.clone(),
                 auxv,
                 fault.map_or_else(
@@ -1786,7 +1807,7 @@ impl KvmBackend {
         executor: &mut ElfExecutor,
         pid: Pid,
         tid: Pid,
-        tool: T,
+        tool: Arc<T>,
         mut thread_state: T::ThreadState,
         global_state: Arc<T::GlobalState>,
         config: &<T::GlobalState as GlobalTool>::Config,
@@ -1824,6 +1845,7 @@ impl KvmBackend {
             let mut guest = KvmGuest::<T>::new(
                 pid,
                 tid,
+                tool.clone(),
                 memory.clone(),
                 &auxv,
                 registers,
@@ -2240,6 +2262,7 @@ impl KvmBackend {
                             let mut guest = KvmGuest::<T>::new(
                                 pid,
                                 tid,
+                                tool.clone(),
                                 memory.clone(),
                                 &auxv,
                                 kvm_registers(registers, request.number()),
@@ -2350,6 +2373,7 @@ impl KvmBackend {
                 let context: ToolContext<'_, T> = ToolContext {
                     pid,
                     tid,
+                    process_state: tool.clone(),
                     thread_state: &thread_state,
                     global_state: Some(global_state.clone()),
                     config: config.clone(),
@@ -2957,6 +2981,7 @@ mod tests {
                 let mut guest = KvmGuest::<crate::StraceTool>::new(
                     Pid::from_raw(1),
                     Pid::from_raw(1),
+                    Arc::new(crate::StraceTool),
                     memory,
                     &auxv,
                     // SAFETY: the test does not inspect any register field.
@@ -3018,6 +3043,7 @@ mod tests {
             let mut guest = KvmGuest::<crate::StraceTool>::new(
                 Pid::from_raw(1),
                 Pid::from_raw(1),
+                Arc::new(crate::StraceTool),
                 memory,
                 &auxv,
                 // SAFETY: the test does not inspect any register field.
@@ -3061,6 +3087,7 @@ mod tests {
         let mut guest = KvmGuest::<crate::StraceTool>::new(
             Pid::from_raw(1),
             Pid::from_raw(1),
+            Arc::new(crate::StraceTool),
             memory,
             &auxv,
             // SAFETY: the test does not inspect any register field.
@@ -3185,6 +3212,7 @@ mod tests {
             let mut guest = KvmGuest::<crate::StraceTool>::new(
                 Pid::from_raw(1),
                 Pid::from_raw(1),
+                Arc::new(crate::StraceTool),
                 memory,
                 &auxv,
                 // SAFETY: the test does not inspect any register field.

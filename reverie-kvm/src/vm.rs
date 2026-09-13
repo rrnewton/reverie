@@ -1763,7 +1763,7 @@ impl KvmBackend {
                 )?;
 
                 let child_pid = Pid::from_raw(child.pid);
-                let child_tool = T::new(child_pid, &context.config);
+                let child_tool = Arc::new(T::new(child_pid, &context.config));
                 let child_thread_state = child_tool
                     .init_thread_state(child_pid, Some((context.tid, context.thread_state)));
                 let global_state = context.global_state.ok_or_else(|| {
@@ -1974,14 +1974,14 @@ impl KvmBackend {
                 }
 
                 // CLONE_THREAD shares the process (thread-group) identity, so the
-                // worker's Tool carries the creator's pid (tgid) as its detpid,
-                // while the thread state is keyed on the new child tid. This
+                // worker shares its creator's process Tool state, while the
+                // thread state is keyed on the new child tid. This
                 // mirrors reverie-ptrace's `cloned()`, where the child shares the
                 // process Tool identity and receives fresh per-thread state
                 // linked to the parent thread.
                 let tgid = context.pid;
                 let child_tid_pid = Pid::from_raw(child_tid);
-                let child_tool = T::new(tgid, &context.config);
+                let child_tool = context.process_state.clone();
                 let child_thread_state = child_tool
                     .init_thread_state(child_tid_pid, Some((context.tid, context.thread_state)));
                 let global_state = context.global_state.ok_or_else(|| {
@@ -4248,6 +4248,7 @@ mod tests {
                     }
                     let starts = Arc::new(Mutex::new(Vec::new()));
                     let context = ToolContext::<crate::StraceTool> {
+                        process_state: Arc::new(crate::StraceTool),
                         pid: Pid::from_raw(1),
                         tid: Pid::from_raw(1),
                         thread_state: &(),
@@ -4439,7 +4440,7 @@ mod tests {
                 &mut child.executor,
                 Pid::from_raw(2),
                 Pid::from_raw(2),
-                FatalProcessMemoryTool,
+                Arc::new(FatalProcessMemoryTool),
                 (),
                 log.clone(),
                 &(),
@@ -4569,6 +4570,7 @@ mod tests {
                 };
                 let starts = Arc::new(Mutex::new(Vec::new()));
                 let context = ToolContext::<crate::StraceTool> {
+                    process_state: Arc::new(crate::StraceTool),
                     pid: Pid::from_raw(1),
                     tid: Pid::from_raw(1),
                     thread_state: &(),
@@ -4676,7 +4678,7 @@ mod tests {
                 &mut child.executor,
                 Pid::from_raw(2),
                 Pid::from_raw(2),
-                FatalProcessMemoryTool,
+                Arc::new(FatalProcessMemoryTool),
                 (),
                 log.clone(),
                 &(),
@@ -4953,6 +4955,7 @@ mod tests {
         let starts = Arc::new(Mutex::new(Vec::new()));
         parent.thread_ownership = ThreadOwnership::Tool;
         let context = ToolContext::<FatalWorkerMemoryTool> {
+            process_state: Arc::new(FatalWorkerMemoryTool { fail_callback }),
             pid: Pid::from_raw(1),
             tid: Pid::from_raw(1),
             thread_state: &(),
@@ -5399,7 +5402,7 @@ mod tests {
                     &mut executor,
                     Pid::from_raw(1),
                     Pid::from_raw(2),
-                    CancellationLifecycleTool,
+                    Arc::new(CancellationLifecycleTool),
                     (),
                     global_state,
                     &config,
@@ -5455,6 +5458,7 @@ mod tests {
         let thread_state = ();
         let global_state = Arc::new(crate::StraceLog::default());
         let context = ToolContext::<crate::StraceTool> {
+            process_state: Arc::new(crate::StraceTool),
             pid: Pid::from_raw(1),
             tid: Pid::from_raw(1),
             thread_state: &thread_state,
@@ -5757,7 +5761,7 @@ mod tests {
         };
 
         futures::executor::block_on(backend.notify_tool_exit(
-            SlotReleaseTool,
+            Arc::new(SlotReleaseTool),
             (Pid::from_raw(3), Pid::from_raw(10_000)),
             &log,
             &(),
