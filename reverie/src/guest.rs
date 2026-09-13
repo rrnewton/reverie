@@ -203,6 +203,24 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// ```
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never;
 
+    /// Terminates the current guest thread with status zero after the Tool has
+    /// determined that this thread must never resume guest execution.
+    ///
+    /// This abandons the current callback and runs the backend's consuming
+    /// thread-exit cleanup exactly once. It accepts no syscall and does not
+    /// authorize other nonreturning injections from restricted callbacks.
+    /// It does not request termination of other live threads. Backends whose
+    /// ordinary exit injection already provides this contract use that path.
+    /// An already-established backend exit retains its status.
+    ///
+    /// Backend process-lifetime limits still apply. In particular, KVM currently
+    /// treats leader exit as process completion; cancelling a leader while live
+    /// siblings must survive is unsupported. Nonleader cancellation leaves live
+    /// siblings running.
+    async fn cancel_current_thread(&mut self) -> Never {
+        self.tail_inject(reverie_syscalls::Exit::default()).await
+    }
+
     /// Defers one already-selected signal for delivery by the backend at its
     /// next safe return-to-userspace boundary.
     ///
@@ -449,6 +467,10 @@ where
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
         #![allow(unreachable_code)]
         self.inner.tail_inject(syscall).await
+    }
+
+    async fn cancel_current_thread(&mut self) -> Never {
+        self.inner.cancel_current_thread().await
     }
 
     async fn defer_signal_delivery(&mut self, event: SignalEvent) -> Result<(), Error> {
