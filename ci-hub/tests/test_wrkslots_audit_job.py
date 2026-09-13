@@ -226,6 +226,55 @@ class WrkslotsAuditJobTests(unittest.TestCase):
         self.assertEqual("cpu_budget", receipt["cost"]["termination"])
         self.assertEqual(3.6, receipt["observer_cost"]["actual"]["cpu_seconds"])
 
+    @staticmethod
+    def completed_box_cost() -> dict[str, object]:
+        return {
+            "schema": "hermit-box-run-actual/v1",
+            "label": "wrkslots-audit",
+            "scope": "hermit-box-run-123-456.scope",
+            "cpu_source": "systemd CPUUsageNSec after scope exit",
+            "cpu_usage_nsec": 22_870_001,
+            "cgroup_usage_usec": 22_871,
+            "cpu_seconds": 0.022871,
+            "cpu_budget_seconds": 240,
+            "wall_backstop_seconds": 1800,
+            "reaped": False,
+            "termination": "completed",
+            "exit_code": 0,
+        }
+
+    def test_completed_counter_is_preserved_through_audit_producer(self) -> None:
+        measured = self.completed_box_cost()
+        completed = self.run_job(BOX_ACTUAL=json.dumps(measured))
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        receipt = json.loads(self.result.read_text())
+        self.assertEqual("OK", receipt["verdict"])
+        for field in ("cpu_source", "cpu_usage_nsec", "cgroup_usage_usec", "cpu_seconds"):
+            self.assertEqual(measured[field], receipt["cost"][field])
+
+    def test_invalid_completed_counter_cannot_publish_a_success(self) -> None:
+        measured = self.completed_box_cost()
+        cases = [
+            ({key: value for key, value in measured.items() if key != "cpu_usage_nsec"}, "unexpected fields"),
+            (measured | {"unrecognized": 0}, "unexpected fields"),
+            (measured | {"cpu_source": "cgroup-v2 cpu.stat usage_usec"}, "unexpected fields"),
+            (measured | {"cpu_source": "unrecognized counter"}, "unknown CPU source"),
+            (measured | {"cpu_usage_nsec": 22_870_000}, "contradicts completed CPUUsageNSec"),
+            (measured | {"cpu_usage_nsec": 2**64 - 1}, "unavailable or out of range"),
+        ]
+        cases.extend(
+            (measured | {"cpu_usage_nsec": value}, "not an integer")
+            for value in (True, "22870001", 22_870_001.0)
+        )
+        for cost, fragment in cases:
+            with self.subTest(cost=cost):
+                completed = self.run_job(BOX_ACTUAL=json.dumps(cost))
+                self.assertEqual(1, completed.returncode, completed.stderr)
+                receipt = json.loads(self.result.read_text())
+                self.assertEqual("NO_RESULT", receipt["verdict"])
+                self.assertIn(fragment, receipt["summary"])
+                self.assertIsNone(receipt["cost"])
+
     def test_missing_cost_cannot_publish_a_success(self) -> None:
         previous = self.run_job()
         self.assertEqual(0, previous.returncode, previous.stderr)

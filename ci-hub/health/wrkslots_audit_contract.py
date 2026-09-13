@@ -14,6 +14,8 @@ TOOL_NAME = "ci-hub/wrkslots-audit"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SCOPE = re.compile(r"^hermit-box-run-[0-9]+-[0-9]+[.]scope$")
+COMPLETED_CPU_SOURCE = "systemd CPUUsageNSec after scope exit"
+HISTORICAL_CPU_SOURCE = "cgroup-v2 cpu.stat usage_usec"
 
 
 class ContractError(ValueError):
@@ -170,7 +172,19 @@ def validate_audit_cost(
     )
     if not math.isclose(wall, observer_wall, rel_tol=0, abs_tol=1e-9):
         raise ContractError("audit cost wall contradicts outer observer")
-    if record.get("cpu_source") != "cgroup-v2 cpu.stat usage_usec":
+    if record.get("cpu_source") == COMPLETED_CPU_SOURCE:
+        usage_nsec = _integer(record.get("cpu_usage_nsec"), "cost.cpu_usage_nsec")
+        # UINT64_MAX is systemd's unavailable-counter sentinel, not a measured
+        # value. Preserve the exact completed counter and round only its unit
+        # conversion, so sub-microsecond usage is never rounded down.
+        if usage_nsec >= 2**64 - 1:
+            raise ContractError("audit cost CPUUsageNSec is unavailable or out of range")
+        if usage_usec != (usage_nsec + 999) // 1000:
+            raise ContractError("audit cost usage_usec contradicts completed CPUUsageNSec")
+    elif record.get("cpu_source") == HISTORICAL_CPU_SOURCE:
+        if "cpu_usage_nsec" in record:
+            raise ContractError("historical audit CPU source carries completed CPUUsageNSec")
+    else:
         raise ContractError("audit cost has unknown CPU source")
     if record.get("wall_source") != "outer monotonic observer":
         raise ContractError("audit cost has unknown wall source")

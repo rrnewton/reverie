@@ -29,7 +29,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "health"))
 from wrkslots_audit_contract import (  # noqa: E402
+    COMPLETED_CPU_SOURCE,
     ContractError,
+    HISTORICAL_CPU_SOURCE,
     RECEIPT_SCHEMA,
     SCOPE,
     validate_audit_payload,
@@ -189,7 +191,13 @@ def _read_audit_cost(
     boxed = _read_json(path)
     if boxed is None:
         raise ContractError("boxed cost record is absent or unreadable")
-    if set(boxed) != BOX_ACTUAL_FIELDS:
+    cpu_source = boxed.get("cpu_source")
+    if cpu_source not in (HISTORICAL_CPU_SOURCE, COMPLETED_CPU_SOURCE):
+        raise ContractError("boxed cost has unknown CPU source")
+    expected_fields = BOX_ACTUAL_FIELDS
+    if cpu_source == COMPLETED_CPU_SOURCE:
+        expected_fields = expected_fields | {"cpu_usage_nsec"}
+    if set(boxed) != expected_fields:
         raise ContractError("boxed cost record has unexpected fields")
     if boxed["schema"] != "hermit-box-run-actual/v1":
         raise ContractError("boxed cost schema is not hermit-box-run-actual/v1")
@@ -198,8 +206,6 @@ def _read_audit_cost(
     scope = boxed["scope"]
     if not isinstance(scope, str) or not SCOPE.fullmatch(scope):
         raise ContractError("boxed cost scope is invalid")
-    if boxed["cpu_source"] != "cgroup-v2 cpu.stat usage_usec":
-        raise ContractError("boxed cost has unknown CPU source")
     boxed_cpu_budget = _typed_integer(
         boxed["cpu_budget_seconds"], "CPU budget", positive=True
     )
@@ -227,7 +233,7 @@ def _read_audit_cost(
         "wall_seconds": observer_cost["actual"]["wall_seconds"],
         "cpu_seconds": usage_usec / 1_000_000,
         "wall_source": "outer monotonic observer",
-        "cpu_source": "cgroup-v2 cpu.stat usage_usec",
+        "cpu_source": cpu_source,
         "cpu_budget_seconds": boxed_cpu_budget,
         "wall_backstop_seconds": boxed_wall_backstop,
         "cgroup_usage_usec": usage_usec,
@@ -236,6 +242,8 @@ def _read_audit_cost(
         "termination": boxed["termination"],
         "exit_code": boxed_exit,
     }
+    if cpu_source == COMPLETED_CPU_SOURCE:
+        record["cpu_usage_nsec"] = boxed["cpu_usage_nsec"]
     return validate_audit_cost(
         record,
         observer_cost=observer_cost,

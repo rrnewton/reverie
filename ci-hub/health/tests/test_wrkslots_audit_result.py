@@ -263,6 +263,55 @@ class WrkslotsAuditResultTests(unittest.TestCase):
         self.assertEqual("NO_RESULT", state)
         self.assertEqual("CPU budget exhausted", summary)
 
+    def test_completed_systemd_cpu_cost_preserves_exact_counter(self) -> None:
+        for usage_nsec in (0, 1, 999, 1000, 1001, 22_870_000):
+            with self.subTest(usage_nsec=usage_nsec):
+                cost = audit_cost(usage_usec=(usage_nsec + 999) // 1000) | {
+                    "cpu_source": "systemd CPUUsageNSec after scope exit",
+                    "cpu_usage_nsec": usage_nsec,
+                }
+                self.write(cost=cost)
+                state, summary, _fields = self.evaluate()
+                self.assertEqual("ok", state, summary)
+
+    def test_historical_source_cannot_carry_completed_counter(self) -> None:
+        for usage_nsec in (22_870_000, 0, 2**64 - 1, None):
+            with self.subTest(usage_nsec=usage_nsec):
+                self.write(cost=audit_cost(usage_usec=22_870) | {"cpu_usage_nsec": usage_nsec})
+                state, summary, _fields = self.evaluate()
+                self.assertEqual("NO_RESULT", state)
+                self.assertIn("historical audit CPU source carries completed CPUUsageNSec", summary)
+
+    def test_invalid_completed_cpu_cost_is_no_result(self) -> None:
+        measured = audit_cost(usage_usec=22_870) | {
+            "cpu_source": "systemd CPUUsageNSec after scope exit",
+            "cpu_usage_nsec": 22_870_000,
+        }
+        cases = [
+            ({key: value for key, value in measured.items() if key != "cpu_usage_nsec"}, "not an integer"),
+            (measured | {"cpu_source": "unrecognized counter"}, "unknown CPU source"),
+            (measured | {"cpu_usage_nsec": 22_870_001}, "contradicts completed CPUUsageNSec"),
+            (measured | {"cpu_seconds": 1.0}, "CPU contradicts cgroup usage_usec"),
+        ]
+        cases.extend(
+            (measured | {"cpu_usage_nsec": value}, "not an integer")
+            for value in (True, False, "22870000", 22_870_000.0)
+        )
+        cases.extend(
+            (measured | {"cpu_usage_nsec": value}, fragment)
+            for value, fragment in (
+                (-1, "not non-negative"),
+                (2**64 - 1, "unavailable or out of range"),
+                (2**64, "unavailable or out of range"),
+            )
+        )
+        for cost, fragment in cases:
+            with self.subTest(cost=cost):
+                self.write(cost=cost)
+                state, summary, _fields = self.evaluate()
+                self.assertEqual("NO_RESULT", state)
+                self.assertIn(fragment, summary)
+
 
 if __name__ == "__main__":
     unittest.main()
