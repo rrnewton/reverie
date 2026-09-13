@@ -129,3 +129,31 @@ fn a_precompiled_entry_cannot_bypass_thread_admission() {
         "the pre-admission write check was not exercised: {output:?}"
     );
 }
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run explicitly with --ignored"]
+fn a_stalled_clone_fails_with_an_admission_diagnostic() {
+    let output = run_fixture("reused_tid_start", "-test-stalled-thread-start");
+    assert_eq!(output.status.code(), Some(96), "guest result: {output:?}");
+    assert!(output.stdout.is_empty(), "unadmitted guest ran: {output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("STALLED_THREAD_START_TEST exercised=1"),
+        "the stalled clone was not exercised: {output:?}"
+    );
+    let diagnostic = stderr
+        .lines()
+        .find(|line| line.starts_with("reverie-dbt: thread admission timed out:"))
+        .unwrap_or_else(|| panic!("missing admission diagnostic: {output:?}"));
+    assert!(diagnostic.contains("virtual_pid=3 "), "{diagnostic}");
+    assert!(diagnostic.contains("pending_clones=1 "), "{diagnostic}");
+    assert!(diagnostic.contains("pending_start=2 "), "{diagnostic}");
+    assert!(diagnostic.ends_with("timeout_ms=100"), "{diagnostic}");
+    let host_tid = diagnostic
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("host_tid="))
+        .expect("diagnostic host TID")
+        .parse::<u32>()
+        .expect("positive numeric host TID");
+    assert!(host_tid > 0, "{diagnostic}");
+}
