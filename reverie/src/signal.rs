@@ -15,6 +15,65 @@ use crate::error::Errno;
 /// Size of Linux's userspace `siginfo_t` representation on supported targets.
 pub const SIGNAL_INFO_SIZE: usize = 128;
 
+/// Receiver state after accepting one process-directed child-exit event.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChildExitSignalDisposition {
+    /// Explicit `SIG_IGN` suppressed generation; no event was inserted.
+    Ignored,
+    /// The event is pending and currently blocked by the receiver's mask.
+    PendingBlocked,
+    /// The event is eligible at the receiver's signal-delivery boundary.
+    ///
+    /// The Tool hook and current disposition still determine whether a guest
+    /// handler runs. This is not a promise of handler execution or `EINTR`.
+    PendingEligible,
+}
+
+/// Why a child-exit event was refused before changing backend state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChildExitSignalErrorKind {
+    /// This backend, execution context, or producer class is unsupported.
+    Unsupported,
+    /// Metadata or the current receiver identity is invalid.
+    Invalid,
+    /// An internal backend operation failed before publication.
+    Backend,
+}
+
+/// Complete result of a backend's child-exit pending-state operation.
+///
+/// A caller must distinguish refusal before publication from failure after
+/// publication. Retrying a post-publication failure may lose the first siginfo
+/// or report a delivery that never reached the receiver. Neither failure is an
+/// ordinary guest syscall result. These generations identify the signal's
+/// disposition generation, not a scheduler operation or delivery identifier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChildExitSignalOutcome {
+    /// The bounded receiver operation completed successfully.
+    Accepted {
+        /// Whether generation was suppressed, blocked, or eligible.
+        disposition: ChildExitSignalDisposition,
+        /// The signal's disposition/pending generation at this operation.
+        pending_generation: u64,
+        /// An already pending standard signal retained its original siginfo.
+        coalesced: bool,
+    },
+    /// Neither pending state nor signalfd readiness changed.
+    RejectedBeforeCommit {
+        /// Machine-readable failure class, independent of diagnostic text.
+        kind: ChildExitSignalErrorKind,
+        /// The original errno.
+        errno: Errno,
+    },
+    /// Insertion or coalescing committed before a readiness update failed.
+    FailedAfterCommit {
+        /// The original readiness-update errno.
+        errno: Errno,
+        /// The generation under which insertion or coalescing committed.
+        pending_generation: u64,
+    },
+}
+
 /// Identifies both the selected guest task and whether a signal was originally
 /// process-directed or thread-directed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
