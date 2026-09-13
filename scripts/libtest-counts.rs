@@ -345,7 +345,7 @@ fn read_counts(path: &Path) -> Result<TestCounts, String> {
             path.display()
         ));
     }
-    let counts: TestCounts = serde_json::from_value(value).map_err(|error| {
+    let counts: TestCounts = serde_json::from_slice(&bytes).map_err(|error| {
         format!(
             "malformed schema-{SCHEMA_VERSION} counts in {}: {error}; rerun the counted test command to regenerate this evidence",
             path.display()
@@ -788,6 +788,83 @@ fn self_test() -> Result<(), String> {
             "successive execution-channel writers produced {channel_counts:?}"
         ));
     }
+
+    let counts_path = env::temp_dir().join(format!(
+        "reverie-libtest-counts-reader-self-test.{}.json",
+        std::process::id()
+    ));
+    let reader_result = (|| {
+        let valid = TestCounts {
+            schema_version: SCHEMA_VERSION,
+            executed_tests: 2,
+            passed_tests: 1,
+            filtered_tests: 3,
+        };
+        write_counts(&counts_path, valid)?;
+        if read_counts(&counts_path)? != valid {
+            return Err("well-formed current counts did not round trip".to_string());
+        }
+        let cases = [
+            (
+                "executed_tests",
+                r#"{"schema_version":2,"executed_tests":2,"passed_tests":1,"filtered_tests":0,"executed_tests":1}"#,
+            ),
+            (
+                "executed_tests",
+                r#"{"schema_version":2,"executed_tests":2,"passed_tests":1,"filtered_tests":0,"executed_tests":2}"#,
+            ),
+            (
+                "passed_tests",
+                r#"{"schema_version":2,"executed_tests":1,"passed_tests":0,"filtered_tests":0,"passed_tests":1}"#,
+            ),
+            (
+                "passed_tests",
+                r#"{"schema_version":2,"executed_tests":1,"passed_tests":1,"filtered_tests":0,"passed_tests":1}"#,
+            ),
+            (
+                "filtered_tests",
+                r#"{"schema_version":2,"executed_tests":1,"passed_tests":1,"filtered_tests":3,"filtered_tests":0}"#,
+            ),
+            (
+                "filtered_tests",
+                r#"{"schema_version":2,"executed_tests":1,"passed_tests":1,"filtered_tests":0,"filtered_tests":0}"#,
+            ),
+            (
+                "schema_version",
+                r#"{"schema_version":1,"executed_tests":1,"passed_tests":1,"filtered_tests":0,"schema_version":2}"#,
+            ),
+            (
+                "schema_version",
+                r#"{"schema_version":2,"executed_tests":1,"passed_tests":1,"filtered_tests":0,"schema_version":2}"#,
+            ),
+        ];
+        for (field, bytes) in cases {
+            fs::write(&counts_path, bytes)
+                .map_err(|error| format!("cannot write reader fixture: {error}"))?;
+            match read_counts(&counts_path) {
+                Err(error) if error.contains(&format!("duplicate field `{field}`")) => {}
+                other => {
+                    return Err(format!(
+                        "duplicate {field} counts were not refused as duplicate evidence: {other:?}"
+                    ));
+                }
+            }
+        }
+        fs::write(
+            &counts_path,
+            r#"{"schema_version":1,"executed_tests":2,"filtered_tests":3}"#,
+        )
+        .map_err(|error| format!("cannot write legacy reader fixture: {error}"))?;
+        match read_counts(&counts_path) {
+            Err(error) if error.contains("schema 1 has no authoritative passed_tests") => Ok(()),
+            other => Err(format!(
+                "legacy counts lost their refusal diagnostic: {other:?}"
+            )),
+        }
+    })();
+    let reader_cleanup = fs::remove_file(&counts_path);
+    reader_result?;
+    reader_cleanup.map_err(|error| format!("cannot remove reader fixture: {error}"))?;
     println!(
         "PASS: libtest execution and discovery counts are isolated, typed, and mutation-sensitive"
     );
