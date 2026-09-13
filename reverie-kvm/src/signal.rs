@@ -14,6 +14,9 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
+use std::sync::Weak;
 
 use kvm_bindings::kvm_regs;
 use kvm_bindings::kvm_xsave;
@@ -430,6 +433,10 @@ pub(crate) struct ThreadSignalState {
     pub(crate) blocked: KernelSigset,
     pub(crate) altstack: Option<GuestStack>,
     pub(crate) pending: StandardPendingSignals,
+    /// A Tool observes eligible ignored signals before the final disposition,
+    /// just as a ptrace signal-delivery stop does. Plain execution discards an
+    /// unblocked ignored signal when it is generated.
+    pub(crate) observe_ignored: bool,
 }
 
 impl ThreadSignalState {
@@ -438,6 +445,7 @@ impl ThreadSignalState {
             blocked: self.blocked,
             altstack: self.altstack,
             pending: StandardPendingSignals::default(),
+            observe_ignored: self.observe_ignored,
         }
     }
 
@@ -446,6 +454,7 @@ impl ThreadSignalState {
             blocked: self.blocked,
             altstack: None,
             pending: StandardPendingSignals::default(),
+            observe_ignored: self.observe_ignored,
         }
     }
 
@@ -454,7 +463,43 @@ impl ThreadSignalState {
             blocked: self.blocked,
             altstack: None,
             pending: self.pending.clone(),
+            observe_ignored: self.observe_ignored,
         }
+    }
+}
+
+/// One authoritative mask and pending queue for a guest thread. A lifecycle
+/// registration may lend this same state to a sender; it never copies events
+/// through a second queue. When both are needed, the process signal lock must
+/// be acquired before this lock, and no guard may cross a Tool callback.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SharedThreadSignalState(Arc<Mutex<ThreadSignalState>>);
+
+impl SharedThreadSignalState {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, ThreadSignalState> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub(crate) fn downgrade(&self) -> Weak<Mutex<ThreadSignalState>> {
+        Arc::downgrade(&self.0)
+    }
+
+    pub(crate) fn upgrade(target: &Weak<Mutex<ThreadSignalState>>) -> Option<Self> {
+        target.upgrade().map(Self)
+    }
+
+    pub(crate) fn for_fork(&self) -> Self {
+        Self(Arc::new(Mutex::new(self.lock().for_fork())))
+    }
+
+    pub(crate) fn for_clone_thread(&self) -> Self {
+        Self(Arc::new(Mutex::new(self.lock().for_clone_thread())))
+    }
+
+    pub(crate) fn after_exec(&self) -> Self {
+        Self(Arc::new(Mutex::new(self.lock().after_exec())))
     }
 }
 

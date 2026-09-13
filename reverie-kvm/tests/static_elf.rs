@@ -7373,17 +7373,13 @@ int main(void) {
 /// signal test ran with `pid == tid`, so validating a thread-directed target
 /// against `state.pid` looked correct. Under a real worker it is wrong in both
 /// directions at once: the worker's own `tkill(gettid(), 0)` was refused with
-/// ESRCH, while a LEADER-targeted request was accepted and then evaluated
-/// against the worker's signal state.
+/// ESRCH, while a leader-targeted request was evaluated against the worker's
+/// state. Signal-zero probes must now succeed for both live identities without
+/// mutating either task; nonzero receiver delivery is checked separately.
 #[test]
-fn real_pthread_worker_signals_itself_by_tid_and_is_refused_for_the_leader() {
-    match Kvm::new() {
-        Ok(_) => {}
-        Err(error) if kvm_is_unavailable(&error) => {
-            eprintln!("skipping KVM worker-signal test: cannot open /dev/kvm: {error}");
-            return;
-        }
-        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+fn real_pthread_worker_signal_probes_use_exact_identity() {
+    if !leader_self_exec_bounded("real_pthread_worker_signal_probes_use_exact_identity") {
+        return;
     }
 
     let directory = TestDirectory::new();
@@ -7394,6 +7390,8 @@ fn real_pthread_worker_signals_itself_by_tid_and_is_refused_for_the_leader() {
 #define _GNU_SOURCE
 #include <errno.h>
 #include <pthread.h>
+#include <signal.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -7411,7 +7409,11 @@ static void *worker(void *unused) {
     atomic_store(&result, 20);
     return NULL;
   }
-  // A worker signalling ITSELF by tid must succeed.
+  sigset_t selected, old_mask, before, after, pending;
+  sigemptyset(&selected); sigaddset(&selected, SIGUSR1);
+  if (pthread_sigmask(SIG_BLOCK, &selected, &old_mask) ||
+      pthread_sigmask(SIG_SETMASK, NULL, &before)) return (void *)25;
+  // A worker probing ITSELF by tid must succeed.
   if (syscall(SYS_tkill, tid, 0) != 0) {
     atomic_store(&result, 21);
     return NULL;
@@ -7421,9 +7423,9 @@ static void *worker(void *unused) {
     atomic_store(&result, 22);
     return NULL;
   }
-  // ⚠️ THE REFUSAL. Naming the LEADER from the worker must fail visibly rather
-  // than being applied to this thread. Any success here is the rejected bug.
-  if (syscall(SYS_tgkill, pid, pid, 0) == 0) {
+  // A live leader is a valid signal-zero target. This must neither enqueue an
+  // event in this worker nor change its independent blocked mask.
+  if (syscall(SYS_tgkill, pid, pid, 0) != 0) {
     atomic_store(&result, 23);
     return NULL;
   }
@@ -7431,6 +7433,26 @@ static void *worker(void *unused) {
   if (syscall(SYS_tkill, 0, 0) == 0 || errno != EINVAL) {
     atomic_store(&result, 24);
     return NULL;
+  }
+  errno = 0;
+  if (syscall(SYS_tgkill, tid, pid, 0) != -1 || errno != ESRCH) {
+    atomic_store(&result, 26); return NULL;
+  }
+  errno = 0;
+  if (syscall(SYS_tkill, INT_MAX, 0) != -1 || errno != ESRCH) {
+    atomic_store(&result, 27); return NULL;
+  }
+  if (pthread_sigmask(SIG_SETMASK, NULL, &after) || sigpending(&pending)) {
+    atomic_store(&result, 28); return NULL;
+  }
+  for (int signal = 1; signal < NSIG; ++signal) {
+    if (sigismember(&before, signal) != sigismember(&after, signal) ||
+        sigismember(&pending, signal) != 0) {
+      atomic_store(&result, 29); return NULL;
+    }
+  }
+  if (pthread_sigmask(SIG_SETMASK, &old_mask, NULL)) {
+    atomic_store(&result, 30); return NULL;
   }
   atomic_store(&result, 1);
   return NULL;
@@ -7442,9 +7464,14 @@ int main(void) {
   if (pthread_create(&thread, NULL, worker, NULL) != 0) {
     return 10;
   }
-  if (pthread_join(thread, NULL) != 0) {
+  void *worker_result = NULL;
+  if (pthread_join(thread, &worker_result) != 0 || worker_result) {
     return 11;
   }
+  sigset_t pending;
+  if (sigpending(&pending)) return 12;
+  for (int signal = 1; signal < NSIG; ++signal)
+    if (sigismember(&pending, signal) != 0) return 13;
   int observed = atomic_load(&result);
   return observed == 1 ? 0 : observed;
 }
@@ -7452,25 +7479,42 @@ int main(void) {
     );
     let executable = executable.to_str().unwrap();
     let image = std::fs::read(executable).unwrap();
-    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
-    backend
-        .install_static_elf_with_context(
-            &image,
-            &[executable],
-            &["PATH=/usr/bin:/bin"],
-            &directory.0,
-        )
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "5s", executable])
+        .output()
         .unwrap();
-    let (_trace, code, _stdout, _stderr) =
-        futures::executor::block_on(backend.run_static_elf_with_tool::<StraceTool>((), true))
+    assert!(native.status.success(), "native probe: {native:?}");
+    assert!(native.stdout.is_empty());
+    assert!(native.stderr.is_empty());
+    for tool_owned in [false, true] {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
             .unwrap();
-    assert_eq!(
-        code, 0,
-        "worker signal-identity guest failed with code {code}; \
-         20=pid==tid so the case is vacuous, 21=tkill(gettid()) refused, \
-         22=tgkill(getpid(),gettid()) refused, 23=leader-targeted call WRONGLY \
-         SUCCEEDED, 24=tkill(0) not EINVAL"
-    );
+        let (code, stdout, stderr) = if tool_owned {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(
+            code, 0,
+            "worker identity probe failed: code={code} tool_owned={tool_owned}; \
+             20=pid==tid, 21=self tkill refused, 22=self tgkill refused, \
+             23=live leader probe refused, 24=tkill(0) not EINVAL, \
+             26=wrong TGID accepted, 27=missing TID accepted, 28..30=mask/pending changed"
+        );
+        assert_eq!(stdout, native.stdout);
+        assert_eq!(stderr, native.stderr);
+    }
 }
 
 #[test]
@@ -12089,5 +12133,468 @@ int main(int argc, char **argv) {
         expected_threads.sort_unstable();
         assert_eq!(actual_threads, expected_threads, "{mode}: {events:?}");
         eprintln!("{mode}: code={code} lifecycle={events:?}");
+    }
+}
+
+const SIBLING_SIGNAL_PROGRAM: &str = r#"#define _GNU_SOURCE
+#include <errno.h>
+#include <pthread.h>
+#include <sched.h>
+#include <signal.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+static atomic_int target_tid, phase, handled, handler_tid;
+static int mode;
+static pthread_t target_pthread;
+static sigset_t selected;
+static void handler(int number, siginfo_t *info, void *context) {
+  (void)context;
+  if (number != SIGUSR1 || info->si_signo != SIGUSR1 ||
+      info->si_code != SI_TKILL || info->si_pid != getpid() ||
+      info->si_uid != getuid()) _exit(81);
+  atomic_store(&handler_tid, (int)syscall(SYS_gettid));
+  atomic_fetch_add(&handled, 1);
+}
+static void install_handler(void) {
+  struct sigaction action = {0}; action.sa_sigaction = handler;
+  action.sa_flags = SA_SIGINFO; sigemptyset(&action.sa_mask);
+  if (sigaction(SIGUSR1, &action, NULL)) _exit(82);
+}
+static void wait_phase(int expected) {
+  while (atomic_load(&phase) < expected) sched_yield();
+}
+static void send_to_target(void) {
+  int target; while (!(target = atomic_load(&target_tid))) sched_yield();
+  int result = mode == 0 ? pthread_kill(target_pthread, SIGUSR1) :
+    mode == 1 ? (int)syscall(SYS_tkill, target, SIGUSR1) :
+    (int)syscall(SYS_tgkill, getpid(), target, SIGUSR1);
+  if (result) _exit(83);
+}
+static void *sender(void *unused) { (void)unused; send_to_target(); return NULL; }
+static void *receiver(void *unused) {
+  (void)unused;
+  int blocked = mode == 3 || mode == 4 || mode == 6 || mode == 7 || mode == 8;
+  if (blocked && pthread_sigmask(SIG_BLOCK, &selected, NULL)) _exit(84);
+  atomic_store(&target_tid, (int)syscall(SYS_gettid));
+  wait_phase(1);
+  if (mode == 3 || mode == 8) {
+    sigset_t pending; if (sigpending(&pending) || !sigismember(&pending, SIGUSR1)) _exit(85);
+    siginfo_t info = {0}; struct timespec zero = {0};
+    // glibc folds SI_TKILL to SI_USER; retain exact checks for both APIs.
+    int received = mode == 8 ?
+      (int)syscall(SYS_rt_sigtimedwait, &selected, &info, &zero, 8) :
+      sigtimedwait(&selected, &info, &zero);
+    int expected_code = mode == 8 ? SI_TKILL : SI_USER;
+    if (received != SIGUSR1 || info.si_signo != SIGUSR1 ||
+        info.si_code != expected_code || info.si_pid != getpid() ||
+        info.si_uid != getuid()) _exit(86);
+    errno = 0;
+    if (sigtimedwait(&selected, NULL, &zero) != -1 || errno != EAGAIN) _exit(87);
+    if (atomic_load(&handled)) _exit(88);
+  } else if (mode == 5) {
+    // An actual return boundary after publication precedes handler installation.
+    for (int i = 0; i < 3; ++i) sched_yield();
+    atomic_store(&phase, 2); wait_phase(3);
+    for (int i = 0; i < 3; ++i) sched_yield();
+    if (atomic_load(&handled)) _exit(89);
+  } else {
+    if (blocked) {
+      if (atomic_load(&handled)) _exit(90);
+      if (pthread_sigmask(SIG_UNBLOCK, &selected, NULL)) _exit(91);
+      if (atomic_load(&handled) != 1) _exit(92);
+    }
+    while (!atomic_load(&handled)) sched_yield();
+    if (atomic_load(&handled) != 1 || atomic_load(&handler_tid) != atomic_load(&target_tid)) _exit(93);
+  }
+  return NULL;
+}
+int main(int argc, char **argv) {
+  if (argc != 2) return 2;
+  mode = atoi(argv[1]);
+  sigemptyset(&selected); sigaddset(&selected, SIGUSR1);
+  install_handler();
+  if (mode == 5 || mode == 6 || mode == 9) {
+    struct sigaction ignored = {0}; ignored.sa_handler = mode == 9 ? SIG_DFL : SIG_IGN;
+    sigemptyset(&ignored.sa_mask);
+    if (sigaction(SIGUSR1, &ignored, NULL)) return 3;
+  }
+  pthread_t receiver_thread, sender_thread;
+  if (mode == 0) {
+    target_pthread = pthread_self();
+    atomic_store(&target_tid, (int)syscall(SYS_gettid));
+    if (pthread_create(&sender_thread, NULL, sender, NULL) || pthread_join(sender_thread, NULL)) return 4;
+    if (atomic_load(&handled) != 1 || atomic_load(&handler_tid) != atomic_load(&target_tid)) return 5;
+  } else {
+    if (pthread_create(&receiver_thread, NULL, receiver, NULL)) return 6;
+    while (!atomic_load(&target_tid)) sched_yield();
+    if (mode == 2) {
+      if (pthread_create(&sender_thread, NULL, sender, NULL) || pthread_join(sender_thread, NULL)) return 7;
+    } else {
+      send_to_target();
+    }
+    if (mode == 3 || mode == 8) {
+      send_to_target();
+      sigset_t pending; if (sigpending(&pending) || sigismember(&pending, SIGUSR1)) return 8;
+      struct timespec zero = {0}; errno = 0;
+      if (sigtimedwait(&selected, NULL, &zero) != -1 || errno != EAGAIN) return 9;
+    }
+    if (mode == 6) install_handler();
+    if (mode == 7) {
+      char *const args[] = {"missing", NULL};
+      execve("/no-such-astra-reverie-signal-executable", args, NULL);
+      if (errno != ENOENT) return 10;
+    }
+    atomic_store(&phase, 1);
+    if (mode == 5) {
+      wait_phase(2); install_handler(); atomic_store(&phase, 3);
+    }
+    if (pthread_join(receiver_thread, NULL)) return 11;
+  }
+  puts("sibling-signal-checked");
+  return 0;
+}
+"#;
+
+#[derive(Default)]
+struct SiblingSignalLog {
+    signals: Mutex<Vec<(i32, i32, i32, i32)>>,
+    starts: Mutex<Vec<i32>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for SiblingSignalLog {
+    type Request = (i32, i32, i32, i32);
+    type Response = ();
+    type Config = u8;
+
+    async fn receive_rpc(&self, _from: Pid, event: Self::Request) {
+        if event.0 == 0 {
+            self.starts.lock().unwrap().push(event.1);
+        } else {
+            self.signals.lock().unwrap().push(event);
+        }
+    }
+}
+
+#[derive(Default)]
+struct SiblingSignalTool;
+
+#[reverie::tool]
+impl Tool for SiblingSignalTool {
+    type GlobalState = SiblingSignalLog;
+    type ThreadState = bool;
+
+    async fn handle_thread_start<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+    ) -> Result<(), reverie::Error> {
+        assert!(!*guest.thread_state());
+        *guest.thread_state_mut() = true;
+        guest.send_rpc((0, guest.tid().as_raw(), 0, 0)).await;
+        Ok(())
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        guest.tail_inject(syscall).await
+    }
+
+    async fn handle_structured_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        event: SignalEvent,
+    ) -> Result<Option<SignalEvent>, Errno> {
+        assert!(
+            *guest.thread_state(),
+            "receiver signal hook ran before Tool admission"
+        );
+        let SignalTarget::Thread { pid, tid } = event.target() else {
+            panic!("sibling signal entered the process-pending domain");
+        };
+        assert_eq!((pid, tid), (guest.pid(), guest.tid()));
+        let info = event.siginfo();
+        assert_eq!(
+            i32::from_ne_bytes(info[8..12].try_into().unwrap()),
+            libc::SI_TKILL
+        );
+        assert_eq!(
+            i32::from_ne_bytes(info[16..20].try_into().unwrap()),
+            pid.as_raw()
+        );
+        guest
+            .send_rpc((1, pid.as_raw(), tid.as_raw(), event.signal()))
+            .await;
+        let observed_tid = guest.inject(reverie::syscalls::Gettid::new()).await?;
+        assert_eq!(observed_tid, i64::from(tid.as_raw()));
+        Ok(Some(event))
+    }
+}
+
+#[test]
+fn sibling_signal_delivery_native_plain_and_tool() {
+    const TEST: &str = "sibling_signal_delivery_native_plain_and_tool";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(&directory.0, "sibling-signal", SIBLING_SIGNAL_PROGRAM);
+    let program = executable.to_str().unwrap();
+    let image = std::fs::read(&executable).unwrap();
+    for mode in 0..=9 {
+        let argument = mode.to_string();
+        let native = std::process::Command::new("timeout")
+            .args(["--kill-after=2s", "5s"])
+            .arg(program)
+            .arg(&argument)
+            .output()
+            .unwrap();
+        if mode == 9 {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(
+                native.status.signal(),
+                Some(libc::SIGUSR1),
+                "native mode={mode}: {native:?}"
+            );
+            assert!(native.stdout.is_empty());
+        } else {
+            assert!(native.status.success(), "native mode={mode}: {native:?}");
+            assert_eq!(native.stdout, b"sibling-signal-checked\n");
+        }
+        assert!(native.stderr.is_empty());
+        for tool_owned in [false, true] {
+            let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+            backend
+                .install_static_elf_with_context(&image, &[program, &argument], &[], &directory.0)
+                .unwrap();
+            let (code, stdout, stderr) = if tool_owned {
+                let (log, code, stdout, stderr) = futures::executor::block_on(
+                    backend.run_static_elf_with_tool::<SiblingSignalTool>(0, true),
+                )
+                .unwrap();
+                let events = log.signals.lock().unwrap();
+                assert_eq!(
+                    events.len(),
+                    if mode == 3 || mode == 8 { 0 } else { 1 },
+                    "mode={mode}: {events:?}"
+                );
+                if let Some(event) = events.first() {
+                    assert_eq!(event.1, 1);
+                    assert_eq!(event.3, libc::SIGUSR1);
+                    assert_eq!(
+                        event.2 == 1,
+                        mode == 0,
+                        "delivery used the wrong receiver: {event:?}"
+                    );
+                }
+                assert_eq!(
+                    log.starts.lock().unwrap().len(),
+                    if mode == 2 { 3 } else { 2 }
+                );
+                (code, stdout, stderr)
+            } else {
+                backend.run_static_elf_captured().unwrap()
+            };
+            eprintln!("sibling mode={mode} tool_owned={tool_owned} code={code}");
+            assert_eq!(
+                code,
+                if mode == 9 { 128 + libc::SIGUSR1 } else { 0 },
+                "mode={mode} tool_owned={tool_owned}: stdout={stdout:?} stderr={stderr:?}"
+            );
+            assert_eq!(stdout, native.stdout, "mode={mode} tool_owned={tool_owned}");
+            assert_eq!(stderr, native.stderr, "mode={mode} tool_owned={tool_owned}");
+        }
+    }
+}
+
+const SIBLING_ENTRY_SIGNAL_PROGRAM: &str = r#"#define _GNU_SOURCE
+#include <sched.h>
+#include <signal.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+static unsigned char stack[65536] __attribute__((aligned(16)));
+static atomic_int handled, done, result;
+static int mode;
+static void handler(int number, siginfo_t *info, void *context) {
+  (void)context;
+  if (info->si_signo != number || info->si_code != SI_TKILL ||
+      info->si_pid != getpid() || info->si_uid != getuid() ||
+      syscall(SYS_gettid) == getpid()) _exit(71);
+  if (atomic_exchange(&handled, number)) _exit(72);
+}
+static int child(void *unused) {
+  (void)unused;
+  // No syscall precedes this first observation of the new thread's user code.
+  int expected = mode == 0 ? SIGUSR1 : mode == 2 ? SIGUSR2 : 0;
+  if (atomic_load(&handled) != expected) atomic_store(&result, 73);
+  if (mode == 3) {
+    unsigned long mask = 1UL << (SIGUSR2 - 1);
+    if (syscall(SYS_rt_sigprocmask, SIG_UNBLOCK, &mask, NULL, 8) ||
+        atomic_load(&handled) != SIGUSR2) atomic_store(&result, 74);
+  }
+  atomic_store(&done, 1);
+  syscall(SYS_exit, 0);
+  __builtin_unreachable();
+}
+int main(int argc, char **argv) {
+  if (argc != 2) return 2;
+  mode = atoi(argv[1]);
+  struct sigaction action = {0}; action.sa_sigaction = handler;
+  action.sa_flags = SA_SIGINFO; sigemptyset(&action.sa_mask);
+  if (sigaction(SIGUSR1, &action, NULL) || sigaction(SIGUSR2, &action, NULL)) return 3;
+  if (mode == 3) {
+    sigset_t selected; sigemptyset(&selected); sigaddset(&selected, SIGUSR2);
+    if (sigprocmask(SIG_BLOCK, &selected, NULL)) return 4;
+  }
+  if (clone(child, stack + sizeof(stack), CLONE_VM | CLONE_FS | CLONE_FILES |
+      CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM, NULL) < 0) return 5;
+  while (!atomic_load(&done)) sched_yield();
+  if (atomic_load(&result)) return atomic_load(&result);
+  int expected = mode == 1 ? 0 : mode == 0 ? SIGUSR1 : SIGUSR2;
+  if (atomic_load(&handled) != expected) return 75;
+  puts("sibling-entry-signal-checked");
+  return 0;
+}
+"#;
+
+#[derive(Default)]
+struct SiblingEntrySignalTool;
+
+#[reverie::tool]
+impl Tool for SiblingEntrySignalTool {
+    type GlobalState = SiblingSignalLog;
+    type ThreadState = bool;
+
+    async fn handle_thread_start<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+    ) -> Result<(), reverie::Error> {
+        assert!(!*guest.thread_state());
+        *guest.thread_state_mut() = true;
+        guest.send_rpc((0, guest.tid().as_raw(), 0, 0)).await;
+        Ok(())
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        if matches!(syscall, Syscall::Clone(_)) {
+            let child = guest.inject(syscall).await?;
+            assert!(child > 0);
+            // The pending child's start gate is released after this parent
+            // callback returns; the receiver already has its private queue.
+            let sent = guest
+                .inject(
+                    reverie::syscalls::Tgkill::new()
+                        .with_tgid(guest.pid().as_raw())
+                        .with_tid(i32::try_from(child).unwrap())
+                        .with_sig(libc::SIGUSR1),
+                )
+                .await?;
+            assert_eq!(sent, 0);
+            Ok(child)
+        } else {
+            guest.tail_inject(syscall).await
+        }
+    }
+
+    async fn handle_structured_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        event: SignalEvent,
+    ) -> Result<Option<SignalEvent>, Errno> {
+        assert!(
+            *guest.thread_state(),
+            "entry signal preceded Tool admission"
+        );
+        assert_ne!(guest.pid(), guest.tid());
+        assert_eq!(
+            event.target(),
+            SignalTarget::Thread {
+                pid: guest.pid(),
+                tid: guest.tid()
+            }
+        );
+        guest
+            .send_rpc((
+                1,
+                guest.pid().as_raw(),
+                guest.tid().as_raw(),
+                event.signal(),
+            ))
+            .await;
+        assert_eq!(
+            guest.inject(reverie::syscalls::Gettid::new()).await?,
+            i64::from(guest.tid().as_raw())
+        );
+        if event.signal() == libc::SIGUSR1 {
+            assert_eq!(
+                guest.inject(Fork::new()).await,
+                Err(Errno::ENOSYS),
+                "entry callback must refuse a process action before effects"
+            );
+            match *guest.config() {
+                1 => return Ok(None),
+                2 | 3 => {
+                    let mut info = event.siginfo();
+                    info[0..4].copy_from_slice(&libc::SIGUSR2.to_ne_bytes());
+                    return Ok(Some(SignalEvent::new(libc::SIGUSR2, info, event.target())?));
+                }
+                _ => {}
+            }
+        }
+        Ok(Some(event))
+    }
+}
+
+#[test]
+fn sibling_signal_before_first_instruction_with_tool() {
+    const TEST: &str = "sibling_signal_before_first_instruction_with_tool";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "sibling-entry-signal",
+        SIBLING_ENTRY_SIGNAL_PROGRAM,
+    );
+    let program = executable.to_str().unwrap();
+    let image = std::fs::read(&executable).unwrap();
+    for mode in 0..=3 {
+        let argument = mode.to_string();
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(&image, &[program, &argument], &[], &directory.0)
+            .unwrap();
+        let (log, code, stdout, stderr) = futures::executor::block_on(
+            backend.run_static_elf_with_tool::<SiblingEntrySignalTool>(mode, true),
+        )
+        .unwrap();
+        eprintln!("sibling entry mode={mode} code={code}");
+        assert_eq!(code, 0, "mode={mode}: stdout={stdout:?} stderr={stderr:?}");
+        assert_eq!(stdout, b"sibling-entry-signal-checked\n");
+        assert!(stderr.is_empty(), "mode={mode}: {stderr:?}");
+        assert_eq!(log.starts.lock().unwrap().len(), 2);
+        let events = log.signals.lock().unwrap();
+        assert_eq!(
+            events.len(),
+            if mode == 3 { 2 } else { 1 },
+            "mode={mode}: {events:?}"
+        );
+        assert_eq!(events[0], (1, 1, 2, libc::SIGUSR1));
+        if mode == 3 {
+            assert_eq!(events[1], (1, 1, 2, libc::SIGUSR2));
+        }
     }
 }
