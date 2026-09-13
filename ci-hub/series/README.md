@@ -113,6 +113,13 @@ all match before rows can be combined. Rows that carry an explicit retry
 `attempt` are never combined, so a failed retry followed by a successful retry
 remains two ordered rows.
 
+New pressure rows also retain `pressure_evidence`: a digest identifying the
+original CellResult and the complete inner invocation history, including each
+report digest, comparison verdict and process disposition. These rows keep an
+explicit outer attempt and remain separate. Ordinary repeat rows still use
+the compression rules above. Historical pressure rows without this field stay
+readable, but cannot prove a complete history for promotion.
+
 The payload also carries the scorecard's existing source-depth shape:
 `depth.<repository>.{commits,first_parent}`. `main_ancestry` records whether the
 Hermit tree was on `origin/main` when written. The history command checks the
@@ -127,6 +134,33 @@ launches detached, checks out current Hermit main under `ignored/`, acquires the
 and invokes the existing `emit-series` command. The fixed systemd unit prevents
 two samples from overlapping, and the lock keeps the sample from running beside
 a validate.
+
+`classify_pressure_sample` reduces one fixed campaign from the accepted series
+projection, never from the website's display state. Its denominator is exactly
+ten distinct repetition numbers for every cell in the frozen selection:
+
+* ten clean, first-attempt product passes with complete inner process evidence
+  and canonical reports in comparison modes is a `promotion-candidate`;
+* one through nine passes, a pass recovered by retry, or a terminal pass with
+  an adverse inner observation is `intermittent`;
+* zero passes and ten complete histories containing only product failures and
+  successful declared subruns is `confirmed-failing`;
+* ten infrastructure failures, prerequisite failures, or no-results retain
+  those three separate classifications; and
+* missing or duplicate repetitions, gapped retries, mixed non-product results,
+  and every other incomplete shape are `incomplete`.
+
+The result reports every count and a separate `promotion_candidate` boolean.
+It does not edit `ci/expected-e2e-plan.json`; changing the selected cohort is a
+later reviewed operation. Exact duplicate events produced by publication replay
+are deduplicated by event ID, while distinct events claiming the same
+cell/repetition/attempt make that cell incomplete.
+Several successful declared subruns are valid and do not count as outer
+retries. Missing history and dirty source remain incomplete. The classifier
+keeps infrastructure, prerequisite and unavailable-result observations distinct
+when a failed outer result contains several inner observations; conflicting
+failure categories remain incomplete. It preserves the framework's original
+result and never turns absent host-inapplicable rows into measurements.
 
 ## One test's complete history
 

@@ -108,6 +108,7 @@ _EVIDENCE_PATH_DELIMITERS = frozenset(
 )
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+PRESSURE_PROMOTION_REPETITIONS = 10
 # Built rather than written literally so this module does not itself contain the
 # owner-path needle the portability check greps tracked files for.
 _OWNER_PATH_NEEDLE = "/" + "home" + "/"
@@ -356,6 +357,249 @@ def measurement_state(rows: Sequence[dict]) -> str:
         if observed_range(rows, coordinate) is not None:
             return "diverged"
     return "diverged-unlocated"
+
+
+def _pressure_outer_kind(payload: dict) -> str:
+    outcome = payload.get("outcome")
+    result = payload.get("result")
+    failure_class = payload.get("failure_class")
+    if outcome == "passed" and result == "pass" and failure_class is None:
+        return "pass"
+    if failure_class == "product_failure" and outcome in {"diverged", "errored"}:
+        return "product"
+    return {
+        "understood_infrastructure_failure": "infrastructure",
+        "understood_prerequisite_failure": "prerequisite",
+        "no_result": "no_result",
+    }.get(failure_class, "unknown")
+
+
+def _pressure_inner_kinds(payload: dict) -> list[str] | None:
+    """Interpret retained, shared-type-validated facts for qualification only."""
+    evidence = payload.get("pressure_evidence")
+    if evidence is None:
+        return None
+    mode = payload["cell"].rsplit("/", 2)[-2]
+    kinds = []
+    for attempt in evidence["attempts"]:
+        comparison = attempt.get("comparison")
+        non_product = {
+            "guest-launch-refused": "prerequisite",
+            "backend-unavailable": "prerequisite",
+            "infrastructure": "infrastructure",
+            "result-publication": "infrastructure",
+            "incomplete-verification-evidence": "no_result",
+            "invalid-backend-evidence": "no_result",
+        }.get(attempt.get("error_kind"))
+        if non_product is not None:
+            kind = non_product
+        elif comparison is not None:
+            verdict = comparison["verdict"]
+            if comparison["canonical"] and verdict == "matched":
+                kind = "pass"
+            elif comparison["canonical"] and verdict == "diverged":
+                kind = "product"
+            elif verdict == "infrastructure_error":
+                kind = "infrastructure"
+            elif verdict == "no_result" and comparison.get("no_result_kind") == "first_run_rejected":
+                kind = "product"
+            else:
+                kind = "no_result"
+        elif mode in _COMPARISON_MODES or attempt["timed_out"]:
+            kind = "no_result"
+        elif attempt["outcome"] == "PASS":
+            # Custom modes can deliberately expect a nonzero exit or signal.
+            # The shared validator checks their completed process disposition.
+            kind = "pass"
+        elif attempt["outcome"] == "FAIL":
+            if attempt.get("status") is None and attempt.get("signal") is None:
+                return None
+            kind = "product"
+        else:
+            kind = "no_result"
+        kinds.append(kind)
+    return kinds
+
+
+def classify_pressure_sample(
+    rows: Iterable[dict], selected_cells: Sequence[str], campaign_id: str
+) -> dict[str, dict[str, Any]]:
+    """Classify one fixed ten-repetition pressure campaign by exact cell.
+
+    Rows are the accepted series projection, not website state.  The latter
+    intentionally collapses every non-product failure to an unknown result and
+    therefore cannot distinguish infrastructure, prerequisites, and no-result.
+    Exact duplicate events are harmless publication replay; two distinct events
+    claiming the same repetition/attempt make that cell incomplete.
+    """
+    selected = list(selected_cells)
+    if not isinstance(campaign_id, str) or not campaign_id or any(
+        not isinstance(cell, str) or not cell for cell in selected
+    ):
+        raise SeriesError("pressure classification requires a named campaign and unique cells")
+    if len(selected) != len(set(selected)):
+        raise SeriesError("pressure classification requires a named campaign and unique cells")
+
+    by_cell: dict[str, dict[int, dict[int, dict]]] = {
+        cell: {} for cell in selected
+    }
+    duplicate_attempts = {cell: 0 for cell in selected}
+    seen_events: dict[str, dict] = {}
+    trees = set()
+    campaign_rows = [row for row in rows if row.get("run_id") == campaign_id]
+    for row in validate_read_rows(campaign_rows):
+        event_id = row.get("event_id")
+        if isinstance(event_id, str) and event_id in seen_events:
+            if seen_events[event_id] != row:
+                raise SeriesError(f"pressure event_id {event_id!r} changed content")
+            continue
+        if isinstance(event_id, str):
+            seen_events[event_id] = row
+        producer = row.get("producer")
+        producer_name = producer.get("tool") if isinstance(producer, dict) else producer
+        if producer_name != "pressure-test":
+            raise SeriesError(
+                f"campaign {campaign_id!r} contains non-pressure producer {producer_name!r}"
+            )
+        payload = row.get("series")
+        if not isinstance(payload, dict):
+            raise SeriesError("pressure campaign row has no series payload")
+        cell = payload.get("cell")
+        if cell not in by_cell:
+            raise SeriesError(
+                f"campaign {campaign_id!r} contains unselected cell {cell!r}"
+            )
+        tree = payload.get("tree")
+        if not isinstance(tree, str) or not tree:
+            raise SeriesError("pressure campaign row has no source tree")
+        trees.add(tree)
+        first = payload.get("run_index")
+        count = payload.get("num_runs", 1)
+        attempt = payload.get("attempt", 1)
+        if (
+            not isinstance(first, int)
+            or isinstance(first, bool)
+            or not isinstance(count, int)
+            or isinstance(count, bool)
+            or count < 1
+            or not isinstance(attempt, int)
+            or isinstance(attempt, bool)
+            or attempt < 1
+            or (count > 1 and "attempt" in payload)
+        ):
+            raise SeriesError("pressure campaign row has invalid repetition/attempt span")
+        last = payload.get("last_run_index", first + count - 1)
+        if last != first + count - 1:
+            raise SeriesError("pressure campaign row has an inconsistent repetition span")
+        for repetition in range(first, last + 1):
+            attempts = by_cell[cell].setdefault(repetition, {})
+            if attempt in attempts:
+                duplicate_attempts[cell] += 1
+            else:
+                attempts[attempt] = payload
+    if len(trees) > 1:
+        raise SeriesError(f"campaign {campaign_id!r} spans multiple source trees")
+
+    expected = set(range(1, PRESSURE_PROMOTION_REPETITIONS + 1))
+    classifications: dict[str, dict[str, Any]] = {}
+    for cell in selected:
+        repetitions = by_cell[cell]
+        counts = {
+            "qualifying_passes": 0,
+            "terminal_passes": 0,
+            "terminal_product_failures": 0,
+            "infrastructure_failures": 0,
+            "prerequisite_failures": 0,
+            "no_results": 0,
+            "mixed_repetitions": 0,
+            "retried_repetitions": 0,
+            "unknown_history_repetitions": 0,
+        }
+        malformed = duplicate_attempts[cell] > 0 or set(repetitions) - expected != set()
+        for repetition in sorted(set(repetitions) & expected):
+            attempts = repetitions[repetition]
+            ordinals = sorted(attempts)
+            if len(ordinals) > 1:
+                counts["retried_repetitions"] += 1
+            if (
+                ordinals != list(range(1, len(ordinals) + 1))
+                or len(ordinals) > 2
+                or any(
+                    attempts[ordinal]["outcome"] == "passed"
+                    for ordinal in ordinals[:-1]
+                )
+            ):
+                # The framework caps outer attempts at two and stops on PASS.
+                # This history cannot supply a valid terminal observation.
+                malformed = True
+                counts["mixed_repetitions"] += 1
+                continue
+            kinds = []
+            inner_kinds = []
+            history_known = True
+            for ordinal in ordinals:
+                payload = attempts[ordinal]
+                kinds.append(_pressure_outer_kind(payload))
+                retained = _pressure_inner_kinds(payload)
+                if not retained or payload.get("source_tree_dirty", False):
+                    history_known = False
+                else:
+                    inner_kinds.extend(retained)
+            if not history_known:
+                counts["unknown_history_repetitions"] += 1
+            adverse_kinds = set(kinds) | (set(inner_kinds) - {"pass"})
+            # Valid retries select PASS over FAIL over ERROR. Retain every
+            # adverse attempt when deciding whether the history is homogeneous.
+            if "pass" in kinds:
+                counts["terminal_passes"] += 1
+                if (
+                    history_known
+                    and ordinals == [1]
+                    and kinds == ["pass"]
+                    and set(inner_kinds) == {"pass"}
+                ):
+                    counts["qualifying_passes"] += 1
+            elif history_known and adverse_kinds == {"product"}:
+                counts["terminal_product_failures"] += 1
+            elif history_known and adverse_kinds == {"infrastructure"}:
+                counts["infrastructure_failures"] += 1
+            elif (
+                history_known
+                and adverse_kinds == {"prerequisite"}
+            ):
+                counts["prerequisite_failures"] += 1
+            elif history_known and adverse_kinds == {"no_result"}:
+                counts["no_results"] += 1
+            else:
+                counts["mixed_repetitions"] += 1
+
+        observed = len(set(repetitions) & expected)
+        missing = PRESSURE_PROMOTION_REPETITIONS - observed
+        complete = not malformed and missing == 0 and counts["unknown_history_repetitions"] == 0
+        if complete and counts["qualifying_passes"] == PRESSURE_PROMOTION_REPETITIONS:
+            classification = "promotion-candidate"
+        elif complete and counts["terminal_passes"] > 0:
+            classification = "intermittent"
+        elif complete and counts["terminal_product_failures"] == PRESSURE_PROMOTION_REPETITIONS:
+            classification = "confirmed-failing"
+        elif complete and counts["infrastructure_failures"] == PRESSURE_PROMOTION_REPETITIONS:
+            classification = "infrastructure-failure"
+        elif complete and counts["prerequisite_failures"] == PRESSURE_PROMOTION_REPETITIONS:
+            classification = "prerequisite-failure"
+        elif complete and counts["no_results"] == PRESSURE_PROMOTION_REPETITIONS:
+            classification = "no-result"
+        else:
+            classification = "incomplete"
+        classifications[cell] = {
+            "classification": classification,
+            "promotion_candidate": classification == "promotion-candidate",
+            "expected_repetitions": PRESSURE_PROMOTION_REPETITIONS,
+            "observed_repetitions": observed,
+            "missing_repetitions": missing,
+            "duplicate_attempts": duplicate_attempts[cell],
+            **counts,
+        }
+    return classifications
 
 
 def append_rows(path: Any, rows: Iterable[dict]) -> int:
@@ -1195,6 +1439,86 @@ def _no_verdict_kind(attempt: dict, disposition: str) -> str:
     )
 
 
+def _pressure_evidence(row: dict) -> dict | None:
+    """Retain the inner history without replacing the framework's verdict.
+
+    A terminal PASS can contain earlier adverse observations. The outward
+    series outcome cannot prove first-attempt qualification after that history
+    has been discarded. Each evidence object identifies one outer attempt;
+    several declared successful inner subruns are valid and are not themselves
+    proof that the outer attempt was retried.
+    """
+    attempts = row.get("attempts")
+    if attempts is None or attempts == []:
+        # Historical/noncomparison results may lack this evidence. They remain
+        # reportable, but the promotion classifier cannot supply missing facts.
+        return None
+    if not isinstance(attempts, list):
+        raise MalformedRow("pressure cell attempts must be an array")
+    mode = _cell_mode(row)
+    retained = []
+    for index, attempt in enumerate(attempts, 1):
+        if not isinstance(attempt, dict):
+            raise MalformedRow(f"pressure inner attempt {index} must be an object")
+        comparison = None
+        if mode in _COMPARISON_MODES:
+            disposition = _typed_comparison_attempt(attempt, mode=mode, index=index)
+            raw = attempt.get("verification_report")
+            if raw is not None:
+                # The existing reader above verifies the report bytes, hash,
+                # complete comparison policy and invocation disposition.
+                report = json.loads(raw)
+                verdict = report["verdict"]
+                for name, minimum in (("guest_exit_code", 0), ("guest_signal", 1)):
+                    value = report.get(name)
+                    if value is not None and (
+                        not isinstance(value, int) or isinstance(value, bool)
+                        or not minimum <= value <= 2**31 - 1
+                    ):
+                        raise MalformedRow(f"pressure inner attempt {index} has invalid {name}")
+                if report.get("guest_exit_code") is not None and report.get("guest_signal") is not None:
+                    raise MalformedRow(f"pressure inner attempt {index} has contradictory guest disposition")
+                if verdict == "infrastructure_error" and (
+                    not 0 < report["infrastructure_error"]["count"] < 2**64
+                    or report.get("verified") is not False
+                    or report.get("bitwise_parity") is not False
+                    or report.get("no_result_reason") is not None
+                ):
+                    raise MalformedRow(f"pressure inner attempt {index} has inconsistent infrastructure evidence")
+                counts = report.get("compared_log_messages")
+                if verdict in {"matched", "diverged"} and any(
+                    counts[side] >= 2**64 for side in ("left", "right")
+                ):
+                    raise MalformedRow(f"pressure inner attempt {index} INFO counts exceed u64")
+                canonical = disposition in {"matched", "diverged"}
+                if verdict == "matched" and counts["left"] != counts["right"]:
+                    # Historical projection accepts this shape, but unequal
+                    # counts cannot prove a complete canonical match.
+                    canonical = False
+                comparison = {
+                    "verdict": verdict,
+                    "canonical": canonical,
+                    "report_sha256": attempt["verification_report_sha256"],
+                    "no_result_kind": (
+                        report["no_result_reason"]["kind"]
+                        if verdict == "no_result" else None
+                    ),
+                }
+        retained.append({
+            "index": attempt.get("index"),
+            "outcome": attempt.get("outcome"),
+            "error_kind": attempt.get("error_kind"),
+            "status": attempt.get("status"),
+            "signal": attempt.get("signal"),
+            "timed_out": attempt.get("timed_out"),
+            "comparison": comparison,
+        })
+    return {
+        "evidence_sha256": _cell_result_evidence_sha256(row),
+        "attempts": retained,
+    }
+
+
 def _no_verdict_evidence(row: dict, projected_outcome: str) -> dict | None:
     """Retain typed non-comparison dispositions without reconstructing one."""
     mode = row.get("mode")
@@ -1623,6 +1947,11 @@ def _rows_from_cell_results(
             # to readers that do not know producer-specific run_index rules.
             payload["attempt"] = run_index if producer == "validate" else attempt
             payload["no_verdict_evidence"] = no_verdict_evidence
+        if producer == "pressure-test":
+            pressure_evidence = _pressure_evidence(cell_result)
+            if pressure_evidence is not None:
+                payload["attempt"] = attempt
+                payload["pressure_evidence"] = pressure_evidence
         if detcore_tree is None and no_verdict_evidence is not None:
             if recorded_detcore_tree is None:
                 resolved = _git(source, ["rev-parse", "--verify", f"{tree}:detcore"])
@@ -1710,6 +2039,7 @@ __all__ = [
     "SeriesError",
     "append_rows",
     "collapse_rows",
+    "classify_pressure_sample",
     "commit_depth",
     "history_rows",
     "history_store_rows",

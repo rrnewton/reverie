@@ -78,6 +78,371 @@ def row(**over):
     return base
 
 
+class PressureSampleClassification(unittest.TestCase):
+    def setUp(self):
+        self.projection = CellResultProjection()
+        self.projection.setUp()
+        self.addCleanup(self.projection.tearDown)
+        self.CELL = series._cell_name(self.projection._cell(1))
+
+    def _cells(self, kinds):
+        cells = []
+        for repetition, kind in enumerate(kinds, 1):
+            cell = self.projection._cell(repetition)
+            if kind == "product":
+                cell.update(outcome="FAIL", result="determinism-failure",
+                            failure_class="product_failure")
+                cell["attempts"] = [self.projection._attempt("diverged")]
+            elif kind != "pass":
+                cell.update(outcome="ERROR", result=None, failure_class={
+                    "infrastructure": "understood_infrastructure_failure",
+                    "prerequisite": "understood_prerequisite_failure",
+                    "no_result": "no_result",
+                }[kind])
+                cell["attempts"] = [self.projection._attempt(
+                    "infrastructure_error" if kind == "infrastructure" else "no_result"
+                )]
+                if kind == "prerequisite":
+                    cell["attempts"][0]["error_kind"] = "backend-unavailable"
+            cells.append(cell)
+        return cells
+
+    def _rows(self, kinds):
+        rows = self.projection._project(self._cells(kinds))
+        for item in rows:
+            item["run_id"] = "campaign-10x"
+        return rows
+
+    def _classify_cells(self, cells):
+        rows = self.projection._project(cells)
+        cell = series._cell_name(cells[0])
+        return series.classify_pressure_sample(rows, [cell], "pressure-one")[cell]
+
+    def _classification(self, kinds):
+        return series.classify_pressure_sample(
+            self._rows(kinds), [self.CELL], "campaign-10x"
+        )[self.CELL]
+
+    def test_ten_qualifying_passes_are_the_only_promotion_candidate(self):
+        candidate = self._classification(["pass"] * 10)
+        self.assertEqual(candidate["classification"], "promotion-candidate")
+        self.assertTrue(candidate["promotion_candidate"])
+        compressed = self._rows(["pass"])[0]
+        # A historical compressed row does not retain individual inner facts.
+        compressed["series"].pop("pressure_evidence")
+        compressed["series"].pop("attempt")
+        compressed["series"].update({"num_runs": 10, "last_run_index": 10})
+        compressed_candidate = series.classify_pressure_sample(
+            [compressed], [self.CELL], "campaign-10x"
+        )[self.CELL]
+        self.assertEqual(
+            compressed_candidate["classification"], "incomplete"
+        )
+        self.assertEqual(compressed_candidate["unknown_history_repetitions"], 10)
+        self.assertEqual(compressed_candidate["terminal_passes"], 10)
+        for passes in (1, 9):
+            with self.subTest(passes=passes):
+                result = self._classification(
+                    ["pass"] * passes + ["product"] * (10 - passes)
+                )
+                self.assertEqual(result["classification"], "intermittent")
+                self.assertFalse(result["promotion_candidate"])
+
+    def test_only_ten_terminal_product_failures_are_confirmed_failing(self):
+        failing = self._classification(["product"] * 10)
+        self.assertEqual(failing["classification"], "confirmed-failing")
+        for kind, classification, count_field in (
+            ("infrastructure", "infrastructure-failure", "infrastructure_failures"),
+            ("prerequisite", "prerequisite-failure", "prerequisite_failures"),
+            ("no_result", "no-result", "no_results"),
+        ):
+            with self.subTest(kind=kind):
+                result = self._classification([kind] * 10)
+                self.assertEqual(result["classification"], classification)
+                self.assertEqual(result[count_field], 10)
+                self.assertFalse(result["promotion_candidate"])
+
+        mixed = self._classification(["product"] * 9 + ["infrastructure"])
+        self.assertEqual(mixed["classification"], "incomplete")
+        self.assertEqual(mixed["terminal_product_failures"], 9)
+        self.assertEqual(mixed["infrastructure_failures"], 1)
+
+    def test_missing_duplicate_and_retry_evidence_cannot_promote(self):
+        missing = self._classification(["pass"] * 9)
+        self.assertEqual(missing["classification"], "incomplete")
+        self.assertEqual(missing["missing_repetitions"], 1)
+
+        duplicate_rows = self._rows(["pass"] * 10)
+        publication_replay = duplicate_rows + [
+            json.loads(json.dumps(duplicate_rows[0]))
+        ]
+        replay_result = series.classify_pressure_sample(
+            publication_replay, [self.CELL], "campaign-10x"
+        )[self.CELL]
+        self.assertEqual(replay_result["classification"], "promotion-candidate")
+        duplicate = dict(duplicate_rows[0])
+        duplicate["event_id"] = "different-event-same-attempt"
+        duplicate_rows.append(duplicate)
+        duplicate_result = series.classify_pressure_sample(
+            duplicate_rows, [self.CELL], "campaign-10x"
+        )[self.CELL]
+        self.assertEqual(duplicate_result["classification"], "incomplete")
+        self.assertEqual(duplicate_result["duplicate_attempts"], 1)
+
+        retried_rows = self._rows(["pass"] * 10)
+        retried_rows[0]["series"]["attempt"] = 2
+        first_attempt = self._rows(["product"])[0]
+        first_attempt["event_id"] = "pressure-first-product"
+        retried_rows.append(first_attempt)
+        retried = series.classify_pressure_sample(
+            retried_rows, [self.CELL], "campaign-10x"
+        )[self.CELL]
+        self.assertEqual(retried["classification"], "intermittent")
+        self.assertEqual(retried["terminal_passes"], 10)
+        self.assertEqual(retried["qualifying_passes"], 9)
+        self.assertEqual(retried["retried_repetitions"], 1)
+
+        regressed_rows = self._rows(["product"] * 10)
+        regressed_rows[0]["series"]["attempt"] = 2
+        first_pass = self._rows(["pass"])[0]
+        first_pass["event_id"] = "pressure-first-pass"
+        regressed_rows.append(first_pass)
+        regressed = series.classify_pressure_sample(
+            regressed_rows, [self.CELL], "campaign-10x"
+        )[self.CELL]
+        self.assertEqual(regressed["classification"], "incomplete")
+        self.assertEqual(regressed["terminal_passes"], 0)
+        self.assertEqual(regressed["mixed_repetitions"], 1)
+
+    def test_inner_failures_behind_terminal_pass_never_qualify(self):
+        for kind in ("product", "infrastructure", "prerequisite", "no_result"):
+            with self.subTest(kind=kind):
+                cells = self._cells(["pass"] * 10)
+                adverse = self._cells([kind])[0]["attempts"][0]
+                cells[0]["attempts"][0]["index"] = "2"
+                cells[0]["attempts"].insert(0, adverse)
+                original = json.dumps(cells, sort_keys=True)
+                result = self._classify_cells(cells)
+                self.assertEqual(result["classification"], "intermittent")
+                self.assertEqual(result["terminal_passes"], 10)
+                self.assertEqual(result["qualifying_passes"], 9)
+                self.assertEqual(result["retried_repetitions"], 0)
+                self.assertEqual(json.dumps(cells, sort_keys=True), original)
+
+    def test_multiple_declared_successes_are_not_outer_retries(self):
+        for mode, status, signal in (
+            ("verify", 0, None), ("chaos", 17, None), ("custom", None, 15),
+        ):
+            with self.subTest(mode=mode):
+                cells = self._cells(["pass"] * 10)
+                for cell in cells:
+                    cell["mode"] = mode
+                    first = cell["attempts"][0]
+                    first.update(status=status, signal=signal)
+                    second = json.loads(json.dumps(first))
+                    second["index"] = "seed-2"
+                    cell["attempts"].append(second)
+                result = self._classify_cells(cells)
+                self.assertEqual(result["classification"], "promotion-candidate")
+                self.assertEqual(result["qualifying_passes"], 10)
+                self.assertEqual(result["retried_repetitions"], 0)
+
+    def test_nonpassing_fold_retains_adverse_facts_and_neutral_successes(self):
+        cells = self._cells(["product"] * 10)
+        for cell in cells:
+            good = self.projection._attempt()
+            good["index"] = "2"
+            cell["attempts"].append(good)
+        result = self._classify_cells(cells)
+        self.assertEqual(result["classification"], "confirmed-failing")
+        bad = self.projection._attempt("infrastructure_error")
+        bad["index"] = "3"
+        cells[0]["attempts"].append(bad)
+        result = self._classify_cells(cells)
+        self.assertEqual(result["classification"], "incomplete")
+        self.assertEqual(result["terminal_product_failures"], 9)
+        self.assertEqual(result["mixed_repetitions"], 1)
+
+    def test_every_inner_report_must_support_canonical_qualification(self):
+        for change in ("unequal-counts", "wrong-time", "skip-commit", "bad-hash", "missing-report", "duplicate-index"):
+            with self.subTest(change=change):
+                cells = self._cells(["pass"] * 10)
+                first = cells[0]["attempts"][0]
+                second = json.loads(json.dumps(first))
+                second["index"] = "2"
+                cells[0]["attempts"].append(second)
+                report = json.loads(first["verification_report"])
+                if change == "unequal-counts":
+                    report["compared_log_messages"]["right"] += 1
+                elif change == "wrong-time":
+                    report["comparison"]["virtualize_time"] = False
+                elif change == "skip-commit":
+                    report["comparison"]["skip_commit"] = True
+                first["verification_report"] = json.dumps(report)
+                first["verification_report_sha256"] = hashlib.sha256(
+                    first["verification_report"].encode()
+                ).hexdigest()
+                if change == "bad-hash":
+                    first["verification_report_sha256"] = "0" * 64
+                elif change == "missing-report":
+                    first["verification_report"] = None
+                    first["verification_report_sha256"] = None
+                elif change == "duplicate-index":
+                    second["index"] = first["index"]
+                if change in ("bad-hash", "missing-report", "duplicate-index"):
+                    with self.assertRaises(series.MalformedRow):
+                        self._classify_cells(cells)
+                else:
+                    result = self._classify_cells(cells)
+                    self.assertEqual(result["classification"], "intermittent")
+                    self.assertEqual(result["qualifying_passes"], 9)
+
+    def test_retry_order_gaps_and_dirty_or_unknown_history(self):
+        for history in (("product", "infrastructure"), ("infrastructure", "pass")):
+            cells = self._cells(["product"] * 10)
+            attempts = [self._cells([kind])[0] for kind in history]
+            for ordinal, attempt in enumerate(attempts, 1):
+                attempt["attempt"] = ordinal
+            result = self._classify_cells(attempts + cells[1:])
+            self.assertEqual(result["retried_repetitions"], 1)
+            self.assertFalse(result["promotion_candidate"])
+            self.assertEqual(result["terminal_passes"], int(history[-1] == "pass"))
+            self.assertEqual(result["classification"],
+                             "intermittent" if history[-1] == "pass" else "incomplete")
+        for change in ("gap", "third-attempt", "dirty", "missing-history"):
+            with self.subTest(change=change):
+                rows = self._rows(["pass"] * 10)
+                payload = rows[0]["series"]
+                if change == "gap":
+                    payload["attempt"] = 2
+                elif change == "third-attempt":
+                    payload["attempt"] = 3
+                elif change == "dirty":
+                    payload["source_tree_dirty"] = True
+                else:
+                    payload.pop("pressure_evidence")
+                result = series.classify_pressure_sample(rows, [self.CELL], "campaign-10x")[self.CELL]
+                self.assertEqual(result["classification"], "incomplete")
+                self.assertFalse(result["promotion_candidate"])
+
+    def test_first_run_rejected_is_product_failure_with_valid_guest_disposition(self):
+        cells = self._cells(["product"] * 10)
+        for cell in cells:
+            cell["result"] = "crash-error"
+            attempt = self.projection._attempt("no_result")
+            attempt.update(outcome="FAIL", error_kind=None)
+            report = json.loads(attempt["verification_report"])
+            report.update(guest_exit_code=17, guest_signal=None,
+                          no_result_reason={"kind": "first_run_rejected", "exit_code": 17, "signal": None})
+            attempt["verification_report"] = json.dumps(report)
+            attempt["verification_report_sha256"] = hashlib.sha256(attempt["verification_report"].encode()).hexdigest()
+            cell["attempts"] = [attempt]
+        result = self._classify_cells(cells)
+        self.assertEqual(result["classification"], "confirmed-failing")
+        self.assertEqual(result["terminal_product_failures"], 10)
+        for value in ("invalid", True, -1, 2**31):
+            with self.subTest(guest_exit_code=value):
+                malformed = json.loads(json.dumps(cells))
+                attempt = malformed[0]["attempts"][0]
+                report = json.loads(attempt["verification_report"])
+                report["guest_exit_code"] = value
+                report["no_result_reason"]["exit_code"] = value
+                attempt["verification_report"] = json.dumps(report)
+                attempt["verification_report_sha256"] = hashlib.sha256(attempt["verification_report"].encode()).hexdigest()
+                with self.assertRaisesRegex(series.MalformedRow, "invalid guest_exit_code"):
+                    self._classify_cells(malformed)
+
+    def test_matched_reports_require_typed_guest_dispositions_and_info_counts(self):
+        for change in ("guest-string", "guest-bool", "signal-zero", "signal-overflow", "both", "counts-overflow"):
+            with self.subTest(change=change):
+                cells = self._cells(["pass"] * 10)
+                attempt = cells[0]["attempts"][0]
+                report = json.loads(attempt["verification_report"])
+                if change == "counts-overflow":
+                    report["compared_log_messages"] = {"left": 2**64, "right": 2**64}
+                elif change == "both":
+                    report.update(guest_exit_code=0, guest_signal=9)
+                else:
+                    field = "guest_exit_code" if change.startswith("guest") else "guest_signal"
+                    report[field] = {"guest-string": "invalid", "guest-bool": True,
+                                     "signal-zero": 0, "signal-overflow": 2**31}[change]
+                attempt["verification_report"] = json.dumps(report)
+                attempt["verification_report_sha256"] = hashlib.sha256(attempt["verification_report"].encode()).hexdigest()
+                with self.assertRaises(series.MalformedRow):
+                    self._classify_cells(cells)
+
+    def test_timeouts_and_known_nonproduct_causes_keep_their_categories(self):
+        for error_kind, outer_kind, count in (
+            ("guest-launch-refused", "prerequisite", "prerequisite_failures"),
+            ("backend-unavailable", "prerequisite", "prerequisite_failures"),
+            ("infrastructure", "infrastructure", "infrastructure_failures"),
+            ("result-publication", "infrastructure", "infrastructure_failures"),
+            ("incomplete-verification-evidence", "no_result", "no_results"),
+            ("invalid-backend-evidence", "no_result", "no_results"),
+        ):
+            with self.subTest(error_kind=error_kind):
+                cells = self._cells([outer_kind] * 10)
+                for cell in cells:
+                    attempt = self.projection._attempt("no_result", index="2")
+                    attempt["error_kind"] = error_kind
+                    cell["attempts"].append(attempt)
+                result = self._classify_cells(cells)
+                self.assertEqual(result[count], 10)
+                self.assertFalse(result["promotion_candidate"])
+        for missing_report in (False, True):
+            cells = self._cells(["no_result"] * 10)
+            for cell in cells:
+                cell["attempts"] = [self.projection._attempt("no_result", timed_out=True)]
+                if missing_report:
+                    cell["attempts"][0].pop("verification_report")
+                    cell["attempts"][0].pop("verification_report_sha256")
+            result = self._classify_cells(cells)
+            self.assertEqual(result["classification"], "no-result")
+            self.assertEqual(result["no_results"], 10)
+
+    def test_infrastructure_report_requires_actual_count_and_consistent_flags(self):
+        for change in ("zero", "negative", "overflow", "verified", "parity", "reason"):
+            with self.subTest(change=change):
+                cell = self._cells(["infrastructure"])[0]
+                attempt = cell["attempts"][0]
+                report = json.loads(attempt["verification_report"])
+                if change in ("zero", "negative", "overflow"):
+                    report["infrastructure_error"]["count"] = {"zero": 0, "negative": -1, "overflow": 2**64}[change]
+                elif change == "reason":
+                    report["no_result_reason"] = {"kind": "not_run"}
+                else:
+                    report["verified" if change == "verified" else "bitwise_parity"] = True
+                attempt["verification_report"] = json.dumps(report)
+                attempt["verification_report_sha256"] = hashlib.sha256(attempt["verification_report"].encode()).hexdigest()
+                with self.assertRaisesRegex(series.MalformedRow, "inconsistent infrastructure evidence"):
+                    self._classify_cells([cell])
+
+    def test_noncomparison_product_failure_requires_a_process_disposition(self):
+        cells = self._cells(["product"] * 10)
+        for cell in cells:
+            cell["mode"] = "custom"
+            cell["result"] = "crash-error"
+        self.assertEqual(self._classify_cells(cells)["classification"], "confirmed-failing")
+        for cell in cells:
+            cell["attempts"][0]["status"] = None
+        with self.assertRaisesRegex(series.MalformedRow, "lacks a process disposition"):
+            self._classify_cells(cells)
+
+    def test_classification_is_bound_to_and_does_not_mutate_the_selected_plan(self):
+        selected = [self.CELL]
+        original = list(selected)
+        result = series.classify_pressure_sample(
+            self._rows(["pass"] * 10), selected, "campaign-10x"
+        )
+        self.assertEqual(selected, original)
+        self.assertEqual(set(result), set(selected))
+
+        foreign = self._rows(["pass"] * 10)
+        foreign[0]["series"]["cell"] = "unselected/test/verify/ptrace"
+        with self.assertRaisesRegex(series.SeriesError, "unselected cell"):
+            series.classify_pressure_sample(foreign, selected, "campaign-10x")
+
+
 class ShardPath(unittest.TestCase):
     def test_shape_matches_the_ledger_convention(self):
         self.assertEqual(
@@ -985,6 +1350,7 @@ class CellResultProjection(unittest.TestCase):
         left=None,
         right=None,
         timed_out=False,
+        index="1",
     ):
         comparison = {
             "strictness": "canonical",
@@ -1031,7 +1397,7 @@ class CellResultProjection(unittest.TestCase):
             }
         raw = json.dumps(report, sort_keys=True, separators=(",", ":"))
         return {
-            "index": "1",
+            "index": index,
             "outcome": (
                 "PASS" if verdict == "matched"
                 else "FAIL" if verdict == "diverged"
@@ -1101,11 +1467,11 @@ class CellResultProjection(unittest.TestCase):
             "attempts": [self._attempt()],
         }
 
-    def _project(self, cells):
+    def _project(self, cells, *, producer="pressure-test"):
         return series.rows_from_cell_results(
             cells,
             parent=self.parent,
-            producer="pressure-test",
+            producer=producer,
             run_id="pressure-one",
             tree=self.tree,
             emitted_at="2026-08-26T10:00:00Z",
@@ -1180,17 +1546,38 @@ class CellResultProjection(unittest.TestCase):
 
     def test_two_hundred_raw_run_ids_become_one_batch_row(self):
         cells = [self._cell(i, duration_ms=5_100 + i) for i in range(200)]
-        rows = self._project(cells)
+        # Ordinary repeats still compress; pressure keeps individual evidence.
+        rows = self._project(cells, producer="hermit-repeat")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["run_id"], "pressure-one")
         self.assertEqual(rows[0]["event_type"], "series.observation")
-        self.assertEqual(rows[0]["producer"], "pressure-test")
+        self.assertEqual(rows[0]["producer"], "hermit-repeat")
         payload = rows[0]["series"]
         self.assertEqual(payload["run_index"], 0)
         self.assertEqual(payload["num_runs"], 200)
         self.assertEqual(payload["runtime"]["wall_time_min_ms"], 5_100)
         self.assertEqual(payload["runtime"]["wall_time_max_ms"], 5_299)
         self.assertEqual(payload["runtime"]["run1"]["syscalls"], 612)
+
+        pressure = self._project(cells)
+        self.assertEqual(len(pressure), 200)
+        self.assertEqual({item["run_id"] for item in pressure}, {"pressure-one"})
+        self.assertEqual({item["producer"] for item in pressure}, {"pressure-test"})
+        self.assertEqual(len({item["event_id"] for item in pressure}), 200)
+        self.assertEqual(len({item["series"]["pressure_evidence"]["evidence_sha256"]
+                              for item in pressure}), 200)
+        for index, item in enumerate(pressure):
+            payload = item["series"]
+            self.assertEqual(payload["run_index"], index)
+            self.assertEqual(payload["attempt"], 1)
+            self.assertEqual(payload["num_runs"], 1)
+            self.assertEqual(payload["runtime"]["wall_time_min_ms"], 5_100 + index)
+            self.assertEqual(payload["runtime"]["wall_time_max_ms"], 5_100 + index)
+            self.assertEqual(payload["runtime"]["run1"]["syscalls"], 612)
+            retained = payload["pressure_evidence"]["attempts"]
+            self.assertEqual(len(retained), 1)
+            self.assertEqual(retained[0]["comparison"]["report_sha256"],
+                             cells[index]["attempts"][0]["verification_report_sha256"])
 
     def test_different_host_capability_sets_are_not_compressed_together(self):
         first = self._cell(0)
@@ -1234,7 +1621,7 @@ class CellResultProjection(unittest.TestCase):
             else:
                 cells.append(self._cell(index, duration_ms=4_000 + index))
 
-        rows = self._project(cells)
+        rows = self._project(cells, producer="hermit-repeat")
         self.assertEqual(len(rows), 3)
         by_coordinates = {
             json.dumps(item["series"].get("coordinates"), sort_keys=True): item["series"]
@@ -1266,6 +1653,17 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(first["last_run_index"], 182)
         self.assertLess(len("\n".join(json.dumps(item) for item in rows)), 10_000)
 
+        pressure = self._project(cells)
+        self.assertEqual(len(pressure), 200)
+        self.assertEqual(sum(item["series"]["outcome"] == "passed" for item in pressure), 120)
+        for record, count in ((1_718, 30), (1_976, 50)):
+            located = [item for item in pressure
+                       if item["series"].get("coordinates", {}).get("first_divergent_record") == record]
+            self.assertEqual(len(located), count)
+            self.assertTrue(all(item["series"]["num_runs"] == 1 for item in located))
+        self.assertEqual(series.observed_range(pressure, "first_divergent_record"),
+                         series.observed_range(rows, "first_divergent_record"))
+
     def test_scattered_positions_remain_distinct_with_the_same_messages(self):
         cells = [
             self._diverged_cell(
@@ -1277,7 +1675,7 @@ class CellResultProjection(unittest.TestCase):
             )
             for index in range(200)
         ]
-        rows = self._project(cells)
+        rows = self._project(cells, producer="hermit-repeat")
         self.assertEqual(len(rows), 200)
         self.assertEqual(
             len({row["series"]["coordinates"]["first_divergent_record"] for row in rows}),
@@ -1843,13 +2241,14 @@ class CellResultProjection(unittest.TestCase):
 
     def test_comparison_cell_outcome_validates_all_attempts_and_uses_framework_result(self):
         matched = self._attempt("matched")
-        timed_out = self._attempt("no_result", timed_out=True)
+        timed_out = self._attempt("no_result", timed_out=True, index="2")
         diverged = self._attempt(
             "diverged",
             record=98,
             syscall=37,
             scheduler_turn=4,
             virtual_nanoseconds=80_000,
+            index="3",
         )
 
         for attempts in ([matched, timed_out], [timed_out, matched]):
@@ -1861,7 +2260,7 @@ class CellResultProjection(unittest.TestCase):
             self.assertEqual(row["outcome"], "timeout")
             self.assertNotIn("coordinates", row)
 
-        timeout_without_report = self._attempt("no_result", timed_out=True)
+        timeout_without_report = self._attempt("no_result", timed_out=True, index="2")
         del timeout_without_report["verification_report"]
         del timeout_without_report["verification_report_sha256"]
         cell = self._cell(0, outcome="ERROR", duration_ms=30_453)
@@ -1954,7 +2353,7 @@ class CellResultProjection(unittest.TestCase):
         )
 
         mixed_no_result = self._cell(0, outcome="ERROR")
-        mixed_no_result["attempts"] = [matched, self._attempt("no_result")]
+        mixed_no_result["attempts"] = [matched, self._attempt("no_result", index="2")]
         mixed_no_result["result"] = None
         mixed_no_result["failure_class"] = "no_result"
         self.assertEqual(
@@ -1963,7 +2362,7 @@ class CellResultProjection(unittest.TestCase):
         )
 
         mixed_error = self._cell(0, outcome="ERROR")
-        mixed_error["attempts"] = [matched, self._attempt("infrastructure_error")]
+        mixed_error["attempts"] = [matched, self._attempt("infrastructure_error", index="2")]
         mixed_error["result"] = None
         mixed_error["failure_class"] = "understood_infrastructure_failure"
         self.assertEqual(
@@ -2246,7 +2645,7 @@ class CellResultProjection(unittest.TestCase):
         cell = self._cell(0, outcome="FAIL")
         cell["attempts"] = [
             self._attempt("diverged", syscall=37),
-            self._attempt("diverged", record=98, syscall=41),
+            self._attempt("diverged", record=98, syscall=41, index="2"),
         ]
         rows = self._project([cell])
         self.assertEqual(
@@ -2262,7 +2661,7 @@ class CellResultProjection(unittest.TestCase):
         cell = self._cell(0, outcome="FAIL")
         cell["attempts"] = [
             self._attempt("diverged", left="first left", right="first right"),
-            self._attempt("diverged", left="second left", right="second right"),
+            self._attempt("diverged", left="second left", right="second right", index="2"),
         ]
         rows = self._project([cell])
         self.assertEqual(
@@ -2387,8 +2786,11 @@ class CellResultProjection(unittest.TestCase):
         files = list(series.spool_dir(self.parent).glob("*.jsonl"))
         self.assertEqual([path.name for path in files], ["pressure-one.jsonl"])
         stored = series.union(files)
-        self.assertEqual(len(stored), 1)
-        self.assertEqual(stored[0]["series"]["num_runs"], 2)
+        self.assertEqual(len(stored), 2)
+        self.assertEqual({item["run_id"] for item in stored}, {"pressure-one"})
+        self.assertCountEqual([item["series"]["run_index"] for item in stored], [0, 1])
+        self.assertTrue(all(item["series"]["num_runs"] == 1 for item in stored))
+        self.assertTrue(all(item["series"]["pressure_evidence"] for item in stored))
 
         stdin = io.StringIO(
             "\n".join(json.dumps(self._cell(i)) for i in range(2)) + "\n"
@@ -2410,7 +2812,8 @@ class CellResultProjection(unittest.TestCase):
             sys.stdin = real_stdin
         self.assertEqual(rc, 0)
         self.assertIn("appended 0 row(s) representing 2 run(s)", stdout.getvalue())
-        self.assertEqual(len(files[0].read_text().splitlines()), 1)
+        self.assertEqual(len(files[0].read_text().splitlines()), 2)
+        self.assertEqual(series.union(files), stored)
 
         tracked = self.parent / "series/hermit/host/2026-08.jsonl"
         tracked.parent.mkdir(parents=True)
@@ -2436,7 +2839,8 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("appended 0 row(s) representing 2 run(s)", stdout.getvalue())
         self.assertFalse(files[0].exists())
-        self.assertEqual(len(tracked.read_text().splitlines()), 1)
+        self.assertEqual(len(tracked.read_text().splitlines()), 2)
+        self.assertEqual(series.union([tracked]), stored)
 
     def test_append_cells_retains_typed_pressure_rows_when_one_cell_is_untyped(self):
         import contextlib
