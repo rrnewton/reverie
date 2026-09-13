@@ -13247,6 +13247,52 @@ int main(int argc, char **argv) {
     }
 }
 
+#[test]
+fn vectored_io_uses_linux_fd_and_flag_argument_widths() {
+    const TEST: &str = "vectored_io_uses_linux_fd_and_flag_argument_widths";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program_with_args(
+        &directory.0,
+        "vectored-fd-width",
+        include_str!("fixtures/vectored_fd_width.c"),
+        &["-std=c11", "-Wall", "-Wextra", "-Werror"],
+    );
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "10s"])
+        .arg(&executable)
+        .arg(directory.0.join("native-fd-width"))
+        .output()
+        .unwrap();
+    assert!(native.status.success(), "native fixture failed: {native:?}");
+    let native_stdout = std::str::from_utf8(&native.stdout).unwrap();
+    assert_eq!(native_stdout.lines().count(), 38);
+    assert!(native.stderr.is_empty());
+
+    let guest_path = directory.0.join("guest-fd-width");
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_file_with_context(
+            std::fs::File::open(&executable).unwrap(),
+            &[executable.to_str().unwrap(), guest_path.to_str().unwrap()],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!(
+        code,
+        0,
+        "KVM fixture exited {code}; stdout={}; stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    );
+    assert_eq!(stdout, native.stdout);
+    assert_eq!(stderr, native.stderr);
+}
+
 const SIBLING_SIGNAL_PROGRAM: &str = r#"#define _GNU_SOURCE
 #include <errno.h>
 #include <pthread.h>
