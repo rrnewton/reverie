@@ -11745,3 +11745,89 @@ int main(void) {
         assert!(stderr.is_empty(), "case {argument}: {stderr:?}");
     }
 }
+
+#[test]
+fn ordinary_worker_exit_preserves_later_tool_owned_threads() {
+    const TEST: &str = "ordinary_worker_exit_preserves_later_tool_owned_threads";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "sequential-pthreads",
+        r#"#define _GNU_SOURCE
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+static void *enter(void *opaque) {
+  int *entered = opaque;
+  *entered = 1;
+  return (void *)(uintptr_t)37;
+}
+int main(void) {
+  for (int i = 0; i < 3; ++i) {
+    int entered = 0;
+    pthread_t thread;
+    void *result = NULL;
+    int created = pthread_create(&thread, NULL, enter, &entered);
+    if (created) return 2;
+    int joined = pthread_join(thread, &result);
+    if (joined || entered != 1 || result != (void *)(uintptr_t)37) {
+      fprintf(stderr, "pthread iteration=%d joined=%d entered=%d result=%p expected=0x25\n", i, joined, entered, result);
+      return 3;
+    }
+  }
+  puts("three-pthreads-executed-and-joined");
+  return 0;
+}
+"#,
+    );
+    let native = std::process::Command::new("timeout")
+        .args(["--signal=TERM", "--kill-after=2s", "15s"])
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(native.status.success(), "native fixture failed: {native:?}");
+    assert_eq!(native.stdout, b"three-pthreads-executed-and-joined\n");
+    assert!(native.stderr.is_empty());
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    for tool_owned in [false, true] {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = if tool_owned {
+            let (counter, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<HierarchicalCounterTool>((), true),
+            )
+            .unwrap();
+            let totals = counter.totals();
+            eprintln!(
+                "tool_owned={tool_owned} code={code} totals={totals:?} stdout={} stderr={}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            );
+            assert_eq!(totals.exited_procs, 1);
+            assert_eq!(totals.exited_threads, 4);
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(
+            code,
+            0,
+            "tool_owned={tool_owned} stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        assert_eq!(stdout, native.stdout, "tool_owned={tool_owned}");
+        assert_eq!(stderr, native.stderr, "tool_owned={tool_owned}");
+    }
+}
