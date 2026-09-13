@@ -1373,6 +1373,64 @@ async fn notify_tool_exit<T: Tool>(
 
 impl KvmBackend {
     #[allow(clippy::too_many_arguments)]
+    async fn finish_exec_teardown_failure<T: Tool>(
+        &mut self,
+        executor: &mut ElfExecutor,
+        tool: Arc<T>,
+        identity: (Pid, Pid),
+        global_state: &T::GlobalState,
+        config: &<T::GlobalState as GlobalTool>::Config,
+        thread_state: T::ThreadState,
+        error: Error,
+    ) -> Error {
+        let Error::ExecWorkerTeardown(primary) = error else {
+            unreachable!("only failed exec worker teardown uses this cleanup path")
+        };
+        let (pid, tid) = identity;
+        // Nonleader exec remains unsupported. Siblings have already joined at
+        // the failed exec boundary; join again before consuming the last Arc.
+        debug_assert_eq!(pid, tid);
+        self.cancel_guest_threads();
+        executor.cancel_current_thread();
+        self.release_thread_slot();
+        self.clear_registered_worker_tid_before_exit(executor);
+        let global = KvmGlobal {
+            tid,
+            state: global_state,
+            config,
+        };
+        let status = ExitStatus::Exited(255);
+        let thread_error = tool
+            .on_exit_thread(tid, &global, thread_state, status)
+            .await
+            .err();
+        // A failing thread hook has still consumed ThreadState. Always attempt
+        // the process hook, and preserve both failures alongside the original
+        // worker diagnostic. Other runtime-error policies are unchanged.
+        let process_error = match Arc::try_unwrap(tool) {
+            Ok(tool) => tool
+                .on_exit_process(pid, &global, status)
+                .await
+                .map_err(Error::Reverie)
+                .err(),
+            Err(_) => Some(Error::UnexpectedVcpuExit(
+                "KVM worker retained process Tool state after failed exec".to_owned(),
+            )),
+        };
+        if thread_error.is_none() && process_error.is_none() {
+            return *primary;
+        }
+        let mut diagnostic = format!("KVM exec failed: {primary}");
+        if let Some(error) = thread_error {
+            diagnostic.push_str(&format!("; owner thread exit failed: {error}"));
+        }
+        if let Some(error) = process_error {
+            diagnostic.push_str(&format!("; owner process exit failed: {error}"));
+        }
+        Error::UnexpectedVcpuExit(diagnostic)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn finish_cancelled_tool_thread<T: Tool>(
         &mut self,
         executor: &mut ElfExecutor,
@@ -2595,11 +2653,25 @@ impl KvmBackend {
                                     .await;
                             }
                             HandlerOutcome::RuntimeError(error) => {
-                                return Err(self.cleanup_unstarted_tool_children_after_error(
+                                let error = self.cleanup_unstarted_tool_children_after_error(
                                     executor,
                                     &pending_child_starts,
                                     error,
-                                ));
+                                );
+                                if matches!(error, Error::ExecWorkerTeardown(_)) {
+                                    return Err(self
+                                        .finish_exec_teardown_failure(
+                                            executor,
+                                            tool,
+                                            (pid, tid),
+                                            global_state.as_ref(),
+                                            config,
+                                            thread_state,
+                                            error,
+                                        )
+                                        .await);
+                                }
+                                return Err(error);
                             }
                         };
                         self.start_pending_tool_children(executor, &pending_child_starts)?;
@@ -2649,7 +2721,23 @@ impl KvmBackend {
                         context,
                         continuation,
                     )
-                    .await?;
+                    .await;
+                let outcome = match outcome {
+                    Err(error @ Error::ExecWorkerTeardown(_)) => {
+                        return Err(self
+                            .finish_exec_teardown_failure(
+                                executor,
+                                tool,
+                                (pid, tid),
+                                global_state.as_ref(),
+                                config,
+                                thread_state,
+                                error,
+                            )
+                            .await);
+                    }
+                    outcome => outcome?,
+                };
                 if !outcome.image_replaced {
                     result = outcome.syscall_result;
                     returned_registers = process_syscall_return_registers(
