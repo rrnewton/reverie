@@ -110,6 +110,10 @@ const GATE_FLOOR_POLICY: &str = "registry-effective-floor";
 const CANONICAL_VALIDATE_REPO: &str = "rrnewton/hermit";
 const CANONICAL_REVERIE_REPO: &str = "rrnewton/reverie";
 const COMMIT_TIMELINE_REF: &str = "origin/main";
+/// Framework result sidecars share the run-handle directory but are a different
+/// record kind with their own schema. `ci-hub/validate/service_result.py` owns
+/// the name; keep the two spellings identical.
+const SERVICE_RESULT_SUFFIX: &str = ".service-result.json";
 const NO_RUN_NOTE: &str = "NO-RUN means no readable validation ledger record identifies that commit; it cannot distinguish a validation that was never attempted from one that failed before writing a ledger record, and an unreadable row may not identify its commit.";
 const ROOT_HELP: &str = r#"Typed front door for dev-hermit validation, GH Actions, and runner operations
 
@@ -7380,6 +7384,16 @@ fn live_validate_runs_from(
     paths.retain(|path| {
         path.extension()
             .is_some_and(|extension| extension == "json")
+            // Framework result sidecars are excluded by name, the same rule the
+            // cleanup discovery and `migrate_run_identities.py` already use;
+            // they are not run handles and never were. Without this they are
+            // read as malformed handles, and because EVERY completed run writes
+            // one, the unreadable set grows without bound and fail-closed
+            // readers such as `integration_tip_validate.py` can never decide.
+            && !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(SERVICE_RESULT_SUFFIX))
     });
     paths.sort();
 
@@ -13146,6 +13160,106 @@ mod tests {
             record.path == runs.join("unattributable.json")
                 && record.error.contains("missing field `schema_version`")
         }));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn framework_result_sidecars_are_not_read_as_run_handles() {
+        // Every completed validate run writes one `<unit>.service-result.json`
+        // beside its handle. Reading those as handles made the unreadable set
+        // grow by one per run, and fail-closed readers -- notably
+        // `integration_tip_validate.py`, which refuses to decide while any
+        // handle is unreadable -- could then never launch. Measured 2026-09-13:
+        // 184 of 481 unreadable handles were exactly this, every sidecar on disk.
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-result-sidecar-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let runs = root.join("ignored/validate/runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::write(
+            runs.join("validate-run.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "state": "completed",
+                "unit": "validate-run.service",
+                "target": "a".repeat(40),
+                "repo": CANONICAL_VALIDATE_REPO,
+                "started_at": "2026-09-13T00:00:00Z",
+                "finished_at": "2026-09-13T00:05:00Z",
+                "result": "success",
+                "exit_code": 0
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        // The real shape, copied from a sidecar this host actually wrote. It
+        // has neither `state` nor `repo`, so it is unreadable AS A HANDLE.
+        let sidecar = serde_json::json!({
+            "schema_version": 4,
+            "commit": "a".repeat(40),
+            "profile": "full",
+            "selection_mode": "full",
+            "final_validate_status": "FAILED",
+            "exit_code": 1,
+            "executed_nodes": 266,
+            "executed_tests": 2823,
+            "passed_tests": 2822
+        });
+        std::fs::write(
+            runs.join(format!("validate-run{SERVICE_RESULT_SUFFIX}")),
+            serde_json::to_vec(&sidecar).unwrap(),
+        )
+        .unwrap();
+
+        let scan = live_validate_runs_from(
+            &root,
+            &root,
+            CANONICAL_VALIDATE_REPO,
+            &root.join("proc"),
+            &root.join("boot_id"),
+            chrono::Utc::now(),
+            false,
+        )
+        .unwrap();
+        assert!(
+            scan.unreadable_handles.is_empty(),
+            "a result sidecar must not be reported as an unreadable handle: {:?}",
+            scan.unreadable_handles
+        );
+        assert_eq!(scan.attempts.len(), 1, "the real handle is still read");
+        assert_eq!(scan.attempts[0].unit, "validate-run.service");
+
+        // CONTROL THAT MUST STILL FAIL: the exclusion is by the sidecar name
+        // only. Byte-identical content under an ordinary handle name is still
+        // unavailable evidence and must still be refused, or this change would
+        // have widened what the reader accepts.
+        std::fs::write(
+            runs.join("validate-not-a-sidecar.json"),
+            serde_json::to_vec(&sidecar).unwrap(),
+        )
+        .unwrap();
+        let scan = live_validate_runs_from(
+            &root,
+            &root,
+            CANONICAL_VALIDATE_REPO,
+            &root.join("proc"),
+            &root.join("boot_id"),
+            chrono::Utc::now(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            scan.unreadable_handles.len(),
+            1,
+            "the same bytes under a handle name must still be unreadable"
+        );
+        assert_eq!(
+            scan.unreadable_handles[0].path,
+            runs.join("validate-not-a-sidecar.json")
+        );
+        assert_eq!(scan.attempts.len(), 1, "the real handle is still read");
         std::fs::remove_dir_all(root).unwrap();
     }
 
