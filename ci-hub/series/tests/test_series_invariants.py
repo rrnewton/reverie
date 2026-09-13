@@ -1126,6 +1126,173 @@ class Publication(unittest.TestCase):
         self.assertEqual(report["published"], 1)
 
 
+class ScorecardProjectionSnapshot(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repo = Path(self.temporary.name) / "parent"
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(self.repo)], check=True
+        )
+        shard = self.repo / "series/hermit/devbig014/2026-08.jsonl"
+        shard.parent.mkdir(parents=True)
+        self.published = row()
+        shard.write_text(json.dumps(self.published, sort_keys=True) + "\n")
+        self._git("add", "series")
+        self._git(
+            "-c", "user.name=t", "-c", "user.email=t@invalid",
+            "commit", "-q", "-m", "published series",
+        )
+        self.commit = self._git("rev-parse", "HEAD")
+        self.tree = self._git("rev-parse", f"{self.commit}:series")
+        self._git("update-ref", "refs/remotes/origin/main", self.commit)
+
+    def _git(self, *arguments):
+        return subprocess.run(
+            ["git", "-C", str(self.repo), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    def _write_local(self, relative, item):
+        target = series.spool_dir(self.repo) / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(item, sort_keys=True) + "\n")
+        return target
+
+    def test_snapshot_binds_published_tree_and_exact_local_sources(self):
+        local = row(
+            event_id="01J000000000000000000000AB",
+            run_id="campaign-2",
+            series={"run_index": 1},
+        )
+        self._write_local("live.jsonl", local)
+        self._write_local("published/duplicate.jsonl", self.published)
+        output = Path(self.temporary.name) / "artifacts/run-1/series-snapshot.json"
+
+        with mock.patch.object(series, "refresh_origin_main"):
+            report = series.write_scorecard_projection_snapshot(self.repo, output)
+
+        snapshot = series.read_scorecard_projection_snapshot(
+            output, expected_sha256=report["sha256"]
+        )
+        self.assertEqual(series.SCORECARD_SNAPSHOT_SCHEMA, snapshot["schema"])
+        self.assertEqual(self.commit, snapshot["source"]["commit"])
+        self.assertEqual(self.tree, snapshot["source"]["tree"])
+        self.assertEqual(1, snapshot["source"]["published_rows"])
+        self.assertEqual(2, snapshot["rows_read"])
+        self.assertEqual(
+            [self.published["event_id"], local["event_id"]],
+            [item["event_id"] for item in snapshot["rows"]],
+        )
+        self.assertEqual(
+            ["live.jsonl", "published/duplicate.jsonl"],
+            [item["path"] for item in snapshot["source"]["local_sources"]],
+        )
+        self.assertEqual(report["rows_read"], snapshot["rows_read"])
+        self.assertEqual(report["source_commit"], self.commit)
+        self.assertEqual(report["source_tree"], self.tree)
+
+    def test_existing_identical_snapshot_is_idempotent_but_conflict_is_refused(self):
+        output = Path(self.temporary.name) / "snapshot.json"
+        with mock.patch.object(series, "refresh_origin_main"):
+            first = series.write_scorecard_projection_snapshot(self.repo, output)
+            second = series.write_scorecard_projection_snapshot(self.repo, output)
+        self.assertEqual(first, second)
+        original = output.read_bytes()
+        output.write_text("foreign\n")
+        with mock.patch.object(series, "refresh_origin_main"):
+            with self.assertRaisesRegex(series.SeriesError, "different content"):
+                series.write_scorecard_projection_snapshot(self.repo, output)
+        self.assertEqual(b"foreign\n", output.read_bytes())
+        self.assertNotEqual(original, output.read_bytes())
+
+    def test_failed_post_link_readback_removes_only_the_new_output(self):
+        output = Path(self.temporary.name) / "snapshot.json"
+        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
+            series,
+            "read_scorecard_projection_snapshot",
+            side_effect=[{}, series.SeriesError("readback failed")],
+        ):
+            with self.assertRaisesRegex(series.SeriesError, "readback failed"):
+                series.write_scorecard_projection_snapshot(self.repo, output)
+        self.assertFalse(output.exists())
+
+    def test_consumer_refuses_tampered_bytes_and_row_digest(self):
+        output = Path(self.temporary.name) / "snapshot.json"
+        with mock.patch.object(series, "refresh_origin_main"):
+            report = series.write_scorecard_projection_snapshot(self.repo, output)
+        snapshot = json.loads(output.read_text())
+        snapshot["rows_sha256"] = "0" * 64
+        output.write_text(
+            json.dumps(snapshot, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        tampered_digest = hashlib.sha256(output.read_bytes()).hexdigest()
+        with self.assertRaisesRegex(series.SeriesError, "row digest"):
+            series.read_scorecard_projection_snapshot(
+                output, expected_sha256=tampered_digest
+            )
+        with self.assertRaisesRegex(series.SeriesError, "digest mismatch"):
+            series.read_scorecard_projection_snapshot(
+                output, expected_sha256=report["sha256"]
+            )
+
+    def test_conflicting_event_identity_refuses_without_output(self):
+        conflict = row(series={"outcome": "diverged"})
+        self._write_local("conflict.jsonl", conflict)
+        output = Path(self.temporary.name) / "snapshot.json"
+        with mock.patch.object(series, "refresh_origin_main"):
+            with self.assertRaisesRegex(series.SeriesError, "different bodies"):
+                series.write_scorecard_projection_snapshot(self.repo, output)
+        self.assertFalse(output.exists())
+
+    def test_local_source_set_change_refuses_without_output(self):
+        first = row(
+            event_id="01J000000000000000000000AB",
+            run_id="campaign-2",
+            series={"run_index": 1},
+        )
+        second = row(
+            event_id="01J000000000000000000000AC",
+            run_id="campaign-3",
+            series={"run_index": 2},
+        )
+        self._write_local("first.jsonl", first)
+        output = Path(self.temporary.name) / "snapshot.json"
+        original = series._read_snapshot_source
+
+        def add_source_after_read(path):
+            captured = original(path)
+            self._write_local("second.jsonl", second)
+            return captured
+
+        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
+            series, "_read_snapshot_source", side_effect=add_source_after_read
+        ):
+            with self.assertRaisesRegex(series.SeriesError, "spool changed"):
+                series.write_scorecard_projection_snapshot(self.repo, output)
+        self.assertFalse(output.exists())
+
+    def test_unavailable_published_source_never_falls_back_to_tracked_output(self):
+        import contextlib
+        import io
+
+        output = Path(self.temporary.name) / "snapshot.json"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(
+            series, "published_snapshot", side_effect=series.SeriesError("fetch failed")
+        ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = series.main([
+                "snapshot", "--parent", str(self.repo), "--output", str(output)
+            ])
+        self.assertEqual(1, rc)
+        self.assertFalse(output.exists())
+        self.assertEqual("", stdout.getvalue())
+        self.assertIn("snapshot unavailable", stderr.getvalue())
+        self.assertIn("no new snapshot was published", stderr.getvalue())
+
+
 class WriteBoundaryCli(unittest.TestCase):
     """The CLI exists so a producer can CALL `validate_row` rather than
     reimplement it in another language. These pin the properties that make

@@ -126,6 +126,14 @@ missing update cannot read as overall success. An interrupted caller leaves the
 systemd service running; `validate-run --attach <unit>` performs the same update
 when it later returns the completed run to an invoker.
 
+The next combined scorecard writer has an additive parent-side helper for
+Hermit's exact `target/validation/validate-invocation.lock` domain. It waits only
+for an explicit bounded interval, holds the lock across the future snapshot and
+two-file replacement, and refuses on contention or an unusable lock path. The
+existing `observe-results` caller is deliberately unchanged until the Hermit
+command can update `SCORECARD.md` and `ci/compat-envelope/cells.json` together;
+this helper alone does not change write-back authority or tracked-file lifetime.
+
 Current run handles retain wire schema 1 so already-deployed readers can
 continue observing a run started by newer code. Their complete contract is
 owned by `run_registry.py`, and the `producer` field names that file so readers

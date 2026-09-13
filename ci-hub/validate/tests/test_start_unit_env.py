@@ -11,6 +11,7 @@ import threading
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -580,6 +581,80 @@ def _finishes(call, seconds: float = 5.0):
     thread.start()
     thread.join(seconds)
     return box.get("finished", False), box
+
+
+class ScorecardInvocationLock(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.checkout = Path(self.temporary.name) / "checkout"
+        self.checkout.mkdir()
+        self.lock_path = (
+            self.checkout / su.SCORECARD_INVOCATION_LOCK_RELATIVE
+        )
+
+    def _open_and_hold(self):
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock = self.lock_path.open("a+")
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock
+
+    def test_helper_holds_the_exact_validate_invocation_lock(self) -> None:
+        with su.scorecard_invocation_lock(self.checkout, timeout_seconds=0.1) as path:
+            self.assertEqual(self.lock_path, path)
+            contender = self.lock_path.open("a+")
+            try:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                contender.close()
+        successor = self._open_and_hold()
+        successor.close()
+
+    def test_contention_is_bounded_and_refuses_before_the_body(self) -> None:
+        held = self._open_and_hold()
+        body_ran = False
+        started = time.monotonic()
+        try:
+            with self.assertRaisesRegex(
+                su.ScorecardInvocationLockRefused,
+                "remained held.*two-file write-back did not run",
+            ):
+                with su.scorecard_invocation_lock(
+                    self.checkout, timeout_seconds=0.02, poll_seconds=0.005
+                ):
+                    body_ran = True
+        finally:
+            held.close()
+        self.assertFalse(body_ran)
+        self.assertLess(time.monotonic() - started, 0.5)
+
+    def test_body_exception_still_releases_the_lock(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "body failed"):
+            with su.scorecard_invocation_lock(self.checkout, timeout_seconds=0.1):
+                raise RuntimeError("body failed")
+        successor = self._open_and_hold()
+        successor.close()
+
+    def test_unresolvable_lock_path_refuses_instead_of_running(self) -> None:
+        self.lock_path.parent.mkdir(parents=True)
+        target = Path(self.temporary.name) / "foreign-lock"
+        target.write_text("")
+        self.lock_path.symlink_to(target)
+        with self.assertRaisesRegex(
+            su.ScorecardInvocationLockRefused, "cannot open.*validation invocation lock"
+        ):
+            with su.scorecard_invocation_lock(self.checkout, timeout_seconds=0):
+                self.fail("a symlinked lock path must never admit the writer")
+
+    def test_invalid_bounds_refuse_before_creating_a_lock(self) -> None:
+        for timeout in (-1, float("inf"), True):
+            with self.subTest(timeout=timeout), self.assertRaises(ValueError):
+                with su.scorecard_invocation_lock(
+                    self.checkout, timeout_seconds=timeout
+                ):
+                    pass
+        self.assertFalse(self.lock_path.exists())
 
 
 class RecordLockNeverWithholdsAVerdict(unittest.TestCase):

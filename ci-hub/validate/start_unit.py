@@ -8,6 +8,7 @@ import filecmp
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -723,6 +724,11 @@ SUPPORTED_REPOS = {
 }
 SCORECARD_PATHS = run_registry.SCORECARD_WRITEBACK_PATHS
 SCORECARD_HANDOFF_SCHEMA_VERSION = 1
+SCORECARD_INVOCATION_LOCK_RELATIVE = Path("target/validation/validate-invocation.lock")
+
+
+class ScorecardInvocationLockRefused(RuntimeError):
+    """The source checkout could not be made safe for scorecard write-back."""
 
 
 class ServiceAcceptance(Enum):
@@ -4073,6 +4079,89 @@ def emit_report(report: Mapping[str, Any], *, json_output: bool) -> None:
         if state == "absent":
             continue
         print(f"{label} {raw} [{state}]", flush=True)
+
+
+@contextmanager
+def scorecard_invocation_lock(
+    source_checkout: Path,
+    *,
+    timeout_seconds: float,
+    poll_seconds: float = 0.05,
+):
+    """Bound scorecard write-back on Hermit's per-checkout validate lock.
+
+    This is the same kernel ``flock`` domain used by ``scripts/validate.rs``.
+    A parent-side writer must take it before reading its snapshot inputs and
+    hold it through replacement of both generated files.  Contention is a
+    refusal after a finite deadline, never an unbounded wait and never
+    permission to write while a qualifying validation is in flight.
+
+    The helper is additive in this slice.  The existing writer is deliberately
+    not switched until Hermit's combined two-file transaction is available.
+    """
+    if (
+        not isinstance(timeout_seconds, (int, float))
+        or isinstance(timeout_seconds, bool)
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds < 0
+    ):
+        raise ValueError("scorecard invocation lock timeout must be finite and nonnegative")
+    if (
+        not isinstance(poll_seconds, (int, float))
+        or isinstance(poll_seconds, bool)
+        or not math.isfinite(poll_seconds)
+        or poll_seconds <= 0
+    ):
+        raise ValueError("scorecard invocation lock poll interval must be finite and positive")
+
+    source_checkout = source_checkout.resolve()
+    if not source_checkout.is_dir():
+        raise ScorecardInvocationLockRefused(
+            f"source checkout is unavailable: {source_checkout}"
+        )
+    lock_path = source_checkout / SCORECARD_INVOCATION_LOCK_RELATIVE
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(lock_path, flags, 0o644)
+    except OSError as error:
+        raise ScorecardInvocationLockRefused(
+            f"cannot open source checkout validation invocation lock {lock_path}: {error}"
+        ) from error
+
+    started = time.monotonic()
+    deadline = started + float(timeout_seconds)
+    acquired = False
+    try:
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except BlockingIOError:
+                now = time.monotonic()
+                if now >= deadline:
+                    elapsed = now - started
+                    raise ScorecardInvocationLockRefused(
+                        "source checkout validation invocation lock remained held for "
+                        f"{elapsed:.3f}s at {lock_path}; scorecard snapshot and "
+                        "two-file write-back did not run"
+                    )
+                time.sleep(min(float(poll_seconds), deadline - now))
+            except OSError as error:
+                raise ScorecardInvocationLockRefused(
+                    f"cannot lock source checkout validation invocation lock {lock_path}: "
+                    f"{error}"
+                ) from error
+        yield lock_path
+    finally:
+        try:
+            if acquired:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
 
 def write_scorecard_from_results(

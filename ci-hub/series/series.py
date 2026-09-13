@@ -53,9 +53,10 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +75,8 @@ from ledger import (  # noqa: E402  (path set above)
 LEGACY_ENVELOPE_VERSION = "stress-series/v1"
 HOST_FACTS_ENVELOPE_VERSION = "stress-series/v2"
 ENVELOPE_VERSION = "stress-series/v3"
+SCORECARD_SNAPSHOT_SCHEMA = "scorecard-series-snapshot/v1"
+SCORECARD_SNAPSHOT_SOURCE = "series"
 READABLE_ENVELOPE_VERSIONS = frozenset({
     LEGACY_ENVELOPE_VERSION,
     HOST_FACTS_ENVELOPE_VERSION,
@@ -756,6 +759,299 @@ def history_store_rows(parent: Any) -> list[dict]:
     spool = spool_dir(parent)
     local = sorted(spool.glob("*.jsonl")) + sorted((spool / "published").glob("*.jsonl"))
     return union_events([*published_rows(parent), *union(local)])
+
+
+def _series_tree_at(parent: Path, commit: str) -> str:
+    """Resolve the exact tree containing the published series at ``commit``."""
+    resolved = _git(parent, [
+        "--no-replace-objects",
+        "rev-parse",
+        "--verify",
+        f"{commit}:{SCORECARD_SNAPSHOT_SOURCE}",
+    ])
+    tree = resolved.stdout.strip()
+    if resolved.returncode != 0 or _SHA_RE.fullmatch(tree) is None:
+        detail = resolved.stderr.strip() or resolved.stdout.strip() or "no output"
+        raise SeriesError(
+            f"cannot resolve published series tree at {commit}: {detail}"
+        )
+    object_type = _git(parent, ["--no-replace-objects", "cat-file", "-t", tree])
+    if object_type.returncode != 0 or object_type.stdout.strip() != "tree":
+        raise SeriesError(
+            f"published series object {tree} at {commit} is not a tree"
+        )
+    return tree
+
+
+def _canonical_rows_bytes(rows: Sequence[dict]) -> bytes:
+    return "".join(
+        json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+        for row in rows
+    ).encode()
+
+
+def _read_snapshot_source(path: Path) -> tuple[bytes, list[dict]]:
+    """Read one local spool source once and refuse mutable path tricks."""
+    if path.is_symlink() or not path.is_file():
+        raise SeriesError(f"series snapshot source is not a regular file: {path}")
+    payload = path.read_bytes()
+    if payload and not payload.endswith(b"\n"):
+        raise MalformedEvent(
+            f"{path}: final line has no newline terminator — the batch is truncated"
+        )
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise MalformedEvent(f"{path}: batch is not UTF-8: {error}") from error
+    rows = [parse_line(line) for line in text.splitlines() if line.strip()]
+    return payload, validate_read_rows(rows)
+
+
+def _local_snapshot_rows(parent: Path) -> tuple[list[dict], list[dict[str, Any]]]:
+    """Capture exact local live/retained inputs for one projection snapshot.
+
+    ``.append.lock`` is the existing serialization domain for projected cell
+    rows.  The before/after path check also refuses a concurrent publication
+    move rather than silently presenting a partially old local frontier.
+    """
+    spool = spool_dir(parent)
+    if not spool.exists():
+        return [], []
+    if spool.is_symlink() or not spool.is_dir():
+        raise SeriesError(f"series spool is not a regular directory: {spool}")
+
+    lock_path = spool / ".append.lock"
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        lock_fd = os.open(lock_path, flags, 0o644)
+    except OSError as error:
+        raise SeriesError(f"cannot open series snapshot lock {lock_path}: {error}") from error
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_SH)
+
+        def paths() -> list[tuple[str, Path]]:
+            return [
+                *(('live', path) for path in sorted(spool.glob("*.jsonl"))),
+                *(
+                    ('published-retained', path)
+                    for path in sorted((spool / "published").glob("*.jsonl"))
+                ),
+            ]
+
+        before = paths()
+        rows: list[dict] = []
+        sources: list[dict[str, Any]] = []
+        for kind, path in before:
+            payload, source_rows = _read_snapshot_source(path)
+            rows.extend(source_rows)
+            relative = path.relative_to(spool).as_posix()
+            sources.append({
+                "kind": kind,
+                "path": relative,
+                "rows": len(source_rows),
+                "size": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            })
+        after = paths()
+        if before != after:
+            raise SeriesError(
+                "series spool changed while its projection snapshot was being read"
+            )
+        return rows, sources
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def scorecard_projection_snapshot(parent: Any) -> dict[str, Any]:
+    """Build one immutable published+local series input for scorecard write-back.
+
+    Failure is terminal for this operation.  In particular, an unavailable
+    published revision never falls back to the tracked files in the caller's
+    checkout, which may be arbitrarily stale.
+    """
+    parent = Path(parent).resolve()
+    published = published_snapshot(parent)
+    source_tree = _series_tree_at(parent, published.commit)
+    local_rows, local_sources = _local_snapshot_rows(parent)
+    try:
+        rows = union_events([*published.rows, *local_rows])
+    except LedgerError as error:
+        raise SeriesError(f"cannot form canonical series snapshot: {error}") from error
+    rows_bytes = _canonical_rows_bytes(rows)
+    return {
+        "schema": SCORECARD_SNAPSHOT_SCHEMA,
+        "source": {
+            "path": SCORECARD_SNAPSHOT_SOURCE,
+            "commit": published.commit,
+            "tree": source_tree,
+            "published_rows": len(published.rows),
+            "local_sources": local_sources,
+        },
+        "rows_read": len(rows),
+        "rows_sha256": hashlib.sha256(rows_bytes).hexdigest(),
+        "rows": rows,
+    }
+
+
+def _snapshot_bytes(snapshot: Mapping[str, Any]) -> bytes:
+    return (
+        json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+    ).encode()
+
+
+def read_scorecard_projection_snapshot(
+    path: Any, *, expected_sha256: str
+) -> dict[str, Any]:
+    """Read and validate an immutable projection snapshot by exact byte digest."""
+    path = Path(path)
+    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256 or "") is None:
+        raise SeriesError("scorecard snapshot expected_sha256 must be 64 lowercase hex")
+    if path.is_symlink() or not path.is_file():
+        raise SeriesError(f"scorecard snapshot is not a regular file: {path}")
+    payload = path.read_bytes()
+    actual_sha256 = hashlib.sha256(payload).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise SeriesError(
+            "scorecard snapshot digest mismatch: "
+            f"expected {expected_sha256}, got {actual_sha256}"
+        )
+    try:
+        snapshot = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SeriesError(f"scorecard snapshot is not valid JSON: {error}") from error
+    if not isinstance(snapshot, dict) or set(snapshot) != {
+        "schema", "source", "rows_read", "rows_sha256", "rows",
+    }:
+        raise SeriesError("scorecard snapshot has an invalid top-level shape")
+    source = snapshot.get("source")
+    if not isinstance(source, dict) or set(source) != {
+        "path", "commit", "tree", "published_rows", "local_sources",
+    }:
+        raise SeriesError("scorecard snapshot has an invalid source identity")
+    if (
+        snapshot.get("schema") != SCORECARD_SNAPSHOT_SCHEMA
+        or source.get("path") != SCORECARD_SNAPSHOT_SOURCE
+        or _SHA_RE.fullmatch(str(source.get("commit", ""))) is None
+        or _SHA_RE.fullmatch(str(source.get("tree", ""))) is None
+        or type(source.get("published_rows")) is not int
+        or source["published_rows"] < 0
+    ):
+        raise SeriesError("scorecard snapshot has an invalid source identity")
+    local_sources = source.get("local_sources")
+    if not isinstance(local_sources, list):
+        raise SeriesError("scorecard snapshot local_sources must be an array")
+    seen_paths = set()
+    ordered_sources = []
+    for item in local_sources:
+        if not isinstance(item, dict) or set(item) != {
+            "kind", "path", "rows", "size", "sha256",
+        }:
+            raise SeriesError("scorecard snapshot has an invalid local source")
+        relative = item.get("path")
+        if (
+            item.get("kind") not in {"live", "published-retained"}
+            or not isinstance(relative, str)
+            or not relative
+            or Path(relative).is_absolute()
+            or ".." in Path(relative).parts
+            or relative in seen_paths
+            or type(item.get("rows")) is not int
+            or item["rows"] < 0
+            or type(item.get("size")) is not int
+            or item["size"] < 0
+            or re.fullmatch(r"[0-9a-f]{64}", str(item.get("sha256", ""))) is None
+        ):
+            raise SeriesError("scorecard snapshot has an invalid local source")
+        if item["kind"] == "live" and len(Path(relative).parts) != 1:
+            raise SeriesError("scorecard snapshot live source has an invalid path")
+        if item["kind"] == "published-retained" and (
+            len(Path(relative).parts) != 2
+            or Path(relative).parts[0] != "published"
+        ):
+            raise SeriesError(
+                "scorecard snapshot published-retained source has an invalid path"
+            )
+        seen_paths.add(relative)
+        ordered_sources.append((item["kind"], relative))
+    source_order = {"live": 0, "published-retained": 1}
+    if ordered_sources != sorted(
+        ordered_sources, key=lambda item: (source_order[item[0]], item[1])
+    ):
+        raise SeriesError("scorecard snapshot local sources are not in canonical order")
+    rows = snapshot.get("rows")
+    if not isinstance(rows, list):
+        raise SeriesError("scorecard snapshot rows must be an array")
+    checked = validate_read_rows(rows)
+    canonical = union_events(checked)
+    if canonical != rows:
+        raise SeriesError("scorecard snapshot rows are not a unique canonical event order")
+    if type(snapshot.get("rows_read")) is not int or snapshot["rows_read"] != len(rows):
+        raise SeriesError("scorecard snapshot rows_read does not match its rows")
+    if source["published_rows"] > len(rows):
+        raise SeriesError("scorecard snapshot published_rows exceeds its canonical rows")
+    rows_sha256 = hashlib.sha256(_canonical_rows_bytes(rows)).hexdigest()
+    if snapshot.get("rows_sha256") != rows_sha256:
+        raise SeriesError("scorecard snapshot row digest does not match its rows")
+    return snapshot
+
+
+def write_scorecard_projection_snapshot(parent: Any, output: Any) -> dict[str, Any]:
+    """Atomically publish one run-scoped snapshot without replacing evidence."""
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.parent.is_symlink() or not output.parent.is_dir():
+        raise SeriesError(f"scorecard snapshot parent is not a regular directory: {output.parent}")
+    snapshot = scorecard_projection_snapshot(parent)
+    payload = _snapshot_bytes(snapshot)
+    digest = hashlib.sha256(payload).hexdigest()
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".tmp", dir=output.parent
+    )
+    temporary = Path(temporary_name)
+    linked = False
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        read_scorecard_projection_snapshot(temporary, expected_sha256=digest)
+        try:
+            os.link(temporary, output)
+            linked = True
+        except FileExistsError:
+            if output.is_symlink() or not output.is_file() or output.read_bytes() != payload:
+                raise SeriesError(
+                    f"scorecard snapshot output already exists with different content: {output}"
+                )
+        directory = os.open(output.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        read_scorecard_projection_snapshot(output, expected_sha256=digest)
+    except Exception:
+        if linked:
+            try:
+                if output.stat().st_ino == temporary.stat().st_ino:
+                    output.unlink()
+            except OSError:
+                pass
+        raise
+    finally:
+        temporary.unlink(missing_ok=True)
+    return {
+        "state": "available",
+        "path": str(output.resolve()),
+        "sha256": digest,
+        "source_commit": snapshot["source"]["commit"],
+        "source_tree": snapshot["source"]["tree"],
+        "rows_read": snapshot["rows_read"],
+    }
 
 
 def test_id(row: dict) -> str | None:
@@ -2115,8 +2411,10 @@ __all__ = [
     "observed_range",
     "parse_line",
     "published_rows",
+    "read_scorecard_projection_snapshot",
     "row_identity",
     "rows_from_cell_results",
+    "scorecard_projection_snapshot",
     "series_for",
     "shared_parent_root",
     "shard_path",
@@ -2129,6 +2427,7 @@ __all__ = [
     "validate_read_rows",
     "validate_rows",
     "verify_append_only",
+    "write_scorecard_projection_snapshot",
 ]
 
 
@@ -2524,6 +2823,40 @@ def _cmd_history(argv: list[str]) -> int:
     return 0
 
 
+def _cmd_snapshot(argv: list[str]) -> int:
+    parent = None
+    output = None
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--parent" and i + 1 < len(argv):
+            parent = argv[i + 1]
+            i += 2
+            continue
+        if argv[i] == "--output" and i + 1 < len(argv):
+            output = argv[i + 1]
+            i += 2
+            continue
+        return _usage(f"unknown snapshot argument {argv[i]!r}")
+    missing = [
+        name
+        for name, value in (("--parent", parent), ("--output", output))
+        if not value
+    ]
+    if missing:
+        return _usage(f"snapshot requires {', '.join(missing)}")
+    try:
+        report = write_scorecard_projection_snapshot(parent, output)
+    except (MalformedEvent, SeriesError, OSError, subprocess.SubprocessError) as error:
+        print(
+            "series: snapshot unavailable; no new snapshot was published: "
+            f"{error}",
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
 def _usage(message: str) -> int:
     print(f"series: {message}", file=sys.stderr)
     print(
@@ -2534,9 +2867,12 @@ def _usage(message: str) -> int:
         "      --run-id <id> --tree <sha> [--checkout <Hermit checkout>]\n"
         "      [--emitted-at <UTC>] < cell-results.jsonl\n"
         "  series.py history --test <test id> [--tree <sha>] [--parent <root>]\n"
+        "  series.py snapshot --parent <root> --output <run-scoped.json>\n"
         "append validates complete series rows. append-cells converts typed harness\n"
         "results, compresses exact equal runs, and writes the UNPUBLISHED spool.\n"
-        "history freshly reads tracked shards from parent origin/main plus that local spool.",
+        "history freshly reads tracked shards from parent origin/main plus that local spool.\n"
+        "snapshot atomically writes that canonical union with immutable source identities;\n"
+        "an unavailable source is refused and never replaced by stale tracked output.",
         file=sys.stderr,
     )
     return 2
@@ -2551,6 +2887,8 @@ def main(argv: list[str]) -> int:
         return _cmd_append_cells(argv[1:])
     if argv[0] == "history":
         return _cmd_history(argv[1:])
+    if argv[0] == "snapshot":
+        return _cmd_snapshot(argv[1:])
     return _usage(f"unknown subcommand {argv[0]!r}")
 
 

@@ -181,6 +181,32 @@ scheduler turns, virtual nanoseconds, syscall counts, wall-time range, all four
 divergence coordinates, the two compared messages, producer, and run id. An
 empty result prints `no runs recorded` and exits nonzero.
 
+## Immutable scorecard input snapshot
+
+The dormant scorecard transaction can obtain one run-scoped input without
+reading a moving checkout or falling back to checked-in observations:
+
+```sh
+python3 ci-hub/series/series.py snapshot \
+  --parent . \
+  --output ignored/validate/<run>/scorecard-series-snapshot.json
+```
+
+The command fetches and resolves parent `origin/main` once, records the exact
+commit and `series/` tree, combines that published snapshot with the local live
+and published-retained spool, validates and orders every row through the
+canonical series union, and records the row count and digest. Each local input
+is named by a relative path, byte size, and digest. The output is fsynced and
+linked into place without replacing an existing different file, then read back
+through the strict digest-checking reader before success is reported.
+
+This command is an additive input provider only. It does not change selection
+or observation authority, does not write or separate the tracked
+`SCORECARD.md` and `ci/compat-envelope/cells.json` pair, and does not change
+their lifetime. If the published source or any local input cannot be read and
+validated, the command reports the snapshot as unavailable and writes no new
+snapshot; it never substitutes stale tracked output.
+
 ## Derived flaky cells
 
 Regenerate the measured-flake registry from the published series with:
