@@ -111,6 +111,12 @@ pub enum Error {
     #[error("KVM guest threads cannot replace the process image")]
     GuestThreadExecUnsupported,
 
+    /// Exec cancelled its siblings, but one of their consuming hooks failed.
+    /// The Tool owner must finish consuming its own state before returning this
+    /// error; no old or replacement guest continuation remains available.
+    #[error(transparent)]
+    ExecWorkerTeardown(Box<Error>),
+
     /// The fixed long-mode bootstrap layout does not fit in guest memory.
     #[error("guest memory is too small for the long-mode bootstrap")]
     LongModeMemoryTooSmall,
