@@ -627,7 +627,7 @@ compile_corpus_guests "$CORPUS_C" "$HROOT" "$BUILD" || exit $?
 # quietly record a corpus-wide red.
 GARGS_DIR="$BUILD/guest-args"
 rm -rf "$GARGS_DIR"; mkdir -p "$GARGS_DIR"
-gargs_tsv="$GARGS_DIR/declared.tsv"
+gargs_export="$GARGS_DIR/declared.txt"
 # TRANSITION: `--guest-args` arrives with rrnewton/hermit#1833. Against a hermit
 # checkout that predates it, degrade LOUDLY instead of exiting -- this collector
 # is shared, and hard-failing it would block every other lane on a flag that has
@@ -636,9 +636,9 @@ gargs_tsv="$GARGS_DIR/declared.tsv"
 # and is classified `usage`, never `pass` and never `diverge`. The measurement can
 # be incomplete, but it can no longer be silently wrong.
 gargs_available=1
-if ! ( cd "$HROOT" && ./scripts/manifest-to-commands.rs --guest-args ) >"$gargs_tsv" 2>"$GARGS_DIR/err"; then
+if ! ( cd "$HROOT" && ./scripts/manifest-to-commands.rs --guest-args ) >"$gargs_export" 2>"$GARGS_DIR/err"; then
   gargs_available=0
-  : >"$gargs_tsv"
+  : >"$gargs_export"
   echo "WARNING: cannot read declared guest arguments from" >&2
   echo "         $HROOT/scripts/manifest-to-commands.rs --guest-args" >&2
   sed 's/^/         /' "$GARGS_DIR/err" >&2
@@ -647,24 +647,15 @@ if ! ( cd "$HROOT" && ./scripts/manifest-to-commands.rs --guest-args ) >"$gargs_
   echo "         determinism failure (rrnewton/hermit#1815). Those cells are" >&2
   echo "         UNMEASURED, not red. Land hermit#1833 to measure them." >&2
 fi
-gargs_n=0
-while IFS=$'\t' read -r ga_id ga_mode ga_backend ga_rest; do
-  [ -n "$ga_id" ] || continue
-  [ "$ga_mode" = verify ] || continue   # this collector measures the verify mode only
-  printf '%s\n' "$ga_rest" | tr '\t' '\n' > "$GARGS_DIR/${ga_id//\//_}.$ga_backend"
-  gargs_n=$((gargs_n+1))
-  # The manifest may only declare `guest_args` for a backend it ENABLES, but this
-  # collector deliberately measures every backend in expansion -- i.e. it asks
-  # "can backend X do what ptrace does on this cell?". The reference invocation
-  # for that question is ptrace's, so ptrace's vector (and only ptrace's) is
-  # reused when the measured backend declares none of its own.
-  #
-  # Deliberately NOT a fall back to "any declared vector": c-programs/madvise-
-  # determinism declares `--kvm` for kvm alone and nothing for ptrace, so a
-  # promiscuous fallback would hand `--kvm` to every other backend. Absence of a
-  # ptrace declaration stays absence.
-  [ "$ga_backend" = ptrace ] && cp "$GARGS_DIR/${ga_id//\//_}.$ga_backend" "$GARGS_DIR/${ga_id//\//_}.__reference"
-done < "$gargs_tsv"
+# Accept both TSV from older Hermit revisions and JSON Lines from newer ones.
+# Validate the complete export before measuring any cell. Each file holds NUL-
+# delimited arguments, preserving empty strings, tabs and embedded newlines.
+# Expansion retains its ptrace reference only where the requested backend has
+# no declaration; an explicitly empty vector is a declaration and has a file.
+if ! gargs_n=$(python3 "$here/guest_args.py" "$gargs_export" "$GARGS_DIR"); then
+  echo "collect-fullcorpus: REFUSED — malformed guest-argument export; no scorecard published" >&2
+  exit 2
+fi
 if [ "$gargs_available" = 1 ]; then
   echo "== guest arguments: $gargs_n declared (verify mode) from $HROOT manifests =="
 else
@@ -696,7 +687,7 @@ sweep_backend() {
     fi
     gargs=(); ga_file="$GARGS_DIR/$key.'"$backend"'"
     [ -f "$ga_file" ] || ga_file="$GARGS_DIR/$key.__reference"
-    [ -f "$ga_file" ] && mapfile -t gargs < "$ga_file"
+    [ -f "$ga_file" ] && mapfile -d "" -t gargs < "$ga_file"
     measure "'"$backend"'" "$cell" "$lane" "$id" "$cell/guest" ${gargs[@]+"${gargs[@]}"}
   ' _ {}
   xargs -a "$CORPUS_NONC" -d '\n' -P "$par" -I{} bash -c '
