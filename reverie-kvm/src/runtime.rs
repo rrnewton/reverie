@@ -1877,7 +1877,10 @@ impl KvmBackend {
             if exit.group {
                 self.request_guest_thread_group_exit(exit.status);
             }
-            self.cancel_guest_threads();
+            if exit.group || executor.is_thread_group_leader() {
+                self.cancel_guest_threads();
+            }
+            self.clear_registered_worker_tid_before_exit(executor);
             self.notify_tool_exit(
                 tool,
                 (pid, tid),
@@ -1918,7 +1921,10 @@ impl KvmBackend {
                     if exit.group {
                         self.request_guest_thread_group_exit(exit.status);
                     }
-                    self.cancel_guest_threads();
+                    if exit.group || executor.is_thread_group_leader() {
+                        self.cancel_guest_threads();
+                    }
+                    self.clear_registered_worker_tid_before_exit(executor);
                     self.notify_tool_exit(
                         tool,
                         (pid, tid),
@@ -1948,6 +1954,7 @@ impl KvmBackend {
             .await
             .err();
             if let Some(error) = post_exec_error {
+                self.clear_registered_worker_tid_before_exit(executor);
                 self.notify_tool_exit(
                     tool,
                     (pid, tid),
@@ -1968,7 +1975,10 @@ impl KvmBackend {
             if exit.group {
                 self.request_guest_thread_group_exit(exit.status);
             }
-            self.cancel_guest_threads();
+            if exit.group || executor.is_thread_group_leader() {
+                self.cancel_guest_threads();
+            }
+            self.clear_registered_worker_tid_before_exit(executor);
             self.notify_tool_exit(
                 tool,
                 (pid, tid),
@@ -1988,6 +1998,7 @@ impl KvmBackend {
         loop {
             if let Some(status) = self.guest_thread_group_exit_status() {
                 self.cancel_guest_threads();
+                self.clear_registered_worker_tid_before_exit(executor);
                 self.notify_tool_exit(
                     tool,
                     (pid, tid),
@@ -2387,6 +2398,7 @@ impl KvmBackend {
                 .await
                 .err();
                 if let Some(error) = post_exec_error {
+                    self.clear_registered_worker_tid_before_exit(executor);
                     self.notify_tool_exit(
                         tool,
                         (pid, tid),
@@ -2462,7 +2474,10 @@ impl KvmBackend {
                 if exit.group {
                     self.request_guest_thread_group_exit(exit.status);
                 }
-                self.cancel_guest_threads();
+                if exit.group || executor.is_thread_group_leader() {
+                    self.cancel_guest_threads();
+                }
+                self.clear_registered_worker_tid_before_exit(executor);
                 self.notify_tool_exit(
                     tool,
                     (pid, tid),
