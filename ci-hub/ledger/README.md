@@ -104,6 +104,35 @@ driver refuses to use the shared producer parent, creates a commit with the
 required attribution, and delegates the push to `scripts/parent-main-write` so
 it shares the machine-wide serialization and fresh-origin CAS boundary.
 
+### Synchronous cleanup-publication identity
+
+`validation_cleanup_publication.publish_validation_cleanup_proof` is the
+narrower boundary for a data-lifecycle decision that requires independent
+publication, rather than ordinary local visibility. It accepts only the fixed
+metadata-only `run.annotate` shape, spools it through the existing publisher,
+fresh-fetches `origin/main`, and returns a frozen
+`ValidationCleanupPublication` bound to the repository roots, producing
+checkout and exact source HEAD, shard path, exact event bytes, introduction
+commit, and observed remote-tip blob. The production default runs both
+publishing and fetches through `with-proxy`; isolated tests substitute a local
+pass-through wrapper.
+
+Persist `publication.to_dict()` with the run record. Immediately before the
+guarded lifecycle action, recover it with
+`ValidationCleanupPublication.from_dict(...)` and call
+`recheck_validation_cleanup_proof` while still holding the action's lock. Use
+the refreshed identity it returns. The recheck reads only the freshly fetched
+remote ref and refuses a wrong repository, source checkout, shard, event,
+changed bytes, missing publication ancestry, or a non-fast-forward/stale prior
+observation. Pending and retained spool batches are intentionally outside this
+proof boundary and cannot satisfy it. Every publisher and proof Git subprocess
+uses the canonical repository-selector environment sanitizer and then disables
+replacement-object resolution, so ambient `GIT_DIR`-class variables or a local
+`refs/replace` entry cannot substitute an invented repository or tree for the
+commit named by the fetched remote. Shards are read as bytes and decoded as
+strict UTF-8 through a typed refusal; replacement decoding never changes the
+bytes being attested.
+
 ## Publishing
 
 ```sh
