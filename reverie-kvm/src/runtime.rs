@@ -278,6 +278,7 @@ enum ProcessExecutionContext {
     InitialExec(SyscallRequest),
     InitialExecCompleted,
     Lifecycle,
+    ThreadEntrySignal,
     SignalBoundary(CompletedSyscallBoundary),
     FaultBoundary(Box<PageZeroFault>),
     SyscallBoundary(CompletedSyscallBoundary),
@@ -285,10 +286,22 @@ enum ProcessExecutionContext {
 
 impl ProcessExecutionContext {
     fn tail_injection_allowed(&self) -> bool {
-        !matches!(self, Self::SignalBoundary(_) | Self::FaultBoundary(_))
+        !matches!(
+            self,
+            Self::SignalBoundary(_) | Self::FaultBoundary(_) | Self::ThreadEntrySignal
+        )
     }
 
     fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
+        if matches!(self, Self::ThreadEntrySignal) {
+            // There is a real user continuation, but no consumed syscall
+            // transport to restore after an injected process action.
+            return !injection_can_be_nonreturning(request)
+                && !matches!(
+                    request.number() as libc::c_long,
+                    libc::SYS_fork | libc::SYS_vfork | libc::SYS_clone | libc::SYS_clone3
+                );
+        }
         !matches!(self, Self::SignalBoundary(_) | Self::FaultBoundary(_))
             || !injection_can_be_nonreturning(request)
     }
@@ -297,7 +310,10 @@ impl ProcessExecutionContext {
         !signal_request_requires_return_frame(request)
             || matches!(
                 self,
-                Self::SignalBoundary(_) | Self::SyscallBoundary(_) | Self::FaultBoundary(_)
+                Self::SignalBoundary(_)
+                    | Self::SyscallBoundary(_)
+                    | Self::FaultBoundary(_)
+                    | Self::ThreadEntrySignal
             )
     }
 }
@@ -416,7 +432,8 @@ where
             // filters the selected event.
             ProcessExecutionContext::SignalBoundary(_)
             | ProcessExecutionContext::FaultBoundary(_)
-            | ProcessExecutionContext::SyscallBoundary(_) => {
+            | ProcessExecutionContext::SyscallBoundary(_)
+            | ProcessExecutionContext::ThreadEntrySignal => {
                 self.executor.defer_signal_delivery(event)
             }
             // Initial-start/post-exec callbacks do not have that transport.
@@ -533,6 +550,10 @@ where
                     ProcessExecutionContext::InitialExecCompleted => unreachable!(
                         "synthetic initial exec completes before process actions are inspected"
                     ),
+                    ProcessExecutionContext::ThreadEntrySignal => Err(Error::UnexpectedVcpuExit(
+                        "process injection from a thread-entry signal hook is unsupported"
+                            .to_owned(),
+                    )),
                 }
             }
             .await;
@@ -1611,6 +1632,7 @@ impl KvmBackend {
         config: &<T::GlobalState as GlobalTool>::Config,
         subscriptions: &Subscription,
         stack_checked_out: &Arc<AtomicBool>,
+        thread_entry: bool,
     ) -> Result<Option<PendingSignal>>
     where
         T: Tool + 'static,
@@ -1641,6 +1663,7 @@ impl KvmBackend {
                     subscriptions,
                     stack_checked_out,
                     None,
+                    thread_entry,
                 )
                 .await?;
             if pending.is_some()
@@ -1673,6 +1696,7 @@ impl KvmBackend {
         subscriptions: &Subscription,
         stack_checked_out: &Arc<AtomicBool>,
         fault: Option<&PageZeroFault>,
+        thread_entry: bool,
     ) -> Result<Option<PendingSignal>>
     where
         T: Tool + 'static,
@@ -1699,6 +1723,8 @@ impl KvmBackend {
         expose_tool_scratch(memory, tool_stack_top)?;
         let process_context = if let Some(fault) = fault {
             ProcessExecutionContext::FaultBoundary(Box::new(fault.clone()))
+        } else if thread_entry {
+            ProcessExecutionContext::ThreadEntrySignal
         } else {
             ProcessExecutionContext::SignalBoundary(CompletedSyscallBoundary::capture(
                 self,
@@ -1820,6 +1846,7 @@ impl KvmBackend {
         T::GlobalState: 'static,
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
+        executor.observe_ignored_signals_with_tool();
         let tool_stack_top = self.tool_stack_top();
         let _registration = self.register_guest_thread()?;
         let mut auxv = executor.auxv().to_vec();
@@ -1990,6 +2017,43 @@ impl KvmBackend {
             }
         }
 
+        // CLONE_THREAD has a complete user continuation before its first
+        // KVM_RUN. Admission comes first; then deliver an already queued event
+        // without executing a synthetic guest syscall or the child's first
+        // instruction. Root/exec lifecycle contexts keep their existing limit.
+        if pid != tid && executor.has_eligible_pending_signal() {
+            let entry_registers = self.vcpu.get_regs()?;
+            executor.set_current_user_stack_pointer(entry_registers.rsp);
+            let pending = self
+                .filter_one_pending_signal_with_tool(
+                    executor,
+                    pid,
+                    tid,
+                    &tool,
+                    &memory,
+                    &auxv,
+                    entry_registers,
+                    u64::MAX,
+                    self.syscall_frame_address,
+                    &mut thread_state,
+                    &global_state,
+                    config,
+                    subscriptions,
+                    &stack_checked_out,
+                    true,
+                )
+                .await?;
+            if !executor.has_pending_exit()
+                && let Some(pending) = pending
+            {
+                self.deliver_selected_signal_before_thread_entry(
+                    executor,
+                    entry_registers,
+                    pending,
+                )?;
+            }
+        }
+
         if let Some((segment, address)) = executor.take_segment() {
             set_user_segment_base(&self.vcpu, segment, address)?;
         }
@@ -2086,6 +2150,7 @@ impl KvmBackend {
                             subscriptions,
                             &stack_checked_out,
                             Some(&fault),
+                            false,
                         )
                         .await?;
                     if let Some((segment, address)) = executor.take_segment() {
@@ -2168,6 +2233,7 @@ impl KvmBackend {
                             config,
                             subscriptions,
                             &stack_checked_out,
+                            false,
                         )
                         .await?;
                     if let Some((segment, address)) = executor.take_segment() {
@@ -2455,6 +2521,7 @@ impl KvmBackend {
                         config,
                         subscriptions,
                         &stack_checked_out,
+                        false,
                     )
                     .await?;
                 if let Some((segment, address)) = executor.take_segment() {

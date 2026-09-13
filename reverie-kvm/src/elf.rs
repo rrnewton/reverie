@@ -40,7 +40,7 @@ use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::PROGRAM_HEADERS_ADDRESS;
 use crate::bootstrap::VDSO_ADDRESS;
 use crate::signal::ProcessSignalState;
-use crate::signal::ThreadSignalState;
+use crate::signal::SharedThreadSignalState;
 
 const PAGE_SIZE: u64 = 4096;
 pub(crate) const TASK_COMM_LEN: usize = 16;
@@ -136,6 +136,10 @@ pub(crate) struct TaskLifecycleState {
 pub(crate) struct TaskLifecycleTable {
     next_generation: u64,
     tasks: std::collections::BTreeMap<i32, TaskLifecycleState>,
+    signal_targets: std::collections::BTreeMap<
+        i32,
+        std::sync::Weak<std::sync::Mutex<crate::signal::ThreadSignalState>>,
+    >,
 }
 
 impl TaskLifecycleTable {
@@ -161,7 +165,44 @@ impl TaskLifecycleTable {
                 dumpable,
             },
         );
+        // A reused numeric TID never inherits the old task's signal endpoint.
+        self.signal_targets.remove(&tid);
         generation
+    }
+
+    pub(crate) fn register_with_signals(
+        &mut self,
+        tid: i32,
+        tgid: i32,
+        pgid: i32,
+        dumpable: bool,
+        signals: &SharedThreadSignalState,
+    ) -> u64 {
+        let generation = self.register(tid, tgid, pgid, dumpable);
+        self.signal_targets.insert(tid, signals.downgrade());
+        generation
+    }
+
+    pub(crate) fn ensure_registered_with_signals(
+        &mut self,
+        tid: i32,
+        tgid: i32,
+        pgid: i32,
+        dumpable: bool,
+        signals: &SharedThreadSignalState,
+    ) -> u64 {
+        let generation = self.ensure_registered(tid, tgid, pgid, dumpable);
+        self.signal_targets.insert(tid, signals.downgrade());
+        generation
+    }
+
+    /// The caller keeps the lifecycle lock through queue publication, so an
+    /// accepted send belongs to this incarnation even if the numeric TID is
+    /// reused immediately after the lock is released.
+    pub(crate) fn signal_target(&self, tid: i32) -> Option<SharedThreadSignalState> {
+        self.signal_targets
+            .get(&tid)
+            .and_then(SharedThreadSignalState::upgrade)
     }
 
     pub(crate) fn ensure_registered(
@@ -184,6 +225,7 @@ impl TaskLifecycleTable {
             .is_some_and(|task| task.generation == generation)
         {
             self.tasks.remove(&tid);
+            self.signal_targets.remove(&tid);
         }
     }
 
@@ -197,6 +239,18 @@ impl TaskLifecycleTable {
         } else {
             self.register(tid, tgid, pgid, true)
         }
+    }
+
+    pub(crate) fn reset_after_exec_with_signals(
+        &mut self,
+        tid: i32,
+        tgid: i32,
+        pgid: i32,
+        signals: &SharedThreadSignalState,
+    ) -> u64 {
+        let generation = self.reset_after_exec(tid, tgid, pgid);
+        self.signal_targets.insert(tid, signals.downgrade());
+        generation
     }
 
     pub(crate) fn set_robust_list(&mut self, tid: i32, head: u64) -> bool {
@@ -327,7 +381,7 @@ pub(crate) struct LoadedStaticElf {
     // TODO-HUMAN-REVIEW(PR-235): Review process-local virtual signalfd state.
     pub process_signals: std::sync::Arc<std::sync::Mutex<ProcessSignalState>>,
     /// Mask, alternate stack, and pending signals private to this thread.
-    pub thread_signals: ThreadSignalState,
+    pub thread_signals: SharedThreadSignalState,
     // One process-tree-wide membership table distinguishes a live task with no
     // robust-list registration from an unknown/dead tid. Entries are created
     // with each executor, reset across exec, and removed when that executor is
@@ -459,12 +513,6 @@ impl LoadedStaticElf {
         let thp_disabled =
             std::sync::Arc::new(AtomicU8::new(previous.thp_disabled.load(Ordering::SeqCst)));
         let cloexec_fds = previous.cloexec_fds;
-        let mut process_signals = previous
-            .process_signals
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .after_exec();
-        let thread_signals = previous.thread_signals.after_exec();
         let mut stdin = previous.stdin;
         let files: std::collections::BTreeMap<_, _> = previous
             .files
@@ -496,9 +544,6 @@ impl LoadedStaticElf {
             .into_iter()
             .filter(|(fd, _)| files.contains_key(fd))
             .collect();
-        process_signals
-            .signalfd_masks
-            .retain(|fd, _| files.contains_key(fd));
         let task_lifecycle = previous.task_lifecycle.clone();
         let file_identity_table = previous.file_identity_table.clone();
         {
@@ -517,6 +562,33 @@ impl LoadedStaticElf {
                 closed_standard_fds.insert(fd);
             }
         }
+
+        // All fallible executable preparation and sibling teardown happen
+        // before this transition. Serialize the pending-state snapshot and
+        // endpoint replacement with senders: an accepted event cannot land in
+        // the old queue after we have copied it. No file operation or callback
+        // occurs while these locks are held.
+        let (process_signals, thread_signals) = {
+            let mut lifecycle = task_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut process_signals = previous
+                .process_signals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .after_exec();
+            let thread_signals = previous.thread_signals.after_exec();
+            process_signals
+                .signalfd_masks
+                .retain(|fd, _| files.contains_key(fd));
+            lifecycle.reset_after_exec_with_signals(
+                previous.tid,
+                previous.pid,
+                previous.pgid,
+                &thread_signals,
+            );
+            (process_signals, thread_signals)
+        };
 
         self.cwd = previous.cwd;
         self.cwd_fd = previous.cwd_fd;
@@ -549,10 +621,6 @@ impl LoadedStaticElf {
         self.process_signals = std::sync::Arc::new(std::sync::Mutex::new(process_signals));
         self.thread_signals = thread_signals;
         self.task_lifecycle = task_lifecycle;
-        self.task_lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .reset_after_exec(self.tid, self.pid, self.pgid);
         self.files = files;
         self.random_device_fds = random_device_fds;
         self.stdout_alias_fds = stdout_alias_fds;
@@ -843,7 +911,7 @@ fn load_executable(
         sched_reset_on_fork: false,
         ioprio: 0,
         process_signals: std::sync::Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
-        thread_signals: ThreadSignalState::default(),
+        thread_signals: SharedThreadSignalState::default(),
         task_lifecycle: std::sync::Arc::new(std::sync::Mutex::new(TaskLifecycleTable::with_root(
             1, 1, 1, true,
         ))),
