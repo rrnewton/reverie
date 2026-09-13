@@ -488,7 +488,7 @@ fn execute_basic_syscall_with_output(
         recvmmsg(memory, state, args)
     } else if number == libc::SYS_ioctl as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        ioctl(memory, state, args)
+        ioctl(memory, state, args, capture_output)
     } else if number == libc::SYS_dup as u64 {
         duplicate_fd(state, args[0], None, 0, false)
     } else if number == libc::SYS_dup2 as u64 {
@@ -8119,12 +8119,78 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
     delivered as i64
 }
 
+// General FIONREAD support was withdrawn in 345681e44bf9d07f8c9f52138ce2682633adfffe:
+// SCM_RIGHTS does not retain synthetic proc-file semantics. Only an actual host
+// pipe/FIFO can use this operation without that missing descriptor metadata.
+fn pipe_fionread(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    guest_fd: libc::c_int,
+    host_fd: libc::c_int,
+    address: u64,
+    capture_output: bool,
+) -> i64 {
+    if capture_output && output_alias(state, guest_fd).is_some() {
+        return negative_errno(libc::ENOTTY);
+    }
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: stat has writable storage and host_fd belongs to this file table.
+    if unsafe { libc::fstat(host_fd, stat.as_mut_ptr()) } != 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: successful fstat initialized the complete structure.
+    let stat = unsafe { stat.assume_init() };
+    if stat.st_mode & libc::S_IFMT != libc::S_IFIFO {
+        return negative_errno(libc::ENOTTY);
+    }
+    if capture_output {
+        // Received rights lose OutputAlias metadata. Compare actual objects so
+        // a transferred capture backing pipe cannot expose supervisor bytes.
+        // Guest close/dup/exec never close or replace host stdio; those retained
+        // host references keep the identity live even after queued sender close.
+        // As elsewhere in inherited-stdio handling, concurrent external host
+        // replacement of these descriptors is outside the supported lifetime.
+        for standard in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+            let mut backing = std::mem::MaybeUninit::<libc::stat>::zeroed();
+            // SAFETY: backing has writable storage; fstat checks the descriptor.
+            if unsafe { libc::fstat(standard, backing.as_mut_ptr()) } != 0 {
+                return negative_errno(libc::ENOTTY);
+            }
+            // SAFETY: successful fstat initialized the complete structure.
+            let backing = unsafe { backing.assume_init() };
+            if (stat.st_dev, stat.st_ino) == (backing.st_dev, backing.st_ino) {
+                return negative_errno(libc::ENOTTY);
+            }
+        }
+    }
+    let mut count: libc::c_int = 0;
+    // SAFETY: count is supervisor storage for one int. The kernel observes the
+    // actual pipe under its own mutex without consuming any queued bytes.
+    if unsafe { libc::ioctl(host_fd, libc::FIONREAD, &mut count) } != 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    if memory.put_user_i32(address, count).is_err() {
+        return negative_errno(libc::EFAULT);
+    }
+    0
+}
+
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
-fn ioctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn ioctl(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> i64 {
     let guest_fd = args[0] as libc::c_int;
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
+    // Linux ioctl takes an unsigned-int command even on the 64-bit syscall ABI.
+    // Keep this limited support independent of the other ioctl dispatch arms.
+    if args[1] as u32 == libc::FIONREAD as u32 {
+        return pipe_fionread(memory, state, guest_fd, host_fd, args[2], capture_output);
+    }
     match args[1] as libc::c_ulong {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-229): Review virtual FIOCLEX/FIONCLEX descriptor flags.
@@ -8141,9 +8207,6 @@ fn ioctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-230): Review the no-guest-NIC ioctl model.
         SIOCETHTOOL => negative_errno(libc::ENODEV),
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-533): Review host FIONREAD query and guest copyback.
-        libc::FIONREAD => negative_errno(libc::ENOTTY),
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-332): Report real terminal state to the guest.
         // The executor's inherited standard descriptors are the real host fds, so
@@ -13064,6 +13127,8 @@ mod tests {
     use super::*;
 
     static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(0);
+
+    include!("pipe_fionread_tests.rs");
 
     #[test]
     fn proc_root_identity_requires_qualified_mount_and_directory() {
