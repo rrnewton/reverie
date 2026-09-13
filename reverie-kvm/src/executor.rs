@@ -4030,9 +4030,10 @@ fn vectored_io(
             return error;
         }
     }
-    let Ok(guest_fd) = libc::c_int::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux descriptor lookup consumes the low 32 bits of the raw register,
+    // including for the positioned syscalls whose entry argument is unsigned
+    // long. Nonzero upper bits do not invalidate an otherwise valid fd.
+    let guest_fd = args[0] as libc::c_int;
     let output_destination = output_alias(state, guest_fd);
     let captured_output = output.is_some() && output_destination.is_some();
     // Synthetic procfs descriptors have backend-owned content and must not be
