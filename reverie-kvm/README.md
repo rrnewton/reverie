@@ -69,15 +69,37 @@ instrumentation.
 ## Bounded signal delivery
 
 Standard-signal state includes shared process and per-thread pending sets,
-coalescing, installed actions and blocked masks. Self-targeted `kill`, `tkill`
-and `tgkill` use guest identities, not supervisor signal delivery. Supported
-events are selected for a concrete guest task at syscall/Tool boundaries;
-the backend does not use host scheduling to choose among live sibling threads.
-Ambiguous process-directed delivery with live siblings, foreign-process
-delivery and multi-process fanout remain unsupported. Signal-zero identity
-probes do not imply delivery support. Realtime-signal queues and general timer
-production are not implemented. `rt_sigtimedwait` can consume an already pending
-virtual event; it does not implement a timed blocking wait.
+coalescing, installed actions and blocked masks. `tkill` and `tgkill` can target
+supported standard signals at a live thread in the sender's process. The named
+receiver owns one private pending queue and its current blocked mask; the
+sender cannot consume that event or change its own mask by sending it. Repeated
+standard signals retain the first pending siginfo. Task registration and
+retirement bind publication to the live TID generation, and exec preserves an
+accepted pending event while replacing its queue atomically. Fork receives
+independent signal state.
+
+Supported events enter guest handlers at a return-to-user boundary. A newly
+created thread also checks events queued before its first instruction; Tool
+admission precedes its signal callback. At that initial boundary, ordinary
+returning injections are available, while process-action and tail injections
+return `ENOSYS` before effects because no consumed syscall continuation exists.
+Tool execution observes eligible ignored events before discarding them. Plain
+execution discards an unblocked ignored send immediately; a blocked ignored
+send remains pending and can be handled if its disposition changes before
+unmasking. Raw `rt_sigtimedwait` retains `SI_TKILL`; glibc's `sigtimedwait` wrapper
+converts that code to `SI_USER`, as it does natively.
+
+This does not interrupt an arbitrary running vCPU or wake a receiver blocked
+in a host syscall, futex, child wait, or other unsupported wait. Enqueuing a
+signal does not supply a deterministic scheduler notification or qualify
+Hermit's parked-I/O interruption capability. Self-targeted `kill` remains
+supported, but process-directed delivery with live siblings, cross-process
+nonzero sends and multi-process fanout remain explicitly unsupported. The
+backend does not use host scheduling to choose a recipient. Signal-zero
+identity probes do not imply delivery support. Sibling `SIGKILL`, stopped-state
+transitions, realtime signals, `SIGCHLD`/`SIGPIPE` production and general timer
+production remain refused or unimplemented. `rt_sigtimedwait` can consume an
+already pending virtual event; it does not implement a timed blocking wait.
 
 Tool-driven execution exposes structured signal events through
 `Tool::handle_structured_signal_event`; accepted selected events can be deferred

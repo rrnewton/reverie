@@ -1481,7 +1481,8 @@ impl KvmBackend {
                 write_tid_best_effort(&mut self.memory, parent_tid, child_tid);
                 write_tid_best_effort(&mut self.memory, child_tid_address, child_tid);
                 let child_fs = tls.unwrap_or(parent_fs);
-                let mut child_executor = executor.thread_child(child_tid)?;
+                let mut child_executor =
+                    executor.thread_child_with_signal_observation(child_tid, false)?;
                 child_executor.set_thread_context(child_tid, child_fs, parent_gs);
                 child_executor.set_clear_child_tid(clear_child_tid);
                 let child_stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
@@ -2294,6 +2295,7 @@ impl KvmBackend {
             interrupted,
             pending,
             None,
+            false,
         )
     }
 
@@ -2309,6 +2311,31 @@ impl KvmBackend {
             fault.registers,
             pending,
             Some(fault),
+            false,
+        )
+    }
+
+    /// A new clone vCPU has a complete user register file and has never entered
+    /// KVM_RUN. Unlike a consumed VMCALL, its continuation can be changed
+    /// directly. This is not an arbitrary running-vCPU interruption mechanism.
+    pub(crate) fn deliver_selected_signal_before_thread_entry(
+        &mut self,
+        executor: &mut ElfExecutor,
+        interrupted: kvm_regs,
+        pending: crate::executor::PendingSignal,
+    ) -> Result<bool> {
+        if !self.is_guest_thread || self.vcpu.get_sregs()?.cs.dpl != 3 {
+            return Err(Error::UnexpectedVcpuExit(
+                "thread-entry signal requires an unstarted clone user continuation".to_owned(),
+            ));
+        }
+        self.deliver_selected_signal_at_boundary(
+            executor,
+            self.syscall_frame_address,
+            interrupted,
+            pending,
+            None,
+            true,
         )
     }
 
@@ -2319,6 +2346,7 @@ impl KvmBackend {
         interrupted: kvm_regs,
         pending: crate::executor::PendingSignal,
         fault: Option<&PageZeroFault>,
+        thread_entry: bool,
     ) -> Result<bool> {
         let signal = pending.event.signal();
         match executor.signal_disposition(signal) {
@@ -2409,6 +2437,8 @@ impl KvmBackend {
         handler.rflags &= !((1 << 8) | (1 << 10) | (1 << 16));
         if let Some(fault) = fault {
             fault.resume_user(self, handler)?;
+        } else if thread_entry {
+            self.vcpu.set_regs(&handler)?;
         } else {
             stage_process_syscall_return(
                 &mut self.memory,
@@ -2562,6 +2592,29 @@ impl KvmBackend {
         executor: &mut ElfExecutor,
     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
         let _registration = self.register_guest_thread()?;
+        if self.is_guest_thread {
+            let entry_registers = self.vcpu.get_regs()?;
+            while let Some(pending) = executor
+                .take_pending_signal_for_delivery()
+                .map_err(|errno| Error::Reverie(errno.into()))?
+            {
+                if self.deliver_selected_signal_before_thread_entry(
+                    executor,
+                    entry_registers,
+                    pending,
+                )? || executor.has_pending_exit()
+                {
+                    break;
+                }
+            }
+            if let Some(exit) = executor.take_exit() {
+                if exit.group {
+                    self.request_guest_thread_group_exit(exit.status);
+                }
+                let (stdout, stderr) = executor.take_output();
+                return Ok((exit.status, stdout, stderr));
+            }
+        }
         loop {
             if let Some(status) = self.guest_thread_group_exit_status() {
                 if !self.is_guest_thread {
