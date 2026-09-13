@@ -3055,8 +3055,10 @@ mod tests {
                 }
             });
             let tid = unsafe { libc::syscall(libc::SYS_gettid) };
-            std::fs::write(directory.join("tid"), tid.to_string()).unwrap();
             assert_eq!(unsafe { libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) }, 0);
+            // The parent must not wait on this nonleader TID until it is a
+            // tracee; publishing before TRACEME permits an immediate ECHILD.
+            std::fs::write(directory.join("tid"), tid.to_string()).unwrap();
             unsafe {
                 libc::raise(libc::SIGSTOP);
             }
@@ -4844,7 +4846,13 @@ mod tests {
         }
     }
 
-    fn qualify_waiter_enrollment(host: u64) {
+    fn qualify_waiter_enrollment(
+        host: u64,
+        result_receiver: &std::sync::mpsc::Receiver<(i64, Option<i32>)>,
+    ) {
+        // This additional wait only obtains diagnostics after enrollment has
+        // already failed. It never retries or extends the futex's own bound.
+        let waiter_result = || result_receiver.recv_timeout(std::time::Duration::from_secs(1));
         let parking = std::sync::atomic::AtomicI32::new(0);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         loop {
@@ -4861,15 +4869,17 @@ mod tests {
             };
             assert!(
                 (0..=1).contains(&moved),
-                "futex enrollment returned {moved}: {}",
-                std::io::Error::last_os_error()
+                "futex enrollment returned {moved}: {}; waiter result: {:?}",
+                std::io::Error::last_os_error(),
+                waiter_result()
             );
             if moved == 1 {
                 break;
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "waiter did not enroll"
+                "waiter did not enroll; waiter result: {:?}",
+                waiter_result()
             );
             std::thread::yield_now();
         }
@@ -4884,7 +4894,12 @@ mod tests {
                 0,
             )
         };
-        assert_eq!(returned, 1, "waiter must be queued at its original word");
+        assert_eq!(
+            returned,
+            1,
+            "waiter must be queued at its original word; waiter result: {:?}",
+            waiter_result()
+        );
         assert_eq!(parking.load(Ordering::Relaxed), 0);
     }
 
@@ -4985,6 +5000,7 @@ mod tests {
             let group = parent.thread_group.clone();
             let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
             let (wake_sender, wake_receiver) = std::sync::mpsc::channel();
+            let (result_sender, result_receiver) = std::sync::mpsc::channel();
             *log.wake_observed.lock().unwrap() = Some(wake_receiver);
             let waiter = std::thread::spawn(move || {
                 let host = memory.host_address() + address - memory.guest_base();
@@ -5010,6 +5026,9 @@ mod tests {
                 } else {
                     None
                 };
+                // Retain the exact syscall result even when enrollment fails
+                // before the test reaches JoinHandle::join below.
+                let _ = result_sender.send((result, error));
                 let slot = if result == 0 {
                     let slot = group.reserve_transport_slot(4).unwrap();
                     group.release_transport_slot(slot);
@@ -5025,6 +5044,7 @@ mod tests {
                 .unwrap();
             qualify_waiter_enrollment(
                 parent.memory.host_address() + address - parent.memory.guest_base(),
+                &result_receiver,
             );
             Some(waiter)
         } else {
