@@ -118,6 +118,27 @@ transitions, realtime signals, `SIGCHLD`/`SIGPIPE` production and general timer
 production remain refused or unimplemented. `rt_sigtimedwait` can consume an
 already pending virtual event; it does not implement a timed blocking wait.
 
+`Guest::queue_child_exit_signal` is a separate receiver operation for a
+Tool-selected `SIGCHLD`/`CLD_EXITED` event. It requires a current single-thread
+parent and an existing syscall, signal, or captured-fault return boundary. The
+caller authenticates the child, its normal exit status and CPU accounting;
+the backend validates the receiver and metadata shape, then retains the event
+in the process pending set. Repeated standard events keep the first complete
+siginfo. Explicit `SIG_IGN` suppresses this child-exit generation even when
+blocked; `SIG_DFL` and `SA_NOCLDWAIT` do not suppress Tool observation. Queue
+acceptance does not change child wait status or reaping policy and does not
+promise a handler or `EINTR`. A typed outcome distinguishes refusal before
+publication from a readiness-update failure after publication.
+
+This operation does not create automatic child-exit notifications. Signal-death,
+stop/continue and multi-thread-parent producers remain unsupported. Initial
+thread-start/exec/post-exec callbacks lack the required transport and refuse
+before effects. The existing private deferral API keeps its earlier refusals.
+Pending events remain private across fork and survive exec; an outstanding
+process event prevents creating an unsupported competing thread consumer.
+Child signalfd records include status and CPU fields. Fork with an open virtual
+signalfd is still refused, including when the descriptor holds a child event.
+
 Tool-driven execution exposes structured signal events through
 `Tool::handle_structured_signal_event`; accepted selected events can be deferred
 through `Guest::defer_signal_delivery`. Public deferral validates signal, target
