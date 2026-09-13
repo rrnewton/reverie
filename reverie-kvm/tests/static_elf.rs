@@ -13069,3 +13069,136 @@ int main(void) {
     assert_eq!(stdout, native.stdout);
     assert_eq!(stderr, native.stderr);
 }
+
+#[test]
+fn direct_vectored_io_preserves_the_supported_boundary_and_refuses_larger_requests() {
+    const TEST: &str =
+        "direct_vectored_io_preserves_the_supported_boundary_and_refuses_larger_requests";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "direct-vector-cap",
+        r#"#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/uio.h>
+#include <unistd.h>
+#define CAP (16UL * 1024 * 1024)
+static int all_bytes(const unsigned char *p, size_t count, unsigned char value) {
+  for (size_t i = 0; i < count; ++i) if (p[i] != value) return 0;
+  return 1;
+}
+int main(int argc, char **argv) {
+  if (argc != 3) return 80;
+  int refused = !strcmp(argv[1], "refused");
+  if (!refused && strcmp(argv[1], "supported")) return 81;
+  unsigned char *data = mmap(NULL, CAP + 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  unsigned char *verify = mmap(NULL, CAP + 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (data == MAP_FAILED || verify == MAP_FAILED) return 82;
+  int fd = open(argv[2], O_CREAT | O_TRUNC | O_RDWR | O_DIRECT, 0600);
+  if (fd < 0) return 83;
+  const long numbers[] = {SYS_readv, SYS_writev, SYS_preadv, SYS_pwritev, SYS_preadv2, SYS_pwritev2};
+  const size_t file_size = refused ? 8192 : CAP;
+  for (size_t index = 0; index < sizeof(numbers)/sizeof(numbers[0]); ++index) {
+    for (int separate_tail = 0; separate_tail <= refused; ++separate_tail) {
+      memset(data, 'f', CAP + 4096);
+      struct iovec seed = {data, file_size};
+      if (pwritev(fd, &seed, 1, 0) != (ssize_t)file_size) return 84;
+      if (ftruncate(fd, file_size)) return 85;
+      if (lseek(fd, refused ? 4096 : 0, SEEK_SET) < 0) return 86;
+      memset(data, 'm', CAP + 4096);
+      struct iovec vectors[2] = {{data, CAP + (refused && !separate_tail)}, {data + CAP, separate_tail ? 1 : 0}};
+      struct iovec before[2]; memcpy(before, vectors, sizeof(before));
+      errno = 0;
+      long result = syscall(numbers[index], fd, vectors, separate_tail ? 2 : 1, 0UL, 0UL, 0UL);
+      int error = errno;
+      off_t position = lseek(fd, 0, SEEK_CUR);
+      struct stat metadata;
+      if (fstat(fd, &metadata)) return 87;
+      int observer = open(argv[2], O_RDONLY);
+      if (observer < 0 || pread(observer, verify, file_size, 0) != (ssize_t)file_size) return 88;
+      close(observer);
+      int reading = index % 2 == 0;
+      int okay = memcmp(before, vectors, sizeof(before)) == 0 && metadata.st_size == (off_t)file_size;
+      if (refused) {
+        okay &= result == -1 && error == EOPNOTSUPP && position == 4096;
+        okay &= all_bytes(data, CAP + 4096, 'm') && all_bytes(verify, file_size, 'f');
+      } else {
+        okay &= result == CAP && position == (index < 2 ? (off_t)CAP : 0);
+        okay &= all_bytes(data, CAP, reading ? 'f' : 'm') && all_bytes(data + CAP, 4096, 'm');
+        okay &= all_bytes(verify, file_size, reading ? 'f' : 'm');
+      }
+      if (!okay) {
+        fprintf(stderr, "mode=%s syscall=%ld tail=%d result=%ld errno=%d position=%ld file_size=%ld\n", argv[1], numbers[index], separate_tail, result, error, (long)position, (long)metadata.st_size);
+        return 89;
+      }
+      printf("%s syscall=%ld tail=%d complete=1\n", argv[1], numbers[index], separate_tail);
+    }
+  }
+  return close(fd) ? 90 : 0;
+}
+"#,
+    );
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "15s"])
+        .arg(&executable)
+        .arg("supported")
+        .arg(directory.0.join("native-direct-cap"))
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "native boundary control: {native:?}"
+    );
+    let expected_native = [19, 20, 295, 296, 327, 328]
+        .into_iter()
+        .map(|number| format!("supported syscall={number} tail=0 complete=1\n"))
+        .collect::<String>();
+    assert_eq!(native.stdout, expected_native.as_bytes());
+    assert!(native.stderr.is_empty());
+    let image = std::fs::read(&executable).unwrap();
+    for mode in ["supported", "refused"] {
+        let path = directory.0.join(format!("guest-direct-cap-{mode}"));
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable.to_str().unwrap(), mode, path.to_str().unwrap()],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        assert_eq!(
+            code,
+            0,
+            "{mode}: stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        let expected = if mode == "supported" {
+            expected_native.clone()
+        } else {
+            [19, 20, 295, 296, 327, 328]
+                .into_iter()
+                .flat_map(|number| {
+                    [0, 1].into_iter().map(move |tail| {
+                        format!("refused syscall={number} tail={tail} complete=1\n")
+                    })
+                })
+                .collect::<String>()
+        };
+        assert_eq!(stdout, expected.as_bytes(), "{mode}");
+        assert!(stderr.is_empty(), "{mode}: {stderr:?}");
+        eprintln!("{mode}: {}", String::from_utf8_lossy(&stdout));
+    }
+}
