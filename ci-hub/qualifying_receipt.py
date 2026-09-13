@@ -49,6 +49,14 @@ from gate_completeness import gates_complete  # noqa: E402
 
 
 PASSED_TESTS_REFUSAL_REASON = "passed_tests != executed_tests for passing row"
+FILTERED_TESTS_I64_REFUSAL_REASON = (
+    "filtered_tests does not fit signed 64-bit integer"
+)
+COUNT_REPRESENTATION = {
+    "applies_at_schema_min": 4,
+    "fields": ["executed_tests", "passed_tests", "filtered_tests"],
+    "signed_bits": 64,
+}
 I64_MIN = -(1 << 63)
 I64_MAX = (1 << 63) - 1
 U64_MAX = (1 << 64) - 1
@@ -448,6 +456,7 @@ def load() -> dict[str, Any]:
         "counts_schema",
         "require",
         "passed_tests",
+        "count_representation",
         "coverage",
         "cell_results",
         "base",
@@ -472,6 +481,11 @@ def load() -> dict[str, Any]:
     if "applies_at_schema_min" not in pred["passed_tests"]:
         raise RuntimeError(
             f"{path}: qualifying predicate missing passed_tests.applies_at_schema_min"
+        )
+    if pred["count_representation"] != COUNT_REPRESENTATION:
+        raise RuntimeError(
+            f"{path}: qualifying predicate count_representation must be "
+            f"{COUNT_REPRESENTATION!r}"
         )
     for key in ("applies_at_schema_min", "supported_schema_max"):
         if key not in pred["cell_results"]:
@@ -1388,6 +1402,13 @@ def _row_qualification_without_class(
     schema = row.get("schema_version") or 0
     executed = row.get("executed_tests")
     passed = row.get("passed_tests")
+    if schema >= pred["count_representation"]["applies_at_schema_min"]:
+        for field in pred["count_representation"]["fields"]:
+            value = row.get(field)
+            if value is not None and not _i64(value):
+                if field == "filtered_tests":
+                    return False, FILTERED_TESTS_I64_REFUSAL_REASON
+                return False, PASSED_TESTS_REFUSAL_REASON
     current_passed_tests_match = (
         _i64(executed)
         and _i64(passed)

@@ -6,6 +6,16 @@
   "passed_tests": {
     "applies_at_schema_min": 4
   },
+  "_count_representation_is_fixed": "At schema 4 and newer, every present top-level executed_tests, passed_tests, and filtered_tests value must be a JSON integer representable by the signed 64-bit HistoryRow fields shared by Rust consumers. This is a fixed cross-language representation contract, not a tunable landing threshold. Missing and null fields continue through their existing versioned qualification rules, and pre-schema-4 history retains its prior readability.",
+  "count_representation": {
+    "applies_at_schema_min": 4,
+    "fields": [
+      "executed_tests",
+      "passed_tests",
+      "filtered_tests"
+    ],
+    "signed_bits": 64
+  },
   "require": {
     "commit_anchored": true,
     "tree_dirty": false,

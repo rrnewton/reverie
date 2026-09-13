@@ -769,6 +769,79 @@ class ReverieValidateTest(unittest.TestCase):
             (14, 13, 3, [], []),
         )
 
+    def test_per_gate_counts_fit_i64_and_aggregate_with_checked_add(self) -> None:
+        maximum = reverie_node.I64_MAX
+
+        def one_gate(*, result: str = "pass") -> dict:
+            return {
+                "gates": [
+                    {
+                        "name": "counted",
+                        "result": result,
+                        "executed_tests": maximum,
+                        "passed_tests": maximum if result == "pass" else maximum - 1,
+                        "filtered_tests": maximum,
+                    }
+                ]
+            }
+
+        self.assertEqual(
+            reverie_node.recorded_gate_coverage(one_gate(), ("counted",)),
+            (maximum, maximum, maximum, [], []),
+        )
+        self.assertEqual(
+            reverie_node.recorded_gate_coverage(
+                one_gate(result="fail"), ("counted",)
+            ),
+            (maximum, maximum - 1, maximum, [], []),
+            "a failed row retains its exact passed/executed triplet",
+        )
+
+        for field in reverie_node.TEST_COUNT_FIELDS:
+            for label, value in (
+                ("null", None),
+                ("string", "17"),
+                ("float", 17.0),
+                ("boolean", True),
+                ("negative", -1),
+                ("above-i64", maximum + 1),
+            ):
+                with self.subTest(field=field, shape=label):
+                    source = one_gate()
+                    source["gates"][0][field] = value
+                    with self.assertRaisesRegex(
+                        reverie_node.Refusal,
+                        rf"{field}.*nonnegative signed 64-bit integer",
+                    ):
+                        reverie_node.recorded_gate_coverage(source, ("counted",))
+
+        overflowing = {
+            "gates": [
+                {
+                    "name": "first",
+                    "result": "pass",
+                    "executed_tests": maximum,
+                    "passed_tests": maximum,
+                    "filtered_tests": maximum,
+                },
+                {
+                    "name": "second",
+                    "result": "pass",
+                    "executed_tests": 1,
+                    "passed_tests": 1,
+                    "filtered_tests": 1,
+                },
+            ]
+        }
+        with self.assertRaisesRegex(
+            reverie_node.Refusal,
+            "aggregate exceeds signed 64-bit maximum for "
+            "executed_tests, passed_tests, filtered_tests",
+        ):
+            reverie_node.recorded_gate_coverage(
+                overflowing, ("first", "second")
+            )
+
     def test_v4_owned_public_gate_requires_exact_counts(self) -> None:
         def source(executed: int, passed: int, filtered: int) -> dict:
             return {
@@ -826,26 +899,40 @@ class ReverieValidateTest(unittest.TestCase):
             ),
             (17, 17, 4),
         )
-        for field, value in (
-            ("executed_tests", None),
-            ("executed_tests", "17"),
-            ("executed_tests", True),
-            ("executed_tests", -1),
-            ("passed_tests", None),
-            ("passed_tests", "17"),
-            ("passed_tests", True),
-            ("passed_tests", -1),
-            ("filtered_tests", None),
-        ):
-            row = {
-                "result": "pass",
-                "executed_tests": 17,
-                "passed_tests": 17,
-                "filtered_tests": 4,
-                field: value,
-            }
-            with self.assertRaisesRegex(reverie_node.Refusal, field):
-                reverie_node.recorded_test_counts(row)
+        maximum = reverie_node.I64_MAX
+        self.assertEqual(
+            reverie_node.recorded_test_counts(
+                {
+                    "result": "pass",
+                    "executed_tests": maximum,
+                    "passed_tests": maximum,
+                    "filtered_tests": maximum,
+                }
+            ),
+            (maximum, maximum, maximum),
+        )
+        for field in reverie_node.TEST_COUNT_FIELDS:
+            for label, value in (
+                ("null", None),
+                ("string", "17"),
+                ("float", 17.0),
+                ("boolean", True),
+                ("negative", -1),
+                ("above-i64", maximum + 1),
+            ):
+                with self.subTest(field=field, shape=label):
+                    row = {
+                        "result": "pass",
+                        "executed_tests": maximum,
+                        "passed_tests": maximum,
+                        "filtered_tests": maximum,
+                        field: value,
+                    }
+                    with self.assertRaisesRegex(
+                        reverie_node.Refusal,
+                        rf"{field}.*nonnegative signed 64-bit integer",
+                    ):
+                        reverie_node.recorded_test_counts(row)
 
         missing = {
             "result": "pass",

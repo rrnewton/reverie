@@ -83,6 +83,8 @@ GATE_CONTRACTS = (
 )
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SAFE_CI_STEP = "validate.reverie-full"
+I64_MAX = (1 << 63) - 1
+TEST_COUNT_FIELDS = ("executed_tests", "passed_tests", "filtered_tests")
 
 
 class Refusal(RuntimeError):
@@ -291,9 +293,11 @@ def recorded_gate_coverage(
                 f"executed_tests={values[0]}, passed_tests={values[1]}, "
                 f"and filtered_tests={values[2]}"
             )
-        executed += values[0]
-        passed += values[1]
-        filtered += values[2]
+        executed, passed, filtered = _checked_count_totals(
+            (executed, passed, filtered),
+            values,
+            context="Reverie source row counted gates",
+        )
         if values[0] == 0:
             zero.append(name)
     return executed, passed, filtered, zero, absent
@@ -303,11 +307,17 @@ def _recorded_test_counts(
     record: dict[str, Any], *, context: str
 ) -> tuple[int, int, int]:
     values: list[int] = []
-    for field in ("executed_tests", "passed_tests", "filtered_tests"):
+    for field in TEST_COUNT_FIELDS:
         value = record.get(field)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value < 0
+            or value > I64_MAX
+        ):
             raise Refusal(
-                f"{context} {field} must be a nonnegative integer, got {value!r}"
+                f"{context} {field} must be a nonnegative signed 64-bit integer, "
+                f"got {value!r}"
             )
         values.append(value)
     executed, passed, filtered = values
@@ -322,6 +332,30 @@ def _recorded_test_counts(
             f"got {passed} != {executed}"
         )
     return executed, passed, filtered
+
+
+def _checked_count_totals(
+    totals: tuple[int, int, int],
+    values: tuple[int, int, int],
+    *,
+    context: str,
+) -> tuple[int, int, int]:
+    """Add already-validated counts without exceeding the ledger's i64 type."""
+    overflow = [
+        field
+        for field, total, value in zip(TEST_COUNT_FIELDS, totals, values, strict=True)
+        if total > I64_MAX - value
+    ]
+    if overflow:
+        raise Refusal(
+            f"{context} aggregate exceeds signed 64-bit maximum for "
+            + ", ".join(overflow)
+        )
+    return (
+        totals[0] + values[0],
+        totals[1] + values[1],
+        totals[2] + values[2],
+    )
 
 
 def recorded_test_counts(source: dict[str, Any]) -> tuple[int, int, int]:

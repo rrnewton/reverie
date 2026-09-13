@@ -35,6 +35,11 @@ PREDICATE = {
     },
     "counts_schema": 5,
     "passed_tests": {"applies_at_schema_min": 4},
+    "count_representation": {
+        "applies_at_schema_min": 4,
+        "fields": ["executed_tests", "passed_tests", "filtered_tests"],
+        "signed_bits": 64,
+    },
     "coverage": {"applies_at_schema_min": 5, "per_node": True},
     "cell_results": {"applies_at_schema_min": 6, "supported_schema_max": 7},
     "producer": {

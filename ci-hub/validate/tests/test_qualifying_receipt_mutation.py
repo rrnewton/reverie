@@ -52,6 +52,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 CI_HUB = Path(__file__).resolve().parents[2]
 REPO_ROOT = CI_HUB.parent
@@ -976,6 +977,10 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         """Both shared predicates use one reason for every current-row defect."""
         predicate = qualifying_receipt.active()
         self.assertEqual(predicate["passed_tests"]["applies_at_schema_min"], 4)
+        self.assertEqual(
+            predicate["count_representation"],
+            qualifying_receipt.COUNT_REPRESENTATION,
+        )
         for schema, base in (
             (4, _grandfathered_schema4_row(SHA)),
             (5, _green_row(SHA)),
@@ -1051,6 +1056,84 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             (False, qualifying_receipt.PASSED_TESTS_REFUSAL_REASON),
             "pre-4 contradictory passed_tests must retain its refusal",
         )
+
+    def test_count_representation_declaration_is_fixed(self) -> None:
+        """The canonical i64 field set is a format contract, not a threshold."""
+        predicate = copy.deepcopy(qualifying_receipt.active())
+        for label, mutation in (
+            ("wrong width", {"signed_bits": 32}),
+            (
+                "missing filtered field",
+                {"fields": ["executed_tests", "passed_tests"]},
+            ),
+            ("late application", {"applies_at_schema_min": 5}),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                drifted = copy.deepcopy(predicate)
+                drifted["count_representation"].update(mutation)
+                path = Path(tmp) / "predicate.json"
+                path.write_text(json.dumps(drifted))
+                with mock.patch.dict(
+                    os.environ,
+                    {qualifying_receipt.PREDICATE_ENV: str(path)},
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "count_representation must be",
+                    ):
+                        qualifying_receipt.load()
+
+    def test_current_schema_out_of_i64_counts_refuse_unanimously(self) -> None:
+        """Schema 4/5 consumers refuse JSON integers Rust cannot deserialize."""
+        overflow = qualifying_receipt.I64_MAX + 1
+        expected_reasons = {
+            "executed_tests": qualifying_receipt.PASSED_TESTS_REFUSAL_REASON,
+            "passed_tests": qualifying_receipt.PASSED_TESTS_REFUSAL_REASON,
+            "filtered_tests": qualifying_receipt.FILTERED_TESTS_I64_REFUSAL_REASON,
+        }
+        for schema, base in (
+            (4, _grandfathered_schema4_row(SHA)),
+            (5, _green_row(SHA)),
+        ):
+            maximum = copy.deepcopy(base)
+            for field in expected_reasons:
+                maximum[field] = qualifying_receipt.I64_MAX
+            self.assertEqual(
+                qualifying_receipt.row_qualification(
+                    maximum, SHA, qualifying_receipt.active()
+                ),
+                (True, "qualifies"),
+            )
+            maximum_panel = self._passed_count_panel(
+                schema, self._panel(maximum, predicate=None)
+            )
+            accepted = sum(maximum_panel.values())
+            self.assertEqual(
+                accepted,
+                len(maximum_panel),
+                f"schema-{schema} I64_MAX counts must be accepted by every "
+                f"applicable consumer: {accepted}/{len(maximum_panel)} "
+                f"{maximum_panel}",
+            )
+
+            for field, expected_reason in expected_reasons.items():
+                with self.subTest(schema=schema, field=field):
+                    row = copy.deepcopy(base)
+                    row[field] = overflow
+                    self.assertEqual(
+                        qualifying_receipt.row_qualification(
+                            row, SHA, qualifying_receipt.active()
+                        ),
+                        (False, expected_reason),
+                    )
+                    panel = self._passed_count_panel(
+                        schema, self._panel(row, predicate=None)
+                    )
+                    self.assertFalse(
+                        any(panel.values()),
+                        f"schema-{schema} over-i64 {field} must be refused "
+                        f"everywhere: {panel}",
+                    )
 
     def test_current_schema_missing_passed_count_refuses_unanimously(self) -> None:
         """Missing and null counts refuse schema 4 and 5 in every consumer."""

@@ -15076,40 +15076,58 @@ mod tests {
             "embedded",
         )
         .unwrap();
-        for field in ["executed_tests", "passed_tests"] {
+        for (field, refusal_reason) in [
+            (
+                "executed_tests",
+                qualifying_receipt::PASSED_TESTS_REFUSAL_REASON,
+            ),
+            (
+                "passed_tests",
+                qualifying_receipt::PASSED_TESTS_REFUSAL_REASON,
+            ),
+            (
+                "filtered_tests",
+                qualifying_receipt::FILTERED_TESTS_I64_REFUSAL_REASON,
+            ),
+        ] {
             let mut row = schema4_receipt_value();
-            row[field] = serde_json::json!("not-an-integer");
-            let inputs = [
-                (false, false, row.clone()),
-                (
-                    true,
-                    false,
-                    serde_json::json!({
-                        "schema_version": published_receipt::SCHEMA_VERSION,
-                        "ledger_record": row.clone(),
-                    }),
-                ),
-                (
-                    false,
-                    true,
-                    serde_json::json!({
-                        "schema": ledger_event::SCHEMA,
-                        "event_type": "run.result",
-                        "legacy_row": row.clone(),
-                    }),
-                ),
-            ];
-            for (published, event, input) in inputs {
-                assert_eq!(
-                    receipt_digest_raw_count_type_refusal(
-                        &input.to_string(),
-                        published,
-                        event,
-                        &pred,
+            for malformed in [
+                serde_json::json!("not-an-integer"),
+                serde_json::Value::from(1_u64 << 63),
+            ] {
+                row[field] = malformed;
+                let inputs = [
+                    (false, false, row.clone()),
+                    (
+                        true,
+                        false,
+                        serde_json::json!({
+                            "schema_version": published_receipt::SCHEMA_VERSION,
+                            "ledger_record": row.clone(),
+                        }),
                     ),
-                    Some(qualifying_receipt::PASSED_TESTS_REFUSAL_REASON),
-                    "malformed {field} must have the shared reason for published={published} event={event}"
-                );
+                    (
+                        false,
+                        true,
+                        serde_json::json!({
+                            "schema": ledger_event::SCHEMA,
+                            "event_type": "run.result",
+                            "legacy_row": row.clone(),
+                        }),
+                    ),
+                ];
+                for (published, event, input) in inputs {
+                    assert_eq!(
+                        receipt_digest_raw_count_type_refusal(
+                            &input.to_string(),
+                            published,
+                            event,
+                            &pred,
+                        ),
+                        Some(refusal_reason),
+                        "malformed {field} must have the shared reason for published={published} event={event}"
+                    );
+                }
             }
         }
     }

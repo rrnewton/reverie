@@ -2278,29 +2278,45 @@ mod tests {
 
     #[test]
     fn parse_ledger_names_malformed_current_schema_count_types() {
-        for field in ["executed_tests", "passed_tests"] {
-            let row = serde_json::json!({
-                "schema_version": 4,
-                "commit": PASS_SHA,
-                "result": "pass",
-                "executed_tests": 7,
-                "passed_tests": 7,
-            });
-            for malformed in [
-                serde_json::json!("7"),
-                serde_json::json!(true),
-                serde_json::json!(7.0),
-            ] {
-                let mut malformed_row = row.clone();
-                malformed_row[field] = malformed;
-                let (rows, failures) = parse_ledger(&malformed_row.to_string());
-                assert!(rows.is_empty());
-                assert_eq!(failures.len(), 1);
-                assert_eq!(
-                    failures[0].error,
+        for schema in [4, 5] {
+            for (field, refusal_reason) in [
+                (
+                    "executed_tests",
                     crate::qualifying_receipt::PASSED_TESTS_REFUSAL_REASON,
-                    "current malformed {field} must use the shared refusal reason"
-                );
+                ),
+                (
+                    "passed_tests",
+                    crate::qualifying_receipt::PASSED_TESTS_REFUSAL_REASON,
+                ),
+                (
+                    "filtered_tests",
+                    crate::qualifying_receipt::FILTERED_TESTS_I64_REFUSAL_REASON,
+                ),
+            ] {
+                let row = serde_json::json!({
+                    "schema_version": schema,
+                    "commit": PASS_SHA,
+                    "result": "pass",
+                    "executed_tests": 7,
+                    "passed_tests": 7,
+                    "filtered_tests": 0,
+                });
+                for malformed in [
+                    serde_json::json!("7"),
+                    serde_json::json!(true),
+                    serde_json::json!(7.0),
+                    serde_json::Value::from(1_u64 << 63),
+                ] {
+                    let mut malformed_row = row.clone();
+                    malformed_row[field] = malformed;
+                    let (rows, failures) = parse_ledger(&malformed_row.to_string());
+                    assert!(rows.is_empty());
+                    assert_eq!(failures.len(), 1);
+                    assert_eq!(
+                        failures[0].error, refusal_reason,
+                        "schema-{schema} malformed {field} must use its shared refusal reason"
+                    );
+                }
             }
         }
 
@@ -2310,6 +2326,7 @@ mod tests {
             "result": "pass",
             "executed_tests": 7,
             "passed_tests": "7",
+            "filtered_tests": 0,
         });
         let (rows, failures) = parse_ledger(&legacy.to_string());
         assert!(rows.is_empty());

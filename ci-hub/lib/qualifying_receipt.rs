@@ -63,6 +63,12 @@ pub const PREDICATE_ENV: &str = "QUALIFYING_RECEIPT_PREDICATE";
 /// Shared with the Python predicate so every current-schema passing row reports
 /// the same failed condition for an absent, malformed, or contradictory count.
 pub const PASSED_TESTS_REFUSAL_REASON: &str = "passed_tests != executed_tests for passing row";
+pub const FILTERED_TESTS_I64_REFUSAL_REASON: &str =
+    "filtered_tests does not fit signed 64-bit integer";
+pub const COUNT_REPRESENTATION_SCHEMA_MIN: u32 = 4;
+pub const COUNT_REPRESENTATION_FIELDS: [&str; 3] =
+    ["executed_tests", "passed_tests", "filtered_tests"];
+pub const COUNT_REPRESENTATION_SIGNED_BITS: u8 = 64;
 
 /// Compile-time snapshot of the live file (fallback only; see module docs).
 pub const EMBEDDED: &str = include_str!("../validate/qualifying-receipt.json");
@@ -92,6 +98,14 @@ pub struct CoverageClause {
 #[derive(Clone, Debug, Deserialize)]
 pub struct PassedTestsClause {
     pub applies_at_schema_min: u32,
+}
+
+/// Fixed cross-language representation of top-level receipt count fields.
+#[derive(Clone, Debug, Deserialize)]
+pub struct CountRepresentationClause {
+    pub applies_at_schema_min: u32,
+    pub fields: Vec<String>,
+    pub signed_bits: u8,
 }
 
 /// Receipt-carried base evidence. Semantics live in the same Python authority
@@ -270,6 +284,7 @@ pub struct QualifyingPredicate {
     #[serde(default = "default_accepts_green_class")]
     pub accepts_green_class: Vec<String>,
     pub passed_tests: PassedTestsClause,
+    pub count_representation: CountRepresentationClause,
     pub coverage: CoverageClause,
     /// Exact base/provenance evidence and its merge-boundary policy.
     pub base: BaseClause,
@@ -293,15 +308,34 @@ fn default_accepts_green_class() -> Vec<String> {
 impl QualifyingPredicate {
     /// Parse from JSON text, mapping errors to a message that names the source.
     pub fn parse(text: &str, origin: &str) -> Result<Self, String> {
-        serde_json::from_str(text)
-            .map_err(|e| format!("{origin}: malformed qualifying predicate: {e}"))
+        let predicate: Self = serde_json::from_str(text)
+            .map_err(|e| format!("{origin}: malformed qualifying predicate: {e}"))?;
+        let representation = &predicate.count_representation;
+        let fields_match = representation
+            .fields
+            .iter()
+            .map(String::as_str)
+            .eq(COUNT_REPRESENTATION_FIELDS);
+        if representation.applies_at_schema_min != COUNT_REPRESENTATION_SCHEMA_MIN
+            || !fields_match
+            || representation.signed_bits != COUNT_REPRESENTATION_SIGNED_BITS
+        {
+            return Err(format!(
+                "{origin}: qualifying predicate count_representation must declare schema {}, fields {:?}, and {} signed bits",
+                COUNT_REPRESENTATION_SCHEMA_MIN,
+                COUNT_REPRESENTATION_FIELDS,
+                COUNT_REPRESENTATION_SIGNED_BITS,
+            ));
+        }
+        Ok(predicate)
     }
 }
 
 /// Classify malformed count types before deserializing a current-schema pass
-/// row into [`HistoryRow`]. Missing and null values deliberately remain on the
-/// normal typed predicate path, as do numeric mismatches. Rows before the
-/// policy cutoff retain their historical deserialization behavior.
+/// row into [`HistoryRow`]. Missing, null, and representable signed values
+/// deliberately remain on the normal typed predicate path, as do numeric
+/// mismatches. Rows before the policy cutoff retain their historical
+/// deserialization behavior.
 pub fn raw_current_schema_count_type_refusal(
     row: &serde_json::Value,
     pred: &QualifyingPredicate,
@@ -313,14 +347,22 @@ pub fn raw_current_schema_count_type_refusal(
         .get("schema_version")
         .and_then(serde_json::Value::as_u64)
         .and_then(|schema| u32::try_from(schema).ok())?;
-    if schema < pred.passed_tests.applies_at_schema_min {
+    if schema < pred.count_representation.applies_at_schema_min {
         return None;
     }
-    let malformed = ["executed_tests", "passed_tests"].iter().any(|field| {
-        row.get(field)
-            .is_some_and(|value| !value.is_null() && value.as_i64().is_none())
-    });
-    malformed.then_some(PASSED_TESTS_REFUSAL_REASON)
+    for field in &pred.count_representation.fields {
+        let malformed = row
+            .get(field)
+            .is_some_and(|value| !value.is_null() && value.as_i64().is_none());
+        if malformed {
+            return Some(if field == "filtered_tests" {
+                FILTERED_TESTS_I64_REFUSAL_REASON
+            } else {
+                PASSED_TESTS_REFUSAL_REASON
+            });
+        }
+    }
+    None
 }
 
 /// Apply the versioned passed-test count contract to an already typed row.
@@ -1298,7 +1340,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_current_schema_count_type_errors_share_the_passed_count_reason() {
+    fn raw_current_schema_count_type_errors_use_shared_reasons() {
         let pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
         for schema in [4, 5] {
             let current = serde_json::json!({
@@ -1306,6 +1348,7 @@ mod tests {
                 "result": "pass",
                 "executed_tests": 427,
                 "passed_tests": 427,
+                "filtered_tests": 0,
             });
 
             for field in ["executed_tests", "passed_tests"] {
@@ -1332,10 +1375,33 @@ mod tests {
                 }
             }
 
+            for malformed in [
+                serde_json::json!("0"),
+                serde_json::json!(true),
+                serde_json::json!(0.0),
+                serde_json::Value::from(1_u64 << 63),
+            ] {
+                let mut row = current.clone();
+                row["filtered_tests"] = malformed;
+                assert_eq!(
+                    raw_current_schema_count_type_refusal(&row, &pred),
+                    Some(FILTERED_TESTS_I64_REFUSAL_REASON),
+                    "schema-{schema} filtered_tests type must use its shared refusal reason"
+                );
+
+                row["schema_version"] = serde_json::json!(3);
+                assert_eq!(
+                    raw_current_schema_count_type_refusal(&row, &pred),
+                    None,
+                    "pre-4 filtered_tests must retain its prior typed-reader behavior"
+                );
+            }
+
             for (field, value) in [
                 ("passed_tests", serde_json::Value::Null),
                 ("passed_tests", serde_json::json!(426)),
                 ("executed_tests", serde_json::Value::Null),
+                ("filtered_tests", serde_json::Value::Null),
             ] {
                 let mut row = current.clone();
                 row[field] = value;
@@ -1368,6 +1434,14 @@ mod tests {
                 exact.coverage = None;
             }
             assert!(row_qualifies(&exact, &sha, &pred));
+            let mut maximum = exact.clone();
+            maximum.executed_tests = Some(i64::MAX);
+            maximum.passed_tests = Some(i64::MAX);
+            maximum.filtered_tests = Some(i64::MAX);
+            assert!(
+                row_qualifies(&maximum, &sha, &pred),
+                "schema-{schema} i64::MAX count fields must remain readable"
+            );
 
             for label in ["missing", "null"] {
                 let mut value = serde_json::to_value(&exact).unwrap();
@@ -1853,7 +1927,68 @@ mod tests {
         let pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
         assert!(pred.counts_schema >= 1);
         assert_eq!(pred.passed_tests.applies_at_schema_min, 4);
+        assert_eq!(
+            pred.count_representation.applies_at_schema_min,
+            COUNT_REPRESENTATION_SCHEMA_MIN
+        );
+        assert_eq!(
+            pred.count_representation
+                .fields
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            COUNT_REPRESENTATION_FIELDS
+        );
+        assert_eq!(
+            pred.count_representation.signed_bits,
+            COUNT_REPRESENTATION_SIGNED_BITS
+        );
         assert!(pred.require.executed_tests_min >= 1);
+    }
+
+    #[test]
+    fn fixed_count_representation_rejects_contract_drift() {
+        let expected_suffix = format!(
+            "qualifying predicate count_representation must declare schema {}, fields {:?}, and {} signed bits",
+            COUNT_REPRESENTATION_SCHEMA_MIN,
+            COUNT_REPRESENTATION_FIELDS,
+            COUNT_REPRESENTATION_SIGNED_BITS,
+        );
+        for (label, mutation) in [
+            (
+                "wrong width",
+                serde_json::json!({
+                    "applies_at_schema_min": 4,
+                    "fields": ["executed_tests", "passed_tests", "filtered_tests"],
+                    "signed_bits": 32,
+                }),
+            ),
+            (
+                "missing filtered field",
+                serde_json::json!({
+                    "applies_at_schema_min": 4,
+                    "fields": ["executed_tests", "passed_tests"],
+                    "signed_bits": 64,
+                }),
+            ),
+            (
+                "late application",
+                serde_json::json!({
+                    "applies_at_schema_min": 5,
+                    "fields": ["executed_tests", "passed_tests", "filtered_tests"],
+                    "signed_bits": 64,
+                }),
+            ),
+        ] {
+            let mut value: serde_json::Value = serde_json::from_str(EMBEDDED).unwrap();
+            value["count_representation"] = mutation;
+            let error = QualifyingPredicate::parse(&value.to_string(), label).unwrap_err();
+            assert_eq!(
+                error,
+                format!("{label}: {expected_suffix}"),
+                "{label} returned the wrong diagnostic"
+            );
+        }
     }
 
     /// A tightened override MOVES the answer for the same row — the core of the
