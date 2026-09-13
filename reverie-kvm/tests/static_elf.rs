@@ -12938,3 +12938,134 @@ int main(int argc, char **argv) {
     assert_eq!(stdout, b"guest-vectored-address-ok\n");
     assert!(stderr.is_empty());
 }
+
+#[test]
+fn signalfd_positioned_vector_flags_match_native_linux() {
+    if !kvm_available("KVM signalfd positioned-vector flags") {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "signalfd-vector-flags",
+        r#"#define _GNU_SOURCE
+#include <errno.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/signalfd.h>
+#include <sys/uio.h>
+#include <unistd.h>
+
+static int check_record(const struct signalfd_siginfo *info) {
+  struct signalfd_siginfo expected = {0};
+  expected.ssi_signo = SIGUSR1;
+  expected.ssi_pid = getpid();
+  expected.ssi_uid = getuid();
+  return memcmp(info, &expected, sizeof(expected)) == 0;
+}
+
+int main(void) {
+  alarm(8);
+  sigset_t set;
+  sigemptyset(&set);
+  sigaddset(&set, SIGUSR1);
+  if (sigprocmask(SIG_BLOCK, &set, 0) != 0) return 2;
+  int fd = signalfd(-1, &set, SFD_CLOEXEC | SFD_NONBLOCK);
+  if (fd < 0) return 3;
+  const unsigned flags[] = {
+      0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 0x80000000, 16 | 32,
+      0x80000000 | 16 | 32};
+  int failures = 0;
+  for (int shape = 0; shape < 5; shape++) {
+    for (unsigned index = 0; index < sizeof(flags) / sizeof(flags[0]); index++) {
+      if (kill(getpid(), SIGUSR1) != 0) return 4;
+      struct signalfd_siginfo info;
+      unsigned char sentinel[sizeof(info)];
+      memset(&info, 0xa5, sizeof(info));
+      memset(sentinel, 0xa5, sizeof(sentinel));
+      struct iovec vector = {shape == 4 ? (void *)(uintptr_t)UINTPTR_MAX : &info,
+                             shape >= 2 ? sizeof(info) : 0};
+      int count = shape == 0 ? 0 : 1;
+      errno = 0;
+      struct iovec *array = shape == 3 ? (struct iovec *)(uintptr_t)1 : &vector;
+      ssize_t result = preadv2(fd, array, count, -1, flags[index]);
+      int error = errno;
+      ssize_t expected = shape == 2 ? (ssize_t)sizeof(info) : 0;
+      int expected_errno = 0;
+      if (shape >= 3) {
+        expected = -1;
+        expected_errno = EFAULT;
+      } else if (shape == 2 && (flags[index] & (64 | 128 | 0x80000000)) != 0) {
+        expected = -1;
+        expected_errno = EOPNOTSUPP;
+      } else if (shape == 2 && (flags[index] & (16 | 32)) == (16 | 32)) {
+        expected = -1;
+        expected_errno = EINVAL;
+      }
+      int unchanged = memcmp(&info, sentinel, sizeof(info)) == 0;
+      int valid_record = check_record(&info);
+      memset(&info, 0xa5, sizeof(info));
+      errno = 0;
+      ssize_t remaining = read(fd, &info, sizeof(info));
+      int remaining_errno = errno;
+      if (result != expected || error != expected_errno) {
+        fprintf(stderr,
+                "shape=%d flags=%u result=%zd/%d expected=%zd/%d "
+                "unchanged=%d remaining=%zd/%d\n",
+                shape, flags[index], result, error, expected, expected_errno,
+                unchanged, remaining, remaining_errno);
+        failures++;
+        continue;
+      }
+      if (result <= 0 && !unchanged) return 11;
+      if (result > 0 && !valid_record) return 12;
+      if (result > 0) {
+        if (remaining != -1 || remaining_errno != EAGAIN ||
+            memcmp(&info, sentinel, sizeof(info)) != 0) return 13;
+      } else {
+        if (remaining != sizeof(info) || !check_record(&info)) return 14;
+      }
+      printf("shape=%d flags=%u result=%zd/%d remaining=%zd/%d\n",
+             shape, flags[index], result, error, remaining, remaining_errno);
+    }
+  }
+  close(fd);
+  if (failures != 0) return 10;
+  puts("signalfd-vector-flags=ok");
+  return 0;
+}
+"#,
+    );
+    let native = std::process::Command::new("timeout")
+        .args(["--signal=TERM", "--kill-after=2s", "15s"])
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(native.status.success(), "native fixture failed: {native:?}");
+    assert_eq!(native.stdout.split(|byte| *byte == b'\n').count(), 67);
+    assert!(native.stdout.ends_with(b"signalfd-vector-flags=ok\n"));
+    assert!(native.stderr.is_empty());
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!(
+        code,
+        0,
+        "KVM fixture exited {code}; stdout={}; stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    );
+    assert_eq!(stdout, native.stdout);
+    assert_eq!(stderr, native.stderr);
+}
