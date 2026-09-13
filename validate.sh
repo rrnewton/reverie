@@ -620,6 +620,20 @@ if ((SELF_TEST_GATE_COUNTS == 1)); then
     expect_count_refusal "$legacy_counts"
     grep -Fq 'schema 1 has no authoritative passed_tests' "$LOG_FILE"
 
+    duplicate_counts="$VALIDATION_TEST_COUNTS_DIR/duplicate.json"
+    for duplicate_json in \
+        '{"schema_version":2,"executed_tests":2,"passed_tests":1,"filtered_tests":0,"executed_tests":1}' \
+        '{"schema_version":2,"executed_tests":1,"passed_tests":1,"filtered_tests":0,"executed_tests":1}' \
+        '{"schema_version":2,"executed_tests":1,"passed_tests":0,"filtered_tests":0,"passed_tests":1}' \
+        '{"schema_version":2,"executed_tests":1,"passed_tests":1,"filtered_tests":0,"passed_tests":1}' \
+        '{"schema_version":2,"executed_tests":1,"passed_tests":1,"filtered_tests":3,"filtered_tests":0}' \
+        '{"schema_version":2,"executed_tests":1,"passed_tests":1,"filtered_tests":0,"filtered_tests":0}' \
+        '{"schema_version":1,"executed_tests":1,"passed_tests":1,"filtered_tests":0,"schema_version":2}' \
+        '{"schema_version":2,"executed_tests":1,"passed_tests":1,"filtered_tests":0,"schema_version":2}'; do
+        printf '%s\n' "$duplicate_json" >"$duplicate_counts"
+        expect_count_refusal "$duplicate_counts"
+    done
+
     reset_self_test_gates
     record_ledger_gate "Test regular workspace cases" 1 0 \
         "$MAX_LEDGER_TEST_COUNT" 0 0
