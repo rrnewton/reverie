@@ -376,6 +376,42 @@ def tree_content_cases() -> None:
             check(f"failed {failing_command}: no receipt", not receipt.exists(), out)
             check(f"failed {failing_command}: no gh call", log.read_text() == "", log.read_text())
 
+    malformed = (
+        ("ls-tree", b"bad bogus not-an-object\ttracked.txt\0", "invalid tree entry"),
+        ("ls-tree", b"100644 tree " + b"1" * 40 + b"\ttracked.txt\0", "invalid tree entry"),
+        ("ls-tree", b"100644 blob short\ttracked.txt\0", "invalid tree entry"),
+        ("diff", b"tracked.txt", "invalid changed-path list"),
+        ("diff", b"tracked.txt\0\0", "invalid changed-path list"),
+    )
+    for index, (command, payload, diagnostic) in enumerate(malformed):
+        with tempfile.TemporaryDirectory(prefix="gh-merge-verified-malformed-") as tmp:
+            root = Path(tmp)
+            origin, work = build_fixture(root, "arrived")
+            bindir, log = tripwire_dir(root)
+            git_wrapper = bindir / "git"
+            git_wrapper.write_text(
+                f"#!{sys.executable}\nimport os, sys\n"
+                f"if {command!r} in sys.argv[1:]:\n"
+                f"    sys.stdout.buffer.write({payload!r})\n"
+                "    sys.exit(0)\n"
+                f"os.execv({shutil.which('git')!r}, ['git', *sys.argv[1:]])\n"
+            )
+            git_wrapper.chmod(0o755)
+            receipt = root / "receipt.json"
+            code, out = run(
+                [sys.executable, str(TOOL), "1", "--repo", "fixture/repo", "--verify-only",
+                 "--receipt", str(receipt)], cwd=work, env={
+                    **os.environ,
+                    "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+                    "GH_MERGE_VERIFIED_REMOTE": str(origin),
+                },
+            )
+            name = f"malformed {command} {index}"
+            check(f"{name}: inconclusive", code == 4, f"exit {code}\n{out}")
+            check(f"{name}: exact diagnostic", diagnostic in out, out)
+            check(f"{name}: no receipt", not receipt.exists(), out)
+            check(f"{name}: no gh call", log.read_text() == "", log.read_text())
+
 
 def load_tool():
     """Import the tool as a module so its helpers can be tested directly."""

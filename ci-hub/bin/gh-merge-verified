@@ -303,6 +303,10 @@ def tree_entry(revision: str, path: str) -> tuple[bytes, bytes, bytes] | None:
         mode, kind, oid = metadata.split()
         if terminator or os.fsdecode(found_path) != path:
             raise ValueError("unexpected tree path")
+        kinds = {b"040000": b"tree", b"100644": b"blob", b"100755": b"blob",
+                 b"120000": b"blob", b"160000": b"commit"}
+        if kinds.get(mode) != kind or re.fullmatch(rb"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid) is None:
+            raise ValueError("invalid tree metadata")
     except ValueError:
         die(4, f"gh-merge-verified: COULD NOT DETERMINE — invalid tree entry for {path!r}")
     return mode, kind, oid
@@ -1254,7 +1258,9 @@ def main() -> None:
     # Disable rename folding so both the removed source and added destination
     # must arrive. NUL separation keeps literal whitespace and glob characters.
     names = git_bytes(["diff", "--no-renames", "--name-only", "-z", f"{base}..{head}"])
-    files = [os.fsdecode(path) for path in names.split(b"\0") if path]
+    if names and (not names.endswith(b"\0") or names.startswith(b"\0") or b"\0\0" in names):
+        die(4, "gh-merge-verified: COULD NOT DETERMINE — invalid changed-path list")
+    files = [os.fsdecode(path) for path in names[:-1].split(b"\0")] if names else []
     if not files:
         die(4, f"gh-merge-verified: COULD NOT DETERMINE — PR {pr} changes no files against its own",
             "  merge base, so there is nothing whose presence could be checked.")
