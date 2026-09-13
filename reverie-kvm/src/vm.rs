@@ -279,6 +279,9 @@ struct GuestThreadGroup {
     // AUTONOMOUS-BOT-IMPLEMENTED: Join cancelled KVM workers before root teardown returns.
     // TODO-HUMAN-REVIEW(PR-178): Review KVM worker join ordering.
     worker_handles: Mutex<Vec<GuestWorkerHandle>>,
+    // Intermediate joins must not consume a failed exit hook. Keep every
+    // failure until the process owner reports teardown, ordered by guest TID.
+    worker_errors: Mutex<std::collections::BTreeMap<i32, Vec<String>>>,
     transport_slots: Mutex<Vec<bool>>,
 }
 
@@ -395,11 +398,43 @@ impl GuestThreadGroup {
             }
             Self::cancel_pending_worker_gates(&handles);
             for worker in handles {
-                if worker.handle.join().is_err() {
-                    eprintln!("reverie-kvm guest thread panicked during teardown");
+                let error = match worker.handle.join() {
+                    Ok(Ok(_)) => None,
+                    Ok(Err(error)) => Some(error.to_string()),
+                    Err(_) => Some("guest thread panicked during teardown".to_owned()),
+                };
+                if let Some(error) = error {
+                    self.worker_errors
+                        .lock()
+                        .expect("KVM worker error lock poisoned")
+                        .entry(worker.tid)
+                        .or_default()
+                        .push(error);
                 }
             }
         }
+    }
+
+    fn teardown_result(&self) -> Result<()> {
+        let errors = self
+            .worker_errors
+            .lock()
+            .expect("KVM worker error lock poisoned");
+        if errors.is_empty() {
+            return Ok(());
+        }
+        let diagnostics = errors
+            .iter()
+            .flat_map(|(tid, errors)| {
+                errors
+                    .iter()
+                    .map(move |error| format!("thread {tid}: {error}"))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        Err(Error::UnexpectedVcpuExit(format!(
+            "KVM worker cleanup failed: {diagnostics}"
+        )))
     }
 
     fn cancel_workers(&self) {
@@ -1585,6 +1620,7 @@ impl KvmBackend {
                 // alive lets it execute stale instructions in the replacement
                 // image and can turn an otherwise successful exec into a fault.
                 self.cancel_guest_threads();
+                self.guest_worker_teardown_result()?;
                 let result = self.exec_process(
                     executor,
                     (&executable_path, executable_file),
@@ -2619,6 +2655,7 @@ impl KvmBackend {
             if let Some(status) = self.guest_thread_group_exit_status() {
                 if !self.is_guest_thread {
                     self.cancel_guest_threads();
+                    self.guest_worker_teardown_result()?;
                 }
                 let (stdout, stderr) = executor.take_output();
                 return Ok((status, stdout, stderr));
@@ -2759,6 +2796,7 @@ impl KvmBackend {
                 }
                 if !self.is_guest_thread {
                     self.cancel_guest_threads();
+                    self.guest_worker_teardown_result()?;
                 }
                 let (stdout, stderr) = executor.take_output();
                 return Ok((exit.status, stdout, stderr));
@@ -2806,6 +2844,14 @@ impl KvmBackend {
         self.thread_group.cancel_workers();
         if !self.is_guest_thread {
             self.thread_group.join_workers();
+        }
+    }
+
+    pub(crate) fn guest_worker_teardown_result(&self) -> Result<()> {
+        if self.is_guest_thread {
+            Ok(())
+        } else {
+            self.thread_group.teardown_result()
         }
     }
 
@@ -6331,3 +6377,7 @@ mod tests {
         assert!(group.worker_handles.lock().unwrap().is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "terminal_vm_tests.rs"]
+mod terminal_tests;

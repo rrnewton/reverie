@@ -2671,6 +2671,14 @@ impl ElfExecutor {
         Some(ProcessExit { status, group })
     }
 
+    /// Completes a Tool-authorized terminal thread without executing a guest
+    /// syscall. An already established fatal or group exit keeps its status.
+    pub(crate) fn cancel_current_thread(&mut self) -> ProcessExit {
+        self.exit_status.get_or_insert(ExitStatus::SUCCESS);
+        self.take_exit()
+            .expect("terminal thread has an exit status")
+    }
+
     pub(crate) fn take_output(&mut self) -> (Vec<u8>, Vec<u8>) {
         if self.owns_output {
             self.output
