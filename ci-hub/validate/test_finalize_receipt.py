@@ -992,7 +992,7 @@ def test_canonical_test_producer_missing_result_manifests_refuses():
         ),
         (
             [_structured_result("test.one"), _structured_result("test.one")],
-            "exactly one structured-test-results",
+            "duplicate structured result manifest",
         ),
         ([_structured_result("test.someone_else")], "mismatched result owner"),
         (
@@ -1004,7 +1004,7 @@ def test_canonical_test_producer_missing_result_manifests_refuses():
                     "owner": "test.one",
                 }
             ],
-            "malformed result manifest",
+            "unsupported structured result schema",
         ),
     ],
 )
@@ -1014,6 +1014,54 @@ def test_canonical_test_producer_result_manifest_controls(result_manifests, mess
     }
     with pytest.raises(RuntimeError, match=message):
         fr._canonical_full_test_producers(data)
+
+
+def test_canonical_structured_result_contract_accepts_exact_valid_declaration():
+    data = {
+        "steps": [
+            _canonical_step("test", "one"),
+            _canonical_step(
+                "e2e",
+                "selected_producer",
+                result_manifests=[_structured_result("e2e.selected_producer")],
+            ),
+        ]
+    }
+    assert fr._canonical_full_test_producers(data) == {"test.one"}
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        ({"schema": 3}, "unsupported structured result schema 3"),
+        ({"path_env": "OTHER"}, "path_env must be 'DAGRUN_TEST_COUNTS_PATH'"),
+        ({"future": True}, "missing or unknown keys"),
+    ],
+)
+def test_every_selected_structured_declaration_matches_canonical_contract(
+    mutation, message
+):
+    declaration = _structured_result("e2e.selected_producer")
+    declaration.update(mutation)
+    # These are the exact conditions the pre-review implementation checked;
+    # all three mutations passed that weaker positive/nonempty predicate.
+    assert (
+        isinstance(declaration["schema"], int)
+        and declaration["schema"] > 0
+        and isinstance(declaration["path_env"], str)
+        and declaration["path_env"]
+    )
+    data = {
+        "steps": [
+            _canonical_step("test", "one"),
+            _canonical_step(
+                "e2e", "selected_producer", result_manifests=[declaration]
+            ),
+        ]
+    }
+    with pytest.raises(RuntimeError, match=message):
+        fr._canonical_full_test_producers(data)
+
 
 def test_planned_from_real_hermit_manifest_at_head():
     """Positive control that the exact Hermit HEAD canonical plan is readable.

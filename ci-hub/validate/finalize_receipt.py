@@ -75,6 +75,12 @@ DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 PRODUCER = "ci-hub-finalize-receipt"
 CANONICAL_MANIFEST = "ci/dag/validate.json"
 FULL_LABEL = "full"
+STRUCTURED_TEST_RESULTS_KIND = "structured-test-results"
+STRUCTURED_TEST_RESULTS_KEYS = frozenset({"kind", "owner", "path_env", "schema"})
+# dagrun's retained and current structured-result schemas are both 2 at the
+# Hermit revision this parent pins. A future schema must update both authorities.
+STRUCTURED_TEST_RESULTS_SCHEMAS = frozenset({2})
+TEST_COUNTS_PATH_ENV = "DAGRUN_TEST_COUNTS_PATH"
 REVERIE_SOURCE_RE = re.compile(
     r"git\+https://github\.com/(?:rrnewton|facebookexperimental)/reverie\.git"
     r"\?rev=([0-9a-f]{40})(?:#[0-9a-f]{40})?"
@@ -300,6 +306,68 @@ def _canonical_full_test_producers(data: object) -> set[str]:
                 selected.add(dependency)
                 pending.append(dependency)
 
+    structured_by_tag: dict[str, list[dict]] = {}
+    for tag in sorted(selected):
+        manifests = steps_by_tag[tag].get("result_manifests")
+        if manifests is None:
+            structured_by_tag[tag] = []
+            continue
+        if not isinstance(manifests, list):
+            raise RuntimeError(
+                f"canonical validation DAG step {tag} has malformed result_manifests"
+            )
+        if any(not isinstance(manifest, dict) for manifest in manifests):
+            raise RuntimeError(
+                f"canonical validation DAG step {tag} has a malformed result manifest"
+            )
+        structured: list[dict] = []
+        for declaration in manifests:
+            if "kind" not in declaration:
+                continue
+            if set(declaration) != STRUCTURED_TEST_RESULTS_KEYS:
+                raise RuntimeError(
+                    f"canonical validation DAG step {tag} has a structured result manifest "
+                    "with missing or unknown keys"
+                )
+            if declaration["kind"] != STRUCTURED_TEST_RESULTS_KIND:
+                raise RuntimeError(
+                    f"canonical validation DAG step {tag} has unknown result-manifest kind "
+                    f"{declaration['kind']!r}"
+                )
+            schema = declaration["schema"]
+            if (
+                not isinstance(schema, int)
+                or isinstance(schema, bool)
+                or schema not in STRUCTURED_TEST_RESULTS_SCHEMAS
+            ):
+                raise RuntimeError(
+                    f"canonical validation DAG step {tag} has unsupported structured "
+                    f"result schema {schema!r}"
+                )
+            if declaration["path_env"] != TEST_COUNTS_PATH_ENV:
+                raise RuntimeError(
+                    f"canonical validation DAG step {tag} structured result path_env must be "
+                    f"{TEST_COUNTS_PATH_ENV!r}"
+                )
+            owner = declaration["owner"]
+            if not isinstance(owner, str) or not owner:
+                raise RuntimeError(
+                    f"canonical validation DAG step {tag} has an empty or malformed "
+                    "structured result owner"
+                )
+            if owner != tag:
+                raise RuntimeError(
+                    f"canonical validation DAG step {tag} has mismatched result owner "
+                    f"{owner!r}"
+                )
+            if declaration in structured:
+                raise RuntimeError(
+                    f"canonical validation DAG step {tag} has a duplicate structured "
+                    "result manifest"
+                )
+            structured.append(declaration)
+        structured_by_tag[tag] = structured
+
     planned: set[str] = set()
     for tag in sorted(selected):
         group = steps_by_tag[tag]["group"]
@@ -310,35 +378,11 @@ def _canonical_full_test_producers(data: object) -> set[str]:
             raise RuntimeError(
                 f"canonical validation DAG test producer {tag} has no result_manifests list"
             )
-        if any(not isinstance(manifest, dict) for manifest in manifests):
-            raise RuntimeError(
-                f"canonical validation DAG test producer {tag} has a malformed result manifest"
-            )
-        structured = [
-            manifest
-            for manifest in manifests
-            if manifest.get("kind") == "structured-test-results"
-        ]
+        structured = structured_by_tag[tag]
         if len(structured) != 1:
             raise RuntimeError(
                 f"canonical validation DAG test producer {tag} must declare exactly one "
                 "structured-test-results manifest"
-            )
-        declaration = structured[0]
-        if declaration.get("owner") != tag:
-            raise RuntimeError(
-                f"canonical validation DAG test producer {tag} has mismatched result owner "
-                f"{declaration.get('owner')!r}"
-            )
-        if (
-            not isinstance(declaration.get("schema"), int)
-            or isinstance(declaration.get("schema"), bool)
-            or declaration["schema"] <= 0
-            or not isinstance(declaration.get("path_env"), str)
-            or not declaration["path_env"]
-        ):
-            raise RuntimeError(
-                f"canonical validation DAG test producer {tag} has a malformed result manifest"
             )
         planned.add(tag)
 
