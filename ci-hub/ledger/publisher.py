@@ -24,30 +24,17 @@ this module exists to prevent.
 **No row is ever rewritten.** `verify_append_only` runs against the remote
 content before each push. If our proposed content is not a line-for-line
 extension of what is published, the publish is refused rather than forced.
-
-**A series snapshot cannot miss a row during publication.** Series publication
-holds the spool's `.append.lock` only long enough to copy the exact pending
-files, releases it for Git/network work, then reacquires it to mark the exact
-published commit and retain only unchanged files. New appends stay live. The
-scorecard snapshot takes the same lock in shared mode before binding its local
-published-commit marker and holds it through output readback. The public
-operation owns each bounded lock phase; its internal drain and reap helpers
-never reacquire it.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.util
 import json
 import os
-import re
-import stat
 import subprocess
 import sys
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
@@ -76,21 +63,6 @@ STORES = ("ledger", "series")
 
 class PublishRefused(Exception):
     """The publish would have rewritten published bytes, or the events are invalid."""
-
-
-@dataclass(frozen=True)
-class _SeriesBatchFile:
-    """Exact bytes and inode captured during the short publication lock."""
-
-    path: Path
-    device: int
-    inode: int
-    mode: int
-    size: int
-    mtime_ns: int
-    ctime_ns: int
-    sha256: str
-    payload: bytes
 
 
 def _series_store():
@@ -237,341 +209,6 @@ def _series_spool_snapshot(
             pending.setdefault((team, host, month), []).append(event)
         files.append(path)
     return ({key: union_events(value) for key, value in pending.items()}, files)
-
-
-def _file_signature(status: os.stat_result) -> tuple[int, ...]:
-    return (
-        status.st_dev,
-        status.st_ino,
-        status.st_mode,
-        status.st_size,
-        status.st_mtime_ns,
-        status.st_ctime_ns,
-    )
-
-
-def _read_descriptor(descriptor: int) -> bytes:
-    chunks = []
-    offset = 0
-    while True:
-        chunk = os.pread(descriptor, 1024 * 1024, offset)
-        if not chunk:
-            return b"".join(chunks)
-        chunks.append(chunk)
-        offset += len(chunk)
-
-
-def _capture_series_batch_files(lock) -> list[_SeriesBatchFile]:
-    """Copy exact live batch bytes while holding the short exclusive lock."""
-    captured = []
-    flags = os.O_RDONLY | os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    for name in sorted(
-        item for item in os.listdir(lock.spool_fd) if item.endswith(".jsonl")
-    ):
-        display = lock.spool / name
-        try:
-            descriptor = os.open(name, flags, dir_fd=lock.spool_fd)
-        except OSError as error:
-            raise PublishRefused(
-                f"cannot bind series publication batch {display}: {error}"
-            ) from error
-        try:
-            before = os.fstat(descriptor)
-            named = os.stat(name, dir_fd=lock.spool_fd, follow_symlinks=False)
-            if (
-                not stat.S_ISREG(before.st_mode)
-                or not stat.S_ISREG(named.st_mode)
-                or _file_signature(before) != _file_signature(named)
-            ):
-                raise PublishRefused(
-                    f"series publication batch changed while opening: {display}"
-                )
-            payload = _read_descriptor(descriptor)
-            after = os.fstat(descriptor)
-            named_after = os.stat(
-                name, dir_fd=lock.spool_fd, follow_symlinks=False,
-            )
-            if (
-                _file_signature(after) != _file_signature(before)
-                or _file_signature(named_after) != _file_signature(before)
-            ):
-                raise PublishRefused(
-                    f"series publication batch changed while reading: {display}"
-                )
-            captured.append(
-                _SeriesBatchFile(
-                    path=display,
-                    device=before.st_dev,
-                    inode=before.st_ino,
-                    mode=before.st_mode,
-                    size=before.st_size,
-                    mtime_ns=before.st_mtime_ns,
-                    ctime_ns=before.st_ctime_ns,
-                    sha256=hashlib.sha256(payload).hexdigest(),
-                    payload=payload,
-                )
-            )
-        finally:
-            os.close(descriptor)
-    return captured
-
-
-def _pending_from_series_batch_files(
-    files: Sequence[_SeriesBatchFile],
-) -> dict[tuple[str, str, str], list[dict]]:
-    """Parse the immutable in-memory batch after releasing the spool lock."""
-    pending: dict[tuple[str, str, str], list[dict]] = {}
-    series_store = _series_store()
-    for captured in files:
-        if captured.payload and not captured.payload.endswith(b"\n"):
-            raise PublishRefused(
-                f"{captured.path}: final line is truncated"
-            )
-        try:
-            text = captured.payload.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise PublishRefused(
-                f"{captured.path}: batch is not UTF-8: {error}"
-            ) from error
-        events = [
-            parse_line(line) for line in text.splitlines() if line.strip()
-        ]
-        try:
-            series_store.validate_read_rows(events)
-        except series_store.SeriesError as error:
-            raise PublishRefused(
-                f"{captured.path}: series event batch is invalid: {error}"
-            ) from error
-        for event in events:
-            try:
-                emitted_at = str(event.get("emitted_at", ""))
-                month = emitted_at[:7]
-                team = str(event.get("team", ""))
-                host = str(event.get("host", ""))
-                series_store.shard_path(team, host, month)
-            except series_store.SeriesError as error:
-                raise PublishRefused(f"{captured.path}: {error}") from error
-            pending.setdefault((team, host, month), []).append(event)
-    return {key: union_events(value) for key, value in pending.items()}
-
-
-def _series_batch_file_unchanged(lock, captured: _SeriesBatchFile) -> bool:
-    """True only when the original live pathname still names the exact bytes."""
-    if captured.path.parent != lock.spool:
-        return False
-    flags = os.O_RDONLY | os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    try:
-        descriptor = os.open(captured.path.name, flags, dir_fd=lock.spool_fd)
-    except OSError:
-        return False
-    try:
-        status = os.fstat(descriptor)
-        named = os.stat(
-            captured.path.name,
-            dir_fd=lock.spool_fd,
-            follow_symlinks=False,
-        )
-        expected = (
-            captured.device,
-            captured.inode,
-            captured.mode,
-            captured.size,
-            captured.mtime_ns,
-            captured.ctime_ns,
-        )
-        return (
-            stat.S_ISREG(status.st_mode)
-            and stat.S_ISREG(named.st_mode)
-            and _file_signature(status) == expected
-            and _file_signature(named) == expected
-            and hashlib.sha256(_read_descriptor(descriptor)).hexdigest()
-            == captured.sha256
-            and _file_signature(os.fstat(descriptor)) == expected
-            and _file_signature(
-                os.stat(
-                    captured.path.name,
-                    dir_fd=lock.spool_fd,
-                    follow_symlinks=False,
-                )
-            )
-            == expected
-        )
-    except OSError:
-        return False
-    finally:
-        os.close(descriptor)
-
-
-def _prepare_series_snapshot_marker(
-    source_root: Path | None,
-    published_commit: str,
-    *,
-    remote: str,
-    branch: str,
-) -> set[str] | None:
-    """Fetch marker objects without holding the series spool lock."""
-    if source_root is None:
-        return None
-    fetched = _git(source_root, "fetch", remote, branch, check=False)
-    if fetched.returncode != 0:
-        raise PublishRefused(
-            "series batch is published but its source-root marker fetch failed; "
-            f"spool retained: {_failure_detail(fetched)}"
-        )
-    present = _git(
-        source_root,
-        "cat-file",
-        "-e",
-        f"{published_commit}^{{commit}}",
-        check=False,
-    )
-    if present.returncode != 0:
-        raise PublishRefused(
-            f"series batch is published at {published_commit}, but that commit is "
-            "unavailable in the source root; spool retained"
-        )
-    ancestry = _git(
-        source_root,
-        "merge-base",
-        "--is-ancestor",
-        published_commit,
-        f"{remote}/{branch}",
-        check=False,
-    )
-    if ancestry.returncode != 0:
-        raise PublishRefused(
-            f"series batch commit {published_commit} is not in freshly fetched "
-            f"{remote}/{branch}; spool retained"
-        )
-    marker_event_ids = _source_commit_event_ids(
-        source_root, published_commit, store="series",
-    )
-    head = _git(
-        source_root, "rev-parse", "--verify", "HEAD^{commit}", check=False,
-    )
-    if head.returncode != 0:
-        raise PublishRefused(
-            "cannot bind the producing checkout HEAD before retained-row reaping; "
-            "spool retained"
-        )
-    head_event_ids = _source_commit_event_ids(
-        source_root, head.stdout.strip(), store="series",
-    )
-    # Retention serves both readers: ordinary producer-local readers consume
-    # HEAD plus the spool, while scorecard snapshots consume the marker plus
-    # the spool. A retained row can disappear only after both immutable views
-    # contain it.
-    return marker_event_ids & head_event_ids
-
-
-def _source_commit_event_ids(
-    source_root: Path, commit: str, *, store: str,
-) -> set[str]:
-    """Read event identities from one immutable source-root commit."""
-    listed = _git(
-        source_root,
-        "ls-tree",
-        "-r",
-        "--name-only",
-        commit,
-        "--",
-        store,
-        check=False,
-    )
-    if listed.returncode != 0:
-        raise PublishRefused(
-            f"cannot list {store} rows at source commit {commit}: "
-            f"{_failure_detail(listed)}"
-        )
-    present = set()
-    for relative in listed.stdout.splitlines():
-        parts = Path(relative).parts
-        if (
-            len(parts) != 4
-            or parts[0] != store
-            or Path(relative).suffix != ".jsonl"
-        ):
-            continue
-        shown = _git(
-            source_root, "show", f"{commit}:{relative}", check=False,
-        )
-        if shown.returncode != 0:
-            raise PublishRefused(
-                f"cannot read {relative} at source commit {commit}: "
-                f"{_failure_detail(shown)}"
-            )
-        if shown.stdout and not shown.stdout.endswith("\n"):
-            raise PublishRefused(
-                f"{relative} at source commit {commit} has a truncated final line"
-            )
-        events = [
-            parse_line(line) for line in shown.stdout.splitlines() if line.strip()
-        ]
-        _validate_store_events(store, events, f"{commit}:{relative}", read=True)
-        present.update(
-            identifier
-            for event in events
-            if isinstance((identifier := event.get("event_id")), str) and identifier
-        )
-    return present
-
-
-def _publish_series_snapshot_marker_locked(
-    source_root: Path, published_commit: str, series_store,
-) -> str:
-    """Advance the exact local marker before any represented source is drained."""
-    marker_ref = series_store.SERIES_SNAPSHOT_REF
-    resolved = _git(
-        source_root, "rev-parse", "--verify", f"{marker_ref}^{{commit}}", check=False,
-    )
-    previous = resolved.stdout.strip() if resolved.returncode == 0 else None
-    target = published_commit
-    if previous and previous != published_commit:
-        previous_before_new = _git(
-            source_root,
-            "merge-base",
-            "--is-ancestor",
-            previous,
-            published_commit,
-            check=False,
-        )
-        if previous_before_new.returncode != 0:
-            new_before_previous = _git(
-                source_root,
-                "merge-base",
-                "--is-ancestor",
-                published_commit,
-                previous,
-                check=False,
-            )
-            if new_before_previous.returncode != 0:
-                raise PublishRefused(
-                    "series snapshot marker and newly published commit are not comparable; "
-                    "spool retained"
-                )
-            target = previous
-    old = previous or "0" * 40
-    updated = _git(
-        source_root, "update-ref", marker_ref, target, old, check=False,
-    )
-    if updated.returncode != 0:
-        raise PublishRefused(
-            f"cannot publish local series snapshot marker {marker_ref}; spool retained: "
-            f"{_failure_detail(updated)}"
-        )
-    verified = _git(
-        source_root, "rev-parse", "--verify", f"{marker_ref}^{{commit}}", check=False,
-    )
-    if verified.returncode != 0 or verified.stdout.strip() != target:
-        raise PublishRefused(
-            f"local series snapshot marker {marker_ref} did not read back as {target}; "
-            "spool retained"
-        )
-    return target
 
 
 def _store_snapshot(
@@ -875,61 +512,7 @@ def publish(
     source_root: str | os.PathLike[str] | None = None,
     store: str = "ledger",
 ) -> dict:
-    """Publish series from a short locked byte snapshot, with no network lock."""
-    if store != "series":
-        return _publish_prepared(
-            repo,
-            spool_dir,
-            remote=remote,
-            branch=branch,
-            attempts=attempts,
-            fetch=fetch,
-            serialized_writer=serialized_writer,
-            attribution=attribution,
-            source_root=source_root,
-            store=store,
-        )
-    series_store = _series_store()
-    try:
-        with series_store.series_spool_transition_lock(
-            spool_dir, exclusive=True,
-        ) as lock:
-            batch_files = _capture_series_batch_files(lock)
-    except series_store.SeriesError as error:
-        raise PublishRefused(f"cannot hold series transition lock: {error}") from error
-    pending = _pending_from_series_batch_files(batch_files)
-    return _publish_prepared(
-        repo,
-        spool_dir,
-        remote=remote,
-        branch=branch,
-        attempts=attempts,
-        fetch=fetch,
-        serialized_writer=serialized_writer,
-        attribution=attribution,
-        source_root=source_root,
-        store=store,
-        prepared_pending=pending,
-        prepared_files=batch_files,
-    )
-
-
-def _publish_prepared(
-    repo: str | os.PathLike[str],
-    spool_dir: str | os.PathLike[str],
-    *,
-    remote: str = DEFAULT_REMOTE,
-    branch: str = DEFAULT_BRANCH,
-    attempts: int = DEFAULT_ATTEMPTS,
-    fetch: bool = True,
-    serialized_writer: str | os.PathLike[str] | None = None,
-    attribution: str | None = None,
-    source_root: str | os.PathLike[str] | None = None,
-    store: str = "ledger",
-    prepared_pending: dict[tuple[str, str, str], list[dict]] | None = None,
-    prepared_files: Sequence[_SeriesBatchFile] | None = None,
-) -> dict:
-    """Publish one store's captured batch with network work outside all locks.
+    """Publish one store's spool; drain only once ancestry proves it.
 
     Returns evidence, not a boolean: the commit written, how many attempts the
     push needed, and the ancestry check that authorised draining the spool.
@@ -968,27 +551,13 @@ def _publish_prepared(
         status = _git(repo, "status", "--porcelain")
         if status.stdout.strip():
             raise PublishRefused("publisher checkout is not clean")
-    reaped = 0
-    if store == "series":
-        if prepared_pending is None or prepared_files is None:
-            raise PublishRefused("series publication omitted its locked batch snapshot")
-        pending = prepared_pending
-        snapshot_files: Sequence[Path] | Sequence[_SeriesBatchFile] = prepared_files
-    else:
-        # Ledger retains its existing lifecycle. Only the series store shares
-        # the scorecard snapshot lock.
-        reaped = (
-            _reap_retained_with_transition_lock_held(
-                spool_dir, Path(source_root), store=store,
-            )
-            if source_root else 0
-        )
-        pending, snapshot_files = _store_snapshot(store, spool_dir)
+    # Reap first: batches the PRODUCING root can now read for itself are done
+    # being retained. Doing it here means every publish run also collects what
+    # the previous run left behind, with no separate schedule to forget.
+    reaped = reap_retained(spool_dir, Path(source_root), store=store) if source_root else 0
+
+    pending, snapshot_files = _store_snapshot(store, spool_dir)
     if not pending:
-        if store == "series" and source_root is not None:
-            reaped = reap_retained(
-                spool_dir, Path(source_root), store=store,
-            )
         return {
             "published": 0,
             "commit": None,
@@ -1038,42 +607,9 @@ def _publish_prepared(
             written.append(rel)
 
         if not written:
-            if store == "series":
-                published_commit = _git(
-                    repo, "rev-parse", f"{remote}/{branch}", check=False,
-                ).stdout.strip()
-                marker_root = Path(source_root) if source_root else None
-                durable_event_ids = _prepare_series_snapshot_marker(
-                    marker_root,
-                    published_commit,
-                    remote=remote,
-                    branch=branch,
-                )
-                retained_count, reaped, changed, marker = _finish_series_publication(
-                    spool_dir,
-                    prepared_files or (),
-                    source_root=marker_root,
-                    published_commit=published_commit,
-                    durable_event_ids=durable_event_ids,
-                )
-            else:
-                _drain(snapshot_files)
-                retained_count, changed, marker = len(snapshot_files), [], None
-            report = {
-                "published": 0,
-                "commit": None,
-                "attempts": attempt,
-                "shards": [],
-                "note": "all events already published",
-                "reaped_retained": reaped,
-                "retained": retained_count,
-            }
-            if store == "series":
-                report.update({
-                    "changed_sources": changed,
-                    "series_snapshot_commit": marker,
-                })
-            return report
+            _drain(snapshot_files)
+            return {"published": 0, "commit": None, "attempts": attempt,
+                    "shards": [], "note": "all events already published"}
 
         _git(repo, "add", "--", *written)
         subject = f"{store}: append {sum(len(v) for v in pending.values())} event(s)"
@@ -1095,40 +631,13 @@ def _publish_prepared(
             ancestry = _git(repo, "merge-base", "--is-ancestor", commit,
                             f"{remote}/{branch}", check=False)
             if ancestry.returncode == 0:
-                if store == "series":
-                    marker_root = Path(source_root) if source_root else None
-                    durable_event_ids = _prepare_series_snapshot_marker(
-                        marker_root,
-                        commit,
-                        remote=remote,
-                        branch=branch,
-                    )
-                    retained_count, reaped, changed, marker = _finish_series_publication(
-                        spool_dir,
-                        prepared_files or (),
-                        source_root=marker_root,
-                        published_commit=commit,
-                        durable_event_ids=durable_event_ids,
-                    )
-                else:
-                    _drain(snapshot_files)
-                    retained_count, changed, marker = len(snapshot_files), [], None
-                report = {
-                    "published": sum(len(v) for v in pending.values()),
-                    "commit": commit,
-                    "attempts": attempt,
-                    "shards": written,
-                    "ancestry": f"{commit} is an ancestor of {remote}/{branch}",
-                    "reaped_retained": reaped,
-                    "retained": retained_count,
-                    "transport": "parent-main-write" if serialized_writer else "git",
-                }
-                if store == "series":
-                    report.update({
-                        "changed_sources": changed,
-                        "series_snapshot_commit": marker,
-                    })
-                return report
+                _drain(snapshot_files)
+                return {"published": sum(len(v) for v in pending.values()),
+                        "commit": commit, "attempts": attempt, "shards": written,
+                        "ancestry": f"{commit} is an ancestor of {remote}/{branch}",
+                        "reaped_retained": reaped,
+                        "retained": len(snapshot_files),
+                        "transport": "parent-main-write" if serialized_writer else "git"}
             last_error = "push reported success but the commit is not an ancestor of the branch"
             continue
 
@@ -1142,65 +651,6 @@ def _publish_prepared(
     raise PublishRefused(
         f"gave up after {attempts} attempts; spool retained. last error: {last_error}"
     )
-
-
-def _finish_series_publication(
-    spool_dir: str | os.PathLike[str],
-    batch_files: Sequence[_SeriesBatchFile],
-    *,
-    source_root: Path | None,
-    published_commit: str,
-    durable_event_ids: set[str] | None,
-) -> tuple[int, int, list[str], str | None]:
-    """Under short EX, retain only unchanged files after publication proof."""
-    if re.fullmatch(r"[0-9a-f]{40}", published_commit or "") is None:
-        raise PublishRefused(
-            "series batch publication has no exact published commit; spool retained"
-        )
-    series_store = _series_store()
-    if source_root is None:
-        return 0, 0, [str(item.path) for item in batch_files], None
-    if durable_event_ids is None:
-        raise PublishRefused(
-            "series batch publication omitted its immutable committed row set; "
-            "spool retained"
-        )
-    try:
-        with series_store.series_spool_transition_lock(
-            spool_dir, exclusive=True,
-        ) as lock:
-            marker = _publish_series_snapshot_marker_locked(
-                source_root, published_commit, series_store,
-            )
-            retained_count = 0
-            changed = []
-            destination = retained_dir(lock.spool)
-            for captured in batch_files:
-                if not _series_batch_file_unchanged(lock, captured):
-                    changed.append(str(captured.path))
-                    continue
-                destination.mkdir(parents=True, exist_ok=True)
-                retained_path = destination / captured.path.name
-                if retained_path.exists():
-                    changed.append(str(captured.path))
-                    continue
-                # Every cooperating series writer is excluded here. A file
-                # that changed during network work remains live and is not in
-                # this exact batch's drain set.
-                os.replace(captured.path, retained_path)
-                retained_count += 1
-            reaped = (
-                _reap_retained_with_transition_lock_held(
-                    spool_dir,
-                    source_root,
-                    store="series",
-                    durable_event_ids=durable_event_ids,
-                )
-                if source_root is not None else 0
-            )
-            return retained_count, reaped, changed, marker
-    except series_store.SeriesError as error:
-        raise PublishRefused(f"cannot hold series transition lock: {error}") from error
 
 
 def _drain(snapshot_files: Sequence[Path]) -> None:
@@ -1241,69 +691,6 @@ def _source_root_event_ids(source_root: Path, *, store: str = "ledger") -> set[s
 def reap_retained(
     spool_dir: str | os.PathLike[str], source_root: Path, *, store: str = "ledger"
 ) -> int:
-    """Reap retained series rows under the same lock as publish/snapshot."""
-    if store != "series":
-        return _reap_retained_with_transition_lock_held(
-            spool_dir, source_root, store=store,
-        )
-    series_store = _series_store()
-    marker = _git(
-        source_root,
-        "rev-parse",
-        "--verify",
-        f"{series_store.SERIES_SNAPSHOT_REF}^{{commit}}",
-        check=False,
-    )
-    if marker.returncode != 0:
-        return 0
-    marker_commit = marker.stdout.strip()
-    marker_event_ids = _source_commit_event_ids(
-        source_root, marker_commit, store="series",
-    )
-    head = _git(
-        source_root, "rev-parse", "--verify", "HEAD^{commit}", check=False,
-    )
-    if head.returncode != 0:
-        raise PublishRefused(
-            "cannot bind the producing checkout HEAD before retained-row reaping"
-        )
-    head_event_ids = _source_commit_event_ids(
-        source_root, head.stdout.strip(), store="series",
-    )
-    durable_event_ids = marker_event_ids & head_event_ids
-    try:
-        with series_store.series_spool_transition_lock(
-            spool_dir, exclusive=True,
-        ):
-            current = _git(
-                source_root,
-                "rev-parse",
-                "--verify",
-                f"{series_store.SERIES_SNAPSHOT_REF}^{{commit}}",
-                check=False,
-            )
-            if current.returncode != 0 or current.stdout.strip() != marker_commit:
-                raise PublishRefused(
-                    "series snapshot marker changed before retained-row reaping; "
-                    "nothing was removed"
-                )
-            return _reap_retained_with_transition_lock_held(
-                spool_dir,
-                source_root,
-                store=store,
-                durable_event_ids=durable_event_ids,
-            )
-    except series_store.SeriesError as error:
-        raise PublishRefused(f"cannot hold series transition lock: {error}") from error
-
-
-def _reap_retained_with_transition_lock_held(
-    spool_dir: str | os.PathLike[str],
-    source_root: Path,
-    *,
-    store: str = "ledger",
-    durable_event_ids: set[str] | None = None,
-) -> int:
     """Delete retained batches now durably readable from the source root.
 
     This is the exact condition the retention exists for: a batch may be
@@ -1315,11 +702,7 @@ def _reap_retained_with_transition_lock_held(
     directory = retained_dir(spool_dir)
     if not directory.is_dir():
         return 0
-    durable = (
-        durable_event_ids
-        if durable_event_ids is not None
-        else _source_root_event_ids(Path(source_root), store=store)
-    )
+    durable = _source_root_event_ids(Path(source_root), store=store)
     reaped = 0
     for path in sorted(directory.glob("*.jsonl")):
         reader = read_event_shard if store == "ledger" else read_shard

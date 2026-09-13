@@ -83,7 +83,6 @@ HOST_FACTS_ENVELOPE_VERSION = "stress-series/v2"
 ENVELOPE_VERSION = "stress-series/v3"
 SCORECARD_SNAPSHOT_SCHEMA = "scorecard-series-snapshot/v1"
 SCORECARD_SNAPSHOT_SOURCE = "series"
-SERIES_SNAPSHOT_REF = "refs/ci-hub/series/published"
 SERIES_SPOOL_LOCK_TIMEOUT_SECONDS = 5.0
 READABLE_ENVELOPE_VERSIONS = frozenset({
     LEGACY_ENVELOPE_VERSION,
@@ -1090,22 +1089,38 @@ def series_spool_transition_lock(
 
 @dataclass
 class _LocalSnapshotCapture:
-    """Held local frontier and every source inode under one shared lock."""
+    """Held local frontier and every source inode through snapshot readback."""
 
-    lock: _SeriesSpoolLock
+    spool: Path
+    spool_fd: int
+    spool_identity: tuple[int, int]
     published_fd: int | None
     published_signature: tuple[int, ...] | None
     source_keys: list[tuple[str, str]]
     sources: list[_HeldSnapshotSource]
 
     def _verify_directory(self) -> None:
-        self.lock.verify()
+        held = os.fstat(self.spool_fd)
+        try:
+            named = os.lstat(self.spool)
+        except OSError as error:
+            raise SeriesError(
+                f"series spool changed while snapshot was held: {error}"
+            ) from error
+        identity = (held.st_dev, held.st_ino)
+        if (
+            not stat.S_ISDIR(held.st_mode)
+            or not stat.S_ISDIR(named.st_mode)
+            or identity != self.spool_identity
+            or (named.st_dev, named.st_ino) != self.spool_identity
+        ):
+            raise SeriesError("series spool pathname changed while snapshot was held")
 
         if self.published_fd is None:
             try:
                 os.stat(
                     "published",
-                    dir_fd=self.lock.spool_fd,
+                    dir_fd=self.spool_fd,
                     follow_symlinks=False,
                 )
             except FileNotFoundError:
@@ -1118,9 +1133,9 @@ class _LocalSnapshotCapture:
 
         held_published = os.fstat(self.published_fd)
         named_published = _lstat_at(
-            self.lock.spool_fd,
+            self.spool_fd,
             "published",
-            str(self.lock.spool / "published"),
+            str(self.spool / "published"),
         )
         if (
             not stat.S_ISDIR(held_published.st_mode)
@@ -1132,7 +1147,7 @@ class _LocalSnapshotCapture:
 
     def verify(self) -> None:
         self._verify_directory()
-        current = [("live", name) for name in _jsonl_names(self.lock.spool_fd)]
+        current = [("live", name) for name in _jsonl_names(self.spool_fd)]
         if self.published_fd is not None:
             current.extend(
                 ("published-retained", f"published/{name}")
@@ -1143,25 +1158,55 @@ class _LocalSnapshotCapture:
         for source in self.sources:
             source.verify()
 
+    def generation(self) -> tuple[Any, ...]:
+        """Exact source set, inode identities, and content digests."""
+        self.verify()
+        return (
+            self.spool_identity,
+            self.published_signature,
+            tuple(
+                (source.kind, source.relative, source.signature, source.sha256)
+                for source in self.sources
+            ),
+        )
+
     def close(self) -> None:
         for source in reversed(self.sources):
             source.close()
         if self.published_fd is not None:
             os.close(self.published_fd)
+        os.close(self.spool_fd)
 
 
 @contextlib.contextmanager
-def _local_snapshot_capture(lock: _SeriesSpoolLock):
-    """Bind local sources while the caller owns the shared series lock."""
-    spool = lock.spool
-    spool_fd = lock.spool_fd
+def _local_snapshot_capture(parent: Path):
+    """Bind local sources independently of the cooperative writer lock."""
+    spool = spool_dir(parent)
+    spool.mkdir(parents=True, exist_ok=True)
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         directory_flags |= os.O_NOFOLLOW
+    try:
+        spool_fd = os.open(spool, directory_flags)
+    except OSError as error:
+        raise SeriesError(
+            f"cannot open regular series spool directory {spool}: {error}"
+        ) from error
     published_fd: int | None = None
     sources: list[_HeldSnapshotSource] = []
     capture: _LocalSnapshotCapture | None = None
     try:
+        spool_status = os.fstat(spool_fd)
+        named_spool = os.lstat(spool)
+        if (
+            not stat.S_ISDIR(spool_status.st_mode)
+            or not stat.S_ISDIR(named_spool.st_mode)
+            or (spool_status.st_dev, spool_status.st_ino)
+            != (named_spool.st_dev, named_spool.st_ino)
+        ):
+            raise SeriesError(
+                f"series spool pathname does not name its opened directory: {spool}"
+            )
         try:
             published_fd = os.open("published", directory_flags, dir_fd=spool_fd)
         except FileNotFoundError:
@@ -1178,7 +1223,9 @@ def _local_snapshot_capture(lock: _SeriesSpoolLock):
                 for name in _jsonl_names(published_fd)
             )
         capture = _LocalSnapshotCapture(
-            lock=lock,
+            spool=spool,
+            spool_fd=spool_fd,
+            spool_identity=(spool_status.st_dev, spool_status.st_ino),
             published_fd=published_fd,
             published_signature=(
                 _stat_signature(os.fstat(published_fd))
@@ -1208,96 +1255,98 @@ def _local_snapshot_capture(lock: _SeriesSpoolLock):
                 source.close()
             if published_fd is not None:
                 os.close(published_fd)
+            os.close(spool_fd)
+
+
+def _snapshot_source_generation(parent: Path) -> tuple[Any, ...]:
+    """Recompute the exact local source generation without trusting the lock."""
+    with _local_snapshot_capture(parent) as capture:
+        return capture.generation()
+
+
+def _origin_main_commit(parent: Path) -> str:
+    """Bind the exact fetched parent origin/main commit."""
+    origin_ref = "refs/remotes/origin/main"
+    resolved = _git(parent, [
+        "--no-replace-objects", "rev-parse", "--verify", f"{origin_ref}^{{commit}}",
+    ])
+    commit = resolved.stdout.strip()
+    if resolved.returncode != 0 or _SHA_RE.fullmatch(commit) is None:
+        detail = resolved.stderr.strip() or resolved.stdout.strip() or "no output"
+        raise SeriesError(f"cannot bind parent origin/main for scorecard snapshot: {detail}")
+    return commit
 
 
 @contextlib.contextmanager
 def _scorecard_projection_capture(parent: Any):
     """Build a snapshot while retaining every mutable source descriptor."""
     parent = Path(parent).resolve()
-    # Network work is outside the spool lock. The local ref is bound only after
-    # the shared lock is held, so a publisher either leaves its batch visible
-    # locally or finishes the exclusive drain before this commit is selected.
+    # Both network refreshes run outside the bounded writer lock. The snapshot
+    # is usable only when the exact published ref and the independently
+    # recomputed local source generation stay unchanged across capture.
     refresh_origin_main(parent, "parent")
-    with series_spool_transition_lock(spool_dir(parent), exclusive=False) as lock:
-        # LOCK ORDER: series spool first, then remote fetch/ref binding, then
-        # local file descriptors, and finally output publication. The series
-        # publisher takes the same lock exclusively before it binds or changes
-        # the remote commit and never recursively reacquires it.
-        origin_ref = "refs/remotes/origin/main"
-        origin = _git(parent, [
-            "--no-replace-objects", "rev-parse", "--verify", f"{origin_ref}^{{commit}}",
-        ])
-        marker = _git(parent, [
-            "--no-replace-objects",
-            "rev-parse",
-            "--verify",
-            f"{SERIES_SNAPSHOT_REF}^{{commit}}",
-        ])
-        if origin.returncode != 0:
+    published_commit = _origin_main_commit(parent)
+    published = published_snapshot_at(parent, published_commit)
+    source_tree = _series_tree_at(parent, published.commit)
+    with contextlib.ExitStack() as held_sources:
+        with series_spool_transition_lock(spool_dir(parent), exclusive=False):
+            before = _snapshot_source_generation(parent)
+            local = held_sources.enter_context(_local_snapshot_capture(parent))
+            captured = local.generation()
+            after = _snapshot_source_generation(parent)
+            if before != captured or captured != after:
+                raise SeriesError(
+                    "series source generation changed during scorecard snapshot capture"
+                )
+
+        refresh_origin_main(parent, "parent")
+        refreshed_commit = _origin_main_commit(parent)
+        if refreshed_commit != published_commit:
             raise SeriesError(
-                "cannot bind parent origin/main for scorecard snapshot: "
-                + (origin.stderr.strip() or "no output")
+                "parent origin/main changed during scorecard snapshot capture: "
+                f"{published_commit} -> {refreshed_commit}"
             )
-        selected = origin.stdout.strip()
-        if marker.returncode == 0:
-            marked = marker.stdout.strip()
-            marker_before_origin = _git(parent, [
-                "--no-replace-objects",
-                "merge-base",
-                "--is-ancestor",
-                marked,
-                selected,
-            ])
-            if marker_before_origin.returncode == 0:
-                pass
-            else:
-                origin_before_marker = _git(parent, [
-                    "--no-replace-objects",
-                    "merge-base",
-                    "--is-ancestor",
-                    selected,
-                    marked,
-                ])
-                if origin_before_marker.returncode != 0:
-                    raise SeriesError(
-                        "series snapshot marker and parent origin/main are not comparable"
-                    )
-                selected = marked
-        published = published_snapshot_at(parent, selected)
-        source_tree = _series_tree_at(parent, published.commit)
-        with _local_snapshot_capture(lock) as local:
-            local_rows = [row for source in local.sources for row in source.rows]
-            try:
-                rows = union_events([*published.rows, *local_rows])
-            except LedgerError as error:
-                raise SeriesError(f"cannot form canonical series snapshot: {error}") from error
-            rows_bytes = _canonical_rows_bytes(rows)
-            snapshot = {
-                "schema": SCORECARD_SNAPSHOT_SCHEMA,
-                "source": {
-                    "path": SCORECARD_SNAPSHOT_SOURCE,
-                    "commit": published.commit,
-                    "tree": source_tree,
-                    "published_rows": len(published.rows),
-                    "local_sources": [
-                        {
-                            "kind": source.kind,
-                            "path": source.relative,
-                            "device": source.signature[0],
-                            "inode": source.signature[1],
-                            "rows": len(source.rows),
-                            "size": source.size,
-                            "sha256": source.sha256,
-                        }
-                        for source in local.sources
-                    ],
-                },
-                "rows_read": len(rows),
-                "rows_sha256": hashlib.sha256(rows_bytes).hexdigest(),
-                "rows": rows,
-            }
+
+        with series_spool_transition_lock(spool_dir(parent), exclusive=False):
+            final_generation = _snapshot_source_generation(parent)
+            if final_generation != captured:
+                raise SeriesError(
+                    "series source generation changed after published-ref verification"
+                )
             local.verify()
-            yield snapshot, local
+
+        local_rows = [row for source in local.sources for row in source.rows]
+        try:
+            rows = union_events([*published.rows, *local_rows])
+        except LedgerError as error:
+            raise SeriesError(f"cannot form canonical series snapshot: {error}") from error
+        rows_bytes = _canonical_rows_bytes(rows)
+        snapshot = {
+            "schema": SCORECARD_SNAPSHOT_SCHEMA,
+            "source": {
+                "path": SCORECARD_SNAPSHOT_SOURCE,
+                "commit": published.commit,
+                "tree": source_tree,
+                "published_rows": len(published.rows),
+                "local_sources": [
+                    {
+                        "kind": source.kind,
+                        "path": source.relative,
+                        "device": source.signature[0],
+                        "inode": source.signature[1],
+                        "rows": len(source.rows),
+                        "size": source.size,
+                        "sha256": source.sha256,
+                    }
+                    for source in local.sources
+                ],
+            },
+            "rows_read": len(rows),
+            "rows_sha256": hashlib.sha256(rows_bytes).hexdigest(),
+            "rows": rows,
+        }
+        local.verify()
+        yield snapshot, local
 
 
 def scorecard_projection_snapshot(parent: Any) -> dict[str, Any]:
@@ -3145,7 +3194,6 @@ __all__ = [
     "HOST_FACTS_ENVELOPE_VERSION",
     "LEGACY_ENVELOPE_VERSION",
     "READABLE_ENVELOPE_VERSIONS",
-    "SERIES_SNAPSHOT_REF",
     "SERIES_SPOOL_LOCK_TIMEOUT_SECONDS",
     "MalformedRow",
     "SeriesError",
