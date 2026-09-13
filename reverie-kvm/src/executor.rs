@@ -55,6 +55,8 @@ use crate::signal::signal_info_user;
 const MAX_HOST_IO: usize = 16 * 1024 * 1024;
 const MAX_CAPTURED_OUTPUT: usize = 64 * 1024 * 1024;
 const PAGE_SIZE: u64 = 4096;
+const MAX_RW_COUNT: usize = (i32::MAX as usize) & !(PAGE_SIZE as usize - 1);
+const X86_64_GUEST_USER_LIMIT: u64 = (1_u64 << 47) - PAGE_SIZE;
 const GUEST_NOFILE_LIMIT: libc::c_int = 1 << 20;
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-235): Review the single virtual network namespace identity.
@@ -113,6 +115,17 @@ const SCM_TIMESTAMPING_OLD: libc::c_int = 37;
 const SCM_TIMESTAMP_NEW: libc::c_int = 63;
 const SCM_TIMESTAMPNS_NEW: libc::c_int = 64;
 const SCM_TIMESTAMPING_NEW: libc::c_int = 65;
+// Linux 7.1 adds RWF_NOSIGNAL after the flags exposed by pinned libc.
+const RWF_NOSIGNAL: libc::c_int = 0x0000_0100;
+const RWF_SUPPORTED_MASK: libc::c_int = libc::RWF_HIPRI
+    | libc::RWF_DSYNC
+    | libc::RWF_SYNC
+    | libc::RWF_NOWAIT
+    | libc::RWF_APPEND
+    | libc::RWF_NOAPPEND
+    | libc::RWF_ATOMIC
+    | libc::RWF_DONTCACHE
+    | RWF_NOSIGNAL;
 
 const FALLOCATE_VALID_MODES: &[libc::c_int] = &[
     0,
@@ -335,18 +348,22 @@ fn execute_basic_syscall_with_output(
         read(memory, state, args)
     } else if number == libc::SYS_writev as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(#120)
-        writev(memory, state, args, output)
+        vectored_io(memory, state, args, libc::SYS_writev, output)
     } else if number == libc::SYS_readv as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(#120)
-        readv(memory, state, args)
+        vectored_io(memory, state, args, libc::SYS_readv, output)
     } else if number == libc::SYS_preadv as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        preadv(memory, state, args, false)
+        vectored_io(memory, state, args, libc::SYS_preadv, output)
     } else if number == libc::SYS_preadv2 as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        preadv(memory, state, args, true)
+        vectored_io(memory, state, args, libc::SYS_preadv2, output)
+    } else if number == libc::SYS_pwritev as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        vectored_io(memory, state, args, libc::SYS_pwritev, output)
+    } else if number == libc::SYS_pwritev2 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        vectored_io(memory, state, args, libc::SYS_pwritev2, output)
     } else if number == libc::SYS_pread64 as u64 {
         pread64(memory, state, args)
     } else if number == libc::SYS_pwrite64 as u64 {
@@ -2779,17 +2796,25 @@ fn file_mode(file: &std::fs::File) -> Result<libc::mode_t, i64> {
     fd_mode(file.as_raw_fd())
 }
 
-fn ensure_read_access(file: &std::fs::File) -> Result<(), i64> {
-    let flags = file_status_flags(file)?;
+fn ensure_read_access_fd(fd: RawFd) -> Result<(), i64> {
+    let flags = fd_status_flags(fd)?;
     if flags & libc::O_PATH != 0 || flags & libc::O_ACCMODE == libc::O_WRONLY {
         return Err(negative_errno(libc::EBADF));
     }
     Ok(())
 }
 
+fn ensure_read_access(file: &std::fs::File) -> Result<(), i64> {
+    ensure_read_access_fd(file.as_raw_fd())
+}
+
 fn ensure_readable(file: &std::fs::File) -> Result<(), i64> {
-    ensure_read_access(file)?;
-    if file_mode(file)? & libc::S_IFMT == libc::S_IFDIR {
+    ensure_readable_fd(file.as_raw_fd())
+}
+
+fn ensure_readable_fd(fd: RawFd) -> Result<(), i64> {
+    ensure_read_access_fd(fd)?;
+    if fd_mode(fd)? & libc::S_IFMT == libc::S_IFDIR {
         return Err(negative_errno(libc::EISDIR));
     }
     Ok(())
@@ -3067,151 +3092,14 @@ fn signal_is_pending(signal: libc::c_int) -> Result<bool, libc::c_int> {
     }
 }
 
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(#120): guest writev gathers each iovec and reuses
-// the scalar write path, so descriptor routing, captured-output aliasing, and
-// SIGPIPE suppression stay identical to write(2). Programs such as javac/java
-// emit their startup diagnostics with writev and abort (exit 127) when it is
-// ENOSYS.
-fn writev(
-    memory: &GuestMemory,
-    state: &mut LoadedStaticElf,
-    args: &[u64; 6],
-    mut output: Option<&mut CapturedOutput>,
-) -> i64 {
-    let Ok(count) = usize::try_from(args[2]) else {
-        return negative_errno(libc::EINVAL);
-    };
-    if count > libc::UIO_MAXIOV as usize {
-        return negative_errno(libc::EINVAL);
-    }
-    let mut total: i64 = 0;
-    for index in 0..count {
-        let entry = args[1] + (index as u64) * 16;
-        let mut base = [0u8; 8];
-        let mut len = [0u8; 8];
-        if memory.read(entry, &mut base).is_err() || memory.read(entry + 8, &mut len).is_err() {
-            return if total > 0 {
-                total
-            } else {
-                negative_errno(libc::EFAULT)
-            };
-        }
-        let iov_base = u64::from_le_bytes(base);
-        let iov_len = u64::from_le_bytes(len);
-        if iov_len == 0 {
-            continue;
-        }
-        let write_args = [args[0], iov_base, iov_len, 0, 0, 0];
-        let result = write(memory, state, &write_args, output.as_deref_mut());
-        if result < 0 {
-            return if total > 0 { total } else { result };
-        }
-        total = total.saturating_add(result);
-        if (result as u64) < iov_len {
-            break; // a short write ends the gather, matching writev(2)
-        }
-    }
-    total
-}
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(#120): guest readv scatters into each iovec via the
-// scalar read path; a short read or EOF stops the scatter, matching readv(2).
-fn readv(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = libc::c_int::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
-    if state.proc_files.contains_key(&fd) {
-        return negative_errno(libc::ENOSYS);
-    }
-    let Ok(count) = usize::try_from(args[2]) else {
-        return negative_errno(libc::EINVAL);
-    };
-    if count > libc::UIO_MAXIOV as usize {
-        return negative_errno(libc::EINVAL);
-    }
-    let mut total: i64 = 0;
-    if signalfd_mask(state, fd).is_some() {
-        let vectors = match decode_guest_iovecs(memory, args[1], count) {
-            Ok(vectors) => vectors,
-            Err(error) => return error,
-        };
-        return signalfd_read_stream(memory, state, fd, &vectors, true, false)
-            .expect("signalfd mask disappeared without descriptor mutation");
-    }
-    for index in 0..count {
-        let entry = args[1] + (index as u64) * 16;
-        let mut base = [0u8; 8];
-        let mut len = [0u8; 8];
-        if memory.read(entry, &mut base).is_err() || memory.read(entry + 8, &mut len).is_err() {
-            return if total > 0 {
-                total
-            } else {
-                negative_errno(libc::EFAULT)
-            };
-        }
-        let iov_base = u64::from_le_bytes(base);
-        let iov_len = u64::from_le_bytes(len);
-        if iov_len == 0 {
-            continue;
-        }
-        let read_args = [args[0], iov_base, iov_len, 0, 0, 0];
-        let result = read(memory, state, &read_args);
-        if result < 0 {
-            return if total > 0 { total } else { result };
-        }
-        total = total.saturating_add(result);
-        if (result as u64) < iov_len {
-            break; // a short read or EOF ends the scatter
-        }
-    }
-    total
-}
-
-// TODO-HUMAN-REVIEW(PR-543): Review virtual signalfd preadv/preadv2 offsets and flags.
-fn preadv(
-    memory: &mut GuestMemory,
-    state: &mut LoadedStaticElf,
-    args: &[u64; 6],
-    has_flags: bool,
-) -> i64 {
-    let raw_offset = args[3] as i64;
-    if raw_offset < -1 {
-        return negative_errno(libc::EINVAL);
-    }
-    let Ok(fd) = libc::c_int::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
-    if signalfd_mask(state, fd).is_none() {
-        return negative_errno(libc::ENOSYS);
-    }
-    if raw_offset >= 0 {
-        return negative_errno(libc::ESPIPE);
-    }
-    let flags = if has_flags { args[5] as libc::c_int } else { 0 };
-    if flags & !libc::RWF_NOWAIT != 0 {
-        return negative_errno(libc::EOPNOTSUPP);
-    }
-    let Ok(count) = usize::try_from(args[2]) else {
-        return negative_errno(libc::EINVAL);
-    };
-    let vectors = match decode_guest_iovecs(memory, args[1], count) {
-        Ok(vectors) => vectors,
-        Err(error) => return error,
-    };
-    signalfd_read_stream(
-        memory,
-        state,
-        fd,
-        &vectors,
-        true,
-        flags & libc::RWF_NOWAIT != 0,
-    )
-    .expect("signalfd mask disappeared without descriptor mutation")
-}
-
 fn write_without_sigpipe(fd: RawFd, bytes: &[u8]) -> i64 {
+    suppress_host_sigpipe(|| {
+        // SAFETY: bytes is a live host buffer and fd is a live backing descriptor.
+        unsafe { libc::write(fd, bytes.as_ptr().cast::<libc::c_void>(), bytes.len()) as i64 }
+    })
+}
+
+fn suppress_host_sigpipe(operation: impl FnOnce() -> i64) -> i64 {
     // A guest backing pipe must not deliver SIGPIPE into the supervisor. Block it in this thread,
     // then synchronously consume the signal generated by this write while preserving a signal that
     // was already pending before the write.
@@ -3247,14 +3135,14 @@ fn write_without_sigpipe(fd: RawFd, bytes: &[u8]) -> i64 {
         }
     };
 
-    // SAFETY: bytes is a live host buffer and fd is a live backing descriptor.
-    let written = unsafe { libc::write(fd, bytes.as_ptr().cast::<libc::c_void>(), bytes.len()) };
+    let written = operation();
     let error = (written < 0).then(std::io::Error::last_os_error);
 
     let mut drain_error = None;
-    if error.as_ref().and_then(std::io::Error::raw_os_error) == Some(libc::EPIPE)
-        && !had_pending_sigpipe
-    {
+    // A pipe write can return a positive partial count and still generate
+    // SIGPIPE if its reader closes before the remaining bytes are written.
+    // Drain any newly pending SIGPIPE, not only an EPIPE result.
+    if !had_pending_sigpipe {
         match signal_is_pending(libc::SIGPIPE) {
             Ok(true) => {
                 let mut signal = 0;
@@ -3285,7 +3173,7 @@ fn write_without_sigpipe(fd: RawFd, bytes: &[u8]) -> i64 {
     if let Some(error) = drain_error {
         return negative_errno(error);
     }
-    error.map_or(written as i64, io_error)
+    error.map_or(written, io_error)
 }
 
 fn host_write(fd: RawFd, bytes: &[u8]) -> i64 {
@@ -3432,6 +3320,714 @@ fn pwrite64(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
     }
     file.write_at(&bytes, args[3])
         .map_or_else(io_error, |count| count as i64)
+}
+
+struct AlignedIoArena {
+    mapping: *mut libc::c_void,
+    mapping_length: usize,
+    data: *mut u8,
+    data_length: usize,
+}
+
+impl AlignedIoArena {
+    fn new(length: usize, alignment: usize) -> Result<Self, i64> {
+        debug_assert_ne!(length, 0);
+        debug_assert_ne!(alignment, 0);
+        let requested = length
+            .checked_add(alignment - 1)
+            .ok_or_else(|| negative_errno(libc::EINVAL))?;
+        let page_size = PAGE_SIZE as usize;
+        let mapping_length = requested
+            .checked_add(page_size - 1)
+            .map(|value| value & !(page_size - 1))
+            .ok_or_else(|| negative_errno(libc::EINVAL))?;
+        // SAFETY: the mapping is anonymous, private, and owned by the returned
+        // value until Drop. MAP_NORESERVE keeps vector-alignment padding from
+        // consuming physical memory.
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                mapping_length,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
+                -1,
+                0,
+            )
+        };
+        if mapping == libc::MAP_FAILED {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+        let mapping_address = mapping as usize;
+        let padding = (alignment - mapping_address % alignment) % alignment;
+        // SAFETY: mapping_length includes alignment - 1 bytes of padding.
+        let data = unsafe { mapping.cast::<u8>().add(padding) };
+        Ok(Self {
+            mapping,
+            mapping_length,
+            data,
+            data_length: length,
+        })
+    }
+
+    fn as_mut_ptr(&mut self, offset: usize) -> *mut libc::c_void {
+        debug_assert!(offset <= self.data_length);
+        // SAFETY: callers compute offset within the aligned data range.
+        unsafe { self.data.add(offset).cast() }
+    }
+
+    #[cfg(test)]
+    fn protect_after_data(&mut self) -> Result<(), i64> {
+        let page_size = PAGE_SIZE as usize;
+        let guard = (self.data as usize)
+            .checked_add(self.data_length)
+            .ok_or_else(|| negative_errno(libc::EINVAL))?;
+        let mapping_end = (self.mapping as usize)
+            .checked_add(self.mapping_length)
+            .ok_or_else(|| negative_errno(libc::EINVAL))?;
+        if !guard.is_multiple_of(page_size)
+            || guard
+                .checked_add(page_size)
+                .is_none_or(|end| end > mapping_end)
+        {
+            return Err(negative_errno(libc::EFAULT));
+        }
+        // SAFETY: guard is page-aligned and covers one page wholly contained
+        // in this arena's live anonymous mapping.
+        if unsafe { libc::mprotect(guard as *mut libc::c_void, page_size, libc::PROT_NONE) } != 0 {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    fn protect_vector_suffix(
+        &mut self,
+        vector_offset: usize,
+        accessible_length: usize,
+    ) -> Result<(), i64> {
+        let fault_offset = vector_offset
+            .checked_add(accessible_length)
+            .filter(|offset| *offset < self.data_length)
+            .ok_or_else(|| negative_errno(libc::EINVAL))?;
+        let fault = (self.data as usize)
+            .checked_add(fault_offset)
+            .ok_or_else(|| negative_errno(libc::EINVAL))?;
+        let page_size = PAGE_SIZE as usize;
+        let protection_start = fault & !(page_size - 1);
+        // A nonempty accessible guest prefix always ends on a guest page
+        // boundary. The staged base has the same low address bits, so its
+        // fault boundary must also be page-aligned. For a wholly inaccessible
+        // vector, protecting the padding before its unaligned base is safe.
+        if accessible_length != 0 && protection_start != fault {
+            return Err(negative_errno(libc::EFAULT));
+        }
+        let mapping_end = (self.mapping as usize)
+            .checked_add(self.mapping_length)
+            .ok_or_else(|| negative_errno(libc::EINVAL))?;
+        let protection_length = mapping_end
+            .checked_sub(protection_start)
+            .filter(|length| *length != 0)
+            .ok_or_else(|| negative_errno(libc::EFAULT))?;
+        // SAFETY: protection_start is page-aligned and the range ends at this
+        // arena's page-aligned mapping boundary.
+        if unsafe {
+            libc::mprotect(
+                protection_start as *mut libc::c_void,
+                protection_length,
+                libc::PROT_NONE,
+            )
+        } != 0
+        {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    fn as_slice(&self, offset: usize, length: usize) -> &[u8] {
+        debug_assert!(offset.saturating_add(length) <= self.data_length);
+        // SAFETY: callers compute offset + length within the aligned data range.
+        unsafe { std::slice::from_raw_parts(self.data.add(offset), length) }
+    }
+
+    fn as_mut_slice(&mut self, offset: usize, length: usize) -> &mut [u8] {
+        debug_assert!(offset.saturating_add(length) <= self.data_length);
+        // SAFETY: this mutable borrow uniquely covers a range in the aligned data range.
+        unsafe { std::slice::from_raw_parts_mut(self.data.add(offset), length) }
+    }
+}
+
+impl Drop for AlignedIoArena {
+    fn drop(&mut self) {
+        // SAFETY: mapping and mapping_length are the values returned by mmap.
+        unsafe {
+            libc::munmap(self.mapping, self.mapping_length);
+        }
+    }
+}
+
+struct StagedIoVector {
+    guest: GuestIoVec,
+    accessible_length: usize,
+    arena: Option<AlignedIoArena>,
+    buffer_offset: usize,
+}
+
+impl StagedIoVector {
+    fn new(guest: GuestIoVec, accessible_length: usize, alignment: usize) -> Result<Self, i64> {
+        debug_assert!(accessible_length <= guest.length);
+        if guest.length == 0 {
+            return Ok(Self {
+                guest,
+                accessible_length: 0,
+                arena: None,
+                buffer_offset: 0,
+            });
+        }
+        let (buffer_offset, allocation_length) =
+            aligned_staging_range(0, guest.base, guest.length, alignment)?;
+        let mut arena = AlignedIoArena::new(allocation_length, alignment)?;
+        if accessible_length < guest.length {
+            arena.protect_vector_suffix(buffer_offset, accessible_length)?;
+        }
+        Ok(Self {
+            guest,
+            accessible_length,
+            arena: Some(arena),
+            buffer_offset,
+        })
+    }
+
+    fn host_iovec(&mut self) -> libc::iovec {
+        libc::iovec {
+            iov_base: self
+                .arena
+                .as_mut()
+                .map_or_else(std::ptr::dangling_mut::<libc::c_void>, |arena| {
+                    arena.as_mut_ptr(self.buffer_offset)
+                }),
+            iov_len: self.guest.length,
+        }
+    }
+
+    fn accessible_slice(&self, length: usize) -> &[u8] {
+        debug_assert!(length <= self.accessible_length);
+        self.arena
+            .as_ref()
+            .expect("accessible staged vector has no arena")
+            .as_slice(self.buffer_offset, length)
+    }
+
+    fn accessible_slice_mut(&mut self, length: usize) -> &mut [u8] {
+        debug_assert!(length <= self.accessible_length);
+        self.arena
+            .as_mut()
+            .expect("accessible staged vector has no arena")
+            .as_mut_slice(self.buffer_offset, length)
+    }
+}
+
+fn staged_host_iovecs(staged_vectors: &mut [StagedIoVector]) -> Vec<libc::iovec> {
+    let mut host_iovecs = Vec::with_capacity(staged_vectors.len());
+    for vector in staged_vectors {
+        host_iovecs.push(vector.host_iovec());
+    }
+    host_iovecs
+}
+
+fn direct_io_memory_alignment(host_fd: RawFd) -> usize {
+    if fd_status_flags(host_fd).is_ok_and(|flags| flags & libc::O_DIRECT == 0) {
+        return PAGE_SIZE as usize;
+    }
+    let mut stat = std::mem::MaybeUninit::<libc::statx>::zeroed();
+    // SAFETY: the empty path is NUL terminated, AT_EMPTY_PATH selects host_fd,
+    // and stat is writable. Kernels without STATX_DIOALIGN leave the fallback.
+    let result = unsafe {
+        libc::statx(
+            host_fd,
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH,
+            libc::STATX_DIOALIGN,
+            stat.as_mut_ptr(),
+        )
+    };
+    if result != 0 {
+        return PAGE_SIZE as usize;
+    }
+    // SAFETY: statx initialized stat on success.
+    let stat = unsafe { stat.assume_init() };
+    if stat.stx_mask & libc::STATX_DIOALIGN == 0 || stat.stx_dio_mem_align == 0 {
+        PAGE_SIZE as usize
+    } else {
+        (stat.stx_dio_mem_align as usize).max(PAGE_SIZE as usize)
+    }
+}
+
+fn aligned_staging_range(
+    next_offset: usize,
+    guest_address: u64,
+    length: usize,
+    alignment: usize,
+) -> Result<(usize, usize), i64> {
+    debug_assert_ne!(length, 0);
+    debug_assert_ne!(alignment, 0);
+    let desired_remainder = guest_address as usize % alignment;
+    let current_remainder = next_offset % alignment;
+    let padding = (desired_remainder + alignment - current_remainder) % alignment;
+    let offset = next_offset
+        .checked_add(padding)
+        .ok_or_else(|| negative_errno(libc::EINVAL))?;
+    let end = offset
+        .checked_add(length)
+        .ok_or_else(|| negative_errno(libc::EINVAL))?;
+    Ok((offset, end))
+}
+
+#[derive(Clone, Copy)]
+struct GuestIoVec {
+    base: u64,
+    length: usize,
+}
+
+fn validate_guest_iovec_address(address: u64, length: usize) -> Result<(), i64> {
+    let limit = X86_64_GUEST_USER_LIMIT;
+    let length = u64::try_from(length).map_err(|_| negative_errno(libc::EFAULT))?;
+    // This is Linux x86-64's access_ok rule: size <= TASK_SIZE_MAX and
+    // address <= TASK_SIZE_MAX - size. It rejects noncanonical addresses,
+    // arithmetic wrap, and the architecture's final guard page. A zero-length
+    // entry still requires its base to be at or below TASK_SIZE_MAX.
+    if length > limit || address > limit - length {
+        Err(negative_errno(libc::EFAULT))
+    } else {
+        Ok(())
+    }
+}
+
+fn decode_guest_iovecs(
+    memory: &GuestMemory,
+    address: u64,
+    raw_count: u64,
+) -> Result<(Vec<GuestIoVec>, usize, usize), i64> {
+    let Ok(count) = usize::try_from(raw_count) else {
+        return Err(negative_errno(libc::EINVAL));
+    };
+    if count > libc::UIO_MAXIOV as usize {
+        return Err(negative_errno(libc::EINVAL));
+    }
+
+    let mut original_vectors = Vec::with_capacity(count);
+    for index in 0..count {
+        let Some(entry_address) =
+            address.checked_add((index * std::mem::size_of::<libc::iovec>()) as u64)
+        else {
+            return Err(negative_errno(libc::EFAULT));
+        };
+        let entry: libc::iovec = read_guest_struct(memory, entry_address)?;
+        original_vectors.push(GuestIoVec {
+            base: entry.iov_base as usize as u64,
+            length: entry.iov_len,
+        });
+    }
+
+    // Linux rejects any individual length outside ssize_t before validating
+    // any data address. This preflight therefore also gives a later oversized
+    // vector EINVAL precedence over an earlier invalid data base.
+    if original_vectors
+        .iter()
+        .any(|vector| vector.length > isize::MAX as usize)
+    {
+        return Err(negative_errno(libc::EINVAL));
+    }
+
+    let mut vectors = Vec::with_capacity(count);
+    let mut total = 0usize;
+    let mut kernel_total = 0usize;
+    for entry in original_vectors {
+        // Linux clamps each valid individual length to MAX_RW_COUNT before its
+        // access_ok check, and checks every original entry even after the
+        // aggregate has reached MAX_RW_COUNT. Thus only the unreachable suffix
+        // of one individually oversized vector is omitted from its range check.
+        let validated_length = entry.length.min(MAX_RW_COUNT);
+        validate_guest_iovec_address(entry.base, validated_length)?;
+        let kernel_length = entry.length.min(MAX_RW_COUNT.saturating_sub(kernel_total));
+        kernel_total += kernel_length;
+        // MAX_HOST_IO bounds supervisor allocation, not the Linux ABI. A
+        // valid larger request may complete partially, so retain the bounded
+        // prefix instead of inventing EINVAL at the private staging limit.
+        let length = kernel_length.min(MAX_HOST_IO.saturating_sub(total));
+        vectors.push(GuestIoVec {
+            base: entry.base,
+            length,
+        });
+        total += length;
+    }
+    Ok((vectors, total, kernel_total))
+}
+
+fn validate_positioned_vectored_offset(number: libc::c_long, args: &[u64; 6]) -> Result<(), i64> {
+    // On x86-64 the fourth argument is the full signed offset. The fifth
+    // register is present in the generic syscall shape, but Linux ignores it
+    // on this architecture. glibc initializes it to zero.
+    let offset = args[3] as i64;
+    let version_two = number == libc::SYS_preadv2 || number == libc::SYS_pwritev2;
+    if offset < if version_two { -1 } else { 0 } {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    Ok(())
+}
+
+fn validate_positioned_vectored_flags(
+    number: libc::c_long,
+    args: &[u64; 6],
+    total: usize,
+) -> Result<(), i64> {
+    let version_two = number == libc::SYS_preadv2 || number == libc::SYS_pwritev2;
+    if !version_two || total == 0 {
+        return Ok(());
+    }
+
+    let flags = args[5] as libc::c_int;
+    if flags & !RWF_SUPPORTED_MASK != 0 {
+        return Err(negative_errno(libc::EOPNOTSUPP));
+    }
+    if flags & libc::RWF_APPEND != 0 && flags & libc::RWF_NOAPPEND != 0 {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    Ok(())
+}
+
+fn invoke_vectored_write(
+    number: libc::c_long,
+    host_fd: RawFd,
+    host_iovecs: &mut [libc::iovec],
+    args: &[u64; 6],
+) -> i64 {
+    suppress_host_sigpipe(|| {
+        // SAFETY: every host iovec points into a live buffer for its declared
+        // length, and host_fd belongs to the translated guest descriptor. The
+        // positioned syscalls receive their complete x86-64 argument shape.
+        unsafe {
+            if number == libc::SYS_writev {
+                return libc::writev(
+                    host_fd,
+                    host_iovecs.as_ptr(),
+                    host_iovecs.len() as libc::c_int,
+                ) as i64;
+            }
+            libc::syscall(
+                number,
+                host_fd as libc::c_long,
+                host_iovecs.as_mut_ptr(),
+                host_iovecs.len() as libc::c_ulong,
+                args[3] as libc::c_ulong,
+                args[4] as libc::c_ulong,
+                args[5] as libc::c_ulong,
+            ) as i64
+        }
+    })
+}
+
+fn invoke_vectored_read(
+    number: libc::c_long,
+    host_fd: RawFd,
+    host_iovecs: &mut [libc::iovec],
+    args: &[u64; 6],
+) -> i64 {
+    // SAFETY: every host iovec points into a live writable buffer for its
+    // declared length, and host_fd belongs to the translated guest descriptor.
+    let result = unsafe {
+        if number == libc::SYS_readv {
+            libc::readv(
+                host_fd,
+                host_iovecs.as_ptr(),
+                host_iovecs.len() as libc::c_int,
+            ) as i64
+        } else {
+            libc::syscall(
+                number,
+                host_fd as libc::c_long,
+                host_iovecs.as_mut_ptr(),
+                host_iovecs.len() as libc::c_ulong,
+                args[3] as libc::c_ulong,
+                args[4] as libc::c_ulong,
+                args[5] as libc::c_ulong,
+            ) as i64
+        }
+    };
+    if result < 0 {
+        io_error(std::io::Error::last_os_error())
+    } else {
+        result
+    }
+}
+
+fn capture_vectored_write(
+    memory: &GuestMemory,
+    iovecs: &[GuestIoVec],
+    destination: OutputAlias,
+    output: &CapturedOutput,
+) -> i64 {
+    let mut bytes = Vec::new();
+    for iovec in iovecs {
+        if iovec.length == 0 {
+            continue;
+        }
+        let start = bytes.len();
+        let Some(end) = start.checked_add(iovec.length) else {
+            return negative_errno(libc::EINVAL);
+        };
+        bytes.resize(end, 0);
+        if memory.read(iovec.base, &mut bytes[start..]).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
+    }
+    if !output.append(matches!(destination, OutputAlias::Stderr), &bytes) {
+        negative_errno(libc::EFBIG)
+    } else {
+        bytes.len() as i64
+    }
+}
+
+// TODO-HUMAN-REVIEW(PR-538): Review ordinary and positioned vectored I/O
+// mediation, including aggregate host calls, bounded staging, virtual signalfd
+// routing, direct-I/O alignment, partial guest-memory faults, captured output,
+// and SIGPIPE containment.
+fn vectored_io(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    number: libc::c_long,
+    output: Option<&mut CapturedOutput>,
+) -> i64 {
+    let reading = matches!(
+        number,
+        libc::SYS_readv | libc::SYS_preadv | libc::SYS_preadv2
+    );
+    let positioned = !matches!(number, libc::SYS_readv | libc::SYS_writev);
+    debug_assert!(
+        reading
+            || matches!(
+                number,
+                libc::SYS_writev | libc::SYS_pwritev | libc::SYS_pwritev2
+            )
+    );
+    if positioned {
+        // Linux validates a positioned operation's signed offset before looking
+        // up the descriptor.
+        if let Err(error) = validate_positioned_vectored_offset(number, args) {
+            return error;
+        }
+    }
+    let Ok(guest_fd) = libc::c_int::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    let output_destination = output_alias(state, guest_fd);
+    let captured_output = output.is_some() && output_destination.is_some();
+    // Synthetic procfs descriptors have backend-owned content and must not be
+    // forwarded to the supervisor's procfs.
+    if state.proc_files.contains_key(&guest_fd) {
+        return negative_errno(libc::ENOSYS);
+    }
+    let descriptor = (!captured_output)
+        .then(|| host_fd(state, guest_fd))
+        .flatten();
+    if !captured_output && descriptor.is_none() {
+        return negative_errno(libc::EBADF);
+    }
+
+    let current_position = !positioned
+        || matches!(number, libc::SYS_preadv2 | libc::SYS_pwritev2) && args[3] as i64 == -1;
+    if !current_position {
+        if captured_output {
+            return negative_errno(libc::ESPIPE);
+        }
+        let host_fd = descriptor.expect("validated guest descriptor disappeared");
+        // A zero-vector call has no data or position side effect, but lets the
+        // host descriptor apply Linux's seekability ordering before guest
+        // memory is imported. In particular, pipes return ESPIPE here.
+        // SAFETY: the iovec count is zero, so the null pointer is not read.
+        let preflight = unsafe {
+            libc::syscall(
+                number,
+                host_fd as libc::c_long,
+                std::ptr::null::<libc::iovec>(),
+                0usize,
+                args[3] as libc::c_ulong,
+                args[4] as libc::c_ulong,
+                args[5] as libc::c_ulong,
+            )
+        };
+        if preflight < 0 {
+            return io_error(std::io::Error::last_os_error());
+        }
+    }
+
+    let virtual_signalfd = signalfd_mask(state, guest_fd).is_some();
+    if virtual_signalfd && current_position && !reading {
+        // Linux rejects writev/pwritev2 on signalfd before importing the
+        // iovec array. Its KVM backing eventfd is deliberately not exposed.
+        return negative_errno(libc::EINVAL);
+    }
+
+    // Access-mode checks follow offset and seekability checks but still
+    // precede iovec import, matching Linux's ordering.
+    let access = if captured_output {
+        if reading {
+            Err(negative_errno(libc::EBADF))
+        } else {
+            Ok(())
+        }
+    } else if let Some(host_fd) = descriptor {
+        if reading {
+            ensure_readable_fd(host_fd)
+        } else {
+            ensure_writable_fd(host_fd)
+        }
+    } else {
+        Err(negative_errno(libc::EBADF))
+    };
+    if let Err(error) = access {
+        return error;
+    }
+
+    let (guest_iovecs, total, kernel_total) = match decode_guest_iovecs(memory, args[1], args[2]) {
+        Ok(decoded) => decoded,
+        Err(error) => return error,
+    };
+    if positioned && let Err(error) = validate_positioned_vectored_flags(number, args, total) {
+        return error;
+    }
+    if virtual_signalfd {
+        debug_assert!(reading && current_position);
+        // These flags require capabilities that signalfd does not provide.
+        // Import and validate the vectors first, and preserve Linux's zero-byte
+        // success without consuming a signal or changing the destination.
+        if number == libc::SYS_preadv2
+            && total != 0
+            && args[5] as libc::c_int & (libc::RWF_ATOMIC | libc::RWF_DONTCACHE) != 0
+        {
+            return negative_errno(libc::EOPNOTSUPP);
+        }
+        return signalfd_read_stream(
+            memory,
+            state,
+            guest_fd,
+            &guest_iovecs,
+            true,
+            number == libc::SYS_preadv2 && args[5] as libc::c_int & libc::RWF_NOWAIT != 0,
+        )
+        .expect("signalfd mask disappeared without descriptor mutation");
+    }
+    if captured_output {
+        if positioned {
+            let flags = args[5] as libc::c_int;
+            if number == libc::SYS_pwritev2
+                && total != 0
+                && flags & (libc::RWF_ATOMIC | libc::RWF_DONTCACHE) != 0
+            {
+                return negative_errno(libc::EOPNOTSUPP);
+            }
+        }
+        debug_assert!(!reading, "captured output is not readable");
+        return capture_vectored_write(
+            memory,
+            &guest_iovecs,
+            output_destination.expect("captured output has no destination"),
+            output.expect("captured output disappeared"),
+        );
+    }
+    let host_fd = descriptor.expect("validated guest descriptor disappeared");
+    if kernel_total > total {
+        let flags = match fd_status_flags(host_fd) {
+            Ok(flags) => flags,
+            Err(error) => return error,
+        };
+        if flags & libc::O_DIRECT != 0 {
+            // The private staging cap must not turn an originally unaligned
+            // length or trailing vector into a valid direct-I/O request. Larger
+            // O_DIRECT operations are unsupported until the full kernel-sized
+            // vector shape can be preserved. Refuse before any data transfer.
+            return negative_errno(libc::EOPNOTSUPP);
+        }
+    }
+    let staging_alignment = direct_io_memory_alignment(host_fd);
+
+    // Give the host one iovec for every bounded guest iovec, with the same
+    // length, order, and low address bits. Each nonempty vector has its own
+    // anonymous arena, so a protected suffix cannot hide or protect a later
+    // vector. A partially accessible vector remains one host vector: its live
+    // prefix ends exactly at a page boundary and its remaining pages are
+    // PROT_NONE. This lets one host syscall apply endpoint-specific EFAULT,
+    // atomicity, packet-consumption, and eventfd-consumption rules without ever
+    // exposing the supervisor's guest-memory mapping.
+    let mut staged_vectors = Vec::with_capacity(guest_iovecs.len());
+    for vector in &guest_iovecs {
+        let prefix = if reading {
+            memory.user_writable_prefix(vector.base, vector.length)
+        } else {
+            memory.user_accessible_prefix(vector.base, vector.length)
+        }
+        .unwrap_or(0);
+        let mut staged = match StagedIoVector::new(*vector, prefix, staging_alignment) {
+            Ok(staged) => staged,
+            Err(error) => return error,
+        };
+        if prefix != 0
+            && memory
+                .read(vector.base, staged.accessible_slice_mut(prefix))
+                .is_err()
+        {
+            return negative_errno(libc::EFAULT);
+        }
+        staged_vectors.push(staged);
+    }
+
+    let mut host_iovecs = staged_host_iovecs(&mut staged_vectors);
+    if !reading {
+        return invoke_vectored_write(number, host_fd, &mut host_iovecs, args);
+    }
+
+    let result = invoke_vectored_read(number, host_fd, &mut host_iovecs, args);
+    if result >= 0 {
+        let mut remaining = result as usize;
+        for vector in &staged_vectors {
+            let transferred = remaining.min(vector.guest.length);
+            let copied = transferred.min(vector.accessible_length);
+            if copied != 0
+                && memory
+                    .write(vector.guest.base, vector.accessible_slice(copied))
+                    .is_err()
+            {
+                return negative_errno(libc::EFAULT);
+            }
+            remaining -= transferred;
+            if remaining == 0 {
+                break;
+            }
+        }
+        debug_assert_eq!(remaining, 0, "host returned more bytes than requested");
+    } else if result == negative_errno(libc::EFAULT) {
+        // Linux may modify an accessible prefix before reporting EFAULT. In
+        // particular eventfd consumes its counter and datagram sockets discard
+        // their packet, while pipe/stream data remains queued; all four copy
+        // bytes into the live prefix. The staging buffers were prefilled from
+        // guest memory, so copying the accessible portions through the first
+        // fault preserves both changed and untouched bytes safely.
+        for vector in &staged_vectors {
+            if vector.accessible_length != 0
+                && memory
+                    .write(
+                        vector.guest.base,
+                        vector.accessible_slice(vector.accessible_length),
+                    )
+                    .is_err()
+            {
+                return negative_errno(libc::EFAULT);
+            }
+            if vector.accessible_length < vector.guest.length {
+                break;
+            }
+        }
+    }
+    result
 }
 
 /// A host file backs a regular (or memfd) object when its mode is `S_IFREG`.
@@ -5519,64 +6115,6 @@ fn queue_signal_event(
 }
 
 const SIGNALFD_RECORD_SIZE: usize = std::mem::size_of::<libc::signalfd_siginfo>();
-const X86_64_TASK_SIZE: u64 = 1_u64 << 47;
-
-fn user_range_passes_access_ok(address: u64, length: u64) -> bool {
-    address < X86_64_TASK_SIZE
-        && address
-            .checked_add(length)
-            .is_some_and(|end| end <= X86_64_TASK_SIZE)
-}
-
-#[derive(Clone, Copy, Debug)]
-struct GuestIoVec {
-    base: u64,
-    length: usize,
-}
-
-fn decode_guest_iovecs(
-    memory: &GuestMemory,
-    address: u64,
-    count: usize,
-) -> Result<Vec<GuestIoVec>, i64> {
-    if count > libc::UIO_MAXIOV as usize {
-        return Err(negative_errno(libc::EINVAL));
-    }
-    if count == 0 {
-        return Ok(Vec::new());
-    }
-    let table_length = count
-        .checked_mul(16)
-        .ok_or_else(|| negative_errno(libc::EINVAL))?;
-    if !range_is_valid(memory, address, table_length as u64) {
-        return Err(negative_errno(libc::EFAULT));
-    }
-    let mut vectors = Vec::with_capacity(count);
-    let mut total = 0usize;
-    for index in 0..count {
-        let entry = address + index as u64 * 16;
-        let mut bytes = [0; 16];
-        if memory.read(entry, &mut bytes).is_err() {
-            return Err(negative_errno(libc::EFAULT));
-        }
-        let base = u64::from_le_bytes(bytes[..8].try_into().expect("iovec base"));
-        let raw_length = u64::from_le_bytes(bytes[8..].try_into().expect("iovec length"));
-        let length = usize::try_from(raw_length).map_err(|_| negative_errno(libc::EINVAL))?;
-        // Linux imports an iovec after access_ok validates its userspace
-        // address shape, but page accessibility is not tested until copyout.
-        // Preserve that distinction because signalfd dequeues before copyout.
-        if length != 0 && !user_range_passes_access_ok(base, raw_length) {
-            return Err(negative_errno(libc::EFAULT));
-        }
-        total = total
-            .checked_add(length)
-            .filter(|total| *total <= isize::MAX as usize)
-            .ok_or_else(|| negative_errno(libc::EINVAL))?;
-        vectors.push(GuestIoVec { base, length });
-    }
-    Ok(vectors)
-}
-
 struct GuestWriteCursor<'a> {
     vectors: &'a [GuestIoVec],
     index: usize,
@@ -12393,8 +12931,12 @@ pub(crate) fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf
 mod tests {
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
+    use std::io::Read;
+    use std::io::Seek;
+    use std::io::SeekFrom;
     use std::os::unix::fs::FileTypeExt;
     use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixStream;
     use std::path::Path;
@@ -12873,6 +13415,31 @@ mod tests {
         }
     }
 
+    fn syscall_result_with_output(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        output: &mut CapturedOutput,
+        number: libc::c_long,
+        args: [u64; 6],
+    ) -> i64 {
+        match execute_basic_syscall_with_output(
+            memory,
+            state,
+            &SyscallRequest::new(number as u64, args),
+            None,
+            Some(output),
+        ) {
+            SyscallAction::Continue {
+                result,
+                segment: None,
+            } => result,
+            SyscallAction::Continue {
+                segment: Some(_), ..
+            } => panic!("filesystem syscall changed a segment base"),
+            SyscallAction::Exit(code) => panic!("filesystem syscall exited with {code:?}"),
+        }
+    }
+
     fn read_struct<T>(memory: &GuestMemory, address: u64) -> T {
         let mut value = std::mem::MaybeUninit::<T>::zeroed();
         // SAFETY: value is writable for exactly size_of::<T>() bytes.
@@ -12947,6 +13514,23 @@ mod tests {
         let mut bytes = value.as_bytes().to_vec();
         bytes.push(0);
         memory.write(address, &bytes).unwrap();
+    }
+
+    fn write_guest_iovecs(memory: &mut GuestMemory, address: u64, vectors: &[(u64, usize)]) {
+        for (index, &(base, length)) in vectors.iter().enumerate() {
+            let entry = libc::iovec {
+                iov_base: base as usize as *mut libc::c_void,
+                iov_len: length,
+            };
+            assert_eq!(
+                write_struct(
+                    memory,
+                    address + (index * std::mem::size_of::<libc::iovec>()) as u64,
+                    &entry
+                ),
+                0
+            );
+        }
     }
 
     /// Read the emulated working directory back through `getcwd`.
@@ -14575,6 +15159,2849 @@ mod tests {
         memory.read(RBUF_B, &mut second).unwrap();
         assert_eq!(&first, b"foob");
         assert_eq!(&second, b"arbaz");
+    }
+
+    #[test]
+    fn ordinary_vectored_io_preserves_aggregate_endpoint_semantics() {
+        const FDS: u64 = 0x100;
+        const WRITE_FIRST: u64 = 0x1000;
+        const WRITE_SECOND: u64 = 0x1100;
+        const WRITE_IOV: u64 = 0x2000;
+        const READ_FIRST: u64 = 0x3000;
+        const READ_SECOND: u64 = 0x3100;
+        const READ_IOV: u64 = 0x4000;
+        const PAYLOAD: &[u8] = b"ABCDEFGH";
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x8000).unwrap();
+
+        // Linux eventfd read_iter accepts one eight-byte value split across
+        // two four-byte iovecs. The old scalar loop issued a four-byte read
+        // for the first entry and incorrectly returned EINVAL.
+        let event_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_eventfd2,
+            [
+                0,
+                (libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) as u64,
+                0,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert!(event_fd >= 0, "eventfd2 returned {event_fd}");
+        memory.write(WRITE_FIRST, &7_u64.to_ne_bytes()).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [event_fd as u64, WRITE_FIRST, 8, 0, 0, 0],
+            ),
+            8
+        );
+        write_guest_iovecs(&mut memory, READ_IOV, &[(READ_FIRST, 4), (READ_SECOND, 4)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [event_fd as u64, READ_IOV, 2, 0, 0, 0],
+            ),
+            8
+        );
+        let event_low: u32 = read_struct(&memory, READ_FIRST);
+        let event_high: u32 = read_struct(&memory, READ_SECOND);
+        assert_eq!(u64::from(event_low) | (u64::from(event_high) << 32), 7);
+
+        // Linux eventfd has asymmetric vectored behavior on this host: its
+        // write path rejects a 4+4 split with EINVAL. Forward one aggregate
+        // host writev so KVM retains that result instead of inventing one.
+        memory.write(WRITE_FIRST, &9_u32.to_ne_bytes()).unwrap();
+        memory.write(WRITE_SECOND, &0_u32.to_ne_bytes()).unwrap();
+        write_guest_iovecs(
+            &mut memory,
+            WRITE_IOV,
+            &[(WRITE_FIRST, 4), (WRITE_SECOND, 4)],
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_writev,
+                [event_fd as u64, WRITE_IOV, 2, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [event_fd as u64, READ_FIRST, 8, 0, 0, 0],
+            ),
+            negative_errno(libc::EAGAIN),
+            "failed split writev changed the eventfd counter"
+        );
+
+        // Pipe and socket controls exercise the same production path. A
+        // datagram writev must create one packet; scalarizing it creates two
+        // packets and makes the first readv short.
+        for endpoint in [None, Some(libc::SOCK_STREAM), Some(libc::SOCK_DGRAM)] {
+            let (read_fd, write_fd) = if let Some(socket_type) = endpoint {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_socketpair,
+                        [
+                            libc::AF_UNIX as u64,
+                            (socket_type | libc::SOCK_CLOEXEC) as u64,
+                            0,
+                            FDS,
+                            0,
+                            0,
+                        ],
+                    ),
+                    0
+                );
+                let [left, right]: [libc::c_int; 2] = read_struct(&memory, FDS);
+                (right, left)
+            } else {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_pipe2,
+                        [FDS, libc::O_CLOEXEC as u64, 0, 0, 0, 0],
+                    ),
+                    0
+                );
+                let [read_fd, write_fd]: [libc::c_int; 2] = read_struct(&memory, FDS);
+                (read_fd, write_fd)
+            };
+
+            memory.write(WRITE_FIRST, &PAYLOAD[..4]).unwrap();
+            memory.write(WRITE_SECOND, &PAYLOAD[4..]).unwrap();
+            write_guest_iovecs(
+                &mut memory,
+                WRITE_IOV,
+                &[(WRITE_FIRST, 4), (WRITE_SECOND, 4)],
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_writev,
+                    [write_fd as u64, WRITE_IOV, 2, 0, 0, 0],
+                ),
+                PAYLOAD.len() as i64,
+                "writev failed for endpoint {endpoint:?}"
+            );
+            memory.write(READ_FIRST, &[b'x'; 3]).unwrap();
+            memory.write(READ_SECOND, &[b'x'; 5]).unwrap();
+            write_guest_iovecs(&mut memory, READ_IOV, &[(READ_FIRST, 3), (READ_SECOND, 5)]);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_readv,
+                    [read_fd as u64, READ_IOV, 2, 0, 0, 0],
+                ),
+                PAYLOAD.len() as i64,
+                "readv failed for endpoint {endpoint:?}"
+            );
+            let mut actual = [0; 8];
+            memory.read(READ_FIRST, &mut actual[..3]).unwrap();
+            memory.read(READ_SECOND, &mut actual[3..]).unwrap();
+            assert_eq!(
+                &actual, PAYLOAD,
+                "payload changed for endpoint {endpoint:?}"
+            );
+
+            assert_eq!(close(&mut state, read_fd as u64), 0);
+            assert_eq!(close(&mut state, write_fd as u64), 0);
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum VectoredFaultEndpoint {
+        EventFd,
+        Pipe,
+        Stream,
+        Datagram,
+    }
+
+    struct NativeFaultBuffer {
+        mapping: *mut libc::c_void,
+        length: usize,
+        crossing: *mut u8,
+        invalid: *mut u8,
+        later: *mut u8,
+    }
+
+    impl NativeFaultBuffer {
+        fn new() -> Self {
+            let page = PAGE_SIZE as usize;
+            // SAFETY: this private mapping is owned until Drop below.
+            let mapping = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    2 * page,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            assert_ne!(mapping, libc::MAP_FAILED);
+            let bytes = mapping.cast::<u8>();
+            // SAFETY: both pointers lie in the writable first page.
+            let (crossing, later) = unsafe { (bytes.add(page - 4), bytes.add(128)) };
+            // SAFETY: each destination is writable for four bytes.
+            unsafe {
+                std::ptr::copy_nonoverlapping(b"xxxx".as_ptr(), crossing, 4);
+                std::ptr::copy_nonoverlapping(b"WXYZ".as_ptr(), later, 4);
+            }
+            // SAFETY: the second page is page-aligned and live.
+            assert_eq!(
+                unsafe { libc::mprotect(bytes.add(page).cast(), page, libc::PROT_NONE) },
+                0
+            );
+            Self {
+                mapping,
+                length: 2 * page,
+                crossing,
+                // SAFETY: the second page is live but inaccessible.
+                invalid: unsafe { bytes.add(page) },
+                later,
+            }
+        }
+
+        fn prefix(&self) -> [u8; 4] {
+            let mut result = [0; 4];
+            // SAFETY: crossing's first four bytes remain in the live first page.
+            unsafe { std::ptr::copy_nonoverlapping(self.crossing, result.as_mut_ptr(), 4) };
+            result
+        }
+    }
+
+    impl Drop for NativeFaultBuffer {
+        fn drop(&mut self) {
+            // SAFETY: mapping and length are the values returned by mmap.
+            unsafe { libc::munmap(self.mapping, self.length) };
+        }
+    }
+
+    struct NativeVectoredEndpoint {
+        reader: std::fs::File,
+        writer: std::fs::File,
+    }
+
+    fn native_vectored_endpoint(kind: VectoredFaultEndpoint) -> NativeVectoredEndpoint {
+        match kind {
+            VectoredFaultEndpoint::EventFd => {
+                // SAFETY: eventfd returns a new owned descriptor on success.
+                let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+                assert!(fd >= 0);
+                // SAFETY: fd is newly owned.
+                let reader = unsafe { std::fs::File::from_raw_fd(fd) };
+                let writer = reader.try_clone().unwrap();
+                NativeVectoredEndpoint { reader, writer }
+            }
+            VectoredFaultEndpoint::Pipe => {
+                let mut fds = [-1; 2];
+                // SAFETY: fds points to two writable integers.
+                assert_eq!(
+                    unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) },
+                    0
+                );
+                // SAFETY: pipe2 returned two newly owned descriptors.
+                unsafe {
+                    NativeVectoredEndpoint {
+                        reader: std::fs::File::from_raw_fd(fds[0]),
+                        writer: std::fs::File::from_raw_fd(fds[1]),
+                    }
+                }
+            }
+            VectoredFaultEndpoint::Stream | VectoredFaultEndpoint::Datagram => {
+                let mut fds = [-1; 2];
+                let socket_type = if matches!(kind, VectoredFaultEndpoint::Stream) {
+                    libc::SOCK_STREAM
+                } else {
+                    libc::SOCK_DGRAM
+                };
+                // SAFETY: fds points to two writable integers.
+                assert_eq!(
+                    unsafe {
+                        libc::socketpair(
+                            libc::AF_UNIX,
+                            socket_type | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+                            0,
+                            fds.as_mut_ptr(),
+                        )
+                    },
+                    0
+                );
+                // SAFETY: socketpair returned two newly owned descriptors.
+                unsafe {
+                    NativeVectoredEndpoint {
+                        reader: std::fs::File::from_raw_fd(fds[0]),
+                        writer: std::fs::File::from_raw_fd(fds[1]),
+                    }
+                }
+            }
+        }
+    }
+
+    fn raw_vectored_call(number: libc::c_long, fd: RawFd, iovecs: &mut [libc::iovec]) -> i64 {
+        raw_vectored_call_at(number, fd, iovecs, u64::MAX)
+    }
+
+    fn raw_vectored_call_at(
+        number: libc::c_long,
+        fd: RawFd,
+        iovecs: &mut [libc::iovec],
+        offset: u64,
+    ) -> i64 {
+        raw_vectored_pointer_call(number, fd, iovecs.as_mut_ptr(), iovecs.len(), offset)
+    }
+
+    fn raw_vectored_pointer_call(
+        number: libc::c_long,
+        fd: RawFd,
+        iovecs: *mut libc::iovec,
+        count: usize,
+        offset: u64,
+    ) -> i64 {
+        // SAFETY: the caller owns fd. The iovec pointer and its entries are
+        // deliberately allowed to be inaccessible to measure kernel ordering.
+        let result =
+            unsafe { libc::syscall(number, fd, iovecs, count, offset, 0usize, 0usize) as i64 };
+        if result < 0 {
+            io_error(std::io::Error::last_os_error())
+        } else {
+            result
+        }
+    }
+
+    fn seed_native_endpoint(endpoint: &NativeVectoredEndpoint, payload: &[u8; 8]) {
+        // SAFETY: writer is live and payload is readable.
+        assert_eq!(
+            unsafe {
+                libc::write(
+                    endpoint.writer.as_raw_fd(),
+                    payload.as_ptr().cast(),
+                    payload.len(),
+                )
+            },
+            payload.len() as isize
+        );
+    }
+
+    fn read_native_endpoint(endpoint: &NativeVectoredEndpoint) -> (i64, [u8; 8]) {
+        let mut bytes = [0; 8];
+        // SAFETY: reader is live and bytes is writable.
+        let result = unsafe {
+            libc::read(
+                endpoint.reader.as_raw_fd(),
+                bytes.as_mut_ptr().cast(),
+                bytes.len(),
+            )
+        };
+        let result = if result < 0 {
+            io_error(std::io::Error::last_os_error())
+        } else {
+            result as i64
+        };
+        (result, bytes)
+    }
+
+    fn guest_vectored_endpoint(
+        kind: VectoredFaultEndpoint,
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+    ) -> (libc::c_int, libc::c_int) {
+        const FDS: u64 = 0x100;
+        match kind {
+            VectoredFaultEndpoint::EventFd => {
+                let fd = syscall_result(
+                    memory,
+                    state,
+                    libc::SYS_eventfd2,
+                    [
+                        0,
+                        (libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) as u64,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                );
+                assert!(fd >= 0);
+                (fd as libc::c_int, fd as libc::c_int)
+            }
+            VectoredFaultEndpoint::Pipe => {
+                assert_eq!(
+                    syscall_result(
+                        memory,
+                        state,
+                        libc::SYS_pipe2,
+                        [FDS, (libc::O_CLOEXEC | libc::O_NONBLOCK) as u64, 0, 0, 0, 0],
+                    ),
+                    0
+                );
+                let [reader, writer]: [libc::c_int; 2] = read_struct(memory, FDS);
+                (reader, writer)
+            }
+            VectoredFaultEndpoint::Stream | VectoredFaultEndpoint::Datagram => {
+                let socket_type = if matches!(kind, VectoredFaultEndpoint::Stream) {
+                    libc::SOCK_STREAM
+                } else {
+                    libc::SOCK_DGRAM
+                };
+                assert_eq!(
+                    syscall_result(
+                        memory,
+                        state,
+                        libc::SYS_socketpair,
+                        [
+                            libc::AF_UNIX as u64,
+                            (socket_type | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK) as u64,
+                            0,
+                            FDS,
+                            0,
+                            0,
+                        ],
+                    ),
+                    0
+                );
+                let [reader, writer]: [libc::c_int; 2] = read_struct(memory, FDS);
+                (reader, writer)
+            }
+        }
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct FaultReadObservation {
+        result: i64,
+        prefix: [u8; 4],
+        remaining_result: i64,
+        remaining: [u8; 8],
+    }
+
+    fn native_fault_read(
+        kind: VectoredFaultEndpoint,
+        number: libc::c_long,
+        read_only: bool,
+    ) -> FaultReadObservation {
+        let endpoint = native_vectored_endpoint(kind);
+        let payload = 0x0807_0605_0403_0201_u64.to_ne_bytes();
+        seed_native_endpoint(&endpoint, &payload);
+        let buffer = NativeFaultBuffer::new();
+        if read_only {
+            // SAFETY: the first page belongs to this buffer and remains readable.
+            assert_eq!(
+                unsafe { libc::mprotect(buffer.mapping, PAGE_SIZE as usize, libc::PROT_READ) },
+                0
+            );
+        }
+        let mut iovecs = [libc::iovec {
+            iov_base: buffer.crossing.cast(),
+            iov_len: 8,
+        }];
+        let result = raw_vectored_call(number, endpoint.reader.as_raw_fd(), &mut iovecs);
+        let (remaining_result, remaining) = read_native_endpoint(&endpoint);
+        FaultReadObservation {
+            result,
+            prefix: buffer.prefix(),
+            remaining_result,
+            remaining,
+        }
+    }
+
+    fn mediated_fault_read(
+        kind: VectoredFaultEndpoint,
+        number: libc::c_long,
+        read_only: bool,
+    ) -> FaultReadObservation {
+        const IOV: u64 = 0x400;
+        const CROSSING: u64 = 0x2ffc;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x5000).unwrap();
+        let (reader, writer) = guest_vectored_endpoint(kind, &mut memory, &mut state);
+        let payload = 0x0807_0605_0403_0201_u64.to_ne_bytes();
+        // SAFETY: writer is a translated live host descriptor.
+        assert_eq!(
+            unsafe { libc::write(state.files[&writer].as_raw_fd(), payload.as_ptr().cast(), 8) },
+            8
+        );
+        memory.write(CROSSING, b"xxxx").unwrap();
+        write_guest_iovecs(&mut memory, IOV, &[(CROSSING, 8)]);
+        memory.enable_user_access();
+        memory.map_user_range(IOV, PAGE_SIZE, false).unwrap();
+        memory
+            .map_user_permissions(CROSSING, 4, true, !read_only)
+            .unwrap();
+        let offset = if number == libc::SYS_preadv2 {
+            u64::MAX
+        } else {
+            0
+        };
+        let result = syscall_result(
+            &mut memory,
+            &mut state,
+            number,
+            [reader as u64, IOV, 1, offset, 0, 0],
+        );
+        let mut prefix = [0; 4];
+        memory.read(CROSSING, &mut prefix).unwrap();
+        let endpoint = NativeVectoredEndpoint {
+            reader: state.files[&reader].try_clone().unwrap(),
+            writer: state.files[&writer].try_clone().unwrap(),
+        };
+        let (remaining_result, remaining) = read_native_endpoint(&endpoint);
+        FaultReadObservation {
+            result,
+            prefix,
+            remaining_result,
+            remaining,
+        }
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct FaultWriteObservation {
+        result: i64,
+        received_result: i64,
+        received: [u8; 8],
+    }
+
+    fn native_fault_write(
+        kind: VectoredFaultEndpoint,
+        number: libc::c_long,
+    ) -> FaultWriteObservation {
+        let endpoint = native_vectored_endpoint(kind);
+        let buffer = NativeFaultBuffer::new();
+        let mut iovecs = [libc::iovec {
+            iov_base: buffer.crossing.cast(),
+            iov_len: 8,
+        }];
+        let result = raw_vectored_call(number, endpoint.writer.as_raw_fd(), &mut iovecs);
+        let (received_result, received) = read_native_endpoint(&endpoint);
+        FaultWriteObservation {
+            result,
+            received_result,
+            received,
+        }
+    }
+
+    fn mediated_fault_write(
+        kind: VectoredFaultEndpoint,
+        number: libc::c_long,
+    ) -> FaultWriteObservation {
+        const IOV: u64 = 0x400;
+        const CROSSING: u64 = 0x2ffc;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x5000).unwrap();
+        let (reader, writer) = guest_vectored_endpoint(kind, &mut memory, &mut state);
+        memory.write(CROSSING, b"ABCD").unwrap();
+        write_guest_iovecs(&mut memory, IOV, &[(CROSSING, 8)]);
+        memory.enable_user_access();
+        memory.map_user_range(IOV, PAGE_SIZE, false).unwrap();
+        memory.map_user_range(CROSSING, 4, false).unwrap();
+        let offset = if number == libc::SYS_pwritev2 {
+            u64::MAX
+        } else {
+            0
+        };
+        let result = syscall_result(
+            &mut memory,
+            &mut state,
+            number,
+            [writer as u64, IOV, 1, offset, 0, 0],
+        );
+        let endpoint = NativeVectoredEndpoint {
+            reader: state.files[&reader].try_clone().unwrap(),
+            writer: state.files[&writer].try_clone().unwrap(),
+        };
+        let (received_result, received) = read_native_endpoint(&endpoint);
+        FaultWriteObservation {
+            result,
+            received_result,
+            received,
+        }
+    }
+
+    #[test]
+    fn vectored_fault_shape_matches_native_across_endpoints() {
+        let payload = 0x0807_0605_0403_0201_u64.to_ne_bytes();
+        for number in [libc::SYS_readv, libc::SYS_preadv2] {
+            for endpoint in [
+                VectoredFaultEndpoint::EventFd,
+                VectoredFaultEndpoint::Pipe,
+                VectoredFaultEndpoint::Stream,
+                VectoredFaultEndpoint::Datagram,
+            ] {
+                let native = native_fault_read(endpoint, number, false);
+                assert_eq!(native.result, negative_errno(libc::EFAULT));
+                assert_eq!(native.prefix, payload[..4]);
+                if matches!(
+                    endpoint,
+                    VectoredFaultEndpoint::EventFd | VectoredFaultEndpoint::Datagram
+                ) {
+                    assert_eq!(native.remaining_result, negative_errno(libc::EAGAIN));
+                } else {
+                    assert_eq!(native.remaining_result, 8);
+                    assert_eq!(native.remaining, payload);
+                }
+                assert_eq!(
+                    mediated_fault_read(endpoint, number, false),
+                    native,
+                    "read shape diverged for {endpoint:?}, syscall {number}"
+                );
+            }
+        }
+
+        for number in [libc::SYS_writev, libc::SYS_pwritev2] {
+            for endpoint in [
+                VectoredFaultEndpoint::EventFd,
+                VectoredFaultEndpoint::Pipe,
+                VectoredFaultEndpoint::Stream,
+                VectoredFaultEndpoint::Datagram,
+            ] {
+                let native = native_fault_write(endpoint, number);
+                assert_eq!(native.result, negative_errno(libc::EFAULT));
+                assert_eq!(native.received_result, negative_errno(libc::EAGAIN));
+                assert_eq!(
+                    mediated_fault_write(endpoint, number),
+                    native,
+                    "write shape diverged for {endpoint:?}, syscall {number}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn vectored_reads_preserve_read_only_destination_faults_and_side_effects() {
+        for number in [libc::SYS_readv, libc::SYS_preadv2] {
+            for endpoint in [
+                VectoredFaultEndpoint::EventFd,
+                VectoredFaultEndpoint::Pipe,
+                VectoredFaultEndpoint::Stream,
+                VectoredFaultEndpoint::Datagram,
+            ] {
+                let native = native_fault_read(endpoint, number, true);
+                assert_eq!(native.result, negative_errno(libc::EFAULT));
+                assert_eq!(native.prefix, *b"xxxx");
+                assert_eq!(
+                    mediated_fault_read(endpoint, number, true),
+                    native,
+                    "read-only destination diverged for {endpoint:?}, syscall {number}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vectored_fault_shape_retains_later_iovecs() {
+        const IOV: u64 = 0x400;
+        const VALID: u64 = 0x2100;
+        const CROSSING: u64 = 0x2ffc;
+        const INVALID: u64 = 0x3000;
+        let payload = 7_u64.to_ne_bytes();
+
+        // A wholly inaccessible first four-byte vector followed by a valid
+        // four-byte vector still has an aggregate length of eight. Native
+        // eventfd therefore consumes the value and reports EFAULT, rather than
+        // rejecting a truncated four-byte request with EINVAL.
+        for number in [libc::SYS_readv, libc::SYS_preadv2] {
+            let native_endpoint = native_vectored_endpoint(VectoredFaultEndpoint::EventFd);
+            seed_native_endpoint(&native_endpoint, &payload);
+            let native_buffer = NativeFaultBuffer::new();
+            let mut native_iovecs = [
+                libc::iovec {
+                    iov_base: native_buffer.invalid.cast(),
+                    iov_len: 4,
+                },
+                libc::iovec {
+                    iov_base: native_buffer.later.cast(),
+                    iov_len: 4,
+                },
+            ];
+            let native_result = raw_vectored_call(
+                number,
+                native_endpoint.reader.as_raw_fd(),
+                &mut native_iovecs,
+            );
+            let native_later = unsafe { std::slice::from_raw_parts(native_buffer.later, 4) }
+                .try_into()
+                .unwrap();
+            let (native_after, _) = read_native_endpoint(&native_endpoint);
+            assert_eq!(native_result, negative_errno(libc::EFAULT));
+            assert_eq!(native_later, *b"WXYZ");
+            assert_eq!(native_after, negative_errno(libc::EAGAIN));
+
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, 0x5000).unwrap();
+            let (event_fd, writer) =
+                guest_vectored_endpoint(VectoredFaultEndpoint::EventFd, &mut memory, &mut state);
+            // SAFETY: writer is the translated live eventfd.
+            assert_eq!(
+                unsafe {
+                    libc::write(state.files[&writer].as_raw_fd(), payload.as_ptr().cast(), 8)
+                },
+                8
+            );
+            memory.write(VALID, b"WXYZ").unwrap();
+            write_guest_iovecs(&mut memory, IOV, &[(INVALID, 4), (VALID, 4)]);
+            memory.enable_user_access();
+            memory.map_user_range(IOV, PAGE_SIZE, false).unwrap();
+            memory.map_user_range(VALID, 4, false).unwrap();
+            let offset = if number == libc::SYS_preadv2 {
+                u64::MAX
+            } else {
+                0
+            };
+            let mediated_result = syscall_result(
+                &mut memory,
+                &mut state,
+                number,
+                [event_fd as u64, IOV, 2, offset, 0, 0],
+            );
+            let mut mediated_later = [0; 4];
+            memory.read(VALID, &mut mediated_later).unwrap();
+            let mediated_endpoint = NativeVectoredEndpoint {
+                reader: state.files[&event_fd].try_clone().unwrap(),
+                writer: state.files[&writer].try_clone().unwrap(),
+            };
+            let (mediated_after, _) = read_native_endpoint(&mediated_endpoint);
+            assert_eq!(
+                (mediated_result, mediated_later, mediated_after),
+                (native_result, native_later, native_after),
+                "later eventfd vector diverged for syscall {number}"
+            );
+        }
+
+        // /dev/null deliberately does not inspect source memory. Its result
+        // counts both the crossing eight-byte vector and the later four-byte
+        // vector, proving that neither the fault suffix nor the later entry was
+        // erased before the one host call.
+        for number in [libc::SYS_writev, libc::SYS_pwritev2] {
+            let native_file = std::fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/null")
+                .unwrap();
+            let native_buffer = NativeFaultBuffer::new();
+            let mut native_iovecs = [
+                libc::iovec {
+                    iov_base: native_buffer.crossing.cast(),
+                    iov_len: 8,
+                },
+                libc::iovec {
+                    iov_base: native_buffer.later.cast(),
+                    iov_len: 4,
+                },
+            ];
+            let native = raw_vectored_call(number, native_file.as_raw_fd(), &mut native_iovecs);
+            assert_eq!(native, 12);
+
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            state.files.insert(
+                3,
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open("/dev/null")
+                    .unwrap(),
+            );
+            let mut memory = GuestMemory::new(0, 0x5000).unwrap();
+            memory.write(CROSSING, b"ABCD").unwrap();
+            memory.write(VALID, b"WXYZ").unwrap();
+            write_guest_iovecs(&mut memory, IOV, &[(CROSSING, 8), (VALID, 4)]);
+            memory.enable_user_access();
+            memory.map_user_range(IOV, PAGE_SIZE, false).unwrap();
+            memory.map_user_range(VALID, PAGE_SIZE, false).unwrap();
+            let offset = if number == libc::SYS_pwritev2 {
+                u64::MAX
+            } else {
+                0
+            };
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, number, [3, IOV, 2, offset, 0, 0],),
+                native,
+                "later /dev/null vector diverged for syscall {number}"
+            );
+        }
+    }
+
+    #[test]
+    fn vectored_iovec_address_validation_matches_guest_and_native_linux_ordering() {
+        const IOV: u64 = 0x400;
+        const DATA: u64 = 0x2000;
+        const PROTECTED: u64 = 0x3000;
+        const FIRST_NON_FOUR_LEVEL_ADDRESS: u64 = 1_u64 << 47;
+        const FIVE_LEVEL_PROBE_ADDRESS: u64 = 1_u64 << 55;
+        const FIVE_LEVEL_USER_LIMIT: u64 = (1_u64 << 56) - PAGE_SIZE;
+        let limit = X86_64_GUEST_USER_LIMIT;
+
+        // The backend always boots a four-level PML4 and does not set CR4.LA57.
+        // Native comparisons above that ceiling are conditional on this
+        // process successfully reserving a five-level address. The fixed,
+        // no-replace mapping cannot collide with or alter a live mapping.
+        // Keeping it PROT_NONE also gives the side-effecting read oracle a
+        // canonical but inaccessible host destination.
+        let host_high_mapping = {
+            // SAFETY: the address is page-aligned, MAP_FIXED_NOREPLACE cannot
+            // replace a mapping, and success is released at the end of the test.
+            let mapping = unsafe {
+                libc::mmap(
+                    FIVE_LEVEL_PROBE_ADDRESS as *mut libc::c_void,
+                    PAGE_SIZE as usize,
+                    libc::PROT_NONE,
+                    libc::MAP_PRIVATE
+                        | libc::MAP_ANONYMOUS
+                        | libc::MAP_NORESERVE
+                        | libc::MAP_FIXED_NOREPLACE,
+                    -1,
+                    0,
+                )
+            };
+            if mapping == libc::MAP_FAILED {
+                None
+            } else {
+                assert_eq!(mapping as u64, FIVE_LEVEL_PROBE_ADDRESS);
+                Some(mapping)
+            }
+        };
+        let numbers = [
+            libc::SYS_readv,
+            libc::SYS_writev,
+            libc::SYS_preadv,
+            libc::SYS_pwritev,
+            libc::SYS_preadv2,
+            libc::SYS_pwritev2,
+        ];
+
+        for number in numbers {
+            let reading = matches!(
+                number,
+                libc::SYS_readv | libc::SYS_preadv | libc::SYS_preadv2
+            );
+            let endpoint_result = |length: usize| if reading { 0 } else { length as i64 };
+            let host_high_result =
+                |length: usize| host_high_mapping.map(|_| endpoint_result(length));
+            let root = TestDir::new();
+            let path = root.0.join("empty-address-oracle");
+            std::fs::write(&path, b"").unwrap();
+            let open_endpoint = || {
+                if reading {
+                    std::fs::File::open(&path).unwrap()
+                } else {
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open("/dev/null")
+                        .unwrap()
+                }
+            };
+            let native_file = open_endpoint();
+            let mut state = test_state(&root.0);
+            state.files.insert(3, open_endpoint());
+            let mut memory = GuestMemory::new(0, 0x5000).unwrap();
+            memory.write(DATA, b"x").unwrap();
+
+            let mut compare = |specifications: &[(u64, usize)],
+                               native_expected: Option<i64>,
+                               mediated_expected: i64,
+                               label: &str| {
+                let mut native_iovecs = specifications
+                    .iter()
+                    .map(|&(address, length)| libc::iovec {
+                        iov_base: address as usize as *mut libc::c_void,
+                        iov_len: length,
+                    })
+                    .collect::<Vec<_>>();
+                let native =
+                    raw_vectored_call_at(number, native_file.as_raw_fd(), &mut native_iovecs, 0);
+                if let Some(expected) = native_expected {
+                    assert_eq!(native, expected, "native {label}, syscall {number}");
+                }
+                write_guest_iovecs(&mut memory, IOV, specifications);
+                let mediated = syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [3, IOV, specifications.len() as u64, 0, 0, 0],
+                );
+                assert_eq!(
+                    mediated, mediated_expected,
+                    "mediated {label}, syscall {number}; native={native}"
+                );
+            };
+
+            let fault = negative_errno(libc::EFAULT);
+            let invalid_length = negative_errno(libc::EINVAL);
+            let too_long = (isize::MAX as usize).checked_add(1).unwrap();
+            compare(
+                &[(DATA, too_long)],
+                Some(invalid_length),
+                invalid_length,
+                "SSIZE_MAX plus one",
+            );
+            compare(
+                &[(DATA, usize::MAX)],
+                Some(invalid_length),
+                invalid_length,
+                "SIZE_MAX",
+            );
+            compare(
+                &[(u64::MAX, too_long)],
+                Some(invalid_length),
+                invalid_length,
+                "oversized length before same-entry invalid base",
+            );
+            compare(
+                &[(u64::MAX, 1), (DATA, too_long)],
+                Some(invalid_length),
+                invalid_length,
+                "later oversized length before earlier invalid base",
+            );
+            compare(
+                &[(DATA, 1), (u64::MAX, too_long)],
+                Some(invalid_length),
+                invalid_length,
+                "later oversized length before its invalid base",
+            );
+            compare(&[(u64::MAX, 1)], Some(fault), fault, "max");
+            compare(&[(u64::MAX - 3, 8)], Some(fault), fault, "wrapped range");
+            compare(
+                &[(limit - 4, 8)],
+                host_high_result(8),
+                fault,
+                "four-level ceiling-crossing range",
+            );
+            compare(
+                &[(limit, 1)],
+                host_high_result(1),
+                fault,
+                "nonempty base at four-level ceiling",
+            );
+            compare(
+                &[(FIRST_NON_FOUR_LEVEL_ADDRESS, 1)],
+                host_high_result(1),
+                fault,
+                "first non-four-level address",
+            );
+            compare(
+                &[(limit - 4, 4)],
+                Some(endpoint_result(4)),
+                endpoint_result(4),
+                "range ending at ceiling",
+            );
+            compare(&[(limit, 0)], Some(0), 0, "zero-length base at ceiling");
+            compare(
+                &[(FIRST_NON_FOUR_LEVEL_ADDRESS, 0)],
+                host_high_result(0),
+                fault,
+                "zero-length base above four-level ceiling",
+            );
+            compare(
+                &[(u64::MAX, 0)],
+                Some(fault),
+                fault,
+                "zero-length noncanonical base",
+            );
+            compare(
+                &[(u64::MAX, 0), (DATA, 1)],
+                Some(fault),
+                fault,
+                "invalid zero-length entry before valid data",
+            );
+            compare(
+                &[(DATA, 1), (u64::MAX, 0)],
+                Some(fault),
+                fault,
+                "invalid zero-length entry after valid data",
+            );
+            compare(
+                &[(1, MAX_HOST_IO), (u64::MAX, 1)],
+                Some(fault),
+                fault,
+                "invalid later entry beyond private byte cap",
+            );
+            compare(
+                &[(limit - MAX_RW_COUNT as u64 + 1, MAX_RW_COUNT + 1)],
+                host_high_result(MAX_RW_COUNT),
+                fault,
+                "oversized vector crossing within its effective prefix",
+            );
+            compare(
+                &[(0, MAX_RW_COUNT - 1), (limit, 1)],
+                host_high_result(MAX_RW_COUNT),
+                fault,
+                "ceiling crossing at final aggregate byte",
+            );
+            compare(
+                &[(0, MAX_RW_COUNT), (limit, 1)],
+                host_high_result(MAX_RW_COUNT),
+                fault,
+                "invalid later range after aggregate cap",
+            );
+            compare(
+                &[(0, MAX_RW_COUNT), (u64::MAX, 1)],
+                Some(fault),
+                fault,
+                "invalid later base after aggregate cap",
+            );
+            compare(
+                &[(0, MAX_RW_COUNT), (u64::MAX, 0)],
+                Some(fault),
+                fault,
+                "invalid later zero-length base after aggregate cap",
+            );
+
+            // Linux checks every entry after independently clamping each
+            // length to MAX_RW_COUNT, then caps the aggregate result. The
+            // private 16 MiB staging cap may make the mediated successful
+            // write shorter, but must not turn an accepted request into an
+            // address or aggregate-length error.
+            let mut compare_bounded_success = |specifications: &[(u64, usize)], label: &str| {
+                let mut native_iovecs = specifications
+                    .iter()
+                    .map(|&(address, length)| libc::iovec {
+                        iov_base: address as usize as *mut libc::c_void,
+                        iov_len: length,
+                    })
+                    .collect::<Vec<_>>();
+                let native =
+                    raw_vectored_call_at(number, native_file.as_raw_fd(), &mut native_iovecs, 0);
+                assert_eq!(
+                    native,
+                    endpoint_result(MAX_RW_COUNT),
+                    "native {label}, syscall {number}"
+                );
+                write_guest_iovecs(&mut memory, IOV, specifications);
+                let mediated = syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [3, IOV, specifications.len() as u64, 0, 0, 0],
+                );
+                assert_eq!(
+                    mediated,
+                    endpoint_result(MAX_HOST_IO),
+                    "bounded mediated {label}, syscall {number}"
+                );
+            };
+            compare_bounded_success(
+                &[(DATA, isize::MAX as usize)],
+                "individually oversized original vector",
+            );
+            compare_bounded_success(
+                &[(limit - MAX_RW_COUNT as u64, MAX_RW_COUNT + 1)],
+                "oversized vector whose effective prefix ends at the ceiling",
+            );
+            compare_bounded_success(
+                &[(0, MAX_RW_COUNT), (limit - 1, 1)],
+                "valid later range after aggregate reaches MAX_RW_COUNT",
+            );
+
+            // A five-level native process can express a declared aggregate
+            // beyond SSIZE_MAX within UIO_MAXIOV. Each entry is still shortened
+            // to MAX_RW_COUNT, and the aggregate result is capped there. A
+            // four-level process cannot construct that aggregate within 1024
+            // individually valid entries.
+            if host_high_mapping.is_some() {
+                let aggregate_count = (isize::MAX as usize / FIVE_LEVEL_USER_LIMIT as usize) + 1;
+                assert!(aggregate_count <= libc::UIO_MAXIOV as usize);
+                let aggregate = vec![(0, FIVE_LEVEL_USER_LIMIT as usize); aggregate_count];
+                compare_bounded_success(&aggregate, "native-valid aggregate beyond SSIZE_MAX");
+            } else {
+                assert!(
+                    (limit as usize)
+                        .checked_mul(libc::UIO_MAXIOV as usize)
+                        .unwrap()
+                        <= isize::MAX as usize
+                );
+            }
+
+            let native_count_zero = raw_vectored_pointer_call(
+                number,
+                native_file.as_raw_fd(),
+                u64::MAX as usize as *mut libc::iovec,
+                0,
+                0,
+            );
+            assert_eq!(native_count_zero, 0, "native zero count, syscall {number}");
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, number, [3, u64::MAX, 0, 0, 0, 0]),
+                native_count_zero,
+                "mediated zero count diverged for syscall {number}"
+            );
+        }
+
+        // A canonical protected address reaches eventfd's read operation and
+        // consumes the value on EFAULT. A noncanonical address is rejected
+        // during iovec import and leaves the value available.
+        for number in [libc::SYS_readv, libc::SYS_preadv2] {
+            for invalid_address in [false, true] {
+                let native_endpoint = native_vectored_endpoint(VectoredFaultEndpoint::EventFd);
+                let payload = 7_u64.to_ne_bytes();
+                seed_native_endpoint(&native_endpoint, &payload);
+                let native_buffer = NativeFaultBuffer::new();
+                let native_address = if invalid_address {
+                    u64::MAX as usize as *mut libc::c_void
+                } else {
+                    native_buffer.invalid.cast()
+                };
+                let mut native_iovecs = [libc::iovec {
+                    iov_base: native_address,
+                    iov_len: 8,
+                }];
+                let native_result = raw_vectored_call(
+                    number,
+                    native_endpoint.reader.as_raw_fd(),
+                    &mut native_iovecs,
+                );
+                let (native_after, native_bytes) = read_native_endpoint(&native_endpoint);
+
+                let root = TestDir::new();
+                let mut state = test_state(&root.0);
+                let mut memory = GuestMemory::new(0, 0x5000).unwrap();
+                let (event_fd, writer) = guest_vectored_endpoint(
+                    VectoredFaultEndpoint::EventFd,
+                    &mut memory,
+                    &mut state,
+                );
+                // SAFETY: writer is the translated live eventfd.
+                assert_eq!(
+                    unsafe {
+                        libc::write(state.files[&writer].as_raw_fd(), payload.as_ptr().cast(), 8)
+                    },
+                    8
+                );
+                let guest_address = if invalid_address { u64::MAX } else { PROTECTED };
+                write_guest_iovecs(&mut memory, IOV, &[(guest_address, 8)]);
+                memory.enable_user_access();
+                memory.map_user_range(IOV, PAGE_SIZE, false).unwrap();
+                let offset = if number == libc::SYS_preadv2 {
+                    u64::MAX
+                } else {
+                    0
+                };
+                let mediated_result = syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [event_fd as u64, IOV, 1, offset, 0, 0],
+                );
+                let mediated_endpoint = NativeVectoredEndpoint {
+                    reader: state.files[&event_fd].try_clone().unwrap(),
+                    writer: state.files[&writer].try_clone().unwrap(),
+                };
+                let (mediated_after, mediated_bytes) = read_native_endpoint(&mediated_endpoint);
+                assert_eq!(native_result, negative_errno(libc::EFAULT));
+                if invalid_address {
+                    assert_eq!(native_after, 8);
+                    assert_eq!(native_bytes, payload);
+                } else {
+                    assert_eq!(native_after, negative_errno(libc::EAGAIN));
+                }
+                assert_eq!(
+                    (mediated_result, mediated_after, mediated_bytes),
+                    (native_result, native_after, native_bytes),
+                    "eventfd address validation diverged for syscall {number}, invalid={invalid_address}"
+                );
+            }
+
+            // The same numeric address is canonical to a five-level native
+            // process but outside this four-level KVM guest's ABI. Native
+            // eventfd consumes before the PROT_NONE copy fault; mediation must
+            // reject the imported range first and preserve the event value.
+            if let Some(mapping) = host_high_mapping {
+                let native_endpoint = native_vectored_endpoint(VectoredFaultEndpoint::EventFd);
+                let payload = 11_u64.to_ne_bytes();
+                seed_native_endpoint(&native_endpoint, &payload);
+                let mut native_iovecs = [libc::iovec {
+                    iov_base: mapping,
+                    iov_len: 8,
+                }];
+                assert_eq!(
+                    raw_vectored_call(
+                        number,
+                        native_endpoint.reader.as_raw_fd(),
+                        &mut native_iovecs,
+                    ),
+                    negative_errno(libc::EFAULT)
+                );
+                assert_eq!(
+                    read_native_endpoint(&native_endpoint).0,
+                    negative_errno(libc::EAGAIN)
+                );
+
+                let root = TestDir::new();
+                let mut state = test_state(&root.0);
+                let mut memory = GuestMemory::new(0, 0x5000).unwrap();
+                let (event_fd, writer) = guest_vectored_endpoint(
+                    VectoredFaultEndpoint::EventFd,
+                    &mut memory,
+                    &mut state,
+                );
+                // SAFETY: writer is the translated live eventfd.
+                assert_eq!(
+                    unsafe {
+                        libc::write(state.files[&writer].as_raw_fd(), payload.as_ptr().cast(), 8)
+                    },
+                    8
+                );
+                write_guest_iovecs(&mut memory, IOV, &[(FIVE_LEVEL_PROBE_ADDRESS, 8)]);
+                memory.enable_user_access();
+                memory.map_user_range(IOV, PAGE_SIZE, false).unwrap();
+                let offset = if number == libc::SYS_preadv2 {
+                    u64::MAX
+                } else {
+                    0
+                };
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        number,
+                        [event_fd as u64, IOV, 1, offset, 0, 0],
+                    ),
+                    negative_errno(libc::EFAULT)
+                );
+                let mediated_endpoint = NativeVectoredEndpoint {
+                    reader: state.files[&event_fd].try_clone().unwrap(),
+                    writer: state.files[&writer].try_clone().unwrap(),
+                };
+                let (after, bytes) = read_native_endpoint(&mediated_endpoint);
+                assert_eq!(after, 8);
+                assert_eq!(bytes, payload);
+            }
+        }
+
+        if let Some(mapping) = host_high_mapping {
+            // SAFETY: release exactly the fixed mapping created above.
+            assert_eq!(unsafe { libc::munmap(mapping, PAGE_SIZE as usize) }, 0);
+        }
+    }
+
+    #[test]
+    fn ordinary_vectored_io_preserves_limits_faults_replacement_and_capture() {
+        const FDS: u64 = 0x100;
+        const REPLACEMENT_FDS: u64 = 0x200;
+        const IOV: u64 = 0x1000;
+        const DATA: u64 = 0x3000;
+        const MAX_IOV: u64 = 0x8000;
+        const MAX_DATA: u64 = 0xd000;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x10_000).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [FDS, libc::O_NONBLOCK as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let [read_fd, write_fd]: [libc::c_int; 2] = read_struct(&memory, FDS);
+
+        // Linux validates the descriptor before importing the iovec array,
+        // while an excessive count on a live descriptor is EINVAL.
+        for number in [libc::SYS_readv, libc::SYS_writev] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [u64::MAX, u64::MAX, libc::UIO_MAXIOV as u64 + 1, 0, 0, 0],
+                ),
+                negative_errno(libc::EBADF)
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [
+                    read_fd as u64,
+                    u64::MAX,
+                    libc::UIO_MAXIOV as u64 + 1,
+                    0,
+                    0,
+                    0
+                ],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_writev,
+                [
+                    write_fd as u64,
+                    u64::MAX,
+                    libc::UIO_MAXIOV as u64 + 1,
+                    0,
+                    0,
+                    0
+                ],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+
+        // Linux shortens an oversized first vector to MAX_RW_COUNT before
+        // address validation. The independent 16 MiB supervisor bound then
+        // retains that prefix without inventing EINVAL.
+        write_guest_iovecs(&mut memory, IOV, &[(DATA, isize::MAX as usize), (DATA, 1)]);
+        let (bounded, total, kernel_total) = decode_guest_iovecs(&memory, IOV, 2).unwrap();
+        assert_eq!(total, MAX_HOST_IO);
+        assert_eq!(kernel_total, MAX_RW_COUNT);
+        assert_eq!(
+            bounded
+                .iter()
+                .map(|vector| vector.length)
+                .collect::<Vec<_>>(),
+            vec![MAX_HOST_IO, 0]
+        );
+
+        // The private byte cap shortens data presented to this invocation; it
+        // does not erase the remaining guest iovec entries or their order.
+        write_guest_iovecs(
+            &mut memory,
+            IOV,
+            &[(DATA, MAX_HOST_IO), (DATA, 1), (X86_64_GUEST_USER_LIMIT, 0)],
+        );
+        let (bounded, total, kernel_total) = decode_guest_iovecs(&memory, IOV, 3).unwrap();
+        assert_eq!(total, MAX_HOST_IO);
+        assert_eq!(kernel_total, MAX_HOST_IO + 1);
+        assert_eq!(bounded.len(), 3);
+        assert_eq!(
+            bounded
+                .iter()
+                .map(|vector| (vector.base, vector.length))
+                .collect::<Vec<_>>(),
+            vec![(DATA, MAX_HOST_IO), (DATA, 0), (X86_64_GUEST_USER_LIMIT, 0)]
+        );
+
+        // An inaccessible second byte in an atomic pipe write must not leave
+        // the accessible first byte behind. Native readv copies into the
+        // accessible first vector, reports EFAULT, and leaves both pipe bytes
+        // queued; truncating the host request would report a successful byte.
+        write_guest_iovecs(&mut memory, IOV, &[(DATA, 1), (DATA + PAGE_SIZE, 1)]);
+        memory.write(DATA, b"x").unwrap();
+        memory.enable_user_access();
+        memory.map_user_range(IOV, PAGE_SIZE, false).unwrap();
+        memory.map_user_range(DATA, PAGE_SIZE, false).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_writev,
+                [write_fd as u64, IOV, 2, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        let host_read_fd = state.files[&read_fd].as_raw_fd();
+        let mut byte = [0_u8; 1];
+        // SAFETY: byte is writable and host_read_fd is a live nonblocking pipe.
+        assert_eq!(
+            unsafe { libc::read(host_read_fd, byte.as_mut_ptr().cast(), 1) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EAGAIN)
+        );
+
+        let host_write_fd = state.files[&write_fd].as_raw_fd();
+        // SAFETY: the literal is readable and host_write_fd is a live pipe.
+        assert_eq!(
+            unsafe { libc::write(host_write_fd, b"yz".as_ptr().cast(), 2) },
+            2
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [read_fd as u64, IOV, 2, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        memory.read(DATA, &mut byte).unwrap();
+        assert_eq!(&byte, b"y");
+        write_guest_iovecs(&mut memory, IOV, &[(DATA, 2)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [read_fd as u64, IOV, 1, 0, 0, 0],
+            ),
+            2
+        );
+        let mut bytes = [0; 2];
+        memory.read(DATA, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"yz");
+
+        // When all UIO_MAXIOV slots are occupied, the inaccessible suffix of
+        // the final vector must still reach the host syscall. Linux returns
+        // EFAULT without committing an atomic pipe write or a datagram.
+        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
+        memory
+            .map_user_range(MAX_IOV, 4 * PAGE_SIZE, false)
+            .unwrap();
+        memory.map_user_range(MAX_DATA, PAGE_SIZE, false).unwrap();
+        memory.write(MAX_DATA, b"x").unwrap();
+        memory.write(MAX_DATA + PAGE_SIZE - 1, b"y").unwrap();
+        let mut maximum_vectors = vec![(MAX_DATA, 1); libc::UIO_MAXIOV as usize - 1];
+        maximum_vectors.push((MAX_DATA + PAGE_SIZE - 1, 2));
+        write_guest_iovecs(&mut memory, MAX_IOV, &maximum_vectors);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [FDS, libc::O_NONBLOCK as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let [atomic_read, atomic_write]: [libc::c_int; 2] = read_struct(&memory, FDS);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_writev,
+                [
+                    atomic_write as u64,
+                    MAX_IOV,
+                    libc::UIO_MAXIOV as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        let atomic_host_read = state.files[&atomic_read].as_raw_fd();
+        // SAFETY: byte is writable and atomic_host_read is a live nonblocking pipe.
+        assert_eq!(
+            unsafe { libc::read(atomic_host_read, byte.as_mut_ptr().cast(), 1) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EAGAIN)
+        );
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    (libc::SOCK_DGRAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK) as u64,
+                    0,
+                    FDS,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let [datagram_write, datagram_read]: [libc::c_int; 2] = read_struct(&memory, FDS);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_writev,
+                [
+                    datagram_write as u64,
+                    MAX_IOV,
+                    libc::UIO_MAXIOV as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        let datagram_host_read = state.files[&datagram_read].as_raw_fd();
+        // SAFETY: byte is writable and datagram_host_read is a live nonblocking socket.
+        assert_eq!(
+            unsafe {
+                libc::recv(
+                    datagram_host_read,
+                    byte.as_mut_ptr().cast(),
+                    1,
+                    libc::MSG_DONTWAIT,
+                )
+            },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EAGAIN)
+        );
+
+        // Replacing a guest descriptor must switch the translated host object;
+        // the stale pipe must not receive the aggregate write.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [REPLACEMENT_FDS, libc::O_NONBLOCK as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let [replacement_read, replacement_write]: [libc::c_int; 2] =
+            read_struct(&memory, REPLACEMENT_FDS);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_dup2,
+                [replacement_write as u64, write_fd as u64, 0, 0, 0, 0],
+            ),
+            i64::from(write_fd)
+        );
+        memory.write(DATA, b"ok").unwrap();
+        write_guest_iovecs(&mut memory, IOV, &[(DATA, 1), (DATA + 1, 1)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_writev,
+                [write_fd as u64, IOV, 2, 0, 0, 0],
+            ),
+            2
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [replacement_read as u64, DATA + 8, 2, 0, 0, 0],
+            ),
+            2
+        );
+        let mut replaced = [0; 2];
+        memory.read(DATA + 8, &mut replaced).unwrap();
+        assert_eq!(&replaced, b"ok");
+
+        let mut output = CapturedOutput::default();
+        assert_eq!(
+            syscall_result_with_output(
+                &mut memory,
+                &mut state,
+                &mut output,
+                libc::SYS_writev,
+                [libc::STDOUT_FILENO as u64, IOV, 2, 0, 0, 0],
+            ),
+            2
+        );
+        let (stdout, stderr) = output.take();
+        assert_eq!(&stdout, b"ok");
+        assert!(stderr.is_empty());
+
+        // Captured stdout models one aggregate write. A fault in the second
+        // source vector must not commit the accessible first-vector prefix.
+        write_guest_iovecs(&mut memory, IOV, &[(DATA, 1), (DATA + PAGE_SIZE, 1)]);
+        assert_eq!(
+            syscall_result_with_output(
+                &mut memory,
+                &mut state,
+                &mut output,
+                libc::SYS_writev,
+                [libc::STDOUT_FILENO as u64, IOV, 2, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        let (stdout, stderr) = output.take();
+        assert!(stdout.is_empty());
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn positioned_vectored_file_io_preserves_offsets_and_uses_x86_64_arguments() {
+        const WRITE_A: u64 = 0x200;
+        const WRITE_B: u64 = 0x220;
+        const WRITE_IOV: u64 = 0x300;
+        const READ_A: u64 = 0x400;
+        const READ_B: u64 = 0x420;
+        const READ_IOV: u64 = 0x500;
+
+        let root = TestDir::new();
+        let path = root.0.join("positioned-vectors");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"abcdefghij").unwrap();
+        file.seek(SeekFrom::Start(7)).unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(3, file);
+        let mut memory = GuestMemory::new(0, 0x10_000).unwrap();
+
+        memory.write(WRITE_A, b"WX").unwrap();
+        memory.write(WRITE_B, b"YZ").unwrap();
+        write_guest_iovecs(&mut memory, WRITE_IOV, &[(WRITE_A, 2), (WRITE_B, 2)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev,
+                // The fifth register is deliberately nonzero. x86-64 Linux
+                // ignores it rather than treating it as offset bits.
+                [3, WRITE_IOV, 2, 4, 0xfeed_face, 0],
+            ),
+            4
+        );
+        assert_eq!(
+            state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+            7
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"abcdWXYZij");
+
+        write_guest_iovecs(&mut memory, READ_IOV, &[(READ_A, 5), (READ_B, 5)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv,
+                [3, READ_IOV, 2, 0, 1, 0],
+            ),
+            10
+        );
+        let mut first = [0u8; 5];
+        let mut second = [0u8; 5];
+        memory.read(READ_A, &mut first).unwrap();
+        memory.read(READ_B, &mut second).unwrap();
+        assert_eq!(&first, b"abcdW");
+        assert_eq!(&second, b"XYZij");
+        assert_eq!(
+            state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+            7
+        );
+
+        // Explicit-offset RWF_APPEND appends without changing the descriptor
+        // position. Offset -1 uses and advances the current descriptor position.
+        memory.write(WRITE_A, b"K").unwrap();
+        write_guest_iovecs(&mut memory, WRITE_IOV, &[(WRITE_A, 1)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [3, WRITE_IOV, 1, 0, 0, libc::RWF_APPEND as u64],
+            ),
+            1
+        );
+        assert_eq!(
+            state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+            7
+        );
+        memory.write(WRITE_A, b"L").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [3, WRITE_IOV, 1, u64::MAX, 0, libc::RWF_APPEND as u64,],
+            ),
+            1
+        );
+        assert_eq!(
+            state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+            12
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"abcdWXYZijKL");
+
+        state
+            .files
+            .get_mut(&3)
+            .unwrap()
+            .seek(SeekFrom::Start(2))
+            .unwrap();
+        write_guest_iovecs(&mut memory, READ_IOV, &[(READ_A, 2)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv2,
+                [3, READ_IOV, 1, u64::MAX, 0, 0],
+            ),
+            2
+        );
+        assert_eq!(
+            state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+            4
+        );
+        let mut bytes = [0u8; 2];
+        memory.read(READ_A, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"cd");
+
+        // A nonzero high half in the full fourth argument must survive. This
+        // also distinguishes x86-64 from an implementation that truncates the
+        // offset to 32 bits.
+        const LARGE_OFFSET: u64 = (1u64 << 32) + 3;
+        memory.write(WRITE_A, b"Q").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev,
+                [3, WRITE_IOV, 1, LARGE_OFFSET, 0, 0],
+            ),
+            1
+        );
+        assert_eq!(
+            state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+            4
+        );
+        assert_eq!(state.files[&3].metadata().unwrap().len(), LARGE_OFFSET + 1);
+        memory.write(READ_A, b"x").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv,
+                [3, READ_IOV, 1, LARGE_OFFSET, 0, 0],
+            ),
+            1
+        );
+        memory.read(READ_A, &mut bytes[..1]).unwrap();
+        assert_eq!(bytes[0], b'Q');
+        assert_eq!(
+            state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+            4
+        );
+    }
+
+    #[test]
+    fn positioned_vectored_io_preserves_standard_and_captured_stream_semantics() {
+        const DATA: u64 = 0x1000;
+        const IOV: u64 = 0x2000;
+        const READ: u64 = 0x3000;
+        const READ_IOV: u64 = 0x4000;
+        const PAYLOAD: &[u8] = b"stream-data";
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x8000).unwrap();
+        memory.write(DATA, PAYLOAD).unwrap();
+        write_guest_iovecs(&mut memory, IOV, &[(DATA, 6), (DATA + 6, 5)]);
+        let mut output = CapturedOutput::default();
+
+        assert_eq!(
+            syscall_result_with_output(
+                &mut memory,
+                &mut state,
+                &mut output,
+                libc::SYS_pwritev2,
+                [libc::STDOUT_FILENO as u64, IOV, 2, u64::MAX, 0, 0],
+            ),
+            PAYLOAD.len() as i64
+        );
+        assert_eq!(
+            syscall_result_with_output(
+                &mut memory,
+                &mut state,
+                &mut output,
+                libc::SYS_pwritev2,
+                [libc::STDERR_FILENO as u64, IOV, 2, u64::MAX, 0, 0],
+            ),
+            PAYLOAD.len() as i64
+        );
+        let alias = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [libc::STDOUT_FILENO as u64, 0, 0, 0, 0, 0],
+        );
+        assert!(alias >= 3, "stdout duplication failed: {alias}");
+        assert_eq!(
+            syscall_result_with_output(
+                &mut memory,
+                &mut state,
+                &mut output,
+                libc::SYS_pwritev2,
+                [alias as u64, IOV, 2, u64::MAX, 0, 0],
+            ),
+            PAYLOAD.len() as i64
+        );
+        // RWF_HIPRI is accepted by Linux's pipe path. The flags that require
+        // regular-file support are rejected instead of being silently lost by
+        // the captured writev path.
+        assert_eq!(
+            syscall_result_with_output(
+                &mut memory,
+                &mut state,
+                &mut output,
+                libc::SYS_pwritev2,
+                [
+                    libc::STDOUT_FILENO as u64,
+                    IOV,
+                    2,
+                    u64::MAX,
+                    0,
+                    libc::RWF_HIPRI as u64,
+                ],
+            ),
+            PAYLOAD.len() as i64
+        );
+        for flags in [libc::RWF_ATOMIC, libc::RWF_DONTCACHE] {
+            assert_eq!(
+                syscall_result_with_output(
+                    &mut memory,
+                    &mut state,
+                    &mut output,
+                    libc::SYS_pwritev2,
+                    [
+                        libc::STDOUT_FILENO as u64,
+                        IOV,
+                        2,
+                        u64::MAX,
+                        0,
+                        flags as u64,
+                    ],
+                ),
+                negative_errno(libc::EOPNOTSUPP)
+            );
+        }
+        assert_eq!(
+            syscall_result_with_output(
+                &mut memory,
+                &mut state,
+                &mut output,
+                libc::SYS_pwritev2,
+                [
+                    libc::STDOUT_FILENO as u64,
+                    0,
+                    0,
+                    u64::MAX,
+                    0,
+                    libc::RWF_ATOMIC as u64
+                ],
+            ),
+            0
+        );
+        for fd in [
+            libc::STDOUT_FILENO as i64,
+            libc::STDERR_FILENO as i64,
+            alias,
+        ] {
+            assert_eq!(
+                syscall_result_with_output(
+                    &mut memory,
+                    &mut state,
+                    &mut output,
+                    libc::SYS_pwritev2,
+                    [fd as u64, 0, 0, 0, 0, 0x8000_0000],
+                ),
+                negative_errno(libc::ESPIPE)
+            );
+        }
+        // Legacy pwritev ignores the otherwise-unused fifth and sixth syscall
+        // registers; the explicit offset still makes the virtual pipe reject it.
+        assert_eq!(
+            syscall_result_with_output(
+                &mut memory,
+                &mut state,
+                &mut output,
+                libc::SYS_pwritev,
+                [
+                    libc::STDOUT_FILENO as u64,
+                    IOV,
+                    2,
+                    0,
+                    0xfeed_face,
+                    libc::RWF_ATOMIC as u64
+                ],
+            ),
+            negative_errno(libc::ESPIPE)
+        );
+        let (stdout, stderr) = output.take();
+        assert_eq!(stdout, [PAYLOAD, PAYLOAD, PAYLOAD].concat());
+        assert_eq!(stderr, PAYLOAD);
+
+        let mut pipe = [-1; 2];
+        // SAFETY: pipe has room for both descriptors.
+        assert_eq!(
+            unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        // SAFETY: the payload is readable and pipe[1] is the live write end.
+        assert_eq!(
+            unsafe { libc::write(pipe[1], PAYLOAD.as_ptr().cast(), PAYLOAD.len()) },
+            PAYLOAD.len() as isize
+        );
+        // SAFETY: ownership of the read descriptor moves into state.stdin.
+        state.stdin = Some(unsafe { std::fs::File::from_raw_fd(pipe[0]) });
+        // SAFETY: the test owns the write descriptor and no longer needs it.
+        assert_eq!(unsafe { libc::close(pipe[1]) }, 0);
+        write_guest_iovecs(&mut memory, READ_IOV, &[(READ, 6), (READ + 6, 5)]);
+        assert_eq!(
+            syscall_result_with_output(
+                &mut memory,
+                &mut state,
+                &mut output,
+                libc::SYS_preadv2,
+                [libc::STDIN_FILENO as u64, READ_IOV, 2, u64::MAX, 0, 0],
+            ),
+            PAYLOAD.len() as i64
+        );
+        let mut read = vec![0; PAYLOAD.len()];
+        memory.read(READ, &mut read).unwrap();
+        assert_eq!(read, PAYLOAD);
+        assert_eq!(
+            syscall_result_with_output(
+                &mut memory,
+                &mut state,
+                &mut output,
+                libc::SYS_preadv2,
+                [libc::STDIN_FILENO as u64, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::ESPIPE)
+        );
+
+        // Without capture, an output alias retains its seekable host backing.
+        let path = root.0.join("seekable-output-alias");
+        std::fs::write(&path, b"0123456789abcdef").unwrap();
+        let mut plain_state = test_state(&root.0);
+        let seekable_alias = insert_file_with_flags(
+            &mut plain_state,
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap(),
+            false,
+            Some(OutputAlias::Stdout),
+        );
+        assert_eq!(seekable_alias, 3);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut plain_state,
+                libc::SYS_pwritev2,
+                [seekable_alias as u64, IOV, 2, 2, 0, 0],
+            ),
+            PAYLOAD.len() as i64
+        );
+        assert_eq!(std::fs::read(path).unwrap(), b"01stream-datadef");
+    }
+
+    #[test]
+    fn positioned_vectored_io_preserves_direct_io_alignment_and_shape() {
+        const FIRST: u64 = 0x4000;
+        const SECOND: u64 = 0x8000;
+        const READ_FIRST: u64 = 0xc000;
+        const READ_SECOND: u64 = 0x10_000;
+        const IOV: u64 = 0x1000;
+        const LENGTH: usize = PAGE_SIZE as usize;
+
+        fn host_direct_write(
+            path: &Path,
+            vectors: &[(u64, usize)],
+            number: libc::c_long,
+            flags: libc::c_int,
+        ) -> i64 {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .read(true)
+                .write(true)
+                .custom_flags(libc::O_DIRECT)
+                .open(path)
+                .unwrap();
+            let staging_alignment = direct_io_memory_alignment(file.as_raw_fd());
+            let mut staged = vectors
+                .iter()
+                .map(|&(address, length)| {
+                    StagedIoVector::new(
+                        GuestIoVec {
+                            base: address,
+                            length,
+                        },
+                        length,
+                        staging_alignment,
+                    )
+                    .unwrap()
+                })
+                .collect::<Vec<_>>();
+            for vector in &mut staged {
+                if vector.accessible_length != 0 {
+                    vector
+                        .accessible_slice_mut(vector.accessible_length)
+                        .fill(b'o');
+                }
+            }
+            let mut iovecs = staged_host_iovecs(&mut staged);
+            // SAFETY: every iovec points into arena for its full declared
+            // length, and file owns a live O_DIRECT descriptor.
+            let result = unsafe {
+                libc::syscall(
+                    number,
+                    file.as_raw_fd(),
+                    iovecs.as_mut_ptr(),
+                    iovecs.len(),
+                    0usize,
+                    0usize,
+                    flags,
+                ) as i64
+            };
+            if result < 0 {
+                io_error(std::io::Error::last_os_error())
+            } else {
+                result
+            }
+        }
+
+        let root = TestDir::new();
+        let path = root.0.join("direct-vectors");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_DIRECT)
+            .open(&path)
+            .unwrap();
+        file.seek(SeekFrom::Start(123)).unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(3, file);
+        let mut memory = GuestMemory::new(0, 0x18_000).unwrap();
+        memory.write(FIRST, &vec![b'a'; LENGTH]).unwrap();
+        memory.write(SECOND, &vec![b'b'; LENGTH]).unwrap();
+
+        // Aligned vectors, including an intervening zero-length entry, retain
+        // their original boundaries and succeed under O_DIRECT.
+        write_guest_iovecs(
+            &mut memory,
+            IOV,
+            &[(FIRST, LENGTH), (FIRST + 1, 0), (SECOND, LENGTH)],
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev,
+                [3, IOV, 3, 0, 0, 0],
+            ),
+            (2 * LENGTH) as i64
+        );
+        assert_eq!(
+            state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+            123
+        );
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[..LENGTH], &vec![b'a'; LENGTH]);
+        assert_eq!(&bytes[LENGTH..], &vec![b'b'; LENGTH]);
+
+        write_guest_iovecs(
+            &mut memory,
+            IOV,
+            &[(READ_FIRST, LENGTH), (READ_SECOND, LENGTH)],
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv,
+                [3, IOV, 2, 0, 0, 0],
+            ),
+            (2 * LENGTH) as i64
+        );
+        let mut first = vec![0; LENGTH];
+        let mut second = vec![0; LENGTH];
+        memory.read(READ_FIRST, &mut first).unwrap();
+        memory.read(READ_SECOND, &mut second).unwrap();
+        assert!(first.iter().all(|byte| *byte == b'a'));
+        assert!(second.iter().all(|byte| *byte == b'b'));
+        assert_eq!(
+            state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+            123
+        );
+
+        // Compare a guest pointer misaligned by one byte to the host result for
+        // that same misalignment. Some filesystems reject it and some fall back
+        // to buffered I/O; either way, staging must not change the answer.
+        let misaligned_oracle = host_direct_write(
+            &root.0.join("direct-base-oracle"),
+            &[(FIRST + 1, LENGTH)],
+            libc::SYS_pwritev,
+            0,
+        );
+        write_guest_iovecs(&mut memory, IOV, &[(FIRST + 1, LENGTH)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev,
+                [3, IOV, 1, 0, 0, 0],
+            ),
+            misaligned_oracle
+        );
+
+        // The second vector has a misaligned base even though the aggregate is
+        // one aligned page. The host comparison keeps the guest vector shape.
+        let shape = [(FIRST, LENGTH / 2), (SECOND + 1, LENGTH / 2)];
+        let shape_oracle = host_direct_write(
+            &root.0.join("direct-shape-oracle"),
+            &shape,
+            libc::SYS_pwritev,
+            0,
+        );
+        write_guest_iovecs(&mut memory, IOV, &shape);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev,
+                [3, IOV, 2, 0, 0, 0],
+            ),
+            shape_oracle
+        );
+
+        // RWF_HIPRI and RWF_ATOMIC are forwarded to the host rather than lost
+        // during staging. The current validation filesystem accepts HIPRI and
+        // reports EOPNOTSUPP for ATOMIC; comparing to the host also remains
+        // correct on a filesystem with different support.
+        let aligned = [(FIRST, LENGTH), (SECOND, LENGTH)];
+        let hipri_oracle = host_direct_write(
+            &root.0.join("direct-hipri-oracle"),
+            &aligned,
+            libc::SYS_pwritev2,
+            libc::RWF_HIPRI,
+        );
+        let atomic_oracle = host_direct_write(
+            &root.0.join("direct-atomic-oracle"),
+            &aligned,
+            libc::SYS_pwritev2,
+            libc::RWF_ATOMIC,
+        );
+        write_guest_iovecs(&mut memory, IOV, &aligned);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [3, IOV, 2, 0, 0, libc::RWF_HIPRI as u64],
+            ),
+            hipri_oracle
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [3, IOV, 2, 0, 0, libc::RWF_ATOMIC as u64],
+            ),
+            atomic_oracle
+        );
+
+        // Inspect the exact host iovecs built by the production helper. Count,
+        // order, zero-length entries, lengths, and low address bits all remain
+        // identical to the guest shape, and backing ranges do not overlap.
+        let specifications = [
+            (FIRST + 1, 17usize),
+            (FIRST + 7, 0usize),
+            (SECOND + 512, 31usize),
+            (READ_FIRST, LENGTH),
+        ];
+        let mut staged = specifications
+            .into_iter()
+            .map(|(address, length)| {
+                StagedIoVector::new(
+                    GuestIoVec {
+                        base: address,
+                        length,
+                    },
+                    length,
+                    64 * 1024,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let host_iovecs = staged_host_iovecs(&mut staged);
+        assert_eq!(host_iovecs.len(), specifications.len());
+        assert_eq!(
+            host_iovecs
+                .iter()
+                .map(|iov| iov.iov_len)
+                .collect::<Vec<_>>(),
+            specifications.map(|(_, length)| length)
+        );
+        for (host, (guest_address, length)) in host_iovecs.iter().zip(specifications) {
+            if length != 0 {
+                assert_eq!(
+                    host.iov_base as usize % (64 * 1024),
+                    guest_address as usize % (64 * 1024)
+                );
+            }
+        }
+        let ranges = host_iovecs
+            .iter()
+            .filter(|iov| iov.iov_len != 0)
+            .map(|iov| {
+                let start = iov.iov_base as usize;
+                (start, start + iov.iov_len)
+            })
+            .collect::<Vec<_>>();
+        for (index, left) in ranges.iter().enumerate() {
+            for right in &ranges[index + 1..] {
+                assert!(left.1 <= right.0 || right.1 <= left.0);
+            }
+        }
+
+        // A partial vector remains one vector of its bounded declared length,
+        // and a later vector remains independently backed after the guard.
+        let partial_specifications = [
+            (FIRST + PAGE_SIZE - 4, 8usize, 4usize),
+            (SECOND, 4usize, 4usize),
+        ];
+        let mut partial = partial_specifications
+            .into_iter()
+            .map(|(address, length, accessible)| {
+                StagedIoVector::new(
+                    GuestIoVec {
+                        base: address,
+                        length,
+                    },
+                    accessible,
+                    64 * 1024,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        partial[1].accessible_slice_mut(4).copy_from_slice(b"tail");
+        assert_eq!(partial[1].accessible_slice(4), b"tail");
+        let partial_iovecs = staged_host_iovecs(&mut partial);
+        assert_eq!(partial_iovecs.len(), 2);
+        assert_eq!(
+            partial_iovecs
+                .iter()
+                .map(|iov| iov.iov_len)
+                .collect::<Vec<_>>(),
+            vec![8, 4]
+        );
+        assert_eq!(partial_iovecs[0].iov_base as usize % (64 * 1024), 0x4ffc);
+        assert_eq!(partial_iovecs[1].iov_base as usize % (64 * 1024), 0x8000);
+    }
+
+    #[test]
+    fn positioned_vectored_io_handles_pipes_partial_writes_and_sigpipe() {
+        const PIPE_FDS: u64 = 0x100;
+        const WRITE: u64 = 0x1000;
+        const WRITE_IOV: u64 = 0x4000;
+        const READ: u64 = 0x5000;
+        const READ_IOV: u64 = 0x6000;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x10_000).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let [read_fd, write_fd]: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        memory.write(WRITE, b"pipe").unwrap();
+        write_guest_iovecs(&mut memory, WRITE_IOV, &[(WRITE, 2), (WRITE + 2, 2)]);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev,
+                [write_fd as u64, WRITE_IOV, 2, 0, 0, 0],
+            ),
+            negative_errno(libc::ESPIPE)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [write_fd as u64, WRITE_IOV, 2, u64::MAX, 0, 0],
+            ),
+            4
+        );
+        write_guest_iovecs(&mut memory, READ_IOV, &[(READ, 1), (READ + 1, 3)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv2,
+                [read_fd as u64, READ_IOV, 2, u64::MAX, 0, 0],
+            ),
+            4
+        );
+        let mut bytes = [0u8; 4];
+        memory.read(READ, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"pipe");
+
+        assert!(!signal_is_pending(libc::SIGPIPE).unwrap());
+        assert_eq!(close(&mut state, read_fd as u64), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [write_fd as u64, WRITE_IOV, 2, u64::MAX, 0, 0],
+            ),
+            negative_errno(libc::EPIPE)
+        );
+        assert!(!signal_is_pending(libc::SIGPIPE).unwrap());
+
+        // A nonblocking pipe provides a deterministic short-write case.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, libc::O_NONBLOCK as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let [_partial_read_fd, partial_write_fd]: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        let host_write_fd = state.files[&partial_write_fd].as_raw_fd();
+        // SAFETY: F_GETPIPE_SZ takes no third argument and the descriptor is a pipe.
+        let capacity = unsafe { libc::fcntl(host_write_fd, libc::F_GETPIPE_SZ) };
+        assert!(capacity >= 2 * 4096);
+        let fill = vec![b'f'; capacity as usize - 4096];
+        // SAFETY: fill is readable and host_write_fd is a live nonblocking pipe.
+        assert_eq!(
+            unsafe { libc::write(host_write_fd, fill.as_ptr().cast(), fill.len()) },
+            fill.len() as isize
+        );
+        memory.write(WRITE, &vec![b'w'; 8192]).unwrap();
+        write_guest_iovecs(
+            &mut memory,
+            WRITE_IOV,
+            &[(WRITE, 4096), (WRITE + 4096, 4096)],
+        );
+        let partial = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_pwritev2,
+            [partial_write_fd as u64, WRITE_IOV, 2, u64::MAX, 0, 0],
+        );
+        assert!(
+            partial > 0 && partial < 8192,
+            "unexpected short write: {partial}"
+        );
+    }
+
+    #[test]
+    fn positioned_vectored_io_guest_faults_do_not_consume_or_write_pipe_data() {
+        const PIPE_FDS: u64 = 0x100;
+        const IOV: u64 = 0x1000;
+        const DATA: u64 = 0x3000;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x5000).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, libc::O_NONBLOCK as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let [read_fd, write_fd]: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        write_guest_iovecs(&mut memory, IOV, &[(DATA, 1)]);
+
+        let host_write_fd = state.files[&write_fd].as_raw_fd();
+        // SAFETY: byte is readable and host_write_fd is a live pipe endpoint.
+        assert_eq!(
+            unsafe { libc::write(host_write_fd, b"x".as_ptr().cast(), 1) },
+            1
+        );
+
+        memory.enable_user_access();
+        memory.map_user_range(IOV, PAGE_SIZE, false).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv2,
+                [read_fd as u64, IOV, 1, u64::MAX, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        memory.map_user_range(DATA, PAGE_SIZE, false).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv2,
+                [read_fd as u64, IOV, 1, u64::MAX, 0, 0],
+            ),
+            1
+        );
+        let mut byte = [0u8; 1];
+        memory.read(DATA, &mut byte).unwrap();
+        assert_eq!(&byte, b"x");
+
+        // A later inaccessible vector copies into the accessible first vector,
+        // reports EFAULT, and leaves both pipe bytes available to the next
+        // call, matching one native current-position preadv2.
+        // SAFETY: the byte string is readable and host_write_fd is live.
+        assert_eq!(
+            unsafe { libc::write(host_write_fd, b"yz".as_ptr().cast(), 2) },
+            2
+        );
+        write_guest_iovecs(&mut memory, IOV, &[(DATA, 1), (DATA + PAGE_SIZE, 1)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv2,
+                [read_fd as u64, IOV, 2, u64::MAX, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        memory.read(DATA, &mut byte).unwrap();
+        assert_eq!(&byte, b"y");
+        write_guest_iovecs(&mut memory, IOV, &[(DATA, 2)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv2,
+                [read_fd as u64, IOV, 1, u64::MAX, 0, 0],
+            ),
+            2
+        );
+        let mut bytes = [0; 2];
+        memory.read(DATA, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"yz");
+
+        write_guest_iovecs(&mut memory, IOV, &[(DATA, 1)]);
+        memory.unmap_user_range(DATA, PAGE_SIZE).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [write_fd as u64, IOV, 1, u64::MAX, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        let host_read_fd = state.files[&read_fd].as_raw_fd();
+        // SAFETY: byte is writable and host_read_fd is a live nonblocking pipe endpoint.
+        let read_result = unsafe { libc::read(host_read_fd, byte.as_mut_ptr().cast(), 1) };
+        assert_eq!(read_result, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EAGAIN)
+        );
+    }
+
+    #[test]
+    fn positioned_vectored_io_preserves_linux_error_ordering_and_procfs_refusal() {
+        const IOV: u64 = 0x100;
+        const DATA: u64 = 0x200;
+
+        let root = TestDir::new();
+        let path = root.0.join("errors");
+        std::fs::write(&path, b"x").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(3, file);
+        state.files.insert(4, std::fs::File::open(&path).unwrap());
+        state.files.insert(
+            5,
+            std::fs::OpenOptions::new().write(true).open(&path).unwrap(),
+        );
+        state.files.insert(6, std::fs::File::open(&root.0).unwrap());
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        memory.write(DATA, b"z").unwrap();
+        write_guest_iovecs(&mut memory, IOV, &[(DATA, 1)]);
+
+        // Access-mode and directory failures precede iovec-array faults.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev,
+                [4, u64::MAX, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv,
+                [5, u64::MAX, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv,
+                [6, u64::MAX, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EISDIR)
+        );
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv,
+                [u64::MAX, u64::MAX, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv,
+                [3, u64::MAX, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv,
+                [3, IOV, libc::UIO_MAXIOV as u64 + 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+
+        // The signed offset is checked before descriptor lookup or access
+        // mode. This is observable for a nonexistent descriptor and for a
+        // descriptor opened in the wrong direction.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [u64::MAX, u64::MAX, 1, (-2i64) as u64, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [4, u64::MAX, 1, (-2i64) as u64, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv2,
+                [5, u64::MAX, 1, (-2i64) as u64, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv,
+                [u64::MAX, u64::MAX, 1, u64::MAX, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+
+        // Offset and flag errors precede access to an invalid iovec payload.
+        let invalid_payload = memory.guest_end();
+        write_guest_iovecs(&mut memory, IOV, &[(invalid_payload, 1)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [3, IOV, 1, (-2i64) as u64, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv,
+                [3, IOV, 1, u64::MAX, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [3, IOV, 1, 0, 0, 0x8000_0000],
+            ),
+            negative_errno(libc::EOPNOTSUPP)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [
+                    3,
+                    IOV,
+                    1,
+                    0,
+                    0,
+                    (libc::RWF_APPEND | libc::RWF_NOAPPEND) as u64,
+                ],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+
+        // Linux ignores unsupported flags when every iovec has length zero,
+        // provided the zero-length entry's base is within TASK_SIZE_MAX.
+        write_guest_iovecs(&mut memory, IOV, &[(X86_64_GUEST_USER_LIMIT, 0)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [3, IOV, 1, 0, 0, 0x8000_0000],
+            ),
+            0
+        );
+
+        write_guest_iovecs(&mut memory, IOV, &[(DATA, MAX_HOST_IO), (DATA, 1)]);
+        let accessible = memory
+            .user_accessible_prefix(DATA, MAX_HOST_IO)
+            .expect("the first vector begins in guest memory");
+        let oversized = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_pwritev,
+            [3, IOV, 2, 0, 0, 0],
+        );
+        assert!(
+            oversized > 0 && oversized <= accessible as i64,
+            "valid request above the private staging bound returned {oversized}"
+        );
+
+        const PIPE_FDS: u64 = 0x3000;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let [read_fd, write_fd]: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        // An explicit position on a pipe is rejected before iovec import,
+        // count checks, access mode, and v2 flag checks.
+        for (number, fd, iov, count, flags) in [
+            (libc::SYS_pwritev2, write_fd, u64::MAX, 1, 0x8000_0000),
+            (
+                libc::SYS_pwritev,
+                write_fd,
+                IOV,
+                libc::UIO_MAXIOV as u64 + 1,
+                0,
+            ),
+            (libc::SYS_preadv2, read_fd, u64::MAX, 1, 0),
+            (libc::SYS_pwritev2, read_fd, u64::MAX, 1, 0),
+            (libc::SYS_preadv2, write_fd, u64::MAX, 1, 0),
+            (libc::SYS_pwritev2, write_fd, 0, 0, 0),
+        ] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [fd as u64, iov, count, 0, 0, flags],
+                ),
+                negative_errno(libc::ESPIPE),
+                "explicit pipe syscall {number} did not preserve ordering"
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [write_fd as u64, u64::MAX, 1, (-2i64) as u64, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [write_fd as u64, u64::MAX, 1, u64::MAX, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev2,
+                [write_fd as u64, IOV, 1, u64::MAX, 0, 0x8000_0000],
+            ),
+            negative_errno(libc::EOPNOTSUPP)
+        );
+
+        state.proc_files.insert(3, 0x1234);
+        for number in [
+            libc::SYS_preadv,
+            libc::SYS_pwritev,
+            libc::SYS_preadv2,
+            libc::SYS_pwritev2,
+        ] {
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, number, [3, IOV, 0, 0, 0, 0]),
+                negative_errno(libc::ENOSYS),
+                "synthetic procfs syscall {number} escaped"
+            );
+        }
+    }
+
+    #[test]
+    fn positioned_vectored_write_preserves_no_copy_host_result_at_iov_max() {
+        const IOV: u64 = 0x100;
+        const DATA: u64 = 0x5ff0;
+
+        let root = TestDir::new();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(3, file);
+        let mut memory = GuestMemory::new(0, 0x6000).unwrap();
+        memory.write(DATA, &[b'x'; 16]).unwrap();
+
+        // Measure the native result with the same maximum-count shape. The
+        // final host vector has 16 accessible bytes followed by an inaccessible
+        // page, but /dev/null does not inspect source memory and reports all 32
+        // bytes. The mediator must preserve that endpoint-specific result.
+        let oracle_file = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        let mut oracle_arena = AlignedIoArena::new(PAGE_SIZE as usize, PAGE_SIZE as usize).unwrap();
+        let oracle_offset = PAGE_SIZE as usize - 16;
+        oracle_arena.as_mut_slice(oracle_offset, 16).fill(b'x');
+        oracle_arena.protect_after_data().unwrap();
+        let mut oracle_iovecs = (0..libc::UIO_MAXIOV as usize)
+            .map(|_| libc::iovec {
+                iov_base: std::ptr::dangling_mut::<libc::c_void>(),
+                iov_len: 0,
+            })
+            .collect::<Vec<_>>();
+        oracle_iovecs.last_mut().unwrap().iov_base = oracle_arena.as_mut_ptr(oracle_offset);
+        oracle_iovecs.last_mut().unwrap().iov_len = 32;
+        // SAFETY: each zero-length vector is ignored, and the final vector
+        // crosses from the live arena into its protected guard page exactly as
+        // the guest request below does.
+        let native = unsafe {
+            libc::syscall(
+                libc::SYS_pwritev,
+                oracle_file.as_raw_fd(),
+                oracle_iovecs.as_ptr(),
+                oracle_iovecs.len(),
+                0usize,
+                0usize,
+            ) as i64
+        };
+        assert_eq!(native, 32);
+
+        let mut vectors = vec![(X86_64_GUEST_USER_LIMIT, 0); libc::UIO_MAXIOV as usize - 1];
+        vectors.push((DATA, 32));
+        write_guest_iovecs(&mut memory, IOV, &vectors);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwritev,
+                [3, IOV, libc::UIO_MAXIOV as u64, 0, 0, 0],
+            ),
+            native
+        );
+    }
+
+    #[test]
+    fn positioned_vectored_read_scatters_a_short_result_without_moving_offset() {
+        const FIRST: u64 = 0x200;
+        const SECOND: u64 = 0x300;
+        const IOV: u64 = 0x400;
+
+        let root = TestDir::new();
+        let path = root.0.join("short-read");
+        std::fs::write(&path, b"abc").unwrap();
+        let mut file = std::fs::File::open(&path).unwrap();
+        file.seek(SeekFrom::Start(2)).unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(3, file);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory.write(FIRST, b"xx").unwrap();
+        memory.write(SECOND, b"xxxx").unwrap();
+        write_guest_iovecs(&mut memory, IOV, &[(FIRST, 2), (SECOND, 4)]);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv,
+                [3, IOV, 2, 0, 0, 0],
+            ),
+            3
+        );
+        let mut first = [0u8; 2];
+        let mut second = [0u8; 4];
+        memory.read(FIRST, &mut first).unwrap();
+        memory.read(SECOND, &mut second).unwrap();
+        assert_eq!(&first, b"ab");
+        assert_eq!(&second, b"cxxx");
+        assert_eq!(
+            state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+            2
+        );
     }
 
     #[test]
@@ -18508,6 +21935,100 @@ mod tests {
             assert_eq!(signal_is_pending(libc::SIGPIPE), Ok(false));
             // SAFETY: the write descriptor is live and owned by this child.
             assert_eq!(unsafe { libc::close(host_fds[1]) }, 0);
+
+            // A blocking write larger than the pipe can commit bytes before
+            // the reader closes. Linux then returns that positive partial
+            // count while also leaving SIGPIPE pending for the calling thread.
+            let mut partial_fds = [-1; 2];
+            // SAFETY: partial_fds has room for both descriptors.
+            assert_eq!(
+                unsafe { libc::pipe2(partial_fds.as_mut_ptr(), libc::O_CLOEXEC) },
+                0
+            );
+            // SAFETY: F_SETPIPE_SZ accepts the requested byte capacity.
+            let capacity = unsafe {
+                libc::fcntl(partial_fds[1], libc::F_SETPIPE_SZ, PAGE_SIZE as libc::c_int)
+            };
+            assert!(capacity > 0, "failed to set pipe capacity: {capacity}");
+            let read_fd = partial_fds[0];
+            let reader = std::thread::spawn(move || {
+                // SAFETY: ownership of the read descriptor moves to this thread.
+                let mut reader = unsafe { std::fs::File::from_raw_fd(read_fd) };
+                let mut bytes = vec![0; capacity as usize];
+                reader.read_exact(&mut bytes).unwrap();
+                // Dropping the sole read endpoint makes the blocked writer
+                // return its positive partial count and generate SIGPIPE.
+            });
+            let payload = vec![b'p'; capacity as usize * 16];
+            let mut iovecs = [libc::iovec {
+                iov_base: payload.as_ptr().cast_mut().cast(),
+                iov_len: payload.len(),
+            }];
+            let partial = invoke_vectored_write(
+                libc::SYS_pwritev2,
+                partial_fds[1],
+                &mut iovecs,
+                &[0, 0, 0, u64::MAX, 0, 0],
+            );
+            reader.join().unwrap();
+            assert!(
+                partial > 0 && partial < payload.len() as i64,
+                "expected positive partial pipe write, got {partial}"
+            );
+            assert_eq!(signal_is_pending(libc::SIGPIPE), Ok(false));
+            // SAFETY: the write descriptor is live and owned by this child.
+            assert_eq!(unsafe { libc::close(partial_fds[1]) }, 0);
+
+            // A SIGPIPE that was already pending before the write belongs to
+            // the caller. The suppression helper must not consume it.
+            let mut blocked = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+            // SAFETY: blocked is writable and initialized by these calls.
+            assert_eq!(unsafe { libc::sigemptyset(blocked.as_mut_ptr()) }, 0);
+            assert_eq!(
+                unsafe { libc::sigaddset(blocked.as_mut_ptr(), libc::SIGPIPE) },
+                0
+            );
+            // SAFETY: the two successful calls above initialized blocked.
+            let blocked = unsafe { blocked.assume_init() };
+            let mut previous = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+            // SAFETY: blocked is initialized and previous is writable.
+            assert_eq!(
+                unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, previous.as_mut_ptr(),) },
+                0
+            );
+            // SAFETY: pthread_sigmask initialized previous on success.
+            let previous = unsafe { previous.assume_init() };
+            // SAFETY: SIGPIPE is blocked in this thread, so raise only queues it.
+            assert_eq!(unsafe { libc::raise(libc::SIGPIPE) }, 0);
+            assert_eq!(signal_is_pending(libc::SIGPIPE), Ok(true));
+
+            let mut pending_fds = [-1; 2];
+            // SAFETY: pending_fds has room for both descriptors.
+            assert_eq!(
+                unsafe { libc::pipe2(pending_fds.as_mut_ptr(), libc::O_CLOEXEC) },
+                0
+            );
+            // SAFETY: the read descriptor is live and owned by this child.
+            assert_eq!(unsafe { libc::close(pending_fds[0]) }, 0);
+            assert_eq!(
+                write_without_sigpipe(pending_fds[1], b"still-broken"),
+                negative_errno(libc::EPIPE)
+            );
+            assert_eq!(signal_is_pending(libc::SIGPIPE), Ok(true));
+            let mut signal = 0;
+            // SAFETY: blocked contains SIGPIPE, which is pending in this thread.
+            assert_eq!(unsafe { libc::sigwait(&blocked, &mut signal) }, 0);
+            assert_eq!(signal, libc::SIGPIPE);
+            assert_eq!(signal_is_pending(libc::SIGPIPE), Ok(false));
+            // SAFETY: previous is the mask saved above; no SIGPIPE remains pending.
+            assert_eq!(
+                unsafe {
+                    libc::pthread_sigmask(libc::SIG_SETMASK, &previous, std::ptr::null_mut())
+                },
+                0
+            );
+            // SAFETY: the write descriptor is live and owned by this child.
+            assert_eq!(unsafe { libc::close(pending_fds[1]) }, 0);
             return;
         }
 
@@ -20830,9 +24351,33 @@ mod tests {
                     number,
                     [signal_fd as u64, IOVEC, 1, u64::MAX, 0, flags],
                 ),
-                SIGNALFD_RECORD_SIZE as i64,
-                "(-1, 0) is the current-position sentinel",
+                if number == libc::SYS_preadv2 {
+                    SIGNALFD_RECORD_SIZE as i64
+                } else {
+                    negative_errno(libc::EINVAL)
+                },
+                "only preadv2 accepts the current-position sentinel",
             );
+            if number == libc::SYS_preadv {
+                assert!(
+                    state
+                        .process_signals
+                        .lock()
+                        .unwrap()
+                        .shared_pending
+                        .contains(libc::SIGUSR1),
+                    "preadv(-1) must not consume the pending record"
+                );
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_preadv2,
+                        [signal_fd as u64, IOVEC, 1, u64::MAX, 0, 0]
+                    ),
+                    SIGNALFD_RECORD_SIZE as i64
+                );
+            }
         }
     }
 
@@ -21809,6 +25354,149 @@ mod tests {
             ),
             128,
         );
+    }
+
+    #[test]
+    fn signalfd_vectored_io_uses_virtual_records_and_linux_error_ordering() {
+        const MASK: u64 = 0x100;
+        const IOV: u64 = 0x180;
+        const FIRST: u64 = 0x300;
+        const SECOND: u64 = 0x500;
+        const CONTIGUOUS: u64 = 0x800;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let pid = state.pid;
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut mask = [0u8; KERNEL_SIGSET_SIZE];
+        for signal in [libc::SIGUSR1, libc::SIGUSR2] {
+            let bit = (signal - 1) as usize;
+            mask[bit / 8] |= 1 << (bit % 8);
+        }
+        memory.write(MASK, &mask).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_rt_sigprocmask,
+                [
+                    libc::SIG_BLOCK as u64,
+                    MASK,
+                    0,
+                    KERNEL_SIGSET_SIZE as u64,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let signal_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_signalfd4,
+            [
+                u64::MAX,
+                MASK,
+                KERNEL_SIGSET_SIZE as u64,
+                (libc::SFD_CLOEXEC | libc::SFD_NONBLOCK) as u64,
+                0,
+                0,
+            ],
+        );
+        assert_eq!(signal_fd, 3);
+
+        // Explicit positioned calls reject this nonseekable descriptor before
+        // importing an invalid iovec array. Current-position writes reject the
+        // signalfd operation itself before importing that array.
+        for number in [libc::SYS_preadv, libc::SYS_pwritev] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [signal_fd as u64, u64::MAX, 1, 0, 0, 0],
+                ),
+                negative_errno(libc::ESPIPE)
+            );
+        }
+        for number in [libc::SYS_writev, libc::SYS_pwritev2] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [signal_fd as u64, u64::MAX, 1, u64::MAX, 0, 0],
+                ),
+                negative_errno(libc::EINVAL)
+            );
+        }
+        write_guest_iovecs(&mut memory, IOV, &[(X86_64_GUEST_USER_LIMIT, 0)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv2,
+                [signal_fd as u64, IOV, 1, u64::MAX, 0, 0],
+            ),
+            0
+        );
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_kill,
+                [pid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        memory.write(FIRST, &[0xa5; 64]).unwrap();
+        memory.write(SECOND, &[0xa5; 64]).unwrap();
+        write_guest_iovecs(&mut memory, IOV, &[(FIRST, 64), (SECOND, 64)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_preadv2,
+                [signal_fd as u64, IOV, 2, u64::MAX, 0, 0],
+            ),
+            std::mem::size_of::<libc::signalfd_siginfo>() as i64
+        );
+        let mut first = [0u8; 64];
+        let mut second = [0u8; 64];
+        memory.read(FIRST, &mut first).unwrap();
+        memory.read(SECOND, &mut second).unwrap();
+        assert_eq!(
+            u32::from_ne_bytes(first[..4].try_into().unwrap()),
+            libc::SIGUSR1 as u32
+        );
+        assert_eq!(second, [0; 64]);
+
+        for signal in [libc::SIGUSR1, libc::SIGUSR2] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_kill,
+                    [pid as u64, signal as u64, 0, 0, 0, 0],
+                ),
+                0
+            );
+        }
+        write_guest_iovecs(&mut memory, IOV, &[(CONTIGUOUS, 256)]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [signal_fd as u64, IOV, 1, 0, 0, 0],
+            ),
+            256
+        );
+        let first_info: libc::signalfd_siginfo = read_struct(&memory, CONTIGUOUS);
+        let second_info: libc::signalfd_siginfo = read_struct(&memory, CONTIGUOUS + 128);
+        assert_eq!(first_info.ssi_signo, libc::SIGUSR1 as u32);
+        assert_eq!(second_info.ssi_signo, libc::SIGUSR2 as u32);
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
@@ -30631,6 +34319,66 @@ mod tests {
                 [0xFFFF_FFFF, 0, 0, 0, 0, 0],
             ),
             negative_errno(libc::ECHILD)
+        );
+    }
+    #[test]
+    fn vectored_direct_io_above_staging_limit_is_refused_without_effects() {
+        const IOV: u64 = 0x1000;
+        const DATA: u64 = 0x10000;
+        let root = TestDir::new();
+        let seed = vec![b'f'; 8192];
+        let sentinel = vec![b'm'; MAX_HOST_IO + PAGE_SIZE as usize];
+        let mut observed = Vec::new();
+        for number in [
+            libc::SYS_readv,
+            libc::SYS_writev,
+            libc::SYS_preadv,
+            libc::SYS_pwritev,
+            libc::SYS_preadv2,
+            libc::SYS_pwritev2,
+        ] {
+            for separate_tail in [false, true] {
+                let path = root.0.join(format!("direct-cap-{number}-{separate_tail}"));
+                std::fs::write(&path, &seed).unwrap();
+                let mut file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .custom_flags(libc::O_DIRECT)
+                    .open(&path)
+                    .unwrap();
+                file.seek(SeekFrom::Start(4096)).unwrap();
+                let mut state = test_state(&root.0);
+                state.files.insert(3, file);
+                let mut memory = GuestMemory::new(0, DATA as usize + sentinel.len()).unwrap();
+                memory.write(DATA, &sentinel).unwrap();
+                let vectors = if separate_tail {
+                    vec![(DATA, MAX_HOST_IO), (DATA + MAX_HOST_IO as u64, 1)]
+                } else {
+                    vec![(DATA, MAX_HOST_IO + 1)]
+                };
+                write_guest_iovecs(&mut memory, IOV, &vectors);
+                let result = syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [3, IOV, vectors.len() as u64, 0, 0, 0],
+                );
+                let mut bytes = vec![0; sentinel.len()];
+                memory.read(DATA, &mut bytes).unwrap();
+                let position = state.files.get_mut(&3).unwrap().stream_position().unwrap();
+                let file_unchanged = std::fs::read(&path).unwrap() == seed;
+                let memory_unchanged = bytes == sentinel;
+                eprintln!(
+                    "number={number} separate_tail={separate_tail} result={result} position={position} file_unchanged={file_unchanged} memory_unchanged={memory_unchanged}"
+                );
+                observed.push((result, position, file_unchanged, memory_unchanged));
+                drop(state);
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+        assert_eq!(
+            observed,
+            vec![(negative_errno(libc::EOPNOTSUPP), 4096, true, true); 12]
         );
     }
 }
