@@ -37,6 +37,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 const SCHEMA_VERSION: u32 = 2;
+const MAX_LEDGER_TEST_COUNT: u64 = i64::MAX as u64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -114,6 +115,17 @@ impl TestCounts {
                 "passed_tests {} exceeds executed_tests {}",
                 self.passed_tests, self.executed_tests
             ));
+        }
+        for (label, value) in [
+            ("executed_tests", self.executed_tests),
+            ("passed_tests", self.passed_tests),
+            ("filtered_tests", self.filtered_tests),
+        ] {
+            if value > MAX_LEDGER_TEST_COUNT {
+                return Err(format!(
+                    "{label} {value} exceeds the validation ledger's supported maximum {MAX_LEDGER_TEST_COUNT}"
+                ));
+            }
         }
         Ok(self)
     }
@@ -487,12 +499,19 @@ fn cargo_test_commands(
         None => (args.as_slice(), Vec::new()),
     };
     let (cargo_args, cargo_test_name) = split_cargo_args(cargo_portion)?;
+    let has_no_fail_fast = cargo_portion.iter().any(|arg| arg == "--no-fail-fast");
     let (mut selected_args, unfiltered_args) = selection_args(&harness_args)?;
     if let Some(test_name) = cargo_test_name {
         selected_args.insert(0, test_name);
     }
 
     let mut execution = args;
+    if !has_no_fail_fast {
+        execution.insert(
+            separator.unwrap_or(execution.len()),
+            "--no-fail-fast".to_string(),
+        );
+    }
     if separator.is_none() {
         execution.push("--".to_string());
     }
@@ -692,6 +711,43 @@ fn self_test() -> Result<(), String> {
     );
     if parse_discovery(mismatched.as_bytes(), io::sink()).is_ok() {
         return Err("mutated discovery total was accepted".to_string());
+    }
+
+    let command = cargo_test_commands(
+        ["cargo", "test", "--workspace", "--", "selected"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        Path::new("/tmp/libtest-counts-self-test.fifo"),
+    )?;
+    let no_fail_fast = command
+        .execution
+        .iter()
+        .position(|argument| argument == "--no-fail-fast")
+        .ok_or_else(|| "execution command did not force --no-fail-fast".to_string())?;
+    let separator = command
+        .execution
+        .iter()
+        .position(|argument| argument == "--")
+        .ok_or_else(|| "execution command has no harness separator".to_string())?;
+    if no_fail_fast >= separator {
+        return Err("--no-fail-fast was not placed in Cargo's argument portion".to_string());
+    }
+    let command = cargo_test_commands(
+        ["cargo", "test", "--no-fail-fast"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        Path::new("/tmp/libtest-counts-self-test.fifo"),
+    )?;
+    if command
+        .execution
+        .iter()
+        .filter(|argument| argument.as_str() == "--no-fail-fast")
+        .count()
+        != 1
+    {
+        return Err("execution command duplicated --no-fail-fast".to_string());
     }
 
     let channel_path = env::temp_dir().join(format!(
