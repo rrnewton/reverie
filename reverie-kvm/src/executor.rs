@@ -46,7 +46,7 @@ use crate::signal::KernelSigset;
 use crate::signal::ProcessSignalState;
 use crate::signal::SS_AUTODISARM;
 #[cfg(test)]
-use crate::signal::ThreadSignalState;
+use crate::signal::SharedThreadSignalState;
 use crate::signal::event_for_process;
 use crate::signal::event_for_thread;
 #[cfg(test)]
@@ -1328,7 +1328,13 @@ impl ElfExecutor {
             .task_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .ensure_registered(state.tid, state.pid, state.pgid, state.dumpable);
+            .ensure_registered_with_signals(
+                state.tid,
+                state.pid,
+                state.pgid,
+                state.dumpable,
+                &state.thread_signals,
+            );
         let next_pid = state.pid.saturating_add(1);
         let sigchld_auto_reap = Arc::new(AtomicBool::new(sigchld_auto_reaps(&state)));
         let address_space = Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state)));
@@ -1725,7 +1731,13 @@ impl ElfExecutor {
             .task_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .register(state.tid, state.pid, state.pgid, state.dumpable);
+            .register_with_signals(
+                state.tid,
+                state.pid,
+                state.pgid,
+                state.dumpable,
+                &state.thread_signals,
+            );
         let sigchld_auto_reap = sigchld_auto_reaps(&state);
         let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
         let child = Self {
@@ -1753,6 +1765,15 @@ impl ElfExecutor {
 
     // TODO-HUMAN-REVIEW(PR-172): Review shared address-space and output ownership.
     pub(crate) fn thread_child(&self, child_tid: i32) -> crate::Result<Self> {
+        let observe_ignored = self.state.thread_signals.lock().observe_ignored;
+        self.thread_child_with_signal_observation(child_tid, observe_ignored)
+    }
+
+    pub(crate) fn thread_child_with_signal_observation(
+        &self,
+        child_tid: i32,
+        observe_ignored: bool,
+    ) -> crate::Result<Self> {
         if self.has_shared_pending_signal()
             || !self
                 .state
@@ -1778,11 +1799,18 @@ impl ElfExecutor {
         state.thp_disabled = self.state.thp_disabled.clone();
         state.process_signals = self.state.process_signals.clone();
         state.thread_signals = self.state.thread_signals.for_clone_thread();
+        state.thread_signals.lock().observe_ignored = observe_ignored;
         let task_generation = state
             .task_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .register(state.tid, state.pid, state.pgid, state.dumpable);
+            .register_with_signals(
+                state.tid,
+                state.pid,
+                state.pgid,
+                state.dumpable,
+                &state.thread_signals,
+            );
         let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
         let child = Self {
             state,
@@ -2350,19 +2378,15 @@ impl ElfExecutor {
     /// Removes the next eligible event, preferring the caller's thread queue
     /// over the process-shared queue as Linux does.
     pub(crate) fn take_pending_signal(&mut self) -> Option<PendingSignal> {
-        let blocked = self.state.thread_signals.blocked;
         let mut process_signals = self
             .state
             .process_signals
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let generations = process_signals.pending_generations;
-        if let Some(event) = self
-            .state
-            .thread_signals
-            .pending
-            .take_eligible(blocked, &generations)
-        {
+        let mut thread_signals = self.state.thread_signals.lock();
+        let blocked = thread_signals.blocked;
+        if let Some(event) = thread_signals.pending.take_eligible(blocked, &generations) {
             return Some(PendingSignal {
                 event,
                 domain: PendingSignalDomain::Thread,
@@ -2396,17 +2420,15 @@ impl ElfExecutor {
     }
 
     pub(crate) fn has_eligible_pending_signal(&self) -> bool {
-        let blocked = self.state.thread_signals.blocked;
         let process_signals = self
             .state
             .process_signals
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let generations = &process_signals.pending_generations;
-        self.state
-            .thread_signals
-            .pending
-            .any_eligible(blocked, generations)
+        let thread_signals = self.state.thread_signals.lock();
+        let blocked = thread_signals.blocked;
+        thread_signals.pending.any_eligible(blocked, generations)
             || process_signals
                 .shared_pending
                 .any_eligible(blocked, generations)
@@ -2424,11 +2446,8 @@ impl ElfExecutor {
         if request.number() != libc::SYS_rt_sigprocmask as u64 {
             return None;
         }
-        let next = match prospective_sigprocmask(
-            memory,
-            self.state.thread_signals.blocked,
-            request.args(),
-        ) {
+        let blocked = self.state.thread_signals.lock().blocked;
+        let next = match prospective_sigprocmask(memory, blocked, request.args()) {
             Ok(Some(next)) => next,
             Ok(None) => return None,
             Err(error) => return Some(error),
@@ -2442,6 +2461,7 @@ impl ElfExecutor {
         let eligible = self
             .state
             .thread_signals
+            .lock()
             .pending
             .any_eligible(next, generations)
             || process_signals
@@ -2476,7 +2496,11 @@ impl ElfExecutor {
     }
 
     pub(crate) fn signal_mask(&self) -> KernelSigset {
-        self.state.thread_signals.blocked
+        self.state.thread_signals.lock().blocked
+    }
+
+    pub(crate) fn observe_ignored_signals_with_tool(&self) {
+        self.state.thread_signals.lock().observe_ignored = true;
     }
 
     pub(crate) fn page_zero_fault_event(&self, address: u64) -> reverie::SignalEvent {
@@ -2499,7 +2523,11 @@ impl ElfExecutor {
         if self.signal_mask().contains(libc::SIGSEGV)
             || self.signal_disposition(libc::SIGSEGV) == SignalDisposition::Ignore
         {
-            self.state.thread_signals.blocked.remove(libc::SIGSEGV);
+            self.state
+                .thread_signals
+                .lock()
+                .blocked
+                .remove(libc::SIGSEGV);
             self.state
                 .process_signals
                 .lock()
@@ -2510,7 +2538,7 @@ impl ElfExecutor {
     }
 
     pub(crate) fn signal_altstack(&self, stack_pointer: u64) -> GuestStack {
-        match self.state.thread_signals.altstack {
+        match self.state.thread_signals.lock().altstack {
             Some(mut stack) => {
                 if stack.contains(stack_pointer) {
                     stack.flags |= libc::SS_ONSTACK;
@@ -2530,7 +2558,7 @@ impl ElfExecutor {
         action: KernelSigaction,
         stack_pointer: u64,
     ) -> Result<(u64, Option<u64>, bool, bool), reverie::syscalls::Errno> {
-        let Some(stack) = self.state.thread_signals.altstack else {
+        let Some(stack) = self.state.thread_signals.lock().altstack else {
             return Ok((stack_pointer, None, true, false));
         };
         if stack.contains(stack_pointer) {
@@ -2556,21 +2584,22 @@ impl ElfExecutor {
         autodisarm: bool,
     ) {
         let signal = pending.event.signal();
-        self.state.thread_signals.blocked.union_with(action.mask);
+        let mut process_signals = self
+            .state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut thread_signals = self.state.thread_signals.lock();
+        thread_signals.blocked.union_with(action.mask);
         if action.flags & libc::SA_NODEFER as u64 == 0 {
-            self.state.thread_signals.blocked.insert(signal);
+            thread_signals.blocked.insert(signal);
         }
-        self.state.thread_signals.blocked.clear_unmaskable();
+        thread_signals.blocked.clear_unmaskable();
         if action.flags & libc::SA_RESETHAND as u64 != 0 {
-            self.state
-                .process_signals
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .dispositions
-                .remove(&signal);
+            process_signals.dispositions.remove(&signal);
         }
         if autodisarm {
-            self.state.thread_signals.altstack = None;
+            thread_signals.altstack = None;
         }
     }
 
@@ -2581,13 +2610,12 @@ impl ElfExecutor {
         restorer_stack_pointer: u64,
     ) {
         blocked.clear_unmaskable();
-        self.state.thread_signals.blocked = blocked;
-        if let Ok(restored) = validate_altstack_update(
-            self.state.thread_signals.altstack,
-            Some(restorer_stack_pointer),
-            stack,
-        ) {
-            self.state.thread_signals.altstack = restored;
+        let mut thread_signals = self.state.thread_signals.lock();
+        thread_signals.blocked = blocked;
+        if let Ok(restored) =
+            validate_altstack_update(thread_signals.altstack, Some(restorer_stack_pointer), stack)
+        {
+            thread_signals.altstack = restored;
         }
         // Linux ignores restore_altstack() failures while still restoring the
         // mask, registers and FP state. In particular, a handler cannot replace
@@ -5408,7 +5436,11 @@ fn signalfd(
                     .insert(fd, description.clone());
             }
             let generations = &process_signals.pending_generations;
-            state.thread_signals.pending.any_matching(mask, generations)
+            state
+                .thread_signals
+                .lock()
+                .pending
+                .any_matching(mask, generations)
                 || process_signals
                     .shared_pending
                     .any_matching(mask, generations)
@@ -5457,7 +5489,11 @@ fn signalfd(
             .signalfd_masks
             .insert(guest_fd, Arc::new(mask));
         let generations = &process_signals.pending_generations;
-        state.thread_signals.pending.any_matching(mask, generations)
+        state
+            .thread_signals
+            .lock()
+            .pending
+            .any_matching(mask, generations)
             || process_signals
                 .shared_pending
                 .any_matching(mask, generations)
@@ -5490,7 +5526,11 @@ fn queue_signal_event(
         let inserted = if process_directed {
             process_signals.shared_pending.enqueue(event, generation)
         } else {
-            state.thread_signals.pending.enqueue(event, generation)
+            state
+                .thread_signals
+                .lock()
+                .pending
+                .enqueue(event, generation)
         }
         .map_err(|errno| negative_errno(errno.into_raw()))?;
         if !inserted {
@@ -5499,7 +5539,7 @@ fn queue_signal_event(
 
         // Thread-private readiness is exact because the process cannot acquire
         // a sibling while a signalfd description exists (prepare_thread above).
-        if process_directed || state.thread_signals.blocked.contains(signal) {
+        if process_directed || state.thread_signals.lock().blocked.contains(signal) {
             process_signals
                 .signalfd_masks
                 .iter()
@@ -5657,6 +5697,7 @@ fn refresh_all_signalfd_readiness(state: &LoadedStaticElf) -> Result<(), i64> {
                     fd,
                     state
                         .thread_signals
+                        .lock()
                         .pending
                         .any_matching(**mask, &process_signals.pending_generations)
                         || process_signals
@@ -5686,6 +5727,7 @@ fn take_signalfd_event(
         let generations = process_signals.pending_generations;
         state
             .thread_signals
+            .lock()
             .pending
             .take_signalfd_matching(mask, &generations)
             .or_else(|| {
@@ -11407,8 +11449,8 @@ fn rt_sigaction(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u
                 && default_signal_disposition(signal) == SignalDisposition::Ignore
     });
     // Linux discards every instance that predates an ignored disposition.
-    // Per-thread queues are not directly reachable from a sibling, so a
-    // process-shared generation makes those old entries ineligible atomically.
+    // A process-shared generation makes old entries in every private queue
+    // ineligible atomically without walking and locking each live sibling.
     // A blocked signal generated after this transition uses the new generation
     // and may remain pending if a handler is installed before it is unblocked.
     let (previous, readiness) = {
@@ -11425,7 +11467,7 @@ fn rt_sigaction(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u
             if let Err(error) = process_signals.advance_pending_generation(signal) {
                 return negative_errno(error.into_raw());
             }
-            state.thread_signals.pending.remove(signal);
+            state.thread_signals.lock().pending.remove(signal);
             process_signals.shared_pending.remove(signal);
         }
         if let Some(action) = action {
@@ -11440,7 +11482,11 @@ fn rt_sigaction(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u
                     let mask = **mask;
                     mask.contains(signal).then_some((
                         fd,
-                        state.thread_signals.pending.any_matching(mask, generations)
+                        state
+                            .thread_signals
+                            .lock()
+                            .pending
+                            .any_matching(mask, generations)
                             || process_signals
                                 .shared_pending
                                 .any_matching(mask, generations),
@@ -11490,9 +11536,9 @@ fn prospective_sigprocmask(
 }
 
 fn rt_sigprocmask(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let previous = state.thread_signals.blocked;
+    let previous = state.thread_signals.lock().blocked;
     match prospective_sigprocmask(memory, previous, args) {
-        Ok(Some(next)) => state.thread_signals.blocked = next,
+        Ok(Some(next)) => state.thread_signals.lock().blocked = next,
         Ok(None) => {}
         Err(error) => return error,
     }
@@ -11515,10 +11561,14 @@ fn rt_sigpending(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64;
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let generations = &process_signals.pending_generations;
-    let mut pending = state.thread_signals.pending.pending_mask(generations);
+    let mut pending = state
+        .thread_signals
+        .lock()
+        .pending
+        .pending_mask(generations);
     pending.union_with(process_signals.shared_pending.pending_mask(generations));
     // Linux reports only signals that are both pending and blocked.
-    pending.intersect_with(state.thread_signals.blocked);
+    pending.intersect_with(state.thread_signals.lock().blocked);
     match memory.copy_to_user(args[0], &pending.to_bytes()[..args[1] as usize]) {
         Ok(()) => 0,
         Err(_) => negative_errno(libc::EFAULT),
@@ -11549,8 +11599,8 @@ pub(crate) enum SignalDisposition {
 /// the Tool hook to observe them, then discarded at that return boundary; an
 /// unchanged fatal default disposition terminates with the conventional
 /// `128 + signo` status. Stopped-state scheduling, queued real-time siginfo,
-/// and delivery to another live task are outside this foundation and fail
-/// visibly rather than reporting false success.
+/// and cross-process delivery remain unsupported. Same-process thread-directed
+/// signals use the named receiver's private queue and return boundary.
 // TODO-HUMAN-REVIEW(#95): Review self-signal termination and the default-disposition table.
 fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> SyscallAction {
     let is_kill = number == libc::SYS_kill as u64;
@@ -11579,15 +11629,11 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
         return continue_with(negative_errno(libc::EINVAL));
     }
 
-    // ⚠️ TARGET IDENTITY IS THREAD-AWARE. A CLONE_THREAD worker built by
-    // `thread_child` keeps the leader's `state.pid` while carrying its own
-    // `state.tid`, so `pid != tid` for every worker. Validating a thread-
-    // directed signal against `state.pid` — as this handler previously did —
-    // is wrong in BOTH directions: it rejects a worker's valid
-    // `tkill(state.tid, ..)` and `tgkill(state.pid, state.tid, ..)` with ESRCH,
-    // and it accepts a LEADER-targeted request and then evaluates or mutates
-    // the WORKER's signal state. `kill` is unchanged: it names a process.
-    let targets_self = if is_kill {
+    if !is_kill {
+        return send_thread_signal(state, tgid, target, signal);
+    }
+
+    let targets_self = {
         let processes: Vec<(i32, i32)> = state
             .task_lifecycle
             .lock()
@@ -11662,39 +11708,8 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
                 });
             }
         }
-    } else {
-        // Linux rejects a non-positive thread id outright, before any lookup.
-        if target <= 0 {
-            return continue_with(negative_errno(libc::EINVAL));
-        }
-        if let Some(tgid) = tgid {
-            if tgid <= 0 {
-                return continue_with(negative_errno(libc::EINVAL));
-            }
-            tgid == state.pid && target == state.tid
-        } else {
-            target == state.tid
-        }
     };
-
     if !targets_self {
-        // ⚠️ A NAMED, LIVE SIBLING IS A BACKEND LIMITATION, NOT A LIE AND NOT A
-        // MUTATION. Falling through to the disposition logic below would apply
-        // another thread's signal to THIS thread's mask, pending set and
-        // disposition table. Report the limitation and change nothing.
-        if !is_kill {
-            let sibling = state
-                .task_lifecycle
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(target)
-                .map(|task| task.tgid);
-            if let Some(sibling_tgid) = sibling
-                && tgid.is_none_or(|tgid| tgid == sibling_tgid)
-            {
-                return continue_with(negative_errno(libc::ENOSYS));
-            }
-        }
         return continue_with(negative_errno(libc::ESRCH));
     }
 
@@ -11756,6 +11771,96 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
     }
 }
 
+/// A thread-directed signal is published into the named receiver's one private
+/// queue. The lifecycle lock binds publication to the live task incarnation;
+/// process dispositions and the receiver mask are then inspected in that order.
+fn send_thread_signal(
+    state: &LoadedStaticElf,
+    tgid: Option<libc::pid_t>,
+    target: libc::pid_t,
+    signal: libc::c_int,
+) -> SyscallAction {
+    if target <= 0 || tgid.is_some_and(|tgid| tgid <= 0) {
+        return continue_with(negative_errno(libc::EINVAL));
+    }
+    {
+        let lifecycle = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(task) = lifecycle.get(target) else {
+            return continue_with(negative_errno(libc::ESRCH));
+        };
+        if tgid.is_some_and(|tgid| tgid != task.tgid) {
+            return continue_with(negative_errno(libc::ESRCH));
+        }
+        if signal == 0 {
+            return continue_with(0);
+        }
+        if task.tgid != state.pid {
+            return continue_with(negative_errno(libc::ENOSYS));
+        }
+        if signal > 31 || matches!(signal, libc::SIGCHLD | libc::SIGPIPE) {
+            return continue_with(negative_errno(libc::ENOSYS));
+        }
+        if signal == libc::SIGKILL {
+            // A sibling may be parked outside any return boundary. Queuing
+            // SIGKILL there would falsely promise actual group cancellation.
+            if target != state.tid {
+                return continue_with(negative_errno(libc::ENOSYS));
+            }
+            return terminating_signal_status(signal, task.dumpable)
+                .map(SyscallAction::Exit)
+                .unwrap_or_else(|| continue_with(negative_errno(libc::ENOSYS)));
+        }
+        let target_signals = if target == state.tid {
+            // Loader-level self-signal callers need no borrowed sibling handle.
+            state.thread_signals.clone()
+        } else {
+            let Some(target_signals) = lifecycle.signal_target(target) else {
+                return continue_with(negative_errno(libc::ENOSYS));
+            };
+            target_signals
+        };
+        let process_signals = state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let disposition = signal_disposition_with_action(
+            process_signals.dispositions.get(&signal).copied(),
+            signal,
+        );
+        if disposition == SignalDisposition::Stop {
+            return continue_with(negative_errno(libc::ENOSYS));
+        }
+        let mut target_signals = target_signals.lock();
+        if disposition == SignalDisposition::Ignore
+            && !target_signals.blocked.contains(signal)
+            && !target_signals.observe_ignored
+        {
+            return continue_with(0);
+        }
+        let event = match event_for_thread(signal, state.pid, target) {
+            Ok(event) => event,
+            Err(errno) => return continue_with(negative_errno(errno.into_raw())),
+        };
+        if let Err(errno) = target_signals
+            .pending
+            .enqueue(event, process_signals.pending_generation(signal))
+        {
+            return continue_with(negative_errno(errno.into_raw()));
+        }
+    }
+    // Threaded signalfd is already refused. The self-directed single-thread
+    // case still updates its eventfd readiness, after every state lock is gone.
+    if target == state.tid
+        && let Err(error) = refresh_all_signalfd_readiness(state)
+    {
+        return continue_with(error);
+    }
+    continue_with(0)
+}
+
 fn process_dumpable(state: &LoadedStaticElf) -> bool {
     state
         .task_lifecycle
@@ -11800,7 +11905,14 @@ fn installed_signal_action(
 }
 
 fn signal_disposition(state: &LoadedStaticElf, signal: libc::c_int) -> SignalDisposition {
-    if let Some(action) = installed_signal_action(state, signal) {
+    signal_disposition_with_action(installed_signal_action(state, signal), signal)
+}
+
+fn signal_disposition_with_action(
+    action: Option<KernelSigaction>,
+    signal: libc::c_int,
+) -> SignalDisposition {
+    if let Some(action) = action {
         const SIG_DFL: u64 = 0;
         const SIG_IGN: u64 = 1;
         match action.handler {
@@ -11833,7 +11945,7 @@ fn default_signal_disposition(signal: libc::c_int) -> SignalDisposition {
 
 /// Reports whether `signal` is currently blocked by the guest's signal mask.
 fn signal_is_blocked(state: &LoadedStaticElf, signal: libc::c_int) -> bool {
-    state.thread_signals.blocked.contains(signal)
+    state.thread_signals.lock().blocked.contains(signal)
 }
 
 fn validate_altstack_update(
@@ -11880,12 +11992,12 @@ fn sigaltstack(
         };
         Some(stack)
     };
-    let previous = state.thread_signals.altstack;
+    let previous = state.thread_signals.lock().altstack;
     let on_stack = previous.is_some_and(|stack| {
         current_user_stack_pointer.is_some_and(|stack_pointer| stack.contains(stack_pointer))
     });
     if let Some(requested) = requested {
-        state.thread_signals.altstack =
+        state.thread_signals.lock().altstack =
             match validate_altstack_update(previous, current_user_stack_pointer, requested) {
                 Ok(stack) => stack,
                 Err(error) => return error,
@@ -11947,6 +12059,7 @@ fn rt_sigtimedwait(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: 
         let generations = process_signals.pending_generations;
         let event = state
             .thread_signals
+            .lock()
             .pending
             .take_matching(set, &generations)
             .or_else(|| {
@@ -11966,6 +12079,7 @@ fn rt_sigtimedwait(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: 
                 let mask = *process_signals.signalfd_masks[&fd];
                 let still_ready = state
                     .thread_signals
+                    .lock()
                     .pending
                     .any_matching(mask, &generations)
                     || process_signals
@@ -12778,7 +12892,7 @@ mod tests {
             sched_reset_on_fork: false,
             ioprio: 0,
             process_signals: Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
-            thread_signals: ThreadSignalState::default(),
+            thread_signals: SharedThreadSignalState::default(),
             task_lifecycle: Arc::new(std::sync::Mutex::new(
                 crate::elf::TaskLifecycleTable::with_root(1, 1, 1, true),
             )),
@@ -12846,11 +12960,11 @@ mod tests {
     }
 
     fn test_block_signal(state: &mut LoadedStaticElf, signal: libc::c_int) {
-        state.thread_signals.blocked.insert(signal);
+        state.thread_signals.lock().blocked.insert(signal);
     }
 
     fn test_blocked_mask(state: &LoadedStaticElf) -> [u8; KERNEL_SIGSET_SIZE] {
-        state.thread_signals.blocked.to_bytes()
+        state.thread_signals.lock().blocked.to_bytes()
     }
 
     fn syscall_result(
@@ -20268,7 +20382,12 @@ mod tests {
         // processing (and the same helper is used after rt_sigreturn).
         queue(&mut executor.state);
         assert_eq!(poll(&mut memory, &mut executor.state), 2);
-        executor.state.thread_signals.blocked.remove(libc::SIGUSR1);
+        executor
+            .state
+            .thread_signals
+            .lock()
+            .blocked
+            .remove(libc::SIGUSR1);
         let selected = executor
             .take_pending_signal_for_delivery()
             .unwrap()
@@ -20281,7 +20400,12 @@ mod tests {
         test_block_signal(&mut executor.state, libc::SIGUSR1);
         queue(&mut executor.state);
         assert_eq!(poll(&mut memory, &mut executor.state), 2);
-        executor.state.thread_signals.blocked.remove(libc::SIGUSR1);
+        executor
+            .state
+            .thread_signals
+            .lock()
+            .blocked
+            .remove(libc::SIGUSR1);
         let suppressed = executor
             .take_pending_signal_for_delivery()
             .unwrap()
@@ -20293,7 +20417,12 @@ mod tests {
         // alias ready again for the replacement signal.
         test_block_signal(&mut executor.state, libc::SIGUSR1);
         queue(&mut executor.state);
-        executor.state.thread_signals.blocked.remove(libc::SIGUSR1);
+        executor
+            .state
+            .thread_signals
+            .lock()
+            .blocked
+            .remove(libc::SIGUSR1);
         let selected = executor
             .take_pending_signal_for_delivery()
             .unwrap()
@@ -20409,7 +20538,13 @@ mod tests {
             negative_errno(libc::EINVAL),
             "ordinary descriptor validation must precede the limitation",
         );
-        assert!(standalone.thread_signals.pending.contains(libc::SIGUSR1));
+        assert!(
+            standalone
+                .thread_signals
+                .lock()
+                .pending
+                .contains(libc::SIGUSR1)
+        );
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -20426,7 +20561,13 @@ mod tests {
             ),
             3,
         );
-        assert!(standalone.thread_signals.pending.contains(libc::SIGUSR1));
+        assert!(
+            standalone
+                .thread_signals
+                .lock()
+                .pending
+                .contains(libc::SIGUSR1)
+        );
         assert_eq!(standalone.files.len(), 1);
 
         let mut reverse_leader = ElfExecutor::new(test_state(&root.0), false);
@@ -20462,6 +20603,7 @@ mod tests {
             reverse_worker
                 .state
                 .thread_signals
+                .lock()
                 .pending
                 .contains(libc::SIGUSR1)
         );
@@ -21861,7 +22003,7 @@ mod tests {
         assert!(pending.contains(libc::SIGUSR1));
         assert!(pending.contains(libc::SIGUSR2));
 
-        state.thread_signals.blocked.remove(libc::SIGUSR2);
+        state.thread_signals.lock().blocked.remove(libc::SIGUSR2);
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -21919,7 +22061,7 @@ mod tests {
             ),
             0,
         );
-        assert!(state.thread_signals.pending.is_empty());
+        assert!(state.thread_signals.lock().pending.is_empty());
         assert!(
             state
                 .process_signals
@@ -22048,7 +22190,7 @@ mod tests {
         );
         assert_eq!(leader.signal_disposition(signal), SignalDisposition::Ignore);
         assert!(
-            worker.state.thread_signals.pending.contains(signal),
+            worker.state.thread_signals.lock().pending.contains(signal),
             "a sibling's old row remains physically private",
         );
         assert!(
@@ -22082,7 +22224,7 @@ mod tests {
             negative_errno(libc::EAGAIN),
             "the sibling's stale row must not be selectable by rt_sigtimedwait",
         );
-        worker.state.thread_signals.blocked.remove(signal);
+        worker.state.thread_signals.lock().blocked.remove(signal);
         assert!(!worker.has_eligible_pending_signal());
         assert_eq!(worker.take_pending_signal(), None);
 
@@ -22112,7 +22254,7 @@ mod tests {
             ),
             0,
         );
-        worker.state.thread_signals.blocked.remove(signal);
+        worker.state.thread_signals.lock().blocked.remove(signal);
         let delivered = worker
             .take_pending_signal()
             .expect("the post-ignore blocked event was lost on handler reinstall");
@@ -22153,7 +22295,7 @@ mod tests {
             ),
             0,
         );
-        worker.state.thread_signals.blocked.remove(signal);
+        worker.state.thread_signals.lock().blocked.remove(signal);
         assert_eq!(worker.take_pending_signal(), None);
     }
 
@@ -22205,7 +22347,7 @@ mod tests {
             u64::MAX,
         );
         assert!(
-            state.thread_signals.pending.contains(signal),
+            state.thread_signals.lock().pending.contains(signal),
             "overflow must not discard the existing pending event",
         );
         assert!(ElfExecutor::new(state, false).has_eligible_pending_signal());
@@ -25282,7 +25424,7 @@ mod tests {
             negative_errno(libc::EFAULT)
         );
         assert!(
-            state.thread_signals.altstack.is_none(),
+            state.thread_signals.lock().altstack.is_none(),
             "disabled altstack remains applied if copying the old stack fails"
         );
         assert_eq!(
@@ -25304,8 +25446,14 @@ mod tests {
             test_signal_action(&child, libc::SIGUSR1),
             Some(expected_action)
         );
-        assert_eq!(child.thread_signals.blocked, state.thread_signals.blocked);
-        assert_eq!(child.thread_signals.altstack, state.thread_signals.altstack);
+        assert_eq!(
+            child.thread_signals.lock().blocked,
+            state.thread_signals.lock().blocked
+        );
+        assert_eq!(
+            child.thread_signals.lock().altstack,
+            state.thread_signals.lock().altstack
+        );
     }
 
     #[test]
@@ -25321,7 +25469,7 @@ mod tests {
             .files
             .insert(4, std::fs::File::open(&path).unwrap());
         previous.cloexec_fds.extend([libc::STDIN_FILENO, 4]);
-        previous.thread_signals.altstack = Some(GuestStack {
+        previous.thread_signals.lock().altstack = Some(GuestStack {
             sp: 1,
             flags: 0,
             size: 16,
@@ -25352,7 +25500,7 @@ mod tests {
             Some(canonical_ignored)
         );
         assert_eq!(test_signal_action(&replacement, libc::SIGUSR2), None);
-        assert!(replacement.thread_signals.altstack.is_none());
+        assert!(replacement.thread_signals.lock().altstack.is_none());
         assert_eq!(replacement.pgid, 55, "exec preserves the process group");
         assert_eq!(
             replacement
@@ -25379,7 +25527,7 @@ mod tests {
             size: libc::MINSIGSTKSZ as u64,
         };
         let top = stack.sp + stack.size;
-        state.thread_signals.altstack = Some(stack);
+        state.thread_signals.lock().altstack = Some(stack);
 
         for (current, on_stack) in [(stack.sp, false), (stack.sp + 1, true), (top, true)] {
             assert_eq!(
@@ -25415,7 +25563,7 @@ mod tests {
                 ),
                 negative_errno(libc::EPERM),
             );
-            assert_eq!(state.thread_signals.altstack, Some(stack));
+            assert_eq!(state.thread_signals.lock().altstack, Some(stack));
         }
         assert_eq!(
             sigaltstack(
@@ -25427,7 +25575,7 @@ mod tests {
             0,
             "the lower bound is not part of a downward-growing altstack",
         );
-        assert_eq!(state.thread_signals.altstack, Some(replacement));
+        assert_eq!(state.thread_signals.lock().altstack, Some(replacement));
     }
 
     #[test]
@@ -25452,7 +25600,7 @@ mod tests {
             ),
             0,
         );
-        assert_eq!(state.thread_signals.altstack, Some(overflowing));
+        assert_eq!(state.thread_signals.lock().altstack, Some(overflowing));
         assert_eq!(
             GuestStack::decode(read_guest_bytes::<24>(&memory, OLD).unwrap()),
             GuestStack {
@@ -25494,7 +25642,7 @@ mod tests {
     #[test]
     fn sa_onstack_placement_obeys_boundaries_and_autodisarm() {
         let root = TestDir::new();
-        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let executor = ElfExecutor::new(test_state(&root.0), false);
         let stack = GuestStack {
             sp: 0x8000,
             flags: 0,
@@ -25505,7 +25653,7 @@ mod tests {
             flags: libc::SA_ONSTACK as u64,
             ..Default::default()
         };
-        executor.state.thread_signals.altstack = Some(stack);
+        executor.state.thread_signals.lock().altstack = Some(stack);
         for current in [stack.sp + 1, top] {
             assert_eq!(
                 executor.signal_stack_top(action, current),
@@ -25523,7 +25671,7 @@ mod tests {
             flags: SS_AUTODISARM,
             ..stack
         };
-        executor.state.thread_signals.altstack = Some(autodisarm);
+        executor.state.thread_signals.lock().altstack = Some(autodisarm);
         assert_eq!(
             executor.signal_stack_top(action, stack.sp + 1),
             Ok((top, Some(stack.sp), false, true)),
@@ -25541,8 +25689,13 @@ mod tests {
             flags: 0,
             size: libc::MINSIGSTKSZ as u64,
         };
-        executor.state.thread_signals.altstack = Some(original_stack);
-        executor.state.thread_signals.blocked.insert(libc::SIGUSR1);
+        executor.state.thread_signals.lock().altstack = Some(original_stack);
+        executor
+            .state
+            .thread_signals
+            .lock()
+            .blocked
+            .insert(libc::SIGUSR1);
         let mut restored_mask = KernelSigset::default();
         restored_mask.insert(libc::SIGUSR2);
         for invalid_stack in [
@@ -25562,7 +25715,10 @@ mod tests {
                 invalid_stack,
                 original_stack.sp + 1,
             );
-            assert_eq!(executor.state.thread_signals.altstack, Some(original_stack));
+            assert_eq!(
+                executor.state.thread_signals.lock().altstack,
+                Some(original_stack)
+            );
         }
 
         let overflowing_stack = GuestStack {
@@ -25572,11 +25728,11 @@ mod tests {
         };
         executor.restore_signal_thread_state(restored_mask, overflowing_stack, original_stack.sp);
         assert_eq!(
-            executor.state.thread_signals.altstack,
+            executor.state.thread_signals.lock().altstack,
             Some(overflowing_stack),
             "Linux stores the descriptor without eagerly adding sp and size",
         );
-        executor.state.thread_signals.altstack = Some(original_stack);
+        executor.state.thread_signals.lock().altstack = Some(original_stack);
 
         let distinct_valid_stack = GuestStack {
             sp: 0x20_000,
@@ -25589,7 +25745,7 @@ mod tests {
             original_stack.sp + 1,
         );
         assert_eq!(
-            executor.state.thread_signals.altstack,
+            executor.state.thread_signals.lock().altstack,
             Some(original_stack),
             "rt_sigreturn ignores EPERM from replacing an active altstack",
         );
@@ -25598,6 +25754,7 @@ mod tests {
             !executor
                 .state
                 .thread_signals
+                .lock()
                 .blocked
                 .contains(libc::SIGUSR1)
         );
@@ -25605,6 +25762,7 @@ mod tests {
             executor
                 .state
                 .thread_signals
+                .lock()
                 .blocked
                 .contains(libc::SIGUSR2)
         );
@@ -25619,7 +25777,7 @@ mod tests {
             flags: 0,
             size: libc::MINSIGSTKSZ as u64,
         };
-        executor.state.thread_signals.altstack = Some(original_stack);
+        executor.state.thread_signals.lock().altstack = Some(original_stack);
         let mut restored_mask = KernelSigset::default();
         restored_mask.insert(libc::SIGUSR2);
         let invalid_stack = GuestStack {
@@ -25628,12 +25786,16 @@ mod tests {
             size: libc::MINSIGSTKSZ as u64,
         };
         executor.restore_signal_thread_state(restored_mask, invalid_stack, original_stack.sp);
-        assert_eq!(executor.state.thread_signals.altstack, Some(original_stack));
+        assert_eq!(
+            executor.state.thread_signals.lock().altstack,
+            Some(original_stack)
+        );
 
         assert!(
             !executor
                 .state
                 .thread_signals
+                .lock()
                 .blocked
                 .contains(libc::SIGUSR1)
         );
@@ -25641,6 +25803,7 @@ mod tests {
             executor
                 .state
                 .thread_signals
+                .lock()
                 .blocked
                 .contains(libc::SIGUSR2)
         );
@@ -26107,7 +26270,12 @@ mod tests {
             for exec_depth in 1..=2 {
                 executor.replace_after_exec(test_state(&root.0));
                 assert!(
-                    executor.state.thread_signals.blocked.contains(signal),
+                    executor
+                        .state
+                        .thread_signals
+                        .lock()
+                        .blocked
+                        .contains(signal),
                     "{label} mask was not preserved across exec {exec_depth}",
                 );
                 assert_eq!(
@@ -26115,7 +26283,14 @@ mod tests {
                     Some(negative_errno(libc::ENOSYS)),
                     "{label} pending signal became eligible after exec {exec_depth}",
                 );
-                assert!(executor.state.thread_signals.blocked.contains(signal));
+                assert!(
+                    executor
+                        .state
+                        .thread_signals
+                        .lock()
+                        .blocked
+                        .contains(signal)
+                );
                 let still_pending = if process_directed {
                     executor
                         .state
@@ -26125,7 +26300,12 @@ mod tests {
                         .shared_pending
                         .contains(signal)
                 } else {
-                    executor.state.thread_signals.pending.contains(signal)
+                    executor
+                        .state
+                        .thread_signals
+                        .lock()
+                        .pending
+                        .contains(signal)
                 };
                 assert!(still_pending, "{label} pending signal was consumed");
                 let mut observed = [0; KERNEL_SIGSET_SIZE];
@@ -27986,7 +28166,7 @@ mod tests {
                 negative_errno(error),
                 "target={target}, signal={signal}",
             );
-            assert!(state.thread_signals.pending.is_empty());
+            assert!(state.thread_signals.lock().pending.is_empty());
             assert!(
                 state
                     .process_signals
@@ -28133,7 +28313,7 @@ mod tests {
             negative_errno(libc::ENOSYS),
             "cross-process fanout is refused before selecting a recipient",
         );
-        assert!(caller.state.thread_signals.pending.is_empty());
+        assert!(caller.state.thread_signals.lock().pending.is_empty());
         assert!(
             caller
                 .state
@@ -28143,7 +28323,7 @@ mod tests {
                 .shared_pending
                 .is_empty()
         );
-        assert!(foreign.state.thread_signals.pending.is_empty());
+        assert!(foreign.state.thread_signals.lock().pending.is_empty());
         assert!(
             foreign
                 .state
@@ -28182,7 +28362,7 @@ mod tests {
             negative_errno(libc::ENOSYS),
             "foreign leaderless delivery is refused before pending mutation",
         );
-        assert!(caller.state.thread_signals.pending.is_empty());
+        assert!(caller.state.thread_signals.lock().pending.is_empty());
         assert!(
             worker
                 .state
@@ -28334,7 +28514,7 @@ mod tests {
             )),
             negative_errno(libc::ENOSYS),
         );
-        assert!(parent.state.thread_signals.pending.is_empty());
+        assert!(parent.state.thread_signals.lock().pending.is_empty());
         assert!(
             parent
                 .state
@@ -28344,7 +28524,7 @@ mod tests {
                 .shared_pending
                 .is_empty()
         );
-        assert!(child.state.thread_signals.pending.is_empty());
+        assert!(child.state.thread_signals.lock().pending.is_empty());
         assert!(
             child
                 .state
@@ -28394,8 +28574,8 @@ mod tests {
             let (worker, worker_result) = worker_thread.join().unwrap();
             assert_eq!(leader_result, negative_errno(libc::ENOSYS));
             assert_eq!(worker_result, negative_errno(libc::ENOSYS));
-            assert!(leader.state.thread_signals.pending.is_empty());
-            assert!(worker.state.thread_signals.pending.is_empty());
+            assert!(leader.state.thread_signals.lock().pending.is_empty());
+            assert!(worker.state.thread_signals.lock().pending.is_empty());
             assert!(
                 leader
                     .state
@@ -28524,8 +28704,22 @@ mod tests {
 
         worker.defer_signal_delivery(event).unwrap();
 
-        assert!(worker.state.thread_signals.pending.contains(libc::SIGUSR1));
-        assert!(!leader.state.thread_signals.pending.contains(libc::SIGUSR1));
+        assert!(
+            worker
+                .state
+                .thread_signals
+                .lock()
+                .pending
+                .contains(libc::SIGUSR1)
+        );
+        assert!(
+            !leader
+                .state
+                .thread_signals
+                .lock()
+                .pending
+                .contains(libc::SIGUSR1)
+        );
         assert!(
             !leader
                 .state
@@ -28698,11 +28892,19 @@ mod tests {
         assert_eq!(pending.event.signal(), libc::SIGUSR2);
         assert_eq!(executor.signal_action(pending.event.signal()), replacement);
         executor.enter_signal_handler(pending, replacement, false);
-        assert!(executor.state.thread_signals.blocked.contains(libc::SIGINT));
+        assert!(
+            executor
+                .state
+                .thread_signals
+                .lock()
+                .blocked
+                .contains(libc::SIGINT)
+        );
         assert!(
             !executor
                 .state
                 .thread_signals
+                .lock()
                 .blocked
                 .contains(libc::SIGTERM)
         );
@@ -28728,7 +28930,12 @@ mod tests {
         let selected = executor.take_pending_signal().unwrap();
         assert_eq!(selected.event.signal(), libc::SIGUSR1);
 
-        executor.state.thread_signals.blocked.insert(libc::SIGUSR2);
+        executor
+            .state
+            .thread_signals
+            .lock()
+            .blocked
+            .insert(libc::SIGUSR2);
         let mut info = selected.event.siginfo();
         info[..4].copy_from_slice(&libc::SIGUSR2.to_ne_bytes());
         let replacement = reverie::SignalEvent::new(
@@ -28752,6 +28959,7 @@ mod tests {
             executor
                 .state
                 .thread_signals
+                .lock()
                 .pending
                 .contains(libc::SIGUSR2)
         );
@@ -28810,7 +29018,7 @@ mod tests {
     #[test]
     fn leader_targeted_signal_does_not_mutate_worker_signal_state() {
         let dir = TestDir::new();
-        let (mut worker, _leader, leader_tid) = worker_state(&dir, 7);
+        let (mut worker, mut leader, leader_tid) = worker_state(&dir, 7);
         let worker = &mut worker.state;
         let pid = worker.pid;
         test_install_signal_action(worker, libc::SIGUSR1, custom_action(0x4321));
@@ -28823,15 +29031,18 @@ mod tests {
             &[pid as u64, leader_tid as u64, libc::SIGUSR1 as u64, 0, 0, 0],
         ));
 
-        assert!(
-            result < 0,
-            "a leader-targeted signal must not report success"
+        assert_eq!(result, 0, "the named live receiver accepts the signal");
+        let delivered = leader.take_pending_signal().expect("leader event missing");
+        assert_eq!(
+            delivered.event,
+            event_for_thread(libc::SIGUSR1, pid, leader_tid).unwrap()
         );
         assert_eq!(
-            result,
-            negative_errno(libc::ENOSYS),
-            "a live sibling is a backend limitation, not a missing target"
+            leader.take_pending_signal(),
+            None,
+            "one send produces one event"
         );
+        assert!(worker.thread_signals.lock().pending.is_empty());
         assert_eq!(
             test_signal_actions(worker),
             before_actions,
@@ -28846,13 +29057,14 @@ mod tests {
         // A blocked signal makes the no-mutation requirement explicit. If the
         // target is incorrectly compared with this worker's process id, the
         // wrong branch reports success and queues the signal in this worker.
-        // Correct live-sibling refusal changes no pending state.
+        // Successful receiver routing still changes no sender pending state.
         let blocked = libc::SIGUSR2;
         test_block_signal(worker, blocked);
         let pending_before = {
             let process_signals = worker.process_signals.lock().unwrap();
             worker
                 .thread_signals
+                .lock()
                 .pending
                 .pending_mask(&process_signals.pending_generations)
         };
@@ -28864,14 +29076,22 @@ mod tests {
         ));
 
         assert_eq!(
-            blocked_result,
-            negative_errno(libc::ENOSYS),
-            "a blocked signal aimed at the leader is still not ours to take"
+            blocked_result, 0,
+            "the sender's blocked mask must not block the leader's signal"
         );
+        let delivered = leader
+            .take_pending_signal()
+            .expect("leader's second event missing");
+        assert_eq!(
+            delivered.event,
+            event_for_thread(blocked, pid, leader_tid).unwrap()
+        );
+        assert_eq!(leader.take_pending_signal(), None);
         let pending_after = {
             let process_signals = worker.process_signals.lock().unwrap();
             worker
                 .thread_signals
+                .lock()
                 .pending
                 .pending_mask(&process_signals.pending_generations)
         };
@@ -28926,8 +29146,8 @@ mod tests {
         }
     }
 
-    /// A positive id that names no live task is ESRCH — distinct from the
-    /// ENOSYS a live sibling gets, so the two cases stay tellable apart.
+    /// A positive id that names no live task is ESRCH, distinct from the
+    /// explicit ENOSYS refusal for a live target outside the supported scope.
     #[test]
     fn foreign_thread_id_reports_esrch_not_enosys() {
         let dir = TestDir::new();
@@ -28951,6 +29171,7 @@ mod tests {
     fn caught_and_ignored_signals_succeed_while_stop_fails_visibly() {
         let dir = TestDir::new();
         let (mut worker, _leader, _) = worker_state(&dir, 7);
+        worker.observe_ignored_signals_with_tool();
         let worker = &mut worker.state;
         let tid = worker.tid;
 
@@ -28964,7 +29185,7 @@ mod tests {
             0,
             "a caught self-thread signal must be accepted for deferred delivery"
         );
-        assert!(worker.thread_signals.pending.contains(libc::SIGUSR1));
+        assert!(worker.thread_signals.lock().pending.contains(libc::SIGUSR1));
 
         assert_eq!(
             result_of(kill_signal(
@@ -28987,9 +29208,386 @@ mod tests {
             "SIG_IGN is a real delivery outcome",
         );
         assert!(
-            worker.thread_signals.pending.contains(libc::SIGUSR2),
+            worker.thread_signals.lock().pending.contains(libc::SIGUSR2),
             "ignored signals remain observable to the Tool until the return boundary",
         );
+    }
+
+    #[test]
+    fn sibling_signal_uses_one_private_queue_and_preserves_first_siginfo() {
+        let root = TestDir::new();
+        let mut leader = ElfExecutor::new(test_state(&root.0), false);
+        let mut receiver = leader.thread_child(7).unwrap();
+        let signal = libc::SIGUSR1;
+        test_block_signal(&mut receiver.state, signal);
+        let event = event_for_thread(signal, leader.state.pid, 7).unwrap();
+        let marked = |marker| {
+            let mut info = event.siginfo();
+            info[127] = marker;
+            reverie::SignalEvent::new(signal, info, event.target()).unwrap()
+        };
+        let first = marked(0x11);
+        receiver.defer_signal_delivery(first).unwrap();
+        assert_eq!(
+            result_of(kill_signal(
+                &mut leader.state,
+                libc::SYS_tgkill as u64,
+                &[1, 7, signal as u64, 0, 0, 0]
+            )),
+            0
+        );
+        receiver.defer_signal_delivery(marked(0x22)).unwrap();
+        assert_eq!(
+            leader.take_pending_signal(),
+            None,
+            "sender cannot take receiver event"
+        );
+        assert_eq!(
+            receiver.take_pending_signal(),
+            None,
+            "blocked receiver must retain it"
+        );
+        receiver.state.thread_signals.lock().blocked.remove(signal);
+        assert_eq!(
+            receiver.take_pending_signal().unwrap().event,
+            first,
+            "sibling and Tool producers must coalesce in the original queue"
+        );
+        assert_eq!(receiver.take_pending_signal(), None);
+        assert!(
+            leader
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn sibling_signal_identity_errors_and_probes_have_no_pending_effect() {
+        let root = TestDir::new();
+        let mut leader = ElfExecutor::new(test_state(&root.0), false);
+        let receiver = leader.thread_child(7).unwrap();
+        let foreign = leader.fork_child(9, false, false).unwrap();
+        for (tgid, tid, signal, expected) in [
+            (1, 7, 0, 0),
+            (9, 9, 0, 0),
+            (2, 7, libc::SIGUSR1, -libc::ESRCH),
+            (1, 99, libc::SIGUSR1, -libc::ESRCH),
+            (9, 9, libc::SIGUSR1, -libc::ENOSYS),
+            (1, 7, libc::SIGKILL, -libc::ENOSYS),
+            (1, 7, libc::SIGSTOP, -libc::ENOSYS),
+            (1, 7, libc::SIGCHLD, -libc::ENOSYS),
+            (1, 7, libc::SIGPIPE, -libc::ENOSYS),
+            (1, 7, libc::SIGRTMIN(), -libc::ENOSYS),
+            (1, 7, 65, -libc::EINVAL),
+            (0, 7, libc::SIGUSR1, -libc::EINVAL),
+            (1, -1, libc::SIGUSR1, -libc::EINVAL),
+        ] {
+            let actions = test_signal_actions(&leader.state);
+            let mask = test_blocked_mask(&leader.state);
+            assert_eq!(
+                result_of(kill_signal(
+                    &mut leader.state,
+                    libc::SYS_tgkill as u64,
+                    &[
+                        tgid as u32 as u64,
+                        tid as u32 as u64,
+                        signal as u64,
+                        0,
+                        0,
+                        0
+                    ]
+                )),
+                i64::from(expected),
+                "tgid={tgid} tid={tid} signal={signal}"
+            );
+            assert_eq!(test_signal_actions(&leader.state), actions);
+            assert_eq!(test_blocked_mask(&leader.state), mask);
+            for state in [&leader.state, &receiver.state, &foreign.state] {
+                assert!(state.thread_signals.lock().pending.is_empty());
+                assert!(
+                    state
+                        .process_signals
+                        .lock()
+                        .unwrap()
+                        .shared_pending
+                        .is_empty()
+                );
+            }
+        }
+        assert_eq!(
+            result_of(kill_signal(
+                &mut leader.state,
+                libc::SYS_tkill as u64,
+                &[7, 0, 0, 0, 0, 0]
+            )),
+            0
+        );
+    }
+
+    #[test]
+    fn sibling_signal_retirement_and_tid_reuse_preserve_exact_registration() {
+        let root = TestDir::new();
+        let mut leader = ElfExecutor::new(test_state(&root.0), false);
+        let mut retired = leader.thread_child(7).unwrap();
+        let retired_generation = retired.task_generation;
+        let retired_weak = retired.state.thread_signals.downgrade();
+        test_block_signal(&mut retired.state, libc::SIGUSR1);
+        assert_eq!(
+            result_of(kill_signal(
+                &mut leader.state,
+                libc::SYS_tgkill as u64,
+                &[1, 7, libc::SIGUSR1 as u64, 0, 0, 0]
+            )),
+            0
+        );
+        let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            retired.execute(&SyscallRequest::new(libc::SYS_exit as u64, [0; 6]), &memory),
+            0
+        );
+        assert!(retired.take_exit().is_some());
+        assert_eq!(
+            result_of(kill_signal(
+                &mut leader.state,
+                libc::SYS_tgkill as u64,
+                &[1, 7, libc::SIGUSR1 as u64, 0, 0, 0]
+            )),
+            negative_errno(libc::ESRCH)
+        );
+        let mut replacement = leader.thread_child(7).unwrap();
+        assert_ne!(replacement.task_generation, retired_generation);
+        assert!(replacement.state.thread_signals.lock().pending.is_empty());
+        drop(retired);
+        assert!(
+            retired_weak.upgrade().is_none(),
+            "the index must not own dead state"
+        );
+        assert_eq!(
+            leader
+                .state
+                .task_lifecycle
+                .lock()
+                .unwrap()
+                .get(7)
+                .unwrap()
+                .generation,
+            replacement.task_generation,
+            "stale Drop removed the reused registration"
+        );
+        assert_eq!(
+            result_of(kill_signal(
+                &mut leader.state,
+                libc::SYS_tgkill as u64,
+                &[1, 7, libc::SIGUSR2 as u64, 0, 0, 0]
+            )),
+            0
+        );
+        assert_eq!(
+            replacement.take_pending_signal().unwrap().event.signal(),
+            libc::SIGUSR2
+        );
+        assert_eq!(replacement.take_pending_signal(), None);
+        assert_eq!(leader.take_pending_signal(), None);
+    }
+
+    #[test]
+    fn sibling_signal_uses_receiver_mask_and_runtime_observation_mode() {
+        let root = TestDir::new();
+        for observed in [false, true] {
+            for blocked in [false, true] {
+                let mut leader = ElfExecutor::new(test_state(&root.0), false);
+                let mut receiver = leader
+                    .thread_child_with_signal_observation(7, observed)
+                    .unwrap();
+                test_install_signal_action(&leader.state, libc::SIGUSR1, custom_action(1));
+                // The sender's opposite mask cannot decide target eligibility.
+                if blocked {
+                    test_block_signal(&mut receiver.state, libc::SIGUSR1);
+                } else {
+                    test_block_signal(&mut leader.state, libc::SIGUSR1);
+                }
+                let sender_mask = test_blocked_mask(&leader.state);
+                assert_eq!(
+                    result_of(kill_signal(
+                        &mut leader.state,
+                        libc::SYS_tgkill as u64,
+                        &[1, 7, libc::SIGUSR1 as u64, 0, 0, 0]
+                    )),
+                    0
+                );
+                assert_eq!(test_blocked_mask(&leader.state), sender_mask);
+                assert!(leader.state.thread_signals.lock().pending.is_empty());
+                assert_eq!(
+                    receiver
+                        .state
+                        .thread_signals
+                        .lock()
+                        .pending
+                        .contains(libc::SIGUSR1),
+                    observed || blocked
+                );
+                test_install_signal_action(&leader.state, libc::SIGUSR1, custom_action(0x4000));
+                receiver
+                    .state
+                    .thread_signals
+                    .lock()
+                    .blocked
+                    .remove(libc::SIGUSR1);
+                let pending = receiver.take_pending_signal();
+                assert_eq!(
+                    pending.is_some(),
+                    observed || blocked,
+                    "an unblocked plain ignored event must not reappear on handler installation"
+                );
+                if let Some(pending) = pending {
+                    assert_eq!(
+                        pending.event,
+                        event_for_thread(libc::SIGUSR1, 1, 7).unwrap()
+                    );
+                }
+                assert_eq!(receiver.take_pending_signal(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn sibling_signal_generation_changes_keep_only_post_ignore_event() {
+        let root = TestDir::new();
+        let mut leader = ElfExecutor::new(test_state(&root.0), false);
+        let mut receiver = leader.thread_child(7).unwrap();
+        test_block_signal(&mut receiver.state, libc::SIGUSR1);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            result_of(kill_signal(
+                &mut leader.state,
+                libc::SYS_tgkill as u64,
+                &[1, 7, libc::SIGUSR1 as u64, 0, 0, 0]
+            )),
+            0
+        );
+        let action_address = 0x100;
+        memory.write(action_address, &custom_action(1)).unwrap();
+        assert_eq!(
+            rt_sigaction(
+                &mut memory,
+                &mut leader.state,
+                &[
+                    libc::SIGUSR1 as u64,
+                    action_address,
+                    0,
+                    KERNEL_SIGSET_SIZE as u64,
+                    0,
+                    0
+                ]
+            ),
+            0
+        );
+        receiver
+            .state
+            .thread_signals
+            .lock()
+            .blocked
+            .remove(libc::SIGUSR1);
+        assert_eq!(
+            receiver.take_pending_signal(),
+            None,
+            "pre-ignore event stayed eligible"
+        );
+        test_block_signal(&mut receiver.state, libc::SIGUSR1);
+        assert_eq!(
+            result_of(kill_signal(
+                &mut leader.state,
+                libc::SYS_tgkill as u64,
+                &[1, 7, libc::SIGUSR1 as u64, 0, 0, 0]
+            )),
+            0
+        );
+        memory
+            .write(action_address, &custom_action(0x4000))
+            .unwrap();
+        assert_eq!(
+            rt_sigaction(
+                &mut memory,
+                &mut leader.state,
+                &[
+                    libc::SIGUSR1 as u64,
+                    action_address,
+                    0,
+                    KERNEL_SIGSET_SIZE as u64,
+                    0,
+                    0
+                ]
+            ),
+            0
+        );
+        receiver
+            .state
+            .thread_signals
+            .lock()
+            .blocked
+            .remove(libc::SIGUSR1);
+        assert_eq!(
+            receiver.take_pending_signal().unwrap().event.signal(),
+            libc::SIGUSR1
+        );
+        assert_eq!(receiver.take_pending_signal(), None);
+    }
+
+    #[test]
+    fn accepted_sibling_signal_survives_exec_and_endpoint_replacement() {
+        let root = TestDir::new();
+        let mut leader = ElfExecutor::new(test_state(&root.0), false);
+        let mut sender = leader.thread_child(7).unwrap();
+        test_block_signal(&mut leader.state, libc::SIGUSR1);
+        test_install_signal_action(&leader.state, libc::SIGUSR1, custom_action(0x4000));
+        assert_eq!(
+            result_of(kill_signal(
+                &mut sender.state,
+                libc::SYS_tgkill as u64,
+                &[1, 1, libc::SIGUSR1 as u64, 0, 0, 0]
+            )),
+            0
+        );
+        let old_target = leader.state.thread_signals.downgrade();
+        // Successful exec's runtime tears down siblings before replacing state.
+        drop(sender);
+        leader.replace_after_exec(test_state(&root.0));
+        assert!(old_target.upgrade().is_none());
+        assert!(
+            leader
+                .state
+                .thread_signals
+                .lock()
+                .blocked
+                .contains(libc::SIGUSR1)
+        );
+        let target = leader
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap()
+            .signal_target(1)
+            .unwrap();
+        assert!(std::sync::Weak::ptr_eq(
+            &target.downgrade(),
+            &leader.state.thread_signals.downgrade()
+        ));
+        assert_eq!(leader.take_pending_signal(), None);
+        leader
+            .state
+            .thread_signals
+            .lock()
+            .blocked
+            .remove(libc::SIGUSR1);
+        assert_eq!(
+            leader.take_pending_signal().unwrap().event,
+            event_for_thread(libc::SIGUSR1, 1, 1).unwrap()
+        );
+        assert_eq!(leader.take_pending_signal(), None);
     }
 
     #[test]
