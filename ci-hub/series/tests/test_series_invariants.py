@@ -1746,6 +1746,31 @@ with series._local_snapshot_capture(parent):
                 ):
                     self.fail("contended lock unexpectedly admitted")
 
+    def test_source_identity_count_limit_refuses_and_names_the_lock(self):
+        first = row(
+            event_id="01J000000000000000000000AB",
+            run_id="campaign-2",
+            series={"run_index": 1},
+        )
+        second = row(
+            event_id="01J000000000000000000000AC",
+            run_id="campaign-3",
+            series={"run_index": 2},
+        )
+        self._write_local("first.jsonl", first)
+        self._write_local("second.jsonl", second)
+        output = Path(self.temporary.name) / "snapshot.json"
+        lock_path = series.spool_dir(self.repo) / ".append.lock"
+
+        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
+            series, "SCORECARD_SNAPSHOT_MAX_DIRECTORY_ENTRIES", 1,
+        ):
+            with self.assertRaisesRegex(
+                series.SeriesError,
+                rf"2 total directory entries.*maximum of 1.*{re.escape(str(lock_path))}",
+            ):
+                series.write_scorecard_projection_snapshot(self.repo, output)
+        self.assertFalse(output.exists())
 
 
     def _assert_total_entry_limit_stops_early(self, suffix):
