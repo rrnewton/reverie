@@ -15,7 +15,7 @@ keywords = ["linux", "instrumentation", "hermit"]
 categories = ["development-tools::debugging", "os::linux-apis"]
 
 [dependencies]
-bitflags = { version = "2.13.1", features = ["serde"], default-features = false }
+bitflags = { version = "2.13.2", features = ["serde"], default-features = false }
 derive_more = { version = "2.1.1", features = ["full"] }
 libc = "0.2.186"
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["std", "general", "system", "net"] }

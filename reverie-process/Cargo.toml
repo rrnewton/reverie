@@ -22,7 +22,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(reverie_asan)', 'cfg(sanit
 
 [dependencies]
 bincode = { version = "2", features = ["serde"] }
-bitflags = { version = "2.13.1", features = ["serde"], default-features = false }
+bitflags = { version = "2.13.2", features = ["serde"], default-features = false }
 colored = "2.1.0"
 futures = { version = "0.3.34", features = ["async-await", "compat"] }
 libc = "0.2.186"
