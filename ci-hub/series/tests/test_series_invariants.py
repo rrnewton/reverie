@@ -1291,8 +1291,8 @@ with series._local_snapshot_capture(parent):
             ])
         self.assertEqual(status, 1)
         self.assertEqual(stdout.getvalue(), "")
-        self.assertIn("snapshot availability was not established", stderr.getvalue())
-        self.assertIn("published or staging evidence may remain", stderr.getvalue())
+        self.assertIn("snapshot failed", stderr.getvalue())
+        self.assertIn("output state is not asserted", stderr.getvalue())
         self.assertIn("refusing success with named staging residue", stderr.getvalue())
         self.assertNotIn("no new snapshot was published", stderr.getvalue())
         stages = list(output.parent.glob(f".{output.name}.staging-*"))
@@ -1300,6 +1300,26 @@ with series._local_snapshot_capture(parent):
         self.assertEqual(len(stages), 1)
         self.assertEqual(output.read_bytes(), stages[0].read_bytes())
         self.assertEqual(output.stat().st_ino, stages[0].stat().st_ino)
+
+    def _counting_scandir(self, visited):
+        original = os.scandir
+
+        class CountingIterator:
+            def __init__(self, directory_fd):
+                self.inner = original(directory_fd)
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                entry = next(self.inner)
+                visited.append(entry.name)
+                return entry
+
+            def close(self):
+                self.inner.close()
+
+        return CountingIterator
 
     def test_snapshot_binds_published_tree_and_exact_local_sources(self):
         local = row(
@@ -1619,8 +1639,96 @@ with series._local_snapshot_capture(parent):
         self.assertEqual(1, rc)
         self.assertFalse(output.exists())
         self.assertEqual("", stdout.getvalue())
-        self.assertIn("snapshot availability was not established", stderr.getvalue())
-        self.assertIn("published or staging evidence may remain", stderr.getvalue())
+        self.assertIn("snapshot failed: fetch failed", stderr.getvalue())
+        self.assertIn("output state is not asserted", stderr.getvalue())
+        self.assertIn(str(output), stderr.getvalue())
+        self.assertIn("correct the named failure", stderr.getvalue())
+        self.assertNotIn("no new snapshot was published", stderr.getvalue())
+
+    def test_snapshot_cli_help_forms_name_every_flag(self):
+        import contextlib
+        import io
+
+        for flag in ("--help", "-h"):
+            with self.subTest(flag=flag):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                    stderr
+                ):
+                    rc = series.main(["snapshot", flag])
+                self.assertEqual(0, rc)
+                self.assertEqual("", stderr.getvalue())
+                self.assertIn("series.py snapshot", stdout.getvalue())
+                self.assertIn("--parent", stdout.getvalue())
+                self.assertIn("--output", stdout.getvalue())
+                self.assertIn("-h, --help", stdout.getvalue())
+
+    def test_snapshot_cli_happy_path_reports_published_identity(self):
+        import contextlib
+        import io
+
+        output = Path(self.temporary.name) / "snapshot.json"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(series, "refresh_origin_main"), contextlib.redirect_stdout(
+            stdout
+        ), contextlib.redirect_stderr(stderr):
+            rc = series.main([
+                "snapshot", "--parent", str(self.repo), "--output", str(output),
+            ])
+        self.assertEqual(0, rc)
+        self.assertEqual("", stderr.getvalue())
+        report = json.loads(stdout.getvalue())
+        self.assertEqual("available", report["state"])
+        self.assertEqual(str(output.absolute()), report["path"])
+        self.assertTrue(output.is_file())
+
+    def test_snapshot_cli_usage_error_redirects_to_help(self):
+        import contextlib
+        import io
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+            stderr
+        ):
+            rc = series.main(["snapshot", "--parent", str(self.repo)])
+        self.assertEqual(2, rc)
+        self.assertEqual("", stdout.getvalue())
+        self.assertIn("snapshot requires --output", stderr.getvalue())
+        self.assertIn("series.py snapshot --help", stderr.getvalue())
+        self.assertIn("--parent", stderr.getvalue())
+        self.assertIn("--output", stderr.getvalue())
+
+    def test_snapshot_cli_late_failure_reports_state_neutrally(self):
+        import contextlib
+        import io
+
+        output = Path(self.temporary.name) / "snapshot.json"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
+            series,
+            "_open_anonymous_snapshot_stage",
+            side_effect=OSError(errno.EOPNOTSUPP, "forced named stage"),
+        ), mock.patch.object(
+            series,
+            "_rename_noreplace",
+            side_effect=OSError(errno.ENOSYS, "forced hardlink fallback"),
+        ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = series.main([
+                "snapshot", "--parent", str(self.repo), "--output", str(output),
+            ])
+
+        self.assertEqual(1, rc)
+        self.assertEqual("", stdout.getvalue())
+        self.assertTrue(output.is_file())
+        stages = list(output.parent.glob(f".{output.name}.staging-*"))
+        self.assertEqual(1, len(stages))
+        self.assertIn("snapshot failed", stderr.getvalue())
+        self.assertIn("output state is not asserted", stderr.getvalue())
+        self.assertIn(str(output), stderr.getvalue())
+        self.assertIn(
+            str(output.parent / f".{output.name}.staging-*"), stderr.getvalue()
+        )
+        self.assertIn("Preserve any file found", stderr.getvalue())
 
     def test_lock_timeout_is_bounded_and_names_the_lock(self):
         spool = series.spool_dir(self.repo)
@@ -1638,31 +1746,54 @@ with series._local_snapshot_capture(parent):
                 ):
                     self.fail("contended lock unexpectedly admitted")
 
-    def test_source_identity_count_limit_refuses_and_names_the_lock(self):
-        first = row(
-            event_id="01J000000000000000000000AB",
-            run_id="campaign-2",
-            series={"run_index": 1},
-        )
-        second = row(
-            event_id="01J000000000000000000000AC",
-            run_id="campaign-3",
-            series={"run_index": 2},
-        )
-        self._write_local("first.jsonl", first)
-        self._write_local("second.jsonl", second)
-        output = Path(self.temporary.name) / "snapshot.json"
-        lock_path = series.spool_dir(self.repo) / ".append.lock"
 
-        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
-            series, "SCORECARD_SNAPSHOT_MAX_LOCAL_SOURCES", 1,
-        ):
-            with self.assertRaisesRegex(
-                series.SeriesError,
-                rf"2 local sources.*maximum of 1.*{re.escape(str(lock_path))}",
+
+    def _assert_total_entry_limit_stops_early(self, suffix):
+        spool = series.spool_dir(self.repo)
+        spool.mkdir(parents=True, exist_ok=True)
+        for index in range(20):
+            (spool / f"entry-{index:02d}{suffix}").write_text("not read\n")
+        lock_path = spool / ".append.lock"
+        visited = []
+
+        with series.series_spool_transition_lock(spool, exclusive=False) as lock:
+            with mock.patch.object(
+                series, "SCORECARD_SNAPSHOT_MAX_DIRECTORY_ENTRIES", 4,
+            ), mock.patch.object(
+                series.os, "scandir", side_effect=self._counting_scandir(visited),
             ):
-                series.write_scorecard_projection_snapshot(self.repo, output)
-        self.assertFalse(output.exists())
+                with self.assertRaisesRegex(
+                    series.SeriesError,
+                    rf"5 total directory entries.*maximum of 4.*"
+                    rf"{re.escape(str(lock_path))}",
+                ):
+                    series._snapshot_source_generation(lock)
+
+        self.assertEqual(5, len(visited), "entry cap was checked after a full scan")
+
+    def test_source_identity_total_entry_limit_stops_jsonl_scan_early(self):
+        self._assert_total_entry_limit_stops_early(".jsonl")
+
+    def test_source_identity_total_entry_limit_counts_non_jsonl_entries(self):
+        self._assert_total_entry_limit_stops_early(".tmp")
+
+    def test_source_identity_generation_enumerates_each_directory_once(self):
+        self._write_local("live.jsonl", row())
+        self._write_local("published/retained.jsonl", row())
+        spool = series.spool_dir(self.repo)
+        original_scandir = os.scandir
+
+        with series.series_spool_transition_lock(spool, exclusive=False) as lock:
+            with mock.patch.object(
+                series.os, "scandir", wraps=original_scandir,
+            ) as scandir:
+                series._snapshot_source_generation(lock)
+
+        self.assertEqual(
+            2,
+            scandir.call_count,
+            "source generation enumerated a directory more than once",
+        )
 
     def test_source_identity_deadline_refuses_and_names_the_lock(self):
         spool = series.spool_dir(self.repo)
@@ -1676,6 +1807,34 @@ with series._local_snapshot_capture(parent):
                     rf"identity phase exceeded 1\.000s.*{re.escape(str(spool / '.append.lock'))}",
                 ):
                     series._snapshot_source_generation(lock)
+
+    def test_source_identity_deadline_stops_slow_enumeration_early(self):
+        spool = series.spool_dir(self.repo)
+        spool.mkdir(parents=True, exist_ok=True)
+        for index in range(20):
+            (spool / f"entry-{index:02d}.tmp").write_text("not read\n")
+        visited = []
+        now = 0.0
+
+        def advancing_clock():
+            nonlocal now
+            now += 0.26
+            return now
+
+        with series.series_spool_transition_lock(spool, exclusive=False) as lock:
+            with mock.patch.object(
+                series.time, "monotonic", side_effect=advancing_clock,
+            ), mock.patch.object(
+                series.os, "scandir", side_effect=self._counting_scandir(visited),
+            ):
+                with self.assertRaisesRegex(
+                    series.SeriesError,
+                    rf"identity phase exceeded 1\.000s.*{re.escape(str(spool / '.append.lock'))}",
+                ):
+                    series._snapshot_source_generation(lock)
+
+        self.assertGreater(len(visited), 0)
+        self.assertLess(len(visited), 21, "deadline was checked after a full scan")
 
     def test_slow_row_validation_does_not_block_append(self):
         original = row(

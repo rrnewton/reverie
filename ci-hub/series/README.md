@@ -212,6 +212,12 @@ changed inode, changed byte sequence, or changed source set makes the snapshot
 unavailable instead of combining a stale published commit with an incomplete
 local spool. This command does not alter publisher retention or reaping.
 
+Each shared-lock identity phase streams directory entries and refuses after
+one second or after 4096 total entries across the live and published-retained
+directories. The count includes non-JSONL entries, and both limits are checked
+before sorting or materializing the complete source list. Source contents,
+network refreshes, validation, and output publication remain outside the lock.
+
 The output is fsynced in an unnamed temporary inode where supported, linked
 into place without replacing an existing file, then read back through a held
 no-follow descriptor before success is reported. The named fallback uses an
@@ -226,8 +232,10 @@ This command is an additive input provider only. It does not change selection
 or observation authority, does not write or separate the tracked
 `SCORECARD.md` and `ci/compat-envelope/cells.json` pair, and does not change
 their lifetime. If the published source or any local input cannot be read and
-validated, the command reports the snapshot as unavailable and writes no new
-snapshot; it never substitutes stale tracked output.
+validated, the command reports failure without claiming whether the final
+output exists. Inspect and preserve the named output and any sibling staging
+file before retrying with a new run-scoped output path. It never substitutes
+stale tracked output.
 
 ## Derived flaky cells
 

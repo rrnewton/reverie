@@ -84,8 +84,18 @@ ENVELOPE_VERSION = "stress-series/v3"
 SCORECARD_SNAPSHOT_SCHEMA = "scorecard-series-snapshot/v1"
 SCORECARD_SNAPSHOT_SOURCE = "series"
 SERIES_SPOOL_LOCK_TIMEOUT_SECONDS = 5.0
-SCORECARD_SNAPSHOT_MAX_LOCAL_SOURCES = 4096
+SCORECARD_SNAPSHOT_MAX_DIRECTORY_ENTRIES = 4096
 SCORECARD_SNAPSHOT_IDENTITY_TIMEOUT_SECONDS = 1.0
+SCORECARD_SNAPSHOT_USAGE = """usage:
+  series.py snapshot --parent <dev-hermit root> --output <run-scoped.json>
+
+Create one immutable scorecard-series-snapshot/v1 file from the exact parent
+origin/main series tree and the bounded local series sources.
+
+options:
+  --parent <dev-hermit root>  parent checkout whose series evidence is read
+  --output <run-scoped.json>  new snapshot path; an existing different file refuses
+  -h, --help                  show this help and exit successfully"""
 READABLE_ENVELOPE_VERSIONS = frozenset({
     LEGACY_ENVELOPE_VERSION,
     HOST_FACTS_ENVELOPE_VERSION,
@@ -929,8 +939,87 @@ def _open_snapshot_source(
         raise
 
 
-def _jsonl_names(directory_fd: int) -> list[str]:
-    return sorted(name for name in os.listdir(directory_fd) if name.endswith(".jsonl"))
+def _bounded_jsonl_names(
+    directory_fd: int,
+    *,
+    display: str,
+    deadline: float,
+    entries_seen: int,
+    context: str,
+) -> tuple[list[str], int]:
+    """Stream one directory under the snapshot's total entry/time budget."""
+    names = []
+    try:
+        iterator = os.scandir(directory_fd)
+    except OSError as error:
+        raise SeriesError(
+            f"cannot enumerate scorecard snapshot sources in {display}: {error}"
+        ) from error
+    try:
+        while True:
+            if time.monotonic() > deadline:
+                raise SeriesError(
+                    "scorecard source identity phase exceeded "
+                    f"{SCORECARD_SNAPSHOT_IDENTITY_TIMEOUT_SECONDS:.3f}s {context}"
+                )
+            try:
+                entry = next(iterator)
+            except StopIteration:
+                break
+            entries_seen += 1
+            if entries_seen > SCORECARD_SNAPSHOT_MAX_DIRECTORY_ENTRIES:
+                raise SeriesError(
+                    "scorecard source identity phase inspected "
+                    f"{entries_seen} total directory entries, exceeding the explicit "
+                    f"maximum of {SCORECARD_SNAPSHOT_MAX_DIRECTORY_ENTRIES} {context}"
+                )
+            if time.monotonic() > deadline:
+                raise SeriesError(
+                    "scorecard source identity phase exceeded "
+                    f"{SCORECARD_SNAPSHOT_IDENTITY_TIMEOUT_SECONDS:.3f}s {context}"
+                )
+            if entry.name.endswith(".jsonl"):
+                names.append(entry.name)
+    except OSError as error:
+        raise SeriesError(
+            f"cannot enumerate scorecard snapshot sources in {display}: {error}"
+        ) from error
+    finally:
+        iterator.close()
+    names.sort()
+    return names, entries_seen
+
+
+def _bounded_snapshot_source_keys(
+    spool_fd: int,
+    published_fd: int | None,
+    *,
+    spool: Path,
+    deadline: float,
+    context: str,
+) -> list[tuple[str, str]]:
+    """Return deterministic source keys without first materializing all names."""
+    live_names, entries_seen = _bounded_jsonl_names(
+        spool_fd,
+        display=str(spool),
+        deadline=deadline,
+        entries_seen=0,
+        context=context,
+    )
+    published_names = []
+    if published_fd is not None:
+        published_names, entries_seen = _bounded_jsonl_names(
+            published_fd,
+            display=str(spool / "published"),
+            deadline=deadline,
+            entries_seen=entries_seen,
+            context=context,
+        )
+    source_keys = [("live", name) for name in live_names]
+    source_keys.extend(
+        ("published-retained", f"published/{name}") for name in published_names
+    )
+    return source_keys
 
 
 @dataclass
@@ -1150,12 +1239,14 @@ class _LocalSnapshotCapture:
     def identity_generation(self) -> tuple[Any, ...]:
         """Exact source set and inode metadata, without rereading source bytes."""
         self._verify_directory()
-        current = [("live", name) for name in _jsonl_names(self.spool_fd)]
-        if self.published_fd is not None:
-            current.extend(
-                ("published-retained", f"published/{name}")
-                for name in _jsonl_names(self.published_fd)
-            )
+        deadline = time.monotonic() + SCORECARD_SNAPSHOT_IDENTITY_TIMEOUT_SECONDS
+        current = _bounded_snapshot_source_keys(
+            self.spool_fd,
+            self.published_fd,
+            spool=self.spool,
+            deadline=deadline,
+            context=f"while verifying held sources in {self.spool}",
+        )
         if current != self.source_keys:
             raise SeriesError("series spool changed while its projection snapshot was held")
         identities = []
@@ -1232,12 +1323,14 @@ def _local_snapshot_capture(parent: Path):
                 f"cannot open regular retained series directory {spool / 'published'}: {error}"
             ) from error
 
-        source_keys = [("live", name) for name in _jsonl_names(spool_fd)]
-        if published_fd is not None:
-            source_keys.extend(
-                ("published-retained", f"published/{name}")
-                for name in _jsonl_names(published_fd)
-            )
+        deadline = time.monotonic() + SCORECARD_SNAPSHOT_IDENTITY_TIMEOUT_SECONDS
+        source_keys = _bounded_snapshot_source_keys(
+            spool_fd,
+            published_fd,
+            spool=spool,
+            deadline=deadline,
+            context=f"while binding held sources in {spool}",
+        )
         capture = _LocalSnapshotCapture(
             spool=spool,
             spool_fd=spool_fd,
@@ -1290,6 +1383,7 @@ def _snapshot_source_generation(lock: _SeriesSpoolLock) -> tuple[Any, ...]:
 
     lock.verify()
     check_deadline()
+    spool_signature = _stat_signature(os.fstat(lock.spool_fd))
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         directory_flags |= os.O_NOFOLLOW
@@ -1328,20 +1422,13 @@ def _snapshot_source_generation(lock: _SeriesSpoolLock) -> tuple[Any, ...]:
                 )
             published_signature = _stat_signature(opened)
 
-        source_keys = [("live", name) for name in _jsonl_names(lock.spool_fd)]
-        if published_fd is not None:
-            source_keys.extend(
-                ("published-retained", f"published/{name}")
-                for name in _jsonl_names(published_fd)
-            )
-        check_deadline()
-        if len(source_keys) > SCORECARD_SNAPSHOT_MAX_LOCAL_SOURCES:
-            raise SeriesError(
-                "scorecard source identity phase found "
-                f"{len(source_keys)} local sources, exceeding the explicit maximum "
-                f"of {SCORECARD_SNAPSHOT_MAX_LOCAL_SOURCES} while holding "
-                f"shared series spool lock {lock_path}"
-            )
+        source_keys = _bounded_snapshot_source_keys(
+            lock.spool_fd,
+            published_fd,
+            spool=lock.spool,
+            deadline=deadline,
+            context=f"while holding shared series spool lock {lock_path}",
+        )
 
         identities = []
         for kind, relative in source_keys:
@@ -1358,16 +1445,6 @@ def _snapshot_source_generation(lock: _SeriesSpoolLock) -> tuple[Any, ...]:
             identities.append((kind, relative, _stat_signature(status)))
             check_deadline()
 
-        current_keys = [("live", name) for name in _jsonl_names(lock.spool_fd)]
-        if published_fd is not None:
-            current_keys.extend(
-                ("published-retained", f"published/{name}")
-                for name in _jsonl_names(published_fd)
-            )
-        if current_keys != source_keys:
-            raise SeriesError(
-                "series source set changed while its identity was measured"
-            )
         for kind, relative, expected in identities:
             if kind == "live":
                 directory_fd, name = lock.spool_fd, relative
@@ -1381,6 +1458,20 @@ def _snapshot_source_generation(lock: _SeriesSpoolLock) -> tuple[Any, ...]:
                     f"{relative}"
                 )
             check_deadline()
+        held_spool = os.fstat(lock.spool_fd)
+        try:
+            named_spool = os.lstat(lock.spool)
+        except OSError as error:
+            raise SeriesError(
+                f"series spool changed while its identity was measured: {error}"
+            ) from error
+        if (
+            _stat_signature(held_spool) != spool_signature
+            or _stat_signature(named_spool) != spool_signature
+        ):
+            raise SeriesError(
+                "series source set changed while its identity was measured"
+            )
         if published_fd is not None:
             held = os.fstat(published_fd)
             named = _lstat_at(
@@ -3780,38 +3871,59 @@ def _cmd_history(argv: list[str]) -> int:
 
 
 def _cmd_snapshot(argv: list[str]) -> int:
+    if argv in (["--help"], ["-h"]):
+        print(SCORECARD_SNAPSHOT_USAGE)
+        return 0
+    if any(argument in {"-h", "--help"} for argument in argv):
+        return _snapshot_usage_error("help cannot be combined with other arguments")
+
     parent = None
     output = None
     i = 0
     while i < len(argv):
-        if argv[i] == "--parent" and i + 1 < len(argv):
+        if argv[i] == "--parent":
+            if i + 1 >= len(argv):
+                return _snapshot_usage_error("--parent requires a value")
             parent = argv[i + 1]
             i += 2
             continue
-        if argv[i] == "--output" and i + 1 < len(argv):
+        if argv[i] == "--output":
+            if i + 1 >= len(argv):
+                return _snapshot_usage_error("--output requires a value")
             output = argv[i + 1]
             i += 2
             continue
-        return _usage(f"unknown snapshot argument {argv[i]!r}")
+        return _snapshot_usage_error(f"unknown snapshot argument {argv[i]!r}")
     missing = [
         name
         for name, value in (("--parent", parent), ("--output", output))
         if not value
     ]
     if missing:
-        return _usage(f"snapshot requires {', '.join(missing)}")
+        return _snapshot_usage_error(f"snapshot requires {', '.join(missing)}")
+    output_path = Path(output)
     try:
-        report = write_scorecard_projection_snapshot(parent, output)
+        report = write_scorecard_projection_snapshot(parent, output_path)
     except (MalformedEvent, SeriesError, OSError, subprocess.SubprocessError) as error:
+        staging_glob = output_path.parent / f".{output_path.name}.staging-*"
         print(
-            "series: snapshot availability was not established; "
-            "published or staging evidence may remain: "
-            f"{error}",
+            f"series: snapshot failed: {error}\n"
+            "series: output state is not asserted after failure; inspect "
+            f"{output_path} and {staging_glob}. Preserve any file found, correct "
+            "the named failure, then retry with a new run-scoped --output. Run "
+            "`series.py snapshot --help` for usage.",
             file=sys.stderr,
         )
         return 1
     print(json.dumps(report, sort_keys=True, separators=(",", ":")))
     return 0
+
+
+def _snapshot_usage_error(message: str) -> int:
+    print(f"series: {message}", file=sys.stderr)
+    print("Run `series.py snapshot --help` for the supported flags.", file=sys.stderr)
+    print(SCORECARD_SNAPSHOT_USAGE, file=sys.stderr)
+    return 2
 
 
 def _usage(message: str) -> int:
