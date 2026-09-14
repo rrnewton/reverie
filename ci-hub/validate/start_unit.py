@@ -659,6 +659,28 @@ class WrkslotsIdentity:
     generation: int
 
 
+@dataclass(frozen=True)
+class CreateJournalCheckout:
+    """One provider-verified checkout from an interrupted slot creation."""
+
+    name: str
+    path: Path
+    branch: str
+    head: str
+
+
+@dataclass(frozen=True)
+class CreateJournalScope:
+    """Read-only provider evidence for one incomplete agent-slot creation."""
+
+    state: str
+    slot: str
+    agent: str
+    slot_path: Path
+    checkouts: tuple[CreateJournalCheckout, ...]
+    dirty_checkouts: frozenset[str]
+
+
 @dataclass
 class CleanupRow:
     path: Path
@@ -1430,6 +1452,12 @@ def default_unit(agent: str, target: str) -> str:
     )
 
 
+def fresh_validation_slot(target: str) -> str:
+    """Choose one unique wrkslots identity before read-only entry checks."""
+
+    return f"validate-fresh-{target[:12]}-{os.getpid()}-{secrets.token_hex(4)}"
+
+
 def _validate_output_paths(root: Path, unit: str) -> tuple[Path, Path]:
     base = root / "ignored/validate/artifacts" / unit
     return base / "e2e", base / "safe-ci-dag-runner"
@@ -1597,6 +1625,7 @@ def prepare_fresh_checkout(
     repo: str,
     tool_root: Path = ROOT,
     independent_refs: bool = False,
+    slot: str | None = None,
 ) -> tuple[Path, WrkslotsIdentity | None]:
     """Materialize `target` into a private temp worktree and PROVE it is usable.
 
@@ -1626,7 +1655,7 @@ def prepare_fresh_checkout(
     """
     parent = require_guest_visible_root(parent, role="fresh-checkout parent")
     state_root = parent.parent.parent
-    slot = f"validate-fresh-{target[:12]}-{os.getpid()}-{secrets.token_hex(4)}"
+    slot = slot or fresh_validation_slot(target)
     fresh = require_guest_visible_root(parent / slot, role="fresh checkout")
     # Ordinary validation uses a worktree: it shares the source object store,
     # so this costs no object copy. Frozen validation needs independent refs.
@@ -2382,7 +2411,7 @@ def archive_orphaned_receipts(
 def recorded_checkout_parents(root: Path, record: Mapping[str, Any]) -> list[Path]:
     """Exact parents in which this record may own a disposable checkout."""
     parents = [
-        validate_checkout_parent(root),
+        (root / "worktrees" / "validate").resolve(),
         # Before disposable validation checkouts were separated from retained
         # evidence, ordinary runs put them directly below ignored/.  Those
         # directories are still validate-only checkouts, and a missing
@@ -2393,7 +2422,12 @@ def recorded_checkout_parents(root: Path, record: Mapping[str, Any]) -> list[Pat
     if record.get("admission") == FROZEN_RESULT_ADMISSION:
         # Accept the short-lived in-boundary location too, so interrupted
         # frozen runs made between 2ad960917 and this repair remain sweepable.
-        parents.insert(0, frozen_checkout_parent(root))
+        frozen = (root.parent / f".{root.name}-frozen-validate").resolve()
+        if frozen == root or root in frozen.parents:
+            raise ValueError(
+                "frozen validation checkout parent must be outside dev-hermit"
+            )
+        parents.insert(0, frozen)
     return parents
 
 
@@ -2418,6 +2452,369 @@ def recorded_wrkslots_identity(
     return WrkslotsIdentity(slot, generation)
 
 
+LEGACY_IN_PLACE_PRODUCER = "systemd-user-v1"
+
+
+def _resolved_project_path(root: Path, raw: object, *, role: str) -> Path:
+    if not isinstance(raw, str) or not raw:
+        raise ValueError(f"{role} is not a non-empty path")
+    relative = Path(raw)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"{role} is not project-relative")
+    resolved = (root / relative).resolve()
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError as error:
+        raise ValueError(f"{role} escapes the project root") from error
+    return resolved
+
+
+def _paths_overlap(first: Path, second: Path) -> bool:
+    try:
+        first.relative_to(second)
+        return True
+    except ValueError:
+        pass
+    try:
+        second.relative_to(first)
+        return True
+    except ValueError:
+        return False
+
+
+def classify_create_journal_scopes(
+    root: Path,
+    *,
+    prospective_slot: str,
+    prospective_checkout: Path,
+    run: Runner,
+    tool_root: Path = ROOT,
+) -> tuple[CreateJournalScope, ...]:
+    """Read and strictly bind provider evidence for interrupted slot creates."""
+
+    state_root = root.resolve()
+    prospective = prospective_checkout.resolve()
+    cargo_parent = (state_root / "ignored/validate/cargo-homes").resolve()
+    expected_requested_path = (
+        state_root / "worktrees" / "validate" / prospective_slot
+    ).resolve()
+    requested_agent = f"validate-{prospective_slot}"
+    result = run(
+        [
+            str(tool_root / "ci-hub/bin/wrkslots"),
+            "--project-root",
+            str(state_root),
+            "--allow-existing-unregistered-worktrees",
+            "classify-create-journals",
+            prospective_slot,
+            "--slot-type",
+            "validate",
+            "--agent",
+            requested_agent,
+            "--format",
+            "json",
+        ],
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        raise RuntimeError(f"wrkslots could not classify create journals: {detail}")
+
+    top_fields = {"blocking", "journals", "requested", "schema"}
+    journal_fields = {
+        "agent",
+        "checkouts",
+        "coordinator",
+        "coordinator_state",
+        "created",
+        "dirty_checkouts",
+        "journal",
+        "journal_identity",
+        "machine",
+        "owner",
+        "owner_state",
+        "planned",
+        "registry_state",
+        "slot",
+        "slot_path",
+        "slot_type",
+        "state",
+    }
+    checkout_fields = {"branch", "dirty", "head", "name", "path"}
+    try:
+        value = json.loads(result.stdout)
+        if not isinstance(value, dict) or set(value) != top_fields:
+            raise ValueError("unexpected top-level fields")
+        if value.get("schema") != 2 or value.get("blocking") is not False:
+            raise ValueError("unexpected classification schema or blocking state")
+        requested = value.get("requested")
+        if requested != {
+            "agent": requested_agent,
+            "slot": prospective_slot,
+            "slot_path": str(expected_requested_path),
+            "slot_type": "validate",
+        }:
+            raise ValueError("classification does not bind the requested validation slot")
+        rows = value.get("journals")
+        if not isinstance(rows, list):
+            raise ValueError("journal classifications are not a list")
+        scopes: list[CreateJournalScope] = []
+        seen_slots: set[tuple[str, str]] = set()
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != journal_fields:
+                raise ValueError("malformed journal classification")
+            state = row.get("state")
+            owner_state = row.get("owner_state")
+            coordinator_state = row.get("coordinator_state")
+            registry_state = row.get("registry_state")
+            expected_process_state = {
+                "live-incomplete-create": "live",
+                "dead-incomplete-create": "dead",
+            }.get(state)
+            if state == "completed-create":
+                if registry_state != "exact-active":
+                    raise ValueError("completed journal has no exact active row")
+            elif (
+                expected_process_state is None
+                or owner_state != expected_process_state
+                or coordinator_state != expected_process_state
+                or registry_state != "absent"
+            ):
+                raise ValueError("incomplete journal has uncertain process or registry state")
+            for field in ("agent", "machine", "owner", "coordinator", "slot"):
+                if not isinstance(row.get(field), str) or not row[field]:
+                    raise ValueError(f"journal {field} is not non-empty text")
+            slot = str(row["slot"])
+            machine = str(row["machine"])
+            key = (machine, slot)
+            if key in seen_slots:
+                raise ValueError("journal classification repeats a slot")
+            seen_slots.add(key)
+            slot_type = row.get("slot_type")
+            if slot_type not in {"agent", "validate"}:
+                raise ValueError("journal has an invalid slot type")
+            raw_slot_path = row.get("slot_path")
+            if not isinstance(raw_slot_path, str) or not raw_slot_path:
+                raise ValueError("journal slot path is missing")
+            slot_path = Path(raw_slot_path).resolve()
+            expected_slot_root = (
+                state_root
+                / "worktrees"
+                / ("slots" if slot_type == "agent" else "validate")
+                / slot
+            ).resolve()
+            if slot_path != expected_slot_root:
+                raise ValueError("journal slot path does not match its slot identity")
+            if _paths_overlap(prospective, slot_path) or _paths_overlap(
+                cargo_parent, slot_path
+            ):
+                raise ValueError("prospective validation storage overlaps a journal slot")
+
+            journal_path = Path(str(row.get("journal", ""))).resolve()
+            if journal_path.parent != (state_root / "worktrees").resolve():
+                raise ValueError("journal path is outside the registry control directory")
+            identity = row.get("journal_identity")
+            if not isinstance(identity, dict) or set(identity) != {
+                "device", "inode", "sha256", "size",
+            }:
+                raise ValueError("journal identity is malformed")
+            journal_bytes = journal_path.read_bytes()
+            metadata = journal_path.stat(follow_symlinks=False)
+            if (
+                any(
+                    type(identity.get(field)) is not int
+                    for field in ("device", "inode", "size")
+                )
+                or identity["device"] != metadata.st_dev
+                or identity["inode"] != metadata.st_ino
+                or identity["size"] != metadata.st_size
+                or identity.get("sha256") != hashlib.sha256(journal_bytes).hexdigest()
+            ):
+                raise ValueError("journal changed after provider classification")
+
+            checkout_rows = row.get("checkouts")
+            dirty_rows = row.get("dirty_checkouts")
+            if (
+                type(row.get("planned")) is not int
+                or type(row.get("created")) is not int
+                or not isinstance(checkout_rows, list)
+                or not isinstance(dirty_rows, list)
+                or row["planned"] < row["created"]
+                or row["created"] != len(checkout_rows)
+            ):
+                raise ValueError("journal checkout counts are malformed")
+            created: list[CreateJournalCheckout] = []
+            created_names: set[str] = set()
+            for checkout_row in checkout_rows:
+                if not isinstance(checkout_row, dict) or set(checkout_row) != checkout_fields:
+                    raise ValueError("checkout classification is malformed")
+                name = checkout_row.get("name")
+                branch = checkout_row.get("branch")
+                head = checkout_row.get("head")
+                if (
+                    not isinstance(name, str)
+                    or not name
+                    or name in created_names
+                    or not isinstance(branch, str)
+                    or not branch
+                    or not isinstance(head, str)
+                    or SHA_RE.fullmatch(head) is None
+                    or type(checkout_row.get("dirty")) is not bool
+                ):
+                    raise ValueError("checkout identity is malformed")
+                path = _resolved_project_path(
+                    state_root, checkout_row.get("path"), role="checkout path"
+                )
+                if not path.is_relative_to(slot_path):
+                    raise ValueError("checkout is outside its slot")
+                created_names.add(name)
+                created.append(CreateJournalCheckout(name, path, branch, head))
+            if (
+                len(dirty_rows) != len(set(dirty_rows))
+                or any(
+                    not isinstance(name, str) or name not in created_names
+                    for name in dirty_rows
+                )
+            ):
+                raise ValueError("dirty checkout identities are malformed")
+            if {
+                str(item["name"])
+                for item in checkout_rows
+                if item.get("dirty") is True
+            } != set(dirty_rows):
+                raise ValueError("dirty checkout facts disagree")
+            if (
+                state in {"live-incomplete-create", "dead-incomplete-create"}
+                and slot_type == "agent"
+            ):
+                scopes.append(
+                    CreateJournalScope(
+                        state=str(state),
+                        slot=slot,
+                        agent=str(row["agent"]),
+                        slot_path=slot_path,
+                        checkouts=tuple(created),
+                        dirty_checkouts=frozenset(str(item) for item in dirty_rows),
+                    )
+                )
+        return tuple(scopes)
+    except (json.JSONDecodeError, OSError, ValueError) as error:
+        raise RuntimeError(
+            f"wrkslots returned an invalid create-journal classification: {error}"
+        ) from error
+
+
+def classify_protected_in_place_record(
+    root: Path,
+    record: Mapping[str, Any],
+    scopes: Sequence[CreateJournalScope],
+) -> tuple[str | None, str | None]:
+    """Bind one in-place record to exactly one provider-verified journal scope."""
+
+    raw_checkout = record.get("checkout")
+    raw_source = record.get("source_checkout")
+    if not isinstance(raw_checkout, str) or not isinstance(raw_source, str):
+        return None, "in-place run record has no checkout and source paths"
+    checkout = Path(raw_checkout).resolve()
+    source = Path(raw_source).resolve()
+    if checkout != source:
+        return None, "in-place run record checkout differs from its source checkout"
+    producer = record.get("producer")
+    if producer == run_registry.PRODUCER:
+        try:
+            parsed = run_registry.parse_current_record(record)
+        except (RuntimeError, ValueError) as error:
+            return None, f"current in-place run record is malformed: {error}"
+        if record.get("temporary_checkout") is not False:
+            return None, "current in-place run record is not explicitly non-temporary"
+        record_agent = parsed.agent
+    elif producer == LEGACY_IN_PLACE_PRODUCER:
+        if "temporary_checkout" in record:
+            return None, "legacy in-place run record unexpectedly has temporary_checkout"
+        record_agent = record.get("agent")
+        if not isinstance(record_agent, str) or not record_agent:
+            return None, "legacy in-place run record has no agent identity"
+    else:
+        return None, "historical in-place run record has no recognized producer identity"
+    matches = [
+        (scope, created)
+        for scope in scopes
+        for created in scope.checkouts
+        if checkout == created.path or checkout.is_relative_to(created.path)
+    ]
+    if len(matches) != 1:
+        return None, "in-place run record is not under exactly one classified agent slot"
+    scope, created = matches[0]
+    if record_agent != scope.agent:
+        return None, "in-place run record agent differs from its classified agent slot"
+    cargo_home, cargo_error = classify_recorded_cargo_home(root, record)
+    if cargo_error is not None:
+        return None, cargo_error
+    if cargo_home is None:
+        return None, "in-place run record has no retained Cargo home"
+    if _paths_overlap(cargo_home, scope.slot_path):
+        return None, "in-place run record Cargo home overlaps its agent slot"
+    dirty = "dirty" if created.name in scope.dirty_checkouts else "clean"
+    return (
+        (
+            f"{scope.state} journal preserves {dirty} agent slot {scope.slot}; "
+            "the exact in-place run record and Cargo home remain retained"
+        ),
+        None,
+    )
+
+
+def is_in_place_scope_candidate(record: Mapping[str, Any]) -> bool:
+    checkout = record.get("checkout")
+    source = record.get("source_checkout")
+    if not isinstance(checkout, str) or not isinstance(source, str):
+        return False
+    if Path(checkout).resolve() != Path(source).resolve():
+        return False
+    if "temporary_checkout" in record:
+        return record.get("temporary_checkout") is False
+    return record.get("producer") == LEGACY_IN_PLACE_PRODUCER
+
+
+def classify_recorded_checkout(
+    root: Path, record: Mapping[str, Any]
+) -> tuple[Path | None, str | None]:
+    """Classify one recorded checkout without changing it.
+
+    A validation run made with ``--in-place`` names its source checkout and
+    records ``temporary_checkout=false``.  That is not removable validation
+    storage.  Historical run records predate this field, while a record written
+    by the current producer is malformed if it omits the field.
+    """
+    raw_checkout = record.get("checkout")
+    if not isinstance(raw_checkout, str):
+        return None, "run record has no checkout path"
+    checkout = Path(raw_checkout).resolve()
+    parents = recorded_checkout_parents(root, record)
+    has_temporary = "temporary_checkout" in record
+    temporary = record.get("temporary_checkout")
+    removable = (
+        checkout.parent in parents
+        and checkout.name.startswith("validate-fresh-")
+    )
+    if removable:
+        if has_temporary and temporary is not True:
+            return None, "temporary_checkout must be true when present"
+        if not has_temporary and record.get("producer") == run_registry.PRODUCER:
+            return None, "current run record has no temporary_checkout"
+        return checkout, None
+    if has_temporary and type(temporary) is not bool:
+        return None, "temporary_checkout must be a boolean when present"
+    if not has_temporary and record.get("producer") == run_registry.PRODUCER:
+        return None, "current run record has no temporary_checkout"
+    if not has_temporary and record.get("producer") != LEGACY_IN_PLACE_PRODUCER:
+        return None, "historical run record has no recognized producer identity"
+    if temporary is True:
+        expected = " or ".join(str(parent) for parent in parents)
+        return None, f"temporary checkout is outside {expected}"
+    return None, None
+
+
 def cleanup_recorded_checkout(
     root: Path,
     record: Mapping[str, Any],
@@ -2429,17 +2826,10 @@ def cleanup_recorded_checkout(
     wrkslots: WrkslotsIdentity | None = None,
 ) -> tuple[bool, list[str], str | None]:
     """Archive local receipt evidence and remove one terminal temp checkout."""
-    raw_checkout = record.get("checkout")
-    if not isinstance(raw_checkout, str):
-        return False, [], "run record has no checkout path"
-    checkout = Path(raw_checkout).resolve()
-    parents = recorded_checkout_parents(root, record)
-    if "temporary_checkout" in record and record["temporary_checkout"] is not True:
-        return False, [], "temporary_checkout must be true when present"
-    if checkout.parent not in parents or not checkout.name.startswith("validate-fresh-"):
-        if record.get("temporary_checkout") is True:
-            expected = " or ".join(str(parent) for parent in parents)
-            return False, [], f"temporary checkout is outside {expected}"
+    checkout, reason = classify_recorded_checkout(root, record)
+    if reason is not None:
+        return False, [], reason
+    if checkout is None:
         return False, [], None
     if not checkout.exists():
         return False, [], None
@@ -2474,6 +2864,28 @@ def cleanup_recorded_checkout(
     )
 
 
+def classify_recorded_cargo_home(
+    root: Path, record: Mapping[str, Any]
+) -> tuple[Path | None, str | None]:
+    """Classify one recorded private Cargo home without changing it."""
+    if "cargo_home" not in record:
+        return None, None
+    raw_private = record.get("cargo_home")
+    if not isinstance(raw_private, str):
+        return None, "recorded Cargo home must be a path string"
+    private = Path(raw_private).resolve()
+    parents = (
+        (root / "ignored" / "validate" / "cargo-homes").resolve(),
+        # Runs launched before private Cargo homes were separated from
+        # wrkslots-managed validation checkouts remain sweepable.
+        (root / "worktrees" / "validate").resolve(),
+    )
+    if private.parent not in parents or not private.name.startswith("validate-cargo-"):
+        expected = " or ".join(str(parent) for parent in parents)
+        return None, f"recorded Cargo home is outside {expected}"
+    return (private, None) if private.exists() else (None, None)
+
+
 def cleanup_recorded_cargo_home(
     root: Path,
     record: Mapping[str, Any],
@@ -2483,20 +2895,10 @@ def cleanup_recorded_cargo_home(
     tool_root: Path = ROOT,
 ) -> tuple[bool, str | None]:
     """Recover one recorded per-run Cargo home after its unit is terminal."""
-    raw_private = record.get("cargo_home")
-    if not isinstance(raw_private, str):
-        return False, None
-    private = Path(raw_private).resolve()
-    parents = (
-        private_cargo_home_parent(root),
-        # Runs launched before private Cargo homes were separated from
-        # wrkslots-managed validation checkouts remain sweepable.
-        validate_checkout_parent(root),
-    )
-    if private.parent not in parents or not private.name.startswith("validate-cargo-"):
-        expected = " or ".join(str(parent) for parent in parents)
-        return False, f"recorded Cargo home is outside {expected}"
-    if not private.exists():
+    private, reason = classify_recorded_cargo_home(root, record)
+    if reason is not None:
+        return False, reason
+    if private is None:
         return False, None
     state_root = root.resolve()
     try:
@@ -2699,7 +3101,11 @@ def terminal_cleanup_unit(
 
 
 def preflight_cleanup_group(
-    group: CleanupGroup, *, run: Runner
+    root: Path,
+    group: CleanupGroup,
+    *,
+    run: Runner,
+    read_only_ownerless: bool = False,
 ) -> list[CleanupHold]:
     found: list[CleanupHold] = []
     if not group.managed and len(group.rows) != 1:
@@ -2714,7 +3120,9 @@ def preflight_cleanup_group(
     for row in group.rows:
         observation = terminal_cleanup_unit(row.path, row.record, run=run)
         row.unit = observation.unit
-        if observation.reason is not None:
+        if observation.reason is not None and not (
+            read_only_ownerless and not group.managed
+        ):
             blocks_entry = observation.blocks_entry
             if observation.state is CleanupUnitState.RUNNING and group.managed:
                 blocks_entry = False
@@ -2724,8 +3132,9 @@ def preflight_cleanup_group(
                     blocks_entry,
                 )
             )
-        if "temporary_checkout" in row.record and row.record["temporary_checkout"] is not True:
-            found.append(CleanupHold("temporary_checkout must be true when present", True))
+        _checkout, checkout_error = classify_recorded_checkout(root, row.record)
+        if checkout_error is not None:
+            found.append(CleanupHold(checkout_error, True))
         if group.managed:
             try:
                 identity = recorded_wrkslots_identity(row.record, group.checkout)
@@ -2746,11 +3155,20 @@ def preflight_cleanup_group(
 
 
 def select_cleanup_groups(
-    root: Path, groups: Mapping[str, CleanupGroup]
+    root: Path,
+    groups: Mapping[str, CleanupGroup],
+    *,
+    persist_cursor: bool = True,
 ) -> tuple[list[CleanupGroup], list[CleanupGroup]]:
     keys = sorted(groups)
     if not keys:
         return [], []
+    if not persist_cursor:
+        chosen = keys[:VALIDATE_CLEANUP_BATCH_LIMIT]
+        return (
+            [groups[key] for key in chosen],
+            [groups[key] for key in keys[len(chosen) :]],
+        )
     cursor = root / "ignored" / "validate" / "checkout-cleanup-cursor.json"
     cursor.parent.mkdir(parents=True, exist_ok=True)
     with run_registry.exclusive_record(cursor, blocking=False):
@@ -2793,8 +3211,23 @@ def sweep_completed_checkouts(
     run: Runner,
     tool_root: Path = ROOT,
     classify_ownerless_only: bool = False,
+    prospective_slot: str | None = None,
+    prospective_checkout: Path | None = None,
 ) -> dict[str, Any]:
     """Hand off scorecards and remove terminal checkouts left by interrupted waiters."""
+    journal_scopes: tuple[CreateJournalScope, ...] = ()
+    if classify_ownerless_only:
+        if prospective_slot is None or prospective_checkout is None:
+            raise ValueError(
+                "read-only entry classification requires the prospective validation slot"
+            )
+        journal_scopes = classify_create_journal_scopes(
+            root,
+            prospective_slot=prospective_slot,
+            prospective_checkout=prospective_checkout,
+            run=run,
+            tool_root=tool_root,
+        )
     runs = root / "ignored" / "validate" / "runs"
     removed: list[str] = []
     removed_cargo_homes: list[str] = []
@@ -2827,7 +3260,10 @@ def sweep_completed_checkouts(
     for row in singles:
         observation = terminal_cleanup_unit(row.path, row.record, run=run)
         row.unit = observation.unit
-        if observation.reason is not None or row.unit is None:
+        if (
+            not classify_ownerless_only
+            and (observation.reason is not None or row.unit is None)
+        ):
             retained.append(
                 {
                     "blocks_entry": observation.blocks_entry,
@@ -2837,12 +3273,81 @@ def sweep_completed_checkouts(
             )
             continue
         fields: dict[str, Any] = {}
+        checkout, checkout_error = classify_recorded_checkout(root, row.record)
+        protected_reason, protected_error = (
+            classify_protected_in_place_record(root, row.record, journal_scopes)
+            if classify_ownerless_only and is_in_place_scope_candidate(row.record)
+            else (None, None)
+        )
+        if classify_ownerless_only and observation.reason is not None:
+            retained.append(
+                {
+                    "blocks_entry": protected_reason is None,
+                    "checkout": str(row.record.get("checkout", "")),
+                    "reason": protected_reason or protected_error or observation.reason,
+                }
+            )
+            row.unit = None
+            continue
+        if checkout_error is not None:
+            item: dict[str, Any] = {
+                "checkout": str(row.record.get("checkout", "")),
+                "reason": checkout_error,
+            }
+            if classify_ownerless_only:
+                item["blocks_entry"] = True
+            retained.append(item)
+            continue
+        if checkout is None:
+            if not classify_ownerless_only and observation.state is CleanupUnitState.TERMINAL:
+                continue
+            if protected_reason is not None:
+                retained.append(
+                    {
+                        "blocks_entry": False,
+                        "checkout": str(row.record.get("checkout", "")),
+                        "reason": protected_reason,
+                    }
+                )
+                row.unit = None
+            else:
+                retained.append(
+                    {
+                        "blocks_entry": True,
+                        "checkout": str(row.record.get("checkout", "")),
+                        "reason": protected_error
+                        or observation.reason
+                        or "in-place run record has no verified create-journal scope",
+                    }
+                )
+            continue
+        if observation.reason is not None or row.unit is None:
+            retained.append(
+                {
+                    "blocks_entry": observation.blocks_entry,
+                    "checkout": str(row.record.get("checkout", "")),
+                    "reason": observation.reason or "unit state unavailable",
+                }
+            )
+            continue
+        if classify_ownerless_only:
+            retained.append(
+                {
+                    "blocks_entry": True,
+                    "checkout": str(checkout),
+                    "reason": (
+                        "terminal validation checkout remains retained; read-only "
+                        "entry classification did not archive or remove it"
+                    ),
+                }
+            )
+            continue
         try:
             handoff = publish_recorded_scorecard_handoff(
                 root,
                 row.path,
                 row.record,
-                Path(str(row.record.get("checkout", ""))),
+                checkout,
                 row.unit,
                 run=run,
                 tool_root=tool_root,
@@ -2872,7 +3377,9 @@ def sweep_completed_checkouts(
 
     managed = {key: group for key, group in groups.items() if group.managed}
     try:
-        selected, later = select_cleanup_groups(root, managed)
+        selected, later = select_cleanup_groups(
+            root, managed, persist_cursor=not classify_ownerless_only
+        )
     except (OSError, RuntimeError, ValueError) as error:
         selected, later = [], list(managed.values())
         bookkeeping_errors.append({"record": str(root / "ignored/validate/checkout-cleanup-cursor.json"), "reason": str(error)})
@@ -2911,7 +3418,12 @@ def sweep_completed_checkouts(
     for group in selected:
         if group.reasons:
             continue
-        for hold in preflight_cleanup_group(group, run=run):
+        for hold in preflight_cleanup_group(
+            root,
+            group,
+            run=run,
+            read_only_ownerless=classify_ownerless_only,
+        ):
             retained.append(
                 {
                     "blocks_entry": hold.blocks_entry,
@@ -2921,26 +3433,32 @@ def sweep_completed_checkouts(
             )
         if group.reasons:
             continue
-        for row in group.rows:
-            try:
-                handoff = publish_recorded_scorecard_handoff(
-                    root,
-                    row.path,
-                    row.record,
-                    group.checkout,
-                    row.unit or row.path.stem,
-                    run=run,
-                    tool_root=tool_root,
-                )
-                if handoff is not None:
-                    row.scorecard_handoff = str(handoff)
-                    scorecard_handoffs.append(str(handoff))
-                row.archived = archive_orphaned_receipts(
-                    root, group.checkout, orphaned_receipt_locations(group.checkout, run=run), unit=row.unit or row.path.stem
-                )
-            except (OSError, RuntimeError, ValueError) as error:
-                group.reasons.append(str(error))
-                retained.append({"checkout": str(group.checkout), "reason": str(error)})
+        if not classify_ownerless_only:
+            for row in group.rows:
+                try:
+                    handoff = publish_recorded_scorecard_handoff(
+                        root,
+                        row.path,
+                        row.record,
+                        group.checkout,
+                        row.unit or row.path.stem,
+                        run=run,
+                        tool_root=tool_root,
+                    )
+                    if handoff is not None:
+                        row.scorecard_handoff = str(handoff)
+                        scorecard_handoffs.append(str(handoff))
+                    row.archived = archive_orphaned_receipts(
+                        root,
+                        group.checkout,
+                        orphaned_receipt_locations(group.checkout, run=run),
+                        unit=row.unit or row.path.stem,
+                    )
+                except (OSError, RuntimeError, ValueError) as error:
+                    group.reasons.append(str(error))
+                    retained.append(
+                        {"checkout": str(group.checkout), "reason": str(error)}
+                    )
         if not group.reasons:
             prepared.append(group)
 
@@ -3045,21 +3563,59 @@ def sweep_completed_checkouts(
 
     batch_groups = [group for group in prepared if group.managed and group.identity is not None]
     if batch_groups:
-        outcomes = remove_fresh_checkouts_batch(
-            root,
-            [(group.checkout, group.identity) for group in batch_groups],
-            run=run,
-            tool_root=tool_root,
-        )
-        for group in batch_groups:
-            reason = outcomes.get(str(group.checkout))
-            if reason is not None:
-                retained.append({"checkout": str(group.checkout), "reason": reason})
-            else:
-                removed.append(str(group.checkout))
+        if classify_ownerless_only:
+            retained.extend(
+                {
+                    "blocks_entry": False,
+                    "checkout": str(group.checkout),
+                    "reason": (
+                        "terminal managed validation remains retained; read-only "
+                        "entry classification did not archive or remove it"
+                    ),
+                }
+                for group in batch_groups
+            )
+        else:
+            outcomes = remove_fresh_checkouts_batch(
+                root,
+                [(group.checkout, group.identity) for group in batch_groups],
+                run=run,
+                tool_root=tool_root,
+            )
+            for group in batch_groups:
+                reason = outcomes.get(str(group.checkout))
+                if reason is not None:
+                    retained.append(
+                        {"checkout": str(group.checkout), "reason": reason}
+                    )
+                else:
+                    removed.append(str(group.checkout))
 
     for row in singles + [row for group in selected for row in group.rows]:
         if row.unit is None:
+            continue
+        cargo_home, cargo_error = classify_recorded_cargo_home(root, row.record)
+        if cargo_error is not None:
+            retained.append(
+                {
+                    "checkout": str(row.record.get("cargo_home", "")),
+                    "reason": cargo_error,
+                }
+            )
+            continue
+        if cargo_home is None:
+            continue
+        if classify_ownerless_only:
+            retained.append(
+                {
+                    "blocks_entry": False,
+                    "checkout": str(cargo_home),
+                    "reason": (
+                        "terminal validation Cargo home remains retained; "
+                        "read-only entry classification did not remove it"
+                    ),
+                }
+            )
             continue
         try:
             cleaned, reason = cleanup_recorded_cargo_home(
@@ -3118,7 +3674,12 @@ class ValidateEntryCleanupRefused(RuntimeError):
 
 
 def require_validate_entry_cleanup(
-    root: Path, *, run: Runner, tool_root: Path = ROOT
+    root: Path,
+    *,
+    prospective_slot: str,
+    prospective_checkout: Path,
+    run: Runner,
+    tool_root: Path = ROOT,
 ) -> None:
     """Run one bounded cleanup batch and refuse entry while old work remains.
 
@@ -3134,6 +3695,8 @@ def require_validate_entry_cleanup(
             run=run,
             tool_root=tool_root,
             classify_ownerless_only=True,
+            prospective_slot=prospective_slot,
+            prospective_checkout=prospective_checkout,
         )
     except (OSError, RuntimeError, ValueError) as error:
         elapsed = time.monotonic() - started
@@ -6021,15 +6584,20 @@ def main(
         if args.in_place:
             checkout = source_checkout
         else:
-            require_validate_entry_cleanup(
-                state_root, run=run, tool_root=tool_root
-            )
-            # DEFAULT: validate the COMMIT, not the tree that claims to be at it.
             checkout_parent = (
                 frozen_checkout_parent(state_root)
                 if args.frozen_validate
                 else validate_checkout_parent(state_root)
             )
+            fresh_slot = fresh_validation_slot(args.target)
+            require_validate_entry_cleanup(
+                state_root,
+                prospective_slot=fresh_slot,
+                prospective_checkout=checkout_parent / fresh_slot,
+                run=run,
+                tool_root=tool_root,
+            )
+            # DEFAULT: validate the COMMIT, not the tree that claims to be at it.
             fresh_checkout, fresh_wrkslots = prepare_fresh_checkout(
                 source_checkout,
                 args.target,
@@ -6038,6 +6606,7 @@ def main(
                 repo=repo,
                 tool_root=tool_root,
                 independent_refs=args.frozen_validate,
+                slot=fresh_slot,
             )
             if args.materialize_target:
                 # The source supplies only Git objects. Prove the tree that will

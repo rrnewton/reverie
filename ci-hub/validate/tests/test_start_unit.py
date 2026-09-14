@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import pathlib
+import runpy
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -220,6 +221,7 @@ class FakeRun:
         self.ownerless_cargo_recovery_rc = 0
         self.wrkslots_generation = 7
         self.wrkslots_create_output: str | None = None
+        self.create_journal_classification_output: str | None = None
         self.wrkslots_create_path: str | None = None
         self.wrkslots_status_generation: int | None = None
         self.wrkslots_status_path: str | None = None
@@ -273,6 +275,34 @@ class FakeRun:
         )
         environment = kwargs.get("env")
         self.command_envs.append(dict(environment) if isinstance(environment, dict) else None)
+        if (
+            command[0].endswith("ci-hub/bin/wrkslots")
+            and "classify-create-journals" in command
+        ):
+            if self.create_journal_classification_output is not None:
+                return completed(command, stdout=self.create_journal_classification_output)
+            project_root = Path(command[command.index("--project-root") + 1])
+            slot = command[command.index("classify-create-journals") + 1]
+            slot_type = command[command.index("--slot-type") + 1]
+            agent = command[command.index("--agent") + 1]
+            return completed(
+                command,
+                stdout=json.dumps(
+                    {
+                        "blocking": False,
+                        "journals": [],
+                        "requested": {
+                            "agent": agent,
+                            "slot": slot,
+                            "slot_path": str(
+                                project_root / "worktrees" / "validate" / slot
+                            ),
+                            "slot_type": slot_type,
+                        },
+                        "schema": 2,
+                    }
+                ),
+            )
         if command[0].endswith("ci-hub/bin/wrkslots") and "create" in command:
             slot = command[command.index("create") + 1]
             project_root = Path(command[command.index("--project-root") + 1])
@@ -1398,6 +1428,195 @@ class StartUnitTest(unittest.TestCase):
         start_unit.run_registry.write_record(record_path, record)
         return fresh, record_path
 
+    def in_place_cleanup_record(
+        self,
+        suffix: str,
+        *,
+        temporary: object = False,
+        include_temporary: bool = True,
+        current: bool = True,
+        state: str = "completed",
+        admitted: bool = False,
+    ) -> tuple[Path, Path, Path]:
+        checkout = (
+            self.root
+            / "worktrees/slots/series-rows/ignored/series-rows/validation-prereq-hermit"
+        )
+        checkout.mkdir(parents=True, exist_ok=True)
+        (checkout / "preserved").write_text("series rows\n")
+        cargo_home = (
+            self.root
+            / "ignored/validate/cargo-homes"
+            / f"validate-cargo-{suffix}"
+        )
+        cargo_home.mkdir(parents=True)
+        (cargo_home / "preserved").write_text("cargo cache\n")
+        record_path = (
+            self.root / "ignored/validate/runs" / f"validate-{suffix}.json"
+        )
+        record: dict[str, object] = {
+            "schema_version": 1,
+            "unit": f"validate-{suffix}.service",
+            "checkout": str(checkout),
+            "source_checkout": str(checkout),
+            "cargo_home": str(cargo_home),
+            "repo": "rrnewton/hermit",
+            "state": state,
+            "exit_code": 0,
+            "final_validate_status": "PASSED",
+        }
+        if include_temporary:
+            record["temporary_checkout"] = temporary
+        if current:
+            record.update(
+                kind="validate",
+                target=SHA,
+                log=str(self.root / "ignored/validate" / f"validate-{suffix}.log"),
+                agent="series-rows",
+                started_at="2026-09-14T07:00:00+00:00",
+                finished_at="2026-09-14T07:01:00+00:00",
+                producer=start_unit.run_registry.PRODUCER,
+                admission="ci-hub validate-lock",
+                pane_role="observer-only",
+                parent_checkout_head=None,
+                validate_lock_child_deadline_seconds=3600,
+                e2e_result_root=str(
+                    self.root / "ignored/validate/artifacts" / suffix / "e2e"
+                ),
+                safe_ci_dag_runner_log_dir=str(
+                    self.root
+                    / "ignored/validate/artifacts"
+                    / suffix
+                    / "safe-ci-dag-runner"
+                ),
+                hermit_run_timeout_seconds=3239,
+                result="success" if state == "completed" else "unknown",
+                detail=(
+                    "the validation result was not recorded"
+                    if state == "unknown"
+                    else None
+                ),
+            )
+            if admitted:
+                record["admission_result"] = {
+                    "recorded_at": "2026-09-14T07:00:01+00:00",
+                    "run_number": 1800,
+                    "state": "admitted",
+                }
+        else:
+            record["producer"] = start_unit.LEGACY_IN_PLACE_PRODUCER
+            record["agent"] = "series-rows"
+        if current and include_temporary and type(temporary) is bool:
+            start_unit.run_registry.write_record(record_path, record)
+        else:
+            record_path.parent.mkdir(parents=True, exist_ok=True)
+            record_path.write_text(json.dumps(record, sort_keys=True) + "\n")
+        return checkout, cargo_home, record_path
+
+    @staticmethod
+    def filesystem_snapshot(root: Path) -> dict[str, tuple[object, ...]]:
+        snapshot: dict[str, tuple[object, ...]] = {}
+        for path in sorted(root.rglob("*")):
+            relative = path.relative_to(root).as_posix()
+            metadata = path.lstat()
+            if path.is_symlink():
+                payload: object = os.readlink(path)
+            elif path.is_file():
+                payload = path.read_bytes()
+            else:
+                payload = tuple(sorted(child.name for child in path.iterdir()))
+            snapshot[relative] = (
+                stat.S_IFMT(metadata.st_mode),
+                metadata.st_ino,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                payload,
+            )
+        return snapshot
+
+    def create_journal_report(
+        self,
+        *,
+        prospective_slot: str,
+        state: str = "dead-incomplete-create",
+        checkout: Path | None = None,
+        observed_head: str = SHA,
+    ) -> str:
+        slot_path = self.root / "worktrees/slots/series-rows"
+        created_path = checkout or slot_path
+        journal = self.root / "worktrees/ACTIVE.devbig014.journal"
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        if not journal.exists():
+            journal.write_bytes(b'{"kind":"create","slot":"series-rows"}\n')
+        metadata = journal.stat(follow_symlinks=False)
+        process_state = state.removesuffix("-incomplete-create")
+        planned = {
+            "branch": "series-rows-parent-20260913",
+            "destination": created_path.relative_to(self.root).as_posix(),
+            "landed_ref": "refs/remotes/origin/main",
+            "name": "parent",
+            "remote": "origin",
+            "remote_url_sha256": "d" * 64,
+            "repository": ".",
+            "start_point": SHA,
+        }
+        created = {
+            **planned,
+            "containing_remote_refs": [],
+            "head": SHA,
+            "path": planned["destination"],
+            "vcs": "git",
+        }
+        created.pop("destination")
+        observed = {
+            "branch": created["branch"],
+            "dirty": True,
+            "head": observed_head,
+            "name": created["name"],
+            "path": created["path"],
+        }
+        return json.dumps(
+            {
+                "blocking": False,
+                "journals": [
+                    {
+                        "agent": "series-rows",
+                        "checkouts": [observed],
+                        "coordinator": "recorded process generation is dead",
+                        "coordinator_state": process_state,
+                        "created": 1,
+                        "dirty_checkouts": ["parent"],
+                        "journal": str(journal),
+                        "journal_identity": {
+                            "device": metadata.st_dev,
+                            "inode": metadata.st_ino,
+                            "sha256": hashlib.sha256(journal.read_bytes()).hexdigest(),
+                            "size": metadata.st_size,
+                        },
+                        "machine": "devbig014",
+                        "owner": "recorded process generation is dead",
+                        "owner_state": process_state,
+                        "planned": 1,
+                        "registry_state": "absent",
+                        "slot": "series-rows",
+                        "slot_path": str(slot_path),
+                        "slot_type": "agent",
+                        "state": state,
+                    }
+                ],
+                "requested": {
+                    "agent": f"validate-{prospective_slot}",
+                    "slot": prospective_slot,
+                    "slot_path": str(
+                        self.root / "worktrees/validate" / prospective_slot
+                    ),
+                    "slot_type": "validate",
+                },
+                "schema": 2,
+            },
+            sort_keys=True,
+        )
+
     def ownerless_cleanup_record(self, suffix: str) -> tuple[Path, Path]:
         fresh = self.root / "ignored" / f"validate-fresh-{suffix}"
         fresh.mkdir(parents=True)
@@ -1519,29 +1738,656 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(3600, record["validate_lock_child_deadline_seconds"])
         self.assertEqual(3239, record["hermit_run_timeout_seconds"])
 
-    def test_entry_cleanup_purges_completed_checkout_before_creating_next(self) -> None:
+    def test_entry_cleanup_retains_completed_checkout_before_creating_next(self) -> None:
         stale, _record = self.managed_cleanup_record("entry-stale")
 
         rc, _output, error = self.invoke()
 
         self.assertEqual(0, rc, error)
-        self.assertFalse(stale.exists())
+        self.assertTrue(stale.exists())
         self.assertIn(
-            "validate-run: ENTRY-CLEANUP state=ready removed=1 ", error
+            "validate-run: ENTRY-CLEANUP state=ready removed=0 ", error
         )
-        batch_index = next(
+        classify_index = next(
             index
             for index, command in enumerate(self.fake.commands)
-            if wrkslots_action(command, "remove-validate-batch")
+            if wrkslots_action(command, "classify-create-journals")
         )
         create_index = next(
             index
             for index, command in enumerate(self.fake.commands)
             if wrkslots_action(command, "create")
         )
-        self.assertLess(batch_index, create_index)
+        self.assertLess(classify_index, create_index)
+        self.assertFalse(
+            any(
+                wrkslots_action(command, "remove-validate-batch")
+                for command in self.fake.commands
+            )
+        )
 
-    def test_entry_cleanup_refuses_after_one_bounded_backlog_batch(self) -> None:
+    def assert_entry_classifies_in_place_cargo_home_without_mutation(
+        self,
+        *,
+        suffix: str,
+        temporary: object,
+        include_temporary: bool = True,
+        current: bool,
+        journal_state: str = "dead-incomplete-create",
+    ) -> None:
+        checkout, cargo_home, record_path = self.in_place_cleanup_record(
+            suffix,
+            temporary=temporary,
+            include_temporary=include_temporary,
+            current=current,
+        )
+        journal = self.root / "worktrees/ACTIVE.devbig014.journal"
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_bytes(b'{"kind":"create","slot":"series-rows"}\n')
+
+        protected = (
+            journal,
+            checkout / "preserved",
+            cargo_home / "preserved",
+            record_path,
+        )
+        before = {
+            path: (
+                path.read_bytes(),
+                path.stat().st_ino,
+                path.stat().st_size,
+                path.stat().st_mtime_ns,
+            )
+            for path in protected
+        }
+        prospective_slot = (
+            f"validate-fresh-{SHA[:12]}-{os.getpid()}-12345678"
+        )
+        self.fake.create_journal_classification_output = (
+            self.create_journal_report(
+                prospective_slot=prospective_slot,
+                state=journal_state,
+                observed_head=("e" * 40 if journal_state.startswith("live-") else SHA),
+            )
+        )
+
+        with mock.patch.object(
+            start_unit, "_carries_nosuid_or_nodev", return_value=False
+        ), mock.patch.object(start_unit.secrets, "token_hex", return_value="12345678"):
+            rc, _output, error = self.invoke(["--dry-run"])
+
+        self.assertEqual(0, rc, error)
+        self.assertIn("retained-nonblocking=1", error)
+        self.assertTrue(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+        self.assertTrue(
+            any(
+                wrkslots_action(command, "classify-create-journals")
+                for command in self.fake.commands
+            )
+        )
+        self.assertFalse(
+            any(
+                wrkslots_action(command, action)
+                for command in self.fake.commands
+                for action in (
+                    "recover",
+                    "recover-ownerless-validate-batch",
+                    "remove-validate-batch",
+                )
+            )
+        )
+        self.assertTrue(checkout.is_dir())
+        self.assertTrue(cargo_home.is_dir())
+        after = {
+            path: (
+                path.read_bytes(),
+                path.stat().st_ino,
+                path.stat().st_size,
+                path.stat().st_mtime_ns,
+            )
+            for path in protected
+        }
+        self.assertEqual(before, after)
+
+    def test_create_journal_scope_parser_accepts_real_pinned_provider_output(
+        self,
+    ) -> None:
+        provider_tests = (
+            start_unit.ROOT
+            / "hermit/agent-utils/py/wrkslots/tests/test_lifecycle.py"
+        )
+        self.assertTrue(provider_tests.is_file())
+        original_sys_path = list(sys.path)
+        try:
+            helpers = runpy.run_path(str(provider_tests))
+        finally:
+            sys.path[:] = original_sys_path
+
+        fixture_root = self.root / "provider-fixture"
+        fixture_root.mkdir()
+        project, _repository, _remote = helpers["make_project"](
+            fixture_root,
+            worktrees_directory="worktrees/slots",
+            layout="flat",
+        )
+        interrupted = helpers["create"](
+            project,
+            slot="series-rows",
+            agent="series-rows",
+            branch="series-rows-parent-20260914",
+            repository_name="repo",
+            checkout_name="parent",
+            slot_type="agent",
+            env={"WRKSLOTS_TEST_INTERRUPT": "after-create-worktree"},
+        )
+        self.assertEqual(86, interrupted.returncode, interrupted.stderr)
+        checkout = helpers["checkout"](
+            project,
+            slot="series-rows",
+            name="parent",
+            slot_type="agent",
+        )
+        (checkout / "unfinished.txt").write_text("authored work\n")
+        journal = helpers["create_journal_path"](project, "series-rows")
+        before = (
+            journal.read_bytes(),
+            journal.stat(follow_symlinks=False).st_ino,
+            journal.stat(follow_symlinks=False).st_mtime_ns,
+        )
+        prospective_slot = f"validate-fresh-{SHA[:12]}-{os.getpid()}-12345678"
+
+        scopes = start_unit.classify_create_journal_scopes(
+            project,
+            prospective_slot=prospective_slot,
+            prospective_checkout=(
+                project / "worktrees/validate" / prospective_slot
+            ),
+            run=start_unit.run_command,
+            tool_root=start_unit.ROOT,
+        )
+
+        self.assertEqual(1, len(scopes))
+        scope = scopes[0]
+        self.assertEqual("live-incomplete-create", scope.state)
+        self.assertEqual("series-rows", scope.slot)
+        self.assertEqual("series-rows", scope.agent)
+        self.assertEqual(
+            (project / "worktrees/slots/series-rows").resolve(), scope.slot_path
+        )
+        self.assertEqual({"parent"}, scope.dirty_checkouts)
+        self.assertEqual(
+            ("parent", "series-rows-parent-20260914"),
+            (scope.checkouts[0].name, scope.checkouts[0].branch),
+        )
+        self.assertEqual(
+            helpers["git"](checkout, "rev-parse", "HEAD").stdout.strip(),
+            scope.checkouts[0].head,
+        )
+        after = (
+            journal.read_bytes(),
+            journal.stat(follow_symlinks=False).st_ino,
+            journal.stat(follow_symlinks=False).st_mtime_ns,
+        )
+        self.assertEqual(before, after)
+
+    def test_entry_classifies_current_in_place_cargo_home_without_mutation(self) -> None:
+        self.assert_entry_classifies_in_place_cargo_home_without_mutation(
+            suffix="current-in-place", temporary=False, current=True
+        )
+
+    def test_entry_classifies_historical_in_place_cargo_home_without_mutation(
+        self,
+    ) -> None:
+        self.assert_entry_classifies_in_place_cargo_home_without_mutation(
+            suffix="historical-in-place",
+            temporary=False,
+            include_temporary=False,
+            current=False,
+            journal_state="live-incomplete-create",
+        )
+
+    def assert_entry_classifies_unknown_record_in_verified_journal_slot(
+        self, *, admitted: bool
+    ) -> None:
+        suffix = "unknown-admitted" if admitted else "unknown-before-admission"
+        checkout, cargo_home, record_path = self.in_place_cleanup_record(
+            suffix,
+            temporary=False,
+            current=True,
+            state="unknown",
+            admitted=admitted,
+        )
+        self.fake.collected_unit = True
+        prospective_slot = f"validate-fresh-{SHA[:12]}-{os.getpid()}-12345678"
+        self.fake.create_journal_classification_output = (
+            self.create_journal_report(prospective_slot=prospective_slot)
+        )
+        protected = (checkout / "preserved", cargo_home / "preserved", record_path)
+        before = {
+            path: (
+                path.read_bytes(),
+                path.stat(follow_symlinks=False).st_ino,
+                path.stat(follow_symlinks=False).st_mtime_ns,
+            )
+            for path in protected
+        }
+
+        with mock.patch.object(
+            start_unit, "_carries_nosuid_or_nodev", return_value=False
+        ), mock.patch.object(start_unit.secrets, "token_hex", return_value="12345678"):
+            rc, _output, error = self.invoke(["--dry-run"])
+
+        self.assertEqual(0, rc, error)
+        self.assertIn("retained-nonblocking=1", error)
+        self.assertTrue(checkout.is_dir())
+        self.assertTrue(cargo_home.is_dir())
+        self.assertEqual(
+            before,
+            {
+                path: (
+                    path.read_bytes(),
+                    path.stat(follow_symlinks=False).st_ino,
+                    path.stat(follow_symlinks=False).st_mtime_ns,
+                )
+                for path in protected
+            },
+        )
+        self.assertTrue(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+
+    def test_entry_classifies_unknown_admitted_record_in_verified_journal_slot(
+        self,
+    ) -> None:
+        self.assert_entry_classifies_unknown_record_in_verified_journal_slot(
+            admitted=True
+        )
+
+    def test_entry_classifies_unknown_pre_admission_record_in_verified_journal_slot(
+        self,
+    ) -> None:
+        self.assert_entry_classifies_unknown_record_in_verified_journal_slot(
+            admitted=False
+        )
+
+    def test_entry_refuses_current_in_place_record_missing_temporary_checkout(
+        self,
+    ) -> None:
+        checkout, cargo_home, record_path = self.in_place_cleanup_record(
+            "current-missing-temporary",
+            include_temporary=False,
+            current=True,
+        )
+        before = (record_path.read_bytes(), cargo_home.stat().st_ino)
+
+        with mock.patch.object(
+            start_unit, "_carries_nosuid_or_nodev", return_value=False
+        ):
+            rc, _output, error = self.invoke(["--dry-run"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("current run record has no temporary_checkout", error)
+        self.assertFalse(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+        self.assertFalse(
+            any(
+                wrkslots_action(command, action)
+                for command in self.fake.commands
+                for action in ("recover", "recover-ownerless-validate-batch")
+            )
+        )
+        self.assertTrue(checkout.is_dir())
+        self.assertTrue(cargo_home.is_dir())
+        self.assertEqual(before, (record_path.read_bytes(), cargo_home.stat().st_ino))
+
+    def test_entry_refuses_unidentified_historical_in_place_record(self) -> None:
+        checkout, cargo_home, record_path = self.in_place_cleanup_record(
+            "historical-missing-producer",
+            include_temporary=False,
+            current=False,
+        )
+        record = json.loads(record_path.read_text())
+        record.pop("producer")
+        record_path.write_text(json.dumps(record, sort_keys=True) + "\n")
+        prospective_slot = f"validate-fresh-{SHA[:12]}-{os.getpid()}-12345678"
+        self.fake.create_journal_classification_output = (
+            self.create_journal_report(prospective_slot=prospective_slot)
+        )
+
+        with mock.patch.object(
+            start_unit, "_carries_nosuid_or_nodev", return_value=False
+        ), mock.patch.object(start_unit.secrets, "token_hex", return_value="12345678"):
+            rc, _output, error = self.invoke(["--dry-run"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("no recognized producer identity", error)
+        self.assertTrue(checkout.is_dir())
+        self.assertTrue(cargo_home.is_dir())
+
+    def test_entry_refuses_malformed_in_place_temporary_checkout(self) -> None:
+        checkout, cargo_home, record_path = self.in_place_cleanup_record(
+            "malformed-in-place", temporary=None, current=True
+        )
+        before = record_path.read_bytes()
+
+        with mock.patch.object(
+            start_unit, "_carries_nosuid_or_nodev", return_value=False
+        ):
+            rc, _output, error = self.invoke(["--dry-run"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("temporary_checkout must be a boolean when present", error)
+        self.assertFalse(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+        self.assertFalse(
+            any(
+                wrkslots_action(command, action)
+                for command in self.fake.commands
+                for action in ("recover", "recover-ownerless-validate-batch")
+            )
+        )
+        self.assertTrue(checkout.is_dir())
+        self.assertTrue(cargo_home.is_dir())
+        self.assertEqual(before, record_path.read_bytes())
+
+    def test_entry_refuses_uncertain_current_in_place_record(self) -> None:
+        checkout, cargo_home, _record_path = self.in_place_cleanup_record(
+            "uncertain-in-place", temporary=False, current=True, state="unknown"
+        )
+        self.fake.collected_unit = True
+
+        with mock.patch.object(
+            start_unit, "_carries_nosuid_or_nodev", return_value=False
+        ):
+            rc, _output, error = self.invoke(["--dry-run"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("not under exactly one classified agent slot", error)
+        self.assertFalse(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+        self.assertFalse(
+            any(
+                wrkslots_action(command, action)
+                for command in self.fake.commands
+                for action in ("recover", "recover-ownerless-validate-batch")
+            )
+        )
+        self.assertTrue(checkout.is_dir())
+        self.assertTrue(cargo_home.is_dir())
+
+    def test_entry_refuses_indeterminate_create_journal_classification(self) -> None:
+        checkout, cargo_home, _record_path = self.in_place_cleanup_record(
+            "indeterminate-journal", temporary=False, current=True, state="unknown"
+        )
+        self.fake.collected_unit = True
+        prospective_slot = f"validate-fresh-{SHA[:12]}-{os.getpid()}-12345678"
+        report = json.loads(
+            self.create_journal_report(prospective_slot=prospective_slot)
+        )
+        report["journals"][0]["state"] = "indeterminate-incomplete-create"
+        report["journals"][0]["owner_state"] = "indeterminate"
+        report["journals"][0]["coordinator_state"] = "indeterminate"
+        self.fake.create_journal_classification_output = json.dumps(report)
+
+        with mock.patch.object(
+            start_unit, "_carries_nosuid_or_nodev", return_value=False
+        ), mock.patch.object(start_unit.secrets, "token_hex", return_value="12345678"):
+            rc, _output, error = self.invoke(["--dry-run"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("uncertain process or registry state", error)
+        self.assertTrue(checkout.is_dir())
+        self.assertTrue(cargo_home.is_dir())
+
+    def test_entry_refuses_when_classified_journal_disappears(self) -> None:
+        checkout, cargo_home, _record_path = self.in_place_cleanup_record(
+            "journal-disappeared", temporary=False, current=True, state="unknown"
+        )
+        self.fake.collected_unit = True
+        prospective_slot = f"validate-fresh-{SHA[:12]}-{os.getpid()}-12345678"
+        report = self.create_journal_report(prospective_slot=prospective_slot)
+        journal = self.root / "worktrees/ACTIVE.devbig014.journal"
+        journal.unlink()
+        self.fake.create_journal_classification_output = report
+
+        with mock.patch.object(
+            start_unit, "_carries_nosuid_or_nodev", return_value=False
+        ), mock.patch.object(start_unit.secrets, "token_hex", return_value="12345678"):
+            rc, _output, error = self.invoke(["--dry-run"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("invalid create-journal classification", error)
+        self.assertTrue(checkout.is_dir())
+        self.assertTrue(cargo_home.is_dir())
+
+    def test_entry_refuses_in_place_record_with_different_source_checkout(self) -> None:
+        checkout, cargo_home, record_path = self.in_place_cleanup_record(
+            "source-mismatch", temporary=False, current=True, state="unknown"
+        )
+        record = start_unit.run_registry.read_record(record_path)
+        record["source_checkout"] = str(self.checkout)
+        start_unit.run_registry.write_record(record_path, record)
+        self.fake.collected_unit = True
+        prospective_slot = f"validate-fresh-{SHA[:12]}-{os.getpid()}-12345678"
+        self.fake.create_journal_classification_output = (
+            self.create_journal_report(prospective_slot=prospective_slot)
+        )
+
+        with mock.patch.object(
+            start_unit, "_carries_nosuid_or_nodev", return_value=False
+        ), mock.patch.object(start_unit.secrets, "token_hex", return_value="12345678"):
+            rc, _output, error = self.invoke(["--dry-run"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("unit state unavailable and run record is not terminal", error)
+        self.assertTrue(checkout.is_dir())
+        self.assertTrue(cargo_home.is_dir())
+
+    def test_entry_refuses_provider_checkout_path_disagreement(self) -> None:
+        checkout, cargo_home, _record_path = self.in_place_cleanup_record(
+            "provider-path-mismatch", temporary=False, current=True, state="unknown"
+        )
+        self.fake.collected_unit = True
+        prospective_slot = f"validate-fresh-{SHA[:12]}-{os.getpid()}-12345678"
+        report = json.loads(
+            self.create_journal_report(prospective_slot=prospective_slot)
+        )
+        report["journals"][0]["checkouts"][0]["path"] = (
+            "worktrees/slots/somewhere-else"
+        )
+        self.fake.create_journal_classification_output = json.dumps(report)
+
+        with mock.patch.object(
+            start_unit, "_carries_nosuid_or_nodev", return_value=False
+        ), mock.patch.object(start_unit.secrets, "token_hex", return_value="12345678"):
+            rc, _output, error = self.invoke(["--dry-run"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("checkout is outside its slot", error)
+        self.assertTrue(checkout.is_dir())
+        self.assertTrue(cargo_home.is_dir())
+
+    def test_entry_refuses_malformed_current_record_inside_classified_slot(self) -> None:
+        checkout, cargo_home, record_path = self.in_place_cleanup_record(
+            "malformed-current-scope",
+            temporary=False,
+            current=True,
+            state="unknown",
+        )
+        record = json.loads(record_path.read_text())
+        record.pop("e2e_result_root")
+        record_path.write_text(json.dumps(record, sort_keys=True) + "\n")
+        self.fake.collected_unit = True
+        prospective_slot = f"validate-fresh-{SHA[:12]}-{os.getpid()}-12345678"
+        self.fake.create_journal_classification_output = (
+            self.create_journal_report(prospective_slot=prospective_slot)
+        )
+
+        with mock.patch.object(
+            start_unit, "_carries_nosuid_or_nodev", return_value=False
+        ), mock.patch.object(start_unit.secrets, "token_hex", return_value="12345678"):
+            rc, _output, error = self.invoke(["--dry-run"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("current in-place run record is malformed", error)
+        self.assertTrue(checkout.is_dir())
+        self.assertTrue(cargo_home.is_dir())
+
+    def test_entry_refuses_record_agent_different_from_classified_slot(self) -> None:
+        checkout, cargo_home, record_path = self.in_place_cleanup_record(
+            "agent-mismatch", temporary=False, current=True, state="unknown"
+        )
+        record = start_unit.run_registry.read_record(record_path)
+        record["agent"] = "different-agent"
+        start_unit.run_registry.write_record(record_path, record)
+        self.fake.collected_unit = True
+        prospective_slot = f"validate-fresh-{SHA[:12]}-{os.getpid()}-12345678"
+        self.fake.create_journal_classification_output = (
+            self.create_journal_report(prospective_slot=prospective_slot)
+        )
+
+        with mock.patch.object(
+            start_unit, "_carries_nosuid_or_nodev", return_value=False
+        ), mock.patch.object(start_unit.secrets, "token_hex", return_value="12345678"):
+            rc, _output, error = self.invoke(["--dry-run"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("agent differs from its classified agent slot", error)
+        self.assertTrue(checkout.is_dir())
+        self.assertTrue(cargo_home.is_dir())
+
+    def test_entry_classification_is_read_only_for_the_complete_tree(self) -> None:
+        fresh, record_path = self.managed_cleanup_record("read-only-complete-tree")
+        prospective_slot = "validate-fresh-aaaaaaaaaaaa-read-only"
+        before = self.filesystem_snapshot(self.root)
+
+        def forbidden(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("read-only entry classification attempted a write")
+
+        with mock.patch.object(
+            start_unit, "publish_recorded_scorecard_handoff", side_effect=forbidden
+        ), mock.patch.object(
+            start_unit, "archive_orphaned_receipts", side_effect=forbidden
+        ), mock.patch.object(
+            start_unit, "remove_fresh_checkouts_batch", side_effect=forbidden
+        ), mock.patch.object(
+            start_unit.run_registry, "update_record", side_effect=forbidden
+        ):
+            start_unit.require_validate_entry_cleanup(
+                self.root,
+                prospective_slot=prospective_slot,
+                prospective_checkout=(
+                    self.root / "worktrees/validate" / prospective_slot
+                ),
+                run=self.fake,
+                tool_root=self.root,
+            )
+
+        self.assertEqual(before, self.filesystem_snapshot(self.root))
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(record_path.is_file())
+        self.assertFalse(
+            any(
+                wrkslots_action(command, action)
+                for command in self.fake.commands
+                for action in (
+                    "recover",
+                    "recover-ownerless-validate-batch",
+                    "remove-validate-batch",
+                )
+            )
+        )
+
+    def test_entry_classifies_all_series_rows_without_changing_the_tree(self) -> None:
+        records = [
+            self.in_place_cleanup_record(
+                "series-terminal", temporary=False, current=True, state="completed"
+            ),
+            self.in_place_cleanup_record(
+                "series-unknown-admitted",
+                temporary=False,
+                current=True,
+                state="unknown",
+                admitted=True,
+            ),
+            self.in_place_cleanup_record(
+                "series-unknown-before-admission",
+                temporary=False,
+                current=True,
+                state="unknown",
+                admitted=False,
+            ),
+        ]
+        self.fake.collected_unit = True
+        prospective_slot = "validate-fresh-aaaaaaaaaaaa-series-proof"
+        self.fake.create_journal_classification_output = (
+            self.create_journal_report(prospective_slot=prospective_slot)
+        )
+        before = self.filesystem_snapshot(self.root)
+
+        def forbidden(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("read-only entry classification attempted a write")
+
+        error = io.StringIO()
+        with mock.patch.object(
+            start_unit, "publish_recorded_scorecard_handoff", side_effect=forbidden
+        ), mock.patch.object(
+            start_unit, "archive_orphaned_receipts", side_effect=forbidden
+        ), mock.patch.object(
+            start_unit, "remove_fresh_checkouts_batch", side_effect=forbidden
+        ), mock.patch.object(
+            start_unit.run_registry, "update_record", side_effect=forbidden
+        ), contextlib.redirect_stderr(error):
+            start_unit.require_validate_entry_cleanup(
+                self.root,
+                prospective_slot=prospective_slot,
+                prospective_checkout=(
+                    self.root / "worktrees/validate" / prospective_slot
+                ),
+                run=self.fake,
+                tool_root=self.root,
+            )
+
+        self.assertIn("retained-nonblocking=3", error.getvalue())
+        self.assertEqual(before, self.filesystem_snapshot(self.root))
+        for checkout, cargo_home, record_path in records:
+            self.assertTrue(checkout.is_dir())
+            self.assertTrue(cargo_home.is_dir())
+            self.assertTrue(record_path.is_file())
+
+    def test_explicit_sweep_still_recovers_terminal_in_place_cargo_home(self) -> None:
+        checkout, cargo_home, record_path = self.in_place_cleanup_record(
+            "explicit-sweep-in-place", temporary=False, current=True
+        )
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertEqual([str(cargo_home)], report["removed_cargo_homes"])
+        self.assertEqual([], report["retained"])
+        self.assertTrue(checkout.is_dir())
+        self.assertFalse(cargo_home.exists())
+        self.assertIsInstance(
+            start_unit.run_registry.read_record(record_path).get(
+                "cargo_home_removed_at"
+            ),
+            str,
+        )
+        self.assertTrue(
+            any(
+                "--ownerless-validate-cargo-home" in command
+                for command in self.fake.commands
+            )
+        )
+
+    def test_entry_cleanup_refuses_after_one_read_only_bounded_backlog_batch(self) -> None:
         stale = [
             self.managed_cleanup_record(f"entry-backlog-{index:03d}")[0]
             for index in range(130)
@@ -1553,9 +2399,9 @@ class StartUnitTest(unittest.TestCase):
 
         self.assertEqual(start_unit.EXIT_REFUSED, rc)
         self.assertLess(elapsed, 1.0)
-        self.assertEqual(8, sum(not path.exists() for path in stale))
-        self.assertEqual(122, sum(path.exists() for path in stale))
-        self.assertIn("removed 8 checkout(s)", error)
+        self.assertEqual(0, sum(not path.exists() for path in stale))
+        self.assertEqual(130, sum(path.exists() for path in stale))
+        self.assertIn("removed 0 checkout(s)", error)
         self.assertIn("waiting on 122 deferred checkout(s)", error)
         self.assertIn(str(stale[8]), error)
         self.assertIn("ci-hub validate-run --sweep-completed", error)
@@ -1563,15 +2409,14 @@ class StartUnitTest(unittest.TestCase):
         self.assertFalse(
             any(wrkslots_action(command, "create") for command in self.fake.commands)
         )
-        batches = [
-            command
-            for command in self.fake.commands
-            if wrkslots_action(command, "remove-validate-batch")
-        ]
-        self.assertEqual(1, len(batches))
-        self.assertEqual(8, batches[0].count("--slot"))
+        self.assertFalse(
+            any(
+                wrkslots_action(command, "remove-validate-batch")
+                for command in self.fake.commands
+            )
+        )
 
-    def test_entry_cleanup_refuses_provider_live_process_retention(self) -> None:
+    def test_entry_cleanup_does_not_probe_or_remove_completed_managed_slot(self) -> None:
         stale, _record = self.managed_cleanup_record("entry-live")
         holder = subprocess.Popen(["sleep", "60"], cwd=stale, text=True)
         self.addCleanup(holder.kill)
@@ -1587,13 +2432,16 @@ class StartUnitTest(unittest.TestCase):
 
         rc, _output, error = self.invoke(run=run)
 
-        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertEqual(0, rc, error)
         self.assertTrue(stale.exists())
-        self.assertIn(str(stale), error)
-        self.assertIn(f"live process {holder.pid}", error)
-        self.assertIn("let it exit or stop it", error)
-        self.assertFalse(
+        self.assertTrue(
             any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+        self.assertFalse(
+            any(
+                wrkslots_action(command, "remove-validate-batch")
+                for command in self.fake.commands
+            )
         )
 
     def test_entry_cleanup_preserves_running_checkout_and_allows_concurrency(self) -> None:
