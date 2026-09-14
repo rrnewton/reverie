@@ -620,6 +620,65 @@ class ReverieValidateTest(unittest.TestCase):
         self.assertEqual(regular["passed_tests"], 11)
         self.assertEqual(regular["result"], "fail")
 
+    def test_reverie_node_records_failed_owned_gate_counts_without_invention(self) -> None:
+        owned = {
+            "name": "Test all owned public instruction cases",
+            "result": "fail",
+            "exit_code": 101,
+            "executed_tests": 17,
+            "passed_tests": 16,
+            "filtered_tests": 0,
+        }
+
+        def fail_owned_gate(source: dict) -> None:
+            gate = next(gate for gate in source["gates"] if gate["name"] == owned["name"])
+            gate.update(owned)
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            checkout = root / "reverie"
+            checkout.mkdir()
+            rc, status, row = self.run_reverie_node(
+                root,
+                checkout,
+                validate_exit=1,
+                aggregate_passed=33,
+                mutate_source=fail_owned_gate,
+            )
+        self.assertEqual(rc, 1)
+        self.assertEqual(status, "FINAL_VALIDATE_STATUS: FAILED\n")
+        self.assertEqual(row["result"], "fail")
+        self.assertEqual(row["raw_result"], "fail")
+        self.assertEqual(
+            (row["executed_tests"], row["passed_tests"], row["filtered_tests"]),
+            (34, 33, 4),
+        )
+        self.assertEqual(
+            next(gate for gate in row["gates"] if gate["name"] == owned["name"]),
+            owned,
+        )
+
+    def test_failed_owned_gate_still_requires_the_exact_population(self) -> None:
+        for executed, filtered in ((16, 0), (18, 0), (17, 1)):
+            with self.subTest(executed=executed, filtered=filtered):
+                source = {
+                    "gates": [{
+                        "name": "Test all owned public instruction cases",
+                        "result": "fail",
+                        "exit_code": 101,
+                        "executed_tests": executed,
+                        "passed_tests": executed - 1,
+                        "filtered_tests": filtered,
+                    }],
+                }
+                with self.assertRaisesRegex(
+                    reverie_node.Refusal,
+                    "must record exactly executed_tests=17 and filtered_tests=0",
+                ):
+                    reverie_node.recorded_gate_coverage(
+                        source, (reverie_node.V4_OWNED_PUBLIC_GATE,)
+                    )
+
     def test_reverie_node_refusal_publishes_could_not_run(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

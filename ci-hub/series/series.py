@@ -873,7 +873,7 @@ def _open_snapshot_source(
     directory_fd: int, name: str, *, kind: str, relative: str,
 ) -> _HeldSnapshotSource:
     """Open and parse one source through its held parent directory descriptor."""
-    flags = os.O_RDONLY | os.O_CLOEXEC
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
@@ -1528,8 +1528,16 @@ def _validate_snapshot_payload(
             "scorecard snapshot digest mismatch: "
             f"expected {expected_sha256}, got {actual_sha256}"
         )
+    def unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        fields: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in fields:
+                raise SeriesError(f"scorecard snapshot has duplicate JSON field {key!r}")
+            fields[key] = value
+        return fields
+
     try:
-        snapshot = json.loads(payload)
+        snapshot = json.loads(payload, object_pairs_hook=unique_fields)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SeriesError(f"scorecard snapshot is not valid JSON: {error}") from error
     if not isinstance(snapshot, dict) or set(snapshot) != {
@@ -1637,7 +1645,7 @@ def _read_scorecard_projection_snapshot_at(
     display: str,
     expected_sha256: str,
 ) -> dict[str, Any]:
-    flags = os.O_RDONLY | os.O_CLOEXEC
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
@@ -3796,7 +3804,8 @@ def _cmd_snapshot(argv: list[str]) -> int:
         report = write_scorecard_projection_snapshot(parent, output)
     except (MalformedEvent, SeriesError, OSError, subprocess.SubprocessError) as error:
         print(
-            "series: snapshot unavailable; no new snapshot was published: "
+            "series: snapshot availability was not established; "
+            "published or staging evidence may remain: "
             f"{error}",
             file=sys.stderr,
         )

@@ -58,7 +58,7 @@ V4_TEST_GATES = (
     "Documentation tests",
 )
 V4_OWNED_PUBLIC_GATE = "Test all owned public instruction cases"
-V4_OWNED_PUBLIC_COUNTS = (17, 17, 0)
+V4_OWNED_PUBLIC_POPULATION = (17, 0)
 
 V5_GATES = (
     "Cross-client skill discovery",
@@ -284,12 +284,16 @@ def recorded_gate_coverage(
         values = _recorded_test_counts(
             gate, context=f"Reverie source row gate {name!r}"
         )
-        if name == V4_OWNED_PUBLIC_GATE and tuple(values) != V4_OWNED_PUBLIC_COUNTS:
+        # A failed gate still measured this exact selected population. Its
+        # authenticated passed count may be smaller; _recorded_test_counts
+        # separately requires every executed test to pass on a passing gate.
+        if name == V4_OWNED_PUBLIC_GATE and (
+            values[0], values[2]
+        ) != V4_OWNED_PUBLIC_POPULATION:
             raise Refusal(
                 f"Reverie source row gate {name!r} must record exactly "
-                f"executed_tests={V4_OWNED_PUBLIC_COUNTS[0]} and "
-                f"passed_tests={V4_OWNED_PUBLIC_COUNTS[1]} and "
-                f"filtered_tests={V4_OWNED_PUBLIC_COUNTS[2]}, got "
+                f"executed_tests={V4_OWNED_PUBLIC_POPULATION[0]} and "
+                f"filtered_tests={V4_OWNED_PUBLIC_POPULATION[1]}, got "
                 f"executed_tests={values[0]}, passed_tests={values[1]}, "
                 f"and filtered_tests={values[2]}"
             )

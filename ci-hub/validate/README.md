@@ -130,6 +130,10 @@ The next combined scorecard writer has an additive parent-side helper for
 Hermit's exact `target/validation/validate-invocation.lock` domain. It waits only
 for an explicit bounded interval, holds the lock across the future snapshot and
 two-file replacement, and refuses on contention or an unusable lock path. The
+yielded held-lock object provides `.path` and `.verify()`. It checks the named
+directory and regular lock inode before entering and when leaving normally;
+the future writer must also call `.verify()` immediately before publication.
+The exit check detects replacement but cannot undo published output. The
 existing `observe-results` caller is deliberately unchanged until the Hermit
 command can update `SCORECARD.md` and `ci/compat-envelope/cells.json` together;
 this helper alone does not change write-back authority or tracked-file lifetime.

@@ -13,9 +13,11 @@ whose negative case is untested is indistinguishable from one that returns
 this repository has hit repeatedly.
 """
 
+import contextlib
 import errno
 import fcntl
 import hashlib
+import io
 import json
 import os
 import re
@@ -1166,6 +1168,139 @@ class ScorecardProjectionSnapshot(unittest.TestCase):
         target.write_text(json.dumps(item, sort_keys=True) + "\n")
         return target
 
+    def _bounded_child(self, operation):
+        # Only local file and metadata operations run in these children. The
+        # deadline belongs to this parent, including old-source FIFO controls.
+        program = (
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import series\n"
+            "parent = Path(sys.argv[2])\n"
+            "try:\n"
+            "    exec(sys.argv[3])\n"
+            "except series.SeriesError as error:\n"
+            "    print(json.dumps({'refused': str(error)}))\n"
+            "else:\n"
+            "    print(json.dumps({'accepted': True}))\n"
+        )
+        child = subprocess.Popen(
+            [sys.executable, "-c", program, str(Path(series.__file__).parent),
+             str(self.repo), operation],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        timed_out = False
+        try:
+            stdout, stderr = child.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            child.kill()
+            stdout, stderr = child.communicate(timeout=3)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=3)
+        print(json.dumps({
+            "control": self.id(), "pid": child.pid, "status": child.returncode,
+            "timed_out": timed_out, "reaped": child.poll() is not None,
+            "stdout": stdout, "stderr": stderr,
+        }, sort_keys=True))
+        self.assertFalse(timed_out, "snapshot control exceeded its external child deadline")
+        self.assertEqual(child.returncode, 0, stderr)
+        return json.loads(stdout)
+
+    def test_fifo_snapshot_reader_refuses_without_waiting_for_a_writer(self):
+        os.mkfifo(self.repo / "snapshot.json")
+        result = self._bounded_child('''
+series.read_scorecard_projection_snapshot(
+    parent / "snapshot.json", expected_sha256="0" * 64,
+)
+''')
+        self.assertIn("not a regular file", result.get("refused", ""))
+
+    def test_regular_source_replaced_by_fifo_refuses_during_capture(self):
+        source = series.spool_dir(self.repo) / "live.jsonl"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"")
+        result = self._bounded_child('''
+spool = series.spool_dir(parent)
+with series.series_spool_transition_lock(spool, exclusive=False) as lock:
+    measured = series._snapshot_source_generation(lock)
+    assert len(measured[2]) == 1
+    assert measured[2][0][:2] == ("live", "live.jsonl")
+source = spool / "live.jsonl"
+os.rename(source, source.with_suffix(".old"))
+os.mkfifo(source)
+with series._local_snapshot_capture(parent):
+    pass
+''')
+        self.assertIn("not a regular file", result.get("refused", ""))
+        self.assertTrue(source.with_suffix(".old").is_file())
+
+    def test_snapshot_reader_rejects_equal_and_conflicting_duplicate_fields(self):
+        local = row(
+            event_id="01J000000000000000000000AB",
+            run_id="campaign-2",
+            series={"run_index": 1},
+        )
+        self._write_local("live.jsonl", local)
+        output = Path(self.temporary.name) / "snapshot.json"
+        with mock.patch.object(series, "refresh_origin_main"):
+            report = series.write_scorecard_projection_snapshot(self.repo, output)
+        original = output.read_bytes()
+        valid = series.read_scorecard_projection_snapshot(
+            output, expected_sha256=report["sha256"]
+        )
+        self.assertEqual(valid["rows_read"], 2)
+        fields = (
+            ("schema", valid["schema"], "other-schema"),
+            ("commit", valid["source"]["commit"], "c" * 40),
+            ("inode", valid["source"]["local_sources"][0]["inode"], 0),
+            ("event_id", self.published["event_id"], "01J000000000000000000000AC"),
+            ("tree", self.published["series"]["tree"], "b" * 40),
+        )
+        for key, value, conflicting in fields:
+            for first in (value, conflicting):
+                with self.subTest(field=key, first=first):
+                    field = json.dumps(key) + ":" + json.dumps(value)
+                    duplicate = json.dumps(key) + ":" + json.dumps(first) + "," + field
+                    self.assertIn(field.encode(), original)
+                    payload = original.replace(field.encode(), duplicate.encode(), 1)
+                    output.write_bytes(payload)
+                    with self.assertRaisesRegex(series.SeriesError, "duplicate JSON field"):
+                        series.read_scorecard_projection_snapshot(
+                            output,
+                            expected_sha256=hashlib.sha256(payload).hexdigest(),
+                        )
+
+    def test_cli_failure_reports_retained_published_and_staging_bytes(self):
+        output = Path(self.temporary.name) / "snapshot.json"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.object(series, "refresh_origin_main"), mock.patch.object(
+            series,
+            "_open_anonymous_snapshot_stage",
+            side_effect=OSError(errno.EOPNOTSUPP, "forced named stage"),
+        ), mock.patch.object(
+            series,
+            "_rename_noreplace",
+            side_effect=OSError(errno.ENOSYS, "forced hardlink fallback"),
+        ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = series._cmd_snapshot([
+                "--parent", str(self.repo), "--output", str(output),
+            ])
+        self.assertEqual(status, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("snapshot availability was not established", stderr.getvalue())
+        self.assertIn("published or staging evidence may remain", stderr.getvalue())
+        self.assertIn("refusing success with named staging residue", stderr.getvalue())
+        self.assertNotIn("no new snapshot was published", stderr.getvalue())
+        stages = list(output.parent.glob(f".{output.name}.staging-*"))
+        self.assertTrue(output.is_file())
+        self.assertEqual(len(stages), 1)
+        self.assertEqual(output.read_bytes(), stages[0].read_bytes())
+        self.assertEqual(output.stat().st_ino, stages[0].stat().st_ino)
+
     def test_snapshot_binds_published_tree_and_exact_local_sources(self):
         local = row(
             event_id="01J000000000000000000000AB",
@@ -1484,8 +1619,8 @@ class ScorecardProjectionSnapshot(unittest.TestCase):
         self.assertEqual(1, rc)
         self.assertFalse(output.exists())
         self.assertEqual("", stdout.getvalue())
-        self.assertIn("snapshot unavailable", stderr.getvalue())
-        self.assertIn("no new snapshot was published", stderr.getvalue())
+        self.assertIn("snapshot availability was not established", stderr.getvalue())
+        self.assertIn("published or staging evidence may remain", stderr.getvalue())
 
     def test_lock_timeout_is_bounded_and_names_the_lock(self):
         spool = series.spool_dir(self.repo)

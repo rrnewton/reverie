@@ -9,6 +9,8 @@ import fcntl
 import io
 import threading
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -599,9 +601,54 @@ class ScorecardInvocationLock(unittest.TestCase):
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         return lock
 
+    def _bounded_child(self, operation: str) -> dict:
+        # These children only inspect local lock descriptors. The parent owns
+        # the deadline, kill and reap even when the old helper admits a FIFO or
+        # fails to make progress. No validation or guest runs here.
+        program = (
+            "import contextlib, fcntl, json, os, sys\n"
+            "from pathlib import Path\n"
+            "from unittest import mock\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import start_unit as su\n"
+            "checkout = Path(sys.argv[2])\n"
+            "lock_path = checkout / su.SCORECARD_INVOCATION_LOCK_RELATIVE\n"
+            "try:\n"
+            "    exec(sys.argv[3])\n"
+            "except su.ScorecardInvocationLockRefused as error:\n"
+            "    print(json.dumps({'refused': str(error)}))\n"
+            "else:\n"
+            "    print(json.dumps({'accepted': True}))\n"
+        )
+        child = subprocess.Popen(
+            [sys.executable, "-c", program, str(Path(su.__file__).parent),
+             str(self.checkout), operation],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        timed_out = False
+        try:
+            stdout, stderr = child.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            child.kill()
+            stdout, stderr = child.communicate(timeout=3)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=3)
+        print(json.dumps({
+            "control": self.id(), "pid": child.pid, "status": child.returncode,
+            "timed_out": timed_out, "reaped": child.poll() is not None,
+            "stdout": stdout, "stderr": stderr,
+        }, sort_keys=True))
+        self.assertFalse(timed_out, "lock control exceeded its external child deadline")
+        self.assertEqual(child.returncode, 0, stderr)
+        return json.loads(stdout)
+
     def test_helper_holds_the_exact_validate_invocation_lock(self) -> None:
-        with su.scorecard_invocation_lock(self.checkout, timeout_seconds=0.1) as path:
-            self.assertEqual(self.lock_path, path)
+        with su.scorecard_invocation_lock(self.checkout, timeout_seconds=0.1) as held:
+            self.assertEqual(self.lock_path, held.path)
+            held.verify()
             contender = self.lock_path.open("a+")
             try:
                 with self.assertRaises(BlockingIOError):
@@ -655,6 +702,90 @@ class ScorecardInvocationLock(unittest.TestCase):
                 ):
                     pass
         self.assertFalse(self.lock_path.exists())
+
+    def test_replaced_lock_while_waiting_refuses_the_obsolete_inode(self) -> None:
+        result = self._bounded_child('''
+lock_path.parent.mkdir(parents=True)
+with contextlib.ExitStack() as cleanup:
+    original = cleanup.enter_context(lock_path.open("a+"))
+    fcntl.flock(original.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    replacements = []
+    def replace_while_waiting(_seconds):
+        assert not replacements
+        os.rename(lock_path, lock_path.with_name("old.lock"))
+        replacement = cleanup.enter_context(lock_path.open("a+"))
+        fcntl.flock(replacement.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        replacements.append(replacement)
+        fcntl.flock(original.fileno(), fcntl.LOCK_UN)
+    with mock.patch.object(su.time, "sleep", side_effect=replace_while_waiting):
+        try:
+            with su.scorecard_invocation_lock(checkout, timeout_seconds=0.2):
+                raise AssertionError("writer body entered after lock replacement")
+        finally:
+            assert len(replacements) == 1
+            with lock_path.open("a+") as contender:
+                try:
+                    fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    pass
+                else:
+                    raise AssertionError("replacement lock was not held")
+''')
+        self.assertIn("pathname changed", result.get("refused", ""))
+
+    def test_replaced_directory_while_waiting_refuses_the_obsolete_inode(self) -> None:
+        result = self._bounded_child('''
+lock_path.parent.mkdir(parents=True)
+with contextlib.ExitStack() as cleanup:
+    original = cleanup.enter_context(lock_path.open("a+"))
+    fcntl.flock(original.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    replacements = []
+    def replace_while_waiting(_seconds):
+        assert not replacements
+        os.rename(lock_path.parent, lock_path.parent.with_name("old-validation"))
+        lock_path.parent.mkdir()
+        replacement = cleanup.enter_context(lock_path.open("a+"))
+        fcntl.flock(replacement.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        replacements.append(replacement)
+        fcntl.flock(original.fileno(), fcntl.LOCK_UN)
+    with mock.patch.object(su.time, "sleep", side_effect=replace_while_waiting):
+        try:
+            with su.scorecard_invocation_lock(checkout, timeout_seconds=0.2):
+                raise AssertionError("writer body entered after directory replacement")
+        finally:
+            assert len(replacements) == 1
+''')
+        self.assertIn("directory changed", result.get("refused", ""))
+
+    def test_nonregular_lock_refuses_before_the_body(self) -> None:
+        self.lock_path.parent.mkdir(parents=True)
+        os.mkfifo(self.lock_path)
+        result = self._bounded_child('''
+with su.scorecard_invocation_lock(checkout, timeout_seconds=0):
+    raise AssertionError("writer body entered with a nonregular lock")
+''')
+        self.assertIn("not a regular file", result.get("refused", ""))
+        self.assertTrue(self.lock_path.exists())
+
+    def test_publication_check_refuses_a_replaced_lock(self) -> None:
+        result = self._bounded_child('''
+with su.scorecard_invocation_lock(checkout, timeout_seconds=0.1) as held:
+    os.rename(lock_path, lock_path.with_name("old.lock"))
+    lock_path.write_text("replacement")
+    held.verify()
+    raise AssertionError("publication must not proceed after lock replacement")
+''')
+        self.assertIn("pathname changed", result.get("refused", ""))
+        self.assertEqual(self.lock_path.read_text(), "replacement")
+
+    def test_context_exit_refuses_a_replaced_lock(self) -> None:
+        result = self._bounded_child('''
+with su.scorecard_invocation_lock(checkout, timeout_seconds=0.1):
+    os.rename(lock_path, lock_path.with_name("old.lock"))
+    lock_path.write_text("replacement")
+''')
+        self.assertIn("pathname changed", result.get("refused", ""))
+        self.assertEqual(self.lock_path.read_text(), "replacement")
 
 
 class RecordLockNeverWithholdsAVerdict(unittest.TestCase):

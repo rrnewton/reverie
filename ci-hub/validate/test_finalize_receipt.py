@@ -1060,7 +1060,9 @@ def test_planned_from_real_hermit_manifest_at_head():
     assert "test.detcore_unit" in planned
     assert "privileged-test.cli_kvm" in planned
     assert "test.cli_on_host" not in planned
-    assert len(planned) == 20
+    assert "test.isolated_dbt_workdir" in planned
+    assert "test.isolated_detcore_workdir" in planned
+    assert len(planned) == 22
     print(
         f"\n[planned-control] {len(planned)} planned test.* nodes at hermit HEAD {sha[:12]}"
     )

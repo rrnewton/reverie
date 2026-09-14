@@ -4081,6 +4081,47 @@ def emit_report(report: Mapping[str, Any], *, json_output: bool) -> None:
         print(f"{label} {raw} [{state}]", flush=True)
 
 
+@dataclass(frozen=True)
+class HeldScorecardInvocationLock:
+    """The held validation directory and regular invocation-lock inode."""
+
+    path: Path
+    directory_fd: int
+    directory_identity: tuple[int, int]
+    descriptor: int
+    lock_identity: tuple[int, int]
+
+    def verify(self) -> None:
+        """Refuse changed names; call immediately before publishing outputs."""
+        try:
+            held_directory = os.fstat(self.directory_fd)
+            named_directory = os.lstat(self.path.parent)
+            held_lock = os.fstat(self.descriptor)
+            named_lock = os.stat(
+                self.path.name, dir_fd=self.directory_fd, follow_symlinks=False
+            )
+        except OSError as error:
+            raise ScorecardInvocationLockRefused(
+                f"validation invocation lock identity is unavailable at {self.path}: {error}"
+            ) from error
+        if any(
+            not stat.S_ISDIR(item.st_mode)
+            or (item.st_dev, item.st_ino) != self.directory_identity
+            for item in (held_directory, named_directory)
+        ):
+            raise ScorecardInvocationLockRefused(
+                f"validation invocation lock directory changed at {self.path.parent}"
+            )
+        if any(
+            not stat.S_ISREG(item.st_mode)
+            or (item.st_dev, item.st_ino) != self.lock_identity
+            for item in (held_lock, named_lock)
+        ):
+            raise ScorecardInvocationLockRefused(
+                f"validation invocation lock pathname changed at {self.path}"
+            )
+
+
 @contextmanager
 def scorecard_invocation_lock(
     source_checkout: Path,
@@ -4096,7 +4137,11 @@ def scorecard_invocation_lock(
     refusal after a finite deadline, never an unbounded wait and never
     permission to write while a qualifying validation is in flight.
 
-    The helper is additive in this slice.  The existing writer is deliberately
+    The yielded object binds the directory and regular lock inode. Call its
+    ``verify()`` immediately before publishing outputs. Verification at context
+    exit also detects changes, but cannot undo an already published output.
+
+    The helper is additive in this slice. The existing writer is deliberately
     not switched until Hermit's combined two-file transaction is available.
     """
     if (
@@ -4120,20 +4165,50 @@ def scorecard_invocation_lock(
             f"source checkout is unavailable: {source_checkout}"
         )
     lock_path = source_checkout / SCORECARD_INVOCATION_LOCK_RELATIVE
+    directory_fd = -1
+    descriptor = -1
+    acquired = False
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            directory_flags |= os.O_NOFOLLOW
+        directory_fd = os.open(lock_path.parent, directory_flags)
+        directory_status = os.fstat(directory_fd)
+        flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NONBLOCK
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
-        descriptor = os.open(lock_path, flags, 0o644)
+        descriptor = os.open(lock_path.name, flags, 0o644, dir_fd=directory_fd)
+        lock_status = os.fstat(descriptor)
+        if not stat.S_ISREG(lock_status.st_mode):
+            raise ScorecardInvocationLockRefused(
+                f"validation invocation lock is not a regular file: {lock_path}"
+            )
+        held = HeldScorecardInvocationLock(
+            path=lock_path,
+            directory_fd=directory_fd,
+            directory_identity=(directory_status.st_dev, directory_status.st_ino),
+            descriptor=descriptor,
+            lock_identity=(lock_status.st_dev, lock_status.st_ino),
+        )
+        held.verify()
     except OSError as error:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if directory_fd >= 0:
+            os.close(directory_fd)
         raise ScorecardInvocationLockRefused(
             f"cannot open source checkout validation invocation lock {lock_path}: {error}"
         ) from error
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if directory_fd >= 0:
+            os.close(directory_fd)
+        raise
 
     started = time.monotonic()
     deadline = started + float(timeout_seconds)
-    acquired = False
     try:
         while True:
             try:
@@ -4155,13 +4230,18 @@ def scorecard_invocation_lock(
                     f"cannot lock source checkout validation invocation lock {lock_path}: "
                     f"{error}"
                 ) from error
-        yield lock_path
+        held.verify()
+        yield held
+        held.verify()
     finally:
         try:
             if acquired:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
-            os.close(descriptor)
+            try:
+                os.close(descriptor)
+            finally:
+                os.close(directory_fd)
 
 
 def write_scorecard_from_results(
