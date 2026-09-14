@@ -119,11 +119,19 @@ for argument in "$@"; do
   esac
 done
 
-# Run the WHOLE removal command in one host-visible process. Moving only the
-# registered-liveness probe would leave the exact-owner and path/cgroup scans in
-# the caller's potentially restricted PID namespace.
-if ((help_requested == 0)) \
-    && [[ $command_name == remove || $command_name == remove-validate-batch ]]; then
+host_removal=0
+if [[ $command_name == remove || $command_name == remove-validate-batch \
+      || $command_name == recover-ownerless-validate-batch \
+      || $command_name == recover ]]; then
+  host_removal=1
+fi
+
+# Run the WHOLE removal or recovery command in one host-visible process. A bare
+# recover may resume a frozen-checkout journal, so its arguments alone cannot
+# prove that no removal will occur. Moving only the registered-liveness probe
+# would leave the exact-owner and path/cgroup scans in the caller's potentially
+# restricted PID namespace.
+if ((help_requested == 0 && host_removal == 1)); then
   process_view_probe="$checkout_root/ci-hub/health/host_process_context.py"
   [[ -f $process_view_probe ]] || refuse \
     "the process-view authority is missing at $process_view_probe; removal requires fresh host process evidence"

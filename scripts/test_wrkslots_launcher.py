@@ -169,6 +169,47 @@ class WrkslotsLauncherTest(unittest.TestCase):
             "7",
         )
 
+    def frozen_recovery_arguments(self) -> tuple[str, ...]:
+        return (
+            "--project-root",
+            str(self.root),
+            "recover",
+            "--coordinator-authorized",
+            "--coordinator-pid",
+            str(os.getpid()),
+            "--frozen-validate-checkout",
+            str(self.root.parent / ".tool-frozen-validate/validate-fresh-one"),
+            "--completed-record",
+            "ignored/validate/runs/validate-one.json",
+            "--repository",
+            "hermit",
+        )
+
+    def frozen_batch_arguments(self) -> tuple[str, ...]:
+        return (
+            "--project-root",
+            str(self.root),
+            "recover-ownerless-validate-batch",
+            "--coordinator-authorized",
+            "--coordinator-pid",
+            str(os.getpid()),
+            "--frozen-validate-checkout",
+            str(self.root.parent / ".tool-frozen-validate/validate-fresh-one"),
+            "--completed-record",
+            "ignored/validate/runs/validate-one.json",
+            "--repository",
+            "hermit",
+        )
+
+    def bare_recovery_arguments(self) -> tuple[str, ...]:
+        return (
+            "--project-root",
+            str(self.root),
+            "recover",
+            "--coordinator-pid",
+            str(os.getpid()),
+        )
+
     def use_real_wrkslots_package(self) -> None:
         package = self.root / "hermit/agent-utils/py/wrkslots"
         shutil.rmtree(package)
@@ -237,6 +278,99 @@ class WrkslotsLauncherTest(unittest.TestCase):
         )
         coordinator = record["argv"][record["argv"].index("--coordinator-pid") + 1]
         self.assertEqual(str(os.getpid()), coordinator)
+
+    def test_frozen_recovery_forms_use_the_same_host_handoff(self) -> None:
+        for arguments, command_name in (
+            (self.frozen_recovery_arguments(), "recover"),
+            (self.frozen_batch_arguments(), "recover-ownerless-validate-batch"),
+        ):
+            with self.subTest(command=command_name):
+                self.record.unlink(missing_ok=True)
+                self.systemd_record.unlink(missing_ok=True)
+                completed = self.run_launcher(*arguments)
+
+                self.assertEqual(0, completed.returncode, completed.stderr)
+                record = json.loads(self.record.read_text())
+                self.assertIn(command_name, record["argv"])
+                self.assertIn("--frozen-validate-checkout", record["argv"])
+                coordinator = record["argv"][
+                    record["argv"].index("--coordinator-pid") + 1
+                ]
+                self.assertEqual(str(os.getpid()), coordinator)
+                properties = self.systemd_record.read_text().splitlines()
+                self.assertIn("--property=ProtectProc=default", properties)
+                self.assertIn("--property=ProcSubset=all", properties)
+
+    def test_abbreviated_frozen_recovery_option_cannot_bypass_host_handoff(self) -> None:
+        arguments = list(self.frozen_recovery_arguments())
+        option = arguments.index("--frozen-validate-checkout")
+        arguments[option] = "--frozen-v"
+
+        completed = self.run_launcher(*arguments)
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertTrue(self.record.exists())
+        self.assertTrue(self.systemd_record.exists())
+
+    def test_bare_recovery_uses_host_handoff(self) -> None:
+        completed = self.run_launcher(*self.bare_recovery_arguments())
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        record = json.loads(self.record.read_text())
+        self.assertIn("recover", record["argv"])
+        self.assertNotIn("--frozen-validate-checkout", record["argv"])
+        self.assertTrue(self.systemd_record.exists())
+
+    def test_bare_recovery_refuses_restricted_reentry(self) -> None:
+        completed = self.run_launcher(
+            *self.bare_recovery_arguments(), FIXTURE_PROCESS_VIEW_RC="2"
+        )
+
+        self.assertEqual(3, completed.returncode)
+        self.assertIn(
+            "does not have a verified full process view", completed.stderr
+        )
+        self.assertFalse(self.record.exists())
+
+    def test_bare_recovery_never_falls_back_after_inner_refusal(self) -> None:
+        completed = self.run_launcher(
+            *self.bare_recovery_arguments(), FIXTURE_INNER_RC="3"
+        )
+
+        self.assertEqual(3, completed.returncode)
+        self.assertTrue(self.record.exists())
+        self.assertTrue(self.systemd_record.exists())
+
+    def test_frozen_recovery_forms_refuse_restricted_reentry(self) -> None:
+        for arguments in (
+            self.frozen_recovery_arguments(),
+            self.frozen_batch_arguments(),
+        ):
+            with self.subTest(command=arguments[2]):
+                self.record.unlink(missing_ok=True)
+                completed = self.run_launcher(
+                    *arguments, FIXTURE_PROCESS_VIEW_RC="2"
+                )
+
+                self.assertEqual(3, completed.returncode)
+                self.assertIn(
+                    "does not have a verified full process view", completed.stderr
+                )
+                self.assertFalse(self.record.exists())
+
+    def test_frozen_recovery_forms_never_fall_back_after_inner_refusal(self) -> None:
+        for arguments in (
+            self.frozen_recovery_arguments(),
+            self.frozen_batch_arguments(),
+        ):
+            with self.subTest(command=arguments[2]):
+                self.record.unlink(missing_ok=True)
+                self.systemd_record.unlink(missing_ok=True)
+                completed = self.run_launcher(*arguments, FIXTURE_INNER_RC="3")
+
+                self.assertEqual(3, completed.returncode)
+                self.assertTrue(self.record.exists())
+                self.assertTrue(self.systemd_record.exists())
 
     def test_coordinator_pid_abbreviations_are_rewritten(self) -> None:
         for arguments, option in (

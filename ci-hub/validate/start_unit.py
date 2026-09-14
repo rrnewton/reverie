@@ -675,6 +675,37 @@ class CleanupGroup:
     rows: list[CleanupRow] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
     identity: WrkslotsIdentity | None = None
+
+
+class CleanupUnitState(Enum):
+    """Typed service state used to decide whether retained work blocks entry."""
+
+    TERMINAL = "terminal"
+    RUNNING = "running"
+    INDETERMINATE = "indeterminate"
+
+
+@dataclass(frozen=True)
+class CleanupUnitObservation:
+    unit: str | None
+    state: CleanupUnitState
+    reason: str | None
+
+    @property
+    def blocks_entry(self) -> bool:
+        # This is the fail-closed default for observations that have not yet
+        # been bound to a positively classified cleanup group.  Only a live
+        # wrkslots-managed validation is known to be legitimate concurrent
+        # work; callers may exempt that case after establishing the group.
+        return self.state is not CleanupUnitState.TERMINAL
+
+
+@dataclass(frozen=True)
+class CleanupHold:
+    reason: str
+    blocks_entry: bool
+
+
 TERMINAL_STATES = frozenset(("failed", "inactive"))
 # THE THREE OUTCOMES A CALLER MUST TELL APART, and one of them used to be
 # invisible.
@@ -1911,8 +1942,34 @@ def remove_fresh_checkout(
             (fresh / ".git").is_dir()
             and validate_parent == frozen_checkout_parent(source.parent)
         ):
-            shutil.rmtree(fresh)
-            return not fresh.exists()
+            state_root = source.parent.resolve()
+            if completed_record is None:
+                raise RuntimeError(
+                    "frozen checkout cleanup requires its completed validation record"
+                )
+            try:
+                record_relative = completed_record.resolve().relative_to(state_root)
+                repository_relative = source.resolve().relative_to(state_root)
+            except ValueError as error:
+                raise RuntimeError(
+                    "frozen checkout record or source repository is outside the project root"
+                ) from error
+            command = [
+                str(tool_root / "ci-hub/bin/wrkslots"),
+                "--project-root",
+                str(state_root),
+                "--allow-existing-unregistered-worktrees",
+                "recover",
+                "--coordinator-authorized",
+                "--coordinator-pid",
+                str(os.getpid()),
+                "--frozen-validate-checkout",
+                str(fresh.resolve()),
+                "--completed-record",
+                record_relative.as_posix(),
+                "--repository",
+                repository_relative.as_posix(),
+            ]
         else:
             raise RuntimeError(
                 f"checkout is outside the managed or frozen validation roots: {fresh}"
@@ -2054,14 +2111,21 @@ def remove_fresh_checkouts_batch(
     }
 
 
+@dataclass(frozen=True)
+class OwnerlessCleanupOutcome:
+    reason: str | None
+    blocks_entry: bool
+
+
 def remove_ownerless_checkouts_batch(
     root: Path,
     checkouts: Sequence[tuple[Path, Path, Path]],
     *,
     run: Runner,
     tool_root: Path = ROOT,
-) -> dict[str, str | None]:
-    """Remove a bounded legacy batch through one shared process census."""
+    frozen: bool = False,
+) -> dict[str, "OwnerlessCleanupOutcome"]:
+    """Remove a bounded ownerless batch through one shared process census."""
     if not checkouts or len(checkouts) > VALIDATE_CLEANUP_BATCH_LIMIT:
         raise ValueError("ownerless validation cleanup batch size must be between one and eight")
     state_root = root.resolve()
@@ -2073,22 +2137,31 @@ def remove_ownerless_checkouts_batch(
     for raw_checkout, raw_record, raw_source in checkouts:
         checkout = raw_checkout.resolve()
         record = raw_record.resolve()
-        repository = state_root / raw_source.name
+        repository = (
+            raw_source if raw_source.is_absolute() else state_root / raw_source
+        )
         try:
-            checkout_relative = checkout.relative_to(state_root).as_posix()
             record_relative = record.relative_to(state_root).as_posix()
             repository_relative = repository.relative_to(state_root).as_posix()
+            checkout_argument = (
+                str(checkout)
+                if frozen
+                else checkout.relative_to(state_root).as_posix()
+            )
         except ValueError as error:
-            raise ValueError("ownerless cleanup path is outside the project root") from error
+            raise ValueError(
+                "ownerless cleanup path, record, or repository is outside the project root"
+            ) from error
+        expected_parent = frozen_checkout_parent(state_root) if frozen else ignored
         if (
-            checkout.parent != ignored
+            checkout.parent != expected_parent
             or not checkout.name.startswith("validate-fresh-")
             or record.parent != runs
             or record.suffix != ".json"
-            or checkout_relative in requested
+            or checkout_argument in requested
         ):
             raise ValueError(f"invalid ownerless validation cleanup input for {checkout}")
-        requested[checkout_relative] = checkout
+        requested[checkout_argument] = checkout
         records.append(record_relative)
         repositories.append(repository_relative)
     command = [
@@ -2098,8 +2171,9 @@ def remove_ownerless_checkouts_batch(
         "recover-ownerless-validate-batch", "--coordinator-authorized",
         "--coordinator-pid", str(os.getpid()),
     ]
+    checkout_flag = "--frozen-validate-checkout" if frozen else "--checkout"
     for checkout in requested:
-        command.extend(("--checkout", checkout))
+        command.extend((checkout_flag, checkout))
     for record in records:
         command.extend(("--completed-record", record))
     for repository in repositories:
@@ -2107,7 +2181,10 @@ def remove_ownerless_checkouts_batch(
     result = run([*command, "--format", "json"], check=False)
     error = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
     if result.returncode != 0:
-        return {str(path): error for path in requested.values()}
+        return {
+            str(path): OwnerlessCleanupOutcome(error, True)
+            for path in requested.values()
+        }
     try:
         value = json.loads(result.stdout)
         fields = {
@@ -2127,48 +2204,63 @@ def remove_ownerless_checkouts_batch(
         metadata = [value.get(name) for name in ("schema", "batch_limit", "requested")]
         if (
             any(type(item) is not int for item in metadata)
-            or metadata != [1, VALIDATE_CLEANUP_BATCH_LIMIT, len(requested)]
+            or metadata != [2, VALIDATE_CLEANUP_BATCH_LIMIT, len(requested)]
             or any(not isinstance(item, int) or isinstance(item, bool) or item < 0 for item in counts)
             or counts[0] != counts[1]
             or counts[1] not in (0, 1)
             or counts[2] > len(requested)
         ):
             raise ValueError("invalid batch metadata")
-        outcomes: dict[str, str | None] = {}
+        outcomes: dict[str, OwnerlessCleanupOutcome] = {}
         for removed, rows in ((True, value.get("removed")), (False, value.get("retained"))):
             if not isinstance(rows, list):
                 raise ValueError("outcomes are not lists")
             for row in rows:
-                expected = {"checkout"} if removed else {"checkout", "reason"}
+                expected = (
+                    {"checkout"}
+                    if removed
+                    else {"blocks_entry", "checkout", "reason"}
+                )
                 if not isinstance(row, dict) or set(row) != expected:
                     raise ValueError("malformed outcome row")
                 checkout = row.get("checkout")
                 reason = None if removed else row.get("reason")
+                blocks_entry = False if removed else row.get("blocks_entry")
                 if (
                     not isinstance(checkout, str)
                     or checkout not in requested
                     or checkout in outcomes
                     or (not removed and (not isinstance(reason, str) or not reason.strip()))
+                    or type(blocks_entry) is not bool
                 ):
                     raise ValueError("unexpected or duplicate outcome identity")
-                outcomes[checkout] = reason
-        removed_count = sum(reason is None for reason in outcomes.values())
+                outcomes[checkout] = OwnerlessCleanupOutcome(reason, blocks_entry)
+        removed_count = sum(outcome.reason is None for outcome in outcomes.values())
+        nonblocking_count = sum(
+            outcome.reason is not None and not outcome.blocks_entry
+            for outcome in outcomes.values()
+        )
         if (
             set(outcomes) != set(requested)
             or (counts[1] == 0 and removed_count)
-            or counts[2] < removed_count
+            or (nonblocking_count and not frozen)
+            or counts[2] < removed_count + nonblocking_count
             or (counts[2] > 0 and counts[1] != 1)
         ):
             raise ValueError("batch census and outcomes disagree")
     except (json.JSONDecodeError, ValueError) as parse_error:
         error = f"wrkslots returned an invalid ownerless batch report: {parse_error}"
-        return {str(path): error for path in requested.values()}
+        return {
+            str(path): OwnerlessCleanupOutcome(error, True)
+            for path in requested.values()
+        }
     return {
-        str(path): (
-            "wrkslots reported success but the checkout still exists"
-            if outcomes[checkout] is None and (path.exists() or path.is_symlink())
-            else outcomes[checkout]
+        str(path): OwnerlessCleanupOutcome(
+            "wrkslots reported success but the checkout still exists",
+            True,
         )
+        if outcomes[checkout].reason is None and (path.exists() or path.is_symlink())
+        else outcomes[checkout]
         for checkout, path in requested.items()
     }
 
@@ -2214,89 +2306,6 @@ def archive_orphaned_receipts(
             shutil.copy2(source, destination, follow_symlinks=False)
         archived.append(str(destination))
     return archived
-
-
-def path_may_have_live_process(path: Path, *, proc_root: Path = Path("/proc")) -> bool:
-    """Whether a same-uid process uses ``path`` or process state is unreadable."""
-    resolved = str(path.resolve())
-    prefix = f"{resolved}{os.sep}"
-
-    def matches(target: str) -> bool:
-        if target.endswith(" (deleted)"):
-            target = target[: -len(" (deleted)")]
-        return target == resolved or target.startswith(prefix)
-
-    try:
-        entries = os.listdir(proc_root)
-    except OSError:
-        return True
-    uid = os.getuid()
-    for entry in entries:
-        if not entry.isdigit():
-            continue
-        proc = proc_root / entry
-        try:
-            if proc.stat().st_uid != uid:
-                continue
-        except OSError:
-            continue
-        readable = False
-        for name in ("cwd", "exe", "root"):
-            try:
-                target = os.readlink(proc / name)
-            except OSError:
-                continue
-            readable = True
-            if matches(target):
-                return True
-        for name in ("fd", "map_files"):
-            try:
-                links = os.listdir(proc / name)
-            except OSError:
-                continue
-            readable = True
-            for link in links:
-                try:
-                    target = os.readlink(proc / name / link)
-                except OSError:
-                    continue
-                if matches(target):
-                    return True
-        try:
-            with (proc / "maps").open(encoding="utf-8", errors="replace") as handle:
-                for line in handle:
-                    fields = line.rstrip("\n").split(maxsplit=5)
-                    if len(fields) == 6 and matches(fields[5]):
-                        return True
-        except OSError:
-            pass
-        try:
-            with (proc / "mountinfo").open(
-                encoding="utf-8", errors="replace"
-            ) as handle:
-                for line in handle:
-                    left, separator, right = line.partition(" - ")
-                    if not separator:
-                        continue
-                    left_fields = left.split()
-                    right_fields = right.split()
-                    candidates = [
-                        *(left_fields[index] for index in (3, 4) if len(left_fields) > index),
-                        *(right_fields[index] for index in (1, 2) if len(right_fields) > index),
-                    ]
-                    for raw in candidates:
-                        if matches(raw.replace("\\040", " ")):
-                            return True
-        except OSError:
-            pass
-        if not readable:
-            try:
-                state = (proc / "stat").read_text().rsplit(")", 1)[1].split()[0]
-            except (OSError, IndexError):
-                continue
-            if state != "Z":
-                return True
-    return False
 
 
 def recorded_checkout_parents(root: Path, record: Mapping[str, Any]) -> list[Path]:
@@ -2346,7 +2355,6 @@ def cleanup_recorded_checkout(
     unit: str,
     run: Runner,
     tool_root: Path = ROOT,
-    check_processes: bool = True,
     wrkslots: WrkslotsIdentity | None = None,
 ) -> tuple[bool, list[str], str | None]:
     """Archive local receipt evidence and remove one terminal temp checkout."""
@@ -2368,16 +2376,10 @@ def cleanup_recorded_checkout(
         wrkslots = recorded_wrkslots_identity(record, checkout)
         if wrkslots is None:
             return False, [], "run record has no exact wrkslots identity"
-    # Linked and historical worktrees are removed through wrkslots below, which
-    # owns the final liveness proof.  Only a frozen standalone clone reaches
-    # direct rmtree and therefore needs this wrapper's fail-closed procfs scan.
-    if (
-        check_processes
-        and checkout.parent == frozen_checkout_parent(root)
-        and (checkout / ".git").is_dir()
-        and path_may_have_live_process(checkout)
-    ):
-        return False, [], "a live process may still use the checkout"
+    # Every linked, historical, and frozen checkout is handed to wrkslots,
+    # which owns the verified host-process census.  A second parent-side procfs
+    # scan can see a restricted namespace and turn an unreadable process into a
+    # false live holder.
     locations = orphaned_receipt_locations(checkout, run=run)
     archived = archive_orphaned_receipts(root, checkout, locations, unit=unit)
     raw_source = record.get("source_checkout")
@@ -2598,14 +2600,18 @@ def discover_cleanup_groups(
 
 def terminal_cleanup_unit(
     path: Path, record: Mapping[str, Any], *, run: Runner
-) -> tuple[str | None, str | None]:
+) -> CleanupUnitObservation:
     try:
         unit = sanitize_unit(str(record.get("unit", path.stem)))
         properties, unit_absent = service_properties_with_absence(unit, run=run)
     except (OSError, RuntimeError, ValueError) as error:
-        return None, str(error)
+        return CleanupUnitObservation(
+            None, CleanupUnitState.INDETERMINATE, str(error)
+        )
     if properties is not None and properties.get("ActiveState") not in TERMINAL_STATES:
-        return None, "unit-running"
+        return CleanupUnitObservation(
+            None, CleanupUnitState.RUNNING, "unit-running"
+        )
     if (
         properties is None
         and not service_result.is_evidenced_terminal(record)
@@ -2613,35 +2619,58 @@ def terminal_cleanup_unit(
             record, unit_absent=unit_absent
         )
     ):
-        return None, "unit state unavailable and run record is not terminal"
-    return unit, None
+        return CleanupUnitObservation(
+            None,
+            CleanupUnitState.INDETERMINATE,
+            "unit state unavailable and run record is not terminal",
+        )
+    return CleanupUnitObservation(unit, CleanupUnitState.TERMINAL, None)
 
 
-def preflight_cleanup_group(group: CleanupGroup, *, run: Runner) -> list[str]:
-    found: list[str] = []
+def preflight_cleanup_group(
+    group: CleanupGroup, *, run: Runner
+) -> list[CleanupHold]:
+    found: list[CleanupHold] = []
+    if not group.managed and len(group.rows) != 1:
+        hold = CleanupHold(
+            "ownerless validation checkout must have exactly one run record; "
+            f"found {len(group.rows)}",
+            True,
+        )
+        group.reasons.append(hold.reason)
+        return [hold]
     identities: set[WrkslotsIdentity] = set()
     for row in group.rows:
-        row.unit, reason = terminal_cleanup_unit(row.path, row.record, run=run)
-        if reason is not None:
-            found.append(reason)
+        observation = terminal_cleanup_unit(row.path, row.record, run=run)
+        row.unit = observation.unit
+        if observation.reason is not None:
+            blocks_entry = observation.blocks_entry
+            if observation.state is CleanupUnitState.RUNNING and group.managed:
+                blocks_entry = False
+            found.append(
+                CleanupHold(
+                    observation.reason,
+                    blocks_entry,
+                )
+            )
         if "temporary_checkout" in row.record and row.record["temporary_checkout"] is not True:
-            found.append("temporary_checkout must be true when present")
+            found.append(CleanupHold("temporary_checkout must be true when present", True))
         if group.managed:
             try:
                 identity = recorded_wrkslots_identity(row.record, group.checkout)
             except ValueError as error:
-                found.append(str(error))
+                found.append(CleanupHold(str(error), True))
             else:
                 if identity is None:
-                    found.append("run record has no exact wrkslots identity")
+                    found.append(CleanupHold("run record has no exact wrkslots identity", True))
                 else:
                     identities.add(identity)
     if group.managed:
         if len(identities) > 1:
-            found.append("run records disagree about the wrkslots generation")
+            found.append(CleanupHold("run records disagree about the wrkslots generation", True))
         elif len(identities) == 1 and not found and group.rows:
             group.identity = next(iter(identities))
-    group.reasons.extend(found)
+    group.reasons.extend(item.reason for item in found)
     return found
 
 
@@ -2695,7 +2724,7 @@ def sweep_completed_checkouts(
     removed: list[str] = []
     removed_cargo_homes: list[str] = []
     scorecard_handoffs: list[str] = []
-    retained: list[dict[str, str]] = []
+    retained: list[dict[str, Any]] = []
     deferred: list[dict[str, str]] = []
     bookkeeping_errors: list[dict[str, str]] = []
     if not runs.is_dir():
@@ -2721,9 +2750,16 @@ def sweep_completed_checkouts(
     retained.extend(discovery_errors)
 
     for row in singles:
-        row.unit, reason = terminal_cleanup_unit(row.path, row.record, run=run)
-        if reason is not None or row.unit is None:
-            retained.append({"checkout": str(row.record.get("checkout", "")), "reason": reason or "unit state unavailable"})
+        observation = terminal_cleanup_unit(row.path, row.record, run=run)
+        row.unit = observation.unit
+        if observation.reason is not None or row.unit is None:
+            retained.append(
+                {
+                    "blocks_entry": observation.blocks_entry,
+                    "checkout": str(row.record.get("checkout", "")),
+                    "reason": observation.reason or "unit state unavailable",
+                }
+            )
             continue
         fields: dict[str, Any] = {}
         try:
@@ -2741,7 +2777,7 @@ def sweep_completed_checkouts(
                 scorecard_handoffs.append(str(handoff))
             cleaned, archived, reason = cleanup_recorded_checkout(
                 root, row.record, record_path=row.path, unit=row.unit,
-                run=run, tool_root=tool_root, check_processes=True,
+                run=run, tool_root=tool_root,
             )
         except (OSError, RuntimeError, ValueError) as error:
             retained.append({"checkout": str(row.record.get("checkout", "")), "reason": str(error)})
@@ -2780,7 +2816,7 @@ def sweep_completed_checkouts(
         if not group.managed and group.checkout.parent != root.resolve() / "ignored"
     ]
     selected.extend(ownerless_selected[:VALIDATE_CLEANUP_BATCH_LIMIT])
-    selected.extend(frozen_selected)
+    selected.extend(frozen_selected[:VALIDATE_CLEANUP_BATCH_LIMIT])
     deferred.extend(
         {
             "checkout": str(group.checkout),
@@ -2788,16 +2824,26 @@ def sweep_completed_checkouts(
         }
         for group in ownerless_selected[VALIDATE_CLEANUP_BATCH_LIMIT:]
     )
+    deferred.extend(
+        {
+            "checkout": str(group.checkout),
+            "reason": "deferred by the bounded frozen validation cleanup batch",
+        }
+        for group in frozen_selected[VALIDATE_CLEANUP_BATCH_LIMIT:]
+    )
 
     prepared: list[CleanupGroup] = []
     for group in selected:
         if group.reasons:
             continue
-        for reason in preflight_cleanup_group(group, run=run):
-            retained.append({"checkout": str(group.checkout), "reason": reason})
-        if not group.managed and group.checkout.parent == frozen_checkout_parent(root) and path_may_have_live_process(group.checkout):
-            group.reasons.append("a live process may still use the checkout")
-            retained.append({"checkout": str(group.checkout), "reason": group.reasons[-1]})
+        for hold in preflight_cleanup_group(group, run=run):
+            retained.append(
+                {
+                    "blocks_entry": hold.blocks_entry,
+                    "checkout": str(group.checkout),
+                    "reason": hold.reason,
+                }
+            )
         if group.reasons:
             continue
         for row in group.rows:
@@ -2848,44 +2894,74 @@ def sweep_completed_checkouts(
             root, ownerless_inputs, run=run, tool_root=tool_root
         )
         for group in ownerless_groups:
-            reason = outcomes.get(str(group.checkout))
-            if reason is not None:
-                retained.append({"checkout": str(group.checkout), "reason": reason})
+            outcome = outcomes.get(str(group.checkout))
+            if outcome is None:
+                retained.append(
+                    {
+                        "blocks_entry": True,
+                        "checkout": str(group.checkout),
+                        "reason": "ownerless cleanup returned no result for this checkout",
+                    }
+                )
+            elif outcome.reason is not None:
+                retained.append(
+                    {
+                        "blocks_entry": outcome.blocks_entry,
+                        "checkout": str(group.checkout),
+                        "reason": outcome.reason,
+                    }
+                )
             else:
                 removed.append(str(group.checkout))
 
-    for group in [
+    frozen_groups = [
         item
         for item in prepared
         if not item.managed and item.checkout.parent != root.resolve() / "ignored"
-    ]:
-        row = group.rows[0]
-        source = Path(
-            str(
-                row.record.get(
-                    "source_checkout",
-                    root
-                    / canonical_repo(
-                        str(row.record.get("repo", "rrnewton/hermit"))
-                    ).rsplit("/", 1)[-1],
+    ]
+    if frozen_groups:
+        frozen_inputs: list[tuple[Path, Path, Path]] = []
+        for group in frozen_groups:
+            row = group.rows[0]
+            source = Path(
+                str(
+                    row.record.get(
+                        "source_checkout",
+                        root
+                        / canonical_repo(
+                            str(row.record.get("repo", "rrnewton/hermit"))
+                        ).rsplit("/", 1)[-1],
+                    )
                 )
             )
-        )
-        if remove_fresh_checkout(
-            source,
-            group.checkout,
+            frozen_inputs.append((group.checkout, row.path, source))
+        outcomes = remove_ownerless_checkouts_batch(
+            root,
+            frozen_inputs,
             run=run,
             tool_root=tool_root,
-            completed_record=row.path,
-        ):
-            removed.append(str(group.checkout))
-        else:
-            retained.append(
-                {
-                    "checkout": str(group.checkout),
-                    "reason": "checkout still exists after the removal attempt",
-                }
-            )
+            frozen=True,
+        )
+        for group in frozen_groups:
+            outcome = outcomes.get(str(group.checkout))
+            if outcome is None:
+                retained.append(
+                    {
+                        "blocks_entry": True,
+                        "checkout": str(group.checkout),
+                        "reason": "frozen cleanup returned no result for this checkout",
+                    }
+                )
+            elif outcome.reason is not None:
+                retained.append(
+                    {
+                        "blocks_entry": outcome.blocks_entry,
+                        "checkout": str(group.checkout),
+                        "reason": outcome.reason,
+                    }
+                )
+            else:
+                removed.append(str(group.checkout))
 
     batch_groups = [group for group in prepared if group.managed and group.identity is not None]
     if batch_groups:
@@ -2966,9 +3042,10 @@ def require_validate_entry_cleanup(
 ) -> None:
     """Run one bounded cleanup batch and refuse entry while old work remains.
 
-    An active validation is not old work and does not block another admitted run.
-    Every other retained row, a bookkeeping error, or a deferred checkout means
-    this invocation must not add another disposable checkout to the backlog.
+    An active managed validation is not old work and does not block another
+    admitted run.  A provider-classified pre-proof historical checkout also
+    remains visible without blocking.  Every retained row without that explicit
+    disposition, a bookkeeping error, or a deferred checkout prevents entry.
     """
     started = time.monotonic()
     try:
@@ -2981,8 +3058,8 @@ def require_validate_entry_cleanup(
         ) from error
     elapsed = time.monotonic() - started
     retained = list(report["retained"])
-    running = [row for row in retained if row.get("reason") == "unit-running"]
-    blocked = [row for row in retained if row.get("reason") != "unit-running"]
+    nonblocking = [row for row in retained if row.get("blocks_entry") is False]
+    blocked = [row for row in retained if row.get("blocks_entry") is not False]
     deferred = list(report["deferred"])
     bookkeeping_errors = list(report["bookkeeping_errors"])
     removed = list(report["removed"])
@@ -3012,7 +3089,7 @@ def require_validate_entry_cleanup(
     print(
         "validate-run: ENTRY-CLEANUP state=ready "
         f"removed={len(removed)} removed-cargo-homes={len(removed_cargo_homes)} "
-        f"retained-running={len(running)} elapsed={elapsed:.3f}s",
+        f"retained-nonblocking={len(nonblocking)} elapsed={elapsed:.3f}s",
         file=sys.stderr,
     )
 
@@ -5057,7 +5134,6 @@ def cleanup_after_attach(
                 unit=unit,
                 run=run,
                 tool_root=tool_root,
-                check_processes=True,
             )
         except (OSError, RuntimeError, ValueError) as error:
             print(

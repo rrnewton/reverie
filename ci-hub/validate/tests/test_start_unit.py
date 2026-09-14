@@ -229,6 +229,7 @@ class FakeRun:
         self.validate_batch_output: str | None = None
         self.validate_batch_zero_census = False
         self.ownerless_batch_retained: dict[str, str] = {}
+        self.ownerless_batch_nonblocking: set[str] = set()
         self.ownerless_batch_output: str | None = None
         self.systemd_launch_rc = 0
         self.systemd_launch_stderr = ""
@@ -372,10 +373,15 @@ class FakeRun:
                     "ownerless validation batch cleanup must carry explicit authority"
                 )
             project_root = Path(command[command.index("--project-root") + 1])
+            checkout_flag = (
+                "--frozen-validate-checkout"
+                if "--frozen-validate-checkout" in command
+                else "--checkout"
+            )
             relative_checkouts = [
                 command[index + 1]
                 for index, value in enumerate(command[:-1])
-                if value == "--checkout"
+                if value == checkout_flag
             ]
             records = [
                 command[index + 1]
@@ -394,7 +400,14 @@ class FakeRun:
             for relative in relative_checkouts:
                 reason = self.ownerless_batch_retained.get(relative)
                 if reason is not None:
-                    retained_rows.append({"checkout": relative, "reason": reason})
+                    retained_rows.append(
+                        {
+                            "blocks_entry": relative
+                            not in self.ownerless_batch_nonblocking,
+                            "checkout": relative,
+                            "reason": reason,
+                        }
+                    )
                     continue
                 fresh = project_root / relative
                 self.removed.append(str(fresh))
@@ -404,11 +417,15 @@ class FakeRun:
                 command,
                 stdout=json.dumps(
                     {
-                        "schema": 1,
+                        "schema": 2,
                         "batch_limit": start_unit.VALIDATE_CLEANUP_BATCH_LIMIT,
                         "process_censuses": 1,
                         "shared_process_censuses": 1,
-                        "same_uid_process_censuses": len(removed_rows),
+                        "same_uid_process_censuses": len(removed_rows)
+                        + sum(
+                            row["blocks_entry"] is False
+                            for row in retained_rows
+                        ),
                         "requested": len(relative_checkouts),
                         "removed": removed_rows,
                         "retained": retained_rows,
@@ -1549,13 +1566,301 @@ class StartUnitTest(unittest.TestCase):
 
         self.assertEqual(0, rc, error)
         self.assertTrue(running.exists())
-        self.assertIn("retained-running=1", error)
+        self.assertIn("retained-nonblocking=1", error)
         self.assertFalse(
             any(
                 wrkslots_action(command, "remove-validate-batch")
                 for command in self.fake.commands
             )
         )
+        self.assertTrue(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+
+    def test_entry_cleanup_blocks_running_frozen_singleton_after_admission_tamper(
+        self,
+    ) -> None:
+        frozen = (
+            start_unit.frozen_checkout_parent(self.root)
+            / "validate-fresh-entry-running-tampered-admission"
+        )
+        (frozen / ".git").mkdir(parents=True)
+        record_path = (
+            self.root
+            / "ignored/validate/runs/validate-entry-running-tampered-admission.json"
+        )
+        record = {
+            "schema_version": 1,
+            "kind": "frozen-validate",
+            "validation_kind": "frozen-validate",
+            "unit": "validate-entry-running-tampered-admission.service",
+            "checkout": str(frozen),
+            "source_checkout": str(self.checkout),
+            "temporary_checkout": True,
+            "admission": start_unit.FROZEN_RESULT_ADMISSION,
+            "repo": "rrnewton/hermit",
+            "state": "unknown",
+            "result": "unknown",
+            "result_source": "historical-validation-service-result",
+            "service_result_schema": 3,
+            "detail": "historical schema 3 has no current authority",
+        }
+        start_unit.run_registry.write_record(record_path, record)
+
+        groups, singles, _rows, retained, _discovery = (
+            start_unit.discover_cleanup_groups(
+                self.root, self.root / "ignored/validate/runs"
+            )
+        )
+        self.assertEqual([], singles)
+        self.assertEqual([], retained)
+        self.assertIn(str(frozen), groups)
+        self.assertFalse(groups[str(frozen)].managed)
+
+        record["admission"] = "ci-hub validate-lock"
+        start_unit.run_registry.write_record(record_path, record)
+        groups, singles, _rows, retained, _discovery = (
+            start_unit.discover_cleanup_groups(
+                self.root, self.root / "ignored/validate/runs"
+            )
+        )
+        self.assertEqual({}, groups)
+        self.assertEqual([record_path], [row.path for row in singles])
+        self.assertEqual([], retained)
+
+        def run(command: list[str], **kwargs: object):
+            if (
+                command[:3] == ["systemctl", "--user", "show"]
+                and "validate-entry-running-tampered-admission.service" in command
+            ):
+                return completed(
+                    command,
+                    stdout=(
+                        "LoadState=loaded\nActiveState=active\nSubState=running\n"
+                        "InvocationID=entry-running-tampered-admission-fixture\n"
+                    ),
+                )
+            return self.fake(command, **kwargs)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=run, tool_root=self.root
+        )
+        self.assertEqual([], report["removed"])
+        self.assertEqual(1, len(report["retained"]))
+        self.assertTrue(report["retained"][0]["blocks_entry"])
+        self.assertEqual("unit-running", report["retained"][0]["reason"])
+
+        rc, _output, error = self.invoke(run=run)
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertTrue(frozen.is_dir())
+        self.assertIn("unit-running", error)
+        self.assertFalse(
+            any(
+                wrkslots_action(command, action)
+                for command in self.fake.commands
+                for action in ("recover", "recover-ownerless-validate-batch")
+            )
+        )
+        self.assertFalse(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+
+    def test_entry_cleanup_allows_typed_historical_frozen_retention(self) -> None:
+        frozen = (
+            start_unit.frozen_checkout_parent(self.root)
+            / "validate-fresh-entry-historical"
+        )
+        (frozen / ".git").mkdir(parents=True)
+        record = self.root / "ignored/validate/runs/validate-entry-historical.json"
+        start_unit.run_registry.write_record(
+            record,
+            {
+                "schema_version": 1,
+                "unit": "validate-entry-historical.service",
+                "checkout": str(frozen),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "admission": start_unit.FROZEN_RESULT_ADMISSION,
+                "repo": "rrnewton/hermit",
+                "state": "unknown",
+                "result": "unknown",
+                "detail": "historical schema 3 has no removal proof",
+            },
+        )
+        reason = (
+            "historical schema 3 frozen validation has no removal proof; "
+            "the inactive checkout remains retained"
+        )
+        self.fake.ownerless_batch_retained[str(frozen)] = reason
+        self.fake.ownerless_batch_nonblocking.add(str(frozen))
+
+        sweep = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+        self.assertEqual([], sweep["removed"])
+        self.assertEqual(1, len(sweep["retained"]))
+        self.assertFalse(sweep["retained"][0]["blocks_entry"])
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(0, rc, error)
+        self.assertTrue(frozen.is_dir())
+        self.assertIn("retained-nonblocking=1", error)
+        self.assertTrue(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+
+    def test_entry_cleanup_blocks_frozen_checkout_named_by_multiple_records(
+        self,
+    ) -> None:
+        frozen = (
+            start_unit.frozen_checkout_parent(self.root)
+            / "validate-fresh-entry-mixed-records"
+        )
+        (frozen / ".git").mkdir(parents=True)
+        common = {
+            "schema_version": 1,
+            "checkout": str(frozen),
+            "source_checkout": str(self.checkout),
+            "temporary_checkout": True,
+            "admission": start_unit.FROZEN_RESULT_ADMISSION,
+            "kind": "frozen-validate",
+            "validation_kind": "frozen-validate",
+            "repo": "rrnewton/hermit",
+        }
+        start_unit.run_registry.write_record(
+            self.root
+            / "ignored/validate/runs/validate-a-entry-historical.json",
+            {
+                **common,
+                "unit": "validate-a-entry-historical.service",
+                "state": "unknown",
+                "result": "unknown",
+                "result_source": "historical-validation-service-result",
+                "service_result_schema": 3,
+                "detail": "historical schema 3 has no current authority",
+            },
+        )
+        start_unit.run_registry.write_record(
+            self.root / "ignored/validate/runs/validate-z-entry-current.json",
+            {
+                **common,
+                "unit": "validate-z-entry-current.service",
+                "state": "completed",
+                "result": "success",
+                "result_source": "validation-service-result",
+                "service_result_schema": 5,
+                "final_validate_status": "PASSED",
+                "exit_code": 0,
+            },
+        )
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertTrue(frozen.is_dir())
+        self.assertIn("must have exactly one run record; found 2", error)
+        self.assertFalse(
+            any(
+                wrkslots_action(command, "recover-ownerless-validate-batch")
+                for command in self.fake.commands
+            )
+        )
+        self.assertFalse(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+
+    def test_entry_cleanup_does_not_infer_nonblocking_from_reason_text(self) -> None:
+        frozen = (
+            start_unit.frozen_checkout_parent(self.root)
+            / "validate-fresh-entry-reason-only"
+        )
+        (frozen / ".git").mkdir(parents=True)
+        record = self.root / "ignored/validate/runs/validate-entry-reason-only.json"
+        start_unit.run_registry.write_record(
+            record,
+            {
+                "schema_version": 1,
+                "unit": "validate-entry-reason-only.service",
+                "checkout": str(frozen),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "admission": start_unit.FROZEN_RESULT_ADMISSION,
+                "repo": "rrnewton/hermit",
+                "state": "unknown",
+                "result": "unknown",
+                "detail": "historical schema 3 has no removal proof",
+            },
+        )
+        self.fake.ownerless_batch_retained[str(frozen)] = "unit-running"
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertTrue(frozen.is_dir())
+        self.assertIn("unit-running", error)
+        self.assertFalse(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+
+    def test_entry_cleanup_blocks_current_frozen_checkout_without_proof(self) -> None:
+        frozen = (
+            start_unit.frozen_checkout_parent(self.root)
+            / "validate-fresh-entry-current-no-proof"
+        )
+        (frozen / ".git").mkdir(parents=True)
+        record = self.root / "ignored/validate/runs/validate-entry-current.json"
+        start_unit.run_registry.write_record(
+            record,
+            {
+                "schema_version": 1,
+                "unit": "validate-entry-current.service",
+                "checkout": str(frozen),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "admission": start_unit.FROZEN_RESULT_ADMISSION,
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "result": "success",
+                "service_result_schema": 5,
+                "final_validate_status": "PASSED",
+                "exit_code": 0,
+            },
+        )
+        reason = (
+            "frozen validation has no typed removal proof; the checkout remains "
+            "retained and blocks entry"
+        )
+        self.fake.ownerless_batch_retained[str(frozen)] = reason
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertTrue(frozen.is_dir())
+        self.assertIn("no typed removal proof", error)
+        self.assertFalse(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+
+    def test_entry_cleanup_uses_typed_unit_state_when_reason_text_changes(self) -> None:
+        running, _record = self.managed_cleanup_record(
+            "entry-running-rendered-differently", state="running"
+        )
+        observation = start_unit.CleanupUnitObservation(
+            None,
+            start_unit.CleanupUnitState.RUNNING,
+            "rendered active-unit explanation changed",
+        )
+
+        with mock.patch.object(
+            start_unit, "terminal_cleanup_unit", return_value=observation
+        ):
+            rc, _output, error = self.invoke()
+
+        self.assertEqual(0, rc, error)
+        self.assertTrue(running.exists())
+        self.assertIn("retained-nonblocking=1", error)
         self.assertTrue(
             any(wrkslots_action(command, "create") for command in self.fake.commands)
         )
@@ -3086,15 +3391,7 @@ class StartUnitTest(unittest.TestCase):
 
         out = io.StringIO()
         err = io.StringIO()
-        with mock.patch.object(
-            start_unit,
-            "path_may_have_live_process",
-            side_effect=AssertionError(
-                "wrkslots-routed cleanup must not use the duplicate parent proc scan"
-            ),
-        ) as parent_liveness, contextlib.redirect_stdout(
-            out
-        ), contextlib.redirect_stderr(err):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = start_unit.main(
                 ["--sweep-completed", "--json"],
                 run=self.fake,
@@ -3103,7 +3400,6 @@ class StartUnitTest(unittest.TestCase):
             )
 
         self.assertEqual(0, rc, err.getvalue())
-        parent_liveness.assert_not_called()
         report = json.loads(out.getvalue())
         self.assertEqual([str(fresh)], report["removed"])
         self.assertEqual([str(cargo_home)], report["removed_cargo_homes"])
@@ -3121,9 +3417,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual([str(archived)], durable["archived_orphaned_receipts"])
 
         out = io.StringIO()
-        with mock.patch.object(
-            start_unit, "path_may_have_live_process", return_value=False
-        ), contextlib.redirect_stdout(out):
+        with contextlib.redirect_stdout(out):
             second_rc = start_unit.main(
                 ["--sweep-completed", "--json"],
                 run=self.fake,
@@ -3771,14 +4065,9 @@ class StartUnitTest(unittest.TestCase):
                 return completed(command, rc=2, stderr="registry shape refused")
             return self.fake(command, **kwargs)
 
-        with mock.patch.object(
-            start_unit,
-            "path_may_have_live_process",
-            side_effect=AssertionError("managed cleanup must delegate liveness"),
-        ):
-            report = start_unit.sweep_completed_checkouts(
-                self.root, run=run, tool_root=self.root
-            )
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=run, tool_root=self.root
+        )
 
         self.assertEqual([], report["removed"])
         self.assertTrue(any("registry shape refused" in row["reason"] for row in report["retained"]))
@@ -4000,9 +4289,7 @@ class StartUnitTest(unittest.TestCase):
         )
 
         out = io.StringIO()
-        with mock.patch.object(
-            start_unit, "path_may_have_live_process", return_value=False
-        ), contextlib.redirect_stdout(out):
+        with contextlib.redirect_stdout(out):
             rc = start_unit.main(
                 ["--sweep-completed", "--json"],
                 run=self.fake,
@@ -4019,6 +4306,96 @@ class StartUnitTest(unittest.TestCase):
             / "ignored/validate/orphaned-receipts/validate-legacy/reports/result.jsonl"
         )
         self.assertEqual(f'{{"commit": "{SHA}"}}\n', archived.read_text())
+
+    def test_sweep_completed_defers_frozen_checkouts_beyond_batch_limit(self) -> None:
+        checkouts: list[Path] = []
+        for index in range(start_unit.VALIDATE_CLEANUP_BATCH_LIMIT + 1):
+            fresh = (
+                start_unit.frozen_checkout_parent(self.root)
+                / f"validate-fresh-frozen-batch-{index:02d}"
+            )
+            (fresh / ".git").mkdir(parents=True)
+            checkouts.append(fresh)
+            record_path = (
+                self.root
+                / "ignored/validate/runs"
+                / f"validate-frozen-batch-{index:02d}.json"
+            )
+            start_unit.run_registry.write_record(
+                record_path,
+                {
+                    "schema_version": 1,
+                    "unit": f"validate-frozen-batch-{index:02d}.service",
+                    "checkout": str(fresh),
+                    "source_checkout": str(self.checkout),
+                    "temporary_checkout": True,
+                    "admission": start_unit.FROZEN_RESULT_ADMISSION,
+                    "repo": "rrnewton/hermit",
+                    "state": "completed",
+                    "exit_code": 0,
+                    "final_validate_status": "PASSED",
+                },
+            )
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual(
+            start_unit.VALIDATE_CLEANUP_BATCH_LIMIT, len(report["removed"])
+        )
+        self.assertEqual(1, len(report["deferred"]))
+        deferred = Path(report["deferred"][0]["checkout"])
+        self.assertEqual(
+            "deferred by the bounded frozen validation cleanup batch",
+            report["deferred"][0]["reason"],
+        )
+        self.assertIn(deferred, checkouts)
+        self.assertTrue(deferred.is_dir())
+        self.assertEqual(
+            set(checkouts) - {deferred},
+            {Path(path) for path in report["removed"]},
+        )
+        frozen_batch = next(
+            command
+            for command in self.fake.commands
+            if wrkslots_action(command, "recover-ownerless-validate-batch")
+        )
+        self.assertEqual(
+            start_unit.VALIDATE_CLEANUP_BATCH_LIMIT,
+            frozen_batch.count("--frozen-validate-checkout"),
+        )
+
+    def test_frozen_batch_preserves_nested_recorded_source_checkout(self) -> None:
+        frozen = (
+            start_unit.frozen_checkout_parent(self.root)
+            / "validate-fresh-nested-source"
+        )
+        (frozen / ".git").mkdir(parents=True)
+        source = self.root / "worktrees/validate/pr2971-source-fixture"
+        source.mkdir(parents=True)
+        record = self.root / "ignored/validate/runs/validate-nested-source.json"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text("{}\n")
+
+        outcomes = start_unit.remove_ownerless_checkouts_batch(
+            self.root,
+            [(frozen, record, source)],
+            run=self.fake,
+            tool_root=self.root,
+            frozen=True,
+        )
+
+        self.assertIsNone(outcomes[str(frozen)].reason)
+        command = next(
+            command
+            for command in self.fake.commands
+            if wrkslots_action(command, "recover-ownerless-validate-batch")
+        )
+        self.assertEqual(
+            source.relative_to(self.root).as_posix(),
+            command[command.index("--repository") + 1],
+        )
 
     def test_sweep_batches_ownerless_checkouts_in_one_census_command(self) -> None:
         first, first_record = self.ownerless_cleanup_record("ownerless-first")
@@ -4104,6 +4481,121 @@ class StartUnitTest(unittest.TestCase):
         self.assertTrue(first.exists())
         self.assertTrue(second.exists())
 
+    def test_ownerless_batch_report_requires_typed_entry_disposition(self) -> None:
+        checkout, _record = self.ownerless_cleanup_record(
+            "ownerless-missing-entry-disposition"
+        )
+        for disposition in ("missing", None, 0, "unknown"):
+            with self.subTest(disposition=disposition):
+                retained: dict[str, object] = {
+                    "checkout": checkout.relative_to(self.root).as_posix(),
+                    "reason": "historical validation remains retained",
+                }
+                if disposition != "missing":
+                    retained["blocks_entry"] = disposition
+                self.fake.ownerless_batch_output = json.dumps(
+                    {
+                        "schema": 2,
+                        "batch_limit": 8,
+                        "process_censuses": 1,
+                        "shared_process_censuses": 1,
+                        "same_uid_process_censuses": 0,
+                        "requested": 1,
+                        "removed": [],
+                        "retained": [retained],
+                    }
+                )
+
+                report = start_unit.sweep_completed_checkouts(
+                    self.root, run=self.fake, tool_root=self.root
+                )
+
+                self.assertEqual([], report["removed"])
+                self.assertEqual(1, len(report["retained"]))
+                self.assertTrue(report["retained"][0]["blocks_entry"])
+                self.assertIn(
+                    "invalid ownerless batch report",
+                    report["retained"][0]["reason"],
+                )
+                self.assertTrue(checkout.exists())
+
+    def test_frozen_nonblocking_report_requires_fresh_same_uid_census(self) -> None:
+        checkout = (
+            start_unit.frozen_checkout_parent(self.root)
+            / "validate-fresh-no-fresh-census"
+        )
+        checkout.mkdir(parents=True)
+        record = self.root / "ignored/validate/runs/validate-no-fresh-census.json"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text("{}\n")
+        self.fake.ownerless_batch_output = json.dumps(
+            {
+                "schema": 2,
+                "batch_limit": 8,
+                "process_censuses": 1,
+                "shared_process_censuses": 1,
+                "same_uid_process_censuses": 0,
+                "requested": 1,
+                "removed": [],
+                "retained": [
+                    {
+                        "blocks_entry": False,
+                        "checkout": str(checkout),
+                        "reason": "historical checkout remains retained",
+                    }
+                ],
+            }
+        )
+
+        outcomes = start_unit.remove_ownerless_checkouts_batch(
+            self.root,
+            [(checkout, record, self.checkout)],
+            run=self.fake,
+            tool_root=self.root,
+            frozen=True,
+        )
+
+        self.assertTrue(outcomes[str(checkout)].blocks_entry)
+        self.assertIn(
+            "invalid ownerless batch report", outcomes[str(checkout)].reason or ""
+        )
+
+    def test_ordinary_ownerless_batch_cannot_exempt_entry(self) -> None:
+        checkout, record = self.ownerless_cleanup_record(
+            "ordinary-false-entry-exemption"
+        )
+        relative = checkout.relative_to(self.root).as_posix()
+        self.fake.ownerless_batch_output = json.dumps(
+            {
+                "schema": 2,
+                "batch_limit": 8,
+                "process_censuses": 1,
+                "shared_process_censuses": 1,
+                "same_uid_process_censuses": 1,
+                "requested": 1,
+                "removed": [],
+                "retained": [
+                    {
+                        "blocks_entry": False,
+                        "checkout": relative,
+                        "reason": "ordinary ownerless checkout remains retained",
+                    }
+                ],
+            }
+        )
+
+        outcomes = start_unit.remove_ownerless_checkouts_batch(
+            self.root,
+            [(checkout, record, self.checkout)],
+            run=self.fake,
+            tool_root=self.root,
+        )
+
+        self.assertTrue(outcomes[str(checkout)].blocks_entry)
+        self.assertIn(
+            "invalid ownerless batch report", outcomes[str(checkout)].reason or ""
+        )
+
     def test_ownerless_batch_does_not_confirm_a_dangling_symlink_as_removed(
         self,
     ) -> None:
@@ -4117,7 +4609,7 @@ class StartUnitTest(unittest.TestCase):
                 command,
                 stdout=json.dumps(
                     {
-                        "schema": 1,
+                        "schema": 2,
                         "batch_limit": start_unit.VALIDATE_CLEANUP_BATCH_LIMIT,
                         "process_censuses": 1,
                         "shared_process_censuses": 1,
@@ -4138,8 +4630,9 @@ class StartUnitTest(unittest.TestCase):
 
         self.assertEqual(
             "wrkslots reported success but the checkout still exists",
-            outcomes[str(checkout)],
+            outcomes[str(checkout)].reason,
         )
+        self.assertTrue(outcomes[str(checkout)].blocks_entry)
         self.assertTrue(checkout.is_symlink())
 
     def test_sweep_completed_does_not_query_irrelevant_retained_records(self) -> None:
@@ -4216,9 +4709,7 @@ class StartUnitTest(unittest.TestCase):
         )
 
         out = io.StringIO()
-        with mock.patch.object(
-            start_unit, "path_may_have_live_process", return_value=False
-        ), contextlib.redirect_stdout(out):
+        with contextlib.redirect_stdout(out):
             rc = start_unit.main(
                 ["--sweep-completed", "--json"],
                 run=self.fake,
@@ -4299,9 +4790,7 @@ class StartUnitTest(unittest.TestCase):
         )
 
         out = io.StringIO()
-        with mock.patch.object(
-            start_unit, "path_may_have_live_process", return_value=False
-        ), contextlib.redirect_stdout(out):
+        with contextlib.redirect_stdout(out):
             rc = start_unit.main(
                 ["--sweep-completed", "--json"],
                 run=self.fake,
@@ -4338,10 +4827,10 @@ class StartUnitTest(unittest.TestCase):
             },
         )
 
+        retained_reason = "live process 4242 uses checkout"
+        self.fake.ownerless_batch_retained[str(fresh)] = retained_reason
         out = io.StringIO()
-        with mock.patch.object(
-            start_unit, "path_may_have_live_process", return_value=True
-        ) as parent_liveness, contextlib.redirect_stdout(out):
+        with contextlib.redirect_stdout(out):
             rc = start_unit.main(
                 ["--sweep-completed", "--json"],
                 run=self.fake,
@@ -4350,12 +4839,9 @@ class StartUnitTest(unittest.TestCase):
             )
 
         self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
-        parent_liveness.assert_called_once_with(fresh)
         report = json.loads(out.getvalue())
         self.assertEqual([], report["removed"])
-        self.assertEqual(
-            "a live process may still use the checkout", report["retained"][0]["reason"]
-        )
+        self.assertEqual(retained_reason, report["retained"][0]["reason"])
         self.assertTrue(fresh.is_dir())
 
     def test_sweep_retains_frozen_checkout_from_managed_location_without_identity(self) -> None:
@@ -4380,9 +4866,7 @@ class StartUnitTest(unittest.TestCase):
         )
 
         out = io.StringIO()
-        with mock.patch.object(
-            start_unit, "path_may_have_live_process", return_value=False
-        ), contextlib.redirect_stdout(out):
+        with contextlib.redirect_stdout(out):
             rc = start_unit.main(
                 ["--sweep-completed", "--json"],
                 run=self.fake,
@@ -4463,13 +4947,16 @@ class StartUnitTest(unittest.TestCase):
                 _fresh, record = self.current_unknown_cleanup_record(
                     suffix, admission
                 )
-                unit, reason = start_unit.terminal_cleanup_unit(
+                observation = start_unit.terminal_cleanup_unit(
                     self.root / f"validate-{suffix}.json",
                     record,
                     run=self.fake,
                 )
-                self.assertEqual(f"validate-{suffix}", unit)
-                self.assertIsNone(reason)
+                self.assertEqual(f"validate-{suffix}", observation.unit)
+                self.assertEqual(
+                    start_unit.CleanupUnitState.TERMINAL, observation.state
+                )
+                self.assertIsNone(observation.reason)
                 self.assertEqual("unknown", record["state"])
                 self.assertEqual("unknown", record["result"])
 
@@ -4486,13 +4973,17 @@ class StartUnitTest(unittest.TestCase):
         def failed_query(command: list[str], **_kwargs: object):
             return completed(command, rc=1, stderr="systemd unavailable")
 
-        unit, reason = start_unit.terminal_cleanup_unit(
+        observation = start_unit.terminal_cleanup_unit(
             self.root / "validate-query-failed.json", record, run=failed_query
         )
 
-        self.assertIsNone(unit)
+        self.assertIsNone(observation.unit)
         self.assertEqual(
-            "unit state unavailable and run record is not terminal", reason
+            start_unit.CleanupUnitState.INDETERMINATE, observation.state
+        )
+        self.assertEqual(
+            "unit state unavailable and run record is not terminal",
+            observation.reason,
         )
 
     def test_cleanup_allows_refused_admission_when_unit_query_fails(self) -> None:
@@ -4509,14 +5000,17 @@ class StartUnitTest(unittest.TestCase):
         def failed_query(command: list[str], **_kwargs: object):
             return completed(command, rc=1, stderr="systemd unavailable")
 
-        unit, reason = start_unit.terminal_cleanup_unit(
+        observation = start_unit.terminal_cleanup_unit(
             self.root / "validate-refused-query-failed.json",
             record,
             run=failed_query,
         )
 
-        self.assertEqual("validate-refused-query-failed", unit)
-        self.assertIsNone(reason)
+        self.assertEqual("validate-refused-query-failed", observation.unit)
+        self.assertEqual(
+            start_unit.CleanupUnitState.TERMINAL, observation.state
+        )
+        self.assertIsNone(observation.reason)
         self.assertEqual("unknown", record["state"])
         self.assertEqual("unknown", record["result"])
 
@@ -4531,15 +5025,19 @@ class StartUnitTest(unittest.TestCase):
             },
         )
 
-        unit, reason = start_unit.terminal_cleanup_unit(
+        observation = start_unit.terminal_cleanup_unit(
             self.root / "validate-malformed-admission.json",
             record,
             run=self.fake,
         )
 
-        self.assertIsNone(unit)
+        self.assertIsNone(observation.unit)
         self.assertEqual(
-            "unit state unavailable and run record is not terminal", reason
+            start_unit.CleanupUnitState.INDETERMINATE, observation.state
+        )
+        self.assertEqual(
+            "unit state unavailable and run record is not terminal",
+            observation.reason,
         )
 
     def test_cleanup_retains_running_run_with_typed_admission(self) -> None:
@@ -4557,13 +5055,17 @@ class StartUnitTest(unittest.TestCase):
         record.pop("detail")
         record.pop("finished_at")
 
-        unit, reason = start_unit.terminal_cleanup_unit(
+        observation = start_unit.terminal_cleanup_unit(
             self.root / "validate-running.json", record, run=self.fake
         )
 
-        self.assertIsNone(unit)
+        self.assertIsNone(observation.unit)
         self.assertEqual(
-            "unit state unavailable and run record is not terminal", reason
+            start_unit.CleanupUnitState.INDETERMINATE, observation.state
+        )
+        self.assertEqual(
+            "unit state unavailable and run record is not terminal",
+            observation.reason,
         )
 
     def test_running_unit_vetoes_a_typed_admission_refusal(self) -> None:
@@ -4587,12 +5089,13 @@ class StartUnitTest(unittest.TestCase):
                 ),
             )
 
-        unit, reason = start_unit.terminal_cleanup_unit(
+        observation = start_unit.terminal_cleanup_unit(
             self.root / "validate-still-running.json", record, run=active_unit
         )
 
-        self.assertIsNone(unit)
-        self.assertEqual("unit-running", reason)
+        self.assertIsNone(observation.unit)
+        self.assertEqual(start_unit.CleanupUnitState.RUNNING, observation.state)
+        self.assertEqual("unit-running", observation.reason)
 
     def test_sweep_defers_linked_checkout_liveness_to_wrkslots(self) -> None:
         fresh = self.root / "worktrees/validate/validate-fresh-held"
@@ -4616,9 +5119,7 @@ class StartUnitTest(unittest.TestCase):
         )
 
         out = io.StringIO()
-        with mock.patch.object(
-            start_unit, "path_may_have_live_process", return_value=True
-        ) as parent_liveness, contextlib.redirect_stdout(out):
+        with contextlib.redirect_stdout(out):
             rc = start_unit.main(
                 ["--sweep-completed", "--json"],
                 run=self.fake,
@@ -4627,7 +5128,6 @@ class StartUnitTest(unittest.TestCase):
             )
 
         self.assertEqual(0, rc)
-        parent_liveness.assert_not_called()
         report = json.loads(out.getvalue())
         self.assertEqual([str(fresh)], report["removed"])
         self.assertEqual([], report["retained"])
@@ -4647,87 +5147,6 @@ class StartUnitTest(unittest.TestCase):
                     )
                 self.assertEqual(2, rc)
                 self.assertIn("cannot be combined", err.getvalue())
-
-    def test_cleanup_liveness_includes_an_open_file_descriptor(self) -> None:
-        checkout = self.root / "worktrees/validate/validate-fresh-held"
-        checkout.mkdir(parents=True)
-        artifact = checkout / "artifact"
-        artifact.write_text("held\n")
-        proc = self.root / "proc" / "123"
-        (proc / "fd").mkdir(parents=True)
-        (proc / "map_files").mkdir()
-        (proc / "cwd").symlink_to(self.root)
-        (proc / "exe").symlink_to(sys.executable)
-        (proc / "root").symlink_to("/")
-        (proc / "fd" / "7").symlink_to(artifact)
-
-        self.assertTrue(
-            start_unit.path_may_have_live_process(checkout, proc_root=proc.parent)
-        )
-
-    def test_cleanup_liveness_retains_unreadable_process(self) -> None:
-        checkout = self.root / "worktrees/validate/validate-fresh-unknown"
-        checkout.mkdir(parents=True)
-        proc = self.root / "proc" / "123"
-        proc.mkdir(parents=True)
-        (proc / "stat").write_text("123 (possibly-related) S 1 2 3\n")
-
-        self.assertTrue(
-            start_unit.path_may_have_live_process(
-                checkout, proc_root=proc.parent
-            )
-        )
-
-    def test_cleanup_liveness_includes_a_working_directory(self) -> None:
-        checkout = self.root / "worktrees/validate/validate-fresh-cwd"
-        checkout.mkdir(parents=True)
-        proc = self.root / "proc" / "123"
-        (proc / "fd").mkdir(parents=True)
-        (proc / "map_files").mkdir()
-        (proc / "cwd").symlink_to(checkout)
-        (proc / "exe").symlink_to(sys.executable)
-        (proc / "root").symlink_to("/")
-
-        self.assertTrue(
-            start_unit.path_may_have_live_process(checkout, proc_root=proc.parent)
-        )
-
-    def test_cleanup_liveness_includes_a_mount(self) -> None:
-        checkout = self.root / "worktrees/validate/validate-fresh-mounted"
-        checkout.mkdir(parents=True)
-        proc = self.root / "proc" / "123"
-        (proc / "fd").mkdir(parents=True)
-        (proc / "map_files").mkdir()
-        (proc / "cwd").symlink_to(self.root)
-        (proc / "exe").symlink_to(sys.executable)
-        (proc / "root").symlink_to("/")
-        (proc / "maps").write_text("")
-        (proc / "mountinfo").write_text(
-            f"41 1 0:32 / {checkout} rw - btrfs /dev/test rw\n"
-        )
-
-        self.assertTrue(
-            start_unit.path_may_have_live_process(checkout, proc_root=proc.parent)
-        )
-
-    def test_cleanup_liveness_includes_a_memory_mapping(self) -> None:
-        checkout = self.root / "worktrees/validate/validate-fresh-mapped"
-        checkout.mkdir(parents=True)
-        artifact = checkout / "mapped-library.so"
-        artifact.write_text("fixture\n")
-        proc = self.root / "proc" / "123"
-        (proc / "fd").mkdir(parents=True)
-        (proc / "map_files").mkdir()
-        (proc / "cwd").symlink_to(self.root)
-        (proc / "exe").symlink_to(sys.executable)
-        (proc / "root").symlink_to("/")
-        (proc / "maps").write_text(
-            f"7f000000-7f001000 r--p 00000000 00:00 0 {artifact}\n"
-        )
-
-        self.assertTrue(
-            start_unit.path_may_have_live_process(checkout, proc_root=proc.parent)
-        )
 
     def test_orphan_archive_retry_requires_identical_regular_file(self) -> None:
         fresh = self.root / "worktrees/validate/validate-fresh-archive"
@@ -7265,13 +7684,7 @@ class StartUnitTest(unittest.TestCase):
 
         out = io.StringIO()
         err = io.StringIO()
-        with (
-            contextlib.redirect_stdout(out),
-            contextlib.redirect_stderr(err),
-            mock.patch.object(
-                start_unit, "path_may_have_live_process", return_value=False
-            ),
-        ):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = start_unit.main(
                 [
                     "--state-root",
@@ -7330,6 +7743,41 @@ class StartUnitTest(unittest.TestCase):
                 for command in self.fake.commands
             )
         )
+
+    def test_immediate_frozen_cleanup_uses_typed_wrkslots_recovery(self) -> None:
+        fresh = (
+            start_unit.frozen_checkout_parent(self.root)
+            / "validate-fresh-immediate-frozen"
+        )
+        (fresh / ".git").mkdir(parents=True)
+        record = self.root / "ignored/validate/runs/validate-immediate-frozen.json"
+        record.parent.mkdir(parents=True)
+        record.write_text("{}\n")
+        commands: list[list[str]] = []
+
+        def run(command: list[str], **_kwargs: object):
+            commands.append(command)
+            shutil.rmtree(fresh)
+            return completed(command, stdout="recovered frozen validation checkout\n")
+
+        removed = start_unit.remove_fresh_checkout(
+            self.checkout,
+            fresh,
+            run=run,
+            tool_root=self.root,
+            completed_record=record,
+        )
+
+        self.assertTrue(removed)
+        self.assertEqual(1, len(commands))
+        command = commands[0]
+        self.assertTrue(wrkslots_action(command, "recover"))
+        self.assertIn("--coordinator-authorized", command)
+        self.assertEqual(
+            str(fresh),
+            command[command.index("--frozen-validate-checkout") + 1],
+        )
+        self.assertFalse(fresh.exists())
 
     def test_immediate_cleanup_does_not_rmtree_managed_git_directory(self) -> None:
         fresh = self.root / "worktrees/validate/validate-fresh-corrupt-git"
