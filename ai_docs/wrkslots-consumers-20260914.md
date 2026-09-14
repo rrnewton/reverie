@@ -870,3 +870,305 @@ module and the fixed project launcher, and writes the evidence files listed
 above. The coordinator and independent reviewer read those files. They are
 verification artifacts, with no production installation consumer. The worker
 remains alive while the registered slot holds the dependency update.
+
+## Additional verification at 20:28 UTC
+
+The parent gitlink change is now prepared locally at
+`b6d5a93e801534a85b6308b30a0a5c5a268026e6`, based on published
+`dfe99fe1091847a008c9000ea223c6f234ee5234`. Only `hermit` changes, from
+`7b8be60708c29b4926f36f06be8793523841d6ba` to the reviewed Hermit candidate
+`37a12da4e66da01ee47893c5550b0deaf14b0edd`. It has not been pushed and is not
+permission to land the dependency PR. The target must be updated if the Hermit
+landing receives a different commit identity.
+
+The prepared parent checkout has its recorded Hermit and nested agent-utils
+checkouts initialized. Its actual `ci-hub/bin/wrkslots create --help` reports
+the assigned-owner creation policy. These checks passed:
+
+- `scripts/check-agent-utils-pin.rs --root /tmp/wrkslots-dev-hermit-20260914 --no-fetch`:
+  exit 0, `state=ok`, isolated-clone mode, recorded Hermit `37a12da4`, nested
+  provider `14589e87`, clean provider checkout at the same revision, and zero
+  commits ahead or behind its fetched `origin/main`.
+- `with-proxy python3 scripts/check_hermit_agent_utils_pin.py --root /tmp/wrkslots-dev-hermit-20260914 --json`:
+  exit 0, `state=current`, lag 0, the same recorded chain and freshly queried
+  agent-utils main.
+
+The parent coherence check does not pass. Its offline check reports Hermit
+manifest pin `8c8c0a57649c9ffbf8a7a14291a64320f64b935f` versus the existing parent
+Reverie gitlink `f055d883ba9a`. A separate temporary index populated from the
+published parent base produced byte-identical output and exit 1. This is an
+existing mismatch; the candidate changes no manifest or Reverie gitlink.
+The networked product-currency checks and full Hermit receipt remain unproved.
+The logs are `/tmp/wrkslots-parent-pin-check-20260914.log`,
+`/tmp/wrkslots-parent-pin-provider-check-20260914.json`,
+`/tmp/wrkslots-parent-pin-launcher-help-20260914.txt`,
+`/tmp/wrkslots-parent-pin-coherence-20260914.log`, and
+`/tmp/wrkslots-parent-baseline-coherence-20260914.log`.
+
+A separately launched Codex harness was also attempted, to strengthen the
+literal agent demonstration beyond the already successful persistent Python
+worker. The installed CLI requested `gpt-6-astra` through its configured model
+gateway and received HTTP 403: `Access to this Codex model is currently restricted.`
+The CLI exited 1 before any model response or tool action. The coordinator
+independently confirmed no second slot directory, branch, or ACTIVE row exists.
+No different model, identity, or endpoint was used to work around that refusal.
+The successful registered Python-worker demonstration remains the completed
+end-to-end result; an additional independent model-harness result is not claimed.
+
+That attempt's files are under `/tmp/wrkslots-harness-demo-20260914/`.
+The dedicated tmux session runs `run-recorded.sh`, which invokes `run.sh`.
+`run.sh` executes the installed Codex CLI with `prompt.txt`; that invocation
+produces `transcript.jsonl` and `launcher.stderr.log`. `run-recorded.sh` records
+the CLI exit in `launcher-exit-status.txt`, then waits for `RELEASE_LAUNCHER`
+before exiting. The implementation agent also records launcher/process metadata
+in `tmux-pane.txt` and `harness-processes.json`, writes `result.json`, and creates
+`RELEASE_LAUNCHER` after the failed CLI exits. The coordinator and reviewer read
+the evidence and check the actual absence of slot state. These are temporary
+demonstration consumers, not production callers. The failed launcher's wrapper
+has exited; the existing demonstration owner and first registered slot were retained.
+
+## Parent Hermit gitlink consumers, 2026-09-14
+
+This is a read-only audit of the remaining parent `hermit` gitlink change. It adds to
+`ai_docs/wrkslots-consumers-20260914.md`; it does not replace that report's wrkslots,
+agent-utils, or inner Hermit inventory. No repository, index, ref, TaskGraph row, or
+slot registry was changed by this audit. Only this report was written.
+
+The inspected parent checkout is `/tmp/wrkslots-dev-hermit-20260914`. Its source base
+was `dfe99fe1091847a008c9000ea223c6f234ee5234`. During the audit the coordinator
+prepared local parent commit `b6d5a93e801534a85b6308b30a0a5c5a268026e6` there. A
+read-only comparison shows that its only changed path relative to the source base
+is `hermit`. The source inventory below therefore applies to both parent commits.
+This records a local candidate, not evidence that either remote main has advanced.
+Approval to bypass the full Hermit receipt was pending in the audit dispatch; no
+continuation, local commit, or local check is treated as that approval.
+
+The observed parent gitlink changes from Hermit
+`7b8be60708c29b4926f36f06be8793523841d6ba` to
+`37a12da4e66da01ee47893c5550b0deaf14b0edd`. Reading those exact Hermit trees shows
+one changed entry: `agent-utils`, mode `160000`, from
+`d14adc47ebc6dd7d1d758d5c3198c465d61ca703` to
+`14589e875c08e458d2f8af5a6f78b12128d5a367`. Every other Hermit tree entry is
+unchanged. The cached Hermit `origin/main` was still
+`7b8be60708c29b4926f36f06be8793523841d6ba` when inspected. No remote query was made.
+
+### Direct readers of the parent gitlink
+
+Paths are relative to dev-hermit. These programs read the recorded gitlink, its
+mode, or its exact commit identity. They are different from programs that merely
+open a file under `hermit/`.
+
+| Source | Reader and effect |
+| --- | --- |
+| `scripts/primary_checkout.py` | `indexed_submodule_commit` (471) reads the parent index, including an explicitly supplied `GIT_INDEX_FILE`, then falls back to `HEAD`. `check_pins` (1763) uses the recorded Hermit commit to read its Cargo manifests and both lockfiles. `check_freshness` and `publish_parent_snapshot` also compare the product gitlinks, including published `origin/main:<product>` entries. The `fresh --publish-parent` path may publish changes; `check-pins` is a separate offline reader. |
+| `scripts/check_reverie_pin_invariant.py` | `recorded_gitlink` (120), called by `check_legs` (235), reads the parent Hermit and Reverie index entries, then `HEAD`. It checks Hermit's internal Reverie manifest pins, agreement with the parent Reverie gitlink, and, unless `--offline`, currency against each product's remote main. Its `published_gitlink` helper is also imported by the Reverie-only monitor; that use does not read the Hermit gitlink. |
+| `scripts/check_hermit_agent_utils_pin.py` | `measure` (165) imports `recorded_gitlink`, follows parent Hermit commit to that commit's `agent-utils` gitlink, and measures its relationship to agent-utils main. `--no-fetch` still performs `ls-remote`; `--offline` skips the entire check. |
+| `scripts/check-agent-utils-pin.rs` | `expected_agent_utils_pin` (487) reads `ls-tree HEAD -- hermit`, validates its mode and object, then reads that exact Hermit commit's `agent-utils` gitlink. `check` compares the nested pin, materialized agent-utils `HEAD`, and agent-utils `origin/main`, plus checkout cleanliness and the parent symlink. It reads `HEAD`, not a staged candidate. |
+| `scripts/check-parent-gitmodules.sh` | Reads index modes for all three parent product paths, including `hermit`; requires mode `160000`, the prescribed public URL and `update = checkout`. Also validates the mode and exact target of `agent-utils -> hermit/agent-utils`. This is a structure check, not proof of remote publication. |
+| `scripts/check-codex-setup.py` | `parent_index_entry`, `indexed_submodule_path_exists`, and the indexed symlink resolver read the parent gitlink and files in the recorded submodule commit. `canonical_submodule_paths` (399) requires configured product roots to be indexed gitlinks. Package and instruction-policy checks also use materialized product files. |
+| `scripts/check-gitlink-currency.sh` | Enumerates `HEAD` gitlinks with `ls-tree`, reads `HEAD:<product>`, and checks ancestry and lag against each product's local `origin/main`. It does not fetch. A local candidate not contained in that ref is reported off-main; this cannot be turned into a publication check by changing a local ref. |
+| `ci-hub/bin/agent-tool` | `gitlink_at` (74), followed by selection at 222 and 234, reads the selected parent commit's Hermit gitlink and then its nested agent-utils gitlink. Default selection resolves fresh parent main and uses a private fetched ref. Explicit `DEV_HERMIT_TOOL_ROOT` selects that root's `HEAD`. Supported tools are `dagrun`, `pr-landing-planner`, `safe-ci-dag-runner`, and `tick-hub`. |
+| `scripts/hermit-health-tick.sh` | The installed `operational-tool` implementation verifies tracked gitlinks and materialized contents, reads exact parent-to-Hermit-to-agent-utils commits at 2213–2234 and 2318–2332, initializes those exact submodules, and records their identities before running a tool. This is both a direct reader and an initializer. |
+| `ci-hub/health/wrkslots_audit_result.py` | `_gitlink` and `provenance_objection` (95) validate the producer receipt's parent history and the exact Hermit and agent-utils gitlinks at that producer commit (149 and 155). It does not require an older valid producer receipt to name the reader's new pins. |
+| `ci-hub/compatibility-website/export_inputs.py` | `_hermit_reader` (493) reads the reader's `HEAD` Hermit gitlink, requires a real materialized Hermit checkout at exactly that commit, and reports both identities. Changing the pin without materializing it causes refusal. |
+| `scripts/health-poll.py` | `_gitlink` (391), used by `check_repo_hygiene` (476), compares all parent product `HEAD` gitlinks with their checkout `HEAD` and cached `origin/main`. This is a read-only prototype, not the deployed health tick. |
+| `scripts/parent-main-write` | `gitlink_overlap_matches_target` (136) reads old tree, target tree, and index entries and requires exact mode/commit agreement when preserving an already advanced checkout. Sync and residue handling at 894 and 1032 also treat mode `160000` separately from blobs. These generic parent Git operations consume `hermit` when that path is involved. They can mutate state and are not local audit commands. |
+| `ci-hub/health/unpushed_parent_commits.py` | `classify_publication` (246) enumerates changed parent paths and compares `rev-parse <commit>:<path>` identities. A changed `hermit` gitlink is an ordinary changed path in that comparison. The separate `raw_blob` helper is for ledger content, not the Hermit pin. |
+| `scripts/single-submodule-bump.rs` | `preflight` reads `HEAD:<selected product>` and fetched product main; `hermit` is one of the permitted parent products. Its run path commits and records the exact A-to-B transition and verification result. Even `plan` fetches, so it is not read-only. |
+
+### Initialization, configuration, and entrypoints
+
+These existing paths pass the parent gitlink to Git initialization or invoke the
+readers above. Their own source bytes are unchanged by the candidate.
+
+| Source | Role |
+| --- | --- |
+| `.gitmodules` | Defines the `hermit`, `reverie`, and `liteinst2` paths, public HTTPS URLs, and `update = checkout`. |
+| `agent-utils` | Tracked symlink to `hermit/agent-utils`; it is not an independent parent gitlink. Existing provider consumers in the earlier report resolve through it. |
+| `.wrkslots.yml` | Its post-provision hook runs `git submodule update --init --recursive`. For a slot whose selected repository is dev-hermit, that initializes the parent Hermit pin. |
+| `Makefile` | `checkout-all` performs recursive initialization; `check-submodules` depends on it; `init-hermit` depends on `check-submodules`. `submodules` invokes `scripts/submodules.sh`. `checkout-fresh` invokes `primary_checkout.py fresh --publish-parent`. Pin-check targets and `lint` invoke the structural and pin readers; `single-submodule-bump` invokes that workflow. Names beginning with `check` do not make these all read-only. |
+| `scripts/submodules.sh` | `process_product` (155) initializes a missing parent product at its gitlink, then manages its attached branch. `--with-agent-utils` initializes the nested pin too. Default branch refresh can subsequently move the product checkout; this is not an exact-candidate audit command. |
+| `scripts/ci-hub-clone-change.py` | Clone provisioning initializes the parent products (1003), then Hermit's agent-utils (1014); initialization checks reject missing submodules. |
+| `scripts/super-validate.sh` | Initializes the parent Hermit pin if the product validator is missing (30), then runs the selected product/demo validation. |
+| `.github/workflows/dev-hermit-ci.yml` | Product initialization at 69, 145, and 198; nested agent-utils initialization at 70 and 199; agent-utils pin check at 215. |
+| `.github/workflows/compat-envelope.yml` | Both checkout steps (72 and 152) request recursive submodules. |
+| `.github/workflows/nightly-demo-sweep.yml` | Checkout at 72 requests recursive submodules; later invokes `scripts/super-validate.sh`. Current trigger is manual `workflow_dispatch`; older comments do not establish automatic execution. |
+| `.github/workflows/portability.yml` | Checkout at 36 requests recursive submodules. |
+| `README.md` | Documents recursive clone/update and explicit parent Hermit then nested agent-utils initialization. |
+| `.githooks/pre-commit` | Invokes `primary_checkout.py check` as a warning, then the blocking offline `check-pins` when Hermit is materialized. The pin check reads the index that the pending commit actually records. |
+| `scripts/setup-hooks.sh` | Installs hook dispatch for parent and initialized products; this carries the pre-commit consumer. It reads configured product paths, not the Hermit commit identity itself. |
+| `.githooks/hygiene-policy.md` | Documents the checkout and pin checks and parent/inner repository relationship. |
+| `ci-hub/history/SUBMODULE-BUMPS.md` | Documents verified parent product pin transitions and explicitly requires nested agent-utils changes to land in Hermit before advancing the parent Hermit gitlink. |
+| `ci-hub/bin/health-tick` | Calls `ci-hub/bin/agent-tool tick-hub` and consumes its selected provider. |
+| `ci-hub/health/pr_status.py` | Calls `ci-hub/bin/agent-tool` for `pr-landing-planner`. |
+| `ci-hub/health/tick-hub.yaml` | Invokes the wrkslots audit receipt reader and `unpushed_parent_commits`; it is also the health configuration selected by the verified tool checkout. |
+| `scripts/systemd/hermit-health-tick.service` | Invokes installed `operational-tool` to select `scripts/hermit-health-tick.sh`. |
+| `scripts/systemd/hermit-owner-checkout-validate.service` | Invokes installed `operational-tool` to select `scripts/owner-checkout-validate-watch.py`. The selected code uses the parent pin; the owner's actual Hermit validation target is explicitly the canonical checkout. |
+| `scripts/systemd/hermit-wrkslots-audit.service` | Invokes installed `operational-tool` to select `ci-hub/bin/wrkslots-audit`. |
+| `ci-hub/bin/wrkslots-audit` | Receives and records the exact parent/Hermit/agent-utils provenance supplied by `operational-tool`. |
+| `ci-hub/ledger/launch_publish_backlog.sh` | Uses installed `operational-tool` when launching the publish sweep from a verified tool checkout. |
+| `scripts/install-owner-checkout-validate-watch.sh` | Installs the owner validator unit and shared operational-tool implementation. |
+| `scripts/install-wrkslots-audit.sh` | Installs the audit unit and shared operational-tool implementation. |
+| `docs/health-poller.md` | Documents the separate read-only health-poll prototype and its invocation. |
+
+The earlier report already enumerates `ci-hub/bin/wrkslots`, `worktrees/wrkslots`,
+the runtime package, its callers, and other provider consumers. The launcher reads
+the materialized `hermit/agent-utils/py` path; it does not itself resolve the parent
+Hermit gitlink. It becomes a consumer of the newly selected implementation once
+that exact nested checkout is materialized.
+
+### Tests and validation wiring
+
+These are unchanged tests or validation entrypoints for the readers and
+initializers above. This list records consumers, not a claim that they were run
+in this audit or that every listed file directly exercises every gitlink case.
+
+- `scripts/test_primary_checkout.py`
+- `scripts/test_reverie_pin_invariant.py`
+- `scripts/test_hermit_agent_utils_pin.py`
+- `scripts/check-agent-utils-pin.rs` (its in-file Rust tests)
+- `scripts/single-submodule-bump.rs` (its in-file Rust tests)
+- `scripts/test_check_codex_setup.py`
+- `scripts/test_ci_hub_clone_change.py`
+- `scripts/test_parent_main_write.py`
+- `scripts/test_health_poll.py` (imports the prototype; not evidence of pin-specific coverage)
+- `ci-hub/tests/test_agent_tool_pin_equivalence.py`
+- `ci-hub/tests/test_compatibility_website_export_inputs.py`
+- `ci-hub/health/tests/test_unpushed_parent_commits_budget.py`
+- `ci-hub/health/tests/test_wrkslots_audit_result.py`
+- `ci-hub/tests/test_health_tick_evaluation_provenance.py`
+- `ci-hub/tests/test_health_tick_escalation.py`
+- `ci-hub/tests/test_tick_frequency.py`
+- `ci-hub/tests/test_wrkslots_audit_job.py`
+- `scripts/test_wrkslots_audit_provenance.py`
+- `scripts/tests/test_install_owner_checkout_validate_watch.py`
+- `scripts/tests/test_install_wrkslots_audit.py`
+- `scripts/tests/test_owner_checkout_validate_watch.py`
+- `scripts/check-harness-help.py` (registers the gitmodules helper help invocation)
+- `scripts/test_python_cli_help.py`
+- `scripts/run-directory-tests.sh`
+- `ci-hub/tests/run_python_suites.py` (imports and collection depend on materialized nested packages)
+- `Makefile`
+- `.github/workflows/dev-hermit-ci.yml`
+
+### Other matches and unchanged Hermit program users
+
+A changed gitlink participates in ordinary Git commit, diff, and push operations.
+`ci-hub/bin/git-push-verified` includes the pin-changing parent commit in its exact
+remote-ref verification. Its tests are `ci-hub/tests/test_git_push_verified.py` and
+`scripts/test_git_push_verified.py`. `ci-hub/bin/gh-merge-verified` also supports
+mode `160000` in general content comparison, with
+`ci-hub/bin/gh-merge-verified-test`; it is not the parent main-only landing path.
+These do not interpret or initialize the selected Hermit product.
+
+The following matches do not read this parent pin:
+
+- `ci-hub/health/reverie_pin_lag.py` reads the published parent **Reverie** gitlink through a shared helper.
+- `scripts/allocate-worktree.rs` initializes `agent-utils` inside a selected Hermit product worktree. Its product starts are independently selected; it does not initialize parent `hermit` from the parent gitlink. `scripts/allocate-worktree-submodule-test.sh` tests that inner provisioning.
+- `scripts/release-worktree.rs` enumerates gitlinks and can reinitialize submodules inside its selected product cleanup target. Its target products are Hermit, Reverie, and LiteInst2, not the parent checkout. It does not select the parent's Hermit commit.
+- `scripts/checkout-optional-submodules.rs` handles Reverie and optional inner submodules, not parent Hermit initialization.
+- `ci-hub/validate/start_unit.py` and `ci-hub/series/pressure_schedule.py` initialize submodules inside explicitly selected product validation checkouts. Their validation target is not obtained from the parent Hermit gitlink.
+- `ci-hub/qualifying_receipt.py` checks a requested product commit's receipt and source definitions. An initialized Hermit source repository is needed, but changing the parent pin does not create a qualifying receipt.
+- `ci-hub/ledger/validate_rows.py` has a tracked-source reader that requires mode `100644 blob`; it does not accept `hermit` mode `160000` as that source file.
+- `ci-hub/validate/gitmodules_lint.py` reads parent and materialized product `.gitmodules` files. Their bytes do not change here. Its tests and mutation suite continue to check those manifests, not the new parent gitlink value.
+- `scripts/list-python-files.sh`, `scripts/list-rust-sources.sh`, and `scripts/list-shell-scripts.sh` explicitly skip directory/gitlink entries rather than read their commits.
+- `ci-hub/stress/nightly-stress.workflow.yml` is a proposed workflow for the **Hermit** repository; its recursive checkout is not a live parent workflow.
+- `demos/common.sh`, `demos/05-qemu-boot.py`, `demos/06-qemu-resume.py`, `bin/hermit-repeat`, `bin/safehermit`, `scripts/doctor.sh`, and `scripts/install-deps.sh` use Hermit programs, files, or setup paths. None obtains the selected product revision by reading this parent gitlink.
+
+For the exact two Hermit commits inspected above, all Hermit source, manifests,
+lockfiles, validation definitions, and binaries tracked outside `agent-utils` are
+unchanged by Git tree identity. Generic users of those bytes are therefore not
+additional changed source APIs. This does not establish runtime behavior of the
+new agent-utils dependency; that evidence remains in the original report and the
+separate validation record.
+
+### Coordinator-provided local check evidence
+
+The coordinator supplied these logs after preparing local parent candidate
+`b6d5a93e801534a85b6308b30a0a5c5a268026e6`; this audit read them without rerunning
+or altering the checks:
+
+- `/tmp/wrkslots-parent-pin-check-20260914.log`: the agent-utils drift check reports `state=ok`, candidate Hermit `37a12da4e66da01ee47893c5550b0deaf14b0edd`, and nested pin, materialized checkout, and cached agent-utils main all `14589e875c08e458d2f8af5a6f78b12128d5a367`; clean detached isolated checkout. The coordinator reports exit 0.
+- `/tmp/wrkslots-parent-pin-provider-check-20260914.json`: explicitly records `exit: 0`, `state: current`, the same Hermit and agent-utils commits, and lag 0.
+- `/tmp/wrkslots-parent-pin-coherence-20260914.log`: A internal passes with one Reverie revision `8c8c0a57649c` across 20 entries; B coherence fails because the parent Reverie gitlink is `f055d883ba9a`; C and D are skipped by `--offline`. The coordinator reports exit 1.
+- `/tmp/wrkslots-parent-baseline-coherence-20260914.log`: the coordinator's separate-index control at published parent base `dfe99fe1091847a008c9000ea223c6f234ee5234` has the same failure. This audit compared both log files byte-for-byte and confirmed equality. Both contain 428 bytes, SHA-256 `e7153e081d1ceec403c94ff5343db8ed805993ad457a4cbf017715cde6a7b0e3`.
+
+The coherence failure is pre-existing and remains a failure. No comparator,
+threshold, assertion, exemption, or pin was changed by this audit to make it pass.
+The provider checks establish their stated dependency relationship; they do not
+establish full Hermit validation or authorization to omit it. These logs contain
+no overall elapsed duration.
+
+### Read-only checks for a prepared local candidate
+
+These checks are appropriate once the coordinator has prepared the candidate
+checkout/index and materialized the needed object stores. They do not prepare,
+commit, or publish a candidate. The commands below describe available checks; the specific coordinator results
+above remain the actual observed evidence. No check was run by this audit. Run each with its actual exit status preserved and inspect the
+reported commit identities.
+
+1. Read the exact parent index and commit: `git ls-files --stage -- hermit`, `git ls-tree HEAD -- hermit`, and `git diff --cached --raw`. Check the mode, stage, and expected commit, not merely command success. A committed candidate must be compared to its recorded base with `git diff --raw <base> <candidate>`.
+2. Read the selected product object directly: `git -C hermit cat-file -e '<Hermit candidate>^{commit}'`, `git -C hermit ls-tree <Hermit candidate> -- agent-utils`, and `git -C hermit diff --raw <old Hermit> <Hermit candidate>`. Require the single intended nested gitlink transition and an available agent-utils commit object. Use `GIT_NO_LAZY_FETCH=1` to prevent a missing promisor object from starting a fetch.
+3. Run `GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 bash scripts/check-parent-gitmodules.sh` in the candidate root. This checks index structure, manifest policy, and the exact parent symlink.
+4. Run `GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/primary_checkout.py --root . check-pins`. It reads the indexed candidate and both lockfiles. Its pre-existing unevaluable case returns zero with a warning, so require the positive line identifying the intended candidate and inspect any warnings. A zero exit alone is insufficient.
+5. Run `GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/check_reverie_pin_invariant.py --root . --offline`. Require A internal and B coherence to be checked successfully. C and D are explicitly skipped in this mode and must be reported as unmeasured.
+6. `scripts/check-codex-setup.py --root .` is a read-only setup check; use `python3 -B`, `PYTHONDONTWRITEBYTECODE=1`, `GIT_OPTIONAL_LOCKS=0`, and `GIT_NO_LAZY_FETCH=1`. It needs the materialized canonical packages and policies; this can check the new pin's setup paths without a remote operation.
+7. An already built `check-agent-utils-pin` executable can run with `--root <candidate root> --no-fetch`. That checks the committed parent `HEAD` chain against materialized agent-utils and its **cached** main ref. The Rust-script launcher may build/cache an executable, so it is not a strictly read-only invocation if not already built. The simpler raw Git reads in item 2 avoid that issue. Neither form proves fresh remote publication of Hermit.
+
+`check-gitlink-currency.sh` is read-only but compares committed `HEAD` to cached
+product main. Before the candidate reaches Hermit main, an off-main finding is
+expected evidence of the still-unpublished commit, not permission to move a ref or
+weaken the check. The full `check_reverie_pin_invariant.py` command queries remote
+main; `check_hermit_agent_utils_pin.py --no-fetch` also still queries remote main.
+Its `--offline` mode skips everything and supplies no candidate evidence.
+
+Do not substitute `make check-submodules`, `make checkout-all`, `make lint`,
+`single-submodule-bump plan`, `agent-tool` default selection, operational-tool, or
+submodule initialization for these read-only checks: they fetch, initialize,
+write caches, or mutate state. The exact Hermit main publication and full Hermit
+receipt remain separate facts to establish through their authorized paths.
+
+### Search evidence and additions to the earlier report
+
+The audit searched tracked parent sources with `git grep` for `gitlink`,
+`submodule update`, recursive checkout configuration, `ls-tree`, indexed gitlink
+helpers, mode `160000`, and their caller names. It read the matched production
+implementations and distinguished tests, installation, policy, archived captures,
+inner product operations, and unrelated blob readers. It did not recursively walk
+other worktrees or treat historical ledger text as executable consumers.
+
+The following paths in this report were absent by exact path text from the
+existing tracked consumer report when compared. They include direct readers,
+initializers, and their test/configuration/documentation consumers; the roles above
+are part of the enumeration and should be retained when incorporating the list.
+The excluded matches in the preceding section are not included here.
+
+- `.githooks/hygiene-policy.md`
+- `.githooks/pre-commit`
+- `.github/workflows/compat-envelope.yml`
+- `.github/workflows/nightly-demo-sweep.yml`
+- `.github/workflows/portability.yml`
+- `ci-hub/compatibility-website/export_inputs.py`
+- `ci-hub/health/pr_status.py`
+- `ci-hub/health/tests/test_unpushed_parent_commits_budget.py`
+- `ci-hub/health/unpushed_parent_commits.py`
+- `ci-hub/history/SUBMODULE-BUMPS.md`
+- `ci-hub/ledger/launch_publish_backlog.sh`
+- `ci-hub/tests/run_python_suites.py`
+- `ci-hub/tests/test_agent_tool_pin_equivalence.py`
+- `ci-hub/tests/test_compatibility_website_export_inputs.py`
+- `ci-hub/tests/test_health_tick_escalation.py`
+- `docs/health-poller.md`
+- `scripts/check-gitlink-currency.sh`
+- `scripts/check_reverie_pin_invariant.py`
+- `scripts/health-poll.py`
+- `scripts/install-owner-checkout-validate-watch.sh`
+- `scripts/owner-checkout-validate-watch.py`
+- `scripts/run-directory-tests.sh`
+- `scripts/setup-hooks.sh`
+- `scripts/super-validate.sh`
+- `scripts/systemd/hermit-health-tick.service`
+- `scripts/test_health_poll.py`
+- `scripts/test_reverie_pin_invariant.py`
+- `scripts/tests/test_install_owner_checkout_validate_watch.py`
+- `scripts/tests/test_owner_checkout_validate_watch.py`
