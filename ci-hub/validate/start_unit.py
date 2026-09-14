@@ -659,6 +659,18 @@ class WrkslotsIdentity:
     generation: int
 
 
+class CleanupPresence(Enum):
+    RETAINED = "retained"
+    ABSENT = "absent"
+    COULD_NOT_DETERMINE = "could-not-determine"
+
+
+@dataclass(frozen=True)
+class CleanupPresenceObservation:
+    state: CleanupPresence
+    detail: str
+
+
 @dataclass(frozen=True)
 class CreateJournalCheckout:
     """One provider-verified checkout from an interrupted slot creation."""
@@ -2007,7 +2019,7 @@ def remove_fresh_checkout(
     except RuntimeError as error:
         print(
             f"validate-run: wrkslots cleanup could not run for {fresh}: {error}; "
-            "the checkout and its lifecycle record were retained. Run "
+            "checkout and row state are unconfirmed. Run "
             "'ci-hub/bin/wrkslots recover --coordinator-pid PID' if an interrupted "
             "operation is reported, otherwise rerun the printed remove command.",
             file=sys.stderr,
@@ -2018,7 +2030,8 @@ def remove_fresh_checkout(
             f"exit {removal.returncode}"
         )
         print(
-            f"validate-run: wrkslots retained validation checkout {fresh}: {detail}",
+            f"validate-run: wrkslots did not confirm removal of validation checkout "
+            f"{fresh}: {detail}",
             file=sys.stderr,
         )
         return False
@@ -2031,6 +2044,131 @@ def remove_fresh_checkout(
         )
         return False
     return True
+
+
+def observe_fresh_checkout_cleanup(
+    root: Path,
+    fresh: Path,
+    wrkslots: WrkslotsIdentity | None,
+    *,
+    run: Runner,
+    tool_root: Path = ROOT,
+) -> tuple[CleanupPresenceObservation, CleanupPresenceObservation]:
+    """Observe the exact path and registration without inferring either from rc."""
+
+    try:
+        os.lstat(fresh)
+    except FileNotFoundError:
+        path = CleanupPresenceObservation(
+            CleanupPresence.ABSENT, f"exact checkout path is absent: {fresh}"
+        )
+    except OSError as error:
+        path = CleanupPresenceObservation(
+            CleanupPresence.COULD_NOT_DETERMINE,
+            f"cannot inspect exact checkout path {fresh}: {error}",
+        )
+    else:
+        path = CleanupPresenceObservation(
+            CleanupPresence.RETAINED, f"exact checkout path exists: {fresh}"
+        )
+
+    if wrkslots is None:
+        row = CleanupPresenceObservation(
+            CleanupPresence.COULD_NOT_DETERMINE,
+            "no exact wrkslots slot and generation were available",
+        )
+        return path, row
+
+    command = [
+        str(tool_root / "ci-hub/bin/wrkslots"),
+        "--project-root",
+        str(root.resolve()),
+        "--allow-existing-unregistered-worktrees",
+        "status",
+        "--slot",
+        wrkslots.slot,
+        "--format",
+        "json",
+    ]
+    try:
+        result = run(command, check=False)
+    except (OSError, RuntimeError) as error:
+        row = CleanupPresenceObservation(
+            CleanupPresence.COULD_NOT_DETERMINE,
+            f"cannot inspect wrkslots row for slot {wrkslots.slot} generation "
+            f"{wrkslots.generation}: {error}",
+        )
+        return path, row
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or (
+            f"exit {result.returncode}"
+        )
+        row = CleanupPresenceObservation(
+            CleanupPresence.COULD_NOT_DETERMINE,
+            f"wrkslots status did not complete for slot {wrkslots.slot} generation "
+            f"{wrkslots.generation}: {detail}",
+        )
+        return path, row
+    try:
+        status = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        row = CleanupPresenceObservation(
+            CleanupPresence.COULD_NOT_DETERMINE,
+            f"wrkslots status for slot {wrkslots.slot} generation "
+            f"{wrkslots.generation} emitted invalid JSON: {error}",
+        )
+        return path, row
+    active = status.get("active") if isinstance(status, dict) else None
+    if (
+        not isinstance(status, dict)
+        or status.get("schema") != 2
+        or status.get("project_root") != str(root.resolve())
+        or not isinstance(active, list)
+    ):
+        row = CleanupPresenceObservation(
+            CleanupPresence.COULD_NOT_DETERMINE,
+            f"wrkslots status for slot {wrkslots.slot} generation "
+            f"{wrkslots.generation} did not identify the exact project and active rows",
+        )
+        return path, row
+    if not active:
+        row = CleanupPresenceObservation(
+            CleanupPresence.ABSENT,
+            f"no active row for slot {wrkslots.slot} generation {wrkslots.generation}",
+        )
+        return path, row
+    record = active[0] if len(active) == 1 else None
+    checkouts = record.get("checkouts") if isinstance(record, dict) else None
+    checkout = checkouts[0] if isinstance(checkouts, list) and len(checkouts) == 1 else None
+    raw_path = checkout.get("path") if isinstance(checkout, dict) else None
+    registered_path: Path | None = None
+    if isinstance(raw_path, str) and raw_path:
+        candidate = Path(raw_path)
+        if not candidate.is_absolute() and ".." not in candidate.parts:
+            registered_path = (root.resolve() / candidate).resolve()
+    exact = (
+        isinstance(record, dict)
+        and record.get("slot") == wrkslots.slot
+        and record.get("slot_type") == "validate"
+        and type(record.get("generation")) is int
+        and record.get("generation") == wrkslots.generation
+        and record.get("storage_inconsistencies") == []
+        and isinstance(checkout, dict)
+        and checkout.get("name") == "checkout"
+        and registered_path == fresh.resolve()
+    )
+    if not exact:
+        row = CleanupPresenceObservation(
+            CleanupPresence.COULD_NOT_DETERMINE,
+            f"wrkslots status row does not match exact slot {wrkslots.slot} generation "
+            f"{wrkslots.generation} and checkout path {fresh}",
+        )
+        return path, row
+    row = CleanupPresenceObservation(
+        CleanupPresence.RETAINED,
+        f"active row exists for slot {wrkslots.slot} generation {wrkslots.generation}",
+    )
+    return path, row
 
 
 def remove_fresh_checkouts_batch(
@@ -6912,14 +7050,48 @@ def main(
     }
     if args.ci_dag_jobs is not None:
         report["dag_jobs"] = args.ci_dag_jobs
+    if args.dry_run:
+        checkout_removed = remove_current_fresh_checkout()
+        remove_private_cargo_home(private_cargo_home, run=run)
+        remove_runtime_root(runtime_root, run=run)
+        if not checkout_removed:
+            if fresh_checkout is None:
+                path_observation = CleanupPresenceObservation(
+                    CleanupPresence.COULD_NOT_DETERMINE,
+                    "no exact temp checkout path was available",
+                )
+                row_observation = CleanupPresenceObservation(
+                    CleanupPresence.COULD_NOT_DETERMINE,
+                    "no exact wrkslots slot and generation were available",
+                )
+            else:
+                path_observation, row_observation = observe_fresh_checkout_cleanup(
+                    state_root,
+                    fresh_checkout,
+                    fresh_wrkslots,
+                    run=run,
+                    tool_root=tool_root,
+                )
+            print(
+                "validate-run: dry-run checkout path: "
+                f"{path_observation.state.value.upper()} -- {path_observation.detail}",
+                file=sys.stderr,
+            )
+            print(
+                "validate-run: dry-run wrkslots row: "
+                f"{row_observation.state.value.upper()} -- {row_observation.detail}",
+                file=sys.stderr,
+            )
+            return could_not_determine(
+                "dry-run checkout cleanup was not confirmed",
+                "inspect the wrkslots refusal above and retry only after the "
+                "supported checkout cleanup can complete",
+            )
     emit_report(report, json_output=args.json)
     if args.dry_run:
         if not args.json:
             print(f"PANE-PLAN workspace={pane_owner.WORKSPACE_LABEL} role=observer-only")
             print(f"COMMAND {shlex.join(command)}")
-        remove_current_fresh_checkout()
-        remove_private_cargo_home(private_cargo_home, run=run)
-        remove_runtime_root(runtime_root, run=run)
         return 0
 
     try:

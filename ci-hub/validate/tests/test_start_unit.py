@@ -226,6 +226,15 @@ class FakeRun:
         self.wrkslots_status_generation: int | None = None
         self.wrkslots_status_path: str | None = None
         self.wrkslots_status_head: str | None = None
+        self.wrkslots_status_rc = 0
+        self.wrkslots_status_stderr = ""
+        self.wrkslots_status_output: str | None = None
+        self.wrkslots_status_active: bool | None = None
+        self.wrkslots_remove_rc = 0
+        self.wrkslots_remove_stderr = ""
+        self.wrkslots_remove_keeps_checkout_on_error = True
+        self.wrkslots_remove_keeps_row_on_error = True
+        self.registered_validate_slots: set[tuple[str, int]] = set()
         self.scorecard_tamper_on_status: str | None = None
         self.validate_batch_retained: dict[str, str] = {}
         self.validate_batch_output: str | None = None
@@ -306,6 +315,8 @@ class FakeRun:
         if command[0].endswith("ci-hub/bin/wrkslots") and "create" in command:
             slot = command[command.index("create") + 1]
             project_root = Path(command[command.index("--project-root") + 1])
+            self.registered_validate_slots.add((slot, self.wrkslots_generation))
+            self.wrkslots_status_active = True
             self.fresh = project_root / "worktrees" / "validate" / slot
             if self.real_source_git:
                 self.fresh.parent.mkdir(parents=True, exist_ok=True)
@@ -355,6 +366,14 @@ class FakeRun:
                 ),
             )
         if command[0].endswith("ci-hub/bin/wrkslots") and "status" in command:
+            if self.wrkslots_status_rc != 0:
+                return completed(
+                    command,
+                    rc=self.wrkslots_status_rc,
+                    stderr=self.wrkslots_status_stderr,
+                )
+            if self.wrkslots_status_output is not None:
+                return completed(command, stdout=self.wrkslots_status_output)
             project_root = Path(command[command.index("--project-root") + 1])
             slot = command[command.index("--slot") + 1]
             status_checkout = project_root / "worktrees/validate" / slot
@@ -364,31 +383,36 @@ class FakeRun:
             relative = self.wrkslots_status_path or status_checkout.relative_to(
                 project_root
             ).as_posix()
+            active = (
+                []
+                if self.wrkslots_status_active is False
+                else [
+                    {
+                        "slot": slot,
+                        "slot_type": "validate",
+                        "generation": (
+                            self.wrkslots_generation
+                            if self.wrkslots_status_generation is None
+                            else self.wrkslots_status_generation
+                        ),
+                        "storage_inconsistencies": [],
+                        "checkouts": [
+                            {
+                                "name": "checkout",
+                                "path": relative,
+                                "head": self.wrkslots_status_head or self.target,
+                            }
+                        ],
+                    }
+                ]
+            )
             return completed(
                 command,
                 stdout=json.dumps(
                     {
                         "schema": 2,
                         "project_root": str(project_root.resolve()),
-                        "active": [
-                            {
-                                "slot": slot,
-                                "slot_type": "validate",
-                                "generation": (
-                                    self.wrkslots_generation
-                                    if self.wrkslots_status_generation is None
-                                    else self.wrkslots_status_generation
-                                ),
-                                "storage_inconsistencies": [],
-                                "checkouts": [
-                                    {
-                                        "name": "checkout",
-                                        "path": relative,
-                                        "head": self.wrkslots_status_head or self.target,
-                                    }
-                                ],
-                            }
-                        ],
+                        "active": active,
                     }
                 ),
             )
@@ -560,7 +584,27 @@ class FakeRun:
                 ),
             )
         if command[0].endswith("ci-hub/bin/wrkslots") and "remove" in command:
+            if self.wrkslots_remove_rc != 0:
+                if self.fresh is not None:
+                    slot = command[command.index("remove") + 1]
+                    generation = int(
+                        command[command.index("--expected-generation") + 1]
+                    )
+                    if not self.wrkslots_remove_keeps_checkout_on_error:
+                        shutil.rmtree(self.fresh, ignore_errors=True)
+                    if not self.wrkslots_remove_keeps_row_on_error:
+                        self.registered_validate_slots.discard((slot, generation))
+                self.wrkslots_status_active = self.wrkslots_remove_keeps_row_on_error
+                return completed(
+                    command,
+                    rc=self.wrkslots_remove_rc,
+                    stderr=self.wrkslots_remove_stderr,
+                )
             if self.fresh is not None:
+                slot = command[command.index("remove") + 1]
+                generation = int(command[command.index("--expected-generation") + 1])
+                self.registered_validate_slots.discard((slot, generation))
+                self.wrkslots_status_active = False
                 self.removed.append(str(self.fresh))
                 if self.real_source_git:
                     subprocess.run(
@@ -6343,6 +6387,125 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("PANE-PLAN workspace=validate-hermit role=observer-only", output)
         self.assertIn("ci-hub validate-lock run", output)
         self.assertFalse((self.root / "run.log").exists())
+
+    def test_materialized_dry_run_reports_one_plan_after_cleanup(self) -> None:
+        rc, output, error = self.invoke(
+            ["--materialize-target", "--dry-run", "--json"]
+        )
+
+        self.assertEqual(0, rc, error)
+        lines = output.splitlines()
+        self.assertEqual(1, len(lines), output)
+        report = json.loads(lines[0])
+        self.assertEqual("would-start", report["event"])
+        self.assertEqual("planned", report["state"])
+        self.assertIsNotNone(self.fake.fresh)
+        assert self.fake.fresh is not None
+        self.assertFalse(self.fake.fresh.exists())
+        self.assertEqual([], sorted(self.fake.registered_validate_slots))
+
+    def assert_materialized_dry_run_cleanup_observation(
+        self,
+        *,
+        checkout_retained: bool,
+        row_retained: bool,
+        row_observable: bool = True,
+        row_mismatch: str | None = None,
+    ) -> None:
+        self.fake.wrkslots_remove_rc = 3
+        self.fake.wrkslots_remove_stderr = "REFUSED: injected cleanup refusal"
+        self.fake.wrkslots_remove_keeps_checkout_on_error = checkout_retained
+        self.fake.wrkslots_remove_keeps_row_on_error = row_retained
+        if not row_observable:
+            self.fake.wrkslots_status_rc = 3
+            self.fake.wrkslots_status_stderr = "REFUSED: injected status refusal"
+        elif row_mismatch == "generation":
+            self.fake.wrkslots_status_generation = self.fake.wrkslots_generation + 1
+        elif row_mismatch == "path":
+            self.fake.wrkslots_status_path = "worktrees/validate/different-slot"
+
+        rc, output, error = self.invoke(
+            ["--materialize-target", "--dry-run", "--json"]
+        )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertEqual("", output)
+        self.assertIn("injected cleanup refusal", error)
+        self.assertIsNotNone(self.fake.fresh)
+        assert self.fake.fresh is not None
+        path_state = "RETAINED" if checkout_retained else "ABSENT"
+        row_state = (
+            "RETAINED"
+            if row_observable and row_retained and row_mismatch is None
+            else "ABSENT"
+            if row_observable and not row_retained
+            else "COULD-NOT-DETERMINE"
+        )
+        self.assertIn(f"dry-run checkout path: {path_state}", error)
+        self.assertIn(str(self.fake.fresh), error)
+        self.assertIn(f"dry-run wrkslots row: {row_state}", error)
+        self.assertIn(self.fake.fresh.name, error)
+        self.assertIn(str(self.fake.wrkslots_generation), error)
+        self.assertEqual(checkout_retained, self.fake.fresh.is_dir())
+        self.assertEqual(
+            (
+                [(self.fake.fresh.name, self.fake.wrkslots_generation)]
+                if row_retained
+                else []
+            ),
+            sorted(self.fake.registered_validate_slots),
+        )
+        self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+        self.assertEqual(
+            [],
+            list((self.root / "worktrees/validate").glob("validate-cargo-*")),
+        )
+        self.assertEqual([], list(self.root.glob("v*")))
+
+    def test_materialized_dry_run_reports_retained_path_and_row(self) -> None:
+        self.assert_materialized_dry_run_cleanup_observation(
+            checkout_retained=True,
+            row_retained=True,
+        )
+
+    def test_materialized_dry_run_reports_absent_path_and_retained_row(self) -> None:
+        self.assert_materialized_dry_run_cleanup_observation(
+            checkout_retained=False,
+            row_retained=True,
+        )
+
+    def test_materialized_dry_run_reports_retained_path_and_absent_row(self) -> None:
+        self.assert_materialized_dry_run_cleanup_observation(
+            checkout_retained=True,
+            row_retained=False,
+        )
+
+    def test_materialized_dry_run_reports_absent_path_and_row(self) -> None:
+        self.assert_materialized_dry_run_cleanup_observation(
+            checkout_retained=False,
+            row_retained=False,
+        )
+
+    def test_materialized_dry_run_reports_unavailable_row_observation(self) -> None:
+        self.assert_materialized_dry_run_cleanup_observation(
+            checkout_retained=True,
+            row_retained=True,
+            row_observable=False,
+        )
+
+    def test_materialized_dry_run_does_not_accept_mismatched_row_path(self) -> None:
+        self.assert_materialized_dry_run_cleanup_observation(
+            checkout_retained=True,
+            row_retained=True,
+            row_mismatch="path",
+        )
+
+    def test_materialized_dry_run_does_not_accept_mismatched_generation(self) -> None:
+        self.assert_materialized_dry_run_cleanup_observation(
+            checkout_retained=True,
+            row_retained=True,
+            row_mismatch="generation",
+        )
 
     def test_service_is_accepted_before_observer_pane_creation(self) -> None:
         def observe_reserved_log(**kwargs: object) -> None:
