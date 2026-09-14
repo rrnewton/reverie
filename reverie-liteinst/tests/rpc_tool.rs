@@ -76,6 +76,115 @@ fn unpatchable_syscall_preserves_xstate_with_native_controls() {
     print!("{stdout}");
 }
 
+#[test]
+fn unpatchable_syscall_preserves_protection_keys() {
+    let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("coordinator.sock");
+    let mut coordinator = Command::new(binary)
+        .arg("coordinator")
+        .arg(&socket)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let ready = socket.exists();
+    let mut command = Command::new(binary);
+    command.arg("syscall-fallback-pkey").arg(&socket);
+    let output = ready.then(|| output_with_timeout(command, Duration::from_secs(20)));
+    let _ = coordinator.kill();
+    let _ = coordinator.wait();
+    let output = output.expect("coordinator socket was not created");
+    if output.status.code() == Some(77) {
+        assert_eq!(output.stdout, b"fallback pkeys: OSPKE unavailable\n");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        eprintln!("pkey control unavailable: OSPKE is not enabled");
+        return;
+    }
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains(" pkru=0: state=preserved\n"), "{stdout}");
+    assert!(stdout.contains(" pkru=1: state=preserved\n"), "{stdout}");
+    assert!(
+        stdout.contains("fallback pkeys: zero=preserved key0-denied=preserved bytes="),
+        "{stdout}"
+    );
+    assert!(stdout.ends_with(" tool=424242 rpc=2\n"), "{stdout}");
+    assert_eq!(stdout.lines().count(), 6, "{stdout}");
+    assert!(
+        stdout.starts_with("pkey fixture: rseq=unregistered before native and Tool controls\n"),
+        "{stdout}"
+    );
+    print!("{stdout}");
+}
+
+#[test]
+fn fork_child_accounts_for_fallback_and_installed_dispatch() {
+    let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("coordinator.sock");
+    let mut coordinator = Command::new(binary)
+        .arg("coordinator")
+        .arg(&socket)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let ready = socket.exists();
+    let outputs = ready.then(|| {
+        ["installed", "fallback"].map(|kind| {
+            let mut command = Command::new(binary);
+            command.arg(format!("syscall-{kind}-fork")).arg(&socket);
+            output_with_timeout(command, Duration::from_secs(20))
+        })
+    });
+    let _ = coordinator.kill();
+    let _ = coordinator.wait();
+    let [installed, fallback] = outputs.expect("coordinator socket was not created");
+    assert!(installed.status.success(), "{installed:?}");
+    assert_eq!(installed.stdout, b"installed fork child: hooks=1 traps=0 fallback=0 syscall=0\ninstalled fork parent: hooks=2 traps=1 fallback=0 syscall=0\n");
+    assert!(installed.stderr.is_empty(), "{installed:?}");
+    assert!(fallback.status.success(), "{fallback:?}");
+    assert_eq!(fallback.stdout, b"fallback fork child: hooks=0 traps=1 fallback=1 syscall=1\nfallback fork parent: hooks=0 traps=1 fallback=1 syscall=1\n");
+    assert!(fallback.stderr.is_empty(), "{fallback:?}");
+    print!(
+        "{}{}",
+        String::from_utf8(installed.stdout).unwrap(),
+        String::from_utf8(fallback.stdout).unwrap()
+    );
+}
+
+#[test]
+fn fallback_refusal_is_counted_separately_from_tool_errors() {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest"));
+    command.arg("syscall-fallback-refusal").arg("unused");
+    let output = output_with_timeout(command, Duration::from_secs(20));
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        output.stdout,
+        b"fallback refusal: result=-95 attempts=1 refused=1 syscall=1 hooks=0 bytes=unchanged\n"
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!stderr.is_empty());
+    for line in stderr.lines() {
+        let number = line
+            .strip_prefix("reverie-liteinst: tool=compat syscall=")
+            .expect("unexpected runtime diagnostic");
+        number
+            .parse::<i64>()
+            .expect("invalid compatibility syscall record");
+    }
+}
+
 fn output_with_timeout(mut command: Command, timeout: Duration) -> Output {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().unwrap();

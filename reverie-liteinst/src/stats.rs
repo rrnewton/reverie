@@ -229,6 +229,7 @@ struct GuestStatsCollector {
     in_guest_nested_sigsys: AtomicU64,
     cacheline_straddler_fallback: AtomicU64,
     unpatchable_or_other_fallback: AtomicU64,
+    fallback_refusal: AtomicU64,
 }
 
 impl GuestStatsCollector {
@@ -238,6 +239,7 @@ impl GuestStatsCollector {
             LiteinstDispatchPath::InGuestNestedSigsys => &self.in_guest_nested_sigsys,
             LiteinstDispatchPath::CachelineStraddlerFallback => &self.cacheline_straddler_fallback,
             LiteinstDispatchPath::UnpatchableOrOtherFallback => &self.unpatchable_or_other_fallback,
+            LiteinstDispatchPath::FallbackRefusal => &self.fallback_refusal,
             LiteinstDispatchPath::FirstSiteSeccomp
             | LiteinstDispatchPath::PtraceInstallation
             | LiteinstDispatchPath::DirectHook => {
@@ -265,6 +267,10 @@ impl GuestStatsCollector {
                 self.unpatchable_or_other_fallback.load(Ordering::Relaxed),
             ),
             (LiteinstDispatchPath::DirectHook, direct_hooks),
+            (
+                LiteinstDispatchPath::FallbackRefusal,
+                self.fallback_refusal.load(Ordering::Relaxed),
+            ),
         ])
     }
 
@@ -275,6 +281,7 @@ impl GuestStatsCollector {
             .store(0, Ordering::Relaxed);
         self.unpatchable_or_other_fallback
             .store(0, Ordering::Relaxed);
+        self.fallback_refusal.store(0, Ordering::Relaxed);
     }
 }
 
@@ -371,6 +378,7 @@ pub(crate) fn initialize_guest_stats(coordinator: &Path) -> io::Result<GuestStat
             in_guest_nested_sigsys: AtomicU64::new(0),
             cacheline_straddler_fallback: AtomicU64::new(0),
             unpatchable_or_other_fallback: AtomicU64::new(0),
+            fallback_refusal: AtomicU64::new(0),
         })
         .map_err(|_| {
             io::Error::new(
@@ -555,6 +563,7 @@ mod tests {
                             (LiteinstDispatchPath::CachelineStraddlerFallback, 3),
                             (LiteinstDispatchPath::UnpatchableOrOtherFallback, 4),
                             (LiteinstDispatchPath::DirectHook, direct_hooks),
+                            (LiteinstDispatchPath::FallbackRefusal, 5),
                         ]),
                         sites: vec![LiteinstProcessSiteStats {
                             rip: 0x4000,
@@ -586,6 +595,8 @@ mod tests {
             8
         );
         assert_eq!(paths.count(&LiteinstDispatchPath::DirectHook), 18);
+        assert_eq!(paths.count(&LiteinstDispatchPath::FallbackRefusal), 10);
+        assert_eq!(paths.total(), 48);
         let rendered = source.to_string();
         assert!(rendered.contains("first_site_seccomp=0"), "{rendered}");
         assert!(rendered.contains("in_guest_sigsys=2"), "{rendered}");
@@ -611,6 +622,7 @@ mod tests {
             paths: CounterSnapshot::new([
                 (LiteinstDispatchPath::InGuestSigsys, 2),
                 (LiteinstDispatchPath::DirectHook, 8),
+                (LiteinstDispatchPath::FallbackRefusal, 3),
             ]),
             sites: Vec::new(),
         };
@@ -622,6 +634,11 @@ mod tests {
         assert_eq!(decoded, report);
         assert_eq!(decoded.paths.count(&LiteinstDispatchPath::InGuestSigsys), 2);
         assert_eq!(decoded.paths.count(&LiteinstDispatchPath::DirectHook), 8);
+        assert_eq!(
+            decoded.paths.count(&LiteinstDispatchPath::FallbackRefusal),
+            3
+        );
+        assert_eq!(decoded.paths.total(), 13);
     }
 
     fn deserialize_dispatch_paths(

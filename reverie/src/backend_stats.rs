@@ -143,6 +143,8 @@ liteinst_dispatch_paths! {
     UnpatchableOrOtherFallback => "unpatchable_or_other",
     /// A patched-site callback that returned to the ptrace-host Tool through SIGTRAP.
     DirectHook => "direct_hook",
+    /// An in-guest fallback attempt refused before ordinary Tool dispatch.
+    FallbackRefusal => "fallback_refusal",
 }
 
 /// Decoded shape of one candidate patch site.

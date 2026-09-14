@@ -213,10 +213,70 @@ fn restart_read() {
     assert_eq!(calls, 3, "read callback did not restart repeatedly");
 }
 
+fn fallback_fork_stats() {
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+    let mapping = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            page,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(mapping, libc::MAP_FAILED);
+    // mov eax, SYS_fork; syscall; ret, with the syscall at the page end.
+    let entry = unsafe { mapping.cast::<u8>().add(page - 8) };
+    unsafe {
+        std::ptr::copy_nonoverlapping([0xb8, 57, 0, 0, 0, 0x0f, 0x05, 0xc3].as_ptr(), entry, 8)
+    };
+    assert_eq!(
+        unsafe { libc::mprotect(mapping, page, libc::PROT_READ | libc::PROT_EXEC) },
+        0
+    );
+    let site = unsafe { entry.add(5) } as u64;
+    let fork: unsafe extern "C" fn() -> i64 = unsafe { std::mem::transmute(entry) };
+    install_tool();
+    let child = unsafe { fork() };
+    assert!(child >= 0, "fork failed: {child}");
+    assert_eq!(reverie_liteinst::reverie_liteinst_site_hook_count(site), 0);
+    assert_eq!(reverie_liteinst::reverie_liteinst_site_trap_count(site), 1);
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_fallback_syscall_count(libc::SYS_fork),
+        1
+    );
+    if child == 0 {
+        unsafe { libc::_exit(0) };
+    }
+    // The wait4 callback deliberately returns a fixture value in other modes.
+    // Use the trusted gate here to observe this actual child's completion.
+    let mut status = -1i32;
+    loop {
+        let waited = unsafe {
+            reverie_preload::trap::raw_syscall6(
+                libc::SYS_wait4,
+                [child as u64, (&mut status as *mut i32) as u64, 0, 0, 0, 0],
+            )
+        };
+        if waited == -i64::from(libc::EINTR) {
+            continue;
+        }
+        assert_eq!(waited, child);
+        break;
+    }
+    assert_eq!(status, 0);
+    println!("fallback fork stats: child=finished");
+}
+
 fn main() {
     let mut arguments = std::env::args_os();
     let _program = arguments.next();
     let mode = arguments.next().expect("missing lifecycle fixture mode");
+    if mode == "fallback-fork-stats" {
+        fallback_fork_stats();
+        return;
+    }
     install_tool();
 
     match mode.to_str() {

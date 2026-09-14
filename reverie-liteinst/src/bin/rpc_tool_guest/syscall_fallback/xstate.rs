@@ -15,6 +15,7 @@ struct State {
     mask: u64,
     site: *mut u8,
     omit_restore: u64,
+    pkru: u64,
 }
 
 struct Image {
@@ -96,6 +97,7 @@ pub(super) fn run(path: &Path) {
         mask,
         site,
         omit_restore: 0,
+        pkru: 0x55555554,
     };
 
     // Native syscall: the seeded state must remain byte-exact.
@@ -175,8 +177,143 @@ pub(super) fn run(path: &Path) {
     );
 }
 
+pub(super) fn run_pkey(path: &Path) {
+    let features = core::arch::x86_64::__cpuid_count(7, 0);
+    if features.ecx & (1 << 4) == 0 {
+        println!("fallback pkeys: OSPKE unavailable");
+        std::process::exit(77);
+    }
+    // A registered rseq area must remain kernel-accessible for signal and
+    // preemption fixups. This fixture is about PKRU across a syscall, not an
+    // invalid rseq registration on memory that it is about to deny. Explicitly
+    // unregister the fixture's own area before BOTH native and Tool controls.
+    let offset = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"__rseq_offset".as_ptr()) };
+    let size = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"__rseq_size".as_ptr()) };
+    assert!(
+        !offset.is_null() && !size.is_null(),
+        "glibc rseq metadata unavailable"
+    );
+    let size = unsafe { *size.cast::<u32>() };
+    let mut rseq_area = None;
+    if size != 0 {
+        assert!(size <= 32, "unsupported rseq registration size {size}");
+        let mut fs_base = 0usize;
+        assert_eq!(
+            unsafe { libc::syscall(libc::SYS_arch_prctl, 0x1003, &mut fs_base) },
+            0
+        );
+        let area = fs_base.wrapping_add_signed(unsafe { *offset.cast::<isize>() });
+        assert_eq!(
+            unsafe { libc::syscall(libc::SYS_rseq, area, 32, 1, 0x5305_3053u32) },
+            0
+        );
+        rseq_area = Some(area);
+    }
+    println!("pkey fixture: rseq=unregistered before native and Tool controls");
+    let (site, native_pid) = super::prepare_site();
+    let mask = unsafe { core::arch::x86_64::_xgetbv(0) };
+    assert_ne!(mask & 512, 0);
+    let bytes = core::arch::x86_64::__cpuid_count(0xd, 0).ebx as usize;
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+    let stride = (bytes + page - 1) & !(page - 1);
+    let length = page + 4 * stride + 1024 * 1024;
+    let mapping = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            length,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(mapping, libc::MAP_FAILED);
+    // Allocating with rights zero enables this key for the calling thread.
+    let key = unsafe { libc::syscall(libc::SYS_pkey_alloc, 0, 0) };
+    assert!(key > 0, "pkey_alloc: {}", std::io::Error::last_os_error());
+    assert_eq!(
+        unsafe {
+            libc::syscall(
+                libc::SYS_pkey_mprotect,
+                mapping,
+                length,
+                libc::PROT_READ | libc::PROT_WRITE,
+                key,
+            )
+        },
+        0
+    );
+    let base = mapping.cast::<u8>();
+    let state = unsafe { &mut *base.cast::<State>() };
+    *state = State {
+        original: unsafe { base.add(page) },
+        before: unsafe { base.add(page + stride) },
+        after: unsafe { base.add(page + 2 * stride) },
+        clear: unsafe { base.add(page + 3 * stride) },
+        mask,
+        site,
+        omit_restore: 0,
+        pkru: 0,
+    };
+    let stack = unsafe { base.add(length) };
+    for pkru in [0, 1] {
+        state.pkru = pkru;
+        assert_eq!(
+            unsafe { fallback_pkey_call(state, stack) },
+            i64::from(native_pid)
+        );
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(state.before, bytes) },
+            unsafe { std::slice::from_raw_parts(state.after, bytes) },
+            "native pkey={key} PKRU={pkru} xstate"
+        );
+        println!("native pkey={key} pkru={pkru}: state=preserved");
+    }
+    CALLBACK_STATE.store(state, Ordering::Relaxed);
+    unsafe { reverie_liteinst::install_tool::<super::FallbackTool>(path) }.unwrap();
+    for pkru in [1, 0] {
+        state.pkru = pkru;
+        assert_eq!(unsafe { fallback_pkey_call(state, stack) }, 424_242);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(state.before, bytes) },
+            unsafe { std::slice::from_raw_parts(state.after, bytes) },
+            "Tool pkey={key} PKRU={pkru} xstate"
+        );
+        println!("Tool pkey={key} pkru={pkru}: state=preserved");
+    }
+    CALLBACK_STATE.store(std::ptr::null_mut(), Ordering::Relaxed);
+    assert_eq!(
+        unsafe { std::slice::from_raw_parts(site, 3) },
+        [0x0f, 0x05, 0xc3]
+    );
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_site_hook_count(site as u64),
+        0
+    );
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_site_trap_count(site as u64),
+        2
+    );
+    assert_eq!(super::super::LAST_TOTAL.load(Ordering::Relaxed), 2);
+    assert_eq!(super::super::LAST_SENDERS.load(Ordering::Relaxed), 1);
+    println!(
+        "fallback pkeys: zero=preserved key0-denied=preserved bytes={bytes} tool=424242 rpc=2"
+    );
+    assert_eq!(unsafe { libc::syscall(libc::SYS_pkey_free, key) }, 0);
+    assert_eq!(unsafe { libc::munmap(mapping, length) }, 0);
+    if let Some(area) = rseq_area {
+        // Every assembly call has restored the original permissions, so the
+        // registered metadata will again remain kernel-readable and writable.
+        assert_eq!(
+            unsafe { libc::syscall(libc::SYS_rseq, area, 32, 0, 0x5305_3053u32) },
+            0
+        );
+    }
+}
+
 unsafe extern "C" {
     fn fallback_xstate_call(state: *const State) -> i64;
+    fn fallback_pkey_call(state: *const State, stack: *mut u8) -> i64;
     fn fallback_xstate_clobber(state: *const State);
 }
 
@@ -219,6 +356,8 @@ fallback_xstate_call:
     sub rsp, 8
     mov r12, rdi
     save_image 0
+    lea rax, [rsp - 8]
+    mov [rip + {expected_rsp}], rax
     fninit
     fld1
     fldcw [rip + seed_cw]
@@ -238,7 +377,7 @@ fallback_xstate_call:
 2:
     test qword ptr [r12 + 32], 512
     jz 3f
-    mov eax, 0x55555554
+    mov eax, [r12 + 56]
     xor ecx, ecx
     xor edx, edx
     wrpkru
@@ -269,6 +408,20 @@ fallback_xstate_call:
     ret
     .size fallback_xstate_call, .-fallback_xstate_call
 
+    .global fallback_pkey_call
+    .hidden fallback_pkey_call
+    .type fallback_pkey_call,@function
+fallback_pkey_call:
+    push r12
+    mov r12, rsp
+    mov rsp, rsi
+    and rsp, -16
+    call fallback_xstate_call
+    mov rsp, r12
+    pop r12
+    ret
+    .size fallback_pkey_call, .-fallback_pkey_call
+
     .global fallback_xstate_clobber
     .hidden fallback_xstate_clobber
     .type fallback_xstate_clobber,@function
@@ -285,5 +438,6 @@ seed_cw:
     .short 0x077f
 seed_mxcsr:
     .long 0x3f80
-    "#
+    "#,
+    expected_rsp = sym super::EXPECTED_RSP,
 );
