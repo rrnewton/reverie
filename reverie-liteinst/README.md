@@ -13,7 +13,8 @@ and `reverie-rpc-transport`.
    syscall gate, and seccomp filter.
 3. The first syscall at an instruction reaches SIGSYS. The LiteInst dispatcher
    installs a replace-first hook and changes the saved signal-context RIP to the
-   generated trampoline entry.
+   generated trampoline entry. An unpatchable syscall uses the deferred entry
+   described below, leaving its instruction bytes intact.
 4. After `sigreturn`, the trampoline invokes `T::handle_syscall_event` in normal
    guest context. The first invocation and later patched invocations therefore
    use the same tool path; the first site trap is not also a tool execution.
@@ -26,6 +27,44 @@ and `reverie-rpc-transport`.
 
 The regression proof reports `calls=32 traps=1 hooks=32` and sends a real
 Reverie tool RPC for every callback.
+
+### Unpatchable syscalls
+
+In typed Tool mode, a syscall without a supported patch window returns from the
+real kernel SIGSYS frame into an ordinary assembly entry. That entry calls the
+same Tool driver as installed syscall hooks, including six arguments, error
+results, tail injection, retries, and coordinator RPC. It retains no pointer
+into the expired kernel signal frame and does not rewrite guest text.
+
+The entry saves registers below the guest's 128-byte red-zone, aligns its
+extended-state area to 64 bytes, and sizes that area from CPUID leaf 0xD. XSAVE
+and XRSTOR use every user-state component enabled in XCR0; there is no fixed
+component mask. Machines without OS-enabled XSAVE use FXSAVE64/FXRSTOR64.
+The XSAVE header is zeroed before saving. The callback receives an empty x87
+stack, default FP controls and a cleared direction flag; the guest's FP state,
+flags and libc errno are restored afterward. The syscall outputs remain RAX
+(result), RCX (continuation PC), and R11 (saved flags).
+
+Each initialized thread owns one pending continuation. A second preparation
+while it is occupied refuses without replacing it. After dispatch, the saved
+RCX owns the return address and return reads no mutable TLS continuation.
+Nested Tool-internal syscalls use the existing trusted gate and do not acquire
+another continuation. Callable guest signal handlers remain unsupported;
+this guard does not add asynchronous callback support. Callbacks must obey the
+ordinary no-unwind ABI and preserve TLS bases. The guest stack must have room
+for the register frame, CPUID-sized state area and callback stack. HookContext
+IP/SP fields retain the existing register API's metadata semantics.
+
+`tests/rpc_tool.rs` covers an RX page ending in `syscall; ret`, with six traps,
+zero installed hooks, exact original bytes, Tool results distinct from native,
+seven RPCs, all arguments, errno, retry, tail injection, GPRs, flags, red-zone
+and XMM0. A separate fixture seeds x87, MXCSR, XMM and the host-enabled YMM,
+opmask, ZMM and PKRU components, then requires byte-exact saved-state equality
+across the Tool callback. It first verifies equality across a native syscall
+and detects the callback's real state clobber when restoration is omitted.
+It reports the actual XCR0 mask and image size. Components absent from that
+host are not execution-tested; this is not a Hermit determinism or parity
+qualification. No XSAVE header exception is used in these comparisons.
 
 ## Backend launcher
 
@@ -105,7 +144,7 @@ trap path. Quiescent publication is never selected from this route.
   preserves parent suspension through child exit. The coordinator drains
   inherited RPC connections to follow outliving and signaled descendants
   without attaching ptrace. Thread-style clone remains fail closed.
-- Patchable syscalls dispatch the Tool in guest, and intercepted normal exits
+- Patchable and unpatchable syscalls dispatch the Tool in guest, and intercepted normal exits
   route thread and process callbacks on the supported single-threaded path.
   CPUID and RDTSC/RDTSCP route through the Tool; determinized CPUID responses
   hide RDRAND/RDSEED from conforming guests.
@@ -124,8 +163,8 @@ trap path. Quiescent publication is never selected from this route.
   syscall injection do so; a tool future that depends on an unrelated executor
   can stall.
 - The five-byte patch window and executable mapping must be supported by
-  `liteinst2`. Dynamic executable mappings without a prepared reachable arena
-  fail closed.
+  `liteinst2` to install a hook. Unpatchable syscalls use deferred Tool dispatch;
+  other intercepted instructions still require a prepared reachable arena.
 - `execve` cannot safely cross the inherited filter because the handler and DSO
   mappings disappear. It remains fail closed; completing exec requires a
   non-seccomp in-guest coverage mechanism or another bootstrap that does not
@@ -141,13 +180,13 @@ preload DSO on the same landed revisions.
 ## Fallback-surface observability
 
 The runtime exports C-ABI counters that make the size and shape of the residual
-fallback surface — the trapped syscalls the runtime could not route to the Tool
+fallback surface — trapped syscalls without an installed hook
 — observable from the guest:
 
 - `reverie_liteinst_site_trap_count(address)` / `reverie_liteinst_site_hook_count(address)`
   — the per-**site** breakdown keyed by the un-patched instruction's address.
 - `reverie_liteinst_fallback_dispatch_count()` — the process-wide total of
-  syscalls that reached the fail-closed escape surface.
+  syscalls that reached fallback dispatch, including successful typed Tool calls.
 - `reverie_liteinst_fallback_syscall_count(number)` — the per-syscall-number
   breakdown, keyed the same way as `reverie_e9patch_fallback_syscall_count` so
   the two ld-preload backends expose a symmetric metric.
@@ -177,17 +216,18 @@ A 20-program C corpus was run through `hermit --backend liteinst run --strict
 --verify` and compared against native and the ptrace backend (full harness,
 CSV, and per-program logs live in the `dev-hermit` parent workspace under
 `experiments/liteinst_corpus_sweep_20260728/`, not in this repo). The result
-characterizes the supported frontier and each boundary mode:
+is historical evidence from July 2026, not a qualification of the current
+in-process runtime or a current L2 measurement:
 
-- **Single-process / single-thread C: 16/16 L2.** Every non-boundary program
+- **Single-process / single-thread C: 16/16 reported repeat comparisons.** Every non-boundary program
   (arithmetic, heap, file I/O, env, libm, clocks, libc `rand`, `argv`,
   recursion, buffered stdio, `getrandom`, anonymous `mmap`, `gmtime`)
   determinized to a bitwise-identical repeat run, matching the ptrace baseline.
   Where a source is non-reproducible, LiteInst determinizes it *correctly*:
   `getpid` (spoofed PID) and `getrandom` (deterministic bytes) both diverge from
-  native by design and still verify L2.
-- **Boundary programs fail in the four documented modes** listed under *Current
-  boundaries*, all shared with e9patch because both ld-preload backends route
+  native by design. Canonical L2 assurance is not established by these results.
+- **Four boundary modes were reported in that historical sweep**,
+  shared with e9patch because both ld-preload backends routed
   clone/fork through the same `reverie-preload` dispatcher and share this
   crate's signal/timer policy: thread `clone` and `fork` are rejected, a
   callable guest signal handler is rejected (fail-closed, nonzero exit), and an
@@ -199,9 +239,9 @@ characterizes the supported frontier and each boundary mode:
 errno from a rejected `clone`/`fork` and keeps running reaches a wrong but
 perfectly reproducible result, which `--verify` then reports as "Determinism
 verified" with `rc = 0`. In the sweep, the threaded and `fork` programs produced
-degraded single-process output that was nonetheless blessed L2. This is a
+degraded single-process output despite a successful repeat comparison. This is a
 property of the shared clone/fork policy plus `--verify` semantics, not a
-LiteInst-only defect; treat an L2 pass on a program that legitimately uses
-threads or child processes as suspect until multi-process support lands. The
+LiteInst-only defect; such a repeat comparison does not establish correct
+thread or process behavior. Current support is described above. The
 rejection itself is covered by `unsafe_clone_is_rejected_in_compatibility_and_strace_modes`
 and the compatibility-fork tests in `tests/strace.rs`.
