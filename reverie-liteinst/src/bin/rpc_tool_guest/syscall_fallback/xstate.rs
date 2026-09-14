@@ -196,6 +196,10 @@ pub(super) fn run_pkey(path: &Path) {
     let size = unsafe { *size.cast::<u32>() };
     let mut rseq_area = None;
     if size != 0 {
+        // __rseq_size is the supported feature size (20 on glibc here), not
+        // the registered ABI length. The original struct rseq registration
+        // occupies its 32-byte aligned ABI size; unregister/re-register must
+        // use that same length. Refuse an unknown larger feature layout.
         assert!(size <= 32, "unsupported rseq registration size {size}");
         let mut fs_base = 0usize;
         assert_eq!(
@@ -258,10 +262,12 @@ pub(super) fn run_pkey(path: &Path) {
     let stack = unsafe { base.add(length) };
     for pkru in [0, 1] {
         state.pkru = pkru;
+        unsafe { *libc::__errno_location() = libc::E2BIG };
         assert_eq!(
             unsafe { fallback_pkey_call(state, stack) },
             i64::from(native_pid)
         );
+        assert_eq!(unsafe { *libc::__errno_location() }, libc::E2BIG);
         assert_eq!(
             unsafe { std::slice::from_raw_parts(state.before, bytes) },
             unsafe { std::slice::from_raw_parts(state.after, bytes) },
@@ -273,7 +279,9 @@ pub(super) fn run_pkey(path: &Path) {
     unsafe { reverie_liteinst::install_tool::<super::FallbackTool>(path) }.unwrap();
     for pkru in [1, 0] {
         state.pkru = pkru;
+        unsafe { *libc::__errno_location() = libc::E2BIG };
         assert_eq!(unsafe { fallback_pkey_call(state, stack) }, 424_242);
+        assert_eq!(unsafe { *libc::__errno_location() }, libc::E2BIG);
         assert_eq!(
             unsafe { std::slice::from_raw_parts(state.before, bytes) },
             unsafe { std::slice::from_raw_parts(state.after, bytes) },

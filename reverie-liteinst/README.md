@@ -96,7 +96,8 @@ qualification. No XSAVE header exception is used in these comparisons.
 
 A separate protection-key fixture uses an actual nondefault-key stack and
 checks PKRU zero and key0 access denied, full state, exact reported RSP, Tool
-results and RPC. Before both native and Tool runs it explicitly unregisters
+results and RPC with the alternate signal stack both enabled and disabled.
+Before both native and Tool runs it explicitly unregisters
 its own glibc rseq area through SYS_rseq, then re-registers it once the original
 permissions have been restored. Registered rseq metadata must remain readable
 and writable for kernel signal/preemption fixups: merely observing one native
@@ -161,6 +162,17 @@ with the shared default. The `alt_stack_from_env_value` parser and the
 `set_guest_alt_stack` round-trip are unit-tested in `src/runtime.rs` and
 `src/lib.rs`.
 
+On systems reporting OSPKE, the shared SIGSYS entry uses a register-only
+WRPKRU prefix to open runtime access before touching its stack, siginfo,
+ucontext, globals or TLS. Linux's default handler permissions may otherwise
+deny a nondefault-key signal stack when `use_alt_stack` is false. Feature
+selection runs during installation, before CPUID faulting; the prefix preserves
+all three signal arguments and then runs the existing provenance and reentry
+checks. It leaves the kernel's saved guest registers and PKRU unchanged, so
+signal return restores the interrupted permissions. The non-OSPKE entry is
+unchanged. This prefix does not make arbitrary Tool callbacks signal-safe or
+add guest signal-handler support.
+
 ## Patch publication modes
 
 The stopped ptrace install helper uses LiteInst2's quiescent entrypoint. The
@@ -196,6 +208,13 @@ trap path. Quiescent publication is never selected from this route.
   later callable handlers, and validates that SIGSYS came from seccomp.
   `SIG_DFL` and `SIG_IGN` remain supported; guest signal handlers remain
   unsupported.
+- Denying access to registered glibc rseq metadata can make native signal
+  delivery fail in the kernel before any handler runs. A short native syscall
+  can survive that denial, while LiteInst's mandatory SIGSYS interception
+  triggers the kernel's rseq check and fails. The protected-stack fixture
+  unregisters its own rseq area for both native and Tool controls; the runtime
+  does not unregister production guests. Direct installed-hook behavior for
+  this registered-rseq case remains unmeasured.
 - Timer arming currently returns success without delivery. Clock reads use a
   calling-thread RDPMC RCB counter and deduct branches retired inside active
   LiteInst handlers. Hosts that deny perf-event access report the clock as

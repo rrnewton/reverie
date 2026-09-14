@@ -225,16 +225,65 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
     IN_HANDLER.set(false);
 }
 
+core::arch::global_asm!(
+    r#"
+    .text
+    .global reverie_preload_sigsys_pkru
+    .hidden reverie_preload_sigsys_pkru
+    .type reverie_preload_sigsys_pkru,@function
+reverie_preload_sigsys_pkru:
+    // Linux enters with default PKRU, which may deny the key of the signal
+    // stack itself. No stack, global, TLS, siginfo or ucontext access is safe
+    // until permissions are opened. RDI/RSI/RDX are the SA_SIGINFO arguments;
+    // preserve RDX in a caller-saved register across WRPKRU's fixed operands.
+    mov r8, rdx
+    xor eax, eax
+    xor ecx, ecx
+    xor edx, edx
+    wrpkru
+    lfence
+    mov rdx, r8
+    jmp {handler}
+    .size reverie_preload_sigsys_pkru, .-reverie_preload_sigsys_pkru
+    "#,
+    handler = sym sigsys_handler,
+);
+
+unsafe extern "C" {
+    fn reverie_preload_sigsys_pkru(
+        signal_number: libc::c_int,
+        info: *mut libc::siginfo_t,
+        context: *mut libc::c_void,
+    );
+}
+
 /// Install the SIGSYS handler (and, optionally, an alternate signal stack).
+///
+/// Selects the PKRU entry only when CPUID reports OSPKE. Selection happens
+/// during installation, before syscall interception or CPUID faulting; the
+/// signal entry itself performs no feature detection or memory access before
+/// opening permissions. It then enters the unchanged provenance/reentry
+/// checks. Guest registers and PKRU remain in the kernel's signal frame;
+/// ordinary signal return restores them, including after deferred dispatch.
+/// Handler permissions stay open through return so a nondefault-key signal
+/// stack remains accessible. This does not change guest signal policy.
 ///
 /// # Safety
 ///
-/// Installs process-global signal disposition; call once during init.
+/// Installs process-global signal disposition; call once during init while
+/// CPUID is available, before enabling instruction faulting.
 pub unsafe fn install_handler(use_alt_stack: bool) -> io::Result<()> {
+    let ospke = core::arch::x86_64::__cpuid(0).eax >= 7
+        && core::arch::x86_64::__cpuid_count(7, 0).ecx & (1 << 4) != 0;
+    let handler = if ospke {
+        reverie_preload_sigsys_pkru
+    } else {
+        sigsys_handler
+    };
     if use_alt_stack {
         unsafe { signal::install_alt_stack()? };
     }
-    unsafe { signal::install_sigsys_handler(sigsys_handler, use_alt_stack) }
+    unsafe { signal::install_sigsys_handler(handler, use_alt_stack) }
 }
 
 #[cfg(test)]
@@ -253,5 +302,30 @@ mod tests {
     #[test]
     fn no_dispatcher_registered_by_default() {
         assert!(dispatcher().is_none());
+    }
+
+    #[test]
+    fn sigsys_rejects_user_generated_signals_on_both_stacks() {
+        const CHILD: &str = "REVERIE_TEST_SIGSYS_PROVENANCE";
+        if let Some(value) = std::env::var_os(CHILD) {
+            unsafe {
+                install_handler(value == "1").unwrap();
+                libc::raise(libc::SIGSYS);
+            }
+            panic!("a user-generated SIGSYS returned from the handler");
+        }
+        for on_alt_stack in ["0", "1"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "trap::tests::sigsys_rejects_user_generated_signals_on_both_stacks",
+                    "--nocapture",
+                ])
+                .env(CHILD, on_alt_stack)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(126), "{output:?}");
+            assert!(output.stderr.is_empty(), "{output:?}");
+        }
     }
 }
