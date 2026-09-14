@@ -24,8 +24,9 @@ changing slot state.
 
 ## Allocate a slot
 
-Agents ask the coordinator for a path. The coordinator creates the slot from
-the primary repository root:
+The coordinator assigns the repository, slot path, branch, and agent. The
+coordinator or the assigned agent creates the slot from the primary repository
+root:
 
 ```bash
 ci-hub/bin/wrkslots --allow-existing-unregistered-worktrees \
@@ -39,9 +40,19 @@ ci-hub/bin/wrkslots --allow-existing-unregistered-worktrees \
 
 The required flag is a reminder and recorded provenance, not a claimed
 permission boundary between same-user processes. A delegated subagent uses the
-same command only after its coordinator supplied the assignment. Omitting the
-flag refuses before creating a branch, directory, or lifecycle record and says
-to ask the coordinator.
+same command after its coordinator supplied the assignment, with its own live
+process as `OWNER_PID`. The coordinator may run in a separate tmux pane and
+need not be an ancestor of that command. Both process generations are recorded
+and rechecked before registration. A caller that assigns another owner or
+omits the owner must still run under the coordinator; another owner must also
+descend from that coordinator. Omitting the flag refuses before creating a
+branch, directory, or lifecycle record and says to ask the coordinator.
+
+Wrkslots uses the installed `with-proxy` command for its internal Git network
+operations and provisioning hooks. This includes recursive submodule setup.
+On hosts without that command it uses the caller's network environment. A
+failed wrapper is reported as a failure; it is never retried through a direct
+connection.
 
 This repository still has worktrees created before wrkslots. During that
 migration, commands operating on a registered slot pass
