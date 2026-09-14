@@ -14,6 +14,7 @@ use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 
 static SITE: AtomicUsize = AtomicUsize::new(0);
+static EXPECTED_RSP: AtomicUsize = AtomicUsize::new(0);
 #[path = "syscall_fallback/xstate.rs"]
 mod xstate;
 
@@ -28,9 +29,15 @@ impl Tool for FallbackTool {
     type ThreadState = u32;
 
     fn subscriptions(_config: &()) -> Subscription {
-        [Sysno::getpid, Sysno::getuid, Sysno::getgid, Sysno::getppid]
-            .into_iter()
-            .collect()
+        [
+            Sysno::getpid,
+            Sysno::getuid,
+            Sysno::getgid,
+            Sysno::getppid,
+            Sysno::fork,
+        ]
+        .into_iter()
+        .collect()
     }
 
     async fn handle_syscall_event<G: Guest<Self>>(
@@ -48,9 +55,11 @@ impl Tool for FallbackTool {
         );
         let registers = guest.regs().await;
         assert_eq!(registers.rip, SITE.load(Ordering::Relaxed) as u64);
-        assert_ne!(registers.rsp, 0);
+        let expected_rsp = EXPECTED_RSP.load(Ordering::Relaxed);
+        assert_eq!(registers.rsp, expected_rsp as u64);
         let nested = unsafe { fallback_test_call(SITE.load(Ordering::Relaxed), libc::SYS_getpid) };
         assert_eq!(nested, NATIVE_PID.load(Ordering::Relaxed) as i64);
+        EXPECTED_RSP.store(expected_rsp, Ordering::Relaxed);
         let (total, senders) = guest.send_rpc(1).await;
         super::LAST_TOTAL.store(total, Ordering::Relaxed);
         super::LAST_SENDERS.store(senders, Ordering::Relaxed);
@@ -60,6 +69,7 @@ impl Tool for FallbackTool {
         };
         xstate::clobber_callback_state();
         match number {
+            Sysno::fork => guest.tail_inject(reverie::syscalls::Fork::new()).await,
             Sysno::getpid => Ok(424_242),
             Sysno::getuid => Err(Errno::EPERM.into()),
             Sysno::getgid => guest.tail_inject(Getpid::new()).await,
@@ -137,6 +147,14 @@ pub(super) fn run(path: &Path) {
         reverie_liteinst::reverie_liteinst_site_trap_count(site as u64),
         6
     );
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_fallback_refusal_count(),
+        0
+    );
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_fallback_syscall_refusal_count(libc::SYS_getuid),
+        0
+    );
     assert_eq!(super::LAST_TOTAL.load(Ordering::Relaxed), 7);
     assert_eq!(super::LAST_SENDERS.load(Ordering::Relaxed), 1);
     println!("fallback: calls=6 rpc=7 hooks=0 bytes=unchanged abi=preserved");
@@ -176,6 +194,8 @@ fallback_test_call:
     mov r9, 66
     mov qword ptr [rsp - 16], 123456
     pcmpeqd xmm0, xmm0
+    lea r11, [rsp - 8]
+    mov [rip + {expected_rsp}], r11
     stc
     pushfq
     pop qword ptr [rsp]
@@ -230,9 +250,118 @@ fallback_test_call:
 9:
     ud2
     .size fallback_test_call, .-fallback_test_call
-"#
+"#,
+    expected_rsp = sym EXPECTED_RSP,
 );
 
 pub(super) fn run_xstate(path: &Path) {
     xstate::run(path);
+}
+
+pub(super) fn run_pkey(path: &Path) {
+    xstate::run_pkey(path);
+}
+
+pub(super) fn run_fork(path: &Path, installed: bool) {
+    let (site, _) = if installed {
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                page,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        let site = unsafe { mapping.cast::<u8>().add(64) };
+        unsafe {
+            std::ptr::copy_nonoverlapping([0x0f, 0x05, 0x90, 0x90, 0x90, 0xc3].as_ptr(), site, 6)
+        };
+        assert_eq!(
+            unsafe { libc::mprotect(mapping, page, libc::PROT_READ | libc::PROT_EXEC) },
+            0
+        );
+        let pid = unsafe { libc::getpid() };
+        SITE.store(site as usize, Ordering::Relaxed);
+        NATIVE_PID.store(pid as usize, Ordering::Relaxed);
+        (site, pid)
+    } else {
+        prepare_site()
+    };
+    unsafe { reverie_liteinst::install_tool::<FallbackTool>(path) }.unwrap();
+    let child = unsafe { fallback_test_call(site as usize, libc::SYS_fork) };
+    assert!(child >= 0, "fork failed: {child}");
+    let hooks = reverie_liteinst::reverie_liteinst_site_hook_count(site as u64);
+    let traps = reverie_liteinst::reverie_liteinst_site_trap_count(site as u64);
+    let fallback = reverie_liteinst::reverie_liteinst_fallback_dispatch_count();
+    let syscall = reverie_liteinst::reverie_liteinst_fallback_syscall_count(libc::SYS_fork);
+    // The parent also enters the installed site once for the nested native
+    // getpid control. Child counters are reset after that parent-only work.
+    assert_eq!(
+        hooks,
+        if installed {
+            if child == 0 { 1 } else { 2 }
+        } else {
+            0
+        }
+    );
+    assert_eq!(traps, u64::from(!installed || child != 0));
+    assert_eq!(fallback, u64::from(!installed));
+    assert_eq!(syscall, u64::from(!installed));
+    let label = if installed { "installed" } else { "fallback" };
+    if !installed {
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(site, 3) },
+            [0x0f, 0x05, 0xc3]
+        );
+    } else {
+        assert_ne!(
+            unsafe { std::slice::from_raw_parts(site, 5) },
+            [0x0f, 0x05, 0x90, 0x90, 0x90]
+        );
+    }
+    if child == 0 {
+        println!(
+            "{label} fork child: hooks={hooks} traps={traps} fallback={fallback} syscall={syscall}"
+        );
+        unsafe { libc::_exit(0) };
+    }
+    super::wait_for_child(child as libc::pid_t);
+    println!(
+        "{label} fork parent: hooks={hooks} traps={traps} fallback={fallback} syscall={syscall}"
+    );
+}
+
+pub(super) fn run_refusal() {
+    let (site, _) = prepare_site();
+    unsafe {
+        std::env::set_var("REVERIE_LITEINST_TOOL", "compat");
+        reverie_liteinst::reverie_liteinst_initialize();
+    }
+    let result = unsafe { fallback_test_call(site as usize, libc::SYS_getpid) };
+    assert_eq!(result, -i64::from(libc::EOPNOTSUPP));
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_fallback_dispatch_count(),
+        1
+    );
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_fallback_refusal_count(),
+        1
+    );
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_fallback_syscall_refusal_count(libc::SYS_getpid),
+        1
+    );
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_site_hook_count(site as u64),
+        0
+    );
+    assert_eq!(
+        unsafe { std::slice::from_raw_parts(site, 3) },
+        [0x0f, 0x05, 0xc3]
+    );
+    println!("fallback refusal: result=-95 attempts=1 refused=1 syscall=1 hooks=0 bytes=unchanged");
 }

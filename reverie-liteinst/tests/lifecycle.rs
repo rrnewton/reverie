@@ -225,6 +225,56 @@ async fn in_guest_run_reports_typed_instrumentation_stats() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn fallback_fork_reports_both_process_dispatch_paths() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (output, global, stats) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload_and_stats::<CoordinatorOnlyTool>(
+            guest_command("fallback-fork-stats"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("fallback fork statistics run hung")
+    .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"fallback fork stats: child=finished\n");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(global.fork.load(Ordering::Relaxed), 1);
+    assert_eq!(stats.snapshot().process_reports(), 2, "{stats}");
+    assert_eq!(
+        stats
+            .dispatch_path_counts()
+            .count(&LiteinstDispatchPath::UnpatchableOrOtherFallback),
+        2,
+        "{stats}"
+    );
+    assert_eq!(
+        stats
+            .dispatch_path_counts()
+            .count(&LiteinstDispatchPath::CachelineStraddlerFallback),
+        0,
+        "{stats}"
+    );
+    assert_eq!(
+        stats
+            .dispatch_path_counts()
+            .count(&LiteinstDispatchPath::FallbackRefusal),
+        0,
+        "{stats}"
+    );
+    assert!(
+        stats
+            .dispatch_path_counts()
+            .count(&LiteinstDispatchPath::InGuestSigsys)
+            >= 2,
+        "{stats}"
+    );
+    println!("{stats}");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn backend_trait_output_capture_reports_bytes_status_and_stats() {
     if std::env::var_os(BACKEND_OUTPUT_CHILD_ENV).is_none() {
         let (_preload_directory, preload) = compile_noop_preload();

@@ -40,20 +40,48 @@ The entry saves registers below the guest's 128-byte red-zone, aligns its
 extended-state area to 64 bytes, and sizes that area from CPUID leaf 0xD. XSAVE
 and XRSTOR use every user-state component enabled in XCR0; there is no fixed
 component mask. Machines without OS-enabled XSAVE use FXSAVE64/FXRSTOR64.
-The XSAVE header is zeroed before saving. The callback receives an empty x87
-stack, default FP controls and a cleared direction flag; the guest's FP state,
-flags and libc errno are restored afterward. The syscall outputs remain RAX
+The XSAVE header is zeroed before saving. On OS-enabled PKU systems the entry
+saves the original PKRU in a register, opens runtime memory access before any
+global or TLS read, and puts the original PKRU back in the saved image with its
+correct initial-state bit. Nested Tool syscall traps reopen runtime access;
+their real signal return restores the interrupted permissions. The callback
+receives an empty x87 stack, default FP controls and a cleared direction flag;
+the guest's FP state, permissions, flags and libc errno are restored afterward.
+After the final XRSTOR, only registers and the guest-accessible frame are read.
+Future runtime or clock boundaries must finish before that restore. The syscall outputs remain RAX
 (result), RCX (continuation PC), and R11 (saved flags).
 
-Each initialized thread owns one pending continuation. A second preparation
-while it is occupied refuses without replacing it. After dispatch, the saved
+The installing thread initializes and touches its continuation TLS before
+seccomp installation. A supported COW fork inherits that initialized state.
+Each such thread owns one pending continuation; a second preparation while it
+is occupied refuses without replacing it. Future thread support must initialize
+these TLS keys in ordinary child-thread startup before its first trap, rather
+than first touching dynamic TLS in a signal handler. After dispatch, the saved
 RCX owns the return address and return reads no mutable TLS continuation.
 Nested Tool-internal syscalls use the existing trusted gate and do not acquire
 another continuation. Callable guest signal handlers remain unsupported;
 this guard does not add asynchronous callback support. Callbacks must obey the
-ordinary no-unwind ABI and preserve TLS bases. The guest stack must have room
-for the register frame, CPUID-sized state area and callback stack. HookContext
-IP/SP fields retain the existing register API's metadata semantics.
+ordinary no-unwind ABI and preserve TLS bases. HookContext IP/SP fields retain
+the existing register API's metadata semantics.
+
+The guest stack must accommodate the callback stack plus at most
+`335 + round_up(CPUID.0D.0:EBX, 64)` bytes below the original RSP. This includes
+the 128-byte red-zone, 144-byte register frame, at most 63 alignment bytes and
+the full state area. The FXSAVE case needs at most 847 bytes plus the callback
+stack. Initialization checks size arithmetic and rejects an area smaller than
+the XSAVE header or larger than the signed stack-adjustment bound. The actual
+CPUID size describes the complete standard layout for the actual XCR0 mask;
+there is no smaller fixed allocation that could omit a high component.
+
+This may require more stack than the installed-hook path on an AMX host:
+a 11008-byte enabled state area needs at most 11343 bytes before the callback
+stack. The full mask preserves state that an AMX-permitted guest can use.
+XFD gates use of permission-controlled state; XSAVE records the initial-state
+status of disabled components, and XRSTOR initializes components whose saved
+XSTATE_BV bits are clear. The entry preserves those CPU-provided bits for all
+components other than the explicitly restored PKRU. AMX/XFD execution has not
+been tested on the current AMD host; preserving the full mask is not a claim
+of measured AMX coverage.
 
 `tests/rpc_tool.rs` covers an RX page ending in `syscall; ret`, with six traps,
 zero installed hooks, exact original bytes, Tool results distinct from native,
@@ -65,6 +93,19 @@ and detects the callback's real state clobber when restoration is omitted.
 It reports the actual XCR0 mask and image size. Components absent from that
 host are not execution-tested; this is not a Hermit determinism or parity
 qualification. No XSAVE header exception is used in these comparisons.
+
+A separate protection-key fixture uses an actual nondefault-key stack and
+checks PKRU zero and key0 access denied, full state, exact reported RSP, Tool
+results and RPC. Before both native and Tool runs it explicitly unregisters
+its own glibc rseq area through SYS_rseq, then re-registers it once the original
+permissions have been restored. Registered rseq metadata must remain readable
+and writable for kernel signal/preemption fixups: merely observing one native
+raw syscall succeed while denying that metadata does not prove a valid rseq
+lifetime. The original registered-rseq native signal failure is separate
+kernel/guest lifecycle evidence; no production rseq behavior changes here.
+Fork regressions retain installed-hook accounting and require fallback children
+to report their own trap, fallback and syscall counts, with two process reports
+through the existing Backend statistics API.
 
 ## Backend launcher
 
@@ -190,6 +231,15 @@ fallback surface — trapped syscalls without an installed hook
 - `reverie_liteinst_fallback_syscall_count(number)` — the per-syscall-number
   breakdown, keyed the same way as `reverie_e9patch_fallback_syscall_count` so
   the two ld-preload backends expose a symmetric metric.
+- `reverie_liteinst_fallback_refusal_count()` and
+  `reverie_liteinst_fallback_syscall_refusal_count(number)` report the subset
+  refused by the runtime before Tool dispatch, including an instruction-state
+  restoration failure. A Tool's own error result does not count as a refusal.
+
+The legacy dispatch counter counts attempts, including this refusal subset.
+Enabled statistics classify a refused attempt as `fallback_refusal`, exclusive
+with successful `cacheline_straddler` or `unpatchable_or_other` fallback paths.
+The common `in_guest_sigsys` delivery count includes both outcomes.
 
 These counters are **per-process**: they are process-global statics, so a
 `fork`/`clone` child copy-on-write inherits the parent's accumulated values.
@@ -198,8 +248,10 @@ as its own. In compatibility/strace mode LiteInst forwards a fork-like syscall
 itself, so `process_syscall` invokes the shared
 [`reverie_preload::fork::ForkHook`] seam in the child (guarded by the shared
 `is_fork_like` classifier and a zero return value): immediately after the fork
-returns `0` in the child, `reset_fallback_observability` zeroes all three counter
-families so the child's attribution starts clean. Only the observability fields
+returns `0` in the child, `reset_fallback_observability` clears inherited
+counters so the child's attribution starts clean. Typed Tool mode then records
+the child's actual fork dispatch method: an installed hook remains a hook,
+while deferred fallback records a trap and successful fallback, not a hook. Only the observability fields
 are reset — the site registry's functional patch state (address, hook, mapping
 generation) is left intact because the child COW-inherits the installed hooks and
 the same executable mappings, so its instrumentation keeps working. The reset is

@@ -11,6 +11,7 @@ use reverie_preload::trap::raw_syscall6;
 
 static SAVE_BYTES: AtomicU32 = AtomicU32::new(512);
 static SAVE_MASK: AtomicU64 = AtomicU64::new(0);
+static PKRU_OFFSET: AtomicU32 = AtomicU32::new(0);
 static SAVE_CONFIG: OnceLock<Result<(), &'static str>> = OnceLock::new();
 static CALLBACK_MXCSR: u32 = 0x1f80;
 
@@ -39,6 +40,14 @@ fn configure_save() -> Result<(), &'static str> {
         let state = core::arch::x86_64::__cpuid_count(0xD, 0);
         let supported = u64::from(state.eax) | (u64::from(state.edx) << 32);
         let (mask, bytes) = save_configuration(enabled, supported, state.ebx)?;
+        // Choose the PKRU-aware entry before returning from SIGSYS. It must
+        // open runtime memory before reading any global or TLS storage.
+        let features = core::arch::x86_64::__cpuid_count(7, 0);
+        if mask & (1 << 9) != 0 && features.ecx & (1 << 4) != 0 {
+            let component = core::arch::x86_64::__cpuid_count(0xD, 9);
+            let offset = pkru_offset(component.ebx, component.eax, state.ebx)?;
+            PKRU_OFFSET.store(offset, Ordering::Relaxed);
+        }
         SAVE_BYTES.store(bytes, Ordering::Relaxed);
         SAVE_MASK.store(mask, Ordering::Relaxed);
     }
@@ -57,6 +66,13 @@ fn save_configuration(
     Ok((enabled, bytes))
 }
 
+fn pkru_offset(offset: u32, size: u32, bytes: u32) -> Result<u32, &'static str> {
+    if size != 8 || offset < 576 || offset.checked_add(size).is_none_or(|end| end > bytes) {
+        return Err("unsupported PKRU XSAVE layout");
+    }
+    Ok(offset)
+}
+
 pub(crate) fn initialize() -> io::Result<()> {
     SAVE_CONFIG
         .get_or_init(configure_save)
@@ -72,15 +88,37 @@ pub(crate) fn initialize() -> io::Result<()> {
 /// Retain only the original instruction address until ordinary dispatch ends.
 /// Reentry before then refuses without overwriting the active continuation.
 /// Afterwards the saved RCX owns the resume address; return reads no TLS state.
-pub(crate) fn prepare(continuation: u64) -> Option<u64> {
-    let instruction = continuation.checked_sub(2)?;
+pub(crate) fn prepare(instruction: u64) -> Option<u64> {
     PENDING.with(|pending| {
         if !READY.get() || pending.get().is_some() {
             return None;
         }
         pending.set(Some(Pending { instruction }));
-        Some(fallback_entry as *const () as u64)
+        Some(if PKRU_OFFSET.load(Ordering::Relaxed) != 0 {
+            fallback_entry_pkru as *const () as u64
+        } else {
+            fallback_entry as *const () as u64
+        })
     })
+}
+
+/// Linux gives a signal handler default PKRU, which can deny the nondefault
+/// key holding the fallback's callback stack. A nested Tool syscall must regain
+/// runtime access before the trusted gate reads its arguments. The kernel's
+/// saved interrupted PKRU is untouched and sigreturn restores it afterwards.
+pub(crate) fn enable_nested_runtime_access() {
+    if PKRU_OFFSET.load(Ordering::Relaxed) != 0 && PENDING.get().is_some() {
+        unsafe {
+            core::arch::asm!(
+                "wrpkru",
+                "lfence",
+                in("eax") 0u32,
+                in("ecx") 0u32,
+                in("edx") 0u32,
+                options(nostack, preserves_flags),
+            );
+        }
+    }
 }
 
 unsafe extern "C" fn dispatch(context: *mut HookContext) {
@@ -108,15 +146,13 @@ unsafe extern "C" fn dispatch(context: *mut HookContext) {
 
 unsafe extern "C" {
     fn fallback_entry();
+    fn fallback_entry_pkru();
 }
 
 global_asm!(
     r#"
     .text
-    .global fallback_entry
-    .hidden fallback_entry
-    .type fallback_entry,@function
-fallback_entry:
+    .macro save_registers
     lea rsp, [rsp - 128]
     pushfq
     push rax
@@ -138,6 +174,32 @@ fallback_entry:
     push rax
     push 0
     mov r12, rsp
+    .endm
+
+    .global fallback_entry
+    .hidden fallback_entry
+    .type fallback_entry,@function
+fallback_entry:
+    save_registers
+    xor r14d, r14d
+    jmp 1f
+
+    .global fallback_entry_pkru
+    .hidden fallback_entry_pkru
+    .type fallback_entry_pkru,@function
+fallback_entry_pkru:
+    save_registers
+    // All guest registers are saved on its accessible stack. Neither the
+    // feature decision nor a memory read may precede this permissions change.
+    xor ecx, ecx
+    rdpkru
+    mov r13d, eax
+    xor eax, eax
+    xor edx, edx
+    wrpkru
+    lfence
+    mov r14d, 1
+1:
     and rsp, -64
     mov r10d, dword ptr [rip + {save_bytes}]
     sub rsp, r10
@@ -150,6 +212,16 @@ fallback_entry:
     mov rdx, rax
     shr rdx, 32
     xsave64 [rsp]
+    test r14d, r14d
+    jz 3f
+    // XSAVE observed the temporary runtime PKRU. Put the guest value and its
+    // initial-state bit back without changing any other component or header.
+    mov r10d, dword ptr [rip + {pkru_offset}]
+    mov qword ptr [rsp + r10], r13
+    and qword ptr [rsp + 512], -513
+    test r13d, r13d
+    jz 3f
+    or qword ptr [rsp + 512], 512
     jmp 3f
 2:
     fxsave64 [rsp]
@@ -166,6 +238,9 @@ fallback_entry:
     jz 4f
     mov rdx, rax
     shr rdx, 32
+    // Finish all runtime/global/TLS access before restoring guest PKRU.
+    // Future runtime boundaries must also precede this restore. The suffix
+    // uses only registers and the guest-accessible frame, even with key0 denied.
     xrstor64 [rsp]
     jmp 5f
 4:
@@ -199,6 +274,7 @@ fallback_entry_end:
     "#,
     save_bytes = sym SAVE_BYTES,
     save_mask = sym SAVE_MASK,
+    pkru_offset = sym PKRU_OFFSET,
     dispatch = sym dispatch,
     callback_mxcsr = sym CALLBACK_MXCSR,
 );
@@ -223,10 +299,19 @@ mod tests {
     }
 
     #[test]
+    fn pkru_layout_must_fit_the_standard_save_area() {
+        assert_eq!(pkru_offset(2688, 8, 2696), Ok(2688));
+        assert!(pkru_offset(2688, 8, 2695).is_err());
+        assert!(pkru_offset(512, 8, 2696).is_err());
+        assert!(pkru_offset(2688, 4, 2696).is_err());
+        assert!(pkru_offset(u32::MAX - 3, 8, u32::MAX).is_err());
+    }
+
+    #[test]
     fn pending_continuation_refuses_reentry_without_overwriting() {
         initialize().unwrap();
-        assert!(prepare(0x1002).is_some());
-        assert!(prepare(0x2002).is_none());
+        assert!(prepare(0x1000).is_some());
+        assert!(prepare(0x2000).is_none());
         assert_eq!(
             PENDING.get(),
             Some(Pending {
@@ -235,7 +320,7 @@ mod tests {
         );
         assert!(initialize().is_err());
         PENDING.set(None);
-        assert!(prepare(0x3002).is_some());
+        assert!(prepare(0x3000).is_some());
         assert_eq!(
             PENDING.get(),
             Some(Pending {

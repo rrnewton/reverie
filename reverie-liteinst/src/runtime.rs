@@ -554,12 +554,20 @@ impl SiteSlot {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) enum SyscallDispatch {
+    Trap,
+    InstalledHook,
+    Fallback,
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct SyscallEvent {
     pub(crate) number: i64,
     pub(crate) args: [u64; 6],
     pub(crate) instruction_pointer: u64,
     pub(crate) result: i64,
     pub(crate) context: usize,
+    pub(crate) dispatch: SyscallDispatch,
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -1350,10 +1358,9 @@ const TRACKED_SYSCALLS: usize = 512;
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-249): Review public fallback-surface observability counters.
-/// Total and per-syscall counts for [`LiteinstDispatcher`]'s escape surface —
-/// trapped sites the runtime could not route to the Tool (un-patchable
-/// `SITE_FALLBACK`, or an unclaimable site) and therefore failed closed with
-/// `EOPNOTSUPP`.
+/// Total and per-syscall counts for trapped sites without an installed hook
+/// (`SITE_FALLBACK` or an unclaimable site), including successful typed Tool
+/// dispatch after signal return.
 struct FallbackCounters {
     total: AtomicU64,
     by_number: [AtomicU64; TRACKED_SYSCALLS],
@@ -1399,6 +1406,7 @@ impl FallbackCounters {
 // TODO-HUMAN-REVIEW(PR-249): Review public fallback-surface observability counters.
 /// Process-wide counters used by the installed runtime.
 static FALLBACK_COUNTERS: FallbackCounters = FallbackCounters::new();
+static FALLBACK_REFUSALS: FallbackCounters = FallbackCounters::new();
 
 /// Record that one syscall reached fallback dispatch without an installed hook.
 ///
@@ -1431,6 +1439,14 @@ pub(crate) fn fallback_syscall_count(number: i64) -> u64 {
     FALLBACK_COUNTERS.by_number(number)
 }
 
+pub(crate) fn fallback_refusal_count() -> u64 {
+    FALLBACK_REFUSALS.total()
+}
+
+pub(crate) fn fallback_syscall_refusal_count(number: i64) -> u64 {
+    FALLBACK_REFUSALS.by_number(number)
+}
+
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-260): Review the fork-child per-process observability reset.
 /// Reset every fallback-surface counter to zero for the current process.
@@ -1461,6 +1477,7 @@ fn reset_site_observability(sites: &[SiteSlot]) {
 pub(crate) fn reset_fallback_observability() {
     // AUTONOMOUS-BOT-IMPLEMENTED
     FALLBACK_COUNTERS.reset();
+    FALLBACK_REFUSALS.reset();
     if let Some(sites) = SITES.get() {
         reset_site_observability(sites);
     }
@@ -1490,9 +1507,27 @@ pub(crate) fn submit_process_stats(
     stats.submit(tid, direct_hooks, sites)
 }
 
-pub(crate) fn record_fork_child_direct_hook(instruction_pointer: u64) {
-    if let Some(site) = find_site(instruction_pointer) {
-        site.hook_count.fetch_add(1, Ordering::Relaxed);
+pub(crate) fn record_fork_child_dispatch(
+    event: &SyscallEvent,
+    stats: crate::stats::GuestStatsHooks,
+) {
+    match event.dispatch {
+        SyscallDispatch::InstalledHook => {
+            if let Some(site) = find_site(event.instruction_pointer) {
+                site.hook_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        SyscallDispatch::Fallback => {
+            if let Some(site) = find_site(event.instruction_pointer) {
+                site.trap_count.fetch_add(1, Ordering::Relaxed);
+            }
+            record_fallback_dispatch(event.number);
+            stats.record_path(crate::LiteinstDispatchPath::InGuestSigsys);
+            if stats.is_enabled() {
+                record_enabled_fallback_stats(stats, event.instruction_pointer);
+            }
+        }
+        SyscallDispatch::Trap => {}
     }
 }
 
@@ -2570,14 +2605,18 @@ unsafe fn installed_syscall_hook_for(context: *mut HookContext, number: Option<i
     {
         site.hook_count.fetch_add(1, Ordering::Relaxed);
     }
-    unsafe { dispatch_syscall_context(context, number) };
+    unsafe { dispatch_syscall_context(context, number, SyscallDispatch::InstalledHook) };
 }
 
 pub(crate) unsafe fn dispatch_fallback_context(context: *mut HookContext) {
-    unsafe { dispatch_syscall_context(context, None) };
+    unsafe { dispatch_syscall_context(context, None, SyscallDispatch::Fallback) };
 }
 
-unsafe fn dispatch_syscall_context(context: *mut HookContext, number: Option<i64>) {
+unsafe fn dispatch_syscall_context(
+    context: *mut HookContext,
+    number: Option<i64>,
+    dispatch: SyscallDispatch,
+) {
     if context.is_null() {
         unsafe {
             exit_now(122);
@@ -2602,6 +2641,7 @@ unsafe fn dispatch_syscall_context(context: *mut HookContext, number: Option<i64
         instruction_pointer: context.instruction_pointer,
         result: UNSET_RESULT,
         context: context_pointer,
+        dispatch,
     };
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-133): Review guarded installed-hook bypass for Tool-internal syscalls.
@@ -2682,6 +2722,13 @@ struct LiteinstDispatcher {
 }
 
 impl LiteinstDispatcher {
+    fn refuse_fallback(&self, event: &mut PreloadSyscallEvent) {
+        FALLBACK_REFUSALS.record(event.number());
+        self.stats
+            .record_path(crate::LiteinstDispatchPath::FallbackRefusal);
+        event.fail(libc::EOPNOTSUPP);
+    }
+
     fn new(stats: crate::stats::GuestStatsHooks, publication: PatchPublication) -> Self {
         Self {
             stats,
@@ -2715,6 +2762,7 @@ fn record_enabled_fallback_stats(stats: crate::stats::GuestStatsHooks, address: 
 impl SyscallDispatcher for LiteinstDispatcher {
     fn dispatch(&self, event: &mut PreloadSyscallEvent) {
         if tool_callback_active() {
+            crate::syscall_fallback::enable_nested_runtime_access();
             self.stats
                 .record_path(crate::LiteinstDispatchPath::InGuestNestedSigsys);
             let mut nested = SyscallEvent {
@@ -2723,6 +2771,7 @@ impl SyscallDispatcher for LiteinstDispatcher {
                 instruction_pointer: event.instruction_pointer(),
                 result: UNSET_RESULT,
                 context: 0,
+                dispatch: SyscallDispatch::Trap,
             };
             forward_nested_tool_syscall(&mut nested);
             event.set_result(nested.result);
@@ -2745,6 +2794,7 @@ impl SyscallDispatcher for LiteinstDispatcher {
                 instruction_pointer: event.instruction_pointer(),
                 result: UNSET_RESULT,
                 context: 0,
+                dispatch: SyscallDispatch::Trap,
             };
             unsafe {
                 process_syscall(&mut trapped);
@@ -2754,8 +2804,8 @@ impl SyscallDispatcher for LiteinstDispatcher {
         }
 
         let resume_address = event.instruction_pointer();
-        let instruction_pointer =
-            unsafe { locate_syscall_site(resume_address) }.unwrap_or(resume_address);
+        let instruction_pointer = unsafe { locate_syscall_site(resume_address) }
+            .unwrap_or(resume_address.saturating_sub(2));
 
         if let Some((site, claimed)) = claim_site(instruction_pointer) {
             site.trap_count.fetch_add(1, Ordering::Relaxed);
@@ -2774,7 +2824,8 @@ impl SyscallDispatcher for LiteinstDispatcher {
                 let restored = unsafe { set_all_instruction_native(false) };
                 if restored.is_err() {
                     site.state.store(SITE_FALLBACK, Ordering::Release);
-                    event.fail(libc::EOPNOTSUPP);
+                    record_fallback_dispatch(event.number());
+                    self.refuse_fallback(event);
                     return;
                 }
                 if installed.is_err() {
@@ -2796,14 +2847,14 @@ impl SyscallDispatcher for LiteinstDispatcher {
 
         // AUTONOMOUS-BOT-IMPLEMENTED
         record_fallback_dispatch(event.number());
-        (self.record_fallback_stats)(self.stats, instruction_pointer);
         if mode == TOOL_REVERIE
-            && let Some(entry) = crate::syscall_fallback::prepare(resume_address)
+            && let Some(entry) = crate::syscall_fallback::prepare(instruction_pointer)
         {
+            (self.record_fallback_stats)(self.stats, instruction_pointer);
             event.defer_to(entry);
             return;
         }
-        event.fail(libc::EOPNOTSUPP);
+        self.refuse_fallback(event);
     }
 }
 
@@ -3556,11 +3607,15 @@ mod tests {
         site.trap_count.store(7, Ordering::Release);
         site.hook_count.store(11, Ordering::Release);
         record_fallback_dispatch(405);
+        super::FALLBACK_REFUSALS.record(405);
         assert!(fallback_dispatch_count() > 0);
+        assert!(super::fallback_refusal_count() > 0);
 
         FORK_HOOK.run_in_child();
 
         assert_eq!(fallback_dispatch_count(), 0);
+        assert_eq!(super::fallback_refusal_count(), 0);
+        assert_eq!(super::fallback_syscall_refusal_count(405), 0);
         assert_eq!(site.trap_count.load(Ordering::Acquire), 0);
         assert_eq!(site.hook_count.load(Ordering::Acquire), 0);
         assert_eq!(site.address.load(Ordering::Acquire), address);

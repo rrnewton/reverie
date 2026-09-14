@@ -250,6 +250,22 @@ pub extern "C" fn reverie_liteinst_fallback_syscall_count(number: i64) -> u64 {
     runtime::fallback_syscall_count(number)
 }
 
+/// Fallback attempts refused by the runtime before ordinary Tool dispatch.
+///
+/// This is a subset of [`reverie_liteinst_fallback_dispatch_count`]. Errors
+/// returned by a successfully invoked Tool are not runtime refusals.
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_liteinst_fallback_refusal_count() -> u64 {
+    runtime::fallback_refusal_count()
+}
+
+/// Per-syscall breakdown of [`reverie_liteinst_fallback_refusal_count`].
+/// Numbers outside the tracked table contribute only to the total.
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_liteinst_fallback_syscall_refusal_count(number: i64) -> u64 {
+    runtime::fallback_syscall_refusal_count(number)
+}
+
 #[cfg(feature = "preload-constructor")]
 #[used]
 #[unsafe(link_section = ".init_array")]
