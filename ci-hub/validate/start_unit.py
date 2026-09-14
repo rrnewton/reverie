@@ -2124,8 +2124,9 @@ def remove_ownerless_checkouts_batch(
     run: Runner,
     tool_root: Path = ROOT,
     frozen: bool = False,
+    classify_only: bool = False,
 ) -> dict[str, "OwnerlessCleanupOutcome"]:
-    """Remove a bounded ownerless batch through one shared process census."""
+    """Remove or read-only classify a bounded ownerless validation batch."""
     if not checkouts or len(checkouts) > VALIDATE_CLEANUP_BATCH_LIMIT:
         raise ValueError("ownerless validation cleanup batch size must be between one and eight")
     state_root = root.resolve()
@@ -2164,13 +2165,21 @@ def remove_ownerless_checkouts_batch(
         requested[checkout_argument] = checkout
         records.append(record_relative)
         repositories.append(repository_relative)
+    action = (
+        "classify-ownerless-validate-batch"
+        if classify_only
+        else "recover-ownerless-validate-batch"
+    )
     command = [
         str(tool_root / "ci-hub/bin/wrkslots"),
         "--project-root", str(state_root),
         "--allow-existing-unregistered-worktrees",
-        "recover-ownerless-validate-batch", "--coordinator-authorized",
-        "--coordinator-pid", str(os.getpid()),
+        action,
     ]
+    if not classify_only:
+        command.extend(
+            ("--coordinator-authorized", "--coordinator-pid", str(os.getpid()))
+        )
     checkout_flag = "--frozen-validate-checkout" if frozen else "--checkout"
     for checkout in requested:
         command.extend((checkout_flag, checkout))
@@ -2187,6 +2196,68 @@ def remove_ownerless_checkouts_batch(
         }
     try:
         value = json.loads(result.stdout)
+        if classify_only:
+            expected_fields = {
+                "classifications",
+                "create_journals",
+                "process_censuses",
+                "requested",
+                "schema",
+            }
+            if not isinstance(value, dict) or set(value) != expected_fields:
+                raise ValueError("unexpected classification fields")
+            rows = value.get("classifications")
+            schema = value.get("schema")
+            requested_count = value.get("requested")
+            process_censuses = value.get("process_censuses")
+            if (
+                type(schema) is not int
+                or schema != 1
+                or type(requested_count) is not int
+                or requested_count != len(requested)
+                or type(process_censuses) is not int
+                or process_censuses not in (0, 1)
+                or not isinstance(value.get("create_journals"), list)
+                or not isinstance(rows, list)
+            ):
+                raise ValueError("invalid classification metadata")
+            outcomes: dict[str, OwnerlessCleanupOutcome] = {}
+            state_blocks_entry = {
+                "could-not-classify": True,
+                "historical-retained": False,
+                "terminal-retained": False,
+            }
+            for row in rows:
+                if not isinstance(row, dict) or set(row) != {
+                    "blocks_entry", "checkout", "reason", "state",
+                }:
+                    raise ValueError("malformed classification row")
+                checkout = row.get("checkout")
+                reason = row.get("reason")
+                blocks_entry = row.get("blocks_entry")
+                state = row.get("state")
+                if (
+                    not isinstance(checkout, str)
+                    or checkout not in requested
+                    or checkout in outcomes
+                    or not isinstance(reason, str)
+                    or not reason.strip()
+                    or type(blocks_entry) is not bool
+                    or not isinstance(state, str)
+                    or state not in state_blocks_entry
+                    or blocks_entry is not state_blocks_entry[state]
+                ):
+                    raise ValueError("invalid classification outcome")
+                outcomes[checkout] = OwnerlessCleanupOutcome(reason, blocks_entry)
+            if set(outcomes) != set(requested):
+                raise ValueError("classification did not cover every requested checkout")
+            if any(not outcome.blocks_entry for outcome in outcomes.values()) and (
+                process_censuses != 1
+            ):
+                raise ValueError(
+                    "nonblocking classification has no process census"
+                )
+            return {str(path): outcomes[key] for key, path in requested.items()}
         fields = {
             "batch_limit", "process_censuses", "removed", "requested",
             "retained", "same_uid_process_censuses", "schema",
@@ -2717,7 +2788,11 @@ def select_cleanup_groups(
 
 
 def sweep_completed_checkouts(
-    root: Path, *, run: Runner, tool_root: Path = ROOT
+    root: Path,
+    *,
+    run: Runner,
+    tool_root: Path = ROOT,
+    classify_ownerless_only: bool = False,
 ) -> dict[str, Any]:
     """Hand off scorecards and remove terminal checkouts left by interrupted waiters."""
     runs = root / "ignored" / "validate" / "runs"
@@ -2891,7 +2966,11 @@ def sweep_completed_checkouts(
             )
             ownerless_inputs.append((group.checkout, row.path, source))
         outcomes = remove_ownerless_checkouts_batch(
-            root, ownerless_inputs, run=run, tool_root=tool_root
+            root,
+            ownerless_inputs,
+            run=run,
+            tool_root=tool_root,
+            classify_only=classify_ownerless_only,
         )
         for group in ownerless_groups:
             outcome = outcomes.get(str(group.checkout))
@@ -2941,6 +3020,7 @@ def sweep_completed_checkouts(
             run=run,
             tool_root=tool_root,
             frozen=True,
+            classify_only=classify_ownerless_only,
         )
         for group in frozen_groups:
             outcome = outcomes.get(str(group.checkout))
@@ -3049,7 +3129,12 @@ def require_validate_entry_cleanup(
     """
     started = time.monotonic()
     try:
-        report = sweep_completed_checkouts(root, run=run, tool_root=tool_root)
+        report = sweep_completed_checkouts(
+            root,
+            run=run,
+            tool_root=tool_root,
+            classify_ownerless_only=True,
+        )
     except (OSError, RuntimeError, ValueError) as error:
         elapsed = time.monotonic() - started
         raise ValidateEntryCleanupRefused(

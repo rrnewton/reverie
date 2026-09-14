@@ -364,13 +364,27 @@ class FakeRun:
             )
         if (
             command[0].endswith("ci-hub/bin/wrkslots")
-            and "recover-ownerless-validate-batch" in command
+            and any(
+                action in command
+                for action in (
+                    "classify-ownerless-validate-batch",
+                    "recover-ownerless-validate-batch",
+                )
+            )
         ):
             if self.ownerless_batch_output is not None:
                 return completed(command, stdout=self.ownerless_batch_output)
-            if "--coordinator-authorized" not in command:
+            classify_only = "classify-ownerless-validate-batch" in command
+            if not classify_only and "--coordinator-authorized" not in command:
                 raise AssertionError(
                     "ownerless validation batch cleanup must carry explicit authority"
+                )
+            if classify_only and any(
+                value in command
+                for value in ("--coordinator-authorized", "--coordinator-pid")
+            ):
+                raise AssertionError(
+                    "ownerless validation classification must not carry mutation authority"
                 )
             project_root = Path(command[command.index("--project-root") + 1])
             checkout_flag = (
@@ -410,9 +424,48 @@ class FakeRun:
                     )
                     continue
                 fresh = project_root / relative
-                self.removed.append(str(fresh))
-                shutil.rmtree(fresh, ignore_errors=True)
-                removed_rows.append({"checkout": relative})
+                if classify_only:
+                    retained_rows.append(
+                        {
+                            "blocks_entry": False,
+                            "checkout": relative,
+                            "reason": (
+                                "terminal validation is exact and unused; read-only "
+                                "classification left it retained"
+                            ),
+                        }
+                    )
+                else:
+                    self.removed.append(str(fresh))
+                    shutil.rmtree(fresh, ignore_errors=True)
+                    removed_rows.append({"checkout": relative})
+            if classify_only:
+                return completed(
+                    command,
+                    stdout=json.dumps(
+                        {
+                            "schema": 1,
+                            "process_censuses": 1,
+                            "requested": len(relative_checkouts),
+                            "create_journals": [],
+                            "classifications": [
+                                {
+                                    **row,
+                                    "state": (
+                                        "could-not-classify"
+                                        if row["blocks_entry"]
+                                        else "historical-retained"
+                                        if str(row["reason"]).startswith(
+                                            "historical schema "
+                                        )
+                                        else "terminal-retained"
+                                    ),
+                                }
+                                for row in retained_rows
+                            ],
+                        }
+                    ),
+                )
             return completed(
                 command,
                 stdout=json.dumps(
@@ -1701,12 +1754,27 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual([], sweep["removed"])
         self.assertEqual(1, len(sweep["retained"]))
         self.assertFalse(sweep["retained"][0]["blocks_entry"])
+        command_count = len(self.fake.commands)
 
         rc, _output, error = self.invoke()
 
         self.assertEqual(0, rc, error)
         self.assertTrue(frozen.is_dir())
         self.assertIn("retained-nonblocking=1", error)
+        entry_commands = self.fake.commands[command_count:]
+        classify = next(
+            command
+            for command in entry_commands
+            if wrkslots_action(command, "classify-ownerless-validate-batch")
+        )
+        self.assertNotIn("--coordinator-authorized", classify)
+        self.assertNotIn("--coordinator-pid", classify)
+        self.assertFalse(
+            any(
+                wrkslots_action(command, "recover-ownerless-validate-batch")
+                for command in entry_commands
+            )
+        )
         self.assertTrue(
             any(wrkslots_action(command, "create") for command in self.fake.commands)
         )
@@ -4480,6 +4548,102 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertTrue(first.exists())
         self.assertTrue(second.exists())
+
+    def test_ownerless_classification_requires_exact_integer_metadata(self) -> None:
+        checkout, record = self.ownerless_cleanup_record(
+            "classification-integer-metadata"
+        )
+        relative = checkout.relative_to(self.root).as_posix()
+        for field, values in {
+            "schema": (True, 1.0, "1"),
+            "requested": (True, 1.0, "1"),
+            "process_censuses": (True, 1.0, "1"),
+        }.items():
+            for kind, replacement in zip(
+                ("bool", "float", "string"), values, strict=True
+            ):
+                with self.subTest(field=field, kind=kind):
+                    payload: dict[str, object] = {
+                        "schema": 1,
+                        "requested": 1,
+                        "process_censuses": 1,
+                        "create_journals": [],
+                        "classifications": [
+                            {
+                                "blocks_entry": False,
+                                "checkout": relative,
+                                "reason": "terminal validation remains retained",
+                                "state": "terminal-retained",
+                            }
+                        ],
+                    }
+                    payload[field] = replacement
+                    self.fake.ownerless_batch_output = json.dumps(payload)
+
+                    outcomes = start_unit.remove_ownerless_checkouts_batch(
+                        self.root,
+                        [(checkout, record, self.checkout)],
+                        run=self.fake,
+                        tool_root=self.root,
+                        classify_only=True,
+                    )
+
+                    self.assertTrue(outcomes[str(checkout)].blocks_entry)
+                    self.assertIn(
+                        "invalid ownerless batch report",
+                        outcomes[str(checkout)].reason or "",
+                    )
+
+    def test_ownerless_classification_requires_state_disposition_pair_and_census(
+        self,
+    ) -> None:
+        checkout, record = self.ownerless_cleanup_record(
+            "classification-state-disposition"
+        )
+        relative = checkout.relative_to(self.root).as_posix()
+        mutations = (
+            ("could-not-classify", False, 1),
+            ("historical-retained", True, 1),
+            ("terminal-retained", True, 1),
+            ("unknown", False, 1),
+            ("terminal-retained", False, 0),
+        )
+        for state, blocks_entry, process_censuses in mutations:
+            with self.subTest(
+                state=state,
+                blocks_entry=blocks_entry,
+                process_censuses=process_censuses,
+            ):
+                self.fake.ownerless_batch_output = json.dumps(
+                    {
+                        "schema": 1,
+                        "requested": 1,
+                        "process_censuses": process_censuses,
+                        "create_journals": [],
+                        "classifications": [
+                            {
+                                "blocks_entry": blocks_entry,
+                                "checkout": relative,
+                                "reason": "classification mutation",
+                                "state": state,
+                            }
+                        ],
+                    }
+                )
+
+                outcomes = start_unit.remove_ownerless_checkouts_batch(
+                    self.root,
+                    [(checkout, record, self.checkout)],
+                    run=self.fake,
+                    tool_root=self.root,
+                    classify_only=True,
+                )
+
+                self.assertTrue(outcomes[str(checkout)].blocks_entry)
+                self.assertIn(
+                    "invalid ownerless batch report",
+                    outcomes[str(checkout)].reason or "",
+                )
 
     def test_ownerless_batch_report_requires_typed_entry_disposition(self) -> None:
         checkout, _record = self.ownerless_cleanup_record(
