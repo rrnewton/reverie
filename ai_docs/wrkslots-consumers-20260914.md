@@ -5,6 +5,24 @@ agent-utils, dev-hermit, Hermit, and Reverie. Paths are relative to the named
 repository unless absolute; baseline line numbers precede the repair. Runtime
 entry points, active callers, and historical references are distinguished below.
 
+## Final publication status
+
+The slot-creation repair is published in all three repositories: agent-utils
+`14589e875c08e458d2f8af5a6f78b12128d5a367`, Hermit
+`ef48ca7e9dc91d53bed716f3ed519c6fcbd6dbdf` through
+https://github.com/rrnewton/hermit/pull/3012, and parent dev-hermit
+`5e05bdb419e989181c717557043ab62c013ab369`. The two dependency changes are Hermit's
+nested `agent-utils` gitlink and the parent's recorded `hermit` gitlink. Hermit's
+Cargo manifest Reverie revision is unchanged.
+
+The Hermit landing used owner-authorized speculative soft-green with no exact-head
+qualifying receipt. The post-land verification timer is enabled and active for
+that exact landed Hermit SHA; its first check recorded that current main has no
+qualifying result and retained the request. The [final landing record](#owner-authorized-speculative-landing)
+below contains the full basis, remote content readback, service evidence, and all
+additional consumers. Earlier prepared-candidate status sections are retained as
+history and are superseded by that final record.
+
 ## Landed implementation and real slot creation
 
 The implementation landed on
@@ -1172,3 +1190,205 @@ The excluded matches in the preceding section are not included here.
 - `scripts/test_reverie_pin_invariant.py`
 - `scripts/tests/test_install_owner_checkout_validate_watch.py`
 - `scripts/tests/test_owner_checkout_validate_watch.py`
+
+## Owner-authorized speculative landing
+
+The owner explicitly authorized speculative soft-green landing of
+https://github.com/rrnewton/hermit/pull/3012 without an exact-head Hermit validation
+receipt. This authorization covers activating the reviewed slot-creation repair
+through the Hermit and parent gitlinks. It does not convert missing validation into
+a passing run or create a receipt for the candidate.
+
+The implementation was adversarially reviewed at agent-utils
+`14589e875c08e458d2f8af5a6f78b12128d5a367`. The review retained the ownership and
+process-generation checks, required refusal for unrelated owners, and found the
+missed lifecycle partition consumer before approval. The corrected partition
+check retains disjointness, completeness, and all prior cases. Full agent-utils
+`make validate` then passed at that exact commit: 3,367 Python tests, 871 Rust tests,
+and 1,491 Python/Rust comparison checks, with the phase durations and coverage
+limits recorded above. No new assertion, tolerance, skip, or comparator was changed
+to obtain landing permission.
+
+The coordinator-assigned persistent Python owner in a separate tmux pane
+demonstrated the actual defect and repair: the original implementation refused the
+correct live coordinator PID
+because it was not an ancestor; the fixed ordinary launcher created and registered
+the assigned Hermit slot, fetched from GitHub, and initialized recursive submodules
+without an outer proxy wrapper. The ACTIVE row, exact owner/coordinator process
+identities, Git worktree registration, and creation event were independently read
+back. The detailed evidence and measured durations remain in this report's real
+slot-creation section. These results establish the slot-creation behavior; they
+are not presented as a full Hermit validation run.
+
+### Exact pin changes
+
+| Repository and entry | Previous recorded object | Intended or verified replacement |
+| --- | --- | --- |
+| Hermit `agent-utils`, mode `160000` | `d14adc47ebc6dd7d1d758d5c3198c465d61ca703` | `14589e875c08e458d2f8af5a6f78b12128d5a367`, already reviewed, validated, and landed on agent-utils main |
+| dev-hermit `hermit`, mode `160000` | `7b8be60708c29b4926f36f06be8793523841d6ba` | `ef48ca7e9dc91d53bed716f3ed519c6fcbd6dbdf`, verified on freshly fetched Hermit main |
+
+https://github.com/rrnewton/hermit/pull/3012 merged at
+`2026-09-14T20:57:17Z` as
+`ef48ca7e9dc91d53bed716f3ed519c6fcbd6dbdf`, whose parent is
+`7b8be60708c29b4926f36f06be8793523841d6ba`. Its complete tree is
+`52f2c3fc67a1956301c62b13636c912642b09e38`, byte-identical to the reviewed candidate.
+A fresh-fetch full-tree comparison returned exit 0. The existing
+`ci-hub/bin/gh-merge-verified` command also returned exit 0; its receipt
+`/tmp/wrkslots-hermit-merge-verified-20260914.json` binds the expected head
+`37a12da4e66da01ee47893c5550b0deaf14b0edd`, names `agent-utils` as the sole changed
+path, and records that path as arrived unchanged. Its log is
+`/tmp/wrkslots-hermit-merge-20260914.log`. The canonical review is recorded at
+https://github.com/rrnewton/hermit/pull/3012#issuecomment-5670698307.
+
+The reviewed local Hermit candidate is
+`37a12da4e66da01ee47893c5550b0deaf14b0edd`. Comparing it to
+`7b8be60708c29b4926f36f06be8793523841d6ba` shows exactly the `agent-utils` gitlink
+change above. All other Hermit tree entries are byte-identical, including the Cargo
+manifests and lockfiles. The Cargo manifest Reverie revision remains
+`8c8c0a57649c9ffbf8a7a14291a64320f64b935f`; it is not changed by this repair.
+
+The parent pin landed on dev-hermit main as
+`5e05bdb419e989181c717557043ab62c013ab369`, based on
+`68a1b9382c906e349a5ca92e30224ca928190337`. It records the verified landed Hermit
+object `ef48ca7e9dc91d53bed716f3ed519c6fcbd6dbdf`. The exact final parent change was
+approved in `/tmp/wrkslots-parent-final-review-20260914.md`. The verified push
+returned exit 0; `/tmp/wrkslots-parent-final-push-20260914.log` confirms the remote
+main SHA. A fresh fetch and content check in
+`/tmp/wrkslots-parent-final-readback-20260914.json` verifies the complete parent →
+Hermit → agent-utils pin chain, the unchanged Cargo manifest Reverie revision, the
+Hermit tree's identity with the reviewed candidate, and `hermit` as the only changed
+parent path. The push's warning that GitHub had no current-tip runs remains visible;
+publishing the pin is not a claim that GitHub CI or full Hermit validation passed.
+
+### Current gate result and evidence limits
+
+The recorded canonical `validate-status --repo rrnewton/hermit --sha
+37a12da4e66da01ee47893c5550b0deaf14b0edd --json --log-paths` result is
+`NOT-VALIDATED`, exit 4: zero records, zero qualifying receipts, and zero in-progress
+runs. It reports current ledger freshness and authoritative local absence. The
+saved result is `/tmp/wrkslots-hermit-pin-validation-status-20260914.json`.
+
+The existing full run of Hermit main
+`7b8be60708c29b4926f36f06be8793523841d6ba` ended with
+`FINAL_VALIDATE_STATUS: FAILED` after 12 minutes 5 seconds. It executed 12 DAG
+nodes, failed one, skipped 258 after the dependency failure, and executed zero
+tests. `build.rust_scripts` failed after 55.48 seconds with four `oom_kill` events
+at its approximately 2 GiB inner cgroup memory cap. The unchanged committed node
+configuration requests eight inner jobs through `CARGO_BUILD_JOBS` and a
+2,147,483,648-byte hard memory limit; the outer scheduler width was 16. The durable
+log is
+`/home/newton/work/dev-hermit/ignored/validate/validate-full-7b8be60708c2-validate-mega-lander-concurrency-solo-7b8be607-20260914t171908z.log`.
+
+The same run also could not retain complete coverage evidence because the
+registration audit refused: `ci/dag/validate.json` step
+`super.pmu_analyze_hello_race_stress_calibrated_skid` executes `['analyze']` but omits
+`integration_test_binaries`. A direct audit of the pin candidate retained that
+same refusal; `/tmp/wrkslots-hermit-pin-registration-audit-20260914.stderr` records
+the exact diagnostic. The DAG and audit source bytes are unchanged by the nested
+agent-utils pin update. No qualifying historical receipt is claimed.
+
+The completed parent provider checks pass for the final landed pin chain:
+`/tmp/wrkslots-parent-final-pin-check-20260914.log` reports `state=ok`, and
+`/tmp/wrkslots-parent-final-provider-check-20260914.json` records exit 0,
+`state=current`, and agent-utils lag 0. Both identify landed Hermit
+`ef48ca7e9dc91d53bed716f3ed519c6fcbd6dbdf` and agent-utils
+`14589e875c08e458d2f8af5a6f78b12128d5a367`; the materialized agent-utils checkout
+is clean and detached in the isolated parent checkout.
+
+The separate parent offline coherence check still fails. It observes one Reverie
+manifest revision `8c8c0a57649c` across 20 entries, but the recorded parent Reverie
+gitlink is `f055d883ba9a`. The candidate and published-base control logs are
+byte-identical, so this is a pre-existing failure. It remains a failure; no pin or
+comparison was changed to suppress it. The logs are
+`/tmp/wrkslots-parent-pin-coherence-20260914.log` and
+`/tmp/wrkslots-parent-baseline-coherence-20260914.log`. Their offline mode explicitly
+skips product-main currency. Passing provider checks, unchanged Hermit source
+bytes, and the real slot demonstration do not establish a full Hermit receipt.
+
+### Instruction mismatch
+
+Hermit's `AGENTS.md:384-388` is the fourth source the owner identified as teaching
+the receipt-required rule: “landing authorization is the parent's exact-head local
+receipt queried through `ci-hub validate-status`.” It should point to the owner's
+speculative soft-green policy. The owner explicitly authorized this landing without
+that exact receipt; no policy or skill file is changed by this pin update.
+
+### Verification after landing and its consumers
+
+The task-specific verification is installed and armed under
+`ignored/wrkslots-post-land-20260914/` in the canonical dev-hermit checkout. It adds
+no tracked production source change. `request.json` was written at
+`2026-09-14T20:59:51.323050+00:00` for the exact landed Hermit commit
+`ef48ca7e9dc91d53bed716f3ed519c6fcbd6dbdf`, tree
+`52f2c3fc67a1956301c62b13636c912642b09e38`, and nested agent-utils
+`14589e875c08e458d2f8af5a6f78b12128d5a367`.
+
+The first service invocation ran from 21:00:21 to 21:01:12 UTC and returned exit 0.
+That was a completed poll, not a validation pass: its durable state is `WAITING`,
+attempt 0, with `qualifying_receipt_claimed=false`. Fresh canonical status for the
+landed main SHA was `NOT-VALIDATED`, exit 4, with zero records, qualifying receipts,
+and in-progress runs; ledger freshness was current and absence authoritative.
+No full verification has launched. At the 21:02:01 UTC readback the timer was both
+enabled and active, the service had `Result=success` and `ExecMainStatus=0`, and the
+next scheduled poll was 21:15 UTC. User lingering was enabled. Exact command exits,
+installed links and hashes, the first state, and its complete main-status result
+are retained in `armed-evidence.json`.
+
+The helper retains the actual landed Hermit SHA, tree, agent-utils gitlink, and PR
+URL in `request.json`, and preserves a clean detached clone at that exact commit
+in `source/`. It verifies the landed commit is contained in freshly fetched Hermit
+main and still records agent-utils `14589e875c08e458d2f8af5a6f78b12128d5a367`.
+Before starting a new verification, the helper requires canonical `validate-status`
+to report `VALIDATED` for the exact
+freshly fetched main SHA with a qualifying record whose `commit` and `sha` both
+match that SHA; a second fetch must show that main did not move during the query. Red, missing, unreadable, or moved evidence
+leaves this task waiting.
+
+If that green main SHA is the actual landed SHA, its canonical qualifying status
+already supplies the requested exact-commit verification. Otherwise the helper
+asks existing `ci-hub validate-run` for `--frozen-validate --target
+ef48ca7e9dc91d53bed716f3ed519c6fcbd6dbdf -- full`. It persists the unit identity before launch and
+reattaches to an existing unit, avoiding duplicate validation. A completed frozen
+result must match the requested commit and the recorded run's checkout and start
+time, and retain `qualifying_receipt=false` and
+`measured_against_superseded_tip=true`. A failure stays a failure. The exact older
+tree can still fail its unchanged build or registration checks after newer main
+is green; this mechanism does not repair or replace that older tree and does not
+turn its frozen result into a historical qualifying receipt.
+
+Every new source, caller, configuration path, and output reader is listed here.
+Paths beneath `ignored/wrkslots-post-land-20260914/` refer to that task directory.
+All three installed unit links below were read back and resolve to the recorded
+service/timer bytes.
+
+| Artifact or existing entrypoint | Consumers and role |
+| --- | --- |
+| `verify.py` | Direct executable consumer: `wrkslots-post-land-20260914.service` `ExecStart`. Direct import consumer: `test_verify.py`. Direct human invocation: coordinator `--arm ef48ca7e9dc91d53bed716f3ed519c6fcbd6dbdf` and `--status`; the coordinator reads its JSON state for this report. No tracked production module imports it. |
+| `test_verify.py` | Invoked by the task's offline Python test command. Imports `verify.py` and exercises exact green evidence, red and moved main, retained terminal results, attachment, durable run identity, full frozen invocation, retries, unknown service state without a duplicate launch, failure retention, and rejection of unbound result rows. Results are retained in `tests.log` and read by the coordinator/reviewer and this report. |
+| `wrkslots-post-land-20260914.service` | Consumed by user systemd through the timer or an explicit coordinator service start. It invokes `/usr/bin/python3` on the exact task helper, with the canonical parent as working directory, `PYTHONDONTWRITEBYTECODE=1`, a 5,600-second service timeout, and control-group termination. |
+| `wrkslots-post-land-20260914.timer` | Consumed by user systemd; names the service explicitly and schedules a poll every 15 minutes, with persistent scheduling and one-minute accuracy. It invokes no validation directly. |
+| `~/.config/systemd/user/wrkslots-post-land-20260914.service` and `~/.config/systemd/user/wrkslots-post-land-20260914.timer` | Installed `systemctl --user link` symlinks to the task files; read by the user systemd manager. The enabled timer also has its installed link under `~/.config/systemd/user/timers.target.wants/`. |
+| `request.json` | Written by `verify.py --arm`; read by subsequent helper invocations. Binds the exact landed commit, tree, nested agent-utils pin, retained source, owner-authorized basis, and full PR URL. |
+| `source/` | Written by arming; read by the helper's clean-source, Git ancestry and main-ref checks and by canonical `validate-run` as the source repository for the exact target. |
+| `state.json` | Written atomically by the helper; read by later helper invocations, `--status`, and the coordinator. It binds the request, attempt/unit, current state, and result paths. |
+| `events.jsonl` | Appended by the helper; retained for coordinator/reviewer history. It is not read to decide whether a validation passed. |
+| `job.lock` | Shared by helper invocations through `flock`; the service, manual arming, and polling cannot mutate this task concurrently. |
+| `main-status.json` and `main-status.stderr` | Written from the canonical status query. The helper reads the parsed status to decide whether to wait or launch; the coordinator/reviewer reads the retained result. |
+| `validate-*-launcher.log` | Receives canonical launch/attachment output. Read by the coordinator/reviewer when following the run; it is not parsed into a pass. |
+| Installed `operational-tool` | Existing launcher selected by the helper for `ci-hub/ci-hub`; it selects verified current parent tooling. Its source and existing consumers were enumerated in the parent pin inventory; no source change is introduced here. |
+| `ci-hub/ci-hub` commands `validate-status` and `validate-run` | Existing commands invoked through `operational-tool`. Status supplies the current main gate; `validate-run` starts or attaches through existing `ci-hub/validate/start_unit.py`. |
+| `ci-hub/validate/start_unit.py` | Existing canonical producer and lifecycle path for `--frozen-validate`, `--target`, `--unit`, `--attach`, and full validation. It manages the validation checkout/log/cache and runs Hermit's existing `scripts/validate.rs`; those existing consumers are unchanged. |
+| `ignored/validate/runs/*.json` and `ignored/validate/frozen/*.jsonl` for the stored validation unit | Written by the existing canonical validation machinery; read by `verify.py` to bind the exact run and retain its measured result. They remain available to existing validation-status/attachment tools and coordinator inspection. |
+| `arm.log`, `install.log`, `enable.log`, and `first-start.log` | Outputs of the coordinator's arming, unit linking/enabling, and first service start. Read by the coordinator/reviewer and summarized in `armed-evidence.json`; they do not establish a full validation pass. |
+| `hashes.json` and `armed-evidence.json` | Written by the task's evidence capture; read by the coordinator/reviewer and this report. They record final source/test/unit hashes, command exits, installed links, and the first poll's state. They are not inputs to the decision to launch or pass validation. |
+| This report and the coordinator's final message | Human readers of the retained request, status, logs, and result. Reporting does not modify the canonical validation result or produce a qualifying receipt. |
+
+The final offline suite passed ten tests in 0.024 seconds; `tests.log` retains
+the result. It checks the helper's decisions with controlled inputs. The installed
+service and timer were checked separately as recorded above; neither result is a
+full Hermit run. The final sources have SHA-256 values:
+
+- `verify.py`: `5002ee63dff4e5e422645b51bc4c1d466e527ee12b0f218b24cfbe7f7c644100`.
+- `test_verify.py`: `b831ee1bd5e261775ab926b183db9fdc5165e2c803bd15cd89c92ad65e763520`.
+- `wrkslots-post-land-20260914.service`: `907d2ed1fd3f339dacb7c65189f99abfb321f5fe2f19bcbe2bb5226dc8c8dd9d`.
+- `wrkslots-post-land-20260914.timer`: `6095d3e185c6b7dbb3a26751fdf3e66c248f84a3608e657f7cdd8fe06a6b3834`.
