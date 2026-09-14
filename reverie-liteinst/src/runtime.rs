@@ -1400,11 +1400,10 @@ impl FallbackCounters {
 /// Process-wide counters used by the installed runtime.
 static FALLBACK_COUNTERS: FallbackCounters = FallbackCounters::new();
 
-/// Record that one syscall reached the fail-closed escape surface.
+/// Record that one syscall reached fallback dispatch without an installed hook.
 ///
-/// Anything reaching this point is, by construction, a trapped syscall the
-/// runtime could not route to the Tool, so this counts the size of LiteInst's
-/// residual escape surface. It is the by-syscall-number analog of the per-site
+/// Typed Tool mode can service these calls after signal return. This is the
+/// by-syscall-number analog of the per-site
 /// `trap`/`hook` counters ([`site_counts`]) and the direct counterpart of
 /// reverie-e9patch's `record_fallback_dispatch` (round 4), keyed the same way so
 /// the two ld-preload backends expose a symmetric fallback-surface metric.
@@ -1416,13 +1415,10 @@ pub(crate) fn record_fallback_dispatch(number: i64) {
     FALLBACK_COUNTERS.record(number);
 }
 
-/// Total syscalls that failed closed on the escape surface.
+/// Total syscalls that reached fallback dispatch.
 ///
-/// A large value relative to the guest's total syscall count indicates a large
-/// residual escape surface — trapped sites the runtime could not route to the
-/// Tool. For Detcore (`TOOL_REVERIE`) this directly bounds the set of syscalls
-/// (e.g. a libc-internal `getrandom`) that bypass determinism, so a nonzero
-/// count is a determinism-completeness signal, not merely a perf one.
+/// Includes successful typed Tool calls; this counter alone does not identify
+/// unsupported syscalls or establish determinism coverage.
 pub(crate) fn fallback_dispatch_count() -> u64 {
     FALLBACK_COUNTERS.total()
 }
@@ -2569,6 +2565,19 @@ unsafe extern "C" fn installed_rdtscp_hook(context: *mut HookContext) {
 }
 
 unsafe fn installed_syscall_hook_for(context: *mut HookContext, number: Option<i64>) {
+    if let Some(context) = unsafe { context.as_ref() }
+        && let Some(site) = find_site(context.instruction_pointer)
+    {
+        site.hook_count.fetch_add(1, Ordering::Relaxed);
+    }
+    unsafe { dispatch_syscall_context(context, number) };
+}
+
+pub(crate) unsafe fn dispatch_fallback_context(context: *mut HookContext) {
+    unsafe { dispatch_syscall_context(context, None) };
+}
+
+unsafe fn dispatch_syscall_context(context: *mut HookContext, number: Option<i64>) {
     if context.is_null() {
         unsafe {
             exit_now(122);
@@ -2580,9 +2589,6 @@ unsafe fn installed_syscall_hook_for(context: *mut HookContext, number: Option<i
     // SAFETY: generated LiteInst code passes a unique mutable saved frame.
     let context_pointer = context as usize;
     let context = unsafe { &mut *context };
-    if let Some(site) = find_site(context.instruction_pointer) {
-        site.hook_count.fetch_add(1, Ordering::Relaxed);
-    }
     let mut event = SyscallEvent {
         number: number.unwrap_or(context.rax as i64),
         args: [
@@ -2766,7 +2772,12 @@ impl SyscallDispatcher for LiteinstDispatcher {
                     )
                 });
                 let restored = unsafe { set_all_instruction_native(false) };
-                if installed.is_err() || restored.is_err() {
+                if restored.is_err() {
+                    site.state.store(SITE_FALLBACK, Ordering::Release);
+                    event.fail(libc::EOPNOTSUPP);
+                    return;
+                }
+                if installed.is_err() {
                     site.state.store(SITE_FALLBACK, Ordering::Release);
                 }
             }
@@ -2783,16 +2794,15 @@ impl SyscallDispatcher for LiteinstDispatcher {
             }
         }
 
-        // Generic Tool execution may allocate, lock, and block on coordinator
-        // I/O, so it cannot run as a fallback inside the SIGSYS handler.
-        //
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // Record the escape before failing closed so the residual fallback
-        // surface is observable by syscall number. Counting does not change the
-        // forwarding decision (still `EOPNOTSUPP`), so the dispatch path is
-        // unchanged; this is the by-number analog of e9patch's round-4 counter.
         record_fallback_dispatch(event.number());
         (self.record_fallback_stats)(self.stats, instruction_pointer);
+        if mode == TOOL_REVERIE
+            && let Some(entry) = crate::syscall_fallback::prepare(resume_address)
+        {
+            event.defer_to(entry);
+            return;
+        }
         event.fail(libc::EOPNOTSUPP);
     }
 }

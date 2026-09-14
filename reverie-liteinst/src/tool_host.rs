@@ -142,6 +142,7 @@ unsafe fn install_tool_inner<T>(
 where
     T: Tool + 'static,
 {
+    crate::syscall_fallback::initialize()?;
     let rpc = CoordinatorRpc::<T::GlobalState>::connect(coordinator)?;
     runtime::reserve_coordinator_fd(rpc.raw_fd())?;
     let stats =
