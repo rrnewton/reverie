@@ -16,6 +16,7 @@
 #![cfg(target_arch = "x86_64")]
 
 mod bootstrap;
+mod clock;
 mod cpuid;
 mod elf;
 mod error;

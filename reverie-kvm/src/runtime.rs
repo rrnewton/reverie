@@ -230,6 +230,8 @@ pub(crate) struct ToolContext<'a, T: Tool> {
 
 // TODO-HUMAN-REVIEW(PR-192): Review async KVM process-action completion.
 trait GuestSyscallExecutor<T: Tool>: Send + Sync {
+    fn read_clock(&self) -> Result<u64>;
+
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64;
 
     fn defer_signal_delivery(&mut self, _event: SignalEvent) -> std::result::Result<(), Errno> {
@@ -281,9 +283,14 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
 
 struct DirectSyscallExecutor<'a> {
     executor: &'a mut dyn SyscallExecutor,
+    vcpu: &'a crate::clock::CountedVcpu,
 }
 
 impl<T: Tool> GuestSyscallExecutor<T> for DirectSyscallExecutor<'_> {
+    fn read_clock(&self) -> Result<u64> {
+        self.vcpu.read_clock()
+    }
+
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
         self.executor.execute(request, memory)
     }
@@ -402,6 +409,10 @@ where
     T::GlobalState: 'static,
     <T::GlobalState as GlobalTool>::Config: 'static,
 {
+    fn read_clock(&self) -> Result<u64> {
+        self.backend.vcpu.read_clock()
+    }
+
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
         if !self.process_context.ordinary_injection_allowed(request) {
             // KvmGuest performs the same check before dispatch. Keep the
@@ -864,10 +875,9 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     }
 
     fn read_clock(&mut self) -> std::result::Result<u64, reverie::Error> {
-        // The single-vCPU process personality does not yet expose a PMU. Returning
-        // a stable zero clock preserves deterministic syscall time while the
-        // executor remains cooperative at every syscall boundary.
-        Ok(0)
+        self.executor
+            .read_clock()
+            .map_err(|error| reverie::Error::Io(std::io::Error::other(error)))
     }
 
     fn detlog_memory_regions(&self) -> Option<Vec<DetlogMemoryRegion>> {
@@ -1636,6 +1646,7 @@ impl KvmBackend {
         T: Tool,
         E: SyscallExecutor,
     {
+        self.vcpu.track_clock()?;
         let tool_stack_top = self.tool_stack_top();
         let pid = Pid::from_raw(self.root_pid);
         let global_state = T::GlobalState::init_global_state(&config).await;
@@ -1653,6 +1664,7 @@ impl KvmBackend {
         let start_outcome = {
             let mut guest_executor = DirectSyscallExecutor {
                 executor: &mut executor,
+                vcpu: &self.vcpu,
             };
             let mut guest = KvmGuest::<T>::new(
                 pid,
@@ -1726,6 +1738,7 @@ impl KvmBackend {
                             let outcome = {
                                 let mut guest_executor = DirectSyscallExecutor {
                                     executor: &mut executor,
+                                    vcpu: &self.vcpu,
                                 };
                                 let mut guest = KvmGuest::<T>::new(
                                     pid,
@@ -2114,6 +2127,7 @@ impl KvmBackend {
         T::GlobalState: 'static,
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
+        self.vcpu.track_clock()?;
         executor.observe_ignored_signals_with_tool();
         let tool_stack_top = self.tool_stack_top();
         let _registration = self.register_guest_thread()?;
@@ -2319,8 +2333,8 @@ impl KvmBackend {
                 }
                 let vcpu_exit = match self.vcpu.run() {
                     Ok(exit) => exit,
-                    Err(error) if error.errno() == libc::EINTR => continue,
-                    Err(error) => return Err(error.into()),
+                    Err(Error::Kvm(error)) if error.errno() == libc::EINTR => continue,
+                    Err(error) => return Err(error),
                 };
                 Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
                 let (frame_address, return_slot) = match vcpu_exit {
@@ -3125,6 +3139,12 @@ mod tests {
     }
 
     impl GuestSyscallExecutor<crate::StraceTool> for SideEffectingExecutor {
+        fn read_clock(&self) -> Result<u64> {
+            Err(Error::GuestClock(
+                "side-effect test has no guest counter".into(),
+            ))
+        }
+
         fn execute(&mut self, request: &SyscallRequest, _memory: &GuestMemory) -> i64 {
             match request.number() as libc::c_long {
                 libc::SYS_write => self.state.output_bytes += request.args()[2] as usize,
@@ -3178,6 +3198,12 @@ mod tests {
     }
 
     impl GuestSyscallExecutor<crate::StraceTool> for PermissiveSideEffectingExecutor {
+        fn read_clock(&self) -> Result<u64> {
+            Err(Error::GuestClock(
+                "side-effect test has no guest counter".into(),
+            ))
+        }
+
         fn execute(&mut self, request: &SyscallRequest, _memory: &GuestMemory) -> i64 {
             match request.number() as libc::c_long {
                 libc::SYS_execve | libc::SYS_execveat => {
