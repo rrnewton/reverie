@@ -598,7 +598,6 @@ fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
 // guards and trusted-gate forwarding.
 fn forward_nested_tool_syscall(event: &mut SyscallEvent, coordinator_fd: libc::c_int) {
     let number = event.number();
-    let args = event.args();
     let unsupported_process =
         // AUTONOMOUS-BOT-IMPLEMENTED
         matches!(number, libc::SYS_clone | libc::SYS_clone3 | libc::SYS_fork | libc::SYS_vfork)
@@ -622,8 +621,7 @@ fn forward_nested_tool_syscall(event: &mut SyscallEvent, coordinator_fd: libc::c
     } else if unsupported_signal_state {
         event.fail(libc::EPERM);
     } else if !protect_coordinator_channel(event, coordinator_fd) {
-        let result = unsafe { raw_syscall6(number, args) };
-        event.set_result(result);
+        event.forward();
     }
 }
 

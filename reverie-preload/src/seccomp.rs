@@ -12,8 +12,9 @@
 //! a thread-directed `SIGSYS`) **except**:
 //!
 //! * `rt_sigreturn`, which must run to unwind the signal frame; and
-//! * the runtime's own *trusted syscall gate* — a single `syscall` instruction
-//!   at a known address (see [`crate::trap`]). The gate lets the handler and
+//! * the runtime's exact trusted syscall sites (see [`crate::trap`]). The
+//!   lifecycle installs a private-memory gate and a guest-permissions gate.
+//!   The sites let the handler and
 //!   dispatcher execute real syscalls without re-trapping, avoiding infinite
 //!   recursion.
 //!
@@ -101,6 +102,34 @@ impl SeccompFilter {
         Ok(Self { program })
     }
 
+    /// Build an exact-address filter for runtime-private and guest-forwarding
+    /// gates. Each pair is checked independently, including its full high word;
+    /// no address range or low-word alias is implicitly trusted.
+    pub fn for_trusted_gates(first: TrustedGate, second: TrustedGate) -> io::Result<Self> {
+        first.validate()?;
+        second.validate()?;
+        let program = vec![
+            stmt(BPF_LD_W_ABS, SECCOMP_DATA_ARCH_OFFSET),
+            jump(BPF_JMP_JEQ_K, AUDIT_ARCH_X86_64, 1, 0),
+            stmt(BPF_RET_K, SECCOMP_RET_KILL_PROCESS),
+            stmt(BPF_LD_W_ABS, SECCOMP_DATA_NR_OFFSET),
+            jump(BPF_JMP_JEQ_K, libc::SYS_rt_sigreturn as u32, 11, 0),
+            stmt(BPF_LD_W_ABS, SECCOMP_DATA_IP_HIGH_OFFSET),
+            jump(BPF_JMP_JEQ_K, (first.syscall_ip >> 32) as u32, 0, 3),
+            stmt(BPF_LD_W_ABS, SECCOMP_DATA_IP_LOW_OFFSET),
+            jump(BPF_JMP_JEQ_K, first.syscall_ip as u32, 7, 0),
+            jump(BPF_JMP_JEQ_K, first.return_ip as u32, 6, 0),
+            stmt(BPF_LD_W_ABS, SECCOMP_DATA_IP_HIGH_OFFSET),
+            jump(BPF_JMP_JEQ_K, (second.syscall_ip >> 32) as u32, 0, 3),
+            stmt(BPF_LD_W_ABS, SECCOMP_DATA_IP_LOW_OFFSET),
+            jump(BPF_JMP_JEQ_K, second.syscall_ip as u32, 2, 0),
+            jump(BPF_JMP_JEQ_K, second.return_ip as u32, 1, 0),
+            stmt(BPF_RET_K, SECCOMP_RET_TRAP),
+            stmt(BPF_RET_K, SECCOMP_RET_ALLOW),
+        ];
+        Ok(Self { program })
+    }
+
     /// The number of BPF instructions in the program.
     pub fn len(&self) -> usize {
         self.program.len()
@@ -168,6 +197,105 @@ const fn jump(code: u16, value: u32, jump_true: u8, jump_false: u8) -> libc::soc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn evaluate(filter: &SeccompFilter, arch: u32, number: i64, ip: u64) -> u32 {
+        let mut accumulator = 0;
+        let mut pc = 0;
+        loop {
+            let instruction = &filter.program[pc];
+            match instruction.code {
+                BPF_LD_W_ABS => {
+                    accumulator = match instruction.k {
+                        SECCOMP_DATA_ARCH_OFFSET => arch,
+                        SECCOMP_DATA_NR_OFFSET => number as u32,
+                        SECCOMP_DATA_IP_LOW_OFFSET => ip as u32,
+                        SECCOMP_DATA_IP_HIGH_OFFSET => (ip >> 32) as u32,
+                        offset => panic!("unexpected seccomp data offset {offset}"),
+                    };
+                }
+                BPF_JMP_JEQ_K => {
+                    pc += usize::from(if accumulator == instruction.k {
+                        instruction.jt
+                    } else {
+                        instruction.jf
+                    });
+                }
+                BPF_RET_K => return instruction.k,
+                code => panic!("unexpected BPF instruction {code}"),
+            }
+            pc += 1;
+        }
+    }
+
+    #[test]
+    fn two_gates_allow_only_exact_full_addresses() {
+        let first = TrustedGate {
+            syscall_ip: 0x1234_0000_1000,
+            return_ip: 0x1234_0000_1002,
+        };
+        let second = TrustedGate {
+            syscall_ip: 0x5678_0000_2000,
+            return_ip: 0x5678_0000_2002,
+        };
+        let filter = SeccompFilter::for_trusted_gates(first, second).unwrap();
+        assert_eq!(filter.len(), 17);
+        for gate in [first, second] {
+            for address in [gate.syscall_ip, gate.return_ip] {
+                assert_eq!(
+                    evaluate(&filter, AUDIT_ARCH_X86_64, libc::SYS_write, address),
+                    SECCOMP_RET_ALLOW
+                );
+                for forbidden in [
+                    address - 1,
+                    address + 1,
+                    address ^ (1 << 32),
+                    address as u32 as u64,
+                ] {
+                    assert_eq!(
+                        evaluate(&filter, AUDIT_ARCH_X86_64, libc::SYS_write, forbidden),
+                        SECCOMP_RET_TRAP,
+                        "{forbidden:#x}"
+                    );
+                }
+                assert_eq!(
+                    evaluate(&filter, 0x4000_0003, libc::SYS_write, address),
+                    SECCOMP_RET_KILL_PROCESS
+                );
+            }
+        }
+        assert_eq!(
+            evaluate(&filter, AUDIT_ARCH_X86_64, libc::SYS_rt_sigreturn, 0),
+            SECCOMP_RET_ALLOW
+        );
+        assert_eq!(
+            evaluate(&filter, 0x4000_0003, libc::SYS_rt_sigreturn, 0),
+            SECCOMP_RET_KILL_PROCESS
+        );
+        assert_eq!(
+            evaluate(
+                &filter,
+                AUDIT_ARCH_X86_64,
+                libc::SYS_write,
+                0x1234_0000_2000
+            ),
+            SECCOMP_RET_TRAP
+        );
+        assert_eq!(
+            evaluate(
+                &filter,
+                AUDIT_ARCH_X86_64,
+                libc::SYS_write,
+                0x5678_0000_1000
+            ),
+            SECCOMP_RET_TRAP
+        );
+        let invalid = TrustedGate {
+            syscall_ip: u32::MAX as u64,
+            return_ip: 1 << 32,
+        };
+        assert!(SeccompFilter::for_trusted_gates(invalid, second).is_err());
+        assert!(SeccompFilter::for_trusted_gates(first, invalid).is_err());
+    }
 
     #[test]
     fn rejects_gate_across_4gib_boundary() {

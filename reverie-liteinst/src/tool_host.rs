@@ -400,6 +400,7 @@ where
             result: 0,
             context: context as *mut HookContext as usize,
             dispatch: runtime::SyscallDispatch::InstalledHook,
+            guest_pkru: None,
         };
         let mut guest = LiteinstGuest::<T> {
             event: &mut event,

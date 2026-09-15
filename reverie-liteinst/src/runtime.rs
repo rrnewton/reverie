@@ -568,6 +568,22 @@ pub(crate) struct SyscallEvent {
     pub(crate) result: i64,
     pub(crate) context: usize,
     pub(crate) dispatch: SyscallDispatch,
+    pub(crate) guest_pkru: Option<u32>,
+}
+
+impl SyscallEvent {
+    /// Forward only this guest operation. Runtime-private syscall buffers must
+    /// retain caller access and continue to use the ordinary raw gate.
+    unsafe fn forward(&self) -> i64 {
+        unsafe {
+            match self.guest_pkru {
+                Some(pkru) => {
+                    reverie_preload::trap::raw_syscall6_with_pkru(self.number, self.args, pkru)
+                }
+                None => raw_syscall6(self.number, self.args),
+            }
+        }
+    }
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -2143,7 +2159,7 @@ fn forward_nested_tool_syscall(event: &mut SyscallEvent) {
     } else if unsupported_signal_state {
         event.result = -i64::from(libc::EPERM);
     } else if !(protect_runtime_control(event) || unsafe { protect_coordinator_channel(event) }) {
-        event.result = unsafe { raw_syscall6(event.number, event.args) };
+        event.result = unsafe { event.forward() };
         observe_mapping_generation(event);
     }
 }
@@ -2642,6 +2658,9 @@ unsafe fn dispatch_syscall_context(
         result: UNSET_RESULT,
         context: context_pointer,
         dispatch,
+        // Installed hooks and deferred Tool injection need their own entry
+        // provenance. Do not borrow permissions from a prior signal event.
+        guest_pkru: None,
     };
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-133): Review guarded installed-hook bypass for Tool-internal syscalls.
@@ -2772,6 +2791,7 @@ impl SyscallDispatcher for LiteinstDispatcher {
                 result: UNSET_RESULT,
                 context: 0,
                 dispatch: SyscallDispatch::Trap,
+                guest_pkru: event.guest_pkru(),
             };
             forward_nested_tool_syscall(&mut nested);
             event.set_result(nested.result);
@@ -2795,6 +2815,7 @@ impl SyscallDispatcher for LiteinstDispatcher {
                 result: UNSET_RESULT,
                 context: 0,
                 dispatch: SyscallDispatch::Trap,
+                guest_pkru: event.guest_pkru(),
             };
             unsafe {
                 process_syscall(&mut trapped);
@@ -2961,7 +2982,7 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
             trace_event(event, None);
         }
     }
-    event.result = unsafe { raw_syscall6(event.number, event.args) };
+    event.result = unsafe { event.forward() };
     observe_mapping_generation(event);
 
     // AUTONOMOUS-BOT-IMPLEMENTED

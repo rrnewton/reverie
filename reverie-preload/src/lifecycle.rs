@@ -86,7 +86,7 @@ impl LifecycleController for InProcessSeccomp {
 /// Kept separate from [`install_in_process_trap`] so the buildable precondition
 /// is unit-testable without installing irreversible process-global state.
 fn build_trap_filter() -> io::Result<SeccompFilter> {
-    SeccompFilter::for_trusted_gate(trap::trusted_gate())
+    SeccompFilter::for_trusted_gates(trap::trusted_gate(), trap::guest_syscall_gate())
 }
 
 /// Install the shared **guest-half** in-process syscall trap: the `SIGSYS`

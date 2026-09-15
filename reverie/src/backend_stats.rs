@@ -137,9 +137,13 @@ liteinst_dispatch_paths! {
     InGuestSigsys => "in_guest_sigsys",
     /// An actual in-guest `SIGSYS` was forwarded while a Tool callback was active.
     InGuestNestedSigsys => "in_guest_nested_sigsys",
-    /// A cache-line-straddling site that retained the ptrace fallback.
+    /** A cache-line-straddling site serviced by fallback: retained ptrace
+    dispatch, or successful in-guest Tool dispatch. Refused in-guest attempts
+    are counted by `FallbackRefusal` instead. */
     CachelineStraddlerFallback => "cacheline_straddler",
-    /// An unpatchable or otherwise rejected site that retained the ptrace fallback.
+    /** Another unpatchable site serviced by fallback: retained ptrace dispatch,
+    or successful in-guest Tool dispatch. Refused in-guest attempts are counted
+    by `FallbackRefusal` instead. */
     UnpatchableOrOtherFallback => "unpatchable_or_other",
     /// A patched-site callback that returned to the ptrace-host Tool through SIGTRAP.
     DirectHook => "direct_hook",

@@ -14,9 +14,9 @@
 //! 2. The kernel delivers a thread-directed `SIGSYS`; [`sigsys_handler`] runs.
 //! 3. The handler reconstructs a [`SyscallEvent`] from the `ucontext` registers
 //!    and calls the registered [`SyscallDispatcher`].
-//! 4. The dispatcher may forward the syscall through the **trusted gate**
-//!    ([`raw_syscall6`]) — a single `syscall` instruction at a whitelisted
-//!    address, so it does not re-trap — then sets a result.
+//! 4. The dispatcher may forward through [`SyscallEvent::forward`], using an
+//!    exact trusted syscall site and the interrupted protection-key rights.
+//!    Runtime-private calls use [`raw_syscall6`]. Neither site re-traps.
 //! 5. The handler writes the result into `RAX` and returns, resuming the guest.
 
 use core::sync::atomic::AtomicPtr;
@@ -29,6 +29,7 @@ use crate::dispatch::SyscallDispatcher;
 use crate::dispatch::SyscallEvent;
 use crate::seccomp::TrustedGate;
 use crate::signal;
+mod pkru;
 const SYS_SECCOMP_CODE: libc::c_int = 1;
 
 core::arch::global_asm!(
@@ -55,6 +56,58 @@ reverie_preload_trusted_syscall_ip:
 reverie_preload_trusted_syscall_return_ip:
     ret
     .size reverie_preload_trusted_syscall, .-reverie_preload_trusted_syscall
+
+    .p2align 4
+    .global reverie_preload_guest_syscall
+    .hidden reverie_preload_guest_syscall
+    .type reverie_preload_guest_syscall,@function
+reverie_preload_guest_syscall:
+    // SysV arguments: number, pointer to six arguments, interrupted PKRU.
+    // Save all stack state and load all memory while caller access is intact.
+    push r12
+    push r13
+    push r14
+    push r15
+    mov r12d, edx
+    mov r13, rdi
+    mov r14, [rsi + 16]
+    mov rdi, [rsi]
+    mov rdx, [rsi + 8]
+    mov r10, [rsi + 24]
+    mov r8, [rsi + 32]
+    mov r9, [rsi + 40]
+    mov rsi, rdx
+    xor ecx, ecx
+    rdpkru
+    mov r15d, eax
+    mov eax, r12d
+    xor edx, edx
+    wrpkru
+    lfence
+    mov rax, r13
+    mov rdx, r14
+    .global reverie_preload_guest_syscall_ip
+    .hidden reverie_preload_guest_syscall_ip
+reverie_preload_guest_syscall_ip:
+    syscall
+    .global reverie_preload_guest_syscall_return_ip
+    .hidden reverie_preload_guest_syscall_return_ip
+reverie_preload_guest_syscall_return_ip:
+    // The guest may deny this very stack. Restore caller rights entirely in
+    // registers before any stack/global/TLS access, also in a COW fork child.
+    mov r12, rax
+    mov eax, r15d
+    xor ecx, ecx
+    xor edx, edx
+    wrpkru
+    lfence
+    mov rax, r12
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    ret
+    .size reverie_preload_guest_syscall, .-reverie_preload_guest_syscall
 "#
 );
 
@@ -70,6 +123,9 @@ unsafe extern "C" {
     ) -> i64;
     static reverie_preload_trusted_syscall_ip: u8;
     static reverie_preload_trusted_syscall_return_ip: u8;
+    fn reverie_preload_guest_syscall(number: i64, args: *const u64, pkru: u32) -> i64;
+    static reverie_preload_guest_syscall_ip: u8;
+    static reverie_preload_guest_syscall_return_ip: u8;
 }
 
 /// The registered dispatcher, as a leaked thin pointer to a boxed trait object.
@@ -84,7 +140,8 @@ thread_local! {
 /// Execute a real syscall through the trusted gate.
 ///
 /// The gate's `syscall` instruction is whitelisted in the seccomp filter, so
-/// this does not re-trap. This is the only syscall path a dispatcher may use.
+/// this does not re-trap. Runtime-private buffers use this gate; forwarding a
+/// guest event uses [`SyscallEvent::forward`] to retain interrupted permissions.
 ///
 /// # Safety
 ///
@@ -103,11 +160,37 @@ pub unsafe fn raw_syscall6(number: i64, args: [u64; 6]) -> i64 {
     }
 }
 
+/// Execute a guest syscall with its interrupted protection-key permissions.
+///
+/// The kernel performs the actual copies, including partial transfers and real
+/// errno results. Caller permissions are restored before any return-stack
+/// access. Runtime-private scratch must continue to use [`raw_syscall6`].
+///
+/// # Safety
+///
+/// OSPKE must be enabled, both trusted gates must be permitted by any installed
+/// filter, and the raw syscall arguments must obey the caller's contract.
+/// Like the ordinary gate, this cannot resume a clone with a different stack
+/// and must not be used as an ordinary wrapper around rt_sigreturn.
+pub unsafe fn raw_syscall6_with_pkru(number: i64, args: [u64; 6], pkru: u32) -> i64 {
+    unsafe { reverie_preload_guest_syscall(number, args.as_ptr(), pkru) }
+}
+
 /// The address range of the trusted gate, for building the seccomp filter.
 pub fn trusted_gate() -> TrustedGate {
     TrustedGate {
         syscall_ip: ptr::addr_of!(reverie_preload_trusted_syscall_ip) as usize as u64,
         return_ip: ptr::addr_of!(reverie_preload_trusted_syscall_return_ip) as usize as u64,
+    }
+}
+
+/// The second exact gate, used only for guest forwarding on OSPKE machines.
+/// Its addresses can be allowlisted on any CPU; unsupported CPUs never execute
+/// its RDPKRU/WRPKRU instructions.
+pub fn guest_syscall_gate() -> TrustedGate {
+    TrustedGate {
+        syscall_ip: ptr::addr_of!(reverie_preload_guest_syscall_ip) as usize as u64,
+        return_ip: ptr::addr_of!(reverie_preload_guest_syscall_return_ip) as usize as u64,
     }
 }
 
@@ -198,6 +281,10 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
     IN_HANDLER.set(true);
 
     let context = unsafe { &mut *context.cast::<libc::ucontext_t>() };
+    let guest_pkru = match unsafe { pkru::from_signal_frame(context.uc_mcontext.fpregs) } {
+        Ok(value) => value,
+        Err(()) => unsafe { exit_now(126) },
+    };
     let registers = &mut context.uc_mcontext.gregs;
     let mut event = SyscallEvent::new(
         registers[libc::REG_RAX as usize],
@@ -211,6 +298,7 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
         ],
         registers[libc::REG_RIP as usize] as u64,
     );
+    event.set_guest_pkru(guest_pkru);
 
     dispatch_event(&mut event);
 
@@ -225,16 +313,67 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
     IN_HANDLER.set(false);
 }
 
+core::arch::global_asm!(
+    r#"
+    .text
+    .global reverie_preload_sigsys_pkru
+    .hidden reverie_preload_sigsys_pkru
+    .type reverie_preload_sigsys_pkru,@function
+reverie_preload_sigsys_pkru:
+    // Linux enters with default PKRU, which may deny the key of the signal
+    // stack itself. No stack, global, TLS, siginfo or ucontext access is safe
+    // until permissions are opened. RDI/RSI/RDX are the SA_SIGINFO arguments;
+    // preserve RDX in a caller-saved register across WRPKRU's fixed operands.
+    mov r8, rdx
+    xor eax, eax
+    xor ecx, ecx
+    xor edx, edx
+    wrpkru
+    lfence
+    mov rdx, r8
+    jmp {handler}
+    .size reverie_preload_sigsys_pkru, .-reverie_preload_sigsys_pkru
+    "#,
+    handler = sym sigsys_handler,
+);
+
+unsafe extern "C" {
+    fn reverie_preload_sigsys_pkru(
+        signal_number: libc::c_int,
+        info: *mut libc::siginfo_t,
+        context: *mut libc::c_void,
+    );
+}
+
 /// Install the SIGSYS handler (and, optionally, an alternate signal stack).
+///
+/// Selects the PKRU entry only when CPUID reports OSPKE and installation has
+/// validated the standard XSAVE PKRU component layout. Selection happens
+/// during installation, before syscall interception or CPUID faulting; the
+/// signal entry itself performs no feature detection or memory access before
+/// opening permissions. It then enters the unchanged provenance/reentry
+/// checks. Guest registers and PKRU remain in the kernel's signal frame;
+/// ordinary signal return restores them, including after deferred dispatch.
+/// Signal events also retain the saved rights for actual guest forwarding;
+/// opening handler access must not authorize a guest's denied syscall buffer.
+/// Handler permissions stay open through return so a nondefault-key signal
+/// stack remains accessible. This does not change guest signal policy.
 ///
 /// # Safety
 ///
-/// Installs process-global signal disposition; call once during init.
+/// Installs process-global signal disposition; call once during init while
+/// CPUID is available, before enabling instruction faulting.
 pub unsafe fn install_handler(use_alt_stack: bool) -> io::Result<()> {
+    let ospke = pkru::initialize()?;
+    let handler = if ospke {
+        reverie_preload_sigsys_pkru
+    } else {
+        sigsys_handler
+    };
     if use_alt_stack {
         unsafe { signal::install_alt_stack()? };
     }
-    unsafe { signal::install_sigsys_handler(sigsys_handler, use_alt_stack) }
+    unsafe { signal::install_sigsys_handler(handler, use_alt_stack) }
 }
 
 #[cfg(test)]
@@ -253,5 +392,30 @@ mod tests {
     #[test]
     fn no_dispatcher_registered_by_default() {
         assert!(dispatcher().is_none());
+    }
+
+    #[test]
+    fn sigsys_rejects_user_generated_signals_on_both_stacks() {
+        const CHILD: &str = "REVERIE_TEST_SIGSYS_PROVENANCE";
+        if let Some(value) = std::env::var_os(CHILD) {
+            unsafe {
+                install_handler(value == "1").unwrap();
+                libc::raise(libc::SIGSYS);
+            }
+            panic!("a user-generated SIGSYS returned from the handler");
+        }
+        for on_alt_stack in ["0", "1"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "trap::tests::sigsys_rejects_user_generated_signals_on_both_stacks",
+                    "--nocapture",
+                ])
+                .env(CHILD, on_alt_stack)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(126), "{output:?}");
+            assert!(output.stderr.is_empty(), "{output:?}");
+        }
     }
 }
