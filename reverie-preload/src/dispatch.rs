@@ -42,6 +42,7 @@ pub struct SyscallEvent {
     source: SyscallEventSource,
     result: Option<i64>,
     resume_address: Option<u64>,
+    guest_pkru: Option<u32>,
 }
 
 impl SyscallEvent {
@@ -76,6 +77,7 @@ impl SyscallEvent {
             source,
             result: None,
             resume_address: None,
+            guest_pkru: None,
         }
     }
 
@@ -100,6 +102,17 @@ impl SyscallEvent {
     /// Returns how this syscall entered the shared dispatcher.
     pub fn source(&self) -> SyscallEventSource {
         self.source
+    }
+
+    /// Protection-key rights from the real interrupted signal frame, when
+    /// OSPKE is enabled. `None` means no saved permission value, including for
+    /// direct instrumentation; it does not mean that the guest had PKRU zero.
+    pub fn guest_pkru(&self) -> Option<u32> {
+        self.guest_pkru
+    }
+
+    pub(crate) fn set_guest_pkru(&mut self, value: Option<u32>) {
+        self.guest_pkru = value;
     }
 
     /// The result the dispatcher has chosen, if any.
@@ -139,7 +152,12 @@ impl SyscallEvent {
     /// it does not re-trap.
     pub fn forward(&mut self) -> i64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        let result = unsafe { trap::raw_syscall6(self.number, self.args) };
+        let result = unsafe {
+            match self.guest_pkru {
+                Some(pkru) => trap::raw_syscall6_with_pkru(self.number, self.args, pkru),
+                None => trap::raw_syscall6(self.number, self.args),
+            }
+        };
         self.result = Some(result);
         result
     }

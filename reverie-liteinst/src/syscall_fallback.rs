@@ -183,6 +183,7 @@ fallback_entry:
     save_registers
     xor r14d, r14d
     jmp 1f
+    .size fallback_entry, .-fallback_entry
 
     .global fallback_entry_pkru
     .hidden fallback_entry_pkru
@@ -270,7 +271,7 @@ fallback_entry_pkru:
     .global fallback_entry_end
     .hidden fallback_entry_end
 fallback_entry_end:
-    .size fallback_entry, .-fallback_entry
+    .size fallback_entry_pkru, .-fallback_entry_pkru
     "#,
     save_bytes = sym SAVE_BYTES,
     save_mask = sym SAVE_MASK,

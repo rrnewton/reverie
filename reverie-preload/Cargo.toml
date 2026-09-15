@@ -37,3 +37,11 @@ path = "src/bin/preload_probe.rs"
 [[test]]
 name = "smoke"
 path = "tests/smoke.rs"
+
+[[test]]
+name = "pkeys"
+path = "tests/pkeys.rs"
+
+[[bin]]
+name = "reverie-preload-pkey-buffers"
+path = "src/bin/pkey_buffers.rs"

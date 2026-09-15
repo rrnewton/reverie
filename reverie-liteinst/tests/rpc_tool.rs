@@ -78,6 +78,15 @@ fn unpatchable_syscall_preserves_xstate_with_native_controls() {
 
 #[test]
 fn unpatchable_syscall_preserves_protection_keys() {
+    protection_keys_with_signal_stack(true);
+}
+
+#[test]
+fn unpatchable_syscall_preserves_protection_keys_without_alt_stack() {
+    protection_keys_with_signal_stack(false);
+}
+
+fn protection_keys_with_signal_stack(on_alt_stack: bool) {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("coordinator.sock");
@@ -95,6 +104,7 @@ fn unpatchable_syscall_preserves_protection_keys() {
     let ready = socket.exists();
     let mut command = Command::new(binary);
     command.arg("syscall-fallback-pkey").arg(&socket);
+    reverie_liteinst::set_guest_alt_stack(&mut command, on_alt_stack);
     let output = ready.then(|| output_with_timeout(command, Duration::from_secs(20)));
     let _ = coordinator.kill();
     let _ = coordinator.wait();
@@ -120,6 +130,7 @@ fn unpatchable_syscall_preserves_protection_keys() {
         stdout.starts_with("pkey fixture: rseq=unregistered before native and Tool controls\n"),
         "{stdout}"
     );
+    println!("alt_stack={on_alt_stack}");
     print!("{stdout}");
 }
 
