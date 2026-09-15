@@ -827,7 +827,7 @@ impl ProcessActionContinuation {
 /// A single-vCPU KVM backend used to exercise the syscall transport.
 pub struct KvmBackend {
     // Field order ensures the vCPU and VM are dropped before registered memory.
-    pub(crate) vcpu: VcpuFd,
+    pub(crate) vcpu: crate::clock::CountedVcpu,
     vm: VmFd,
     pub(crate) memory: GuestMemory,
     _kvm: Kvm,
@@ -993,7 +993,7 @@ impl KvmBackend {
             }
         };
         Ok(Self {
-            vcpu,
+            vcpu: crate::clock::CountedVcpu::new(vcpu),
             vm,
             memory,
             _kvm: kvm,
@@ -1154,6 +1154,7 @@ impl KvmBackend {
         regs.rip = entry_point;
         regs.rflags = 2;
         self.vcpu.set_regs(&regs)?;
+        self.vcpu.new_guest();
         Ok(())
     }
 
@@ -1192,6 +1193,8 @@ impl KvmBackend {
     /// The initial process personality supports x86-64 `ET_EXEC` images without a
     /// `PT_INTERP` segment. Dynamic executables require a userspace dynamic linker
     /// and are deliberately rejected.
+    /// After executing an initial ELF, create a fresh backend for another initial
+    /// image. Guest exec is a separate supported continuation of its clock.
     pub fn install_static_elf(&mut self, image: &[u8], argv0: &str) -> Result<()> {
         self.install_static_elf_with_args(image, &[argv0], &[])
     }
@@ -1226,6 +1229,7 @@ impl KvmBackend {
         envp: &[&str],
         cwd: &Path,
     ) -> Result<()> {
+        self.vcpu.check_initial_elf_install()?;
         let loaded = load_static_elf(&mut self.memory, image, argv, envp, cwd)?;
         self.install_loaded_static_elf(loaded)
     }
@@ -1251,6 +1255,7 @@ impl KvmBackend {
         )?;
         self.memory.enable_user_access();
         self.static_elf = Some(loaded);
+        self.vcpu.new_elf_guest();
         Ok(())
     }
 
@@ -1271,6 +1276,7 @@ impl KvmBackend {
         envp: &[&str],
         cwd: &Path,
     ) -> Result<()> {
+        self.vcpu.check_initial_elf_install()?;
         let loaded = load_static_elf_file(&mut self.memory, file, argv, envp, cwd)?;
         self.install_loaded_static_elf(loaded)
     }
@@ -2826,8 +2832,8 @@ impl KvmBackend {
             }
             let vcpu_exit = match self.vcpu.run() {
                 Ok(exit) => exit,
-                Err(error) if error.errno() == libc::EINTR => continue,
-                Err(error) => return Err(error.into()),
+                Err(Error::Kvm(error)) if error.errno() == libc::EINTR => continue,
+                Err(error) => return Err(error),
             };
             Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
             let (segment_update, process_action, mut signal_boundary) = match vcpu_exit {
@@ -5582,6 +5588,9 @@ mod tests {
         backend
             .install_static_elf(&minimal_test_elf(&code), "/bin/boundary-cleanup-test")
             .unwrap();
+        // This fixture later enters Tool lifecycle hooks. Start accounting
+        // before its manual first guest entry, just as the production runner does.
+        backend.vcpu.track_clock().unwrap();
         let mut executor = ElfExecutor::new(backend.static_elf.take().unwrap(), false);
         let frame_address = match backend.vcpu.run().unwrap() {
             VcpuExit::Hypercall(exit) => {

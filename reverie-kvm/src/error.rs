@@ -11,6 +11,14 @@ use thiserror::Error;
 /// Errors produced by the KVM backend prototype.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// A guest branch counter is unavailable or its accounting cannot be trusted.
+    #[error("guest clock failed: {0}")]
+    GuestClock(String),
+
+    /// Reusing a completed initial ELF requires resetting pending KVM transport state.
+    #[error("initial ELF reinstallation after execution is unsupported; create a fresh KvmBackend")]
+    InitialElfReinstallationUnsupported,
+
     /// A host filesystem operation failed while preparing the guest.
     #[error("host filesystem operation failed: {0}")]
     HostIo(#[from] std::io::Error),
