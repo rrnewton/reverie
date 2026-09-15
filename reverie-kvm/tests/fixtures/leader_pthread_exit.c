@@ -11,7 +11,12 @@ static int mode;
 static void await_exit(_Atomic int *word) {
     for (;;) {
         int tid = atomic_load(word);
-        if (!tid) return;
+        if (!tid) {
+            /* Pass on the single clear-TID wake to another waiter. */
+            if (syscall(SYS_futex, word, FUTEX_WAKE, 1, 0, 0, 0) < 0)
+                syscall(SYS_exit_group, 91);
+            return;
+        }
         long result = syscall(SYS_futex, word, FUTEX_WAIT, tid, 0, 0, 0);
         if (result && errno != EAGAIN && errno != EINTR) syscall(SYS_exit_group, 91);
     }
