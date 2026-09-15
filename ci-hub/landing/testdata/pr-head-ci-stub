@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+printf 'pr-head-ci %s\n' "$*" >> "$CALLS"
+rc="${SCEN_JIT_RC:-0}"
+[ "$rc" -eq 0 ] && : > "$SCEN_DIR/jit_ok"
+exit "$rc"

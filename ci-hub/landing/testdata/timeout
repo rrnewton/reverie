@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+printf '%s' "timeout" >> "$CALLS"; for a in "$@"; do printf ' %s' "$a" >> "$CALLS"; done; printf '\n' >> "$CALLS"
+shift; [ $# -gt 0 ] && exec "$@"; exit 0

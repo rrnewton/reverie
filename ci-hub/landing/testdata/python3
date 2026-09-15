@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+printf 'python3 %s\n' "$*" >> "$CALLS"
+case "$*" in
+  *rebase_wrapper.py*authorize*)
+    # Faithful model of the authority: a head is authorized when it has EITHER a
+    # qualifying exact-head verdict (hard green) OR recorded rebase provenance
+    # (soft green). With neither, it refuses -- and the message names the
+    # missing record, which is the secondary message emitted after hard-green
+    # has already been demoted.
+    if [ -f "$SCEN_DIR/jit_ok" ] || [ -f "$SCEN_DIR/recorded" ]; then
+      echo '{"verdict":"AUTHORIZED"}'; exit 0
+    fi
+    echo '{"verdict":"REFUSED","detail":"no rebase record for result '"${SCEN_ORIG:-bbbb222}"'"}'; exit 2 ;;
+  *rebase_wrapper.py*record*) : > "$SCEN_DIR/recorded"; echo '{"recorded":true}'; exit 0 ;;
+  *) exit 0 ;;
+esac

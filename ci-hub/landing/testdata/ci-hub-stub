@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+printf 'ci-hub %s\n' "$*" >> "$CALLS"
+case "$1" in
+  land-lock)
+    # run the inner command after `--`, which is what the real lock wrapper does
+    found=0; inner=()
+    for a in "$@"; do
+      if [ "$found" -eq 1 ]; then inner+=("$a"); fi
+      [ "$a" = "--" ] && found=1
+    done
+    if [ "${#inner[@]}" -gt 0 ]; then exec "${inner[@]}"; fi
+    exit 0 ;;
+  validate-status) echo '{"verdict":"NOT_VALIDATED"}'; exit "${SCEN_VSTATUS_RC:-4}" ;;
+  *) exit 0 ;;
+esac

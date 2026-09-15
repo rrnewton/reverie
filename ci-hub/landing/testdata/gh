@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+printf 'gh %s\n' "$*" >> "$CALLS"
+sel=""; prev=""
+for a in "$@"; do case "$prev" in -q|--jq) sel="$a";; esac; prev="$a"; done
+H="${SCEN_HEAD:-bbbb222}"; ST="${SCEN_PR_STATE:-OPEN}"
+if [ -n "$sel" ]; then
+  case "$sel" in
+    *".state"*" + "*".headRefName"*) echo "$ST feature" ;;
+    *".headRefOid"*) echo "$H" ;;
+    *".state"*) echo "$ST" ;;
+    *".isDraft"*) echo "false" ;;
+    *".mergeable"*) echo "MERGEABLE" ;;
+    *".baseRefName"*) echo "main" ;;
+    *".headRefName"*) echo "feature" ;;
+    *) echo "" ;;
+  esac
+  exit 0
+fi
+case "$*" in
+  *"pr view"*) echo '{"headRefOid":"'"$H"'","state":"'"$ST"'","isDraft":false,"mergeable":"MERGEABLE","baseRefName":"main","headRefName":"feature"}' ;;
+  *api*) echo '[]' ;;
+  *) echo '{}' ;;
+esac
+exit 0

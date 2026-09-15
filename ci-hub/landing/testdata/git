@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+exec 3>>"$CALLS"; printf 'git %s\n' "$*" >&3; exec 3>&-
+args=("$@"); i=0
+while [ $i -lt ${#args[@]} ]; do case "${args[$i]}" in -C) i=$((i+2));; *) break;; esac; done
+sub="${args[$i]:-}"; rest=("${args[@]:$((i+1))}")
+case "$sub" in
+  remote)
+    case "${rest[*]}" in *get-url*) echo "https://github.com/rrnewton/hermit.git"; exit 0 ;; esac
+    exit 0 ;;
+  fetch|checkout|reset|clean|branch|push|config|update-ref|stash|worktree) exit 0 ;;
+  rev-parse)
+    for a in "${rest[@]}"; do
+      case "$a" in
+        origin/main) echo "${SCEN_MAIN:-aaaa111}"; exit 0 ;;
+        origin/*)
+          n=$(cat "$SCEN_DIR/revcount" 2>/dev/null || echo 0); echo $((n+1)) > "$SCEN_DIR/revcount"
+          if [ "$n" -eq 0 ]; then echo "${SCEN_ORIG:-bbbb222}"; else echo "${SCEN_HEAD:-bbbb222}"; fi
+          exit 0 ;;
+        HEAD) echo "${SCEN_ORIG:-bbbb222}"; exit 0 ;;
+      esac
+    done
+    echo "${SCEN_ORIG:-bbbb222}"; exit 0 ;;
+  merge-base) [ "${SCEN_ANCESTOR:-1}" -eq 1 ] && exit 0 || exit 1 ;;
+  cat-file|show|log|diff|status|ls-remote) exit 0 ;;
+  *) exit 0 ;;
+esac

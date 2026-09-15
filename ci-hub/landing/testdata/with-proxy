@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+printf '%s' "with-proxy" >> "$CALLS"; for a in "$@"; do printf ' %s' "$a" >> "$CALLS"; done; printf '\n' >> "$CALLS"
+shift_cmd="$1"; shift; exec "$shift_cmd" "$@"

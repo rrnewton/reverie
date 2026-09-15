@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+printf '%s' "jq" >> "$CALLS"; for a in "$@"; do printf ' %s' "$a" >> "$CALLS"; done; printf '\n' >> "$CALLS"
+exit 0
