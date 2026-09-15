@@ -11,6 +11,8 @@ case "$*" in
       echo '{"verdict":"AUTHORIZED"}'; exit 0
     fi
     echo '{"verdict":"REFUSED","detail":"no rebase record for result '"${SCEN_ORIG:-bbbb222}"'"}'; exit 2 ;;
+  *union_rebase_result.py*require-success*)
+    echo '{"ok":true,"branch":"feature"}'; exit 0 ;;
   *rebase_wrapper.py*record*) : > "$SCEN_DIR/recorded"; echo '{"recorded":true}'; exit 0 ;;
   *) exit 0 ;;
 esac

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Stands in for union-rebase.sh: writes the result contract the lander requires
+# and reports success, so the --union scenario actually reaches the code under
+# test instead of abandoning because the driver is absent.
+printf 'union-rebase %s\n' "$*" >> "$CALLS"
+out=""
+prev=""
+for a in "$@"; do [ "$prev" = "--result-json" ] && out="$a"; prev="$a"; done
+[ -n "$out" ] && printf '{"ok":true,"branch":"feature","result":"%s"}\n' "${SCEN_HEAD:-bbbb222}" > "$out"
+exit 0
