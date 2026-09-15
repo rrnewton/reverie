@@ -11,6 +11,47 @@ const INSTRUCTION_CONTROL_UNAVAILABLE_STATUS: i32 = 77;
 const TEST_STRADDLER_STALENESS_TICKS: &str = "20000";
 
 #[test]
+fn ordinary_tool_memory_and_scratch_work_with_protected_guest_state() {
+    let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+    for on_alt_stack in [true, false] {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("coordinator.sock");
+        let mut coordinator = Command::new(binary)
+            .arg("coordinator")
+            .arg(&socket)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !socket.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let ready = socket.exists();
+        let mut command = Command::new(binary);
+        command.arg("memory-access").arg(&socket);
+        reverie_liteinst::set_guest_alt_stack(&mut command, on_alt_stack);
+        let output = ready.then(|| output_with_timeout(command, Duration::from_secs(20)));
+        let _ = coordinator.kill();
+        let _ = coordinator.wait();
+        let output = output.expect("coordinator socket was not created");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        if output.status.code() == Some(77) {
+            assert_eq!(output.stdout, b"memory access: OSPKE unavailable\n");
+            eprintln!("ordinary memory protected-state control unmeasured: OSPKE unavailable");
+            continue;
+        }
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let bytes = stdout.strip_prefix("memory access: rseq=unregistered native=2 Tool=2 pkru=0,1 xstate-bytes=")
+            .and_then(|line| line.strip_suffix(" scratch=complete readlink=complete inspection=complete faults=EFAULT rpc=2 hooks=0 traps=2\n"))
+            .expect("complete memory-access evidence").parse::<usize>().unwrap();
+        assert!(bytes >= 576);
+        println!("alt_stack={on_alt_stack} {stdout}");
+    }
+}
+
+#[test]
 fn unpatchable_syscall_dispatches_tool_after_signal_return() {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
     let directory = tempfile::tempdir().unwrap();
