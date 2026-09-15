@@ -148,7 +148,12 @@ class LandPrRepoRoutingTest(unittest.TestCase):
             'detached_args=(--_detached "$PR" "$BR" --repo "$R"', script
         )
         self.assertIn('args=(--_inner "$PR" "$BR" --repo "$R"', script)
-        self.assertIn('validate-status --repo "$R" --sha "$ORIG"', script)
+        # The exact-head status read moved into
+        # `attempt_jit_exact_head_validation`, so its sha is that function's
+        # `$candidate` parameter. The property under test here is that the
+        # repository is still threaded as "$R" through every wrapper and
+        # authority, and it is.
+        self.assertIn('validate-status --repo "$R" --sha "$candidate"', script)
         self.assertIn('--repo "$R" --result "$candidate"', script)
         self.assertIn('apply-local-label --pr "$PR" --repo "$R"', script)
         self.assertIn('--repo "$R" --pr "$PR" --json', script)

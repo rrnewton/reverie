@@ -329,12 +329,21 @@ else
   audit "final boundary lost canonical binding state, cache independence, or empty-set refusal" bad
 fi
 
+# The just-in-time producer moved into `attempt_jit_exact_head_validation`, so
+# its head is the function's `$candidate` parameter rather than `$ORIG`. Same
+# producer, same current-base precondition, same post-run recheck -- the two
+# renamed literals below are the parameter, not a relaxed check. The added
+# clauses are the reason it was factored: it is now reachable from BOTH the
+# pre-check and the no-op-rebase discharge, and one copy cannot drift from the
+# other.
 if grep -Fq 'bin/pr-head-ci"' "$lander" &&
-   grep -Fq -- '--expected-head "$ORIG"' "$lander" &&
+   grep -Fq -- '--expected-head "$candidate"' "$lander" &&
    grep -Fq -- '--checkout "$WT" --agent "$AGENT" --execute' "$lander" &&
-   grep -Fq 'merge-base --is-ancestor "$eligibility_base" "$ORIG"' "$lander" &&
-   grep -Fq 'post-JIT validation landability' "$lander"; then
-  audit "missing exact-head authority invokes centralized JIT only on a current-base head, then rechecks landability" ok
+   grep -Fq 'merge-base --is-ancestor "$eligibility_base" "$candidate"' "$lander" &&
+   grep -Fq 'post-JIT validation landability' "$lander" &&
+   grep -Fq 'attempt_jit_exact_head_validation "$ORIG"' "$lander" &&
+   grep -Fq 'attempt_jit_exact_head_validation "$HEAD"' "$lander"; then
+  audit "missing exact-head authority invokes centralized JIT only on a current-base head, then rechecks landability, from both the pre-check and the no-op-rebase discharge" ok
 else
   audit "landing frontier has no exact-head centralized JIT producer or skips its post-run authority recheck" bad
 fi

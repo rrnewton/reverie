@@ -489,9 +489,24 @@ say "validation landability(head=$ORIG) rc=$VRC: $VS"
 # ⚠️ BUT ONLY WHEN STEP 2 WILL RUN. Under --no-rebase step 2 is skipped, so this
 # pre-check IS the only gate and must keep refusing. Relaxing it there would be the
 # gate ceasing to refuse because it ceased to look.
+deferred_missing_record=0
 if [ "$VRC" -ne 0 ] && [ "$NO_REBASE" -eq 0 ] \
    && grep -q "no rebase record for result" <<<"$VS"; then
   say "pre-check: no rebase record yet for $ORIG -- step 2 creates it; deferring to the post-push re-authorize"
+  # ⚠️ REMEMBER THAT WE DEFERRED, because the promise above is conditional and
+  # step 2 can fail to keep it. `record` runs only when the rebase REWRITES the
+  # head (step 3), so a rebase that is a no-op -- the head already contains
+  # current main -- creates nothing, and step 4 then refuses the unchanged head
+  # for the very condition this deferral waved through. Measured on
+  # https://github.com/rrnewton/hermit/pull/2944 at head
+  # 208c63eb89f0dddb5dc7ecacdf9f75074de1b821: authorize rc=2, no rebase record,
+  # abandoned, with no path to succeed on any retry.
+  #
+  # Setting VRC=0 also SKIPS the just-in-time block below, which is the part
+  # that would otherwise have earned an exact-head verdict. So the deferral must
+  # hand that obligation forward rather than drop it; step 3 discharges it the
+  # moment the rebase turns out to be a no-op.
+  deferred_missing_record=1
   VRC=0
 fi
 # JUST-IN-TIME PR-HEAD CI. A prepared, reviewed head whose exact commit has no
@@ -499,24 +514,27 @@ fi
 # other qualifying receipt. Do not validate a stale base: the producer would
 # correctly refuse it. The helper re-reads the live PR head after VALIDATE, so a
 # concurrent push expires this result instead of inheriting it.
-if [ "$VRC" -ne 0 ]; then
-  existing_status=$("$ROOT/ci-hub/ci-hub" validate-status --repo "$R" --sha "$ORIG" --json 2>&1)
+# Factored so step 3 can discharge a deferred obligation through EXACTLY this
+# path, rather than through a second copy of it that can drift.
+attempt_jit_exact_head_validation() {
+  local candidate=$1
+  existing_status=$("$ROOT/ci-hub/ci-hub" validate-status --repo "$R" --sha "$candidate" --json 2>&1)
   existing_rc=$?
   if [ "$existing_rc" -eq 4 ] && \
-     git -C "$WT" merge-base --is-ancestor "$eligibility_base" "$ORIG"; then
+     git -C "$WT" merge-base --is-ancestor "$eligibility_base" "$candidate"; then
     jit_detail=$("$ROOT/ci-hub/bin/pr-head-ci" \
-      --repo "$R" --pr "$PR" --expected-head "$ORIG" \
+      --repo "$R" --pr "$PR" --expected-head "$candidate" \
       --checkout "$WT" --agent "$AGENT" --execute 2>&1)
     jit_rc=$?
-    say "just-in-time exact-head CI(head=$ORIG) rc=$jit_rc: $jit_detail"
+    say "just-in-time exact-head CI(head=$candidate) rc=$jit_rc: $jit_detail"
     [ "$jit_rc" -eq 0 ] \
-      || abandon "just-in-time exact-head CI produced no qualifying verdict for $ORIG (rc=$jit_rc)" 4
+      || abandon "just-in-time exact-head CI produced no qualifying verdict for $candidate (rc=$jit_rc)" 4
     with-proxy git -C "$WT" fetch -q origin main \
       || abandon "could not refresh current main after just-in-time validation" 4
     eligibility_base=$(git -C "$WT" rev-parse --verify origin/main) \
       || abandon "cannot resolve current main after just-in-time validation" 4
-    VS=$(validation_landability "$ORIG" "$eligibility_base" --json 2>&1); VRC=$?
-    say "post-JIT validation landability(head=$ORIG) rc=$VRC: $VS"
+    VS=$(validation_landability "$candidate" "$eligibility_base" --json 2>&1); VRC=$?
+    say "post-JIT validation landability(head=$candidate) rc=$VRC: $VS"
   elif [ "$existing_rc" -eq 4 ]; then
     # ⚠️ SAY WHICH OF THE TWO CONDITIONS ACTUALLY HELD. This branch is reached when
     # `merge-base --is-ancestor` did not succeed, and that has TWO causes: the head
@@ -529,15 +547,18 @@ if [ "$VRC" -ne 0 ]; then
     # whose actual failure was a 120-second TimeoutExpired in the authority script.
     # Advising a rebase for a timeout sends the next person to fix the wrong thing,
     # which is the diagnostic class this project has now hit repeatedly.
-    if git -C "$WT" rev-parse --verify --quiet "$ORIG^{commit}" >/dev/null \
+    if git -C "$WT" rev-parse --verify --quiet "$candidate^{commit}" >/dev/null \
        && git -C "$WT" rev-parse --verify --quiet "$eligibility_base^{commit}" >/dev/null; then
       say "just-in-time exact-head CI not admitted: PR head does not contain current origin/main (base=$eligibility_base); rebase before VALIDATE"
     else
-      say "just-in-time exact-head CI not admitted: could not compare PR head $ORIG against current origin/main $eligibility_base -- one of them is not present locally. This is NOT a statement that the head needs rebasing."
+      say "just-in-time exact-head CI not admitted: could not compare PR head $candidate against current origin/main $eligibility_base -- one of them is not present locally. This is NOT a statement that the head needs rebasing."
     fi
   else
     say "just-in-time exact-head CI not admitted: canonical exact-head status rc=$existing_rc: $existing_status"
   fi
+}
+if [ "$VRC" -ne 0 ]; then
+  attempt_jit_exact_head_validation "$ORIG"
 fi
 [ "$VRC" -eq 0 ] \
   || abandon "validation landability refused PR head $ORIG (rc=$VRC)" 4
@@ -671,6 +692,25 @@ if [ "$plain_rebase" -eq 1 ] && [ "$HEAD" != "$ORIG" ] && [ "$R" = rrnewton/herm
 elif [ "$plain_rebase" -eq 1 ]; then
   if [ "$HEAD" = "$ORIG" ]; then
     say "rebase provenance unchanged: rebase did not rewrite $ORIG"
+    # ⚠️ DISCHARGE THE DEFERRED OBLIGATION. The pre-check waived a missing
+    # rebase record on the stated promise that step 2 would create one. The
+    # rebase was a no-op, so step 2 created nothing, and the unconditional
+    # re-authorize in step 4 is about to refuse this exact unchanged head for
+    # that same missing record -- deterministically, with no retry that could
+    # ever succeed. Route it through the SAME just-in-time exact-head path the
+    # pre-check would have used had it not deferred.
+    #
+    # ⚠️ THIS DOES NOT WRITE A REBASE RECORD, and must not. There was no rebase,
+    # so there is no provenance to record; fabricating one to satisfy a gate is
+    # the thing an earlier lane correctly refused to do. This earns a real
+    # exact-head verdict instead, which is what the gate is actually asking for.
+    # Every later check -- step 4's unconditional authorize, the approval,
+    # floor, live-PR and current-main gates -- still runs unchanged, and a head
+    # whose provenance is genuinely absent is still refused by them.
+    if [ "$deferred_missing_record" -eq 1 ]; then
+      say "no-op rebase after a deferred missing-record pre-check: routing the unchanged head $HEAD through just-in-time exact-head validation before post-push authorization"
+      attempt_jit_exact_head_validation "$HEAD"
+    fi
   else
     say "rebase rewrote $ORIG to $HEAD; $R requires fresh exact-head validation"
   fi
