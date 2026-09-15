@@ -56,6 +56,7 @@ use crate::executor::ChildStartGate;
 use crate::executor::ElfExecutor;
 use crate::executor::PendingSignal;
 use crate::executor::ProcessAction;
+use crate::executor::ProcessExit;
 use crate::executor::conventional_exit_code;
 use crate::vm::CompletedSyscallBoundary;
 use crate::vm::PageZeroFault;
@@ -118,6 +119,13 @@ impl PendingChildStart {
 
     fn is_pending(&self) -> bool {
         self.start.is_pending()
+    }
+
+    pub(crate) fn tool_thread_gate(&self) -> Option<(i32, &ChildStartGate)> {
+        match self.child {
+            PendingChildKind::ToolThread(tid) => Some((tid, &self.start)),
+            PendingChildKind::ForkProcess(_) => None,
+        }
     }
 
     pub(crate) fn cancel(self) -> PendingChildCancellation {
@@ -1358,6 +1366,21 @@ where
 }
 
 #[derive(Clone, Copy)]
+struct ToolProcessExit {
+    exit: ProcessExit,
+    cancelled: bool,
+}
+
+impl From<ProcessExit> for ToolProcessExit {
+    fn from(exit: ProcessExit) -> Self {
+        Self {
+            exit,
+            cancelled: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 struct ToolExit {
     status: ExitStatus,
     process_exited: bool,
@@ -1412,12 +1435,19 @@ async fn notify_tool_exit<T: Tool>(
 }
 
 impl KvmBackend {
-    fn cancelled_tool_thread_status(&self, executor: &mut ElfExecutor) -> ExitStatus {
-        let exit = executor.cancel_current_thread();
+    fn cancelled_tool_thread_status(&self, executor: &mut ElfExecutor) -> ToolProcessExit {
+        let exit = if let Some(status) = self.guest_thread_group_exit_status() {
+            executor.retire_current_thread(status, true)
+        } else {
+            executor.cancel_current_thread()
+        };
         if exit.group {
             self.request_guest_thread_group_exit(exit.status);
         }
-        exit.status
+        ToolProcessExit {
+            exit,
+            cancelled: true,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1429,7 +1459,7 @@ impl KvmBackend {
         global_state: &T::GlobalState,
         config: &<T::GlobalState as GlobalTool>::Config,
         thread_state: T::ThreadState,
-        outcome: Result<ExitStatus>,
+        outcome: Result<ToolProcessExit>,
     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
         let (pid, tid) = identity;
         // Failed exec already reports the joined worker errors as its primary
@@ -1438,22 +1468,59 @@ impl KvmBackend {
             Err(Error::ExecWorkerTeardown(primary)) => (Err(*primary), true),
             outcome => (outcome, false),
         };
-        let status = outcome.as_ref().copied().unwrap_or(ExitStatus::Exited(255));
+        let natural_exit = outcome
+            .as_ref()
+            .is_ok_and(|exit| !exit.cancelled && !exit.exit.group);
+        let mut status = outcome
+            .as_ref()
+            .map_or(ExitStatus::Exited(255), |exit| exit.exit.status);
         // Retire the exact task generation before consuming hooks can wake a
         // peer. No guest callback can still borrow Tool or descriptor state.
-        executor.cancel_current_thread();
+        match &outcome {
+            Ok(exit) => {
+                executor.retire_current_thread(exit.exit.status, exit.exit.group);
+            }
+            Err(_) => executor.retire_failed_thread(),
+        }
         self.release_thread_slot();
         self.clear_registered_worker_tid_before_exit(executor);
         executor.release_files_on_exit();
         self.release_stdin_on_exit();
-        if pid == tid {
-            self.cancel_guest_threads();
+        if outcome.is_err() {
+            // A failed worker must interrupt live siblings before a leader's
+            // natural join can block on an earlier handle. Cancellation does
+            // not supply a guest group-exit status; the original error remains.
+            if pid == tid {
+                self.cancel_guest_threads();
+            } else {
+                self.record_guest_worker_failure(tid.as_raw());
+            }
+        } else if pid == tid {
+            if natural_exit {
+                self.join_guest_threads();
+            } else {
+                self.cancel_guest_threads();
+            }
         }
         let workers = if exec_worker_failure {
             Ok(())
         } else {
             self.guest_worker_teardown_result()
         };
+        let mut process_status = Ok(());
+        if pid == tid && natural_exit {
+            match executor.process_exit_status() {
+                Some(final_status) => status = final_status,
+                None if workers.is_err() => status = ExitStatus::Exited(255),
+                None => {
+                    status = ExitStatus::Exited(255);
+                    process_status = Err(Error::UnexpectedVcpuExit(
+                        "KVM process has no final task exit status after joining workers"
+                            .to_owned(),
+                    ));
+                }
+            }
+        }
         // Per-process worker hooks precede the leader hook, as in ptrace.
         // Both owner hooks precede independent fork descendants: a descendant
         // may need the parent's scheduler deregistration or process accounting
@@ -1483,6 +1550,7 @@ impl KvmBackend {
         }
         for (phase, result) in [
             ("worker cleanup", workers),
+            ("process exit status", process_status),
             ("owner exit", owner),
             ("child process cleanup", children),
         ] {
@@ -2060,7 +2128,7 @@ impl KvmBackend {
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
         expose_tool_scratch(&memory, tool_stack_top)?;
         let mut _process_completed = false;
-        let outcome: Result<ExitStatus> = async {
+        let outcome: Result<ToolProcessExit> = async {
             let start_outcome = {
                 let mut guest_executor = StaticElfSyscallExecutor {
                     backend: self,
@@ -2113,14 +2181,14 @@ impl KvmBackend {
                 // cancellation. Clear CHILD_CLEARTID immediately before the Tool
                 // exit callback; the worker wrapper then observes that the address
                 // has already been consumed.
-                return Ok(ExitStatus::SUCCESS);
+                return Ok(self.cancelled_tool_thread_status(executor));
             }
             auxv = executor.auxv().to_vec();
             if let Some(exit) = executor.take_exit() {
                 if exit.group {
                     self.request_guest_thread_group_exit(exit.status);
                 }
-                return Ok(exit.status);
+                return Ok(exit.into());
             }
 
             if initial_post_exec {
@@ -2153,7 +2221,7 @@ impl KvmBackend {
                         if exit.group {
                             self.request_guest_thread_group_exit(exit.status);
                         }
-                        return Ok(exit.status);
+                        return Ok(exit.into());
                     }
                 }
                 let post_exec_outcome = run_post_exec_handler(
@@ -2232,7 +2300,7 @@ impl KvmBackend {
                 if exit.group {
                     self.request_guest_thread_group_exit(exit.status);
                 }
-                return Ok(exit.status);
+                return Ok(exit.into());
             }
 
             // Read once so the per-syscall classifier can borrow it while `self` is
@@ -2240,10 +2308,14 @@ impl KvmBackend {
             let thread_ownership = self.thread_ownership;
             loop {
                 if let Some(status) = self.guest_thread_group_exit_status() {
-                    return Ok(status);
+                    return Ok(ProcessExit {
+                        status,
+                        group: true,
+                    }
+                    .into());
                 }
                 if self.guest_thread_is_cancelled() {
-                    return Ok(ExitStatus::SUCCESS);
+                    return Ok(self.cancelled_tool_thread_status(executor));
                 }
                 let vcpu_exit = match self.vcpu.run() {
                     Ok(exit) => exit,
@@ -2308,7 +2380,7 @@ impl KvmBackend {
                             if exit.group {
                                 self.request_guest_thread_group_exit(exit.status);
                             }
-                            return Ok(exit.status);
+                            return Ok(exit.into());
                         }
                         continue;
                     }
@@ -2399,7 +2471,7 @@ impl KvmBackend {
                         if exit.group {
                             self.request_guest_thread_group_exit(exit.status);
                         }
-                        return Ok(exit.status);
+                        return Ok(exit.into());
                     }
                     continue;
                 }
@@ -2700,7 +2772,7 @@ impl KvmBackend {
                     if exit.group {
                         self.request_guest_thread_group_exit(exit.status);
                     }
-                    return Ok(exit.status);
+                    return Ok(exit.into());
                 }
             }
         }
