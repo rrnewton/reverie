@@ -1378,11 +1378,12 @@ async fn notify_tool_exit<T: Tool>(
         state: global_state,
         config,
     };
-    tool.on_exit_thread(tid, &thread_global, thread_state, exit.status)
+    let thread_result = tool
+        .on_exit_thread(tid, &thread_global, thread_state, exit.status)
         .await
-        .map_err(Error::Reverie)?;
+        .map_err(Error::Reverie);
     if !exit.process_exited {
-        return Ok(());
+        return thread_result;
     }
     // The process-exit hook belongs to the thread-group leader (tid == pid).
     let process_global = KvmGlobal {
@@ -1390,14 +1391,34 @@ async fn notify_tool_exit<T: Tool>(
         state: global_state,
         config,
     };
-    // Every worker has completed its exit callback and dropped its process
-    // reference before the leader reaches this consuming hook.
-    let tool = Arc::try_unwrap(tool).map_err(|_| {
-        Error::UnexpectedVcpuExit("KVM worker retained process Tool state after exit".to_owned())
-    })?;
-    tool.on_exit_process(pid, &process_global, exit.status)
-        .await
-        .map_err(Error::Reverie)
+    // A failed thread hook has still consumed ThreadState. Attempt the
+    // process hook as well, after every worker has dropped its process Arc.
+    let process_result = match Arc::try_unwrap(tool) {
+        Ok(tool) => tool
+            .on_exit_process(pid, &process_global, exit.status)
+            .await
+            .map_err(Error::Reverie),
+        Err(_) => Err(Error::UnexpectedVcpuExit(
+            "KVM worker retained process Tool state after exit".to_owned(),
+        )),
+    };
+    match (thread_result, process_result) {
+        (Ok(()), process) => process,
+        (Err(error), Ok(())) => Err(error),
+        (Err(thread), Err(process)) => Err(Error::UnexpectedVcpuExit(format!(
+            "KVM owner thread exit failed: {thread}; owner process exit failed: {process}"
+        ))),
+    }
+}
+
+fn process_exit_result(children: Result<()>, owner: Result<()>) -> Result<()> {
+    match (children, owner) {
+        (Ok(()), owner) => owner,
+        (Err(error), Ok(())) => Err(error),
+        (Err(children), Err(owner)) => Err(Error::UnexpectedVcpuExit(format!(
+            "KVM child cleanup failed: {children}; owner exit failed: {owner}"
+        ))),
+    }
 }
 
 impl KvmBackend {
@@ -1423,6 +1444,9 @@ impl KvmBackend {
         executor.cancel_current_thread();
         self.release_thread_slot();
         self.clear_registered_worker_tid_before_exit(executor);
+        // Fork children from earlier callbacks remain owned across exec. Even
+        // this already-failed replacement must join them before returning.
+        let child_error = executor.join_all_child_processes().err();
         let global = KvmGlobal {
             tid,
             state: global_state,
@@ -1446,10 +1470,13 @@ impl KvmBackend {
                 "KVM worker retained process Tool state after failed exec".to_owned(),
             )),
         };
-        if thread_error.is_none() && process_error.is_none() {
+        if child_error.is_none() && thread_error.is_none() && process_error.is_none() {
             return *primary;
         }
         let mut diagnostic = format!("KVM exec failed: {primary}");
+        if let Some(error) = child_error {
+            diagnostic.push_str(&format!("; child process cleanup failed: {error}"));
+        }
         if let Some(error) = thread_error {
             diagnostic.push_str(&format!("; owner thread exit failed: {error}"));
         }
@@ -1478,15 +1505,18 @@ impl KvmBackend {
         }
         self.release_thread_slot();
         self.clear_registered_worker_tid_before_exit(executor);
-        self.notify_tool_exit(
-            tool,
-            identity,
-            global_state,
-            config,
-            thread_state,
-            exit.status,
-        )
-        .await?;
+        let children = executor.join_all_child_processes();
+        let owner = self
+            .notify_tool_exit(
+                tool,
+                identity,
+                global_state,
+                config,
+                thread_state,
+                exit.status,
+            )
+            .await;
+        process_exit_result(children, owner)?;
         let (stdout, stderr) = executor.take_output();
         Ok((exit.status, stdout, stderr))
     }
@@ -2426,17 +2456,19 @@ impl KvmBackend {
                         if executor.is_thread_group_leader() {
                             self.cancel_guest_threads();
                         }
-                        executor.join_all_child_processes()?;
+                        let children = executor.join_all_child_processes();
                         self.clear_registered_worker_tid_before_exit(executor);
-                        self.notify_tool_exit(
-                            tool,
-                            (pid, tid),
-                            global_state.as_ref(),
-                            config,
-                            thread_state,
-                            exit.status,
-                        )
-                        .await?;
+                        let owner = self
+                            .notify_tool_exit(
+                                tool,
+                                (pid, tid),
+                                global_state.as_ref(),
+                                config,
+                                thread_state,
+                                exit.status,
+                            )
+                            .await;
+                        process_exit_result(children, owner)?;
                         let (stdout, stderr) = executor.take_output();
                         return Ok((exit.status, stdout, stderr));
                     }
@@ -2541,17 +2573,19 @@ impl KvmBackend {
                     if executor.is_thread_group_leader() {
                         self.cancel_guest_threads();
                     }
-                    executor.join_all_child_processes()?;
+                    let children = executor.join_all_child_processes();
                     self.clear_registered_worker_tid_before_exit(executor);
-                    self.notify_tool_exit(
-                        tool,
-                        (pid, tid),
-                        global_state.as_ref(),
-                        config,
-                        thread_state,
-                        exit.status,
-                    )
-                    .await?;
+                    let owner = self
+                        .notify_tool_exit(
+                            tool,
+                            (pid, tid),
+                            global_state.as_ref(),
+                            config,
+                            thread_state,
+                            exit.status,
+                        )
+                        .await;
+                    process_exit_result(children, owner)?;
                     let (stdout, stderr) = executor.take_output();
                     return Ok((exit.status, stdout, stderr));
                 }
@@ -2904,7 +2938,7 @@ impl KvmBackend {
             }
             pending_exit = pending_exit.or_else(|| executor.take_exit());
             if let Some(exit) = pending_exit {
-                executor.join_all_child_processes()?;
+                let children = executor.join_all_child_processes();
                 if exit.group {
                     self.request_guest_thread_group_exit(exit.status);
                 }
@@ -2912,15 +2946,17 @@ impl KvmBackend {
                     self.cancel_guest_threads();
                 }
                 self.clear_registered_worker_tid_before_exit(executor);
-                self.notify_tool_exit(
-                    tool,
-                    (pid, tid),
-                    global_state.as_ref(),
-                    config,
-                    thread_state,
-                    exit.status,
-                )
-                .await?;
+                let owner = self
+                    .notify_tool_exit(
+                        tool,
+                        (pid, tid),
+                        global_state.as_ref(),
+                        config,
+                        thread_state,
+                        exit.status,
+                    )
+                    .await;
+                process_exit_result(children, owner)?;
                 let (stdout, stderr) = executor.take_output();
                 return Ok((exit.status, stdout, stderr));
             }

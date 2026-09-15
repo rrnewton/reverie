@@ -2012,16 +2012,65 @@ impl ElfExecutor {
 
     // TODO-HUMAN-REVIEW(PR-235): Review KVM root-exit child synchronization.
     pub(crate) fn join_all_child_processes(&mut self) -> crate::Result<()> {
-        let pids = self.pending_processes.keys().copied().collect::<Vec<_>>();
-        for pid in pids {
-            self.collect_child_process(pid, true)?;
+        let mut errors = Vec::new();
+        // Taking ownership first ensures that every handle is joined, even if
+        // an earlier child lost its start gate or returned an error. Reusing
+        // collect_child_process here would leave a failed start in the map.
+        for (pid, process) in std::mem::take(&mut self.pending_processes) {
+            if process.start.start().is_err() {
+                errors.push(crate::Error::UnexpectedVcpuExit(format!(
+                    "KVM child process {pid} lost its parent start gate"
+                )));
+            }
+            let result = process.handle.join().map_err(|_| {
+                crate::Error::UnexpectedVcpuExit(format!("KVM child process {pid} panicked"))
+            });
+            match result.and_then(|result| result) {
+                Err(error) => errors.push(error),
+                Ok(()) => {
+                    let completion = process
+                        .completion
+                        .lock()
+                        .map_err(|_| {
+                            crate::Error::UnexpectedVcpuExit(format!(
+                                "KVM child process {pid} completion lock poisoned"
+                            ))
+                        })
+                        .and_then(|mut completion| {
+                            completion.take().ok_or_else(|| {
+                                crate::Error::UnexpectedVcpuExit(format!(
+                                    "KVM child process {pid} exited without publishing its status"
+                                ))
+                            })
+                        });
+                    if let Err(error) = completion
+                        .and_then(|completion| self.record_child_completion(pid, completion))
+                    {
+                        errors.push(error);
+                    }
+                }
+            }
         }
         for handle in self.completed_processes.drain(..) {
-            handle.join().map_err(|_| {
+            let result = handle.join().map_err(|_| {
                 crate::Error::UnexpectedVcpuExit("completed KVM child process panicked".to_owned())
-            })??;
+            });
+            if let Err(error) = result.and_then(|result| result) {
+                errors.push(error);
+            }
         }
-        Ok(())
+        match errors.len() {
+            0 => Ok(()),
+            1 => Err(errors.pop().unwrap()),
+            _ => Err(crate::Error::UnexpectedVcpuExit(format!(
+                "KVM child process cleanup failed: {}",
+                errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ))),
+        }
     }
 
     fn synchronize_wait4(&mut self, request: &SyscallRequest) -> Option<i64> {
@@ -32492,6 +32541,134 @@ mod tests {
         executor.start_pending_child_processes().unwrap();
         started_receiver.recv().unwrap();
         executor.join_all_child_processes().unwrap();
+    }
+
+    #[test]
+    fn child_process_cleanup_joins_every_handle_and_preserves_each_error() {
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let lifetime = Arc::new(());
+        for pid in 2..=7 {
+            let (start_sender, start_receiver) = std::sync::mpsc::channel();
+            let completion = Arc::new(Mutex::new(None));
+            let child_completion = completion.clone();
+            let child_lifetime = lifetime.clone();
+            let receiver = if pid == 2 {
+                drop(start_receiver);
+                None
+            } else {
+                Some(start_receiver)
+            };
+            let handle = std::thread::spawn(move || {
+                let _lifetime = child_lifetime;
+                if let Some(receiver) = receiver {
+                    assert_eq!(receiver.recv().unwrap(), ChildStartCommand::Start);
+                }
+                match pid {
+                    2 => Err(crate::Error::UnexpectedVcpuExit(
+                        "lost-gate child diagnostic".to_owned(),
+                    )),
+                    3 => panic!("forced pending child panic"),
+                    4 => Ok(()),
+                    5 => {
+                        *child_completion.lock().unwrap() = Some(ChildCompletion::Failed);
+                        Ok(())
+                    }
+                    6 => {
+                        let _ = std::panic::catch_unwind(|| {
+                            let _guard = child_completion.lock().unwrap();
+                            panic!("forced completion lock poison");
+                        });
+                        Ok(())
+                    }
+                    7 => {
+                        *child_completion.lock().unwrap() =
+                            Some(ChildCompletion::Waitable(ExitStatus::SUCCESS));
+                        Ok(())
+                    }
+                    _ => unreachable!(),
+                }
+            });
+            executor.register_child_process(pid, start_sender, completion, handle);
+        }
+        let (release, wait_release) = std::sync::mpsc::channel();
+        let (finished, wait_finished) = std::sync::mpsc::channel();
+        for index in 0..2 {
+            let child_lifetime = lifetime.clone();
+            executor
+                .completed_processes
+                .push(std::thread::spawn(move || {
+                    let _lifetime = child_lifetime;
+                    if index == 0 {
+                        Err(crate::Error::UnexpectedVcpuExit(
+                            "completed child diagnostic".to_owned(),
+                        ))
+                    } else {
+                        panic!("forced completed child panic");
+                    }
+                }));
+        }
+        let child_lifetime = lifetime.clone();
+        executor
+            .completed_processes
+            .push(std::thread::spawn(move || {
+                let _lifetime = child_lifetime;
+                wait_release
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                finished.send(()).unwrap();
+                Ok(())
+            }));
+        let release_thread = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            release.send(()).unwrap();
+        });
+        let error = executor.join_all_child_processes().unwrap_err().to_string();
+        let remaining = (
+            executor.pending_processes.len(),
+            executor.completed_processes.len(),
+            Arc::strong_count(&lifetime),
+        );
+        // Release and join fixture workers even when checking an early-return
+        // mutation, which can leave pending gates and handles behind.
+        release_thread.join().unwrap();
+        for (_, process) in std::mem::take(&mut executor.pending_processes) {
+            let _ = process.start.start();
+            let _ = process.handle.join();
+        }
+        for handle in executor.completed_processes.drain(..) {
+            let _ = handle.join();
+        }
+        wait_finished
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(
+            remaining,
+            (0, 0, 1),
+            "all handles must be joined before returning: {error}"
+        );
+        assert_eq!(executor.state.children.get(&7), Some(&ExitStatus::SUCCESS));
+        let expected = [
+            "KVM child process 2 lost its parent start gate",
+            "lost-gate child diagnostic",
+            "KVM child process 3 panicked",
+            "KVM child process 4 exited without publishing its status",
+            "KVM child process 5 failed before publishing its status",
+            "KVM child process 6 completion lock poisoned",
+            "completed child diagnostic",
+            "completed KVM child process panicked",
+        ];
+        let mut previous = None;
+        for diagnostic in expected {
+            assert_eq!(error.matches(diagnostic).count(), 1, "{error}");
+            let position = error.find(diagnostic).unwrap();
+            assert!(
+                previous.is_none_or(|previous| previous < position),
+                "stable child collection order: {error}"
+            );
+            previous = Some(position);
+        }
+        assert!(executor.join_all_child_processes().is_ok());
     }
 
     #[test]
