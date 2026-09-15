@@ -1051,6 +1051,7 @@ fn guest_host_address(
 pub(crate) struct ElfExecutor {
     state: LoadedStaticElf,
     task_generation: u64,
+    process_generation: u64,
     address_space: Arc<std::sync::Mutex<AddressSpaceState>>,
     file_table: Arc<std::sync::Mutex<FileTableState>>,
     output: Option<CapturedOutput>,
@@ -1135,6 +1136,10 @@ impl ChildStartGate {
             ChildStartGateState::Started => ChildStartCancellation::AlreadyStarted,
             ChildStartGateState::Cancelled => ChildStartCancellation::AlreadyCancelled,
         }
+    }
+
+    pub(crate) fn same_gate(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
     }
 
     pub(crate) fn is_pending(&self) -> bool {
@@ -1361,6 +1366,13 @@ impl ElfExecutor {
                 state.dumpable,
                 &state.thread_signals,
             );
+        let process_generation = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(state.tid)
+            .expect("registered KVM task exists")
+            .process_generation;
         let next_pid = state.pid.saturating_add(1);
         let sigchld_auto_reap = Arc::new(AtomicBool::new(sigchld_auto_reaps(&state)));
         let address_space = Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state)));
@@ -1371,6 +1383,7 @@ impl ElfExecutor {
         Self {
             state,
             task_generation,
+            process_generation,
             address_space,
             file_table,
             output: capture_output.then(CapturedOutput::default),
@@ -1765,11 +1778,19 @@ impl ElfExecutor {
                 state.dumpable,
                 &state.thread_signals,
             );
+        let process_generation = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(state.tid)
+            .expect("registered KVM task exists")
+            .process_generation;
         let sigchld_auto_reap = sigchld_auto_reaps(&state);
         let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
         let child = Self {
             state,
             task_generation,
+            process_generation,
             address_space,
             file_table,
             output: self.output.clone(),
@@ -1839,10 +1860,18 @@ impl ElfExecutor {
                 state.dumpable,
                 &state.thread_signals,
             );
+        let process_generation = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(state.tid)
+            .expect("registered KVM task exists")
+            .process_generation;
         let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
         let child = Self {
             state,
             task_generation,
+            process_generation,
             address_space: self.address_space.clone(),
             file_table: self.file_table.clone(),
             output: self.output.clone(),
@@ -2043,7 +2072,7 @@ impl ElfExecutor {
         if !children.pending.is_empty() || !children.completed.is_empty() {
             self.transferred_processes
                 .lock()
-                .expect("KVM transferred child-process lock poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .entry(self.state.tid)
                 .or_default()
                 .push(children);
@@ -2307,14 +2336,15 @@ impl ElfExecutor {
     pub(crate) fn replace_after_exec(&mut self, state: LoadedStaticElf) {
         let previous = std::mem::replace(&mut self.state, state);
         self.state.inherit_process_state(previous);
-        self.task_generation = self
+        let identity = self
             .state
             .task_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(self.state.tid)
-            .expect("execing KVM task is absent from its lifecycle table")
-            .generation;
+            .expect("execing KVM task is absent from its lifecycle table");
+        self.task_generation = identity.generation;
+        self.process_generation = identity.process_generation;
         *self
             .address_space
             .lock()
@@ -2950,21 +2980,43 @@ impl ElfExecutor {
     /// Returns and clears a pending thread-local or group-wide exit.
     pub(crate) fn take_exit(&mut self) -> Option<ProcessExit> {
         let status = self.exit_status.take()?;
-        self.state
+        let group = std::mem::take(&mut self.exit_group);
+        let status = self
+            .state
             .task_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(self.state.tid, self.task_generation);
-        let group = std::mem::take(&mut self.exit_group);
+            .exit(self.state.tid, self.task_generation, status, group);
         Some(ProcessExit { status, group })
     }
 
     /// Completes a Tool-authorized terminal thread without executing a guest
     /// syscall. An already established fatal or group exit keeps its status.
     pub(crate) fn cancel_current_thread(&mut self) -> ProcessExit {
-        self.exit_status.get_or_insert(ExitStatus::SUCCESS);
+        self.retire_current_thread(ExitStatus::SUCCESS, false)
+    }
+
+    pub(crate) fn retire_current_thread(&mut self, status: ExitStatus, group: bool) -> ProcessExit {
+        self.exit_status.get_or_insert(status);
+        self.exit_group |= group;
         self.take_exit()
             .expect("terminal thread has an exit status")
+    }
+
+    pub(crate) fn retire_failed_thread(&mut self) {
+        self.state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .fail(self.state.tid, self.task_generation);
+    }
+
+    pub(crate) fn process_exit_status(&self) -> Option<ExitStatus> {
+        self.state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .process_exit_status(self.state.pid, self.process_generation)
     }
 
     pub(crate) fn take_output(&mut self) -> (Vec<u8>, Vec<u8>) {
@@ -2981,11 +3033,15 @@ impl ElfExecutor {
 
 impl Drop for ElfExecutor {
     fn drop(&mut self) {
-        self.state
+        let mut lifecycle = self
+            .state
             .task_lifecycle
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(self.state.tid, self.task_generation);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        lifecycle.remove(self.state.tid, self.task_generation);
+        if self.state.tid == self.state.pid {
+            lifecycle.forget_process_exit(self.state.pid, self.process_generation);
+        }
     }
 }
 
@@ -33156,6 +33212,132 @@ mod tests {
         assert_eq!(
             executor.child_completion(ExitStatus::Exited(5)),
             ChildCompletion::AutoReaped(ExitStatus::Exited(5)),
+        );
+    }
+
+    fn commit_test_exit(executor: &mut ElfExecutor, code: u64, group: bool) -> ProcessExit {
+        let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let number = if group {
+            libc::SYS_exit_group
+        } else {
+            libc::SYS_exit
+        };
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(number as u64, [code, 0, 0, 0, 0, 0]),
+                &memory
+            ),
+            0
+        );
+        executor.take_exit().unwrap()
+    }
+
+    #[test]
+    fn process_exit_status_follows_shared_thread_membership_not_fork_or_drop() {
+        let root = TestDir::new();
+        let mut leader = ElfExecutor::new(test_state(&root.0), false);
+        let mut worker = leader.thread_child(2).unwrap();
+        let mut fork = leader.fork_child(3, false, false).unwrap();
+        assert!(Arc::ptr_eq(
+            &leader.state.task_lifecycle,
+            &fork.state.task_lifecycle
+        ));
+        assert_eq!(leader.process_generation, worker.process_generation);
+        assert_ne!(leader.process_generation, fork.process_generation);
+        let prepared = worker.thread_child(4).unwrap();
+        commit_test_exit(&mut leader, 37, false);
+        commit_test_exit(&mut worker, 73, false);
+        assert_eq!(
+            leader.process_exit_status(),
+            None,
+            "registered preparation is still live"
+        );
+        commit_test_exit(&mut fork, 99, false);
+        drop(prepared);
+        assert_eq!(leader.process_exit_status(), Some(ExitStatus::Exited(73)));
+        assert_eq!(fork.process_exit_status(), Some(ExitStatus::Exited(99)));
+        leader.cancel_current_thread();
+        worker.cancel_current_thread();
+        assert_eq!(
+            leader.process_exit_status(),
+            Some(ExitStatus::Exited(73)),
+            "duplicate retirement has no new zero status"
+        );
+    }
+
+    #[test]
+    fn process_exit_status_is_bound_to_process_and_task_generations() {
+        let root = TestDir::new();
+        let leader = ElfExecutor::new(test_state(&root.0), false);
+        let mut old = leader.fork_child(3, false, false).unwrap();
+        commit_test_exit(&mut old, 61, false);
+        let mut new = leader.fork_child(3, false, false).unwrap();
+        assert_ne!(old.process_generation, new.process_generation);
+        old.retire_current_thread(ExitStatus::Exited(99), true);
+        assert_eq!(
+            new.process_exit_status(),
+            None,
+            "stale executor cannot retire replacement task"
+        );
+        commit_test_exit(&mut new, 73, false);
+        assert_eq!(old.process_exit_status(), Some(ExitStatus::Exited(61)));
+        assert_eq!(new.process_exit_status(), Some(ExitStatus::Exited(73)));
+        let old_process_generation = old.process_generation;
+        drop(old);
+        assert_eq!(
+            leader
+                .state
+                .task_lifecycle
+                .lock()
+                .unwrap()
+                .process_exit_status(3, old_process_generation),
+            None
+        );
+        assert_eq!(
+            new.process_exit_status(),
+            Some(ExitStatus::Exited(73)),
+            "dropping an old process owner preserves the replacement's status"
+        );
+    }
+
+    #[test]
+    fn process_exit_status_exec_reset_rejects_old_worker_retirement() {
+        let root = TestDir::new();
+        let mut leader = ElfExecutor::new(test_state(&root.0), false);
+        let mut old_worker = leader.thread_child(2).unwrap();
+        commit_test_exit(&mut old_worker, 61, false);
+        leader.replace_after_exec(test_state(&root.0));
+        let mut new_worker = leader.thread_child(2).unwrap();
+        assert_ne!(old_worker.task_generation, new_worker.task_generation);
+        old_worker.retire_current_thread(ExitStatus::Exited(99), true);
+        commit_test_exit(&mut leader, 37, false);
+        assert_eq!(leader.process_exit_status(), None);
+        commit_test_exit(&mut new_worker, 73, false);
+        assert_eq!(leader.process_exit_status(), Some(ExitStatus::Exited(73)));
+    }
+
+    #[test]
+    fn process_exit_status_preserves_group_selection_and_terminal_failure() {
+        let root = TestDir::new();
+        let mut leader = ElfExecutor::new(test_state(&root.0), false);
+        let mut first = leader.thread_child(2).unwrap();
+        let mut last = leader.thread_child(3).unwrap();
+        commit_test_exit(&mut first, 61, true);
+        assert_eq!(
+            commit_test_exit(&mut last, 73, true).status,
+            ExitStatus::Exited(61)
+        );
+        commit_test_exit(&mut leader, 37, false);
+        assert_eq!(leader.process_exit_status(), Some(ExitStatus::Exited(61)));
+
+        let mut failed_leader = ElfExecutor::new(test_state(&root.0), false);
+        let mut failed_worker = failed_leader.thread_child(2).unwrap();
+        commit_test_exit(&mut failed_leader, 37, false);
+        failed_worker.retire_failed_thread();
+        assert_eq!(
+            failed_leader.process_exit_status(),
+            None,
+            "a failed worker does not manufacture guest exit status"
         );
     }
 

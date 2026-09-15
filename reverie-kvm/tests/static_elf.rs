@@ -13910,3 +13910,6 @@ mod child_exit_signals;
 
 #[path = "support/terminal_fork.rs"]
 mod terminal_fork;
+
+#[path = "support/leader_exit.rs"]
+mod leader_exit;

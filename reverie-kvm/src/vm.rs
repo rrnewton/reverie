@@ -75,6 +75,7 @@ use crate::executor::ChildStartCommand;
 use crate::executor::ChildStartGate;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
+use crate::executor::ProcessExit;
 use crate::executor::SignalDisposition;
 use crate::executor::conventional_exit_code;
 use crate::runtime::PendingChildCancellation;
@@ -279,13 +280,66 @@ struct GuestThreadGroup {
     // AUTONOMOUS-BOT-IMPLEMENTED: Join cancelled KVM workers before root teardown returns.
     // TODO-HUMAN-REVIEW(PR-178): Review KVM worker join ordering.
     worker_handles: Mutex<Vec<GuestWorkerHandle>>,
+    // Joining moves handles out of the registry. Cancellation must still own
+    // every pending gate while a moved handle is blocking in JoinHandle::join.
+    worker_start_gates: Mutex<std::collections::BTreeMap<i32, ChildStartGate>>,
     // Intermediate joins must not consume a failed exit hook. Keep every
     // failure until the process owner reports teardown, ordered by guest TID.
     worker_errors: Mutex<std::collections::BTreeMap<i32, Vec<String>>>,
+    failure_state: Mutex<WorkerFailureState>,
     transport_slots: Mutex<Vec<bool>>,
 }
 
+#[derive(Default)]
+struct WorkerFailureState {
+    natural_join_started: bool,
+    worker_failed: bool,
+    reportable_errors: std::collections::BTreeSet<i32>,
+}
+
 impl GuestThreadGroup {
+    fn record_worker_failure(&self, tid: i32) {
+        let joining = {
+            let mut state = self
+                .failure_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !self.cancelled.load(Ordering::Acquire) {
+                state.reportable_errors.insert(tid);
+            }
+            state.worker_failed = true;
+            state.natural_join_started
+        };
+        if joining {
+            self.cancel_workers();
+        }
+    }
+
+    fn take_worker_error_report(&self, tid: i32) -> bool {
+        self.failure_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .reportable_errors
+            .remove(&tid)
+    }
+
+    fn begin_natural_join(&self) {
+        let failed = {
+            let mut state = self
+                .failure_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.natural_join_started = true;
+            state.worker_failed
+        };
+        // The shared lock covers both arrival orders: a completed failure must
+        // not hide behind an earlier live handle, and a later failure must wake
+        // a natural join that is already waiting for that handle.
+        if failed {
+            self.cancel_workers();
+        }
+    }
+
     fn exit_status(&self) -> Option<ExitStatus> {
         *self
             .exit_status
@@ -342,7 +396,20 @@ impl GuestThreadGroup {
             !handles.iter().any(|worker| worker.tid == tid),
             "duplicate KVM guest worker tid {tid}"
         );
+        if let Some(gate) = &start {
+            self.worker_start_gates
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(tid, gate.clone());
+        }
+        let gate = start.clone();
         handles.push(GuestWorkerHandle { tid, start, handle });
+        drop(handles);
+        if self.cancelled.load(Ordering::Acquire)
+            && let Some(gate) = gate
+        {
+            Self::cancel_worker_gate(&gate);
+        }
     }
 
     fn discard_unstarted_worker(&self, tid: i32) -> Result<bool> {
@@ -365,22 +432,30 @@ impl GuestThreadGroup {
         let Some(handle) = handle else {
             return Ok(false);
         };
+        self.worker_start_gates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&tid);
         let _ = handle.join().map_err(|_| {
             Error::UnexpectedVcpuExit(format!("unstarted KVM guest thread {tid} panicked"))
         })??;
         Ok(true)
     }
 
+    fn cancel_worker_gate(gate: &ChildStartGate) {
+        if matches!(
+            gate.cancel(),
+            crate::executor::ChildStartCancellation::NewlyCancelled {
+                delivery_failed: true
+            }
+        ) {
+            eprintln!("reverie-kvm unstarted guest thread lost its cancellation gate");
+        }
+    }
+
     fn cancel_pending_worker_gates(handles: &[GuestWorkerHandle]) {
         for gate in handles.iter().filter_map(|worker| worker.start.as_ref()) {
-            if matches!(
-                gate.cancel(),
-                crate::executor::ChildStartCancellation::NewlyCancelled {
-                    delivery_failed: true
-                }
-            ) {
-                eprintln!("reverie-kvm unstarted guest thread lost its cancellation gate");
-            }
+            Self::cancel_worker_gate(gate);
         }
     }
 
@@ -396,13 +471,19 @@ impl GuestThreadGroup {
             if handles.is_empty() {
                 return;
             }
-            Self::cancel_pending_worker_gates(&handles);
+            if self.cancelled.load(Ordering::Acquire) {
+                Self::cancel_pending_worker_gates(&handles);
+            }
             for worker in handles {
                 let error = match worker.handle.join() {
                     Ok(Ok(_)) => None,
                     Ok(Err(error)) => Some(error.to_string()),
                     Err(_) => Some("guest thread panicked during teardown".to_owned()),
                 };
+                self.worker_start_gates
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&worker.tid);
                 if let Some(error) = error {
                     self.worker_errors
                         .lock()
@@ -439,12 +520,16 @@ impl GuestThreadGroup {
 
     fn cancel_workers(&self) {
         self.cancelled.store(true, Ordering::Release);
-        Self::cancel_pending_worker_gates(
-            &self
-                .worker_handles
-                .lock()
-                .expect("KVM guest worker-handle lock poisoned"),
-        );
+        let gates = self
+            .worker_start_gates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for gate in gates {
+            Self::cancel_worker_gate(&gate);
+        }
         let workers = self.workers.lock().expect("KVM guest worker lock poisoned");
         for &worker in workers.iter() {
             // SAFETY: the registry lock keeps each pthread ID live for this call.
@@ -456,10 +541,20 @@ impl GuestThreadGroup {
 
     // TODO-HUMAN-REVIEW(PR-211): Review KVM exec sibling cancellation ordering.
     fn rearm_after_exec(&self) {
+        debug_assert!(
+            self.worker_start_gates
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+        );
         *self
             .exit_status
             .lock()
             .expect("KVM exit-group lock poisoned") = None;
+        *self
+            .failure_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = WorkerFailureState::default();
         self.cancelled.store(false, Ordering::Release);
     }
 
@@ -485,7 +580,7 @@ impl GuestThreadGroup {
         let mut slots = self
             .transport_slots
             .lock()
-            .expect("KVM transport-slot lock poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(in_use) = slots.get_mut(slot) {
             *in_use = false;
         }
@@ -1564,19 +1659,35 @@ impl KvmBackend {
                 let handle = std::thread::Builder::new()
                     .name(format!("reverie-kvm-guest-{child_tid}"))
                     .spawn(move || {
-                        let result = child.run_static_elf_process(&mut child_executor);
-                        child.release_thread_slot();
-                        clear_tid_and_wake(
-                            &mut child.memory,
-                            child_executor.take_clear_child_tid(),
-                        );
-                        let cancelled = child.thread_group.cancelled.load(Ordering::Acquire);
-                        if let Err(error) = &result
-                            && !cancelled
-                        {
-                            eprintln!("reverie-kvm guest thread {child_tid} failed: {error}");
+                        let execution =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                let result = child.run_static_elf_process(&mut child_executor);
+                                child.release_thread_slot();
+                                clear_tid_and_wake(
+                                    &mut child.memory,
+                                    child_executor.take_clear_child_tid(),
+                                );
+                                if result.is_err() {
+                                    child_executor.retire_failed_thread();
+                                    child.thread_group.record_worker_failure(child_tid);
+                                }
+                                if let Err(error) = &result
+                                    && child.thread_group.take_worker_error_report(child_tid)
+                                {
+                                    eprintln!(
+                                        "reverie-kvm guest thread {child_tid} failed: {error}"
+                                    );
+                                }
+                                result
+                            }));
+                        match execution {
+                            Ok(result) => result,
+                            Err(payload) => child.finish_panicked_guest_worker(
+                                &mut child_executor,
+                                child_tid,
+                                payload,
+                            ),
                         }
-                        result
                     })?;
                 self.thread_group.add_worker_handle(child_tid, handle);
             }
@@ -1654,14 +1765,43 @@ impl KvmBackend {
         executor: &mut ElfExecutor,
         starts: &SharedChildStarts,
     ) -> Result<()> {
-        let children = starts
+        let children = self.cancel_unstarted_tool_children(starts);
+        self.discard_cancelled_tool_children(executor, children)
+    }
+
+    fn cancel_unstarted_tool_children(
+        &self,
+        starts: &SharedChildStarts,
+    ) -> Vec<(PendingChildCancellation, bool)> {
+        // A natural join can already own the handle. Capture exact gate
+        // registration before Cancel lets that join finish and remove it.
+        let registered = self
+            .thread_group
+            .worker_start_gates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        starts
             .lock()
             .expect("KVM child-start lock poisoned")
             .drain(..)
-            .map(PendingChildStart::cancel)
-            .collect::<Vec<_>>();
+            .map(|start| {
+                let registered_thread = start.tool_thread_gate().is_some_and(|(tid, gate)| {
+                    registered
+                        .get(&tid)
+                        .is_some_and(|found| found.same_gate(gate))
+                });
+                (start.cancel(), registered_thread)
+            })
+            .collect()
+    }
+
+    fn discard_cancelled_tool_children(
+        &mut self,
+        executor: &mut ElfExecutor,
+        children: Vec<(PendingChildCancellation, bool)>,
+    ) -> Result<()> {
         let mut first_error = None;
-        for child in children {
+        for (child, registered_thread) in children {
             let PendingChildCancellation::NewlyCancelled {
                 child,
                 delivery_failed,
@@ -1690,7 +1830,7 @@ impl KvmBackend {
                     .thread_group
                     .discard_unstarted_worker(tid)
                     .and_then(|found| {
-                        found.then_some(()).ok_or_else(|| {
+                        (found || registered_thread).then_some(()).ok_or_else(|| {
                             Error::UnexpectedVcpuExit(format!(
                                 "unstarted KVM guest thread {tid} was not registered"
                             ))
@@ -2056,41 +2196,50 @@ impl KvmBackend {
                 let handle = std::thread::Builder::new()
                     .name(format!("reverie-kvm-guest-{child_tid}"))
                     .spawn(move || {
-                        match start_receiver.recv() {
-                            Ok(ChildStartCommand::Start) => {}
-                            Ok(ChildStartCommand::Cancel) => {
-                                return Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()));
+                        let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            match start_receiver.recv() {
+                                Ok(ChildStartCommand::Start) => {}
+                                Ok(ChildStartCommand::Cancel) => {
+                                    return Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()));
+                                }
+                                Err(_) => {
+                                    panic!("KVM guest thread {child_tid} lost its parent start gate")
+                                }
                             }
-                            Err(_) => {
-                                panic!("KVM guest thread {child_tid} lost its parent start gate")
-                            }
-                        }
-                        let result =
-                            futures::executor::block_on(child.run_static_elf_process_with_tool(
-                                &mut child_executor,
-                                tgid,
-                                child_tid_pid,
-                                child_tool,
-                                child_thread_state,
-                                global_state,
-                                &config,
-                                &subscriptions,
-                                false,
-                            ));
-                        child.release_thread_slot();
-                        clear_tid_and_wake(
-                            &mut child.memory,
-                            child_executor.take_clear_child_tid(),
-                        );
-                        let cancelled = child.thread_group.cancelled.load(Ordering::Acquire);
-                        if let Err(error) = &result
-                            && !cancelled
-                        {
-                            eprintln!(
-                                "reverie-kvm guest thread {child_tid} tool loop failed: {error}"
+                            let result =
+                                futures::executor::block_on(child.run_static_elf_process_with_tool(
+                                    &mut child_executor,
+                                    tgid,
+                                    child_tid_pid,
+                                    child_tool,
+                                    child_thread_state,
+                                    global_state,
+                                    &config,
+                                    &subscriptions,
+                                    false,
+                                ));
+                            child.release_thread_slot();
+                            clear_tid_and_wake(
+                                &mut child.memory,
+                                child_executor.take_clear_child_tid(),
                             );
+                            if result.is_err() {
+                                child_executor.retire_failed_thread();
+                                child.thread_group.record_worker_failure(child_tid);
+                            }
+                            if let Err(error) = &result
+                                && child.thread_group.take_worker_error_report(child_tid)
+                            {
+                                eprintln!(
+                                    "reverie-kvm guest thread {child_tid} tool loop failed: {error}"
+                                );
+                            }
+                            result
+                        }));
+                        match execution {
+                            Ok(result) => result,
+                            Err(payload) => child.finish_panicked_guest_worker(&mut child_executor, child_tid, payload),
                         }
-                        result
                     })?;
                 self.thread_group
                     .add_unstarted_worker(child_tid, start_gate.clone(), handle);
@@ -2507,9 +2656,6 @@ impl KvmBackend {
 
     pub(crate) fn clear_registered_worker_tid_before_exit(&mut self, executor: &mut ElfExecutor) {
         self.release_thread_slot();
-        if !self.is_guest_thread {
-            return;
-        }
         let Some(address) = executor.take_clear_child_tid() else {
             return;
         };
@@ -2656,24 +2802,27 @@ impl KvmBackend {
                 }
             }
             if let Some(exit) = executor.take_exit() {
-                if exit.group {
-                    self.request_guest_thread_group_exit(exit.status);
-                }
-                let (stdout, stderr) = executor.take_output();
-                return Ok((exit.status, stdout, stderr));
+                return self.finish_static_elf_thread(executor, exit);
             }
         }
         loop {
             if let Some(status) = self.guest_thread_group_exit_status() {
-                if !self.is_guest_thread {
-                    self.cancel_guest_threads();
-                    self.guest_worker_teardown_result()?;
-                }
-                let (stdout, stderr) = executor.take_output();
-                return Ok((status, stdout, stderr));
+                return self.finish_static_elf_thread(
+                    executor,
+                    ProcessExit {
+                        status,
+                        group: true,
+                    },
+                );
             }
             if self.is_guest_thread && self.thread_group.cancelled.load(Ordering::Acquire) {
-                return Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()));
+                return self.finish_static_elf_thread(
+                    executor,
+                    ProcessExit {
+                        status: ExitStatus::SUCCESS,
+                        group: false,
+                    },
+                );
             }
             let vcpu_exit = match self.vcpu.run() {
                 Ok(exit) => exit,
@@ -2803,17 +2952,40 @@ impl KvmBackend {
 
             pending_exit = pending_exit.or_else(|| executor.take_exit());
             if let Some(exit) = pending_exit {
-                if exit.group {
-                    self.request_guest_thread_group_exit(exit.status);
-                }
-                if !self.is_guest_thread {
-                    self.cancel_guest_threads();
-                    self.guest_worker_teardown_result()?;
-                }
-                let (stdout, stderr) = executor.take_output();
-                return Ok((exit.status, stdout, stderr));
+                return self.finish_static_elf_thread(executor, exit);
             }
         }
+    }
+
+    fn finish_static_elf_thread(
+        &mut self,
+        executor: &mut ElfExecutor,
+        exit: ProcessExit,
+    ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+        executor.retire_current_thread(exit.status, exit.group);
+        self.clear_registered_worker_tid_before_exit(executor);
+        executor.release_files_on_exit();
+        self.release_stdin_on_exit();
+        if exit.group {
+            self.request_guest_thread_group_exit(exit.status);
+        }
+        let status = if self.is_guest_thread {
+            exit.status
+        } else {
+            if exit.group {
+                self.cancel_guest_threads();
+            } else {
+                self.join_guest_threads();
+            }
+            self.guest_worker_teardown_result()?;
+            executor.process_exit_status().ok_or_else(|| {
+                Error::UnexpectedVcpuExit(
+                    "KVM process has no final task exit status after joining workers".to_owned(),
+                )
+            })?
+        };
+        let (stdout, stderr) = executor.take_output();
+        Ok((status, stdout, stderr))
     }
 
     pub(crate) fn register_guest_thread(&self) -> Result<GuestThreadRegistration> {
@@ -2861,6 +3033,35 @@ impl KvmBackend {
     pub(crate) fn cancel_guest_threads(&self) {
         self.thread_group.cancel_workers();
         if !self.is_guest_thread {
+            self.thread_group.join_workers();
+        }
+    }
+
+    fn finish_panicked_guest_worker(
+        &mut self,
+        executor: &mut ElfExecutor,
+        tid: i32,
+        payload: Box<dyn std::any::Any + Send>,
+    ) -> ! {
+        // The callback and its borrowed Tool references have already unwound.
+        // Keep the original JoinHandle panic while releasing this worker's
+        // resources and transferring independent forks to the process owner.
+        executor.retire_failed_thread();
+        self.clear_registered_worker_tid_before_exit(executor);
+        executor.release_files_on_exit();
+        self.release_stdin_on_exit();
+        executor.transfer_child_processes_to_owner();
+        self.thread_group.record_worker_failure(tid);
+        std::panic::resume_unwind(payload)
+    }
+
+    pub(crate) fn record_guest_worker_failure(&self, tid: i32) {
+        self.thread_group.record_worker_failure(tid);
+    }
+
+    pub(crate) fn join_guest_threads(&self) {
+        if !self.is_guest_thread {
+            self.thread_group.begin_natural_join();
             self.thread_group.join_workers();
         }
     }
@@ -6148,9 +6349,13 @@ mod tests {
         let worker_group = group.clone();
         let worker_finished = Arc::new(AtomicBool::new(false));
         let finished = worker_finished.clone();
-        group.add_worker_handle(
+        let (start_sender, start_receiver) = std::sync::mpsc::channel();
+        let gate = ChildStartGate::new(start_sender);
+        group.add_unstarted_worker(
             2,
+            gate.clone(),
             std::thread::spawn(move || {
+                assert_eq!(start_receiver.recv().unwrap(), ChildStartCommand::Start);
                 while !worker_group.cancelled.load(Ordering::Acquire) {
                     std::thread::yield_now();
                 }
@@ -6158,16 +6363,28 @@ mod tests {
                 Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
             }),
         );
+        gate.start().unwrap();
         *group.exit_status.lock().unwrap() = Some(ExitStatus::Exited(127));
+        group.record_worker_failure(2);
+        assert!(!group.cancelled.load(Ordering::Acquire));
+        group.begin_natural_join();
+        assert!(group.cancelled.load(Ordering::Acquire));
 
         group.cancel_workers();
         group.join_workers();
         group.rearm_after_exec();
 
         assert!(worker_finished.load(Ordering::Acquire));
+        assert!(group.worker_start_gates.lock().unwrap().is_empty());
         assert!(group.worker_handles.lock().unwrap().is_empty());
         assert_eq!(group.exit_status(), None);
         assert!(!group.cancelled.load(Ordering::Acquire));
+        assert!(!group.take_worker_error_report(2));
+        group.begin_natural_join();
+        assert!(
+            !group.cancelled.load(Ordering::Acquire),
+            "exec discarded the earlier failure"
+        );
     }
 
     #[test]
@@ -6357,6 +6574,7 @@ mod tests {
             }
         ));
         assert!(group.discard_unstarted_worker(2).unwrap());
+        assert!(!group.worker_start_gates.lock().unwrap().contains_key(&2));
         assert!(cancelled.load(Ordering::Acquire));
         assert_eq!(group.worker_handles.lock().unwrap().len(), 1);
         assert_eq!(group.worker_handles.lock().unwrap()[0].tid, 3);
@@ -6366,6 +6584,340 @@ mod tests {
         sibling_release_sender.send(()).unwrap();
         group.join_workers();
         assert!(sibling_finished.load(Ordering::Acquire));
+    }
+
+    fn failure_and_join_order(failure_first: bool) {
+        let group = Arc::new(GuestThreadGroup::default());
+        let worker_group = group.clone();
+        let finished = Arc::new(AtomicBool::new(false));
+        let worker_finished = finished.clone();
+        group.add_worker_handle(
+            2,
+            std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while !worker_group.cancelled.load(Ordering::Acquire) {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "failed natural join left a worker running"
+                    );
+                    std::thread::yield_now();
+                }
+                worker_finished.store(true, Ordering::Release);
+                Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
+            }),
+        );
+        if failure_first {
+            group.record_worker_failure(3);
+            assert!(!group.cancelled.load(Ordering::Acquire));
+            group.begin_natural_join();
+        } else {
+            group.begin_natural_join();
+            assert!(!group.cancelled.load(Ordering::Acquire));
+            group.record_worker_failure(3);
+        }
+        group.join_workers();
+        assert!(finished.load(Ordering::Acquire));
+        assert!(group.worker_handles.lock().unwrap().is_empty());
+        assert!(group.take_worker_error_report(3));
+        assert!(
+            !group.take_worker_error_report(3),
+            "initiating diagnostic is consumed once"
+        );
+        group.record_worker_failure(2);
+        assert!(
+            !group.take_worker_error_report(2),
+            "cancelled peers remain suppressed"
+        );
+    }
+
+    #[test]
+    fn completed_failure_interrupts_a_later_natural_join() {
+        failure_and_join_order(true);
+    }
+
+    #[test]
+    fn later_failure_interrupts_an_existing_natural_join() {
+        failure_and_join_order(false);
+    }
+
+    #[test]
+    fn failure_cancels_pending_start_in_batch_being_joined() {
+        let group = Arc::new(GuestThreadGroup::default());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let gate = ChildStartGate::new(sender);
+        let (done_sender, done_receiver) = std::sync::mpsc::channel();
+        group.add_unstarted_worker(
+            2,
+            gate.clone(),
+            std::thread::spawn(move || {
+                assert_eq!(
+                    receiver
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap(),
+                    ChildStartCommand::Cancel
+                );
+                done_sender.send(()).unwrap();
+                Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
+            }),
+        );
+        let joining_group = group.clone();
+        let joining = std::thread::spawn(move || {
+            joining_group.begin_natural_join();
+            joining_group.join_workers();
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !group.worker_handles.lock().unwrap().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "join never took its batch"
+            );
+            std::thread::yield_now();
+        }
+        assert!(group.worker_start_gates.lock().unwrap().contains_key(&2));
+        assert!(!joining.is_finished());
+        assert!(!gate.is_cancelled());
+        group.record_worker_failure(3);
+        done_receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        joining.join().unwrap();
+        group.teardown_result().unwrap();
+        assert!(group.worker_start_gates.lock().unwrap().is_empty());
+        assert!(group.worker_handles.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn callback_error_preserves_registered_child_taken_by_join() {
+        let Some((mut backend, mut executor, _)) = backend_at_completed_tool_boundary() else {
+            return;
+        };
+        let group = backend.thread_group.clone();
+        let starts = Arc::new(Mutex::new(Vec::new()));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let gate = ChildStartGate::new(sender);
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        group.add_unstarted_worker(
+            2,
+            gate.clone(),
+            std::thread::spawn(move || {
+                assert_eq!(
+                    receiver
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap(),
+                    ChildStartCommand::Cancel
+                );
+                release_receiver
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
+            }),
+        );
+        starts
+            .lock()
+            .unwrap()
+            .push(PendingChildStart::tool_thread(2, gate));
+        let joining_group = group.clone();
+        let joining = std::thread::spawn(move || {
+            joining_group.begin_natural_join();
+            joining_group.join_workers();
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !group.worker_handles.lock().unwrap().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "join never took its batch"
+            );
+            std::thread::yield_now();
+        }
+        let primary = Error::Reverie(reverie::syscalls::Errno::EIO.into());
+        let original = primary.to_string();
+        let error =
+            backend.cleanup_unstarted_tool_children_after_error(&mut executor, &starts, primary);
+        assert!(!joining.is_finished());
+        release_sender.send(()).unwrap();
+        joining.join().unwrap();
+        group.teardown_result().unwrap();
+        assert!(starts.lock().unwrap().is_empty());
+        assert!(group.worker_start_gates.lock().unwrap().is_empty());
+        assert!(group.worker_handles.lock().unwrap().is_empty());
+        assert_eq!(error.to_string(), original);
+    }
+
+    #[test]
+    fn callback_cleanup_recognizes_completed_cancelled_child() {
+        for cancelled_before_cleanup in [false, true] {
+            let Some((mut backend, mut executor, _)) = backend_at_completed_tool_boundary() else {
+                return;
+            };
+            let group = backend.thread_group.clone();
+            let starts = Arc::new(Mutex::new(Vec::new()));
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let gate = ChildStartGate::new(sender);
+            group.add_unstarted_worker(
+                2,
+                gate.clone(),
+                std::thread::spawn(move || {
+                    assert_eq!(
+                        receiver
+                            .recv_timeout(std::time::Duration::from_secs(5))
+                            .unwrap(),
+                        ChildStartCommand::Cancel
+                    );
+                    Err(Error::UnexpectedVcpuExit(
+                        "controlled cancelled worker cleanup failure".to_owned(),
+                    ))
+                }),
+            );
+            starts
+                .lock()
+                .unwrap()
+                .push(PendingChildStart::tool_thread(2, gate));
+            let joining_group = group.clone();
+            let joining = std::thread::spawn(move || joining_group.join_workers());
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !group.worker_handles.lock().unwrap().is_empty() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "join never took its batch"
+                );
+                std::thread::yield_now();
+            }
+            if cancelled_before_cleanup {
+                group.cancel_workers();
+                joining.join().unwrap();
+                assert!(group.worker_start_gates.lock().unwrap().is_empty());
+                let primary = Error::Reverie(reverie::syscalls::Errno::EIO.into());
+                let original = primary.to_string();
+                let error = backend.cleanup_unstarted_tool_children_after_error(
+                    &mut executor,
+                    &starts,
+                    primary,
+                );
+                assert_eq!(error.to_string(), original);
+            } else {
+                let children = backend.cancel_unstarted_tool_children(&starts);
+                joining.join().unwrap();
+                assert!(group.worker_start_gates.lock().unwrap().is_empty());
+                backend
+                    .discard_cancelled_tool_children(&mut executor, children)
+                    .unwrap();
+            }
+            let error = group.teardown_result().unwrap_err().to_string();
+            assert_eq!(
+                error
+                    .matches("controlled cancelled worker cleanup failure")
+                    .count(),
+                1,
+                "{error}"
+            );
+            assert!(starts.lock().unwrap().is_empty());
+            assert!(group.worker_handles.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn worker_failure_publication_recovers_poisoned_state() {
+        let group = Arc::new(GuestThreadGroup::default());
+        let poisoning = group.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _state = poisoning.failure_state.lock().unwrap();
+                panic!("controlled worker failure-state poison");
+            })
+            .join()
+            .is_err()
+        );
+        group.begin_natural_join();
+        group.record_worker_failure(3);
+        assert!(group.cancelled.load(Ordering::Acquire));
+        assert!(group.take_worker_error_report(3));
+        assert!(!group.take_worker_error_report(3));
+    }
+
+    #[test]
+    fn pending_start_registered_after_cancellation_is_drained() {
+        let group = Arc::new(GuestThreadGroup::default());
+        let poisoning = group.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _gates = poisoning.worker_start_gates.lock().unwrap();
+                panic!("controlled start-gate registry poison");
+            })
+            .join()
+            .is_err()
+        );
+        group.cancel_workers();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let gate = ChildStartGate::new(sender);
+        group.add_unstarted_worker(
+            2,
+            gate.clone(),
+            std::thread::spawn(move || {
+                assert_eq!(
+                    receiver
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap(),
+                    ChildStartCommand::Cancel
+                );
+                Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
+            }),
+        );
+        assert!(gate.is_cancelled());
+        group.join_workers();
+        group.teardown_result().unwrap();
+        assert!(
+            group
+                .worker_start_gates
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+        );
+        assert!(group.worker_handles.lock().unwrap().is_empty());
+        group.rearm_after_exec();
+        assert!(!group.cancelled.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn natural_join_preserves_a_registered_pending_start() {
+        let group = Arc::new(GuestThreadGroup::default());
+        let (start_sender, start_receiver) = std::sync::mpsc::channel();
+        let gate = ChildStartGate::new(start_sender);
+        let (done_sender, done_receiver) = std::sync::mpsc::channel();
+        group.add_unstarted_worker(
+            2,
+            gate.clone(),
+            std::thread::spawn(move || {
+                assert_eq!(start_receiver.recv().unwrap(), ChildStartCommand::Start);
+                done_sender.send(()).unwrap();
+                Ok((ExitStatus::Exited(73), Vec::new(), Vec::new()))
+            }),
+        );
+        let joining_group = group.clone();
+        let joining = std::thread::spawn(move || joining_group.join_workers());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !group.worker_handles.lock().unwrap().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "natural join did not take the registered handle"
+            );
+            std::thread::yield_now();
+        }
+        assert!(
+            !joining.is_finished(),
+            "pending worker cannot have completed"
+        );
+        assert!(
+            !gate.is_cancelled(),
+            "natural join cancelled a committed start"
+        );
+        gate.start().unwrap();
+        done_receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        joining.join().unwrap();
+        group.teardown_result().unwrap();
+        assert!(group.worker_start_gates.lock().unwrap().is_empty());
+        assert!(group.worker_handles.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -6433,6 +6985,7 @@ mod tests {
             }),
         );
 
+        group.cancel_workers();
         group.join_workers();
 
         assert!(nested_cancelled.load(Ordering::Acquire));

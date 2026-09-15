@@ -126,6 +126,7 @@ pub(crate) struct GuestFileIdentityTable {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TaskLifecycleState {
     pub generation: u64,
+    pub process_generation: u64,
     pub tgid: i32,
     pub pgid: i32,
     pub robust_list_head: u64,
@@ -140,6 +141,14 @@ pub(crate) struct TaskLifecycleTable {
         i32,
         std::sync::Weak<std::sync::Mutex<crate::signal::ThreadSignalState>>,
     >,
+    process_exits: std::collections::BTreeMap<(i32, u64), ProcessExitState>,
+}
+
+#[derive(Debug, Default)]
+struct ProcessExitState {
+    last_thread: Option<ExitStatus>,
+    group: Option<ExitStatus>,
+    failed: bool,
 }
 
 impl TaskLifecycleTable {
@@ -155,10 +164,19 @@ impl TaskLifecycleTable {
             .checked_add(1)
             .expect("KVM task generation exhausted");
         let generation = self.next_generation;
+        let process_generation = if tid == tgid {
+            generation
+        } else {
+            self.tasks
+                .values()
+                .find(|task| task.tgid == tgid)
+                .map_or(generation, |task| task.process_generation)
+        };
         self.tasks.insert(
             tid,
             TaskLifecycleState {
                 generation,
+                process_generation,
                 tgid,
                 pgid,
                 robust_list_head: 0,
@@ -229,8 +247,82 @@ impl TaskLifecycleTable {
         }
     }
 
+    /// Commit a guest task's exit while retiring its exact identity. Host
+    /// handle completion and failed child preparation do not select a status.
+    pub(crate) fn exit(
+        &mut self,
+        tid: i32,
+        generation: u64,
+        status: ExitStatus,
+        group: bool,
+    ) -> ExitStatus {
+        let Some(task) = self.tasks.get(&tid).copied() else {
+            return status;
+        };
+        if task.generation != generation {
+            return status;
+        }
+        let exit = self
+            .process_exits
+            .entry((task.tgid, task.process_generation))
+            .or_default();
+        if group {
+            exit.group.get_or_insert(status);
+        }
+        exit.last_thread = Some(status);
+        let status = exit.group.unwrap_or(status);
+        self.remove(tid, generation);
+        status
+    }
+
+    pub(crate) fn process_exit_status(
+        &self,
+        tgid: i32,
+        process_generation: u64,
+    ) -> Option<ExitStatus> {
+        if self
+            .tasks
+            .values()
+            .any(|task| task.tgid == tgid && task.process_generation == process_generation)
+        {
+            return None;
+        }
+        let exit = self.process_exits.get(&(tgid, process_generation))?;
+        if exit.failed {
+            None
+        } else {
+            exit.group.or(exit.last_thread)
+        }
+    }
+
+    pub(crate) fn forget_process_exit(&mut self, tgid: i32, process_generation: u64) {
+        if !self
+            .tasks
+            .values()
+            .any(|task| task.tgid == tgid && task.process_generation == process_generation)
+        {
+            self.process_exits.remove(&(tgid, process_generation));
+        }
+    }
+
+    pub(crate) fn fail(&mut self, tid: i32, generation: u64) {
+        let Some(task) = self.tasks.get(&tid).copied() else {
+            return;
+        };
+        if task.generation != generation {
+            return;
+        }
+        self.process_exits
+            .entry((task.tgid, task.process_generation))
+            .or_default()
+            .failed = true;
+        self.remove(tid, generation);
+    }
+
     pub(crate) fn reset_after_exec(&mut self, tid: i32, tgid: i32, pgid: i32) -> u64 {
         if let Some(task) = self.tasks.get_mut(&tid) {
+            self.process_exits
+                .remove(&(task.tgid, task.process_generation));
             task.tgid = tgid;
             task.pgid = pgid;
             task.robust_list_head = 0;
