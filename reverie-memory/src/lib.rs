@@ -196,7 +196,7 @@ pub trait MemoryAccess {
     where
         F: FnMut(&[u8]) -> Option<usize>,
     {
-        let mut count = 0;
+        let mut count = 0usize;
 
         loop {
             let read = self.read(addr, buf)?;
@@ -207,13 +207,16 @@ pub trait MemoryAccess {
                 return Err(Errno::EFAULT);
             }
 
-            addr = unsafe { addr.add(read) };
-
             if let Some(used) = pred(&buf[..read]) {
-                return Ok(count + used);
+                return count.checked_add(used).ok_or(Errno::EFAULT);
             }
 
-            count += read;
+            // Only advance when another chunk is needed. Addresses may name
+            // remote memory, so neither in-bounds pointer arithmetic nor a
+            // wrapping address is valid for this traversal.
+            let next = addr.as_raw().checked_add(read).ok_or(Errno::EFAULT)?;
+            addr = Addr::from_raw(next).ok_or(Errno::EFAULT)?;
+            count = count.checked_add(read).ok_or(Errno::EFAULT)?;
         }
     }
 
