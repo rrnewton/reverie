@@ -2843,6 +2843,12 @@ impl KvmBackend {
         })
     }
 
+    /// Drop this backend's reserved input description at terminal ownership
+    /// cleanup. Fork and thread backends retain their independent references.
+    pub(crate) fn release_stdin_on_exit(&mut self) {
+        self.stdin = None;
+    }
+
     pub(crate) fn guest_thread_group_exit_status(&self) -> Option<ExitStatus> {
         self.thread_group.exit_status()
     }

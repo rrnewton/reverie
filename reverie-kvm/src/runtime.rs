@@ -1411,114 +1411,99 @@ async fn notify_tool_exit<T: Tool>(
     }
 }
 
-fn process_exit_result(children: Result<()>, owner: Result<()>) -> Result<()> {
-    match (children, owner) {
-        (Ok(()), owner) => owner,
-        (Err(error), Ok(())) => Err(error),
-        (Err(children), Err(owner)) => Err(Error::UnexpectedVcpuExit(format!(
-            "KVM child cleanup failed: {children}; owner exit failed: {owner}"
-        ))),
-    }
-}
-
 impl KvmBackend {
-    #[allow(clippy::too_many_arguments)]
-    async fn finish_exec_teardown_failure<T: Tool>(
-        &mut self,
-        executor: &mut ElfExecutor,
-        tool: Arc<T>,
-        identity: (Pid, Pid),
-        global_state: &T::GlobalState,
-        config: &<T::GlobalState as GlobalTool>::Config,
-        thread_state: T::ThreadState,
-        error: Error,
-    ) -> Error {
-        let Error::ExecWorkerTeardown(primary) = error else {
-            unreachable!("only failed exec worker teardown uses this cleanup path")
-        };
-        let (pid, tid) = identity;
-        // Nonleader exec remains unsupported. Siblings have already joined at
-        // the failed exec boundary; join again before consuming the last Arc.
-        debug_assert_eq!(pid, tid);
-        self.cancel_guest_threads();
-        executor.cancel_current_thread();
-        self.release_thread_slot();
-        self.clear_registered_worker_tid_before_exit(executor);
-        // Fork children from earlier callbacks remain owned across exec. Even
-        // this already-failed replacement must join them before returning.
-        let child_error = executor.join_all_child_processes().err();
-        let global = KvmGlobal {
-            tid,
-            state: global_state,
-            config,
-        };
-        let status = ExitStatus::Exited(255);
-        let thread_error = tool
-            .on_exit_thread(tid, &global, thread_state, status)
-            .await
-            .err();
-        // A failing thread hook has still consumed ThreadState. Always attempt
-        // the process hook, and preserve both failures alongside the original
-        // worker diagnostic. Other runtime-error policies are unchanged.
-        let process_error = match Arc::try_unwrap(tool) {
-            Ok(tool) => tool
-                .on_exit_process(pid, &global, status)
-                .await
-                .map_err(Error::Reverie)
-                .err(),
-            Err(_) => Some(Error::UnexpectedVcpuExit(
-                "KVM worker retained process Tool state after failed exec".to_owned(),
-            )),
-        };
-        if child_error.is_none() && thread_error.is_none() && process_error.is_none() {
-            return *primary;
-        }
-        let mut diagnostic = format!("KVM exec failed: {primary}");
-        if let Some(error) = child_error {
-            diagnostic.push_str(&format!("; child process cleanup failed: {error}"));
-        }
-        if let Some(error) = thread_error {
-            diagnostic.push_str(&format!("; owner thread exit failed: {error}"));
-        }
-        if let Some(error) = process_error {
-            diagnostic.push_str(&format!("; owner process exit failed: {error}"));
-        }
-        Error::UnexpectedVcpuExit(diagnostic)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn finish_cancelled_tool_thread<T: Tool>(
-        &mut self,
-        executor: &mut ElfExecutor,
-        tool: Arc<T>,
-        identity: (Pid, Pid),
-        global_state: &T::GlobalState,
-        config: &<T::GlobalState as GlobalTool>::Config,
-        thread_state: T::ThreadState,
-    ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
-        // Retire the exact generation before a consuming exit hook can wake a
-        // peer or make the identity observable again. No syscall or return-frame
-        // update is needed for this already terminal thread.
+    fn cancelled_tool_thread_status(&self, executor: &mut ElfExecutor) -> ExitStatus {
         let exit = executor.cancel_current_thread();
         if exit.group {
             self.request_guest_thread_group_exit(exit.status);
         }
+        exit.status
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_tool_process<T: Tool>(
+        &mut self,
+        executor: &mut ElfExecutor,
+        tool: Arc<T>,
+        identity: (Pid, Pid),
+        global_state: &T::GlobalState,
+        config: &<T::GlobalState as GlobalTool>::Config,
+        thread_state: T::ThreadState,
+        outcome: Result<ExitStatus>,
+    ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+        let (pid, tid) = identity;
+        // Failed exec already reports the joined worker errors as its primary
+        // cause. Do not add those same cached diagnostics a second time.
+        let (outcome, exec_worker_failure) = match outcome {
+            Err(Error::ExecWorkerTeardown(primary)) => (Err(*primary), true),
+            outcome => (outcome, false),
+        };
+        let status = outcome.as_ref().copied().unwrap_or(ExitStatus::Exited(255));
+        // Retire the exact task generation before consuming hooks can wake a
+        // peer. No guest callback can still borrow Tool or descriptor state.
+        executor.cancel_current_thread();
         self.release_thread_slot();
         self.clear_registered_worker_tid_before_exit(executor);
-        let children = executor.join_all_child_processes();
-        let owner = self
-            .notify_tool_exit(
-                tool,
-                identity,
-                global_state,
-                config,
-                thread_state,
-                exit.status,
-            )
-            .await;
-        process_exit_result(children, owner)?;
-        let (stdout, stderr) = executor.take_output();
-        Ok((exit.status, stdout, stderr))
+        executor.release_files_on_exit();
+        self.release_stdin_on_exit();
+        if pid == tid {
+            self.cancel_guest_threads();
+        }
+        let workers = if exec_worker_failure {
+            Ok(())
+        } else {
+            self.guest_worker_teardown_result()
+        };
+        // Per-process worker hooks precede the leader hook, as in ptrace.
+        // Both owner hooks precede independent fork descendants: a descendant
+        // may need the parent's scheduler deregistration or process accounting
+        // before it can finish. Final output/global ownership still waits below.
+        let owner = notify_tool_exit(
+            tool,
+            pid,
+            tid,
+            global_state,
+            config,
+            thread_state,
+            ToolExit {
+                status,
+                process_exited: pid == tid,
+            },
+        )
+        .await;
+        let children = if pid == tid {
+            executor.join_all_child_processes()
+        } else {
+            executor.transfer_child_processes_to_owner();
+            Ok(())
+        };
+        let mut errors = Vec::new();
+        if let Err(error) = outcome {
+            errors.push(("execution", error));
+        }
+        for (phase, result) in [
+            ("worker cleanup", workers),
+            ("owner exit", owner),
+            ("child process cleanup", children),
+        ] {
+            if let Err(error) = result {
+                errors.push((phase, error));
+            }
+        }
+        match errors.len() {
+            0 => {
+                let (stdout, stderr) = executor.take_output();
+                Ok((status, stdout, stderr))
+            }
+            1 => Err(errors.pop().unwrap().1),
+            _ => Err(Error::UnexpectedVcpuExit(
+                errors
+                    .into_iter()
+                    .map(|(phase, error)| format!("KVM {phase} failed: {error}"))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )),
+        }
     }
 
     /// Releases a worker's reusable slot before its exit becomes visible to
@@ -2075,539 +2060,370 @@ impl KvmBackend {
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
         expose_tool_scratch(&memory, tool_stack_top)?;
         let mut _process_completed = false;
-        let start_outcome = {
-            let mut guest_executor = StaticElfSyscallExecutor {
-                backend: self,
-                executor,
-                memory: memory.clone(),
-                process_context: ProcessExecutionContext::Lifecycle,
-                last_result: None,
-                process_completed: &mut _process_completed,
+        let outcome: Result<ExitStatus> = async {
+            let start_outcome = {
+                let mut guest_executor = StaticElfSyscallExecutor {
+                    backend: self,
+                    executor,
+                    memory: memory.clone(),
+                    process_context: ProcessExecutionContext::Lifecycle,
+                    last_result: None,
+                    process_completed: &mut _process_completed,
+                };
+                let mut guest = KvmGuest::<T>::new(
+                    pid,
+                    tid,
+                    tool.clone(),
+                    memory.clone(),
+                    &auxv,
+                    registers,
+                    &mut thread_state,
+                    &mut guest_executor,
+                    global_state.as_ref(),
+                    Some(global_state.clone()),
+                    config,
+                    subscriptions,
+                    handler_signal.clone(),
+                    pending_child_starts.clone(),
+                    tool_stack_top,
+                    stack_checked_out.clone(),
+                );
+                drive_handler(
+                    tool.handle_thread_start(&mut guest),
+                    handler_signal,
+                    pending_child_starts.clone(),
+                )
+                .await
             };
-            let mut guest = KvmGuest::<T>::new(
-                pid,
-                tid,
-                tool.clone(),
-                memory.clone(),
-                &auxv,
-                registers,
-                &mut thread_state,
-                &mut guest_executor,
-                global_state.as_ref(),
-                Some(global_state.clone()),
-                config,
-                subscriptions,
-                handler_signal.clone(),
-                pending_child_starts.clone(),
-                tool_stack_top,
-                stack_checked_out.clone(),
-            );
-            drive_handler(
-                tool.handle_thread_start(&mut guest),
-                handler_signal,
-                pending_child_starts.clone(),
-            )
-            .await
-        };
-        hide_tool_scratch(&memory, tool_stack_top)?;
-        match start_outcome {
-            HandlerOutcome::ThreadCancelled => {
-                self.start_pending_tool_children(executor, &pending_child_starts)?;
-                return self
-                    .finish_cancelled_tool_thread(
-                        executor,
-                        tool,
-                        (pid, tid),
-                        global_state.as_ref(),
-                        config,
-                        thread_state,
-                    )
-                    .await;
+            hide_tool_scratch(&memory, tool_stack_top)?;
+            match start_outcome {
+                HandlerOutcome::ThreadCancelled => {
+                    self.start_pending_tool_children(executor, &pending_child_starts)?;
+                    return Ok(self.cancelled_tool_thread_status(executor));
+                }
+                HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
+                HandlerOutcome::RuntimeError(error) => return Err(error),
+                HandlerOutcome::TailInjected { .. } => {}
             }
-            HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
-            HandlerOutcome::RuntimeError(error) => return Err(error),
-            HandlerOutcome::TailInjected { .. } => {}
-        }
-        if self.guest_thread_is_cancelled() {
-            // The parent releases the start gate after it has begun scheduler
-            // registration. handle_thread_start completes the child-side
-            // ordering. Preserve handle_thread_start -> on_exit ordering,
-            // but do not execute post-exec hooks or a guest instruction after
-            // cancellation. Clear CHILD_CLEARTID immediately before the Tool
-            // exit callback; the worker wrapper then observes that the address
-            // has already been consumed.
-            self.clear_registered_worker_tid_before_exit(executor);
-            self.notify_tool_exit(
-                tool,
-                (pid, tid),
-                global_state.as_ref(),
-                config,
-                thread_state,
-                ExitStatus::SUCCESS,
-            )
-            .await?;
-            let (stdout, stderr) = executor.take_output();
-            return Ok((ExitStatus::SUCCESS, stdout, stderr));
-        }
-        auxv = executor.auxv().to_vec();
-        if let Some(exit) = executor.take_exit() {
-            if exit.group {
-                self.request_guest_thread_group_exit(exit.status);
+            if self.guest_thread_is_cancelled() {
+                // The parent releases the start gate after it has begun scheduler
+                // registration. handle_thread_start completes the child-side
+                // ordering. Preserve handle_thread_start -> on_exit ordering,
+                // but do not execute post-exec hooks or a guest instruction after
+                // cancellation. Clear CHILD_CLEARTID immediately before the Tool
+                // exit callback; the worker wrapper then observes that the address
+                // has already been consumed.
+                return Ok(ExitStatus::SUCCESS);
             }
-            if exit.group || executor.is_thread_group_leader() {
-                self.cancel_guest_threads();
+            auxv = executor.auxv().to_vec();
+            if let Some(exit) = executor.take_exit() {
+                if exit.group {
+                    self.request_guest_thread_group_exit(exit.status);
+                }
+                return Ok(exit.status);
             }
-            self.clear_registered_worker_tid_before_exit(executor);
-            self.notify_tool_exit(
-                tool,
-                (pid, tid),
-                global_state.as_ref(),
-                config,
-                thread_state,
-                exit.status,
-            )
-            .await?;
-            let (stdout, stderr) = executor.take_output();
-            return Ok((exit.status, stdout, stderr));
-        }
 
-        if initial_post_exec {
-            // The root ELF image is already installed when this backend begins.
-            // Present the same initial exec syscall and successful-exec lifecycle
-            // boundaries as ptrace without loading the installed image twice.
-            if subscriptions
-                .iter_syscalls()
-                .any(|number| number == reverie::syscalls::Sysno::execve)
-            {
-                let initial_outcome = run_initial_exec_handler(
+            if initial_post_exec {
+                // The root ELF image is already installed when this backend begins.
+                // Present the same initial exec syscall and successful-exec lifecycle
+                // boundaries as ptrace without loading the installed image twice.
+                if subscriptions
+                    .iter_syscalls()
+                    .any(|number| number == reverie::syscalls::Sysno::execve)
+                {
+                    let initial_outcome = run_initial_exec_handler(
+                        self,
+                        &tool,
+                        pid,
+                        &memory,
+                        &auxv,
+                        &mut thread_state,
+                        executor,
+                        &global_state,
+                        config,
+                        subscriptions,
+                        &stack_checked_out,
+                    )
+                    .await?;
+                    if matches!(initial_outcome, CallbackOutcome::ThreadCancelled) {
+                        return Ok(self.cancelled_tool_thread_status(executor));
+                    }
+                    auxv = executor.auxv().to_vec();
+                    if let Some(exit) = executor.take_exit() {
+                        if exit.group {
+                            self.request_guest_thread_group_exit(exit.status);
+                        }
+                        return Ok(exit.status);
+                    }
+                }
+                let post_exec_outcome = run_post_exec_handler(
                     self,
                     &tool,
                     pid,
                     &memory,
-                    &auxv,
+                    &mut auxv,
                     &mut thread_state,
                     executor,
-                    &global_state,
+                    global_state.clone(),
                     config,
                     subscriptions,
                     &stack_checked_out,
                 )
-                .await?;
-                if matches!(initial_outcome, CallbackOutcome::ThreadCancelled) {
-                    return self
-                        .finish_cancelled_tool_thread(
-                            executor,
-                            tool,
-                            (pid, tid),
-                            global_state.as_ref(),
-                            config,
-                            thread_state,
-                        )
-                        .await;
+                .await;
+                let post_exec_error = match post_exec_outcome {
+                    Ok(CallbackOutcome::ThreadCancelled) => {
+                        return Ok(self.cancelled_tool_thread_status(executor));
+                    }
+                    Ok(CallbackOutcome::Completed(())) => None,
+                    Err(error) => Some(error),
+                };
+                if let Some(error) = post_exec_error {
+                    return Err(error);
                 }
-                auxv = executor.auxv().to_vec();
-                if let Some(exit) = executor.take_exit() {
-                    if exit.group {
-                        self.request_guest_thread_group_exit(exit.status);
-                    }
-                    if exit.group || executor.is_thread_group_leader() {
-                        self.cancel_guest_threads();
-                    }
-                    self.clear_registered_worker_tid_before_exit(executor);
-                    self.notify_tool_exit(
-                        tool,
-                        (pid, tid),
-                        global_state.as_ref(),
+            }
+
+            // CLONE_THREAD has a complete user continuation before its first
+            // KVM_RUN. Admission comes first; then deliver an already queued event
+            // without executing a synthetic guest syscall or the child's first
+            // instruction. Root/exec lifecycle contexts keep their existing limit.
+            if pid != tid && executor.has_eligible_pending_signal() {
+                let entry_registers = self.vcpu.get_regs()?;
+                executor.set_current_user_stack_pointer(entry_registers.rsp);
+                let pending = self
+                    .filter_one_pending_signal_with_tool(
+                        executor,
+                        pid,
+                        tid,
+                        &tool,
+                        &memory,
+                        &auxv,
+                        entry_registers,
+                        u64::MAX,
+                        self.syscall_frame_address,
+                        &mut thread_state,
+                        &global_state,
                         config,
-                        thread_state,
-                        exit.status,
+                        subscriptions,
+                        &stack_checked_out,
+                        true,
                     )
                     .await?;
-                    let (stdout, stderr) = executor.take_output();
-                    return Ok((exit.status, stdout, stderr));
-                }
-            }
-            let post_exec_outcome = run_post_exec_handler(
-                self,
-                &tool,
-                pid,
-                &memory,
-                &mut auxv,
-                &mut thread_state,
-                executor,
-                global_state.clone(),
-                config,
-                subscriptions,
-                &stack_checked_out,
-            )
-            .await;
-            let post_exec_error = match post_exec_outcome {
-                Ok(CallbackOutcome::ThreadCancelled) => {
-                    return self
-                        .finish_cancelled_tool_thread(
-                            executor,
-                            tool,
-                            (pid, tid),
-                            global_state.as_ref(),
-                            config,
-                            thread_state,
-                        )
-                        .await;
-                }
-                Ok(CallbackOutcome::Completed(())) => None,
-                Err(error) => Some(error),
-            };
-            if let Some(error) = post_exec_error {
-                self.clear_registered_worker_tid_before_exit(executor);
-                self.notify_tool_exit(
-                    tool,
-                    (pid, tid),
-                    global_state.as_ref(),
-                    config,
-                    thread_state,
-                    ExitStatus::Exited(255),
-                )
-                .await?;
-                return Err(error);
-            }
-        }
-
-        // CLONE_THREAD has a complete user continuation before its first
-        // KVM_RUN. Admission comes first; then deliver an already queued event
-        // without executing a synthetic guest syscall or the child's first
-        // instruction. Root/exec lifecycle contexts keep their existing limit.
-        if pid != tid && executor.has_eligible_pending_signal() {
-            let entry_registers = self.vcpu.get_regs()?;
-            executor.set_current_user_stack_pointer(entry_registers.rsp);
-            let pending = self
-                .filter_one_pending_signal_with_tool(
-                    executor,
-                    pid,
-                    tid,
-                    &tool,
-                    &memory,
-                    &auxv,
-                    entry_registers,
-                    u64::MAX,
-                    self.syscall_frame_address,
-                    &mut thread_state,
-                    &global_state,
-                    config,
-                    subscriptions,
-                    &stack_checked_out,
-                    true,
-                )
-                .await?;
-            let pending = match pending {
-                CallbackOutcome::Completed(pending) => pending,
-                CallbackOutcome::ThreadCancelled => {
-                    return self
-                        .finish_cancelled_tool_thread(
-                            executor,
-                            tool,
-                            (pid, tid),
-                            global_state.as_ref(),
-                            config,
-                            thread_state,
-                        )
-                        .await;
-                }
-            };
-            if !executor.has_pending_exit()
-                && let Some(pending) = pending
-            {
-                self.deliver_selected_signal_before_thread_entry(
-                    executor,
-                    entry_registers,
-                    pending,
-                )?;
-            }
-        }
-
-        if let Some((segment, address)) = executor.take_segment() {
-            set_user_segment_base(&self.vcpu, segment, address)?;
-        }
-        if let Some(exit) = executor.take_exit() {
-            if exit.group {
-                self.request_guest_thread_group_exit(exit.status);
-            }
-            if exit.group || executor.is_thread_group_leader() {
-                self.cancel_guest_threads();
-            }
-            self.clear_registered_worker_tid_before_exit(executor);
-            self.notify_tool_exit(
-                tool,
-                (pid, tid),
-                global_state.as_ref(),
-                config,
-                thread_state,
-                exit.status,
-            )
-            .await?;
-            let (stdout, stderr) = executor.take_output();
-            return Ok((exit.status, stdout, stderr));
-        }
-
-        // Read once so the per-syscall classifier can borrow it while `self` is
-        // borrowed elsewhere in the loop body.
-        let thread_ownership = self.thread_ownership;
-        loop {
-            if let Some(status) = self.guest_thread_group_exit_status() {
-                self.cancel_guest_threads();
-                self.clear_registered_worker_tid_before_exit(executor);
-                self.notify_tool_exit(
-                    tool,
-                    (pid, tid),
-                    global_state.as_ref(),
-                    config,
-                    thread_state,
-                    status,
-                )
-                .await?;
-                let (stdout, stderr) = executor.take_output();
-                return Ok((status, stdout, stderr));
-            }
-            if self.guest_thread_is_cancelled() {
-                self.clear_registered_worker_tid_before_exit(executor);
-                self.notify_tool_exit(
-                    tool,
-                    (pid, tid),
-                    global_state.as_ref(),
-                    config,
-                    thread_state,
-                    ExitStatus::SUCCESS,
-                )
-                .await?;
-                let (stdout, stderr) = executor.take_output();
-                return Ok((ExitStatus::SUCCESS, stdout, stderr));
-            }
-            let vcpu_exit = match self.vcpu.run() {
-                Ok(exit) => exit,
-                Err(error) if error.errno() == libc::EINTR => continue,
-                Err(error) => return Err(error.into()),
-            };
-            Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
-            let (frame_address, return_slot) = match vcpu_exit {
-                VcpuExit::Hypercall(exit) => {
-                    if exit.nr != VMCALL_SYSCALL_TRANSPORT {
-                        return Err(Error::UnexpectedHypercall(exit.nr));
+                let pending = match pending {
+                    CallbackOutcome::Completed(pending) => pending,
+                    CallbackOutcome::ThreadCancelled => {
+                        return Ok(self.cancelled_tool_thread_status(executor));
                     }
-                    (exit.args[0], std::ptr::from_mut(exit.ret) as usize)
+                };
+                if !executor.has_pending_exit()
+                    && let Some(pending) = pending
+                {
+                    self.deliver_selected_signal_before_thread_entry(
+                        executor,
+                        entry_registers,
+                        pending,
+                    )?;
                 }
-                VcpuExit::Hlt => {
-                    if self.try_resume_vmware_backdoor_probe()? {
+            }
+
+            if let Some((segment, address)) = executor.take_segment() {
+                set_user_segment_base(&self.vcpu, segment, address)?;
+            }
+            if let Some(exit) = executor.take_exit() {
+                if exit.group {
+                    self.request_guest_thread_group_exit(exit.status);
+                }
+                return Ok(exit.status);
+            }
+
+            // Read once so the per-syscall classifier can borrow it while `self` is
+            // borrowed elsewhere in the loop body.
+            let thread_ownership = self.thread_ownership;
+            loop {
+                if let Some(status) = self.guest_thread_group_exit_status() {
+                    return Ok(status);
+                }
+                if self.guest_thread_is_cancelled() {
+                    return Ok(ExitStatus::SUCCESS);
+                }
+                let vcpu_exit = match self.vcpu.run() {
+                    Ok(exit) => exit,
+                    Err(error) if error.errno() == libc::EINTR => continue,
+                    Err(error) => return Err(error.into()),
+                };
+                Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+                let (frame_address, return_slot) = match vcpu_exit {
+                    VcpuExit::Hypercall(exit) => {
+                        if exit.nr != VMCALL_SYSCALL_TRANSPORT {
+                            return Err(Error::UnexpectedHypercall(exit.nr));
+                        }
+                        (exit.args[0], std::ptr::from_mut(exit.ret) as usize)
+                    }
+                    VcpuExit::Hlt => {
+                        if self.try_resume_vmware_backdoor_probe()? {
+                            continue;
+                        }
+                        let Some(fault) = self.capture_page_zero_fault(executor)? else {
+                            return Err(self.static_elf_halt_error()?);
+                        };
+                        executor.prepare_captured_page_zero_fault();
+                        executor.set_current_user_stack_pointer(fault.registers.rsp);
+                        let pending = self
+                            .filter_next_pending_signal_with_tool(
+                                executor,
+                                pid,
+                                tid,
+                                &tool,
+                                &memory,
+                                &auxv,
+                                fault.registers,
+                                u64::MAX,
+                                self.syscall_frame_address,
+                                &mut thread_state,
+                                &global_state,
+                                config,
+                                subscriptions,
+                                &stack_checked_out,
+                                Some(&fault),
+                                false,
+                            )
+                            .await?;
+                        let pending = match pending {
+                            CallbackOutcome::Completed(pending) => pending,
+                            CallbackOutcome::ThreadCancelled => {
+                                return Ok(self.cancelled_tool_thread_status(executor));
+                            }
+                        };
+                        if let Some((segment, address)) = executor.take_segment() {
+                            set_user_segment_base(&self.vcpu, segment, address)?;
+                        }
+                        if !executor.has_pending_exit() {
+                            if let Some(pending) = pending {
+                                self.deliver_page_zero_fault(executor, &fault, pending)?;
+                            } else {
+                                fault.resume_user(self, fault.registers)?;
+                            }
+                        }
+                        if let Some(exit) = executor.take_exit() {
+                            self.discard_process_clear_tid_at_signal_return(executor);
+                            if exit.group {
+                                self.request_guest_thread_group_exit(exit.status);
+                            }
+                            return Ok(exit.status);
+                        }
                         continue;
                     }
-                    let Some(fault) = self.capture_page_zero_fault(executor)? else {
-                        return Err(self.static_elf_halt_error()?);
-                    };
-                    executor.prepare_captured_page_zero_fault();
-                    executor.set_current_user_stack_pointer(fault.registers.rsp);
-                    let pending = self
-                        .filter_next_pending_signal_with_tool(
-                            executor,
-                            pid,
-                            tid,
-                            &tool,
-                            &memory,
-                            &auxv,
-                            fault.registers,
-                            u64::MAX,
-                            self.syscall_frame_address,
-                            &mut thread_state,
-                            &global_state,
-                            config,
-                            subscriptions,
-                            &stack_checked_out,
-                            Some(&fault),
-                            false,
-                        )
-                        .await?;
-                    let pending = match pending {
-                        CallbackOutcome::Completed(pending) => pending,
-                        CallbackOutcome::ThreadCancelled => {
-                            return self
-                                .finish_cancelled_tool_thread(
-                                    executor,
-                                    tool,
-                                    (pid, tid),
-                                    global_state.as_ref(),
-                                    config,
-                                    thread_state,
-                                )
-                                .await;
+                    exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
+                };
+                // A CLONE_THREAD worker runs on its own vCPU with a per-thread
+                // syscall area, so the transported frame is `self.syscall_frame_address`
+                // (equal to the root constant for the process leader, distinct for
+                // each worker), not the fixed root `SYSCALL_FRAME_ADDRESS`.
+                if frame_address != self.syscall_frame_address {
+                    return Err(Error::UnexpectedVcpuExit(format!(
+                        "syscall frame is at unexpected address {frame_address:#x}"
+                    )));
+                }
+                let registers = self.vcpu.get_regs()?;
+                let request = SyscallRequest::read_from(&memory, frame_address)?;
+                // The KVM_RUN hypercall return slot is one-shot storage. Publish
+                // its unused value exactly once while this decoded exit is live;
+                // process actions may re-enter the vCPU before the Tool callback
+                // returns, after which this pointer must never be reused.
+                unsafe {
+                    (return_slot as *mut u64).write(0);
+                }
+                let userspace =
+                    process_syscall_return_registers(&memory, registers, frame_address, 0, None)?;
+                executor.set_current_user_stack_pointer(userspace.rsp);
+                if request.number() == libc::SYS_rt_sigreturn as u64 {
+                    // `rt_sigreturn` is backend-owned: its apparent syscall result
+                    // is the register file restored from the guest frame, not an
+                    // ordinary scalar return value that a Tool can replace.
+                    let mut signal_exit = None;
+                    if let Some(restored) = self.restore_rt_sigreturn(executor, frame_address)? {
+                        executor.set_current_user_stack_pointer(restored.rsp);
+                        let pending = self
+                            .filter_one_pending_signal_with_tool(
+                                executor,
+                                pid,
+                                tid,
+                                &tool,
+                                &memory,
+                                &auxv,
+                                restored,
+                                request.number(),
+                                frame_address,
+                                &mut thread_state,
+                                &global_state,
+                                config,
+                                subscriptions,
+                                &stack_checked_out,
+                                false,
+                            )
+                            .await?;
+                        let pending = match pending {
+                            CallbackOutcome::Completed(pending) => pending,
+                            CallbackOutcome::ThreadCancelled => {
+                                return Ok(self.cancelled_tool_thread_status(executor));
+                            }
+                        };
+                        if let Some((segment, address)) = executor.take_segment() {
+                            set_user_segment_base(&self.vcpu, segment, address)?;
                         }
-                    };
-                    if let Some((segment, address)) = executor.take_segment() {
-                        set_user_segment_base(&self.vcpu, segment, address)?;
-                    }
-                    if !executor.has_pending_exit() {
-                        if let Some(pending) = pending {
-                            self.deliver_page_zero_fault(executor, &fault, pending)?;
+                        signal_exit = executor.take_exit();
+                        let delivered = if signal_exit.is_none()
+                            && let Some(pending) = pending
+                        {
+                            self.deliver_selected_signal_from_registers(
+                                executor,
+                                frame_address,
+                                restored,
+                                pending,
+                            )?
                         } else {
-                            fault.resume_user(self, fault.registers)?;
+                            false
+                        };
+                        signal_exit = signal_exit.or_else(|| executor.take_exit());
+                        if !delivered && signal_exit.is_none() {
+                            stage_process_syscall_return(
+                                &mut memory,
+                                &self.vcpu,
+                                frame_address,
+                                restored,
+                            )?;
                         }
                     }
-                    if let Some(exit) = executor.take_exit() {
+                    signal_exit = signal_exit.or_else(|| executor.take_exit());
+                    if let Some(exit) = signal_exit {
                         self.discard_process_clear_tid_at_signal_return(executor);
                         if exit.group {
                             self.request_guest_thread_group_exit(exit.status);
                         }
-                        if executor.is_thread_group_leader() {
-                            self.cancel_guest_threads();
-                        }
-                        let children = executor.join_all_child_processes();
-                        self.clear_registered_worker_tid_before_exit(executor);
-                        let owner = self
-                            .notify_tool_exit(
-                                tool,
-                                (pid, tid),
-                                global_state.as_ref(),
-                                config,
-                                thread_state,
-                                exit.status,
-                            )
-                            .await;
-                        process_exit_result(children, owner)?;
-                        let (stdout, stderr) = executor.take_output();
-                        return Ok((exit.status, stdout, stderr));
+                        return Ok(exit.status);
                     }
                     continue;
                 }
-                exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
-            };
-            // A CLONE_THREAD worker runs on its own vCPU with a per-thread
-            // syscall area, so the transported frame is `self.syscall_frame_address`
-            // (equal to the root constant for the process leader, distinct for
-            // each worker), not the fixed root `SYSCALL_FRAME_ADDRESS`.
-            if frame_address != self.syscall_frame_address {
-                return Err(Error::UnexpectedVcpuExit(format!(
-                    "syscall frame is at unexpected address {frame_address:#x}"
-                )));
-            }
-            let registers = self.vcpu.get_regs()?;
-            let request = SyscallRequest::read_from(&memory, frame_address)?;
-            // The KVM_RUN hypercall return slot is one-shot storage. Publish
-            // its unused value exactly once while this decoded exit is live;
-            // process actions may re-enter the vCPU before the Tool callback
-            // returns, after which this pointer must never be reused.
-            unsafe {
-                (return_slot as *mut u64).write(0);
-            }
-            let userspace =
-                process_syscall_return_registers(&memory, registers, frame_address, 0, None)?;
-            executor.set_current_user_stack_pointer(userspace.rsp);
-            if request.number() == libc::SYS_rt_sigreturn as u64 {
-                // `rt_sigreturn` is backend-owned: its apparent syscall result
-                // is the register file restored from the guest frame, not an
-                // ordinary scalar return value that a Tool can replace.
-                let mut signal_exit = None;
-                if let Some(restored) = self.restore_rt_sigreturn(executor, frame_address)? {
-                    executor.set_current_user_stack_pointer(restored.rsp);
-                    let pending = self
-                        .filter_one_pending_signal_with_tool(
-                            executor,
-                            pid,
-                            tid,
-                            &tool,
-                            &memory,
-                            &auxv,
-                            restored,
-                            request.number(),
-                            frame_address,
-                            &mut thread_state,
-                            &global_state,
-                            config,
-                            subscriptions,
-                            &stack_checked_out,
-                            false,
-                        )
-                        .await?;
-                    let pending = match pending {
-                        CallbackOutcome::Completed(pending) => pending,
-                        CallbackOutcome::ThreadCancelled => {
-                            return self
-                                .finish_cancelled_tool_thread(
-                                    executor,
-                                    tool,
-                                    (pid, tid),
-                                    global_state.as_ref(),
-                                    config,
-                                    thread_state,
-                                )
-                                .await;
-                        }
-                    };
-                    if let Some((segment, address)) = executor.take_segment() {
-                        set_user_segment_base(&self.vcpu, segment, address)?;
-                    }
-                    signal_exit = executor.take_exit();
-                    let delivered = if signal_exit.is_none()
-                        && let Some(pending) = pending
-                    {
-                        self.deliver_selected_signal_from_registers(
-                            executor,
-                            frame_address,
-                            restored,
-                            pending,
-                        )?
-                    } else {
-                        false
-                    };
-                    signal_exit = signal_exit.or_else(|| executor.take_exit());
-                    if !delivered && signal_exit.is_none() {
-                        stage_process_syscall_return(
-                            &mut memory,
-                            &self.vcpu,
-                            frame_address,
-                            restored,
-                        )?;
-                    }
-                }
-                signal_exit = signal_exit.or_else(|| executor.take_exit());
-                if let Some(exit) = signal_exit {
-                    self.discard_process_clear_tid_at_signal_return(executor);
-                    if exit.group {
-                        self.request_guest_thread_group_exit(exit.status);
-                    }
-                    if executor.is_thread_group_leader() {
-                        self.cancel_guest_threads();
-                    }
-                    let children = executor.join_all_child_processes();
-                    self.clear_registered_worker_tid_before_exit(executor);
-                    let owner = self
-                        .notify_tool_exit(
-                            tool,
-                            (pid, tid),
-                            global_state.as_ref(),
-                            config,
-                            thread_state,
-                            exit.status,
-                        )
-                        .await;
-                    process_exit_result(children, owner)?;
-                    let (stdout, stderr) = executor.take_output();
-                    return Ok((exit.status, stdout, stderr));
-                }
-                continue;
-            }
-            let syscall = request.into_syscall()?;
-            // TODO-HUMAN-REVIEW(PR-156): Review root process-syscall Tool dispatch.
-            // CLONE_THREAD is deliberately NOT backend-owned: the parent's
-            // clone is delivered to the Tool (Detcore) so the worker inherits
-            // process-shared Tool state (fd table, memory identity) and joins
-            // Detcore's scheduler. `run_process_action_with_tool` then spawns
-            // the worker on the Tool loop, which issues the matching
-            // `handle_thread_start` the parent's clone handler waits for.
-            let backend_owned = is_backend_owned_syscall(request.number(), thread_ownership)
-                && !executor.is_random_device_read(&request)
-                && !executor.is_tool_visible_read(&request);
-            let subscribed = !backend_owned
-                && subscriptions
-                    .iter_syscalls()
-                    .any(|number| number == syscall.number());
-            let (mut result, handler_replaced_image, _handler_process_completed, restart_requested) =
-                if subscribed {
+                let syscall = request.into_syscall()?;
+                // TODO-HUMAN-REVIEW(PR-156): Review root process-syscall Tool dispatch.
+                // CLONE_THREAD is deliberately NOT backend-owned: the parent's
+                // clone is delivered to the Tool (Detcore) so the worker inherits
+                // process-shared Tool state (fd table, memory identity) and joins
+                // Detcore's scheduler. `run_process_action_with_tool` then spawns
+                // the worker on the Tool loop, which issues the matching
+                // `handle_thread_start` the parent's clone handler waits for.
+                let backend_owned = is_backend_owned_syscall(request.number(), thread_ownership)
+                    && !executor.is_random_device_read(&request)
+                    && !executor.is_tool_visible_read(&request);
+                let subscribed = !backend_owned
+                    && subscriptions
+                        .iter_syscalls()
+                        .any(|number| number == syscall.number());
+                let (
+                    mut result,
+                    handler_replaced_image,
+                    _handler_process_completed,
+                    restart_requested,
+                ) = if subscribed {
                     let mut handler_process_completed = false;
                     // With no eligible virtual signal, ERESTARTSYS immediately
                     // re-enters the callback as before. With one, leave the loop so
@@ -2704,16 +2520,7 @@ impl KvmBackend {
                             ),
                             HandlerOutcome::ThreadCancelled => {
                                 self.start_pending_tool_children(executor, &pending_child_starts)?;
-                                return self
-                                    .finish_cancelled_tool_thread(
-                                        executor,
-                                        tool,
-                                        (pid, tid),
-                                        global_state.as_ref(),
-                                        config,
-                                        thread_state,
-                                    )
-                                    .await;
+                                return Ok(self.cancelled_tool_thread_status(executor));
                             }
                             HandlerOutcome::RuntimeError(error) => {
                                 let error = self.cleanup_unstarted_tool_children_after_error(
@@ -2721,19 +2528,6 @@ impl KvmBackend {
                                     &pending_child_starts,
                                     error,
                                 );
-                                if matches!(error, Error::ExecWorkerTeardown(_)) {
-                                    return Err(self
-                                        .finish_exec_teardown_failure(
-                                            executor,
-                                            tool,
-                                            (pid, tid),
-                                            global_state.as_ref(),
-                                            config,
-                                            thread_state,
-                                            error,
-                                        )
-                                        .await);
-                                }
                                 return Err(error);
                             }
                         };
@@ -2743,224 +2537,184 @@ impl KvmBackend {
                 } else {
                     (executor.execute(&request, &memory), false, false, false)
                 };
-            let mut returned_registers =
-                process_syscall_return_registers(&memory, registers, frame_address, result, None)?;
-            let mut restarted_registers = restart_requested
-                .then(|| restart_syscall_registers(returned_registers, request.number()))
-                .transpose()?;
-            // The ring0 trampoline reads the result from the frame and then
-            // SYSRETs, so the hypercall return slot is unused here.
-            SyscallRequest::write_result(&mut memory, frame_address, result)?;
-            let pending_segment = executor.take_segment();
-            let mut pending_exit = executor.take_exit();
-            let pending_process = executor.take_process_action();
-
-            if let Some((segment, address)) = pending_segment {
-                set_user_segment_base(&self.vcpu, segment, address)?;
-            }
-            let mut replaced_image = handler_replaced_image;
-            if let Some(action) = pending_process {
-                let continuation = CompletedSyscallBoundary::capture_for_action(
-                    self,
-                    frame_address,
-                    None,
-                    &action,
-                )?;
-                let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
-                let context: ToolContext<'_, T> = ToolContext {
-                    pid,
-                    tid,
-                    process_state: tool.clone(),
-                    thread_state: &thread_state,
-                    global_state: Some(global_state.clone()),
-                    config: config.clone(),
-                    subscriptions: subscriptions.clone(),
-                    pending_child_starts: pending_child_starts.clone(),
-                };
-                let outcome = self
-                    .run_process_action_with_tool_at_boundary(
-                        executor,
-                        action,
-                        context,
-                        continuation,
-                    )
-                    .await;
-                let outcome = match outcome {
-                    Err(error @ Error::ExecWorkerTeardown(_)) => {
-                        return Err(self
-                            .finish_exec_teardown_failure(
-                                executor,
-                                tool,
-                                (pid, tid),
-                                global_state.as_ref(),
-                                config,
-                                thread_state,
-                                error,
-                            )
-                            .await);
-                    }
-                    outcome => outcome?,
-                };
-                if !outcome.image_replaced {
-                    result = outcome.syscall_result;
-                    returned_registers = process_syscall_return_registers(
-                        &memory,
-                        registers,
-                        frame_address,
-                        result,
-                        None,
-                    )?;
-                    restarted_registers = restart_requested
-                        .then(|| restart_syscall_registers(returned_registers, request.number()))
-                        .transpose()?;
-                }
-                replaced_image |= outcome.image_replaced;
-                self.start_pending_tool_children(executor, &pending_child_starts)?;
-            }
-            if replaced_image {
-                auxv = executor.auxv().to_vec();
-                let post_exec_outcome = run_post_exec_handler(
-                    self,
-                    &tool,
-                    pid,
+                let mut returned_registers = process_syscall_return_registers(
                     &memory,
-                    &mut auxv,
-                    &mut thread_state,
-                    executor,
-                    global_state.clone(),
-                    config,
-                    subscriptions,
-                    &stack_checked_out,
-                )
-                .await;
-                let post_exec_error = match post_exec_outcome {
-                    Ok(CallbackOutcome::ThreadCancelled) => {
-                        return self
-                            .finish_cancelled_tool_thread(
-                                executor,
-                                tool,
-                                (pid, tid),
-                                global_state.as_ref(),
-                                config,
-                                thread_state,
-                            )
-                            .await;
-                    }
-                    Ok(CallbackOutcome::Completed(())) => None,
-                    Err(error) => Some(error),
-                };
-                if let Some(error) = post_exec_error {
-                    self.clear_registered_worker_tid_before_exit(executor);
-                    self.notify_tool_exit(
-                        tool,
-                        (pid, tid),
-                        global_state.as_ref(),
-                        config,
-                        thread_state,
-                        ExitStatus::Exited(255),
-                    )
-                    .await?;
-                    return Err(error);
+                    registers,
+                    frame_address,
+                    result,
+                    None,
+                )?;
+                let mut restarted_registers = restart_requested
+                    .then(|| restart_syscall_registers(returned_registers, request.number()))
+                    .transpose()?;
+                // The ring0 trampoline reads the result from the frame and then
+                // SYSRETs, so the hypercall return slot is unused here.
+                SyscallRequest::write_result(&mut memory, frame_address, result)?;
+                let pending_segment = executor.take_segment();
+                let mut pending_exit = executor.take_exit();
+                let pending_process = executor.take_process_action();
+
+                if let Some((segment, address)) = pending_segment {
+                    set_user_segment_base(&self.vcpu, segment, address)?;
                 }
-            }
-            if let Some((segment, address)) = executor.take_segment() {
-                set_user_segment_base(&self.vcpu, segment, address)?;
-            }
-            if !replaced_image && pending_exit.is_none() {
-                let pending = self
-                    .filter_one_pending_signal_with_tool(
-                        executor,
+                let mut replaced_image = handler_replaced_image;
+                if let Some(action) = pending_process {
+                    let continuation = CompletedSyscallBoundary::capture_for_action(
+                        self,
+                        frame_address,
+                        None,
+                        &action,
+                    )?;
+                    let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                    let context: ToolContext<'_, T> = ToolContext {
                         pid,
                         tid,
+                        process_state: tool.clone(),
+                        thread_state: &thread_state,
+                        global_state: Some(global_state.clone()),
+                        config: config.clone(),
+                        subscriptions: subscriptions.clone(),
+                        pending_child_starts: pending_child_starts.clone(),
+                    };
+                    let outcome = self
+                        .run_process_action_with_tool_at_boundary(
+                            executor,
+                            action,
+                            context,
+                            continuation,
+                        )
+                        .await;
+                    let outcome = outcome?;
+                    if !outcome.image_replaced {
+                        result = outcome.syscall_result;
+                        returned_registers = process_syscall_return_registers(
+                            &memory,
+                            registers,
+                            frame_address,
+                            result,
+                            None,
+                        )?;
+                        restarted_registers = restart_requested
+                            .then(|| {
+                                restart_syscall_registers(returned_registers, request.number())
+                            })
+                            .transpose()?;
+                    }
+                    replaced_image |= outcome.image_replaced;
+                    self.start_pending_tool_children(executor, &pending_child_starts)?;
+                }
+                if replaced_image {
+                    auxv = executor.auxv().to_vec();
+                    let post_exec_outcome = run_post_exec_handler(
+                        self,
                         &tool,
+                        pid,
                         &memory,
-                        &auxv,
-                        returned_registers,
-                        request.number(),
-                        frame_address,
+                        &mut auxv,
                         &mut thread_state,
-                        &global_state,
+                        executor,
+                        global_state.clone(),
                         config,
                         subscriptions,
                         &stack_checked_out,
-                        false,
                     )
-                    .await?;
-                let pending = match pending {
-                    CallbackOutcome::Completed(pending) => pending,
-                    CallbackOutcome::ThreadCancelled => {
-                        return self
-                            .finish_cancelled_tool_thread(
-                                executor,
-                                tool,
-                                (pid, tid),
-                                global_state.as_ref(),
-                                config,
-                                thread_state,
-                            )
-                            .await;
+                    .await;
+                    let post_exec_error = match post_exec_outcome {
+                        Ok(CallbackOutcome::ThreadCancelled) => {
+                            return Ok(self.cancelled_tool_thread_status(executor));
+                        }
+                        Ok(CallbackOutcome::Completed(())) => None,
+                        Err(error) => Some(error),
+                    };
+                    if let Some(error) = post_exec_error {
+                        return Err(error);
                     }
-                };
+                }
                 if let Some((segment, address)) = executor.take_segment() {
                     set_user_segment_base(&self.vcpu, segment, address)?;
                 }
-                pending_exit = pending_exit.or_else(|| executor.take_exit());
-                let mut delivered = false;
-                if pending_exit.is_none()
-                    && let Some(pending) = pending
-                {
-                    let signal_registers =
-                        if restart_requested && executor.caught_signal_restarts_syscall(pending) {
+                if !replaced_image && pending_exit.is_none() {
+                    let pending = self
+                        .filter_one_pending_signal_with_tool(
+                            executor,
+                            pid,
+                            tid,
+                            &tool,
+                            &memory,
+                            &auxv,
+                            returned_registers,
+                            request.number(),
+                            frame_address,
+                            &mut thread_state,
+                            &global_state,
+                            config,
+                            subscriptions,
+                            &stack_checked_out,
+                            false,
+                        )
+                        .await?;
+                    let pending = match pending {
+                        CallbackOutcome::Completed(pending) => pending,
+                        CallbackOutcome::ThreadCancelled => {
+                            return Ok(self.cancelled_tool_thread_status(executor));
+                        }
+                    };
+                    if let Some((segment, address)) = executor.take_segment() {
+                        set_user_segment_base(&self.vcpu, segment, address)?;
+                    }
+                    pending_exit = pending_exit.or_else(|| executor.take_exit());
+                    let mut delivered = false;
+                    if pending_exit.is_none()
+                        && let Some(pending) = pending
+                    {
+                        let signal_registers = if restart_requested
+                            && executor.caught_signal_restarts_syscall(pending)
+                        {
                             restarted_registers.expect("restart registers were constructed")
                         } else {
                             returned_registers
                         };
-                    delivered = self.deliver_selected_signal_from_registers(
-                        executor,
-                        frame_address,
-                        signal_registers,
-                        pending,
-                    )?;
+                        delivered = self.deliver_selected_signal_from_registers(
+                            executor,
+                            frame_address,
+                            signal_registers,
+                            pending,
+                        )?;
+                    }
+                    pending_exit = pending_exit.or_else(|| executor.take_exit());
+                    if restart_requested && !delivered && pending_exit.is_none() {
+                        // Suppression, an ignored replacement, or a replacement
+                        // newly blocked by its signal number means no handler ran;
+                        // resume by re-executing the original syscall rather than
+                        // leaking EINTR or the kernel-private ERESTARTSYS value.
+                        stage_process_syscall_return(
+                            &mut memory,
+                            &self.vcpu,
+                            frame_address,
+                            restarted_registers.expect("restart registers were constructed"),
+                        )?;
+                    }
                 }
                 pending_exit = pending_exit.or_else(|| executor.take_exit());
-                if restart_requested && !delivered && pending_exit.is_none() {
-                    // Suppression, an ignored replacement, or a replacement
-                    // newly blocked by its signal number means no handler ran;
-                    // resume by re-executing the original syscall rather than
-                    // leaking EINTR or the kernel-private ERESTARTSYS value.
-                    stage_process_syscall_return(
-                        &mut memory,
-                        &self.vcpu,
-                        frame_address,
-                        restarted_registers.expect("restart registers were constructed"),
-                    )?;
+                if let Some(exit) = pending_exit {
+                    if exit.group {
+                        self.request_guest_thread_group_exit(exit.status);
+                    }
+                    return Ok(exit.status);
                 }
-            }
-            pending_exit = pending_exit.or_else(|| executor.take_exit());
-            if let Some(exit) = pending_exit {
-                let children = executor.join_all_child_processes();
-                if exit.group {
-                    self.request_guest_thread_group_exit(exit.status);
-                }
-                if exit.group || executor.is_thread_group_leader() {
-                    self.cancel_guest_threads();
-                }
-                self.clear_registered_worker_tid_before_exit(executor);
-                let owner = self
-                    .notify_tool_exit(
-                        tool,
-                        (pid, tid),
-                        global_state.as_ref(),
-                        config,
-                        thread_state,
-                        exit.status,
-                    )
-                    .await;
-                process_exit_result(children, owner)?;
-                let (stdout, stderr) = executor.take_output();
-                return Ok((exit.status, stdout, stderr));
             }
         }
+        .await;
+        self.finish_tool_process(
+            executor,
+            tool,
+            (pid, tid),
+            global_state.as_ref(),
+            config,
+            thread_state,
+            outcome,
+        )
+        .await
     }
 }
 

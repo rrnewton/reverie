@@ -360,7 +360,12 @@ fn guest_program() -> Vec<u8> {
 fn task_virtual_memory_size(tid: i64) -> Option<i64> {
     let stat = match std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")) {
         Ok(stat) => stat,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || error.raw_os_error() == Some(libc::ESRCH) =>
+        {
+            return None;
+        }
         Err(error) => panic!("cannot inspect host thread {tid}: {error}"),
     };
     // The final ')' ends comm; vsize is field 23, twenty fields after state.
@@ -1007,5 +1012,812 @@ fn backend_exec_failure_preserves_child_and_owner_errors() {
     run_exec_case(
         "terminal_fork::backend_exec_failure_preserves_child_and_owner_errors",
         9,
+    );
+}
+
+#[derive(Default)]
+struct TerminalRouteTool {
+    pid: i32,
+    mode: u8,
+    control: Arc<Control>,
+}
+impl Drop for TerminalRouteTool {
+    fn drop(&mut self) {
+        self.control.record("tool-drop", self.pid, 0);
+    }
+}
+#[reverie::tool]
+impl Tool for TerminalRouteTool {
+    type GlobalState = Log;
+    type ThreadState = (i32, bool);
+    fn new(pid: Pid, mode: &u8) -> Self {
+        Self {
+            pid: pid.as_raw(),
+            mode: *mode,
+            control: control(),
+        }
+    }
+    fn subscriptions(_: &u8) -> Subscription {
+        Subscription::all_syscalls()
+    }
+    fn init_thread_state(
+        &self,
+        tid: Pid,
+        _: Option<(Pid, &Self::ThreadState)>,
+    ) -> Self::ThreadState {
+        (tid.as_raw(), false)
+    }
+    async fn handle_thread_start<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+    ) -> Result<(), reverie::Error> {
+        let tid = guest.tid().as_raw();
+        assert_eq!(*guest.thread_state(), (tid, false));
+        guest.thread_state_mut().1 = true;
+        self.control
+            .record("start", tid, unsafe { libc::syscall(libc::SYS_gettid) });
+        HOST_EXIT.with(|exit| {
+            assert!(
+                exit.0
+                    .borrow_mut()
+                    .replace((self.control.clone(), tid))
+                    .is_none()
+            )
+        });
+        Ok(())
+    }
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+        let tid = guest.tid().as_raw();
+        self.control.record("post-exec", tid, 0);
+        if self.mode == 12 && tid == 1 {
+            let mut state = self.control.state.lock().unwrap();
+            if state
+                .events
+                .iter()
+                .filter(|event| event.kind == "post-exec" && event.pid == 1)
+                .count()
+                == 2
+            {
+                state.parent_ready = true;
+                self.control.changed.notify_all();
+                return Err(Errno::EIO);
+            }
+        }
+        Ok(())
+    }
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        let args = syscall.into_parts().1;
+        if syscall.number() == Sysno::getuid && args.arg0 == 0x7465726d {
+            return Ok(i64::from(self.mode));
+        }
+        if syscall.number() == Sysno::fork {
+            return Ok(guest.inject(syscall).await?);
+        }
+        if syscall.number() == Sysno::gettid && args.arg0 == 0x7465726d {
+            self.control.record("blocked", self.pid, 0);
+            if matches!(self.mode, 14 | 16 | 18) {
+                self.wait_for_parent_exit(guest.tid().as_raw()).await;
+                return Ok(i64::from(self.pid));
+            }
+            let state = self.control.state.lock().unwrap();
+            let (state, timeout) = self
+                .control
+                .changed
+                .wait_timeout_while(state, Duration::from_secs(5), |state| !state.release_child)
+                .unwrap();
+            assert!(!timeout.timed_out(), "fork release timed out: {state:?}");
+            return Ok(i64::from(self.pid));
+        }
+        if syscall.number() == Sysno::getpid && args.arg0 == 0x7465726d {
+            self.control
+                .wait_for(|state| state.events.iter().any(|event| event.kind == "blocked"))
+                .await;
+            if self.mode == 13 {
+                self.control.state.lock().unwrap().parent_ready = true;
+                self.control.changed.notify_all();
+                return Err(std::io::Error::other("controlled fatal Tool callback").into());
+            }
+            self.control.record("parent-marker", 1, 0);
+            return Ok(1);
+        }
+        if syscall.number() == Sysno::getpid && args.arg0 == 0x7465726f {
+            self.control.record("blocked", guest.tid().as_raw(), 0);
+            // Workers complete before the leader hook, as required by ptrace.
+            return Ok(1);
+        }
+        if syscall.number() == Sysno::getpid && args.arg0 == 0x7465726e {
+            self.control
+                .wait_for(|state| {
+                    state
+                        .events
+                        .iter()
+                        .any(|event| event.kind == "parent-marker")
+                })
+                .await;
+            return Ok(1);
+        }
+        if matches!(self.mode, 11 | 14 | 15 | 16 | 18)
+            && guest.tid().as_raw() == 1
+            && syscall.number() == Sysno::exit_group
+        {
+            self.control.state.lock().unwrap().parent_ready = true;
+            self.control.changed.notify_all();
+        }
+        if syscall.number() == Sysno::write {
+            assert_ne!(
+                self.pid, 1,
+                "terminal parent cannot execute replacement/continuation writes"
+            );
+            let mut bytes = vec![0; args.arg2];
+            guest.memory().read_exact(
+                reverie::syscalls::Addr::from_raw(args.arg1).unwrap(),
+                &mut bytes,
+            )?;
+            let expected: &[u8] = if args.arg0 == 1 {
+                b"child\n"
+            } else {
+                b"child stderr\n"
+            };
+            assert_eq!(bytes, expected);
+            let count = guest.inject(syscall).await?;
+            assert_eq!(count, expected.len() as i64);
+            self.control.record("write", self.pid, args.arg0 as i64);
+            return Ok(count);
+        }
+        guest.tail_inject(syscall).await
+    }
+    async fn on_exit_thread<G: GlobalRPC<Log>>(
+        &self,
+        tid: Pid,
+        _: &G,
+        state: Self::ThreadState,
+        status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        let tid = tid.as_raw();
+        assert_eq!(state, (tid, true));
+        let expected = if self.pid != 1 {
+            0
+        } else if self.mode == 10 {
+            37
+        } else if matches!(self.mode, 12 | 13) {
+            255
+        } else {
+            0
+        };
+        assert_eq!(status, ExitStatus::Exited(expected));
+        self.control.record("thread-exit", tid, i64::from(expected));
+        if self.mode == 10 && tid == 3 {
+            self.control.state.lock().unwrap().parent_ready = true;
+            self.control.changed.notify_all();
+        }
+        Ok(())
+    }
+    async fn on_exit_process<G: GlobalRPC<Log>>(
+        self,
+        pid: Pid,
+        _: &G,
+        status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        assert_eq!(pid.as_raw(), self.pid);
+        let expected = if self.pid != 1 {
+            0
+        } else if self.mode == 10 {
+            37
+        } else if matches!(self.mode, 12 | 13) {
+            255
+        } else {
+            0
+        };
+        assert_eq!(status, ExitStatus::Exited(expected));
+        self.control
+            .record("process-exit", self.pid, i64::from(expected));
+        Ok(())
+    }
+}
+const TERMINAL_ROUTE_GUEST: &str = r#"
+#define _GNU_SOURCE
+#include <pthread.h>
+#include <sched.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+static int mode;
+static void fork_child(void) {
+  syscall(SYS_gettid, 0x7465726d);
+  if (write(1, "child\n", 6) != 6) syscall(SYS_exit_group, 41);
+  if (write(2, "child stderr\n", 13) != 13) syscall(SYS_exit_group, 42);
+  syscall(SYS_exit_group, 0);
+}
+static void *worker(void *unused) {
+  (void)unused;
+  if (mode == 15) { syscall(SYS_getpid, 0x7465726f); return 0; }
+  if (mode == 11 || mode == 16) {
+    long child = syscall(SYS_fork);
+    if (child < 0) syscall(SYS_exit_group, 43);
+    if (!child) fork_child();
+    for (;;) sched_yield();
+  }
+  syscall(SYS_getpid, 0x7465726e);
+  syscall(SYS_exit_group, 37);
+  return 0;
+}
+int main(int argc, char **argv) {
+  if (argc == 2) { write(1, "replacement\n", 12); return 44; }
+  mode = syscall(SYS_getuid, 0x7465726d);
+  if (mode != 11 && mode != 15 && mode != 16) {
+    long child = syscall(SYS_fork);
+    if (child < 0) return 45;
+    if (!child) fork_child();
+  }
+  pthread_t thread;
+  if ((mode <= 11 || mode == 15 || mode == 16) && pthread_create(&thread, 0, worker, 0)) return 46;
+  syscall(SYS_getpid, 0x7465726d);
+  if (mode == 11 || mode == 14 || mode == 15 || mode == 16 || mode == 18) syscall(SYS_exit_group, 0);
+  if (mode == 12) { char *next[] = {argv[0], "replacement", 0}; execv(argv[0], next); return 47; }
+  for (;;) sched_yield();
+}
+"#;
+fn run_terminal_route(test: &str, mode: u8) {
+    if !bounded(test) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(&directory.0, "terminal-route", TERMINAL_ROUTE_GUEST);
+    let control = Arc::new(Control::default());
+    *CONTROL.lock().unwrap() = Some(control.clone());
+    let captured = control.clone();
+    let cwd = directory.0.clone();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_file_with_context(
+                std::fs::File::open(&executable).unwrap(),
+                &[executable.to_str().unwrap()],
+                &[],
+                &cwd,
+            )
+            .unwrap();
+        let result = futures::executor::block_on(
+            backend.run_static_elf_with_tool::<TerminalRouteTool>(mode, true),
+        );
+        sender
+            .send((result, snapshot_at_return(&captured)))
+            .unwrap();
+    });
+    let state = control.state.lock().unwrap();
+    let (state, timeout) = control
+        .changed
+        .wait_timeout_while(state, Duration::from_secs(5), |state| !state.parent_ready)
+        .unwrap();
+    assert!(
+        !timeout.timed_out(),
+        "terminal boundary not reached: {state:?}"
+    );
+    let child = if mode == 11 { 3 } else { 2 };
+    let child_tid = state
+        .events
+        .iter()
+        .find(|event| event.kind == "start" && event.pid == child)
+        .unwrap()
+        .value;
+    assert!(task_virtual_memory_size(child_tid).is_some_and(|bytes| bytes > 0));
+    drop(state);
+    let early = receiver.recv_timeout(Duration::from_millis(100)).ok();
+    control.state.lock().unwrap().release_child = true;
+    control.changed.notify_all();
+    let returned_early = early.is_some();
+    let (result, (events, global_dropped)) =
+        early.unwrap_or_else(|| receiver.recv_timeout(Duration::from_secs(5)).unwrap());
+    worker.join().unwrap();
+    let state = control.state.lock().unwrap();
+    let (state, timeout) = control
+        .changed
+        .wait_timeout_while(state, Duration::from_secs(5), |state| {
+            !state
+                .events
+                .iter()
+                .any(|event| event.kind == "host-exit" && event.pid == child)
+        })
+        .unwrap();
+    assert!(
+        !timeout.timed_out(),
+        "detached baseline child did not finish"
+    );
+    drop(state);
+    eprintln!(
+        "terminal route mode={mode} early={returned_early} result={result:?} events={events:?} global_dropped={global_dropped}"
+    );
+    assert!(
+        !returned_early,
+        "terminal route returned while its fork child was blocked"
+    );
+    let tids = if mode <= 11 {
+        vec![1, 2, 3]
+    } else {
+        vec![1, 2]
+    };
+    for tid in tids {
+        for kind in ["start", "thread-exit"] {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.pid == tid && event.kind == kind)
+                    .count(),
+                1,
+                "each thread must be consumed: {events:?}"
+            );
+        }
+        if tid != 1 {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.pid == tid && event.kind == "host-exit")
+                    .count(),
+                1
+            );
+            assert!(!events.iter().any(|event| event.pid == tid
+                && event.kind == "host-memory-at-return"
+                && event.value != 0));
+        }
+    }
+    for pid in [1, child] {
+        for kind in ["process-exit", "tool-drop"] {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.pid == pid && event.kind == kind)
+                    .count(),
+                1,
+                "each process must be consumed: {events:?}"
+            );
+        }
+    }
+    for fd in [1, 2] {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.pid == child && event.kind == "write" && event.value == fd)
+                .count(),
+            1
+        );
+    }
+    if mode <= 11 {
+        let (global, status, stdout, stderr) = result.unwrap();
+        assert_eq!(status, if mode == 10 { 37 } else { 0 });
+        assert_eq!(stdout, b"child\n");
+        assert_eq!(stderr, b"child stderr\n");
+        assert!(!global_dropped);
+        drop(global);
+    } else {
+        let error = result.unwrap_err().to_string();
+        assert_eq!(
+            error,
+            if mode == 12 {
+                "Reverie post-exec hook failed: -5 EIO (I/O error)"
+            } else {
+                "Reverie tool failed: controlled fatal Tool callback"
+            }
+        );
+        assert!(global_dropped);
+    }
+    assert!(control.state.lock().unwrap().global_dropped);
+    *CONTROL.lock().unwrap() = None;
+}
+#[test]
+fn terminal_route_group_exit_joins_root_fork() {
+    run_terminal_route(
+        "terminal_fork::terminal_route_group_exit_joins_root_fork",
+        10,
+    );
+}
+#[test]
+fn terminal_route_cancelled_worker_joins_its_fork() {
+    run_terminal_route(
+        "terminal_fork::terminal_route_cancelled_worker_joins_its_fork",
+        11,
+    );
+}
+#[test]
+fn terminal_route_post_exec_error_joins_fork() {
+    run_terminal_route(
+        "terminal_fork::terminal_route_post_exec_error_joins_fork",
+        12,
+    );
+}
+#[test]
+fn terminal_route_fatal_tool_error_joins_fork() {
+    run_terminal_route(
+        "terminal_fork::terminal_route_fatal_tool_error_joins_fork",
+        13,
+    );
+}
+
+#[derive(Default)]
+struct ExitFilesTool;
+#[reverie::tool]
+impl Tool for ExitFilesTool {
+    type GlobalState = ();
+    type ThreadState = ();
+    fn subscriptions(_: &()) -> Subscription {
+        Subscription::all_syscalls()
+    }
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        let args = syscall.into_parts().1;
+        if syscall.number() == Sysno::read && args.arg0 > 2 {
+            eprintln!(
+                "exit-files before read tid={} fd={}",
+                guest.tid(),
+                args.arg0
+            );
+            let result = guest.inject(syscall).await?;
+            eprintln!(
+                "exit-files completed read tid={} result={result}",
+                guest.tid()
+            );
+            return Ok(result);
+        }
+        if syscall.number() == Sysno::exit || syscall.number() == Sysno::exit_group {
+            eprintln!(
+                "exit-files terminal syscall tid={} status={}",
+                guest.tid(),
+                args.arg0
+            );
+        }
+        guest.tail_inject(syscall).await
+    }
+}
+const EXIT_FILES_GUEST: &str = r#"
+#define _GNU_SOURCE
+#include <pthread.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <fcntl.h>
+static void *worker(void *unused) { (void)unused; syscall(SYS_exit, 0); return 0; }
+int main(int argc, char **argv) {
+  if (argc != 2) return 60;
+  int p[2];
+  if (pipe(p)) return 61;
+  if (argv[1][0] == '2') {
+    pthread_t thread;
+    if (pthread_create(&thread, 0, worker, 0) || pthread_join(thread, 0)) return 62;
+    if (fcntl(p[1], F_GETFD) < 0 || write(p[1], "x", 1) != 1 || close(p[1])) return 63;
+    char byte = 0;
+    if (read(p[0], &byte, 1) != 1 || byte != 'x' || read(p[0], &byte, 1) != 0) return 64;
+    return write(1, "EOF\n", 4) != 4;
+  }
+  long child = syscall(SYS_fork);
+  if (child < 0) return 65;
+  if (!child) {
+    if (close(p[1])) return 66;
+    char byte;
+    if (read(p[0], &byte, 1) != 0) return 67;
+    if (write(1, "EOF\n", 4) != 4) return 68;
+    syscall(SYS_exit_group, 0);
+  }
+  if (close(p[0])) return 69;
+  if (argv[1][0] == '1' && close(p[1])) return 70;
+  syscall(SYS_exit_group, 0);
+  return 71;
+}
+"#;
+fn run_exit_files(test: &str, mode: &str) {
+    if std::env::var_os("REVERIE_EXIT_FILES_CHILD").as_deref() != Some(std::ffi::OsStr::new(test)) {
+        let status = std::process::Command::new("timeout")
+            .args(["--kill-after=2s", "10s"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env("REVERIE_EXIT_FILES_CHILD", test)
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "exit-files subprocess did not complete: {status:?}"
+        );
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(&directory.0, "terminal-exit-files", EXIT_FILES_GUEST);
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "5s"])
+        .arg(&executable)
+        .arg(mode)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "native failed: {native:?}");
+    assert_eq!(native.stdout, b"EOF\n");
+    assert!(native.stderr.is_empty());
+    eprintln!("exit-files native mode={mode} code=0 exact_stdout=EOF");
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_file_with_context(
+            std::fs::File::open(&executable).unwrap(),
+            &[executable.to_str().unwrap(), mode],
+            &[],
+            &directory.0,
+        )
+        .unwrap();
+    let (_, status, stdout, stderr) =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<ExitFilesTool>((), true))
+            .unwrap();
+    assert_eq!(status, 0);
+    assert_eq!(stdout, b"EOF\n");
+    assert!(stderr.is_empty());
+}
+#[test]
+fn terminal_exit_releases_parent_pipe_writer_before_joining_child() {
+    run_exit_files(
+        "terminal_fork::terminal_exit_releases_parent_pipe_writer_before_joining_child",
+        "0",
+    );
+}
+#[test]
+fn terminal_exit_explicit_pipe_close_control() {
+    run_exit_files(
+        "terminal_fork::terminal_exit_explicit_pipe_close_control",
+        "1",
+    );
+}
+#[test]
+fn terminal_exit_preserves_live_sibling_shared_files() {
+    run_exit_files(
+        "terminal_fork::terminal_exit_preserves_live_sibling_shared_files",
+        "2",
+    );
+}
+
+impl TerminalRouteTool {
+    async fn wait_for_parent_exit(&self, tid: i32) {
+        let hook = if self.mode == 18 {
+            "process-exit"
+        } else {
+            "thread-exit"
+        };
+        let state = self.control.state.lock().unwrap();
+        let (state, timeout) = self
+            .control
+            .changed
+            .wait_timeout_while(state, Duration::from_secs(5), |state| {
+                !state
+                    .events
+                    .iter()
+                    .any(|event| event.kind == hook && event.pid == 1)
+            })
+            .unwrap();
+        let acknowledged = state
+            .events
+            .iter()
+            .any(|event| event.kind == hook && event.pid == 1);
+        drop(state);
+        assert!(
+            !timeout.timed_out(),
+            "parent hook did not precede fork completion"
+        );
+        self.control
+            .record("parent-exit-ack", tid, i64::from(acknowledged));
+    }
+}
+fn run_parent_exit_ack(test: &str, mode: u8) {
+    if !bounded(test) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(&directory.0, "terminal-parent-ack", TERMINAL_ROUTE_GUEST);
+    let control = Arc::new(Control::default());
+    *CONTROL.lock().unwrap() = Some(control.clone());
+    let capture = control.clone();
+    let cwd = directory.0.clone();
+    let (send, recv) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_file_with_context(
+                std::fs::File::open(&executable).unwrap(),
+                &[executable.to_str().unwrap()],
+                &[],
+                &cwd,
+            )
+            .unwrap();
+        let result = futures::executor::block_on(
+            backend.run_static_elf_with_tool::<TerminalRouteTool>(mode, true),
+        );
+        send.send((result, snapshot_at_return(&capture))).unwrap();
+    });
+    let state = control.state.lock().unwrap();
+    let (state, timeout) = control
+        .changed
+        .wait_timeout_while(state, Duration::from_secs(5), |state| !state.parent_ready)
+        .unwrap();
+    assert!(!timeout.timed_out(), "parent never reached exit: {state:?}");
+    drop(state);
+    // Only the required parent hook may release the fork; there is no timed
+    // fallback that can manufacture child progress before that acknowledgment.
+    let (result, (events, global_dropped)) = recv.recv_timeout(Duration::from_secs(5)).unwrap();
+    worker.join().unwrap();
+    eprintln!("parent-exit acknowledgment mode={mode} result={result:?} events={events:?}");
+    let (global, status, stdout, stderr) = result.unwrap();
+    assert_eq!(status, 0);
+    assert_eq!(
+        stdout,
+        if mode != 15 {
+            b"child\n".as_slice()
+        } else {
+            b""
+        }
+    );
+    assert_eq!(
+        stderr,
+        if mode != 15 {
+            b"child stderr\n".as_slice()
+        } else {
+            b""
+        }
+    );
+    let tids = if mode == 16 {
+        vec![1, 2, 3]
+    } else {
+        vec![1, 2]
+    };
+    for &tid in &tids {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.pid == tid && event.kind == "thread-exit")
+                .count(),
+            1
+        );
+    }
+    for &tid in &tids[1..] {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.pid == tid && event.kind == "host-exit")
+                .count(),
+            1
+        );
+        assert!(!events.iter().any(|event| event.pid == tid
+            && event.kind == "host-memory-at-return"
+            && event.value != 0));
+    }
+    let child = if mode == 16 { 3 } else { 2 };
+    for pid in if mode != 15 { vec![1, child] } else { vec![1] } {
+        for kind in ["process-exit", "tool-drop"] {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.pid == pid && event.kind == kind)
+                    .count(),
+                1
+            );
+        }
+    }
+    let hook = if mode == 18 {
+        "process-exit"
+    } else {
+        "thread-exit"
+    };
+    let parent = events
+        .iter()
+        .position(|event| event.kind == hook && event.pid == 1)
+        .unwrap();
+    if mode == 15 || mode == 16 {
+        let worker = events
+            .iter()
+            .position(|event| event.kind == "thread-exit" && event.pid == 2)
+            .unwrap();
+        assert!(
+            worker < parent,
+            "leader must observe completed worker hooks"
+        );
+    }
+    if mode != 15 {
+        let ack = events
+            .iter()
+            .position(|event| {
+                event.kind == "parent-exit-ack" && event.pid == child && event.value == 1
+            })
+            .expect("parent exit was not acknowledged before child progress");
+        assert!(parent < ack);
+    }
+    assert!(!global_dropped);
+    drop(global);
+    assert!(control.state.lock().unwrap().global_dropped);
+    *CONTROL.lock().unwrap() = None;
+}
+#[test]
+fn terminal_parent_thread_exit_precedes_fork_join() {
+    run_parent_exit_ack(
+        "terminal_fork::terminal_parent_thread_exit_precedes_fork_join",
+        14,
+    );
+}
+#[test]
+fn terminal_worker_thread_exit_precedes_leader_hook() {
+    run_parent_exit_ack(
+        "terminal_fork::terminal_worker_thread_exit_precedes_leader_hook",
+        15,
+    );
+}
+
+#[test]
+fn terminal_exit_releases_reserved_stdin_description() {
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+    const TEST: &str = "terminal_fork::terminal_exit_releases_reserved_stdin_description";
+    if !bounded(TEST) {
+        return;
+    }
+    // dup(0); close(0); exit(0). A legal write-only fd 0 and its guest alias
+    // must both lose this process's references at exit, even while the backend
+    // object itself remains alive. No byte is written to the pipe.
+    let code = [
+        0xb8, 32, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05, 0xb8, 3, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05, 0xb8,
+        60, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05,
+    ];
+    let image = static_elf(&code);
+    let directory = TestDirectory::new();
+    let executable = directory.0.join("exit-reserved-stdin");
+    std::fs::write(&executable, &image).unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for native in [true, false] {
+        let mut fds = [0; 2];
+        assert_eq!(
+            unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) },
+            0
+        );
+        let mut reader = unsafe { std::fs::File::from_raw_fd(fds[0]) };
+        let writer = unsafe { std::fs::File::from_raw_fd(fds[1]) };
+        let mut backend = None;
+        if native {
+            let status = std::process::Command::new(&executable)
+                .stdin(std::process::Stdio::from(writer))
+                .status()
+                .unwrap();
+            assert_eq!(status.code(), Some(0));
+        } else {
+            let mut vm = KvmBackend::new_with_stdin(MEMORY_SIZE, Some(writer)).unwrap();
+            vm.install_static_elf(&image, "/bin/exit-reserved-stdin")
+                .unwrap();
+            let (_, status, stdout, stderr) =
+                futures::executor::block_on(vm.run_static_elf_with_tool::<ExitFilesTool>((), true))
+                    .unwrap();
+            assert_eq!(status, 0);
+            assert!(stdout.is_empty() && stderr.is_empty());
+            backend = Some(vm);
+        }
+        let mut byte = [0];
+        let observed = reader.read(&mut byte);
+        eprintln!(
+            "reserved stdin native={native} reader={observed:?} backend_alive={}",
+            backend.is_some()
+        );
+        assert_eq!(
+            observed.unwrap(),
+            0,
+            "exited process retained its reserved stdin description"
+        );
+        drop(backend);
+    }
+}
+
+#[test]
+fn terminal_parent_thread_exit_precedes_worker_owned_fork_join() {
+    run_parent_exit_ack(
+        "terminal_fork::terminal_parent_thread_exit_precedes_worker_owned_fork_join",
+        16,
+    );
+}
+#[test]
+fn terminal_parent_process_exit_precedes_fork_join() {
+    run_parent_exit_ack(
+        "terminal_fork::terminal_parent_process_exit_precedes_fork_join",
+        18,
     );
 }
