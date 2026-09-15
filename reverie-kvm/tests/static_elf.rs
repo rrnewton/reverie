@@ -13907,3 +13907,6 @@ mod exec_worker_error_diagnostic;
 
 #[path = "support/child_exit_signals.rs"]
 mod child_exit_signals;
+
+#[path = "support/terminal_fork.rs"]
+mod terminal_fork;
