@@ -246,6 +246,10 @@ load_producer_definitions() {
 resolve_producer_record_from_checkout() {
     local checkout=$1 target_sha=$2 producer_record expected_definition
     local checked_definition relative blob
+    if [[ $repo == rrnewton/reverie ]]; then
+        observe_producer_paths_from_checkout "$checkout" "$target_sha" '["validate.sh"]'
+        return $?
+    fi
     while IFS= read -r producer_record; do
         if ! jq -e --arg sha "$target_sha" '
             (has("valid_commits") | not)
@@ -282,19 +286,30 @@ resolve_producer_record_from_checkout() {
 }
 
 observe_primary_producer_record_from_checkout() {
-    local checkout=$1 target_sha=$2 expected_definition checked_definition
-    local relative blob paths
-    expected_definition=$(jq -c '.definition' <<<"$p_primary_record") || return 2
+    local checkout=$1 target_sha=$2 paths
+    if [[ $repo == rrnewton/reverie ]]; then
+        observe_producer_paths_from_checkout "$checkout" "$target_sha" '["validate.sh"]'
+        return $?
+    fi
     paths=$(jq -c '.paths' <<<"$p_primary_record") || return 2
+    observe_producer_paths_from_checkout "$checkout" "$target_sha" "$paths"
+}
+
+observe_producer_paths_from_checkout() {
+    local checkout=$1 target_sha=$2 paths=$3 checked_definition relative blob
+    # Reverie's canonical policy qualifies the complete run separately. This
+    # records its actual entrypoint at the exact commit, not a claim that one
+    # path contains the whole validation implementation.
     checked_definition='{}'
     while IFS= read -r relative; do
         blob=$(git -C "$checkout" rev-parse "$target_sha:$relative" 2>/dev/null) || return 1
         [[ $blob =~ ^[0-9a-f]{40}$ ]] || return 1
+        [[ $(git -C "$checkout" cat-file -t "$blob" 2>/dev/null) == blob ]] || return 1
         checked_definition=$(jq -cn \
             --argjson definition "$checked_definition" \
             --arg relative "$relative" --arg blob "$blob" \
             '$definition + {($relative): $blob}') || return 2
-    done < <(jq -r 'keys[]' <<<"$expected_definition")
+    done < <(jq -r '.[]' <<<"$paths")
     jq -cn --argjson definition "$checked_definition" \
         --argjson paths "$paths" \
         --arg resolved_from "$checkout" \
@@ -305,6 +320,16 @@ observe_primary_producer_record_from_checkout() {
 resolve_producer_record_from_github() {
     local target_repo=$1 target_sha=$2 producer_record expected_definition
     local checked_definition relative blob saw_error=0
+    if [[ $repo == rrnewton/reverie ]]; then
+        blob=$("${gh_cmd[@]}" api \
+            "repos/$target_repo/contents/validate.sh?ref=$target_sha" \
+            --jq 'select(.type == "file") | .sha' 2>/dev/null) || return 2
+        [[ $blob =~ ^[0-9a-f]{40}$ ]] || return 1
+        jq -cn --arg blob "$blob" --arg resolved_from "github:$target_repo@$target_sha" \
+            '{definition: {"validate.sh": $blob}, coverage_status: "legacy-selected-paths",
+              paths: ["validate.sh"], resolved_from: $resolved_from}'
+        return $?
+    fi
     while IFS= read -r producer_record; do
         if ! jq -e --arg sha "$target_sha" '
             (has("valid_commits") | not)
@@ -356,7 +381,7 @@ Options:
   --current-reverie-base SHA  Fresh Reverie main tip at that same boundary
   --repo-checkout DIR     Hermit object store containing --current-base
   --reverie-checkout DIR  Reverie object store containing --current-reverie-base
-  --producer-repo-checkout DIR  Hermit object store containing exact --sha
+  --producer-repo-checkout DIR  Product object store containing exact --sha
   --producer-definition-primary  Print the validated primary map and exit
   --producer-definition-allowed  Print all currently allowed exact maps and exit
   --producer-definition-check FILE  Accept FILE only if it is one allowed whole map
@@ -402,7 +427,17 @@ if [[ -n $producer_definition_mode ]]; then
         printf 'producer-definition helper mode cannot be combined with receipt verification\n' >&2
         exit 2
     fi
-    load_producer_definitions || exit $?
+    if [[ $repo == rrnewton/reverie ]]; then
+        case "$producer_definition_mode" in
+            resolve|observe) ;;
+            *) printf 'Reverie producer evidence has no Hermit registration mode\n' >&2; exit 2 ;;
+        esac
+    elif [[ $repo == rrnewton/hermit ]]; then
+        load_producer_definitions || exit $?
+    else
+        printf 'unsupported producer repository: %s\n' "$repo" >&2
+        exit 2
+    fi
     if [[ $producer_definition_mode == primary ]]; then
         [[ -z $sha && -z $repo_checkout && -z $producer_definition_landed_replay &&
            -z $producer_definition_expected_registry_sha256 ]] || exit 2
@@ -671,8 +706,14 @@ fi
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # Resolve the producer authority through the same helper used by the publisher.
-# The registry comes from this immutable parent commit, never the PR under test.
-load_producer_definitions || exit $?
+# Hermit's registry comes from this immutable parent commit, never the PR under
+# test. Reverie records its actual validate.sh blob with selected-path coverage.
+if [[ $repo == rrnewton/hermit ]]; then
+    load_producer_definitions || exit $?
+elif [[ $repo != rrnewton/reverie ]]; then
+    printf 'unsupported producer repository: %s\n' "$repo" >&2
+    exit 2
+fi
 target_producer_status=0
 if [[ -n $producer_repo_checkout ]]; then
     target_producer_record=$(resolve_producer_record_from_checkout \
@@ -683,7 +724,7 @@ else
 fi
 if ((target_producer_status != 0)); then
     if ((target_producer_status == 1)); then
-        printf 'target commit has no registered producer definition: %s@%s\n' \
+        printf 'target commit has no resolvable producer definition: %s@%s\n' \
             "$repo" "$sha" >&2
         exit 1
     fi

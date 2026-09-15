@@ -169,6 +169,16 @@ def producer_definition_allowed(
     )
 
 
+def producer_definition_repository(row: dict[str, Any]) -> str:
+    """Choose the product object store, never a different receipt policy."""
+    repo = row.get("repo")
+    if repo in (None, "hermit", "rrnewton/hermit"):
+        return "rrnewton/hermit"
+    if repo in ("reverie", "rrnewton/reverie"):
+        return "rrnewton/reverie"
+    raise ProducerDefinitionError(f"unsupported producer repository {repo!r}")
+
+
 def producer_definition_repositories(
     row: dict[str, Any], repositories: list[str | Path] | None = None
 ) -> list[Path]:
@@ -188,7 +198,8 @@ def producer_definition_repositories(
     override = os.environ.get("PRODUCER_DEFINITION_REPO")
     if override:
         candidates.append(Path(override))
-    candidates.append(Path(__file__).resolve().parents[1] / "hermit")
+    product = producer_definition_repository(row).rsplit("/", 1)[1]
+    candidates.append(Path(__file__).resolve().parents[1] / product)
     seen: set[str] = set()
     ordered: list[Path] = []
     for candidate in candidates:
@@ -319,6 +330,8 @@ def resolve_producer_definition(
         attempted.append(str(checkout))
         result = _run_producer_definition_verifier(
             "--producer-definition-resolve",
+            "--repo",
+            producer_definition_repository(row),
             "--sha",
             sha,
             "--repo-checkout",
@@ -359,8 +372,9 @@ def observe_producer_definition(
 ) -> dict[str, Any]:
     """Derive current producer blobs without making their registration authoritative.
 
-    The path set comes from the checked registry shape, while exact blob hashes
-    come from the commit being published. The result deliberately reports
+    Hermit's path set comes from the checked registry shape; Reverie uses its
+    validate.sh entrypoint. Exact blob hashes come from the commit being
+    published. The result deliberately reports
     ``legacy-selected-paths``: the registry's former ``complete`` claim is not
     reusable when the map omits modules compiled by the validation entrypoint.
     This keeps useful producer provenance in an immutable receipt without
@@ -383,6 +397,8 @@ def observe_producer_definition(
         attempted.append(str(checkout))
         result = _run_producer_definition_verifier(
             "--producer-definition-observe",
+            "--repo",
+            producer_definition_repository(row),
             "--sha",
             sha,
             "--repo-checkout",

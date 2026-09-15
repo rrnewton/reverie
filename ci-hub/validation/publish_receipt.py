@@ -54,6 +54,7 @@ def selected_record(
     sha: str,
     expected_digest: str,
     canonicalization: str,
+    repo: str = "rrnewton/hermit",
 ) -> dict[str, Any]:
     """Verify selected-row identity and shared-policy consistency."""
     if canonicalization != RECEIPT_CANONICALIZATION:
@@ -76,7 +77,33 @@ def selected_record(
         fail("selected canonical record is not an object")
     if row.get("commit") != sha:
         fail("selected canonical record is not bound to --sha")
-    if not qualifying_receipt.row_qualifies(row, sha, qualifying_receipt.active()):
+    if repo not in ("rrnewton/hermit", "rrnewton/reverie"):
+        fail(f"unsupported validation repository {repo!r}")
+    row_repo = row.get("repo")
+    if row_repo not in (repo, repo.rsplit("/", 1)[1]) and not (
+        repo == "rrnewton/hermit" and row.get("schema_version") == 4 and row_repo is None
+    ):
+        fail("selected canonical record is not bound to --repo")
+    if repo == "rrnewton/reverie":
+        # The existing Rust authority owns Reverie's versioned gates, count
+        # accounting, admission and containment contract. Hermit's shared
+        # predicate requires different base and producer evidence.
+        environment = os.environ.copy()
+        environment["CI_HUB_SKIP_SOFT_MAIN_WARNING"] = "1"
+        result = bounded_capture.capture(
+            [
+                str(Path(__file__).resolve().parents[1] / "ci-hub"),
+                "receipt-digest", "--sha", sha, "--repository", repo,
+                "--require-canonical-qualifying", "--canonical-row",
+            ],
+            input=canonical_record.decode(),
+            env=environment,
+        )
+        if result.returncode != 0:
+            fail(f"selected Reverie record failed canonical qualification: {result.stderr.strip()}")
+        if result.stdout.encode() != canonical_record:
+            fail("selected Reverie record does not contain the exact canonical HistoryRow bytes")
+    elif not qualifying_receipt.row_qualifies(row, sha, qualifying_receipt.active()):
         fail("selected canonical record does not satisfy the shared receipt predicate")
     for field in ("started_at", "log_file", "host"):
         if not isinstance(row.get(field), str) or not row[field]:
@@ -379,6 +406,7 @@ def execute(args: argparse.Namespace, canonical_record: bytes) -> dict[str, Any]
         sha=args.sha,
         expected_digest=args.selected_receipt_sha256,
         canonicalization=args.canonicalization,
+        repo=args.repo,
     )
     evidence_dir = args.state_root / "ignored" / "validation-evidence"
     durable_log = preserve_log(evidence_dir, args.sha, row)

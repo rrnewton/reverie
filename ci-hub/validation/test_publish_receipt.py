@@ -2,6 +2,7 @@
 
 import argparse
 import base64
+import copy
 import hashlib
 import importlib.util
 import json
@@ -976,6 +977,191 @@ class ProducerTransitionTests(unittest.TestCase):
                     ):
                         with self.assertRaises(SystemExit):
                             MODULE.registered_producer()
+
+
+class ReverieReceiptTests(unittest.TestCase):
+    # Immutable canonical bytes of the real September 14 run, not a synthetic
+    # row supplied with Hermit's absent base/producer fields to make it pass.
+    ORIGINAL = SCRIPT.parent / "fixtures/reverie-run150.json"
+    SHA = "8de90a5b93af7c08b76d973bb0e5e5ea0adc156e"
+    DIGEST = "c6037137812d4d188afdf694ada914b749b6888813c73a111e600eaf4cfd3c58"
+    REPO = "rrnewton/reverie"
+
+    @staticmethod
+    def hub(*args: str, body: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(SCRIPT.parent.parent / "ci-hub"), "receipt-digest", *args],
+            input=body, text=True, capture_output=True,
+            env={**os.environ, "CI_HUB_SKIP_SOFT_MAIN_WARNING": "1"}, timeout=180,
+        )
+
+    def select(self, body: bytes, *, repo: str = REPO):
+        return MODULE.selected_record(
+            body, sha=self.SHA, expected_digest=hashlib.sha256(body).hexdigest(),
+            canonicalization=MODULE.RECEIPT_CANONICALIZATION, repo=repo,
+        )
+
+    def test_original_completed_run_retains_exact_canonical_bytes(self):
+        body = self.ORIGINAL.read_bytes()
+        self.assertEqual(len(body), 3164)
+        self.assertEqual(hashlib.sha256(body).hexdigest(), self.DIGEST)
+        selected = self.select(body)
+        self.assertEqual(selected, json.loads(body))
+        self.assertNotIn("base_sha", selected)
+
+    def test_wrong_repository_and_noncanonical_bytes_are_refused(self):
+        body = self.ORIGINAL.read_bytes()
+        for repo in ("rrnewton/hermit", "attacker/reverie"):
+            with self.subTest(repo=repo), self.assertRaises(SystemExit):
+                self.select(body, repo=repo)
+        rendered = json.dumps(json.loads(body), indent=2).encode()
+        with self.assertRaisesRegex(SystemExit, "exact canonical HistoryRow bytes"):
+            self.select(rendered)
+
+    def test_unsupported_policy_producer_and_failed_count_are_refused(self):
+        body = self.ORIGINAL.read_bytes()
+        for old, new in (
+            (b"reverie-local-validation/v3", b"reverie-local-validation/v999"),
+            (b"ci-hub-reverie-validate-run", b"reverie-validate-sh"),
+            (b'"passed_tests":1546', b'"passed_tests":1545'),
+        ):
+            with self.subTest(old=old):
+                self.assertIn(old, body)
+                with self.assertRaisesRegex(SystemExit, "canonical qualification"):
+                    self.select(body.replace(old, new))
+
+    @staticmethod
+    def git(repo: Path, *args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args], text=True, capture_output=True,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_NAME": "receipt-test", "GIT_AUTHOR_EMAIL": "test@example.com",
+                "GIT_COMMITTER_NAME": "receipt-test", "GIT_COMMITTER_EMAIL": "test@example.com",
+            },
+        )
+        if result.returncode:
+            raise AssertionError(result.stderr)
+        return result.stdout.strip()
+
+    def fixture(self, root: Path) -> tuple[Path, str, dict]:
+        repo = root / "reverie-producer"
+        repo.mkdir()
+        (repo / "validate.sh").write_text("#!/bin/bash\nexit 0\n")
+        self.git(repo, "init", "-q")
+        self.git(repo, "add", "validate.sh")
+        self.git(repo, "commit", "-qm", "Reverie receipt producer fixture")
+        sha = self.git(repo, "rev-parse", "HEAD")
+        row = json.loads(self.ORIGINAL.read_bytes())
+        row.update(commit=sha, cwd=str(repo), tree=self.git(repo, "rev-parse", "HEAD^{tree}"))
+        row["validate_lock_authority"]["holder"]["target"] = sha
+        log = root / "validate.log"
+        log.write_text("portable receipt fixture log\n")
+        row["log_file"] = str(log)
+        return repo, sha, row
+
+    def verify(
+        self, root: Path, repo: Path, sha: str, receipt: dict, *, tamper_artifact: bool = False,
+    ):
+        body = MODULE.canonical(receipt)
+        digest = hashlib.sha256(body).hexdigest()
+        receipt_commit = "b" * 40
+        relative = f"validation-receipts/{self.REPO}/{sha}/{digest}.json"
+        path = root / "receipts" / receipt_commit / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body + (b" " if tamper_artifact else b""))
+        comments = root / "comments.json"
+        comments.write_text(json.dumps([[{
+            "user": {"login": "rrnewton"},
+            "body": "[Human]\n"
+            f"<!-- locally-validated-receipt commit={receipt_commit} path={relative} sha256={digest} -->",
+        }]]))
+        return subprocess.run(
+            [str(SCRIPT.with_name("verify_receipt.sh")), "--repo", self.REPO,
+             "--sha", sha, "--comments", str(comments),
+             "--fixture-receipts", str(root / "receipts"),
+             "--producer-repo-checkout", str(repo)],
+            text=True, capture_output=True,
+            env={**os.environ, "CI_HUB_SKIP_SOFT_MAIN_WARNING": "1"}, timeout=180,
+        )
+
+    def test_publish_and_immutable_readback_bind_actual_reverie_entrypoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo, sha, row = self.fixture(root)
+            canonical = self.hub("--sha", sha, "--canonical-row", body=json.dumps(row))
+            self.assertEqual(canonical.returncode, 0, canonical.stderr)
+            body = canonical.stdout.encode()
+            args = ReceiptTests().args(root, hashlib.sha256(body).hexdigest(), sha=sha)
+            args.repo = self.REPO
+            # No fixture Hermit registry and no resolver mock: actual git blobs
+            # are used by both minting and immutable verification.
+            report = MODULE.execute(args, body)
+            receipt = json.loads(report["artifact_body"])
+            self.assertEqual(receipt["ledger_record"], row)
+            self.assertEqual(receipt["producer"]["definition"], {
+                "validate.sh": self.git(repo, "rev-parse", f"{sha}:validate.sh"),
+            })
+            self.assertEqual(receipt["producer"]["coverage_status"], "legacy-selected-paths")
+            self.assertEqual(receipt["producer"]["paths"], ["validate.sh"])
+            verified = self.verify(root, repo, sha, receipt)
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            for change in ("blob", "coverage", "repository", "identity"):
+                mutant = copy.deepcopy(receipt)
+                if change == "blob":
+                    mutant["producer"]["definition"]["validate.sh"] = "a" * 40
+                elif change == "coverage":
+                    mutant["producer"]["coverage_status"] = "complete"
+                elif change == "repository":
+                    mutant["repository"] = "rrnewton/hermit"
+                else:
+                    mutant["selected_receipt_identity"]["digest"] = "0" * 64
+                with self.subTest(change=change):
+                    refused = self.verify(root, repo, sha, mutant)
+                    self.assertNotEqual(refused.returncode, 0, refused.stdout)
+                    self.assertIn("typed published receipt refusal", refused.stderr)
+            self.assertNotEqual(
+                self.verify(root, repo, sha, receipt, tamper_artifact=True).returncode, 0,
+            )
+            # Recompute the selected identity for semantic mutations: refusal
+            # must come from the existing policy, not an incidental stale hash.
+            for field, value in (
+                ("producer", "reverie-validate-sh"),
+                ("reverie_validation_policy", "reverie-local-validation/v999"),
+                ("schema_version", 4),
+                ("repo", "rrnewton/hermit"),
+                ("passed_tests", 1545),
+            ):
+                mutant = copy.deepcopy(receipt)
+                mutant["ledger_record"][field] = value
+                canonical = self.hub(
+                    "--sha", sha, "--canonical-row", body=json.dumps(mutant["ledger_record"]),
+                )
+                self.assertEqual(canonical.returncode, 0, canonical.stderr)
+                mutant["selected_receipt_identity"]["digest"] = hashlib.sha256(
+                    canonical.stdout.encode(),
+                ).hexdigest()
+                with self.subTest(field=field):
+                    refused = self.verify(root, repo, sha, mutant)
+                    self.assertNotEqual(refused.returncode, 0, refused.stdout)
+                    self.assertIn("typed published receipt refusal", refused.stderr)
+
+    def test_missing_or_nonfile_entrypoint_cannot_produce_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo, _, row = self.fixture(root)
+            self.git(repo, "rm", "validate.sh")
+            self.git(repo, "commit", "-qm", "Missing producer entrypoint")
+            sha = self.git(repo, "rev-parse", "HEAD")
+            with self.assertRaises(SystemExit):
+                MODULE.producer_definition(row, sha)
+            (repo / "validate.sh").mkdir()
+            (repo / "validate.sh" / "child").write_text("not an entrypoint\n")
+            self.git(repo, "add", "validate.sh")
+            self.git(repo, "commit", "-qm", "Directory is not a producer entrypoint")
+            sha = self.git(repo, "rev-parse", "HEAD")
+            with self.assertRaises(SystemExit):
+                MODULE.producer_definition(row, sha)
 
 
 if __name__ == "__main__":

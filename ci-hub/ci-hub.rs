@@ -618,8 +618,9 @@ struct ReceiptDigestArgs {
     /// bare HistoryRow. The embedded row is still the value canonicalized.
     #[arg(long)]
     published_receipt: bool,
-    /// Repository the published receipt must name.
-    #[arg(long, requires = "published_receipt")]
+    /// Repository the row or published receipt must name. Canonical qualification
+    /// defaults to Hermit for callers predating repository-specific receipts.
+    #[arg(long)]
     repository: Option<String>,
     /// Accept the historical owner-service receipt shape that predates the
     /// selected-receipt identity. Current receipts must carry it.
@@ -4342,19 +4343,34 @@ fn run_receipt_digest(args: ReceiptDigestArgs) -> Result<i32, CiHubError> {
             "receipt-digest HistoryRow is not bound to --sha".into(),
         ));
     }
+    let repository = canonical_validation_repo(
+        args.repository
+            .as_deref()
+            .unwrap_or(CANONICAL_VALIDATE_REPO),
+    )
+    .ok_or_else(|| CiHubError::ValidateStatus("receipt-digest repository is unsupported".into()))?;
+    if args.repository.is_some() && !row_matches_validation_repo(&row, repository) {
+        return Err(CiHubError::ValidateStatus(
+            "receipt-digest HistoryRow is not bound to --repository".into(),
+        ));
+    }
     if args.require_canonical_qualifying {
-        if qualify_canonical_receipt(&row, &args.sha).is_none() {
+        if qualify_repository_receipt(&row, &args.sha, repository).is_none() {
             return Err(CiHubError::ValidateStatus(
                 "receipt-digest HistoryRow does not satisfy the complete canonical qualifying predicate"
                     .into(),
             ));
         }
     } else if args.require_qualifying
-        && !crate::qualifying_receipt::row_qualifies(
-            &row,
-            &args.sha,
-            crate::qualifying_receipt::active(),
-        )
+        && !(if repository == CANONICAL_REVERIE_REPO {
+            qualify_reverie_receipt(&row, &args.sha).is_some()
+        } else {
+            crate::qualifying_receipt::row_qualifies(
+                &row,
+                &args.sha,
+                crate::qualifying_receipt::active(),
+            )
+        })
     {
         return Err(CiHubError::ValidateStatus(
             "receipt-digest HistoryRow does not satisfy the shared qualifying predicate".into(),
@@ -4837,6 +4853,18 @@ fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRece
     })
 }
 
+fn qualify_repository_receipt(
+    row: &HistoryRow,
+    sha: &str,
+    repo: &str,
+) -> Option<QualifyingReceipt> {
+    match canonical_validation_repo(repo)? {
+        CANONICAL_VALIDATE_REPO => qualify_canonical_receipt(row, sha),
+        CANONICAL_REVERIE_REPO => qualify_reverie_receipt(row, sha),
+        _ => None,
+    }
+}
+
 fn assess_canonical_receipts(
     root: &Path,
     rows: &[HistoryRow],
@@ -4859,11 +4887,7 @@ fn assess_canonical_receipts(
         if !row_matches_validation_repo(row, repo) || row.commit.as_deref() != Some(sha) {
             continue;
         }
-        let receipt = if repo == CANONICAL_VALIDATE_REPO {
-            qualify_canonical_receipt(row, sha)
-        } else {
-            qualify_reverie_receipt(row, sha)
-        };
+        let receipt = qualify_repository_receipt(row, sha, repo);
         if let Some(receipt) = receipt {
             // A clean exact-commit full run is the validation authority. The
             // former six-file allowlist made validator improvements unable to
@@ -14506,6 +14530,54 @@ mod tests {
         )
         .unwrap();
         assert!(cross_repo.qualifying.is_empty());
+    }
+
+    #[test]
+    fn repository_receipt_dispatch_preserves_original_reverie_run() {
+        let bytes = include_bytes!("validation/fixtures/reverie-run150.json");
+        let sha = "8de90a5b93af7c08b76d973bb0e5e5ea0adc156e";
+        let row: HistoryRow = serde_json::from_slice(bytes).unwrap();
+        let receipt = qualify_repository_receipt(&row, sha, CANONICAL_REVERIE_REPO)
+            .expect("the original completed Reverie run must qualify without Hermit base fields");
+        assert_eq!(receipt.canonical_row_json.as_bytes(), bytes);
+        assert_eq!(bytes.len(), 3164);
+        assert_eq!(
+            receipt.canonical_sha256,
+            "c6037137812d4d188afdf694ada914b749b6888813c73a111e600eaf4cfd3c58"
+        );
+        assert_eq!(receipt.row.executed_tests, Some(1546));
+        assert_eq!(receipt.row.passed_tests, Some(1546));
+        assert!(qualify_repository_receipt(&row, sha, CANONICAL_VALIDATE_REPO).is_none());
+        assert!(qualify_repository_receipt(&row, sha, "attacker/reverie").is_none());
+        let hermit = history_row(schema4_receipt_value());
+        assert!(
+            qualify_repository_receipt(&hermit, RECEIPT_SHA, CANONICAL_VALIDATE_REPO).is_some()
+        );
+        assert!(qualify_repository_receipt(&hermit, RECEIPT_SHA, CANONICAL_REVERIE_REPO).is_none());
+
+        for (field, invalid) in [
+            ("schema_version", serde_json::json!(4)),
+            ("producer", serde_json::json!("reverie-validate-sh")),
+            (
+                "reverie_validation_policy",
+                serde_json::json!("reverie-local-validation/v999"),
+            ),
+            ("repo", serde_json::json!("hermit")),
+            ("passed_tests", serde_json::json!(1545)),
+            ("passed_tests", serde_json::Value::Null),
+            ("admission", serde_json::Value::Null),
+            ("coverage", serde_json::Value::Null),
+            ("validate_lock_authority", serde_json::Value::Null),
+            ("safe_ci", serde_json::Value::Null),
+        ] {
+            let mut value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+            value[field] = invalid;
+            assert!(
+                qualify_repository_receipt(&history_row(value), sha, CANONICAL_REVERIE_REPO)
+                    .is_none(),
+                "invalid {field} must not qualify through repository dispatch"
+            );
+        }
     }
 
     #[test]
