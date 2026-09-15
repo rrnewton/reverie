@@ -490,7 +490,23 @@ say "validation landability(head=$ORIG) rc=$VRC: $VS"
 # pre-check IS the only gate and must keep refusing. Relaxing it there would be the
 # gate ceasing to refuse because it ceased to look.
 deferred_missing_record=0
-if [ "$VRC" -ne 0 ] && [ "$NO_REBASE" -eq 0 ] \
+# ⚠️ --union IS EXCLUDED FOR THE SAME REASON AS --no-rebase, and leaving it in
+# was a real defect rather than an oversight of wording. The deferral's entire
+# premise is "step 2 creates the record". Under --union step 2 runs
+# union-rebase.sh, which writes its own result contract and never calls
+# rebase_wrapper at all, while the lander's own `record` below is gated on
+# plain_rebase -- which --union leaves at 0. So NOTHING creates a record on the
+# union path, and deferring there makes a promise on union's behalf that union
+# structurally cannot keep: the post-push re-authorize then refuses the head for
+# the very condition that was waved through, exactly as it did for the no-op
+# plain rebase this change repairs.
+#
+# Excluding it is not a carve-out that skips a check, it is the opposite. VRC
+# stays non-zero, so the just-in-time block below RUNS for union heads and can
+# earn a real exact-head verdict; and if it cannot, the refusal arrives at the
+# pre-check naming the condition that actually decided, instead of arriving
+# after a push as a missing-record message that no one can satisfy.
+if [ "$VRC" -ne 0 ] && [ "$NO_REBASE" -eq 0 ] && [ "$UNION" -eq 0 ] \
    && grep -q "no rebase record for result" <<<"$VS"; then
   say "pre-check: no rebase record yet for $ORIG -- step 2 creates it; deferring to the post-push re-authorize"
   # ⚠️ REMEMBER THAT WE DEFERRED, because the promise above is conditional and
