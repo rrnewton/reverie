@@ -128,6 +128,12 @@ typedef struct {
 #define DBT_DIAGNOSTIC_FD 198
 #define VIRTUAL_IDENTITY_MAGIC UINT64_C(0x5245565049443033)
 #define MAX_VIRTUAL_IDENTITIES 8192
+#define TEST_REUSED_TID_STALE (INT32_MAX - INT32_C(5))
+
+typedef struct {
+  int32_t virtual_pid;
+  _Atomic uint64_t count;
+} pending_thread_clone_t;
 
 typedef struct {
   uint64_t magic;
@@ -140,6 +146,9 @@ typedef struct {
   // AUTONOMOUS-BOT-IMPLEMENTED
   // TODO-HUMAN-REVIEW(PR-shared-dbi-clock): Review shared continuous DBI time.
   _Atomic uint64_t virtual_time_ns;
+  size_t pending_thread_clone_count;
+  pending_thread_clone_t pending_thread_clones[MAX_VIRTUAL_IDENTITIES];
+  _Atomic bool thread_clone_process_exit_test_exercised;
   /* The launch-time descriptor identity survives exec, unlike numeric fd 0. */
   bool initial_stdin_valid;
   struct stat initial_stdin;
@@ -303,11 +312,12 @@ extern void reverie_dbt_runtime_totals(uint64_t *branches, uint64_t *syscalls,
 
 static _Atomic uint64_t branch_count __attribute__((aligned(64)));
 static _Atomic uint64_t stdin_read_count;
-static _Atomic uint64_t pending_thread_starts;
 static _Atomic int32_t runtime_background_state;
 static _Atomic uint64_t image_generation;
 static _Atomic bool runtime_backend_failure;
 static int thread_state_index;
+static reg_id_t admission_state_tls_register;
+static uint admission_state_tls_offset;
 static int compat_gateway_index;
 static ptr_uint_t cpuid_marker_note;
 static ptr_uint_t rdtsc_marker_note;
@@ -319,6 +329,13 @@ static bool test_thread_exit_evidence;
 static bool test_leave_process_clone_result_pending;
 static bool test_backend_failure;
 static bool test_backend_failure_sender_lookup_miss;
+static bool test_reused_tid;
+static bool test_thread_clone_process_exit;
+static bool test_thread_start_write;
+static bool test_stalled_thread_start;
+static uint64_t test_thread_start_write_address;
+static _Atomic bool test_reused_tid_exercised;
+static _Atomic bool test_reused_tid_waited;
 // Typed backend-statistics sink path. When the launcher passes
 // `-stats_path <path>`, each real runtime image appends exactly one fixed-size
 // binary record to this file at `event_exit`, using DynamoRIO's own
@@ -1084,6 +1101,8 @@ static void initialize_virtual_identity_state(bool external_global) {
   atomic_init(&virtual_identity_state->next_virtual_id, VIRTUAL_ROOT_PID + 1);
   atomic_init(&virtual_identity_state->virtual_time_ns,
               UINT64_C(1000000000));
+  atomic_init(&virtual_identity_state->thread_clone_process_exit_test_exercised,
+              false);
   virtual_identity_state->initial_stdin_valid =
       fstat(STDIN_FILENO, &virtual_identity_state->initial_stdin) == 0;
   virtual_identity_state->external_global = external_global;
@@ -1108,6 +1127,36 @@ static void virtual_identity_unlock(void) {
 static int32_t allocate_virtual_identity(void) {
   return atomic_fetch_add_explicit(&virtual_identity_state->next_virtual_id, 1,
                                    memory_order_relaxed);
+}
+
+static _Atomic uint64_t *pending_thread_clones_for(int32_t virtual_pid) {
+  pending_thread_clone_t *entry;
+  size_t i;
+  DR_ASSERT(virtual_pid > 0);
+
+  virtual_identity_lock();
+  for (i = 0; i != virtual_identity_state->pending_thread_clone_count; ++i) {
+    entry = &virtual_identity_state->pending_thread_clones[i];
+    if (entry->virtual_pid == virtual_pid) {
+      virtual_identity_unlock();
+      return &entry->count;
+    }
+  }
+
+  DR_ASSERT(virtual_identity_state->pending_thread_clone_count <
+            MAX_VIRTUAL_IDENTITIES);
+  entry = &virtual_identity_state->pending_thread_clones
+               [virtual_identity_state->pending_thread_clone_count++];
+  entry->virtual_pid = virtual_pid;
+  atomic_init(&entry->count, 0);
+  virtual_identity_unlock();
+  return &entry->count;
+}
+
+static void finish_pending_thread_clone(int32_t virtual_pid) {
+  uint64_t pending_before = atomic_fetch_sub_explicit(
+      pending_thread_clones_for(virtual_pid), 1, memory_order_acq_rel);
+  DR_ASSERT(pending_before > 0);
 }
 
 static int32_t ensure_virtual_identity(int32_t host) {
@@ -1409,23 +1458,79 @@ static int32_t in_tree_parent_pid(void) {
 }
 
 // TODO-HUMAN-REVIEW(PR-131): Review the child entry-block scheduling gate.
-static void start_pending_thread(void) {
+static void set_pending_thread_start(prototype_counters_t *counters,
+                                     uint64_t pending) {
+  counters->pending_thread_start = pending;
+  /* Every caller runs in the thread whose admission state is being updated.
+   * The raw TLS copy makes the basic-block check a single direct TLS load. */
+  uint64_t *slots = (uint64_t *)((byte *)dr_get_dr_segment_base(
+      admission_state_tls_register) + admission_state_tls_offset);
+  slots[0] = pending;
+}
+
+static void try_start_pending_thread(void) {
   void *drcontext = dr_get_current_drcontext();
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
+  int32_t mapped_virtual_tid;
+  uint64_t pending_thread_clones;
+  bool mapping_found = false;
   if (counters == NULL || counters->pending_thread_start == 0)
     return;
 
-  evidence_callback_enter();
-  int32_t init_result = reverie_dbt_runtime_thread_init(
-      counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
-      (int32_t)dr_get_process_id(), in_tree_parent_pid(),
-      atomic_load_explicit(&branch_count, memory_order_relaxed), 0,
-      invoke_syscall, read_registers, write_registers);
-  evidence_callback_leave();
+  /* The clone parent overwrites the host mapping before decrementing the
+   * shared count. While any thread clone is pending, a retained entry can
+   * still describe an earlier thread that used the same host TID. */
+  pending_thread_clones = atomic_load_explicit(
+      pending_thread_clones_for(counters->virtual_pid), memory_order_acquire);
+  if (test_thread_clone_process_exit &&
+      counters->virtual_pid == VIRTUAL_ROOT_PID && pending_thread_clones == 1 &&
+      atomic_load_explicit(
+          &virtual_identity_state->thread_clone_process_exit_test_exercised,
+          memory_order_acquire) &&
+      lookup_virtual_identity((int32_t)dr_get_thread_id(drcontext),
+                              &mapped_virtual_tid)) {
+    dr_fprintf(
+        diagnostic_file,
+        "reverie-dbt: exited process blocked a surviving thread clone\n");
+    pending_thread_clones = 0;
+    remember_virtual_identity((int32_t)dr_get_thread_id(drcontext),
+                              TEST_REUSED_TID_STALE);
+    mapped_virtual_tid = TEST_REUSED_TID_STALE;
+    mapping_found = true;
+  }
+  if (test_reused_tid && pending_thread_clones != 0)
+    atomic_store_explicit(&test_reused_tid_waited, true, memory_order_release);
+  if (pending_thread_clones == 0 && !mapping_found)
+    mapping_found = lookup_virtual_identity(
+        (int32_t)dr_get_thread_id(drcontext), &mapped_virtual_tid);
+  if (pending_thread_clones != 0 || !mapping_found) {
+    set_pending_thread_start(counters, 2);
+    return;
+  }
+  if (test_reused_tid && mapped_virtual_tid == TEST_REUSED_TID_STALE) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: reused host TID did not receive expected virtual "
+               "identity\n");
+    exit_runtime_tree(91);
+    return;
+  }
+  counters->virtual_tid = mapped_virtual_tid;
+
+  int32_t init_result = 0;
+  if (!has_copied_runtime() ||
+      (runtime_uses_external_global() && !is_copied_vfork_process())) {
+    evidence_callback_enter();
+    init_result = reverie_dbt_runtime_thread_init(
+        counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
+        (int32_t)dr_get_process_id(), in_tree_parent_pid(),
+        atomic_load_explicit(&branch_count, memory_order_relaxed), 0,
+        invoke_syscall, read_registers, write_registers);
+    evidence_callback_leave();
+  }
   // TODO-HUMAN-REVIEW(PR-134): Confirm retryable native child startup.
   if (init_result > 0) {
-    counters->pending_thread_start = 2;
+    set_pending_thread_start(counters, 2);
     return;
   }
   if (init_result < 0) {
@@ -1434,8 +1539,63 @@ static void start_pending_thread(void) {
     exit_runtime_tree(101);
     return;
   }
-  counters->pending_thread_start = 0;
-  atomic_fetch_sub_explicit(&pending_thread_starts, 1, memory_order_release);
+  set_pending_thread_start(counters, 0);
+}
+
+static void start_pending_thread(void) {
+  prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
+      dr_get_current_drcontext(), thread_state_index);
+  struct timespec started;
+  const uint64_t timeout_ms = test_stalled_thread_start ? 100 : 60000;
+  if (counters == NULL || counters->pending_thread_start == 0)
+    return;
+  if (clock_gettime(CLOCK_MONOTONIC, &started) != 0) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: cannot read thread admission deadline clock\n");
+    exit_runtime_tree(97);
+    return;
+  }
+  // This is also an entry-block clean call. Returning a retry to DynamoRIO
+  // would let the child execute guest instructions before its Tool admits it.
+  while (counters->pending_thread_start != 0) {
+    try_start_pending_thread();
+    if (counters->pending_thread_start == 0)
+      return;
+    // The runtime may block inside its Tool thread-start hook until the
+    // scheduler admits the child. Check only a returned retry: a successful
+    // admission must not fail because the Tool legitimately waited longer.
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+      dr_fprintf(diagnostic_file,
+                 "reverie-dbt: cannot read thread admission deadline clock\n");
+      exit_runtime_tree(97);
+      return;
+    }
+    uint64_t elapsed_ms =
+        (uint64_t)(now.tv_sec - started.tv_sec) * 1000;
+    if (now.tv_nsec >= started.tv_nsec)
+      elapsed_ms += (uint64_t)(now.tv_nsec - started.tv_nsec) / 1000000;
+    else
+      elapsed_ms -= (uint64_t)(started.tv_nsec - now.tv_nsec + 999999) /
+                    1000000;
+    if (elapsed_ms >= timeout_ms) {
+      uint64_t pending = atomic_load_explicit(
+          pending_thread_clones_for(counters->virtual_pid),
+          memory_order_acquire);
+      dr_fprintf(diagnostic_file,
+                 "reverie-dbt: thread admission timed out: virtual_pid=%d "
+                 "host_tid=%d pending_clones=%llu pending_start=%llu "
+                 "timeout_ms=%llu\n",
+                 counters->virtual_pid,
+                 (int)dr_get_thread_id(dr_get_current_drcontext()),
+                 (unsigned long long)pending,
+                 (unsigned long long)counters->pending_thread_start,
+                 (unsigned long long)timeout_ms);
+      exit_runtime_tree(96);
+      return;
+    }
+    dr_sleep(1);
+  }
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -1479,17 +1639,76 @@ static dr_emit_flags_t analyze_syscall_gateway(
   return DR_EMIT_DEFAULT;
 }
 
+static bool admission_registers_available(void *drcontext, bool restored) {
+  reg_id_t reg = DR_REG_NULL;
+  for (;;) {
+    drreg_reserve_info_t info = {sizeof(info)};
+    if (drreg_reservation_info_ex(drcontext, reg, &info) != DRREG_SUCCESS ||
+        info.reserved || (restored && !info.holds_app_value))
+      return false;
+    if (reg == DR_REG_STOP_GPR)
+      return true;
+    reg = reg == DR_REG_NULL ? DR_REG_START_GPR : reg + 1;
+  }
+}
+
+static void insert_thread_admission(void *drcontext, instrlist_t *bb,
+                                     instr_t *instruction) {
+  const dr_cleancall_save_t context_flags =
+      DR_CLEANCALL_READS_APP_CONTEXT | DR_CLEANCALL_WRITES_APP_CONTEXT;
+  /* drreg cannot combine MULTIPATH with WRITES_APP_CONTEXT. Materialize all
+   * unreserved application values before branching, so skipping the call cannot
+   * skip a lazy restore or an update to a live spill. If another instrumenter
+   * owns a register, keep the original unconditional call instead. */
+  if (!admission_registers_available(drcontext, false)) {
+    dr_insert_clean_call_ex(drcontext, bb, instruction,
+                            (void *)start_pending_thread, context_flags, 0);
+    return;
+  }
+  DR_ASSERT(drreg_restore_all(drcontext, bb, instruction) == DRREG_SUCCESS);
+  if (!admission_registers_available(drcontext, true)) {
+    dr_insert_clean_call_ex(drcontext, bb, instruction,
+                            (void *)start_pending_thread, context_flags, 0);
+    return;
+  }
+
+  instr_t *skip = INSTR_CREATE_label(drcontext);
+  instr_t *call = INSTR_CREATE_label(drcontext);
+  instr_t *restore = INSTR_CREATE_label(drcontext);
+  /* The pending path restores the application register before the clean call
+   * and saves its possibly updated value afterward. Both paths then execute
+   * the same final restore. The saved slot is valid at every linear decoder
+   * position even when the call is skipped. No instruction here changes flags. */
+  dr_save_reg(drcontext, bb, instruction, DR_REG_XCX, SPILL_SLOT_1);
+  dr_insert_read_raw_tls(drcontext, bb, instruction,
+                         admission_state_tls_register,
+                         admission_state_tls_offset, DR_REG_XCX);
+  instrlist_meta_preinsert(bb, instruction,
+      INSTR_CREATE_jecxz(drcontext, opnd_create_instr(skip)));
+  instrlist_meta_preinsert(bb, instruction,
+      INSTR_CREATE_jmp(drcontext, opnd_create_instr(call)));
+  instrlist_meta_preinsert(bb, instruction, skip);
+  instrlist_meta_preinsert(bb, instruction,
+      INSTR_CREATE_jmp(drcontext, opnd_create_instr(restore)));
+  instrlist_meta_preinsert(bb, instruction, call);
+  dr_restore_reg(drcontext, bb, instruction, DR_REG_XCX, SPILL_SLOT_1);
+  dr_insert_clean_call_ex(drcontext, bb, instruction,
+                          (void *)start_pending_thread, context_flags, 0);
+  dr_save_reg(drcontext, bb, instruction, DR_REG_XCX, SPILL_SLOT_1);
+  instrlist_meta_preinsert(bb, instruction, restore);
+  dr_restore_reg(drcontext, bb, instruction, DR_REG_XCX, SPILL_SLOT_1);
+}
+
 static dr_emit_flags_t instrument_instruction(void *drcontext, void *tag,
                                               instrlist_t *bb,
                                               instr_t *instruction,
                                               bool for_trace, bool translating,
                                               void *user_data) {
-  if (instr_is_app(instruction) && instruction == instrlist_first_app(bb) &&
-      atomic_load_explicit(&pending_thread_starts, memory_order_acquire) != 0) {
-    dr_insert_clean_call_ex(
-        drcontext, bb, instruction, (void *)start_pending_thread,
-        DR_CLEANCALL_READS_APP_CONTEXT | DR_CLEANCALL_WRITES_APP_CONTEXT,
-        0);
+  // A shared fragment can be compiled before any thread clone is pending.
+  // Always retain the runtime check: thread-init's mcontext PC is not a valid
+  // application entry address on Linux, so it cannot flush an older fragment.
+  if (instr_is_app(instruction) && instruction == instrlist_first_app(bb)) {
+    insert_thread_admission(drcontext, bb, instruction);
   }
   // The INITIAL guest-stack scrub runs HERE -- at the first application
   // instruction -- and not, as it once did, at the first application syscall.
@@ -1928,7 +2147,28 @@ static bool prepare_clone_identity(prototype_counters_t *counters, int sysnum,
       counters->pending_process_clone_exit_signal = exit_signal;
     }
   }
-  if ((flags & CLONE_THREAD) == 0) {
+  if ((flags & CLONE_THREAD) != 0) {
+    if (test_thread_start_write &&
+        (sysnum != SYS_clone ||
+         !read_app((const void *)(uintptr_t)args[1],
+                   &test_thread_start_write_address,
+                   sizeof(test_thread_start_write_address)))) {
+      exit_runtime_tree(95);
+      return false;
+    }
+    atomic_fetch_add_explicit(pending_thread_clones_for(counters->virtual_pid),
+                              1, memory_order_acq_rel);
+    if (test_thread_clone_process_exit &&
+        counters->virtual_pid != VIRTUAL_ROOT_PID) {
+      atomic_store_explicit(
+          &virtual_identity_state->thread_clone_process_exit_test_exercised,
+          true, memory_order_release);
+      dr_fprintf(diagnostic_file,
+                 "THREAD_CLONE_PROCESS_EXIT_TEST exercised=1\n");
+      exit_runtime_tree(94);
+      return false;
+    }
+  } else {
     atomic_store_explicit(&pending_clone_flags, flags, memory_order_relaxed);
     atomic_store_explicit(&pending_clone_creator_pid,
                           (int32_t)dr_get_process_id(), memory_order_relaxed);
@@ -1942,7 +2182,6 @@ static int32_t complete_clone_identity(prototype_counters_t *counters,
                                        int64_t result) {
   int32_t virtual_child = counters->pending_virtual_child;
   uint64_t flags = counters->pending_clone_flags;
-  int32_t mapped;
   if (virtual_child == 0)
     return 0;
 
@@ -1955,20 +2194,55 @@ static int32_t complete_clone_identity(prototype_counters_t *counters,
         exit_runtime_tree(101);
       }
     }
-    if ((flags & CLONE_THREAD) != 0 &&
-        lookup_virtual_identity((int32_t)result, &mapped))
-      virtual_child = mapped;
-    else
-      remember_virtual_identity((int32_t)result, virtual_child);
+    if (test_reused_tid && (flags & CLONE_THREAD) != 0) {
+      int32_t injected = 0;
+      int attempts;
+      remember_virtual_identity((int32_t)result, TEST_REUSED_TID_STALE);
+      if (!lookup_virtual_identity((int32_t)result, &injected) ||
+          injected != TEST_REUSED_TID_STALE) {
+        remember_virtual_identity((int32_t)result, virtual_child);
+        finish_pending_thread_clone(counters->virtual_pid);
+        exit_runtime_tree(92);
+        return 0;
+      }
+      for (attempts = 0; attempts != 1000; ++attempts) {
+        if (atomic_load_explicit(&test_reused_tid_waited, memory_order_acquire))
+          break;
+        dr_sleep(1);
+      }
+      if (attempts == 1000) {
+        remember_virtual_identity((int32_t)result, virtual_child);
+        finish_pending_thread_clone(counters->virtual_pid);
+        exit_runtime_tree(93);
+        return 0;
+      }
+      atomic_store_explicit(&test_reused_tid_exercised, true,
+                            memory_order_release);
+      if (test_thread_start_write) {
+        int written = -1;
+        dr_sleep(20);
+        bool readable = read_app(
+            (const void *)(uintptr_t)test_thread_start_write_address,
+            &written, sizeof(written));
+        if (!readable || written != 0) {
+          dr_fprintf(diagnostic_file,
+                     "reverie-dbt: child wrote memory before thread admission "
+                     "readable=%d written=%d\n", readable, written);
+          exit_runtime_tree(95);
+          return 0;
+        }
+        dr_fprintf(diagnostic_file, "THREAD_START_WRITE_TEST blocked=1\n");
+      }
+    }
+    /* The parent allocated virtual_child before clone. It remains
+     * authoritative when Linux reuses a host TID whose old mapping is still in
+     * the shared table. */
+    remember_virtual_identity((int32_t)result, virtual_child);
   } else if (result == 0) {
     int32_t host_tid = (int32_t)dr_get_thread_id(dr_get_current_drcontext());
     if ((flags & CLONE_THREAD) == 0)
       evidence_initialize_fork_child_thread(counters);
-    if ((flags & CLONE_THREAD) != 0 &&
-        lookup_virtual_identity(host_tid, &mapped))
-      virtual_child = mapped;
-    else
-      remember_virtual_identity(host_tid, virtual_child);
+    remember_virtual_identity(host_tid, virtual_child);
     if ((flags & CLONE_THREAD) != 0) {
       counters->virtual_tid = virtual_child;
     } else {
@@ -1989,9 +2263,15 @@ static int32_t complete_clone_identity(prototype_counters_t *counters,
       virtual_process_id = virtual_child;
     }
   }
-  if ((flags & CLONE_THREAD) == 0 &&
-      (result <= 0 || (flags & CLONE_VM) == 0))
+  if ((flags & CLONE_THREAD) != 0 && result != 0) {
+    if (test_stalled_thread_start && result > 0)
+      dr_fprintf(diagnostic_file, "STALLED_THREAD_START_TEST exercised=1\n");
+    else
+      finish_pending_thread_clone(counters->virtual_pid);
+  } else if ((flags & CLONE_THREAD) == 0 &&
+             (result <= 0 || (flags & CLONE_VM) == 0)) {
     release_clone_identity_handoff(virtual_child);
+  }
   counters->pending_virtual_child = 0;
   if (!(result == 0 && (flags & CLONE_THREAD) == 0 &&
         runtime_owner_pid != 0 && dr_get_process_id() != runtime_owner_pid &&
@@ -3699,11 +3979,9 @@ static bool pre_syscall(void *drcontext, int sysnum) {
    * a syscall through an inherited fragment, start it here after the
    * thread-init event has returned so the parent post-clone callback can
    * register it. */
-  // TODO-HUMAN-REVIEW(PR-134): Confirm the delayed-flush syscall fallback.
-  while (!has_copied_runtime() && counters->pending_thread_start != 0) {
+  // TODO-HUMAN-REVIEW(PR-134): Confirm the syscall entry fallback.
+  if (counters->pending_thread_start != 0) {
     start_pending_thread();
-    if (counters->pending_thread_start != 0)
-      dr_sleep(1);
   }
 
   for (i = 0; i != 6; ++i)
@@ -3966,23 +4244,26 @@ static void thread_init(void *drcontext) {
     DR_ASSERT(counters->preempt_mcontext != NULL);
   }
 
-  // Publish stable virtual identities before entering Rust. Detcore consumes
-  // these fields while constructing its thread state; host tid/pid remain
-  // separate callback arguments for native targeting and pending-map lookup.
+  int32_t pending_thread_start =
+      dr_get_thread_id(drcontext) != dr_get_process_id() &&
+      (has_copied_runtime() ||
+       reverie_dbt_runtime_ready(
+           atomic_load_explicit(&image_generation, memory_order_acquire)));
+
+  // Publish stable process identities before entering Rust. A new thread's
+  // virtual TID remains zero until the clone parent publishes the mapping.
   counters->virtual_pid =
       pending_child != 0 && !is_thread ? pending_child : virtual_process_id;
   counters->virtual_ppid = pending_child != 0 && !is_thread
                                ? virtual_process_id
                                : virtual_parent_process_id;
   counters->virtual_tid =
-      pending_child != 0 ? pending_child : ensure_virtual_identity(host_tid);
+      pending_child != 0
+          ? pending_child
+          : (pending_thread_start ? 0 : ensure_virtual_identity(host_tid));
   counters->pending_virtual_child = 0;
   counters->pending_clone_flags = pending_child != 0 ? clone_flags : 0;
 
-  int32_t pending_thread_start =
-      !has_copied_runtime() && dr_get_thread_id(drcontext) != dr_get_process_id() &&
-      reverie_dbt_runtime_ready(
-          atomic_load_explicit(&image_generation, memory_order_acquire));
   evidence_thread_enter(counters);
   evidence_callback_enter();
   evidence_emit_image_initialization();
@@ -4010,13 +4291,7 @@ static void thread_init(void *drcontext) {
     release_clone_identity_handoff(pending_child);
   }
 
-  counters->pending_thread_start = (uint64_t)pending_thread_start;
-  if (pending_thread_start != 0) {
-    dr_mcontext_t context = {sizeof(context), DR_MC_CONTROL};
-    atomic_fetch_add_explicit(&pending_thread_starts, 1, memory_order_release);
-    DR_ASSERT(dr_get_mcontext(drcontext, &context));
-    DR_ASSERT(dr_delay_flush_region(context.pc, 1, 0, NULL));
-  }
+  set_pending_thread_start(counters, (uint64_t)pending_thread_start);
 }
 
 static void complete_runtime_thread_exit(prototype_counters_t *counters,
@@ -4167,6 +4442,12 @@ static void emit_stats_record(void) {
 }
 
 static void event_exit(void) {
+  if (test_reused_tid)
+    dr_fprintf(
+        diagnostic_file, "REUSED_TID_TEST exercised=%d\n",
+        atomic_load_explicit(&test_reused_tid_exercised, memory_order_acquire)
+            ? 1
+            : 0);
   finalize_runtime_process();
   uint64_t branches;
   uint64_t syscalls;
@@ -4204,6 +4485,7 @@ static void event_exit(void) {
   drx_exit();
   drmgr_unregister_tls_field(compat_gateway_index);
   drmgr_unregister_tls_field(thread_state_index);
+  DR_ASSERT(dr_raw_tls_cfree(admission_state_tls_offset, 1));
   drreg_exit();
   drmgr_exit();
 }
@@ -4316,6 +4598,16 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     else if (strcmp(argv[i],
                     "-test-backend-failure-sender-lookup-miss") == 0)
       test_backend_failure_sender_lookup_miss = true;
+    else if (strcmp(argv[i], "-test-reused-tid") == 0)
+      test_reused_tid = true;
+    else if (strcmp(argv[i], "-test-thread-clone-process-exit") == 0)
+      test_thread_clone_process_exit = true;
+    else if (strcmp(argv[i], "-test-stalled-thread-start") == 0)
+      test_stalled_thread_start = true;
+    else if (strcmp(argv[i], "-test-thread-start-write") == 0) {
+      test_thread_start_write = true;
+      test_reused_tid = true;
+    }
     else if (strcmp(argv[i], "-diagnostic_fd") == 0) {
       int fd;
       DR_ASSERT(++i < argc);
@@ -4365,6 +4657,9 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   if (!evidence_is_enabled())
     runtime_callbacks_page.value.evidence_log_level = 0;
   atomic_store_explicit(&runtime_background_state, 0, memory_order_release);
+  atomic_store_explicit(&test_reused_tid_exercised, false,
+                        memory_order_relaxed);
+  atomic_store_explicit(&test_reused_tid_waited, false, memory_order_relaxed);
   runtime_owner_pid = dr_get_process_id();
   initialize_evidence_transport();
   if (test_direct_evidence_entry) {
@@ -4386,6 +4681,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     virtual_parent_process_id = VIRTUAL_INIT_PID;
     remember_virtual_identity((int32_t)runtime_owner_pid, virtual_process_id);
   }
+  atomic_store_explicit(pending_thread_clones_for(virtual_process_id), 0,
+                        memory_order_release);
   atomic_store_explicit(&image_generation, reverie_dbt_runtime_image_init(),
                         memory_order_release);
   resource_lock = dr_mutex_create();
@@ -4422,14 +4719,17 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     else if (strcmp(argv[i], "-test-wait-for-background") == 0 ||
              strcmp(argv[i], "-test-kill-announced-child") == 0 ||
              strcmp(argv[i], "-test-thread-exit-evidence") == 0 ||
+             strcmp(argv[i], "-test-reused-tid") == 0 ||
+             strcmp(argv[i], "-test-thread-clone-process-exit") == 0 ||
+             strcmp(argv[i], "-test-stalled-thread-start") == 0 ||
+             strcmp(argv[i], "-test-thread-start-write") == 0 ||
              strcmp(argv[i],
                     "-test-leave-process-clone-result-pending") == 0 ||
              strcmp(argv[i], "-test-backend-failure") == 0 ||
              strcmp(argv[i],
                     "-test-backend-failure-sender-lookup-miss") == 0) {
       /* Used only by native lifecycle regression tests. */
-    }
-    else if (strcmp(argv[i], "-isolated-process-group") == 0)
+    } else if (strcmp(argv[i], "-isolated-process-group") == 0)
       runtime_process_group = (process_id_t)getpgrp();
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-dbi-preempt): Review branch-count preemption argument.
@@ -4491,6 +4791,9 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   thread_state_index = drmgr_register_tls_field();
   compat_gateway_index = drmgr_register_tls_field();
   if (thread_state_index == -1 || compat_gateway_index == -1)
+    DR_ASSERT(false);
+  if (!dr_raw_tls_calloc(&admission_state_tls_register,
+                         &admission_state_tls_offset, 1, 0))
     DR_ASSERT(false);
   drmgr_register_exit_event(event_exit);
   if (!drmgr_register_module_load_event(module_load) ||
