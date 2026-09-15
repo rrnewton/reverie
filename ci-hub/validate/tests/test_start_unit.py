@@ -969,6 +969,95 @@ class FakeRun:
         raise AssertionError(command)
 
 
+class RetainedStepProfilesTest(unittest.TestCase):
+    def command(
+        self,
+        *,
+        unit: str = "validate-profile-a",
+        repo: str = "rrnewton/hermit",
+        environment: dict[str, str] | None = None,
+    ) -> list[str]:
+        return start_unit.build_systemd_command(
+            root=Path("/immutable/tool"),
+            state_root=Path("/canonical/state"),
+            checkout=Path("/canonical/state/worktrees/validate/frozen-target"),
+            target=SHA,
+            agent="dev-hermit",
+            unit=unit,
+            record=Path("/canonical/state/ignored/validate/runs") / f"{unit}.json",
+            log=Path("/canonical/state/ignored/validate") / f"{unit}.log",
+            pr=3018,
+            validate_args=["full"],
+            wait=7200,
+            hold=1200,
+            child_deadline=3600,
+            environment=environment or {"HOME": "/home/test", "PATH": "/usr/bin:/bin"},
+            repo=repo,
+        )
+
+    def profile_values(self, command: list[str]) -> list[str]:
+        return [item for item in command if item.startswith("RUN_NODE_PERF_DIR=")]
+
+    def test_hermit_profiles_use_retained_state_root(self) -> None:
+        command = self.command()
+        expected = (
+            "RUN_NODE_PERF_DIR=/canonical/state/ignored/validate/artifacts/"
+            "validate-profile-a/dagrun-profiles"
+        )
+        self.assertEqual([expected], self.profile_values(command))
+        self.assertEqual("--setenv", command[command.index(expected) - 1])
+
+    def test_ambient_profile_path_cannot_replace_owned_artifact(self) -> None:
+        command = self.command(environment={
+            "HOME": "/home/test",
+            "PATH": "/usr/bin:/bin",
+            "RUN_NODE_PERF_DIR": "/foreign/checkout/profiles",
+            "UNRELATED_ENVIRONMENT": "must-not-be-forwarded",
+        })
+        self.assertEqual(self.profile_values(self.command()), self.profile_values(command))
+        self.assertEqual(1, len(self.profile_values(command)))
+        self.assertNotIn("RUN_NODE_PERF_DIR=/foreign/checkout/profiles", command)
+        self.assertFalse(any(item.startswith("UNRELATED_ENVIRONMENT=") for item in command))
+
+    def test_distinct_units_have_distinct_profile_directories(self) -> None:
+        first = self.profile_values(self.command(unit="validate-profile-a"))
+        second = self.profile_values(self.command(unit="validate-profile-b"))
+        self.assertEqual(1, len(first))
+        self.assertEqual(1, len(second))
+        self.assertNotEqual(first, second)
+        self.assertEqual(
+            ["RUN_NODE_PERF_DIR=/canonical/state/ignored/validate/artifacts/"
+             "validate-profile-b/dagrun-profiles"],
+            second,
+        )
+
+    def test_reverie_does_not_receive_hermit_profile_environment(self) -> None:
+        ordinary = self.command(repo="rrnewton/reverie")
+        ambient = self.command(repo="rrnewton/reverie", environment={
+            "HOME": "/home/test",
+            "PATH": "/usr/bin:/bin",
+            "RUN_NODE_PERF_DIR": "/foreign/checkout/profiles",
+        })
+        self.assertEqual(ordinary, ambient)
+        self.assertEqual([], self.profile_values(ordinary))
+        self.assertIn("/immutable/tool/ci-hub/validate/reverie_safe_ci.py", ordinary)
+
+    def test_profile_capture_preserves_ordinary_driver_and_limits(self) -> None:
+        command = self.command()
+        self.assertEqual(
+            ["/usr/bin/env", "PR_NUMBER=3018", sys.executable,
+             "/immutable/tool/ci-hub/validate/run_with_validate_deadline.py",
+             "with-proxy", "./scripts/validate.rs", "full"],
+            command[-7:],
+        )
+        self.assertIn("HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS=3239", command)
+        for option, expected in (("--wait", "7200"), ("--hold", "1200"),
+                                 ("--child-deadline", "3600"), ("--target", SHA)):
+            self.assertEqual(expected, command[command.index(option) + 1])
+        self.assertFalse(any(item.startswith("CI_DAG_JOBS=") for item in command))
+        self.assertFalse(any(item.startswith("CARGO_BUILD_JOBS=") for item in command))
+
+
 class StartUnitTest(unittest.TestCase):
     def test_run_handle_kind_is_the_validate_lock_kind(self) -> None:
         self.assertEqual(
@@ -1663,6 +1752,31 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual("codex/fixture-branch", record["branch"])
         self.assertEqual(3600, record["validate_lock_child_deadline_seconds"])
         self.assertEqual(3239, record["hermit_run_timeout_seconds"])
+
+    def test_materialized_profile_artifact_survives_checkout_cleanup(self) -> None:
+        profile = (
+            self.root / "ignored/validate/artifacts/validate-test/dagrun-profiles/"
+            "step_profiles-fixture.csv"
+        )
+        contents = b"step,ok,oom_kills,memory_events_oom_kill\nprobe,true,2,2\n"
+
+        def run(command: list[str], **kwargs: object):
+            if command[0] == "systemd-run" and "validate-lock" in command:
+                values = [item for item in command if item.startswith("RUN_NODE_PERF_DIR=")]
+                self.assertEqual([f"RUN_NODE_PERF_DIR={profile.parent}"], values)
+                # Model the driver's existing profile writer, including raw OOM
+                # evidence that contradicts a passing StepOutcome.
+                profile.parent.mkdir(parents=True, exist_ok=True)
+                profile.write_bytes(contents)
+            return self.fake(command, **kwargs)
+
+        rc, _output, error = self.invoke(["--materialize-target", "--", "full"], run=run)
+
+        self.assertEqual(0, rc, error)
+        self.assertIsNotNone(self.fake.fresh)
+        assert self.fake.fresh is not None
+        self.assertFalse(self.fake.fresh.exists())
+        self.assertEqual(contents, profile.read_bytes())
 
     def test_entry_cleanup_retains_completed_checkout_before_creating_next(self) -> None:
         stale, _record = self.managed_cleanup_record("entry-stale")

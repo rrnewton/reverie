@@ -4115,6 +4115,10 @@ def build_systemd_command(
                 f"SAFE_CI_DAG_RUNNER_LOG_DIR={runner_log_dir}",
                 "--setenv",
                 f"DAGRUN_LOG_DIR={runner_log_dir}",
+                # Retain raw scheduler counters outside the disposable checkout.
+                # Older success outcomes erase OOM counts that profiles preserve.
+                "--setenv",
+                f"RUN_NODE_PERF_DIR={runner_log_dir.parent / 'dagrun-profiles'}",
             ]
         )
     if frozen_validate:
