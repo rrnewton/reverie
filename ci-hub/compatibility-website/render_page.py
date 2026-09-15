@@ -1148,6 +1148,81 @@ def _state_summary(model: SiteModel, page: str) -> str:
     return '<div class="metrics">' + "".join(cards) + "</div>"
 
 
+def _result_reading(model: SiteModel) -> str:
+    """State the denominator and the age of the red cells, from the data.
+
+    Without this a reader takes "30 red" against the 5,744 in the manifest and
+    understates the failure rate sevenfold, or takes it as 30 things broken right
+    now when every one of them is a result retained from an earlier run. Both
+    readings are available from the numbers alone, and the wrong one is the more
+    natural. The site is read on a phone, where the metric cards arrive long
+    before any provenance a reader might otherwise use to calibrate them.
+
+    THE ARITHMETIC IS CHECKED, NOT ASSERTED. An earlier version of this paragraph
+    said "the remaining 4895 cells have never been measured", which invited the
+    subtraction 5744 - 835 and got 4909. The 14 it swallowed are the deliberate
+    projection omissions that the sentence four lines above already names as exact
+    arithmetic. A paragraph whose whole purpose is to stop a reader using the
+    wrong denominator is the worst possible place to hide one, so every population
+    is named and the total is refused if it does not close.
+    """
+    counts = model.data["counts"]
+    in_manifest = counts["in_manifest_cell_count"]
+    states = Counter(_cell_state(cell) for cell in model.cells)
+    green = states["green"]
+    red = states["red"]
+    never = states["never-measured"]
+    measured = green + red
+    undecided = len(model.cells) - measured - never
+    omitted = in_manifest - len(model.cells)
+    if measured + never + undecided + omitted != in_manifest:
+        raise RenderRefused(
+            "overview reading note arithmetic does not close: "
+            f"{measured} with a result + {never} never measured + {undecided} "
+            f"undecided + {omitted} omitted != {in_manifest} in the manifest"
+        )
+    if undecided < 0 or omitted < 0:
+        raise RenderRefused("overview reading note computed a negative population")
+
+    red_cells = [cell for cell in model.cells if _cell_state(cell) == "red"]
+    red_selected = sum(1 for cell in red_cells if cell.get("selected_by_full"))
+    if red == 0:
+        red_sentence = "No cell in this snapshot carries a recorded failure."
+    elif red_selected == 0:
+        red_sentence = (
+            f"None of the {red} red cells is selected by full in this snapshot, so "
+            "every one of them is a result retained from an earlier run rather "
+            "than a failure of the run recorded above."
+        )
+    elif red_selected == red:
+        red_sentence = f"All {red} red cells are selected by full in this snapshot."
+    else:
+        red_sentence = (
+            f"{red_selected} of the {red} red cells are selected by full in this "
+            f"snapshot; the other {red - red_selected} are results retained from "
+            "earlier runs."
+        )
+
+    parts = [f"{measured} have a recorded result", f"{never} have never been measured"]
+    if undecided:
+        parts.append(f"{undecided} have evidence that does not establish a result")
+    parts.append(
+        f"{omitted} are deliberate omissions with no cell row on this site"
+    )
+    breakdown = ", ".join(parts[:-1]) + f" and {parts[-1]}"
+    return (
+        '<p class="result-reading"><strong>How to read these.</strong> '
+        f"Green and red are counted over the {measured} cells with a recorded "
+        "result, "
+        f"not over the {in_manifest} in the manifest; quoting red against the "
+        "manifest would understate the rate. "
+        f"{red_sentence} "
+        f"Of the {in_manifest} cells in the manifest, {breakdown}. "
+        "The manifest holds far more cells than any path selects, which is the "
+        "intended arrangement and not a backlog.</p>"
+    )
+
+
 def _overview(model: SiteModel, page: str) -> str:
     counts = model.data["counts"]
     runs = model.runs
@@ -1165,6 +1240,7 @@ def _overview(model: SiteModel, page: str) -> str:
       </div>
       <p>The difference between cells in the manifest and rows with a cell page is retained as exact arithmetic. It is not assigned a cell result and has no cell row on this site.</p>
       {_state_summary(model, page)}
+      {_result_reading(model)}
       <p class="evidence-counts">
         {_count_link(page, 'cells/index.html', 'series-rows', runs['series_physical_row_count'], 'admitted canonical series rows', runs['series_represented_run_count'])}.
         {_count_link(page, 'runs/index.html', 'validation-runs', len(model.history_rows), 'admitted validation ledger rows')}.
@@ -1845,6 +1921,8 @@ def _landing_introduction() -> str:
       <p>For more context, see the <a href="https://github.com/rrnewton/hermit/blob/main/README.md">README</a> and the high-level <a href="https://developers.facebook.com/blog/post/2022/11/22/hermit-deterministic-linux-testing/">introduction in the blog post</a>.</p>
       <p>Hermit testing centers on a suite of test programs, each identified by a test ID. The central compatibility matrix is indexed by <strong>test ID × mode × backend</strong>. A mode selects deterministic execution, record/replay, or chaos concurrency testing. A backend identifies the Reverie implementation and the way it instruments the guest program.</p>
       <p>This page reports the compatibility evidence recorded in the displayed snapshot; it is not a live status view.</p>
+      <p>Every count here comes from the single dated measurement run named in the provenance above, so it answers &ldquo;what did that run measure?&rdquo; and not &ldquo;where is the project now?&rdquo;. Backend work that landed after that run is not represented, and a backend whose coverage changed since then still shows the figure this run recorded. Comparing two dates means opening two snapshots and comparing them; no page on this site does that for you.</p>
+      <p>Read the result counts against the right denominator. Green and red are counted only over cells this run actually measured, which is a much smaller population than the manifest. Cells the run did not select are reported separately as never measured; they are not failures, and folding them in would understate the pass rate as badly as ignoring them would overstate it.</p>
     </div>"""
 
 

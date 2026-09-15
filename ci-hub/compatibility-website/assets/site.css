@@ -27,7 +27,16 @@ body {
     "Segoe UI", sans-serif;
   line-height: 1.5;
   margin: 0;
-  overflow-wrap: anywhere;
+  /* `anywhere` here broke ORDINARY WORDS, not just long identifiers: at 390px a
+     cell heading split as "veri/fy" and the validation-run headers split
+     "selected" and "recorded" mid-word at 1440px. `anywhere` also shrinks a
+     box's min-content contribution, so table columns were free to squeeze
+     themselves narrower than their own words -- which is why the damage showed
+     up in table headers rather than in prose. `break-word` breaks a word only
+     when it cannot fit a line by itself and leaves min-content alone.
+     Elements that genuinely carry unbreakable 64-hex digests opt back in to
+     `anywhere` individually below. */
+  overflow-wrap: break-word;
 }
 
 a {
@@ -486,9 +495,16 @@ table {
   width: 12rem;
 }
 
-.validation-runs-table th,
+/* Body cells hold record ids and commit digests and must stay breakable, but a
+   column HEADING is prose and breaking it mid-word is never the right answer.
+   Splitting these two is what stops "Cells selected by that path" rendering as
+   "select/ed". */
 .validation-runs-table td {
   overflow-wrap: anywhere;
+}
+
+.validation-runs-table th {
+  overflow-wrap: break-word;
 }
 
 .validation-runs-table tbody th {
@@ -875,5 +891,41 @@ footer {
 
   .list-pagination {
     align-items: center;
+  }
+}
+
+/* NARROW-SCREEN TABLES. Measured on the published 2026-09-11 site at 390x844:
+   the cells table put 1856px of content inside a 322px scroller (5.76 viewport
+   widths) and the validation-run table 1345px (4.18). Relating a row's identity
+   on the left to its result on the right meant scrolling across four to six
+   screens and back, with nothing holding the identity in view.
+
+   The cause is `table { width: max-content }` plus a fixed `width: 80rem` on the
+   validation-run table: together they tell the table never to wrap, at every
+   viewport. Releasing both below 48rem lets the columns wrap and the table fit
+   the screen. The table gets taller, which is the correct trade on a phone --
+   vertical scrolling is one gesture and keeps each row's identity beside its
+   result, horizontal scrolling is two and does not.
+
+   Deliberately scoped to narrow viewports. The reviewer found the desktop
+   layout sound, so it keeps `max-content` and is not touched here. The
+   horizontal scroller stays in place as the fallback for anything that still
+   cannot fit.
+
+   THE VALIDATION-RUN TABLE IS DELIBERATELY EXCLUDED, and that exclusion is the
+   whole reason this selector carries a `:not()`. Its fixed layout, its run-id
+   column under 250px, its clipped-with-ellipsis run id and the fact that its
+   scroller overflows are all ASSERTED by
+   test_compatibility_website_render_page.py -- at a 600px viewport, which is
+   inside this media query. Releasing its width made
+   `test_validation_runs_default_to_started_descending_and_use_recorded_wall_clock`
+   and `test_long_fallback_run_id_is_single_line_clipped_and_fully_accessible`
+   fail. That table's horizontal scroll is a decision the suite protects, not an
+   oversight, so satisfying the review finding there would have meant editing
+   those tests to match the code. It is left alone and reported as unfixed
+   instead. */
+@media (max-width: 48rem) {
+  .table-scroll table:not(.validation-runs-table) {
+    width: auto;
   }
 }

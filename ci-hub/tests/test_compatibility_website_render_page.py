@@ -4012,3 +4012,489 @@ def test_renderer_removes_retired_private_detail_helpers() -> None:
         "_filtered_count_link",
     ):
         assert not hasattr(render_page, name)
+
+
+def _cell_with_many_evidence_rows(count: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Give one cell enough recorded evidence to push a late occurrence off-screen.
+
+    The defect only appears once the requested row is BELOW THE FOLD, and on the
+    real site it also sat on a second page. A two-row fixture cell cannot show
+    either, because the target is already in view and `scrollY == 0` is then the
+    correct answer rather than the bug.
+    """
+    data = representative_build_data()
+    cell = data["cells"][0]
+    template = copy.deepcopy(data["runs"]["series_rows"][0])
+    for index in range(count):
+        row = copy.deepcopy(template)
+        event_id = f"event-bulk-{index:04d}"
+        tree = f"{index:040d}"
+        row.update(
+            event_id=event_id,
+            producer="pressure-test",
+            product_result=None,
+            run_id=f"bulk-run-{index:04d}",
+        )
+        row["series"].update(
+            failure_class="understood_prerequisite_failure",
+            outcome="skipped",
+            result=None,
+            tree=tree,
+        )
+        row.pop("corrects", None)
+        row["current_main_ancestry"] = False
+        data["runs"]["series_rows"].append(row)
+        data["runs"]["product_results"][event_id] = None
+        data["runs"]["projection_results"][event_id] = None
+        data["runs"]["current_main_ancestry"][tree] = False
+        cell["event_ids"].append(event_id)
+        cell["physical_row_count"] += 1
+        cell["represented_run_count"] += 1
+        for field in (
+            "projection_admitted_physical_row_count",
+            "projection_admitted_represented_run_count",
+            "series_physical_row_count",
+            "series_represented_run_count",
+        ):
+            data["runs"][field] += 1
+        data["counts"]["physical_row_count"] += 1
+        data["counts"]["represented_run_count"] += 1
+        data["provenance"]["series_physical_row_count"] += 1
+        data["provenance"]["series_represented_run_count"] += 1
+    _refresh_projection_digests(data)
+    return _validated(data), cell
+
+
+def test_recorded_evidence_fragment_scrolls_the_requested_occurrence_into_view(
+    chromium_browser: Any,
+) -> None:
+    """A shared occurrence link must land ON the row, not merely on its page.
+
+    Measured on the published 2026-09-11 site before this fix: loading a cell URL
+    whose only state was an `event-...` fragment left the document at scrollY 0
+    with the requested row at y=8904. The fragment chose the right page and the
+    row existed; the reader was simply not taken to it. The browser performs its
+    own fragment scroll while the document is still the server-rendered shell,
+    before this list has drawn the row, and never retries.
+    """
+    data, cell = _cell_with_many_evidence_rows(60)
+    files = render_page.render_site(_build(data), data)
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    target_event = "event-bulk-0059"
+    fragment = render_page._fragment("event", target_event)
+
+    page = chromium_browser.new_page(viewport={"width": 1440, "height": 900})
+    _browser_route(page, files)
+    page.goto(f"http://127.0.0.1/{model.cell_paths[cell['cell']]}#{fragment}")
+    _wait_for_verified_data(page)
+    page.wait_for_selector(f"#{fragment}")
+
+    measured = page.evaluate(
+        "fragment => {"
+        "  const target = document.getElementById(fragment);"
+        "  const box = target.getBoundingClientRect();"
+        "  return {"
+        "    documentTop: Math.round(box.top + window.scrollY),"
+        "    scrollY: Math.round(window.scrollY),"
+        "    viewportTop: Math.round(box.top),"
+        "    viewportHeight: window.innerHeight,"
+        "  };"
+        "}",
+        fragment,
+    )
+    page.close()
+
+    # The row must genuinely be far down the document, or this test would pass
+    # against the defect for the wrong reason.
+    assert measured["documentTop"] > measured["viewportHeight"]
+    assert measured["scrollY"] > 0, "the occurrence was never scrolled into view"
+    assert 0 <= measured["viewportTop"] < measured["viewportHeight"]
+
+
+def test_a_fragment_for_another_list_does_not_move_this_one(
+    chromium_browser: Any,
+) -> None:
+    """Detail pages carry several independent paged lists.
+
+    A fragment naming a row none of this list's records own must leave it alone,
+    otherwise adding the scroll above would make unrelated lists fight over one
+    fragment.
+    """
+    data, cell = _cell_with_many_evidence_rows(60)
+    files = render_page.render_site(_build(data), data)
+    model = render_page._site_model(_build(data), data, wording="fixture")
+
+    page = chromium_browser.new_page(viewport={"width": 1440, "height": 900})
+    _browser_route(page, files)
+    page.goto(
+        f"http://127.0.0.1/{model.cell_paths[cell['cell']]}"
+        "#event-this-identity-is-not-in-any-record"
+    )
+    _wait_for_verified_data(page)
+    scroll_y = page.evaluate("() => Math.round(window.scrollY)")
+    page.close()
+
+    assert scroll_y == 0
+
+
+def test_ordinary_words_are_not_broken_mid_word(chromium_browser: Any) -> None:
+    """`overflow-wrap: anywhere` on body split ordinary words, not just digests.
+
+    It also shrinks a box's min-content contribution, which is why the damage
+    showed up in table headings: the column was free to squeeze below the width
+    of its own longest word. Digest-bearing elements keep `anywhere`.
+    """
+    data = representative_build_data()
+    data = _validated(data)
+    files = render_page.render_site(_build(data), data)
+
+    page = chromium_browser.new_page(viewport={"width": 390, "height": 844})
+    _browser_route(page, files)
+    page.goto("http://127.0.0.1/runs/index.html")
+    page.wait_for_selector(".validation-runs-table tbody td")
+    styles = page.evaluate(
+        "() => ({"
+        "  body: getComputedStyle(document.body).overflowWrap,"
+        "  runHeading: getComputedStyle("
+        "    document.querySelector('.validation-runs-table thead th')).overflowWrap,"
+        "  runCell: getComputedStyle("
+        "    document.querySelector('.validation-runs-table tbody td')).overflowWrap,"
+        "})"
+    )
+    page.close()
+
+    assert styles["body"] == "break-word"
+    assert styles["runHeading"] == "break-word"
+    # Body cells still carry record ids and commit digests and must stay breakable.
+    assert styles["runCell"] == "anywhere"
+
+
+def test_cells_table_fits_a_narrow_viewport_and_the_run_table_keeps_its_fixed_layout(
+    chromium_browser: Any,
+) -> None:
+    """Measured at 390x844 before this fix: 1856px of cells table inside a 322px
+    scroller, 5.76 viewport widths of horizontal travel to relate an identity to
+    its result.
+
+    The validation-run table is deliberately NOT included. Its fixed layout and
+    overflowing scroller are asserted elsewhere in this file at a 600px viewport,
+    so releasing its width would mean editing those tests to match the code.
+    """
+    data = representative_build_data()
+    data = _validated(data)
+    files = render_page.render_site(_build(data), data)
+
+    page = chromium_browser.new_page(viewport={"width": 390, "height": 844})
+    _browser_route(page, files)
+    page.goto("http://127.0.0.1/cells/index.html")
+    _wait_for_verified_data(page)
+    # DIFFERENTIAL, not an absolute bar. Ten columns of cell identity cannot be
+    # made to fit 322px without dropping data, so an absolute threshold here
+    # would either be unreachable or be whatever number happened to pass. This
+    # measures the same page twice -- once as shipped, once with the narrow-width
+    # rule defeated -- so it proves the rule is doing the work rather than
+    # asserting a figure chosen after the fact.
+    ratio = (
+        "() => {"
+        "  const scroll = document.querySelector('#all-cells .table-scroll');"
+        "  return scroll.scrollWidth / Math.max(1, scroll.clientWidth);"
+        "}"
+    )
+    cells_ratio = page.evaluate(ratio)
+    page.add_style_tag(
+        content=(
+            "@media (max-width: 48rem) {"
+            "  .table-scroll table:not(.validation-runs-table) {"
+            "    width: max-content;"
+            "  }"
+            "}"
+        )
+    )
+    unfixed_ratio = page.evaluate(ratio)
+    page.goto("http://127.0.0.1/runs/index.html")
+    page.wait_for_selector(".validation-runs-table")
+    run_layout = page.evaluate(
+        "() => getComputedStyle("
+        "document.querySelector('.validation-runs-table')).tableLayout"
+    )
+    page.close()
+
+    assert unfixed_ratio > cells_ratio, "the narrow-width rule changed nothing"
+    assert cells_ratio <= unfixed_ratio * 0.75, (
+        "the narrow-width rule should remove a substantial part of the "
+        f"horizontal travel; measured {cells_ratio:.2f} against {unfixed_ratio:.2f}"
+    )
+    # Honest bound: this REDUCES the sideways travel, it does not remove it. Ten
+    # columns still do not fit a phone, and the residual is reported as an
+    # unfixed part of the review finding rather than hidden behind a passing
+    # threshold.
+    assert cells_ratio > 1.0
+    assert run_layout == "fixed"
+
+
+def test_landing_introduction_separates_a_dated_snapshot_from_current_progress() -> None:
+    """The review found a reader could read snapshot counts as current progress,
+    and could read the manifest as the denominator for red."""
+    landing = render_page._landing_introduction()
+
+    assert "it is not a live status view" in landing
+    assert "single dated measurement run" in landing
+    assert "Backend work that landed after that run is not represented" in landing
+    assert "Green and red are counted only over cells this run actually measured" in landing
+    assert "never measured" in landing
+    # The old vocabulary must not come back with the new prose.
+    assert "enabled" not in landing.lower()
+
+
+def test_cell_identity_heading_breaks_only_at_its_separators(
+    chromium_browser: Any,
+) -> None:
+    """Measured on the built site at 390x844 before this fix: the heading
+    rendered as "applications/git-" / "repository-" / "workflow/verify/p" /
+    "trace", splitting `ptrace` across two lines.
+
+    Note the browser does NOT reliably break at a slash on its own -- it kept
+    "workflow/verify/p" together and broke inside the next word -- which is the
+    whole reason the joints have to be stated rather than hoped for.
+
+    Driven through set_content with a realistic long identity rather than the
+    rendered fixture page, because the fixture's only cell is
+    `tests/hello/verify/ptrace`, 25 characters, which fits without ever breaking
+    mid-word. An earlier version of this test used that page and PASSED WITH THE
+    FIX REVERTED; it measured nothing. The control is asserted here instead: the
+    same identity, same width, same stylesheet, with and without the <wbr>
+    joints.
+    """
+    identity = "applications/git-repository-workflow/verify/ptrace"
+    stylesheet = (
+        REPOSITORY / "ci-hub/compatibility-website/assets/site.css"
+    ).read_text()
+    javascript = (
+        REPOSITORY / "ci-hub/compatibility-website/assets/site.js"
+    ).read_text()
+
+    def lines_for(with_joints: bool) -> list[str]:
+        page = chromium_browser.new_page(viewport={"width": 390, "height": 844})
+        page.set_content(
+            "<!doctype html><html><head>"
+            f"<style>{stylesheet}</style></head>"
+            "<body data-page-kind='heading-test'>"
+            "<main><header class='page-heading'><h1 id='identity'></h1>"
+            "</header></main>"
+            f"<script>{javascript}</script></body></html>"
+        )
+        page.evaluate(
+            """([identity, withJoints]) => {
+              const heading = document.getElementById('identity');
+              if (!withJoints) {
+                heading.textContent = identity;
+                return;
+              }
+              const segments = identity.split('/');
+              segments.forEach((segment, index) => {
+                const last = index === segments.length - 1;
+                heading.appendChild(
+                  document.createTextNode(last ? segment : segment + '/'));
+                if (!last) { heading.appendChild(document.createElement('wbr')); }
+              });
+            }""",
+            [identity, with_joints],
+        )
+        rows = page.evaluate(
+            """() => {
+              const heading = document.getElementById('identity');
+              const walker = document.createTreeWalker(heading, NodeFilter.SHOW_TEXT);
+              const out = [];
+              let current = '';
+              let lastTop = null;
+              let node;
+              while ((node = walker.nextNode())) {
+                for (let index = 0; index < node.textContent.length; index += 1) {
+                  const range = document.createRange();
+                  range.setStart(node, index);
+                  range.setEnd(node, index + 1);
+                  const top = range.getBoundingClientRect().top;
+                  if (lastTop !== null && Math.abs(top - lastTop) > 2) {
+                    out.push(current);
+                    current = '';
+                  }
+                  current += node.textContent[index];
+                  lastTop = top;
+                }
+              }
+              if (current) { out.push(current); }
+              return out;
+            }"""
+        )
+        page.close()
+        return rows
+
+    def splits_a_word(rows: list[str]) -> bool:
+        return any(
+            not (line.endswith("/") or line.endswith("-")) for line in rows[:-1]
+        )
+
+    without_joints = lines_for(False)
+    with_joints = lines_for(True)
+
+    assert len(with_joints) > 1, "meaningless unless the heading wrapped"
+    # The control: this identity really does split a word when left to CSS.
+    assert splits_a_word(without_joints), (
+        "the control did not reproduce the defect, so the assertion below "
+        f"proves nothing; measured {without_joints}"
+    )
+    assert not splits_a_word(with_joints), (
+        f"the identity still breaks inside a word: {with_joints}"
+    )
+
+
+def test_cell_detail_heading_inserts_the_joints_through_the_product(
+    chromium_browser: Any,
+) -> None:
+    """Assert the SITE inserts the break opportunities, not that Chromium honours
+    them.
+
+    The behaviour test above builds its own <wbr> DOM inside `page.evaluate`, so
+    it demonstrates that Chromium breaks at a <wbr> and nothing about whether the
+    renderer emits any: reverting only `site.js`, which deletes `identityNode`
+    outright, still leaves it green. This drives the real cell detail page and
+    counts the joints the product actually produced, which is the half that was
+    previously carried only by a source-string grep.
+    """
+    data = _validated(representative_build_data())
+    files = render_page.render_site(_build(data), data)
+    cell = data["cells"][0]
+    model = render_page._site_model(_build(data), data, wording="fixture")
+
+    page = chromium_browser.new_page(viewport={"width": 390, "height": 844})
+    _browser_route(page, files)
+    page.goto(f"http://127.0.0.1/{model.cell_paths[cell['cell']]}")
+    _wait_for_verified_data(page)
+    page.wait_for_selector("h1")
+    observed = page.evaluate(
+        """() => {
+          const heading = document.querySelector('h1');
+          return {
+            text: heading.textContent,
+            joints: heading.querySelectorAll('wbr').length,
+          };
+        }"""
+    )
+    page.close()
+
+    identity = str(cell["cell"])
+    assert observed["text"] == identity
+    # One joint per separator, and the identity really does have separators.
+    assert identity.count("/") > 0
+    assert observed["joints"] == identity.count("/"), (
+        f"heading carries {observed['joints']} break opportunities for "
+        f"{identity.count('/')} separators in {identity!r}"
+    )
+
+
+class _ReadingModel:
+    """Minimal stand-in carrying only what `_result_reading` reads.
+
+    The branch differential has to be driven from something with red cells, and
+    the real fixtures cannot supply one cheaply: a red cell needs its own series
+    row, its own validate-run selection and its own share of the physical-row
+    partition, and the reducer refuses every shortcut. Driving the branches from
+    a stub keeps the differential honest; the test below it runs the same
+    function against a real rendered model so the stub cannot drift unnoticed.
+    """
+
+    def __init__(self, cells, in_manifest):
+        self.cells = cells
+        states = Counter(cell["state"] for cell in cells)
+        self.data = {
+            "counts": {
+                "green_cell_count": states["green"],
+                "in_manifest_cell_count": in_manifest,
+                "never_measured_cell_count": states["never-measured"],
+                "red_cell_count": states["red"],
+            }
+        }
+
+
+def _reading_cell(state, selected_by_full=False):
+    return {
+        "state": state,
+        "latest_result": {"green": "pass", "red": "product_failure"}.get(state),
+        "qualifying_physical_row_count": 0 if state == "never-measured" else 1,
+        "selected_by_full": selected_by_full,
+    }
+
+
+def test_overview_reading_note_names_every_population_and_they_sum_to_the_manifest() -> None:
+    """Run against a REAL rendered model that has an omission.
+
+    The one-cell fixture closes any arithmetic trivially, which is exactly how
+    the earlier version of this paragraph shipped saying "the remaining 4895"
+    when 5744 - 835 is 4909. This fixture has 3 in the manifest, 2 cell rows and
+    1 deliberate omission, so a paragraph that swallows the omission cannot add
+    up here either.
+    """
+    data = _validated(data_with_all_three_states_and_one_omitted_row())
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    in_manifest = data["counts"]["in_manifest_cell_count"]
+    assert in_manifest - len(model.cells) > 0, "fixture must contain an omission"
+
+    reading = render_page._result_reading(model)
+    text = re.sub(r"<[^>]+>", " ", reading)
+
+    stated = [int(value) for value in re.findall(r"\b(\d+)\b", text)]
+    assert in_manifest in stated
+    # Every population named after "Of the N cells in the manifest," must sum to N.
+    tail = text.split(f"Of the {in_manifest} cells in the manifest,", 1)[1]
+    parts = [int(value) for value in re.findall(r"\b(\d+)\b", tail.split(".")[0])]
+    assert sum(parts) == in_manifest, (
+        f"named populations {parts} sum to {sum(parts)}, not {in_manifest}: {tail!r}"
+    )
+    assert "understate the rate" in text
+    assert "not a backlog" in text
+    assert "enabled" not in text.lower()
+
+
+def test_reading_note_refuses_when_the_arithmetic_does_not_close() -> None:
+    """Fail closed. A paragraph that exists to fix a denominator must not ship a
+    wrong one quietly, so the populations are checked rather than trusted."""
+    cells = [_reading_cell("green"), _reading_cell("red")]
+    with pytest.raises(render_page.RenderRefused):
+        # 2 cell rows against an in-manifest total of 1 cannot be partitioned.
+        render_page._result_reading(_ReadingModel(cells, 1))
+
+
+@pytest.mark.parametrize(
+    "selected,expected,forbidden",
+    [
+        ((False, False), "None of the 2 red cells", "All 2 red cells"),
+        ((True, True), "All 2 red cells", "retained from an earlier run"),
+        ((True, False), "1 of the 2 red cells", "None of the 2 red cells"),
+    ],
+)
+def test_red_cell_sentence_follows_the_data_rather_than_a_fixed_string(
+    selected, expected, forbidden
+) -> None:
+    """The claim "these are old failures" is only true while it is true.
+
+    A fixed sentence keeps asserting it after a run starts failing cells the full
+    path does select, which is the reassuring direction to be wrong in. Each
+    branch is driven and the other branches' wording is asserted ABSENT, so
+    replacing the block with any single literal fails at least one case.
+    """
+    cells = [
+        _reading_cell("green"),
+        _reading_cell("never-measured"),
+        *(_reading_cell("red", selected_by_full=value) for value in selected),
+    ]
+    reading = render_page._result_reading(_ReadingModel(cells, len(cells)))
+    assert expected in reading
+    assert forbidden not in reading
+
+
+def test_red_cell_sentence_handles_a_snapshot_with_no_failures() -> None:
+    reading = render_page._result_reading(
+        _ReadingModel([_reading_cell("green")], 1)
+    )
+    assert "No cell in this snapshot carries a recorded failure." in reading
+
