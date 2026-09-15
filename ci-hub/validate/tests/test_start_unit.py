@@ -2020,20 +2020,23 @@ class StartUnitTest(unittest.TestCase):
         self.assertTrue(cargo_home.is_dir())
         self.assertEqual(before, record_path.read_bytes())
 
-    def test_entry_refuses_uncertain_current_in_place_record(self) -> None:
-        checkout, cargo_home, _record_path = self.in_place_cleanup_record(
+    def test_entry_retains_uncertain_current_in_place_record_without_journal(self) -> None:
+        checkout, cargo_home, record_path = self.in_place_cleanup_record(
             "uncertain-in-place", temporary=False, current=True, state="unknown"
         )
         self.fake.collected_unit = True
+        before = record_path.read_bytes()
 
         with mock.patch.object(
             start_unit, "_carries_nosuid_or_nodev", return_value=False
         ):
             rc, _output, error = self.invoke(["--dry-run"])
 
-        self.assertEqual(start_unit.EXIT_REFUSED, rc)
-        self.assertIn("not under exactly one classified agent slot", error)
-        self.assertFalse(
+        # Non-disposable storage does not become disposable or acquire a known
+        # outcome merely because its creation journal has been retired.
+        self.assertEqual(0, rc, error)
+        self.assertIn("retained-nonblocking=1", error)
+        self.assertTrue(
             any(wrkslots_action(command, "create") for command in self.fake.commands)
         )
         self.assertFalse(
@@ -2045,6 +2048,73 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertTrue(checkout.is_dir())
         self.assertTrue(cargo_home.is_dir())
+        self.assertEqual(before, record_path.read_bytes())
+
+    def test_entry_still_refuses_legacy_in_place_record_without_journal(self) -> None:
+        _checkout, _cargo_home, record_path = self.in_place_cleanup_record(
+            "legacy-without-journal", include_temporary=False, current=False
+        )
+        before = record_path.read_bytes()
+        rc, _output, error = self.invoke(["--dry-run"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("not under exactly one classified agent slot", error)
+        self.assertEqual(before, record_path.read_bytes())
+
+    def test_retained_in_place_storage_preserves_live_and_uncertain_observations(self) -> None:
+        checkout, cargo_home, record_path = self.in_place_cleanup_record(
+            "retained-observation", temporary=False, current=True, state="unknown"
+        )
+        record = start_unit.run_registry.read_record(record_path)
+        prospective_slot = "validate-fresh-retained-observation"
+        storage_reason = (
+            "non-disposable in-place storage remains untouched; "
+            "outcome and process state are unchanged"
+        )
+        for unit_state, expected_reason in (
+            ("running", "unit-running"),
+            ("absent", "unit state unavailable and run record is not terminal"),
+            ("query-error", "retained unit query unavailable"),
+        ):
+            with self.subTest(unit_state=unit_state):
+                self.fake.collected_unit = unit_state == "absent"
+
+                def run(command: list[str], **kwargs: object):
+                    if command[:3] == ["systemctl", "--user", "show"]:
+                        if unit_state == "running":
+                            return completed(command, stdout=(
+                                "LoadState=loaded\nActiveState=active\nSubState=running\n"
+                                "InvocationID=retained-live-unit-fixture\n"
+                            ))
+                        if unit_state == "query-error":
+                            raise OSError(expected_reason)
+                    return self.fake(command, **kwargs)
+
+                before = self.filesystem_snapshot(self.root)
+                observation = start_unit.terminal_cleanup_unit(record_path, record, run=run)
+                self.assertTrue(observation.blocks_entry)
+                self.assertEqual(expected_reason, observation.reason)
+                report = start_unit.sweep_completed_checkouts(
+                    self.root,
+                    run=run,
+                    tool_root=self.root,
+                    classify_ownerless_only=True,
+                    prospective_slot=prospective_slot,
+                    prospective_checkout=self.root / "worktrees/validate" / prospective_slot,
+                )
+
+                self.assertEqual([], report["removed"])
+                self.assertEqual([], report["removed_cargo_homes"])
+                self.assertEqual([], report["scorecard_handoffs"])
+                self.assertEqual([{
+                    "blocks_entry": False,
+                    "checkout": str(checkout),
+                    "reason": f"{expected_reason}; {storage_reason}",
+                }], report["retained"])
+                self.assertEqual(before, self.filesystem_snapshot(self.root))
+                self.assertEqual(record, start_unit.run_registry.read_record(record_path))
+                self.assertTrue(checkout.is_dir())
+                self.assertTrue(cargo_home.is_dir())
 
     def test_entry_refuses_indeterminate_create_journal_classification(self) -> None:
         checkout, cargo_home, _record_path = self.in_place_cleanup_record(
@@ -2110,7 +2180,7 @@ class StartUnitTest(unittest.TestCase):
             rc, _output, error = self.invoke(["--dry-run"])
 
         self.assertEqual(start_unit.EXIT_REFUSED, rc)
-        self.assertIn("unit state unavailable and run record is not terminal", error)
+        self.assertIn("checkout differs from its source checkout", error)
         self.assertTrue(checkout.is_dir())
         self.assertTrue(cargo_home.is_dir())
 
@@ -2164,9 +2234,9 @@ class StartUnitTest(unittest.TestCase):
         self.assertTrue(checkout.is_dir())
         self.assertTrue(cargo_home.is_dir())
 
-    def test_entry_refuses_record_agent_different_from_classified_slot(self) -> None:
+    def test_entry_refuses_legacy_record_agent_different_from_classified_slot(self) -> None:
         checkout, cargo_home, record_path = self.in_place_cleanup_record(
-            "agent-mismatch", temporary=False, current=True, state="unknown"
+            "agent-mismatch", include_temporary=False, current=False, state="unknown"
         )
         record = start_unit.run_registry.read_record(record_path)
         record["agent"] = "different-agent"
@@ -2248,43 +2318,163 @@ class StartUnitTest(unittest.TestCase):
                 state="unknown",
                 admitted=False,
             ),
+            self.in_place_cleanup_record(
+                "series-running", temporary=False, current=True, state="running"
+            ),
         ]
-        self.fake.collected_unit = True
+        for index, (_checkout, _cargo_home, record_path) in enumerate(records):
+            record = start_unit.run_registry.read_record(record_path)
+            record["process_identity"] = {
+                "pid": 12345 + index,
+                "start_ticks": 67890 + index,
+                "boot_id": "retained-historical-boot",
+            }
+            if index == 0:
+                record.update(result="failure", exit_code=1, final_validate_status="FAILED")
+            elif record["state"] == "running":
+                record.pop("finished_at")
+                record.pop("exit_code")
+                record.pop("final_validate_status")
+            start_unit.run_registry.write_record(record_path, record)
         prospective_slot = "validate-fresh-aaaaaaaaaaaa-series-proof"
-        self.fake.create_journal_classification_output = (
-            self.create_journal_report(prospective_slot=prospective_slot)
-        )
-        before = self.filesystem_snapshot(self.root)
+        report = json.loads(self.create_journal_report(prospective_slot=prospective_slot))
+        original_record_bytes = [path.read_bytes() for _, _, path in records]
 
         def forbidden(*_args: object, **_kwargs: object) -> object:
             raise AssertionError("read-only entry classification attempted a write")
 
-        error = io.StringIO()
-        with mock.patch.object(
-            start_unit, "publish_recorded_scorecard_handoff", side_effect=forbidden
-        ), mock.patch.object(
-            start_unit, "archive_orphaned_receipts", side_effect=forbidden
-        ), mock.patch.object(
-            start_unit, "remove_fresh_checkouts_batch", side_effect=forbidden
-        ), mock.patch.object(
-            start_unit.run_registry, "update_record", side_effect=forbidden
-        ), contextlib.redirect_stderr(error):
-            start_unit.require_validate_entry_cleanup(
-                self.root,
-                prospective_slot=prospective_slot,
-                prospective_checkout=(
-                    self.root / "worktrees/validate" / prospective_slot
-                ),
-                run=self.fake,
-                tool_root=self.root,
-            )
+        for stage in ("original-journal", "new-slot-owner", "retired-journal", "removed-cargo"):
+            with self.subTest(stage=stage):
+                if stage == "new-slot-owner":
+                    # A different current owner/HEAD does not rewrite historical
+                    # evidence or authorize access to that owner's source.
+                    report = json.loads(self.create_journal_report(
+                        prospective_slot=prospective_slot,
+                        state="live-incomplete-create",
+                        observed_head="e" * 40,
+                    ))
+                    report["journals"][0]["agent"] = "new-series-owner"
+                elif stage == "retired-journal":
+                    (self.root / "worktrees/ACTIVE.devbig014.journal").unlink()
+                    report["journals"] = []
+                elif stage == "removed-cargo":
+                    for _checkout, cargo_home, _record_path in records:
+                        shutil.rmtree(cargo_home)
+                self.fake.create_journal_classification_output = json.dumps(report)
+                for unit_state in ("terminal", "running", "absent"):
+                    with self.subTest(unit_state=unit_state):
+                        self.fake.collected_unit = unit_state == "absent"
 
-        self.assertIn("retained-nonblocking=3", error.getvalue())
-        self.assertEqual(before, self.filesystem_snapshot(self.root))
+                        def run(command: list[str], **kwargs: object):
+                            if unit_state == "running" and command[:3] == ["systemctl", "--user", "show"]:
+                                return completed(command, stdout=(
+                                    "LoadState=loaded\nActiveState=active\nSubState=running\n"
+                                    "InvocationID=current-live-unit-fixture\n"
+                                ))
+                            return self.fake(command, **kwargs)
+
+                        before = self.filesystem_snapshot(self.root)
+                        error = io.StringIO()
+                        with mock.patch.object(
+                            start_unit, "publish_recorded_scorecard_handoff", side_effect=forbidden
+                        ), mock.patch.object(
+                            start_unit, "archive_orphaned_receipts", side_effect=forbidden
+                        ), mock.patch.object(
+                            start_unit, "remove_fresh_checkouts_batch", side_effect=forbidden
+                        ), mock.patch.object(
+                            start_unit.run_registry, "update_record", side_effect=forbidden
+                        ), contextlib.redirect_stderr(error):
+                            start_unit.require_validate_entry_cleanup(
+                                self.root,
+                                prospective_slot=prospective_slot,
+                                prospective_checkout=(
+                                    self.root / "worktrees/validate" / prospective_slot
+                                ),
+                                run=run,
+                                tool_root=self.root,
+                            )
+                        # Existing discovery skips rows whose only removable
+                        # storage (the Cargo home) no longer exists.
+                        retained_count = 0 if stage == "removed-cargo" else 4
+                        self.assertIn(f"retained-nonblocking={retained_count}", error.getvalue())
+                        self.assertEqual(before, self.filesystem_snapshot(self.root))
+                        self.assertEqual(
+                            original_record_bytes,
+                            [path.read_bytes() for _, _, path in records],
+                        )
+                        for _, _, record_path in records:
+                            reason, refusal = start_unit.classify_retained_current_in_place_record(
+                                self.root, start_unit.run_registry.read_record(record_path)
+                            )
+                            self.assertIsNone(refusal)
+                            self.assertEqual(
+                                "non-disposable in-place storage remains untouched; "
+                                "outcome and process state are unchanged",
+                                reason,
+                            )
         for checkout, cargo_home, record_path in records:
             self.assertTrue(checkout.is_dir())
-            self.assertTrue(cargo_home.is_dir())
+            self.assertFalse(cargo_home.exists())
             self.assertTrue(record_path.is_file())
+
+    def test_entry_refuses_ambiguous_current_in_place_storage(self) -> None:
+        checkout, cargo_home, record_path = self.in_place_cleanup_record(
+            "ambiguous-in-place", temporary=False, current=True, state="unknown"
+        )
+        original = start_unit.run_registry.read_record(record_path)
+        managed = self.root / "worktrees/validate/validate-fresh-not-in-place"
+        absent_cargo = cargo_home.with_name("validate-cargo-already-removed")
+        controls = (
+            ({"checkout": "relative", "source_checkout": "relative"}, "absolute"),
+            ({"checkout": str(managed), "source_checkout": str(managed)}, "temporary_checkout must be true"),
+            ({"temporary_checkout": 0}, "temporary_checkout must be a boolean"),
+            ({"cargo_home": None}, "malformed"),
+            ({"cargo_home": str(self.root / "foreign-cargo")}, "Cargo home is outside"),
+            ({"cargo_home": os.path.relpath(cargo_home)}, "absolute"),
+            ({"checkout": str(cargo_home), "source_checkout": str(cargo_home)}, "Cargo home overlaps"),
+            ({"checkout": str(cargo_home / "source"), "source_checkout": str(cargo_home / "source")}, "Cargo home overlaps"),
+            ({"checkout": str(absent_cargo), "source_checkout": str(absent_cargo), "cargo_home": str(absent_cargo)}, "Cargo home overlaps"),
+            ({"schema_version": 999}, "malformed|unsupported schema"),
+            ({"process_identity": {"pid": True, "start_ticks": 1, "boot_id": "boot"}}, "malformed"),
+        )
+        self.fake.collected_unit = True
+        for changes, expected in controls:
+            with self.subTest(changes=changes):
+                record_path.write_text(json.dumps({**original, **changes}) + "\n")
+                before = self.filesystem_snapshot(self.root)
+                record = {**original, **changes}
+                classified, refusal = start_unit.classify_recorded_checkout(self.root, record)
+                self.assertIsNone(classified)
+                entry_expected = (
+                    "unit state unavailable and run record is not terminal"
+                    if refusal is not None else expected
+                )
+                if refusal is None:
+                    reason, refusal = start_unit.classify_retained_current_in_place_record(
+                        self.root, record
+                    )
+                    self.assertIsNone(reason)
+                self.assertRegex(refusal or "", expected)
+                # Preserve discovery's existing exclusion of rows with no
+                # remaining cleanup path; the classifier above must still
+                # refuse malformed or overlapping absent paths directly.
+                if start_unit.recorded_cleanup_path_exists(self.root, record):
+                    with self.assertRaisesRegex(RuntimeError, entry_expected):
+                        start_unit.require_validate_entry_cleanup(
+                            self.root,
+                            prospective_slot="validate-fresh-ambiguity-control",
+                            prospective_checkout=self.root / "worktrees/validate/validate-fresh-ambiguity-control",
+                            run=self.fake,
+                            tool_root=self.root,
+                        )
+                self.assertEqual(before, self.filesystem_snapshot(self.root))
+        self.assertFalse(any(
+            wrkslots_action(command, action)
+            for command in self.fake.commands
+            for action in ("create", "recover", "recover-ownerless-validate-batch", "remove-validate-batch")
+        ))
+        self.assertTrue(checkout.is_dir())
+        self.assertTrue(cargo_home.is_dir())
 
     def test_explicit_sweep_still_recovers_terminal_in_place_cargo_home(self) -> None:
         checkout, cargo_home, record_path = self.in_place_cleanup_record(

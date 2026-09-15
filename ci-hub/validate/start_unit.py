@@ -2448,6 +2448,47 @@ def classify_create_journal_scopes(
         ) from error
 
 
+def classify_retained_current_in_place_record(
+    root: Path, record: Mapping[str, Any]
+) -> tuple[str | None, str | None]:
+    """Describe non-disposable storage, without asserting outcome or ownership.
+
+    Call only after classify_recorded_checkout positively identifies storage as
+    non-disposable. A create journal can disappear, and the source's owner or
+    HEAD can change, without changing the historical record's storage contract.
+    This classification authorizes neither removal nor access to a live slot.
+    """
+    try:
+        run_registry.parse_current_record(record)
+    except (RuntimeError, ValueError) as error:
+        return None, f"current in-place run record is malformed: {error}"
+    if record.get("temporary_checkout") is not False:
+        return None, "current in-place run record is not explicitly non-temporary"
+    raw_checkout = record.get("checkout")
+    raw_source = record.get("source_checkout")
+    raw_cargo = record.get("cargo_home")
+    if not all(
+        isinstance(path, str) and Path(path).is_absolute()
+        for path in (raw_checkout, raw_source, raw_cargo)
+    ):
+        return None, "current in-place run record paths must be absolute"
+    checkout = Path(str(raw_checkout)).resolve()
+    if checkout != Path(str(raw_source)).resolve():
+        return None, "in-place run record checkout differs from its source checkout"
+    _cargo_home, cargo_error = classify_recorded_cargo_home(root, record)
+    if cargo_error is not None:
+        return None, cargo_error
+    # A legitimate cleanup may already have removed Cargo's directory. Still
+    # check its recorded path: absence does not make overlapping storage safe.
+    if _paths_overlap(Path(str(raw_cargo)).resolve(), checkout):
+        return None, "in-place run record Cargo home overlaps its source checkout"
+    return (
+        "non-disposable in-place storage remains untouched; "
+        "outcome and process state are unchanged",
+        None,
+    )
+
+
 def classify_protected_in_place_record(
     root: Path,
     record: Mapping[str, Any],
@@ -3018,17 +3059,30 @@ def sweep_completed_checkouts(
             continue
         fields: dict[str, Any] = {}
         checkout, checkout_error = classify_recorded_checkout(root, row.record)
-        protected_reason, protected_error = (
-            classify_protected_in_place_record(root, row.record, journal_scopes)
-            if classify_ownerless_only and is_in_place_scope_candidate(row.record)
-            else (None, None)
-        )
+        protected_reason, protected_error = None, None
+        if classify_ownerless_only and checkout is None and checkout_error is None:
+            if row.record.get("producer") == run_registry.PRODUCER:
+                protected_reason, protected_error = classify_retained_current_in_place_record(
+                    root, row.record
+                )
+            elif is_in_place_scope_candidate(row.record):
+                protected_reason, protected_error = classify_protected_in_place_record(
+                    root, row.record, journal_scopes
+                )
         if classify_ownerless_only and observation.reason is not None:
+            # This exemption concerns untouched storage, not legitimate live
+            # work under CleanupUnitObservation.blocks_entry's managed-group
+            # contract. validate-lock still owns capacity admission. Preserve
+            # the live/uncertain observation alongside the storage reason.
             retained.append(
                 {
                     "blocks_entry": protected_reason is None,
                     "checkout": str(row.record.get("checkout", "")),
-                    "reason": protected_reason or protected_error or observation.reason,
+                    "reason": (
+                        f"{observation.reason}; {protected_reason}"
+                        if protected_reason is not None
+                        else protected_error or observation.reason
+                    ),
                 }
             )
             row.unit = None
