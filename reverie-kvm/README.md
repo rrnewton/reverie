@@ -66,6 +66,23 @@ the root tool's shared `GlobalState`. Tool-owned workers run the corresponding
 Tool lifecycle callbacks; opting into unmonitored threads does not provide that
 instrumentation.
 
+## Vectored I/O
+
+`readv`, `writev`, `preadv`, `pwritev`, `preadv2`, and `pwritev2` preserve vector
+order and boundaries within one aggregate host operation. Staging preserves
+pointer alignment and inaccessible memory ranges so the host endpoint applies
+its own partial-transfer and fault rules. Version-two offset -1 selects the
+current descriptor position; other supported positioned calls use the full
+x86-64 signed offset.
+
+The supervisor stages at most 16 MiB per operation. Larger buffered requests
+may complete a bounded prefix. An `O_DIRECT` request whose Linux-clamped
+aggregate exceeds 16 MiB returns `EOPNOTSUPP` before data transfer, with no
+change to guest buffers, file data or descriptor position. This is an explicit
+backend capability limit: shortening such a request could erase a required
+alignment failure. Direct requests at or below the limit retain their original
+vector shape and alignment checks.
+
 ## Bounded signal delivery
 
 Standard-signal state includes shared process and per-thread pending sets,
@@ -101,6 +118,27 @@ transitions, realtime signals, `SIGCHLD`/`SIGPIPE` production and general timer
 production remain refused or unimplemented. `rt_sigtimedwait` can consume an
 already pending virtual event; it does not implement a timed blocking wait.
 
+`Guest::queue_child_exit_signal` is a separate receiver operation for a
+Tool-selected `SIGCHLD`/`CLD_EXITED` event. It requires a current single-thread
+parent and an existing syscall, signal, or captured-fault return boundary. The
+caller authenticates the child, its normal exit status and CPU accounting;
+the backend validates the receiver and metadata shape, then retains the event
+in the process pending set. Repeated standard events keep the first complete
+siginfo. Explicit `SIG_IGN` suppresses this child-exit generation even when
+blocked; `SIG_DFL` and `SA_NOCLDWAIT` do not suppress Tool observation. Queue
+acceptance does not change child wait status or reaping policy and does not
+promise a handler or `EINTR`. A typed outcome distinguishes refusal before
+publication from a readiness-update failure after publication.
+
+This operation does not create automatic child-exit notifications. Signal-death,
+stop/continue and multi-thread-parent producers remain unsupported. Initial
+thread-start/exec/post-exec callbacks lack the required transport and refuse
+before effects. The existing private deferral API keeps its earlier refusals.
+Pending events remain private across fork and survive exec; an outstanding
+process event prevents creating an unsupported competing thread consumer.
+Child signalfd records include status and CPU fields. Fork with an open virtual
+signalfd is still refused, including when the descriptor holds a child event.
+
 Tool-driven execution exposes structured signal events through
 `Tool::handle_structured_signal_event`; accepted selected events can be deferred
 through `Guest::defer_signal_delivery`. Public deferral validates signal, target
@@ -131,10 +169,11 @@ unsupported rather than being relabelled as successful Linux signal delivery.
 Virtual `signalfd` consumes supported pending events and models record-stream
 reads, descriptor aliases and readiness. Creation requires `SFD_NONBLOCK`;
 the model is limited to a single-thread process and refuses unsupported
-sibling/fork lifetimes while a signalfd is open. `preadv`/`preadv2` support here
-is restricted to that virtual stream and its offset/flag rules; ordinary
-descriptor vector positional reads are not thereby implemented. This does not
-forward host signal state or claim general descriptor-transfer lifetime parity.
+sibling/fork lifetimes while a signalfd is open. Vectored reads retain the
+virtual stream's Linux offset and flag rules, including refusal of unsupported
+`RWF_ATOMIC` and `RWF_DONTCACHE` requests with nonzero capacity. Host signal state
+is not forwarded; general descriptor-transfer lifetime parity remains outside
+this model.
 
 ## Task names and prctl state
 

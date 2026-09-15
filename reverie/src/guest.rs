@@ -203,6 +203,24 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// ```
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never;
 
+    /// Terminates the current guest thread with status zero after the Tool has
+    /// determined that this thread must never resume guest execution.
+    ///
+    /// This abandons the current callback and runs the backend's consuming
+    /// thread-exit cleanup exactly once. It accepts no syscall and does not
+    /// authorize other nonreturning injections from restricted callbacks.
+    /// It does not request termination of other live threads. Backends whose
+    /// ordinary exit injection already provides this contract use that path.
+    /// An already-established backend exit retains its status.
+    ///
+    /// Backend process-lifetime limits still apply. In particular, KVM currently
+    /// treats leader exit as process completion; cancelling a leader while live
+    /// siblings must survive is unsupported. Nonleader cancellation leaves live
+    /// siblings running.
+    async fn cancel_current_thread(&mut self) -> Never {
+        self.tail_inject(reverie_syscalls::Exit::default()).await
+    }
+
     /// Defers one already-selected signal for delivery by the backend at its
     /// next safe return-to-userspace boundary.
     ///
@@ -217,6 +235,30 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// `ENOSYS`; adding this method does not change ptrace signal delivery.
     async fn defer_signal_delivery(&mut self, _event: SignalEvent) -> Result<(), Error> {
         Err(Errno::ENOSYS.into())
+    }
+
+    /// Queues a Tool-selected normal child-exit event for the current process.
+    ///
+    /// The caller supplies a complete process-directed `SIGCHLD`/`CLD_EXITED`
+    /// event and owns its child-status provenance and deterministic ordering.
+    /// The backend validates the receiver and metadata, preserves process-wide
+    /// pending ownership and first-siginfo coalescing, and reports whether queue
+    /// publication preceded any failure. Wait status and child reaping remain
+    /// independent. This operation never recursively invokes a Tool hook or
+    /// resumes guest instructions; normal receiver boundaries own delivery.
+    ///
+    /// Backends may refuse unsupported contexts or process lifetimes. In
+    /// particular, KVM initially supports only a live single-thread parent at
+    /// a transported return-to-user boundary. The historical private deferral
+    /// operation and its refusal policy are unchanged.
+    async fn queue_child_exit_signal(
+        &mut self,
+        _event: SignalEvent,
+    ) -> crate::ChildExitSignalOutcome {
+        crate::ChildExitSignalOutcome::RejectedBeforeCommit {
+            kind: crate::ChildExitSignalErrorKind::Unsupported,
+            errno: Errno::ENOSYS,
+        }
     }
 
     /// Like [`Guest::inject`], but will retry the syscall if `EINTR` or
@@ -451,8 +493,19 @@ where
         self.inner.tail_inject(syscall).await
     }
 
+    async fn cancel_current_thread(&mut self) -> Never {
+        self.inner.cancel_current_thread().await
+    }
+
     async fn defer_signal_delivery(&mut self, event: SignalEvent) -> Result<(), Error> {
         self.inner.defer_signal_delivery(event).await
+    }
+
+    async fn queue_child_exit_signal(
+        &mut self,
+        event: SignalEvent,
+    ) -> crate::ChildExitSignalOutcome {
+        self.inner.queue_child_exit_signal(event).await
     }
 
     fn set_timer(&mut self, sched: TimerSchedule) -> Result<(), Error> {
