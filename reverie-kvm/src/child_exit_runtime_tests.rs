@@ -29,6 +29,12 @@ struct QueueExecutor {
     calls: usize,
 }
 impl GuestSyscallExecutor<AdapterTool> for QueueExecutor {
+    fn read_clock(&self) -> Result<u64> {
+        Err(Error::GuestClock(
+            "signal test adapter has no guest counter".into(),
+        ))
+    }
+
     fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> i64 {
         panic!("queue operation executed a guest syscall")
     }

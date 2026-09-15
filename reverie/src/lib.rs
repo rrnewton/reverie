@@ -56,6 +56,8 @@ mod backtrace;
 mod error;
 mod guest;
 #[cfg(target_arch = "x86_64")]
+pub mod pmu;
+#[cfg(target_arch = "x86_64")]
 mod rdtsc;
 mod regs;
 mod signal;
