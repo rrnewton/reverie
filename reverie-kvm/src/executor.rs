@@ -4089,7 +4089,12 @@ fn vectored_io(
 
     // Access-mode checks follow offset and seekability checks but still
     // precede iovec import, matching Linux's ordering.
-    let access = if captured_output {
+    let access = if reading && is_open_standard(state, guest_fd) && guest_fd != libc::STDIN_FILENO {
+        // Keep scalar read's policy for original stdout/stderr, even when the
+        // supervisor's backing descriptor is O_RDWR. Guest-owned replacements
+        // and dup aliases retain their separate descriptor/capture routing.
+        Err(negative_errno(libc::EBADF))
+    } else if captured_output {
         if reading {
             Err(negative_errno(libc::EBADF))
         } else {
@@ -17599,6 +17604,575 @@ mod tests {
             state.files.get_mut(&3).unwrap().stream_position().unwrap(),
             4
         );
+    }
+
+    struct RedirectedStandardFd {
+        fd: libc::c_int,
+        saved: std::fs::File,
+    }
+
+    impl RedirectedStandardFd {
+        fn new(fd: libc::c_int, source: &std::fs::File) -> Self {
+            // This helper is used only after exec in an isolated exact-test child.
+            // SAFETY: fd is an open standard descriptor; fcntl returns a new owned fd.
+            let saved = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+            assert!(saved >= 3);
+            // SAFETY: saved is newly owned, and source remains live through dup2.
+            let saved = unsafe { std::fs::File::from_raw_fd(saved) };
+            assert_eq!(unsafe { libc::dup2(source.as_raw_fd(), fd) }, fd);
+            Self { fd, saved }
+        }
+    }
+
+    impl Drop for RedirectedStandardFd {
+        fn drop(&mut self) {
+            // SAFETY: saved owns the original descriptor until after restoration.
+            assert_eq!(
+                unsafe { libc::dup2(self.saved.as_raw_fd(), self.fd) },
+                self.fd
+            );
+        }
+    }
+
+    fn run_standard_descriptor_test_child(test: &str, child_env: &str) -> bool {
+        if std::env::var_os(child_env).is_some() {
+            // Preserve assertion diagnostics while either host standard output
+            // descriptor is redirected. This exact-test child owns the hook.
+            let saved = unsafe { libc::fcntl(libc::STDERR_FILENO, libc::F_DUPFD_CLOEXEC, 3) };
+            assert!(saved >= 3);
+            let diagnostics = unsafe { std::fs::File::from_raw_fd(saved) };
+            std::panic::set_hook(Box::new(move |info| {
+                let _ = writeln!(&diagnostics, "{info}");
+            }));
+            return false;
+        }
+        let output = std::process::Command::new("timeout")
+            .args(["--kill-after=2s", "10s"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env(child_env, "1")
+            .output()
+            .expect("failed to run isolated standard-descriptor regression");
+        assert!(
+            output.status.success(),
+            "isolated standard-descriptor regression failed with {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        true
+    }
+
+    #[test]
+    fn standard_descriptor_vectored_reads_preserve_access_and_error_ordering() {
+        if run_standard_descriptor_test_child(
+            "executor::tests::standard_descriptor_vectored_reads_preserve_access_and_error_ordering",
+            "REVERIE_STANDARD_VECTOR_READ_CHILD",
+        ) {
+            return;
+        }
+        const DATA: u64 = 0x200;
+        const SECOND: u64 = 0x210;
+        const IOV: u64 = 0x100;
+        const ORIGINAL: &[u8] = b"01234supervisor-input-ABCDEFGHIJKLMN";
+        let root = TestDir::new();
+        let path = root.0.join("standard-read-backing");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(ORIGINAL).unwrap();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let calls = [
+            (libc::SYS_readv, 0),
+            (libc::SYS_preadv, 3),
+            (libc::SYS_preadv2, 3),
+            (libc::SYS_preadv2, u64::MAX),
+        ];
+        for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+            let _redirect = RedirectedStandardFd::new(fd, &file);
+            assert_eq!(fd_status_flags(fd).unwrap() & libc::O_ACCMODE, libc::O_RDWR);
+            let mut native_bytes = [0; 8];
+            // Native Linux allows reading this O_RDWR standard descriptor. The
+            // executor deliberately retains scalar read's original-output policy.
+            assert_eq!(
+                unsafe { libc::pread(fd, native_bytes.as_mut_ptr().cast(), 8, 5) },
+                8
+            );
+            assert_eq!(&native_bytes, &ORIGINAL[5..13]);
+            for capture in [false, true] {
+                for (number, offset) in calls {
+                    for shape in 0..7 {
+                        let mut state = test_state(&root.0);
+                        memory.write(0, &vec![0xa5; PAGE_SIZE as usize]).unwrap();
+                        write_guest_iovecs(&mut memory, IOV, &[(DATA, 3), (SECOND, 5)]);
+                        let mut args = [fd as u64, IOV, 2, offset, 0, 0];
+                        match shape {
+                            0 => {}
+                            1 => args[1] = u64::MAX,
+                            2 => args[2] = libc::UIO_MAXIOV as u64 + 1,
+                            3 => write_guest_iovecs(
+                                &mut memory,
+                                IOV,
+                                &[(DATA, isize::MAX as usize + 1), (SECOND, 5)],
+                            ),
+                            4 => args[2] = 0,
+                            5 => {
+                                args[2] = 1;
+                                write_guest_iovecs(&mut memory, IOV, &[(u64::MAX, 0)]);
+                            }
+                            6 => args[5] = 0x8000_0000,
+                            _ => unreachable!(),
+                        }
+                        file.seek(SeekFrom::Start(5)).unwrap();
+                        let mut before = vec![0; PAGE_SIZE as usize];
+                        memory.read(0, &mut before).unwrap();
+                        let mut output = CapturedOutput::default();
+                        assert!(output.append(false, b"prior-out"));
+                        assert!(output.append(true, b"prior-err"));
+                        let result = if capture {
+                            syscall_result_with_output(
+                                &mut memory,
+                                &mut state,
+                                &mut output,
+                                number,
+                                args,
+                            )
+                        } else {
+                            syscall_result(&mut memory, &mut state, number, args)
+                        };
+                        let expected = if capture && number != libc::SYS_readv && offset != u64::MAX
+                        {
+                            negative_errno(libc::ESPIPE)
+                        } else {
+                            negative_errno(libc::EBADF)
+                        };
+                        let mut after = vec![0; PAGE_SIZE as usize];
+                        memory.read(0, &mut after).unwrap();
+                        assert_eq!(
+                            (
+                                result,
+                                after,
+                                std::fs::read(&path).unwrap(),
+                                file.stream_position().unwrap(),
+                                output.take()
+                            ),
+                            (
+                                expected,
+                                before,
+                                ORIGINAL.to_vec(),
+                                5,
+                                (b"prior-out".to_vec(), b"prior-err".to_vec())
+                            ),
+                            "fd={fd} capture={capture} number={number} offset={offset} shape={shape}"
+                        );
+                    }
+                    if number != libc::SYS_readv {
+                        let invalid_offset = if number == libc::SYS_preadv {
+                            u64::MAX
+                        } else {
+                            u64::MAX - 1
+                        };
+                        let args = [
+                            fd as u64,
+                            u64::MAX,
+                            libc::UIO_MAXIOV as u64 + 1,
+                            invalid_offset,
+                            0,
+                            0x8000_0000,
+                        ];
+                        let mut state = test_state(&root.0);
+                        let mut before = vec![0; PAGE_SIZE as usize];
+                        memory.read(0, &mut before).unwrap();
+                        let mut output = CapturedOutput::default();
+                        let result = if capture {
+                            syscall_result_with_output(
+                                &mut memory,
+                                &mut state,
+                                &mut output,
+                                number,
+                                args,
+                            )
+                        } else {
+                            syscall_result(&mut memory, &mut state, number, args)
+                        };
+                        assert_eq!(result, negative_errno(libc::EINVAL));
+                        let mut after = vec![0; PAGE_SIZE as usize];
+                        memory.read(0, &mut after).unwrap();
+                        assert_eq!(after, before);
+                        assert_eq!(std::fs::read(&path).unwrap(), ORIGINAL);
+                        assert_eq!(file.stream_position().unwrap(), 5);
+                        assert_eq!(output.take(), (Vec::new(), Vec::new()));
+                    }
+                }
+            }
+            // Preserve the existing scalar policy as a separate control.
+            let mut state = test_state(&root.0);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_read,
+                    [fd as u64, DATA, 8, 0, 0, 0]
+                ),
+                negative_errno(libc::EBADF)
+            );
+            assert_eq!(file.stream_position().unwrap(), 5);
+
+            let mut pipe = [-1; 2];
+            assert_eq!(
+                unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) },
+                0
+            );
+            let pipe_read = unsafe { std::fs::File::from_raw_fd(pipe[0]) };
+            let pipe_write = unsafe { std::fs::File::from_raw_fd(pipe[1]) };
+            assert_eq!(
+                unsafe { libc::write(pipe_write.as_raw_fd(), b"queued".as_ptr().cast(), 6) },
+                6
+            );
+            {
+                let _pipe_redirect = RedirectedStandardFd::new(fd, &pipe_write);
+                for (number, offset) in calls {
+                    let mut state = test_state(&root.0);
+                    let mut before = vec![0; PAGE_SIZE as usize];
+                    memory.read(0, &mut before).unwrap();
+                    let expected = if number == libc::SYS_readv || offset == u64::MAX {
+                        libc::EBADF
+                    } else {
+                        libc::ESPIPE
+                    };
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            number,
+                            [
+                                fd as u64,
+                                u64::MAX,
+                                libc::UIO_MAXIOV as u64 + 1,
+                                offset,
+                                0,
+                                0
+                            ]
+                        ),
+                        negative_errno(expected)
+                    );
+                    let mut after = vec![0; PAGE_SIZE as usize];
+                    memory.read(0, &mut after).unwrap();
+                    assert_eq!(after, before);
+                }
+            }
+            let mut queued = [0; 7];
+            assert_eq!(
+                unsafe {
+                    libc::read(
+                        pipe_read.as_raw_fd(),
+                        queued.as_mut_ptr().cast(),
+                        queued.len(),
+                    )
+                },
+                6
+            );
+            assert_eq!(&queued[..6], b"queued");
+            assert_eq!(queued[6], 0);
+        }
+    }
+
+    #[test]
+    fn standard_descriptor_vectored_io_preserves_owned_and_captured_routing() {
+        if run_standard_descriptor_test_child(
+            "executor::tests::standard_descriptor_vectored_io_preserves_owned_and_captured_routing",
+            "REVERIE_STANDARD_VECTOR_ROUTING_CHILD",
+        ) {
+            return;
+        }
+        const DATA: u64 = 0x200;
+        const SECOND: u64 = 0x210;
+        const IOV: u64 = 0x100;
+        const PATH: u64 = 0x600;
+        const ORIGINAL: &[u8] = b"0123456789abcdefghijklmnopqrstuv";
+        let root = TestDir::new();
+        let path = root.0.join("owned-vector-backing");
+        let native_path = root.0.join("native-vector-backing");
+        let calls = [
+            (libc::SYS_readv, 0),
+            (libc::SYS_writev, 0),
+            (libc::SYS_preadv, 3),
+            (libc::SYS_pwritev, 3),
+            (libc::SYS_preadv2, 3),
+            (libc::SYS_pwritev2, 3),
+            (libc::SYS_preadv2, u64::MAX),
+            (libc::SYS_pwritev2, u64::MAX),
+        ];
+        // Routes cover original streams, ordinary replacements, output dup
+        // aliases, aliases replaced with ordinary files, and stdin access modes.
+        for route in 0..14 {
+            for capture in [false, true] {
+                for (number, offset) in calls {
+                    let reading = matches!(
+                        number,
+                        libc::SYS_readv | libc::SYS_preadv | libc::SYS_preadv2
+                    );
+                    // Original output reads are covered by the refusal test above.
+                    if matches!(route, 1 | 2) && reading {
+                        continue;
+                    }
+                    std::fs::write(&path, ORIGINAL).unwrap();
+                    std::fs::write(&native_path, ORIGINAL).unwrap();
+                    let mut backing = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&path)
+                        .unwrap();
+                    let mut native = std::fs::OpenOptions::new()
+                        .read(route != 13)
+                        .write(route != 12)
+                        .open(&native_path)
+                        .unwrap();
+                    let _stdout = RedirectedStandardFd::new(libc::STDOUT_FILENO, &backing);
+                    let _stderr = RedirectedStandardFd::new(libc::STDERR_FILENO, &backing);
+                    let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+                    memory.write(0, &vec![0xa5; PAGE_SIZE as usize]).unwrap();
+                    memory.write(DATA, b"one").unwrap();
+                    memory.write(SECOND, b"two!!").unwrap();
+                    memory.write(PATH, b"owned-vector-backing\0").unwrap();
+                    write_guest_iovecs(&mut memory, IOV, &[(DATA, 3), (SECOND, 5)]);
+                    let mut state = test_state(&root.0);
+                    let fd = match route {
+                        0 => {
+                            state.stdin = Some(backing.try_clone().unwrap());
+                            0
+                        }
+                        1 | 2 => route,
+                        3..=5 => {
+                            let opened = syscall_result(
+                                &mut memory,
+                                &mut state,
+                                libc::SYS_open,
+                                [PATH, libc::O_RDWR as u64, 0, 0, 0, 0],
+                            );
+                            assert_eq!(opened, 3);
+                            let target = route - 3;
+                            assert_eq!(
+                                syscall_result(
+                                    &mut memory,
+                                    &mut state,
+                                    libc::SYS_dup2,
+                                    [opened as u64, target as u64, 0, 0, 0, 0]
+                                ),
+                                target as i64
+                            );
+                            assert!(!is_open_standard(&state, target));
+                            assert!(output_alias(&state, target).is_none());
+                            target
+                        }
+                        6 => syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_dup,
+                            [1, 0, 0, 0, 0, 0],
+                        ) as libc::c_int,
+                        7 => syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_fcntl,
+                            [2, libc::F_DUPFD as u64, 5, 0, 0, 0],
+                        ) as libc::c_int,
+                        8 => syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_fcntl,
+                            [1, libc::F_DUPFD_CLOEXEC as u64, 6, 0, 0, 0],
+                        ) as libc::c_int,
+                        9 => syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_dup2,
+                            [2, 0, 0, 0, 0, 0],
+                        ) as libc::c_int,
+                        10 | 11 => {
+                            let target = if route == 10 { 3 } else { 0 };
+                            assert_eq!(
+                                syscall_result(
+                                    &mut memory,
+                                    &mut state,
+                                    libc::SYS_dup2,
+                                    [2, target as u64, 0, 0, 0, 0]
+                                ),
+                                target as i64
+                            );
+                            assert!(output_alias(&state, target).is_some());
+                            let opened = syscall_result(
+                                &mut memory,
+                                &mut state,
+                                libc::SYS_open,
+                                [PATH, libc::O_RDWR as u64, 0, 0, 0, 0],
+                            );
+                            assert!(opened >= 3 && opened != target as i64);
+                            assert_eq!(
+                                syscall_result(
+                                    &mut memory,
+                                    &mut state,
+                                    libc::SYS_dup2,
+                                    [opened as u64, target as u64, 0, 0, 0, 0]
+                                ),
+                                target as i64
+                            );
+                            assert!(output_alias(&state, target).is_none());
+                            target
+                        }
+                        12 | 13 => {
+                            state.stdin = Some(
+                                std::fs::OpenOptions::new()
+                                    .read(route == 12)
+                                    .write(route == 13)
+                                    .open(&path)
+                                    .unwrap(),
+                            );
+                            0
+                        }
+                        _ => unreachable!(),
+                    };
+                    assert!(fd >= 0);
+                    if (6..=9).contains(&route) {
+                        assert!(output_alias(&state, fd).is_some());
+                    }
+                    let translated = host_fd(&state, fd).unwrap();
+                    assert_eq!(unsafe { libc::lseek(translated, 5, libc::SEEK_SET) }, 5);
+                    native.seek(SeekFrom::Start(5)).unwrap();
+                    let args = [fd as u64, IOV, 2, offset, 0, 0];
+                    let mut before = vec![0; PAGE_SIZE as usize];
+                    memory.read(0, &mut before).unwrap();
+                    let mut expected_memory = before.clone();
+                    let captured_alias = capture && output_alias(&state, fd).is_some();
+                    let explicit_offset =
+                        !matches!(number, libc::SYS_readv | libc::SYS_writev) && offset != u64::MAX;
+                    let mut expected_output = (Vec::new(), Vec::new());
+                    let expected_result = if captured_alias {
+                        if explicit_offset {
+                            negative_errno(libc::ESPIPE)
+                        } else if reading {
+                            negative_errno(libc::EBADF)
+                        } else {
+                            let bytes = b"onetwo!!".to_vec();
+                            if matches!(output_alias(&state, fd), Some(OutputAlias::Stderr)) {
+                                expected_output.1 = bytes;
+                            } else {
+                                expected_output.0 = bytes;
+                            }
+                            8
+                        }
+                    } else {
+                        let native_iov = [
+                            libc::iovec {
+                                iov_base: unsafe {
+                                    expected_memory.as_mut_ptr().add(DATA as usize)
+                                }
+                                .cast(),
+                                iov_len: 3,
+                            },
+                            libc::iovec {
+                                iov_base: unsafe {
+                                    expected_memory.as_mut_ptr().add(SECOND as usize)
+                                }
+                                .cast(),
+                                iov_len: 5,
+                            },
+                        ];
+                        // The native request sees the same file bytes, position,
+                        // vector lengths, and syscall arguments as the guest.
+                        let result = unsafe {
+                            libc::syscall(
+                                number,
+                                native.as_raw_fd(),
+                                native_iov.as_ptr(),
+                                2usize,
+                                offset,
+                                0u64,
+                                0u64,
+                            )
+                        };
+                        if result < 0 {
+                            io_error(std::io::Error::last_os_error())
+                        } else {
+                            result as i64
+                        }
+                    };
+                    let mut output = CapturedOutput::default();
+                    let result = if capture {
+                        syscall_result_with_output(
+                            &mut memory,
+                            &mut state,
+                            &mut output,
+                            number,
+                            args,
+                        )
+                    } else {
+                        syscall_result(&mut memory, &mut state, number, args)
+                    };
+                    let mut after = vec![0; PAGE_SIZE as usize];
+                    memory.read(0, &mut after).unwrap();
+                    let actual_position = unsafe { libc::lseek(translated, 0, libc::SEEK_CUR) };
+                    assert_eq!(
+                        (
+                            result,
+                            after,
+                            std::fs::read(&path).unwrap(),
+                            actual_position,
+                            output.take()
+                        ),
+                        (
+                            expected_result,
+                            expected_memory,
+                            std::fs::read(&native_path).unwrap(),
+                            native.stream_position().unwrap() as i64,
+                            expected_output
+                        ),
+                        "route={route} capture={capture} number={number} offset={offset}"
+                    );
+                    let supervisor_position = backing.stream_position().unwrap();
+                    // Closing either an original stream, replacement or alias
+                    // must not reopen the supervisor's original descriptor.
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_close,
+                            [fd as u64, 0, 0, 0, 0, 0]
+                        ),
+                        0
+                    );
+                    assert_eq!(host_fd(&state, fd), None);
+                    assert!(output_alias(&state, fd).is_none());
+                    let before_close_check = std::fs::read(&path).unwrap();
+                    let mut expected_memory = vec![0; PAGE_SIZE as usize];
+                    memory.read(0, &mut expected_memory).unwrap();
+                    let mut output = CapturedOutput::default();
+                    let result = if capture {
+                        syscall_result_with_output(
+                            &mut memory,
+                            &mut state,
+                            &mut output,
+                            number,
+                            args,
+                        )
+                    } else {
+                        syscall_result(&mut memory, &mut state, number, args)
+                    };
+                    assert_eq!(result, negative_errno(libc::EBADF));
+                    let mut after = vec![0; PAGE_SIZE as usize];
+                    memory.read(0, &mut after).unwrap();
+                    assert_eq!(after, expected_memory);
+                    assert_eq!(std::fs::read(&path).unwrap(), before_close_check);
+                    assert_eq!(output.take(), (Vec::new(), Vec::new()));
+                    // Keep the supervisor backing File live through the close check.
+                    assert_eq!(backing.stream_position().unwrap(), supervisor_position);
+                }
+            }
+        }
     }
 
     #[test]
