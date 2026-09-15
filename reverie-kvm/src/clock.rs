@@ -165,6 +165,13 @@ impl GuestClock {
     }
 
     fn begin(&mut self) -> Result<CountInterval<'_>> {
+        self.begin_with_raw_event(current_raw_event)
+    }
+
+    fn begin_with_raw_event(
+        &mut self,
+        raw_event: impl FnOnce() -> Result<u64>,
+    ) -> Result<CountInterval<'_>> {
         self.read()?;
         let mut affinity = match CpuAffinity::enter() {
             Ok(affinity) => affinity,
@@ -175,7 +182,7 @@ impl GuestClock {
                 tid: host_tid(),
                 thread: std::thread::current().id(),
                 cpu: affinity.cpu,
-                raw_event: current_raw_event()?,
+                raw_event: raw_event()?,
             };
             if self.binding.as_ref().map(|b| b.identity) != Some(identity) {
                 self.binding.take();
@@ -686,6 +693,36 @@ mod tests {
 
     #[test]
     fn read_and_disable_errors_poison_even_when_kvm_returns_eintr() {
+        const TEST: &str =
+            "clock::tests::read_and_disable_errors_poison_even_when_kvm_returns_eintr";
+        const CHILD_ENV: &str = "REVERIE_KVM_CLOCK_CLOSE_CHILD";
+        const COMPLETE: &str = "clock close observation: read and disable errors both passed";
+        if std::env::var(CHILD_ENV).ok().as_deref() != Some(TEST) {
+            let output = std::process::Command::new("timeout")
+                .args(["--kill-after=2s", "10s"])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+                .env(CHILD_ENV, TEST)
+                .output()
+                .expect("failed to run isolated clock close observation");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            print!("{stdout}");
+            eprint!("{stderr}");
+            assert!(
+                output.status.success(),
+                "isolated clock test: {}",
+                output.status
+            );
+            assert_eq!(
+                stdout.lines().filter(|line| *line == COMPLETE).count(),
+                1,
+                "both close observations must execute in the isolated child"
+            );
+            return;
+        }
+        // Allocate after exec: other library tests must not reuse the closed
+        // fd number before the real F_GETFD observation in affinity.restore.
         let original = affinity().unwrap();
         for disable_failure in [false, true] {
             let mut binding = reader(&[]);
@@ -721,6 +758,7 @@ mod tests {
             assert!(clock.begin().is_err());
             assert!(same_affinity(&affinity().unwrap(), &original));
         }
+        println!("\n{COMPLETE}");
     }
 
     #[test]
@@ -745,8 +783,60 @@ mod tests {
         assert!(same_affinity(&affinity().unwrap(), &original));
     }
 
+    fn single_cpu_interval_counts_no_host_work(original: &libc::cpu_set_t) -> usize {
+        let mut allocation = CpuAffinity::enter().unwrap();
+        let cpu = allocation.cpu;
+        assert!(unsafe { libc::CPU_ISSET(cpu, original) });
+        allocation.check().unwrap();
+        let singleton = affinity().unwrap();
+        let mut clock = GuestClock {
+            tracking: true,
+            ..Default::default()
+        };
+        let interval = clock.begin().unwrap();
+        assert_eq!(interval.affinity.cpu, cpu);
+        assert!(same_affinity(&interval.affinity.saved, &singleton));
+        interval.affinity.check().unwrap();
+        for value in 0..1_000_000 {
+            std::hint::black_box(value);
+        }
+        interval.finish().unwrap();
+        assert_eq!(clock.total, 0);
+        assert_eq!(clock.read().unwrap(), 0);
+        assert_eq!(clock.read().unwrap(), 0);
+        assert!(!clock.binding.as_ref().unwrap().enabled);
+        assert!(same_affinity(&affinity().unwrap(), &singleton));
+        allocation.check().unwrap();
+        allocation.restore().unwrap();
+        assert!(same_affinity(&affinity().unwrap(), original));
+        cpu
+    }
+
     #[test]
-    fn temporary_cpu_escape_is_not_hidden_by_matching_endpoint_checks() {
+    fn counted_intervals_respect_the_permitted_cpu_allocation() {
+        let original = affinity().unwrap();
+        let permitted: Vec<_> = (0..libc::CPU_SETSIZE as usize)
+            .filter(|&cpu| unsafe { libc::CPU_ISSET(cpu, &original) })
+            .collect();
+        assert!(!permitted.is_empty());
+        let cpu = single_cpu_interval_counts_no_host_work(&original);
+        println!("clock residency: single-CPU interval executed on {cpu}; permitted={permitted:?}");
+        if permitted.len() > 1 {
+            let (cpu, other) = temporary_cpu_escape_is_not_hidden_by_matching_endpoint_checks();
+            assert!(permitted.contains(&cpu));
+            assert!(permitted.contains(&other));
+            println!(
+                "clock residency: physical temporary migration executed {cpu}->{other}->{cpu}"
+            );
+        } else {
+            println!(
+                "clock residency: physical temporary migration NOT EXECUTED; caller permitted one CPU"
+            );
+        }
+        assert!(same_affinity(&affinity().unwrap(), &original));
+    }
+
+    fn temporary_cpu_escape_is_not_hidden_by_matching_endpoint_checks() -> (usize, usize) {
         let original = affinity().unwrap();
         let mut clock = GuestClock {
             tracking: true,
@@ -774,6 +864,7 @@ mod tests {
         assert!(error.to_string().contains("residency"), "{error}");
         assert!(clock.read().is_err());
         assert!(same_affinity(&affinity().unwrap(), &original));
+        (cpu, other)
     }
 
     #[test]
@@ -785,7 +876,7 @@ mod tests {
             tid: host_tid(),
             thread: std::thread::current().id(),
             cpu: pinned.cpu,
-            raw_event: current_raw_event().unwrap(),
+            raw_event: 0,
         };
         let mut clock = GuestClock {
             tracking: true,
@@ -793,11 +884,17 @@ mod tests {
             binding: Some(binding),
             ..Default::default()
         };
-        let error = match clock.begin() {
+        let error = match clock.begin_with_raw_event(|| Ok(0)) {
             Err(error) => error,
             Ok(_) => panic!("a pipe cannot enable a perf event"),
         };
         assert!(error.to_string().contains("enable guest counter"));
+        assert!(
+            error
+                .to_string()
+                .contains(&std::io::Error::from_raw_os_error(libc::ENOTTY).to_string())
+        );
+        println!("clock injected enable failure: {error}");
         assert!(clock.binding.is_none());
         assert!(clock.read().is_err());
         assert_eq!(clock.total, 9);
