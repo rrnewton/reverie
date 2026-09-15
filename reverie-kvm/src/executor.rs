@@ -1060,6 +1060,8 @@ pub(crate) struct ElfExecutor {
     // TODO-HUMAN-REVIEW(PR-235): Review concurrent KVM process lifecycle ownership.
     pending_processes: std::collections::BTreeMap<i32, PendingProcess>,
     completed_processes: Vec<std::thread::JoinHandle<crate::Result<()>>>,
+    // Exiting workers transfer forks to their process owner before returning.
+    transferred_processes: Arc<Mutex<std::collections::BTreeMap<i32, Vec<OwnedChildProcesses>>>>,
     child_completion_sender: std::sync::mpsc::Sender<i32>,
     child_completion_receiver: Mutex<std::sync::mpsc::Receiver<i32>>,
     process_action: Option<ProcessAction>,
@@ -1150,6 +1152,12 @@ impl ChildStartGate {
     }
 }
 
+#[derive(Default)]
+struct OwnedChildProcesses {
+    pending: std::collections::BTreeMap<i32, PendingProcess>,
+    completed: Vec<std::thread::JoinHandle<crate::Result<()>>>,
+}
+
 struct PendingProcess {
     start: ChildStartGate,
     completion: Arc<Mutex<Option<ChildCompletion>>>,
@@ -1180,6 +1188,7 @@ struct AddressSpaceState {
     mmap_limit: u64,
 }
 
+#[derive(Default)]
 struct FileTableState {
     stdin: Option<std::fs::File>,
     files: std::collections::BTreeMap<i32, std::fs::File>,
@@ -1370,6 +1379,7 @@ impl ElfExecutor {
             sigchld_auto_reap,
             pending_processes: std::collections::BTreeMap::new(),
             completed_processes: Vec::new(),
+            transferred_processes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             child_completion_sender,
             child_completion_receiver: Mutex::new(child_completion_receiver),
             process_action: None,
@@ -1768,6 +1778,7 @@ impl ElfExecutor {
             sigchld_auto_reap: Arc::new(AtomicBool::new(sigchld_auto_reap)),
             pending_processes: std::collections::BTreeMap::new(),
             completed_processes: Vec::new(),
+            transferred_processes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             child_completion_sender,
             child_completion_receiver: Mutex::new(child_completion_receiver),
             process_action: None,
@@ -1840,6 +1851,7 @@ impl ElfExecutor {
             sigchld_auto_reap: self.sigchld_auto_reap.clone(),
             pending_processes: std::collections::BTreeMap::new(),
             completed_processes: Vec::new(),
+            transferred_processes: self.transferred_processes.clone(),
             child_completion_sender,
             child_completion_receiver: Mutex::new(child_completion_receiver),
             process_action: None,
@@ -2010,13 +2022,62 @@ impl ElfExecutor {
         Ok(true)
     }
 
+    /// Release only this executor's descriptor references. A live CLONE_FILES
+    /// sibling retains the old shared table; clearing its contents would close
+    /// that sibling's descriptors too.
+    pub(crate) fn release_files_on_exit(&mut self) {
+        self.state.stdin = None;
+        self.state.files.clear();
+        self.file_table = Arc::new(Mutex::new(FileTableState::default()));
+        self.process_action = None;
+    }
+
+    /// A worker cannot wait for a fork that needs the leader's exit hooks.
+    /// Keep the handles in process-owned storage until all worker hooks finish.
+    pub(crate) fn transfer_child_processes_to_owner(&mut self) {
+        debug_assert!(!self.is_thread_group_leader());
+        let children = OwnedChildProcesses {
+            pending: std::mem::take(&mut self.pending_processes),
+            completed: std::mem::take(&mut self.completed_processes),
+        };
+        if !children.pending.is_empty() || !children.completed.is_empty() {
+            self.transferred_processes
+                .lock()
+                .expect("KVM transferred child-process lock poisoned")
+                .entry(self.state.tid)
+                .or_default()
+                .push(children);
+        }
+    }
+
     // TODO-HUMAN-REVIEW(PR-235): Review KVM root-exit child synchronization.
     pub(crate) fn join_all_child_processes(&mut self) -> crate::Result<()> {
         let mut errors = Vec::new();
         // Taking ownership first ensures that every handle is joined, even if
         // an earlier child lost its start gate or returned an error. Reusing
         // collect_child_process here would leave a failed start in the map.
-        for (pid, process) in std::mem::take(&mut self.pending_processes) {
+        let mut pending: Vec<_> = std::mem::take(&mut self.pending_processes)
+            .into_iter()
+            .collect();
+        let mut completed = std::mem::take(&mut self.completed_processes);
+        if self.is_thread_group_leader() {
+            let transferred = std::mem::take(
+                &mut *self
+                    .transferred_processes
+                    .lock()
+                    .expect("KVM transferred child-process lock poisoned"),
+            );
+            // BTreeMap gives virtual TID order, independent of host completion.
+            // Vec entries preserve every transfer, even if a TID is reused.
+            for (_, transfers) in transferred {
+                for children in transfers {
+                    pending.extend(children.pending);
+                    completed.extend(children.completed);
+                }
+            }
+        }
+        pending.sort_by_key(|(pid, _)| *pid);
+        for (pid, process) in pending {
             if process.start.start().is_err() {
                 errors.push(crate::Error::UnexpectedVcpuExit(format!(
                     "KVM child process {pid} lost its parent start gate"
@@ -2051,7 +2112,7 @@ impl ElfExecutor {
                 }
             }
         }
-        for handle in self.completed_processes.drain(..) {
+        for handle in completed {
             let result = handle.join().map_err(|_| {
                 crate::Error::UnexpectedVcpuExit("completed KVM child process panicked".to_owned())
             });
@@ -32541,6 +32602,81 @@ mod tests {
         executor.start_pending_child_processes().unwrap();
         started_receiver.recv().unwrap();
         executor.join_all_child_processes().unwrap();
+    }
+
+    #[test]
+    fn exiting_workers_transfer_every_child_handle_in_virtual_order() {
+        let directory = TestDir::new();
+        let mut owner = ElfExecutor::new(test_state(&directory.0), false);
+        let mut worker2 = owner.thread_child(2).unwrap();
+        let mut worker3 = owner.thread_child(3).unwrap();
+        let fork = owner.fork_child(4, false, false).unwrap();
+        assert!(Arc::ptr_eq(
+            &owner.transferred_processes,
+            &worker2.transferred_processes
+        ));
+        assert!(Arc::ptr_eq(
+            &owner.transferred_processes,
+            &worker3.transferred_processes
+        ));
+        assert!(!Arc::ptr_eq(
+            &owner.transferred_processes,
+            &fork.transferred_processes
+        ));
+        let lifetime = Arc::new(());
+        // Reverse host transfer order. Two transfers from the same worker must
+        // keep both collections rather than replacing an earlier handle.
+        for worker in [&mut worker3, &mut worker2] {
+            let tid = worker.state.tid;
+            for batch in 0..2 {
+                let pid = tid * 10 + batch;
+                let (start, wait) = std::sync::mpsc::channel();
+                let child_lifetime = lifetime.clone();
+                let handle = std::thread::spawn(move || {
+                    let _lifetime = child_lifetime;
+                    assert_eq!(wait.recv().unwrap(), ChildStartCommand::Start);
+                    Err(crate::Error::UnexpectedVcpuExit(format!(
+                        "transferred pending {pid}"
+                    )))
+                });
+                worker.register_child_process(pid, start, Arc::new(Mutex::new(None)), handle);
+                let child_lifetime = lifetime.clone();
+                worker.completed_processes.push(std::thread::spawn(move || {
+                    let _lifetime = child_lifetime;
+                    Err(crate::Error::UnexpectedVcpuExit(format!(
+                        "transferred completed {pid}"
+                    )))
+                }));
+                worker.transfer_child_processes_to_owner();
+                assert!(worker.pending_processes.is_empty());
+                assert!(worker.completed_processes.is_empty());
+            }
+        }
+        drop(worker2);
+        drop(worker3);
+        let error = owner.join_all_child_processes().unwrap_err().to_string();
+        assert!(owner.pending_processes.is_empty());
+        assert!(owner.completed_processes.is_empty());
+        assert!(owner.transferred_processes.lock().unwrap().is_empty());
+        assert_eq!(
+            Arc::strong_count(&lifetime),
+            1,
+            "every transferred handle joined"
+        );
+        let mut previous = None;
+        for kind in ["pending", "completed"] {
+            for pid in [20, 21, 30, 31] {
+                let diagnostic = format!("transferred {kind} {pid}");
+                assert_eq!(error.matches(&diagnostic).count(), 1, "{error}");
+                let position = error.find(&diagnostic).unwrap();
+                assert!(
+                    previous.is_none_or(|previous| previous < position),
+                    "{error}"
+                );
+                previous = Some(position);
+            }
+        }
+        owner.join_all_child_processes().unwrap();
     }
 
     #[test]
