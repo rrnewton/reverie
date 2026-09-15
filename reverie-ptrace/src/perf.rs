@@ -450,6 +450,60 @@ impl PerfCounter {
         Ok(value)
     }
 
+    pub(crate) fn ctr_value_paused_once(&self) -> Result<u64, Errno> {
+        use std::ptr::addr_of;
+        use std::ptr::addr_of_mut;
+        use std::ptr::read_volatile;
+
+        let mapping = self.mmap.ok_or(Errno::EOPNOTSUPP)?;
+        let gate = self.raw_syscall.ok_or(Errno::EOPNOTSUPP)?;
+        let page = mapping.as_ptr();
+        let sequence = unsafe { read_once(addr_of_mut!((*page).lock)) };
+        if sequence & 1 != 0 {
+            return Err(Errno::EAGAIN);
+        }
+        smp_rmb();
+        let (index, enabled, running) = unsafe {
+            (
+                read_volatile(addr_of!((*page).index)),
+                read_volatile(addr_of!((*page).time_enabled)),
+                read_volatile(addr_of!((*page).time_running)),
+            )
+        };
+        if index != 0 {
+            return Err(Errno::EBUSY);
+        }
+        if enabled != running {
+            return Err(Errno::ENODEV);
+        }
+        let mut value = 0u64;
+        let length = std::mem::size_of_val(&value);
+        let result = Errno::from_ret(unsafe {
+            gate(
+                libc::SYS_read,
+                [
+                    self.fd as u64,
+                    (&raw mut value) as u64,
+                    length as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ) as usize
+        })?;
+        smp_rmb();
+        if sequence != unsafe { read_once(addr_of_mut!((*page).lock)) } {
+            return Err(Errno::EAGAIN);
+        }
+        if result == 0 {
+            return Err(Errno::ENODEV);
+        }
+        if result != length {
+            return Err(Errno::EIO);
+        }
+        Ok(value)
+    }
+
     /// Perform a fast read, which doesn't involve a syscall in the fast path.
     /// This falls back to a slow syscall read where necessary, including if
     /// fast reads weren't enabled in the `Builder`.
@@ -910,6 +964,10 @@ mod support_test {
         }
     }
 }
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "perf/tests.rs"]
+mod paused_tests;
 
 // NOTE: aarch64 doesn't work with
 // `Event::Hardware(HardwareEvent::BranchInstructions)`, so these tests are
