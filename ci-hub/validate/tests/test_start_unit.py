@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 import start_unit  # noqa: E402
+from test_immutable_tool_authority import AuthorityFixture, make_tree_read_only
 import qualifying_receipt  # noqa: E402
 from scripts import test_parent_main_write as parent_main_tests  # noqa: E402
 
@@ -30,125 +31,6 @@ from scripts import test_parent_main_write as parent_main_tests  # noqa: E402
 SHA = "a" * 40
 HERMIT_SHA = "b" * 40
 AGENT_UTILS_SHA = "c" * 40
-
-
-def make_tree_read_only(path: Path) -> None:
-    metadata = path.lstat()
-    if stat.S_ISLNK(metadata.st_mode):
-        return
-    if path.is_dir():
-        for child in path.iterdir():
-            make_tree_read_only(child)
-        path.chmod(0o555)
-    elif path.is_file():
-        path.chmod(0o555 if metadata.st_mode & 0o111 else 0o444)
-
-
-class AuthorityFixture:
-    def __init__(
-        self,
-        root: Path,
-        state_root: Path,
-        target_root: Path,
-        *,
-        bootstrap_sha256: str,
-        sealed: bool = True,
-        update: dict[str, object] | None = None,
-        remove: set[str] | None = None,
-    ) -> None:
-        self.root_fd = os.open(
-            root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-        )
-        self.state_fd = os.open(
-            state_root,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-        )
-        self.target_fd = os.open(
-            target_root,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-        )
-        self.authority_fd = os.memfd_create(
-            "dev-hermit-tool-authority",
-            os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
-        )
-        root_metadata = os.fstat(self.root_fd)
-        state_metadata = os.fstat(self.state_fd)
-        target_metadata = os.fstat(self.target_fd)
-        content_sha256 = start_unit.immutable_tool_content_sha256(
-            Path(f"/proc/{os.getpid()}/fd/{self.root_fd}")
-        )
-        self.record: dict[str, object] = {
-            "schema": start_unit.TOOL_AUTHORITY_SCHEMA,
-            "holder_pid": os.getpid(),
-            "authority_fd": self.authority_fd,
-            "target_fd": self.target_fd,
-            "target_root": str(target_root.resolve()),
-            "target_dev": target_metadata.st_dev,
-            "target_ino": target_metadata.st_ino,
-            "root_fd": self.root_fd,
-            "root_dev": root_metadata.st_dev,
-            "root_ino": root_metadata.st_ino,
-            "state_fd": self.state_fd,
-            "state_root": str(state_root.resolve()),
-            "state_dev": state_metadata.st_dev,
-            "state_ino": state_metadata.st_ino,
-            "content_sha256": content_sha256,
-            "parent_sha": SHA,
-            "hermit_sha": HERMIT_SHA,
-            "agent_utils_sha": AGENT_UTILS_SHA,
-            "bootstrap_sha256": bootstrap_sha256,
-        }
-        self.record.update(update or {})
-        for name in remove or set():
-            self.record.pop(name, None)
-        os.write(
-            self.authority_fd,
-            json.dumps(self.record, sort_keys=True, separators=(",", ":")).encode()
-            + b"\n",
-        )
-        os.fchmod(self.authority_fd, 0o400)
-        if sealed:
-            fcntl.fcntl(
-                self.authority_fd,
-                fcntl.F_ADD_SEALS,
-                fcntl.F_SEAL_SEAL
-                | fcntl.F_SEAL_SHRINK
-                | fcntl.F_SEAL_GROW
-                | fcntl.F_SEAL_WRITE,
-            )
-        self.tool_root = Path(f"/proc/{os.getpid()}/fd/{self.root_fd}")
-        self.target_root = target_root
-        self.authority_path = Path(
-            f"/proc/{os.getpid()}/fd/{self.authority_fd}"
-        )
-
-    def environment(self) -> dict[str, str]:
-        return {
-            start_unit.TOOL_AUTHORITY_ENV: str(self.authority_path),
-            start_unit.TOOL_CONTENT_SHA256_ENV: str(
-                self.record.get("content_sha256", "")
-            ),
-            start_unit.TOOL_PARENT_SHA_ENV: str(self.record.get("parent_sha", "")),
-            start_unit.TOOL_HERMIT_SHA_ENV: str(self.record.get("hermit_sha", "")),
-            start_unit.TOOL_AGENT_UTILS_SHA_ENV: str(
-                self.record.get("agent_utils_sha", "")
-            ),
-            start_unit.TOOL_BOOTSTRAP_SHA256_ENV: str(
-                self.record.get("bootstrap_sha256", "")
-            ),
-        }
-
-    def close(self) -> None:
-        for descriptor in (
-            self.authority_fd,
-            self.state_fd,
-            self.root_fd,
-            self.target_fd,
-        ):
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
 
 
 def completed(command: list[str], rc: int = 0, stdout: str = "", stderr: str = ""):
@@ -3385,6 +3267,12 @@ class StartUnitTest(unittest.TestCase):
         self.assertNotIn(f"DEV_HERMIT_TOOL_ROOT={self.root}", command)
 
     def test_fd_authority_accepts_sealed_same_holder_identity_and_pins(self) -> None:
+        import immutable_tool_authority
+
+        self.assertIs(
+            immutable_tool_authority.read_immutable_tool_authority,
+            start_unit.read_immutable_tool_authority,
+        )
         bootstrap = self.root / "authority-bootstrap"
         bootstrap.write_text("#!/bin/sh\nexit 0\n")
         bootstrap.chmod(0o555)
