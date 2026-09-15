@@ -21,6 +21,12 @@ impl Tool for AdapterTool {
 }
 struct RefusingExecutor;
 impl GuestSyscallExecutor<AdapterTool> for RefusingExecutor {
+    fn read_clock(&self) -> Result<u64> {
+        Err(Error::GuestClock(
+            "signal test adapter has no guest counter".into(),
+        ))
+    }
+
     fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> i64 {
         panic!("terminal cancellation executed a syscall")
     }
