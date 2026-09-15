@@ -7246,7 +7246,10 @@ fn latest_termination_request(
         .max_by(|left, right| left.requested_at.cmp(&right.requested_at))
 }
 
-fn slot_from_validate_checkout(root: &Path, checkout: &str) -> Option<String> {
+fn slot_from_validate_checkout<'a>(
+    shared_root: impl FnOnce() -> &'a Path,
+    checkout: &str,
+) -> Option<String> {
     let path = Path::new(checkout);
     let components = path
         .components()
@@ -7269,7 +7272,7 @@ fn slot_from_validate_checkout(root: &Path, checkout: &str) -> Option<String> {
         }
     }
 
-    let shared_root = landing_lock::repository_lock_root(root);
+    let shared_root = shared_root();
     if path == shared_root.join("hermit") || path == shared_root.join("reverie") {
         return Some("primary".into());
     }
@@ -7452,6 +7455,11 @@ fn live_validate_runs_from(
     now: chrono::DateTime<chrono::Utc>,
     include_log_paths: bool,
 ) -> Result<LiveValidateRunScan, CiHubError> {
+    // The shared repository root is a query-wide display fact. Resolving it
+    // for each retained handle made --log-paths spawn over a thousand identical
+    // Git commands. Paths with an explicit slot, or queries without log paths,
+    // never need this fallback.
+    let slot_root = std::cell::LazyCell::new(|| landing_lock::repository_lock_root(state_root));
     // Run handles live under the shared state root, but their schema belongs to
     // the exact ci-hub checkout executing this command. A stale shared checkout
     // must not make a newer reader reject fields its own producer writes.
@@ -7610,7 +7618,7 @@ fn live_validate_runs_from(
                     None => {
                         let source_checkout =
                             current_validate_run_text(&value, "source_checkout", &path)?;
-                        slot_from_validate_checkout(state_root, &source_checkout)
+                        slot_from_validate_checkout(|| slot_root.as_path(), &source_checkout)
                     }
                 };
                 let log_file = current_validate_run_text(&value, "log", &path)?;
@@ -7841,7 +7849,9 @@ fn live_validate_runs_from(
                         .source_checkout
                         .as_deref()
                         .or(record.checkout.as_deref())
-                        .and_then(|checkout| slot_from_validate_checkout(state_root, checkout))
+                        .and_then(|checkout| {
+                            slot_from_validate_checkout(|| slot_root.as_path(), checkout)
+                        })
                 })
             } else {
                 None
@@ -7888,7 +7898,9 @@ fn live_validate_runs_from(
                 .as_deref()
                 .or(record.checkout.as_deref());
             (
-                checkout.and_then(|checkout| slot_from_validate_checkout(state_root, checkout)),
+                checkout.and_then(|checkout| {
+                    slot_from_validate_checkout(|| slot_root.as_path(), checkout)
+                }),
                 record.log.clone(),
             )
         } else {
@@ -12748,6 +12760,54 @@ mod tests {
     }
 
     #[test]
+    fn validation_slot_root_is_lazy_and_reused_across_retained_handles() {
+        let resolutions = std::cell::Cell::new(0);
+        let shared_root = std::cell::LazyCell::new(|| {
+            resolutions.set(resolutions.get() + 1);
+            PathBuf::from("/srv/shared-parent")
+        });
+        for (checkout, expected) in [
+            ("/srv/shared-parent/worktrees/slots/worker/hermit", "worker"),
+            ("/srv/shared-parent/worktrees/legacy/hermit", "legacy"),
+        ] {
+            assert_eq!(
+                slot_from_validate_checkout(|| shared_root.as_path(), checkout).as_deref(),
+                Some(expected)
+            );
+        }
+        assert_eq!(resolutions.get(), 0);
+
+        // The observed production census performed this same root lookup 1036
+        // times. Retain every path classification while resolving it once.
+        for _ in 0..1036 {
+            for (checkout, expected) in [
+                ("/srv/shared-parent/hermit", "primary"),
+                ("/srv/shared-parent/reverie", "primary"),
+                ("/tmp/validation-checkout", "standalone"),
+                ("/srv/retained-checkout", "retained-checkout"),
+            ] {
+                assert_eq!(
+                    slot_from_validate_checkout(|| shared_root.as_path(), checkout).as_deref(),
+                    Some(expected)
+                );
+            }
+        }
+        assert_eq!(resolutions.get(), 1);
+
+        let other_query = std::cell::LazyCell::new(|| PathBuf::from("/srv/other-parent"));
+        assert_eq!(
+            slot_from_validate_checkout(|| other_query.as_path(), "/srv/other-parent/hermit")
+                .as_deref(),
+            Some("primary")
+        );
+        assert_eq!(
+            slot_from_validate_checkout(|| other_query.as_path(), "/srv/shared-parent/hermit")
+                .as_deref(),
+            Some("hermit")
+        );
+    }
+
+    #[test]
     fn live_validate_requires_boot_pid_generation_and_exact_unit() {
         let root = std::env::temp_dir().join(format!(
             "ci-hub-live-validate-{}-{}",
@@ -12783,6 +12843,8 @@ mod tests {
                 "target": "a".repeat(40),
                 "repo": CANONICAL_VALIDATE_REPO,
                 "agent": "hermit-test",
+                "source_checkout": root.join("hermit"),
+                "log": root.join("ignored/validate/validate-hermit-test.log"),
                 "started_at": "2026-08-27T12:00:00Z",
                 "host": "validation-host",
                 "process_identity": {
@@ -12835,6 +12897,23 @@ mod tests {
         );
         let line = &table[1];
         assert!(line.starts_with("  - IN-PROGRESS -"), "{line}");
+
+        let with_paths = live_validate_runs_from(
+            &root,
+            &root,
+            CANONICAL_VALIDATE_REPO,
+            &proc_root,
+            &boot_id,
+            now,
+            true,
+        )
+        .unwrap();
+        assert_eq!(with_paths.entries.len(), 1);
+        assert_eq!(with_paths.entries[0].slot.as_deref(), Some("primary"));
+        assert_eq!(with_paths.attempts.len(), 1);
+        assert_eq!(with_paths.attempts[0].slot.as_deref(), Some("primary"));
+        assert!(with_paths.attempts[0].process_verified);
+        assert!(with_paths.unreadable_handles.is_empty());
 
         std::fs::write(
             process.join("cgroup"),
@@ -13060,6 +13139,22 @@ mod tests {
             serde_json::to_vec(&historical).unwrap(),
         )
         .unwrap();
+        let retained_count = 1036;
+        for index in 0..retained_count {
+            let mut retained = historical.clone();
+            retained["unit"] = serde_json::json!(format!("validate-retained-{index}.service"));
+            retained["source_checkout"] = serde_json::json!(match index % 4 {
+                0 => root.join("hermit"),
+                1 => root.join("worktrees/slots/retained/hermit"),
+                2 => PathBuf::from("/tmp/retained-validation"),
+                _ => PathBuf::from("/srv/retained-validation"),
+            });
+            std::fs::write(
+                runs.join(format!("validate-retained-{index}.json")),
+                serde_json::to_vec(&retained).unwrap(),
+            )
+            .unwrap();
+        }
         let mut malformed = current.clone();
         malformed["unexpected_contract_field"] = serde_json::json!(true);
         malformed["unit"] = serde_json::json!("validate-malformed.service");
@@ -13082,7 +13177,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(live.entries.len(), 3);
-        assert_eq!(live.attempts.len(), 4);
+        assert_eq!(live.attempts.len(), 4 + retained_count);
+        for index in 0..retained_count {
+            let unit = format!("validate-retained-{index}.service");
+            let retained = live
+                .attempts
+                .iter()
+                .find(|attempt| attempt.unit == unit)
+                .unwrap();
+            let expected_slot =
+                ["primary", "retained", "standalone", "retained-validation"][index % 4];
+            assert_eq!(retained.slot.as_deref(), Some(expected_slot));
+            assert_eq!(retained.sha, "677df8ff06dc72941c2eaa5826c7ba32f4ca36aa");
+            assert_eq!(retained.state, "completed");
+            assert_eq!(retained.result.as_deref(), Some("success"));
+            assert_eq!(retained.exit_code, Some(0));
+            assert_eq!(
+                retained.finished_at.as_deref(),
+                Some("2026-08-28T18:13:32.022882+00:00")
+            );
+            assert!(!retained.process_verified);
+            assert!(!validate_attempt_is_outstanding(retained));
+        }
         let historical_attempt = live
             .attempts
             .iter()
