@@ -7,7 +7,9 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -28,11 +30,23 @@ import git_env  # noqa: E402
 REPO = "rrnewton/hermit"
 AGENT = "ops-tick-integration-tip"
 DEFAULT_TOTAL_TIMEOUT_SECONDS = 75.0
+# The first query includes cold Rust compilation: a fresh tool clone took
+# 46.847s even after removing repeated Git discovery. Allocate that startup
+# within the existing total deadline; later observations still have their
+# shorter cap and every phase is limited by the time remaining.
+FIRST_STATUS_TIMEOUT_SECONDS = 50.0
+LAUNCH_TIMEOUT_SECONDS = 10.0
+LAUNCHER_OBSERVATION_TIMEOUT_SECONDS = 5.0
+CONSUMED_IDENTITY_TIMEOUT_SECONDS = 5.0
 EXACT_VALIDATE_STATUS_SCHEMA_VERSION = 3
 
 
 class ObservationUnavailable(RuntimeError):
     """One required authority could not answer within this tick."""
+
+
+class CommandNotStarted(ObservationUnavailable):
+    """The command was refused before its child process could be started."""
 
 
 @dataclass(frozen=True)
@@ -117,7 +131,7 @@ def run_bounded(
             start_new_session=True,
         )
     except OSError as error:
-        raise ObservationUnavailable(f"cannot start {command[0]}: {error}") from error
+        raise CommandNotStarted(f"cannot start {command[0]}: {error}") from error
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as error:
@@ -438,6 +452,178 @@ def latest_prior_attempt(
     )
 
 
+def prior_launcher_observation(
+    settings: Settings,
+    attempt: Mapping[str, object],
+    timeout: float,
+    run: Runner,
+) -> dict[str, str]:
+    """Read the exact launcher, without promoting it to validation evidence."""
+
+    target = attempt.get("target")
+    unit = attempt.get("launcher_unit")
+    if (
+        not isinstance(target, str)
+        or re.fullmatch(r"[0-9a-f]{40}", target) is None
+        or not isinstance(unit, str)
+        or re.fullmatch(
+            rf"validate-ops-tick-{target[:12]}-[0-9a-f]{{12}}-launcher\.service",
+            unit,
+        ) is None
+    ):
+        raise ObservationUnavailable(
+            "prior attempt lacks an exact bound launcher identity; " + prior_attempt_text(attempt)
+        )
+    fields = ("Id", "LoadState", "ActiveState", "SubState", "MainPID", "InvocationID")
+    completed = run(
+        ["systemctl", "--user", "show", unit, "--no-pager", *(
+            f"--property={name}" for name in fields
+        )],
+        settings.state_root,
+        timeout,
+    )
+    if completed.returncode != 0:
+        raise ObservationUnavailable(
+            f"cannot observe prior launcher {unit}: "
+            f"{one_line(completed.stderr.strip() or f'exit {completed.returncode}')}"
+        )
+    properties: dict[str, str] = {}
+    for line in completed.stdout.splitlines():
+        name, separator, value = line.partition("=")
+        if not separator or name in properties or name not in fields:
+            raise ObservationUnavailable(f"malformed systemctl reply for prior launcher {unit}")
+        properties[name] = value
+    if (
+        set(properties) != set(fields)
+        or properties["Id"] != unit
+        or re.fullmatch(r"[0-9]+", properties["MainPID"]) is None
+        or (
+            properties["InvocationID"]
+            and re.fullmatch(r"[0-9a-f]{32}", properties["InvocationID"]) is None
+        )
+    ):
+        raise ObservationUnavailable(f"incomplete or mismatched prior launcher observation for {unit}")
+    state = properties["ActiveState"]
+    if (
+        properties["LoadState"] == "not-found"
+        and state == "inactive"
+        and properties["SubState"] == "dead"
+        and properties["MainPID"] == "0"
+        and properties["InvocationID"] == ""
+    ):
+        return {**properties, "observation": "absent"}
+    if properties["LoadState"] == "loaded":
+        if (
+            (state, properties["SubState"]) in {("inactive", "dead"), ("failed", "failed")}
+            and properties["MainPID"] == "0"
+        ):
+            return {**properties, "observation": "terminal"}
+        if state in {
+            "active", "activating", "deactivating", "reloading", "refreshing", "maintenance"
+        } and properties["InvocationID"]:
+            return {**properties, "observation": "live"}
+    raise ObservationUnavailable(f"uncertain prior launcher state for {unit}: {properties}")
+
+
+def launcher_prerequisites(settings: Settings) -> tuple[Path, str]:
+    operational_tool = settings.operational_tool
+    parent_sha = settings.tool_parent_sha
+    if (
+        operational_tool is None
+        or not operational_tool.is_file()
+        or not os.access(operational_tool, os.X_OK)
+    ):
+        raise CommandNotStarted(
+            "the verified installed operational-tool is unavailable; refusing a launcher "
+            "that would depend on the health tick's short-lived tool snapshot"
+        )
+    if (
+        parent_sha is None
+        or re.fullmatch(r"[0-9a-f]{40}", parent_sha) is None
+    ):
+        raise CommandNotStarted(
+            "the exact parent tool SHA is unavailable; refusing an unbound launcher"
+        )
+    return operational_tool, parent_sha
+
+
+def consumed_launcher_identity(
+    settings: Settings,
+    attempt: Mapping[str, object],
+    timeout: float,
+    run: Runner,
+) -> dict[str, object]:
+    """Prove a retained terminal handle consumed this exact exclusive unit key.
+
+    The current tool's parser supplies schema and producer authority. This is
+    consumption evidence only; the old outcome is never a verdict for a new tip.
+    """
+
+    unit = str(attempt["launcher_unit"]).removesuffix("-launcher.service") + ".service"
+    if attempt.get("unit", unit) != unit:
+        raise ObservationUnavailable("prior launcher and validation unit identities disagree")
+    path = settings.state_root / "ignored" / "validate" / "runs" / f"{unit.removesuffix('.service')}.json"
+
+    def retained_identity() -> tuple[int, int, int, int]:
+        try:
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or path.resolve(strict=True) != path:
+                raise ObservationUnavailable(f"consumed identity is not a canonical regular handle: {path}")
+            return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
+        except OSError as error:
+            raise ObservationUnavailable(f"cannot inspect retained consumed identity {path}: {error}") from error
+
+    before = retained_identity()
+    completed, report = command_json(
+        [
+            sys.executable,
+            "-B",
+            str(settings.tool_root / "ci-hub" / "validate" / "run_registry.py"),
+            "inspect-current-records",
+            "--path",
+            str(path),
+        ],
+        cwd=settings.state_root,
+        timeout=timeout,
+        run=run,
+    )
+    if retained_identity() != before:
+        raise ObservationUnavailable(f"retained consumed identity changed during inspection: {path}")
+    records = report.get("records")
+    if (
+        completed.returncode != 0
+        or report.get("unreadable") != []
+        or not isinstance(records, list)
+        or len(records) != 1
+        or not isinstance(records[0], dict)
+        or records[0].get("path") != str(path)
+        or not isinstance(records[0].get("record"), dict)
+    ):
+        raise ObservationUnavailable(f"current run registry did not authenticate one readable exact handle: {path}")
+    record = records[0]["record"]
+    if (
+        type(record.get("schema_version")) is not int
+        or record["schema_version"] != 1
+        or record.get("kind") != "validate"
+        or record.get("unit") != unit
+        or record.get("target") != attempt.get("target")
+        or record.get("repo") != REPO
+        or record.get("counts_as_validation") is not True
+        or record.get("state") not in {"completed", "refused", "killed"}
+        or not isinstance(record.get("finished_at"), str)
+        or not record["finished_at"].strip()
+        or type(record.get("exit_code")) is not int
+    ):
+        raise ObservationUnavailable(f"retained handle is not terminal evidence for the exact prior identity: {path}")
+    return {
+        "record_path": str(path),
+        "record_dev": before[0],
+        "record_ino": before[1],
+        "tool_parent_sha": settings.tool_parent_sha,
+        **{name: record.get(name) for name in ("unit", "target", "state", "result", "detail", "exit_code", "finished_at")},
+    }
+
+
 def spawn_validate(
     settings: Settings,
     target: str,
@@ -447,28 +633,13 @@ def spawn_validate(
     launcher_log: Path,
     timeout: float,
 ) -> Mapping[str, object]:
-    operational_tool = settings.operational_tool
-    parent_sha = settings.tool_parent_sha
-    if (
-        operational_tool is None
-        or not operational_tool.is_file()
-        or not os.access(operational_tool, os.X_OK)
-    ):
-        raise ObservationUnavailable(
-            "the verified installed operational-tool is unavailable; refusing a launcher "
-            "that would depend on the health tick's short-lived tool snapshot"
-        )
-    if (
-        parent_sha is None
-        or len(parent_sha) != 40
-        or any(character not in "0123456789abcdef" for character in parent_sha)
-    ):
-        raise ObservationUnavailable(
-            "the exact parent tool SHA is unavailable; refusing an unbound launcher"
-        )
-    launcher_log.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(launcher_log, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    os.close(descriptor)
+    operational_tool, parent_sha = launcher_prerequisites(settings)
+    try:
+        launcher_log.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(launcher_log, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(descriptor)
+    except OSError as error:
+        raise CommandNotStarted(f"cannot prepare launcher log {launcher_log}: {error}") from error
     launcher_unit = f"{unit}-launcher"
     validate_arguments = [
         "validate-run",
@@ -526,7 +697,7 @@ def spawn_validate(
             or f"exit {completed.returncode}"
         )
         raise ObservationUnavailable(
-            f"systemd-run refused {launcher_unit}: {one_line(detail)}"
+            f"systemd-run did not confirm {launcher_unit}: {one_line(detail)}"
         )
     return {"unit": f"{launcher_unit}.service", "accepted": True}
 
@@ -581,7 +752,7 @@ def run_tick(
     deadline = time.monotonic() + settings.total_timeout_seconds
     target = fetch(settings, remaining(deadline, 25.0))
     count, in_progress, status = exact_record_count(
-        settings, target, remaining(deadline, 25.0), run
+        settings, target, remaining(deadline, FIRST_STATUS_TIMEOUT_SECONDS), run
     )
     first_outstanding = outstanding_run_handles(status)
     verified = [handle for handle in first_outstanding if handle["process_verified"] is True]
@@ -594,7 +765,61 @@ def run_tick(
     outstanding = first_outstanding
     admission: dict[str, object] | None = None
     lock_reports_exact_target = False
+    tick_attempt: dict[str, object] | None = None
+    reuse_launcher_identity = False
+    consumed_prior: dict[str, object] | None = None
     if not count and not in_progress:
+        tick_attempt = read_json(settings.state_dir / "latest.json")
+        if tick_attempt is not None and tick_attempt.get("state") != "launch-not-started":
+            observed = prior_launcher_observation(
+                settings,
+                tick_attempt,
+                remaining(deadline, LAUNCHER_OBSERVATION_TIMEOUT_SECONDS),
+                run,
+            )
+            if observed["observation"] == "live":
+                emit(
+                    state="launcher-in-progress",
+                    target=target,
+                    launcher_target=tick_attempt.get("target"),
+                    launcher_unit=observed["Id"],
+                    launcher_pid=observed["MainPID"],
+                    launcher_invocation=observed["InvocationID"],
+                    launched=0,
+                    summary=(
+                        f"prior launcher {observed['Id']} is still {observed['ActiveState']}; "
+                        "no second launcher started; this is not validation result evidence"
+                    ),
+                )
+                return 0
+            launch_receipt = tick_attempt.get("launcher")
+            unconfirmed = (
+                tick_attempt.get("state") != "launcher-accepted"
+                or not isinstance(launch_receipt, dict)
+                or launch_receipt.get("accepted") is not True
+                or launch_receipt.get("unit") != observed["Id"]
+                or tick_attempt.get("launcher_identity_unconfirmed") is True
+            )
+            if unconfirmed:
+                if tick_attempt.get("target") != target:
+                    try:
+                        consumed_prior = consumed_launcher_identity(
+                            settings,
+                            tick_attempt,
+                            remaining(deadline, CONSUMED_IDENTITY_TIMEOUT_SECONDS),
+                            run,
+                        )
+                    except ObservationUnavailable as error:
+                        raise ObservationUnavailable(
+                            f"prior launcher {observed['Id']} for another tip has an unconfirmed "
+                            f"request and no retained terminal consumption proof: {error}"
+                        ) from error
+                else:
+                    # A manager request may still be pending after the client
+                    # was killed, even when a query reports not-found. Reuse
+                    # both names so delayed acceptance races the same keys,
+                    # never a second independently named launcher/run.
+                    reuse_launcher_identity = True
         # A preparing record exists before validate-lock publishes its process
         # identity. Read the lock between snapshots and preserve outstanding
         # handles from either read so the periodic check never creates a
@@ -683,11 +908,10 @@ def run_tick(
         )
         return 2
 
-    tick_attempt = read_json(settings.state_dir / "latest.json")
-    if tick_attempt is not None and tick_attempt.get("target") != target:
-        tick_attempt = None
-
-    prior = latest_prior_attempt(tick_attempt, status["run_handles"])
+    prior = latest_prior_attempt(
+        tick_attempt if tick_attempt and tick_attempt.get("target") == target else None,
+        status["run_handles"],
+    )
     if admission is None:
         admission = admission_status(settings, target, remaining(deadline, 10.0), run)
     if admission["admissible"] is not True:
@@ -725,10 +949,17 @@ def run_tick(
         )
         return 0
 
+    # Refuse an exhausted decision or missing launcher prerequisites before
+    # writing intent. A later setup error can still be classified not-started.
+    remaining(deadline, LAUNCH_TIMEOUT_SECONDS)
+    launcher_prerequisites(settings)
     observed_at = datetime.now(timezone.utc).isoformat()
     token = uuid.uuid4().hex[:12]
     attempt_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{token}"
     unit = f"validate-ops-tick-{target[:12]}-{token}"
+    if reuse_launcher_identity:
+        assert tick_attempt is not None
+        unit = str(tick_attempt["launcher_unit"]).removesuffix("-launcher.service")
     logs = settings.state_dir / "logs"
     validate_log = logs / f"{attempt_id}-validate.log"
     launcher_log = logs / f"{attempt_id}-launcher.log"
@@ -745,9 +976,22 @@ def run_tick(
         "started_at": observed_at,
         "validate_log": str(validate_log),
         "launcher_log": str(launcher_log),
+        "launcher_identity_unconfirmed": reuse_launcher_identity,
     }
+    if consumed_prior is not None:
+        attempt["consumed_prior_launcher"] = consumed_prior
+    if reuse_launcher_identity:
+        assert tick_attempt is not None
+        attempt["reused_launcher_from"] = {
+            name: tick_attempt.get(name)
+            for name in ("attempt_id", "started_at", "state", "detail", "validate_log", "launcher_log")
+        }
     atomic_write_json(attempt_path, attempt)
     try:
+        try:
+            launch_timeout = remaining(deadline, LAUNCH_TIMEOUT_SECONDS)
+        except ObservationUnavailable as error:
+            raise CommandNotStarted(str(error)) from error
         launch = spawn(
             settings,
             target,
@@ -755,31 +999,56 @@ def run_tick(
             unit,
             validate_log,
             launcher_log,
-            remaining(deadline, 10.0),
+            launch_timeout,
         )
     except Exception as error:
-        attempt.update(
-            state="launch-failed",
-            detail=one_line(error),
-            finished_at=datetime.now(timezone.utc).isoformat(),
-        )
-        atomic_write_json(attempt_path, attempt)
+        not_started = isinstance(error, CommandNotStarted) and not reuse_launcher_identity
+        state = "launch-not-started" if not_started else "launch-unknown"
+        detail = one_line(error)
+        attempt.update(state=state, detail=detail)
+        if not_started:
+            attempt["finished_at"] = datetime.now(timezone.utc).isoformat()
+        else:
+            attempt["launcher_identity_unconfirmed"] = True
+        try:
+            atomic_write_json(attempt_path, attempt)
+        except OSError as record_error:
+            # The original starting intent still names the exact unit. Never
+            # turn a failed evidence update into a claim that dispatch failed.
+            detail += f"; could not update attempt evidence: {one_line(record_error)}"
         emit(
-            state="launch-failed",
+            state=state,
             target=target,
             record_count=0,
-            in_progress_count=0,
-            launched=0,
+            launcher_unit=attempt["launcher_unit"],
+            launched=0 if not_started else "unknown",
             prior_attempt=prior_attempt_text(prior),
-            next_action="repair the launch refusal, then retry this exact tip",
+            next_action=(
+                "repair the pre-dispatch refusal, then retry this exact tip"
+                if not_started else
+                "observe the recorded launcher unit before retrying; its request may have been accepted"
+            ),
             summary=(
-                "validate launch failed before a ledger row was written for exact "
-                f"Hermit main tip {target}: {one_line(error)}"
+                f"launcher {'was not started' if not_started else 'acceptance is unconfirmed'} "
+                f"for exact Hermit main tip {target}: {detail}"
             ),
         )
-        return 1
+        return 1 if not_started else 2
     attempt.update(state="launcher-accepted", launcher=dict(launch))
-    atomic_write_json(attempt_path, attempt)
+    try:
+        atomic_write_json(attempt_path, attempt)
+    except OSError as error:
+        emit(
+            state="launch-evidence-unknown",
+            target=target,
+            launcher_unit=attempt["launcher_unit"],
+            launched=1,
+            summary=(
+                f"systemd accepted launcher {attempt['launcher_unit']}, but its evidence "
+                f"update failed: {one_line(error)}; observe the retained starting intent"
+            ),
+        )
+        return 2
     emit(
         state="launched",
         target=target,
@@ -790,7 +1059,7 @@ def run_tick(
         prior_attempt=prior_attempt_text(prior),
         next_action=f"follow {validate_log}; read validate-status when the run finishes",
         summary=(
-            f"started one asynchronous validate for exact Hermit main tip {target}; "
+            f"systemd accepted one asynchronous validation launcher for exact Hermit main tip {target}; "
             f"{prior_attempt_text(prior)}; follow {validate_log} and read validate-status "
             "when the run finishes"
         ),
