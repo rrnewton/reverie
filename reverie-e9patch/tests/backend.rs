@@ -366,3 +366,64 @@ async fn non_elf_script_uses_ptrace_fallback() {
     assert_eq!(stats.recovered_sites(), None);
     assert_eq!(stats.patched_sites(), None);
 }
+
+#[path = "fixtures/pkey_nested_support.rs"]
+mod pkey_nested_support;
+
+#[tokio::test]
+async fn direct_tool_nested_syscall_preserves_interrupted_buffer_permissions() {
+    let (_directory, guest) = compile_fixture("pkey_nested.c");
+    let native = ProcessCommand::new(&guest).arg("native").output().unwrap();
+    if native.status.code() == Some(77) {
+        eprintln!("OSPKE unavailable; E9 nested protection-key cases were not measured");
+        return;
+    }
+    assert!(native.status.success(), "{native:?}");
+    assert!(native.stderr.is_empty(), "{native:?}");
+    assert_eq!(native.stdout, b"rights=0 result=1 raw_errno=0 remaining=1 pipe=53 pkru=0\nrights=1 result=-14 raw_errno=14 remaining=-1 pipe=0 pkru=4\nrights=2 result=1 raw_errno=0 remaining=1 pipe=53 pkru=8\n");
+    let profile = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_owned();
+    let preload = std::env::var_os("REVERIE_TEST_E9_PKEY_PRELOAD")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| profile.join("examples/libpkey_nested_tool.so"));
+    assert!(
+        preload.is_file(),
+        "build the pkey_nested_tool cdylib example: {}",
+        preload.display()
+    );
+    println!(
+        "native nested-buffer control:
+{}",
+        String::from_utf8_lossy(&native.stdout)
+    );
+    for on_alt_stack in [true, false] {
+        let mut command = Command::new(&guest);
+        command.arg("tool");
+        reverie_e9patch::set_guest_alt_stack(&mut command, on_alt_stack);
+        let (output, global) = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            E9patchBackend::run_direct_with_output_and_preload::<pkey_nested_support::NestedTool>(
+                command,
+                (),
+                &preload,
+            ),
+        )
+        .await
+        .expect("E9 nested pkey guest timed out")
+        .unwrap();
+        println!(
+            "E9 nested-buffer control alt_stack={on_alt_stack}:
+{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        assert_eq!(output.stdout, native.stdout);
+        assert_eq!(*global.observed.lock().unwrap(), [(1, 0), (-14, 4), (1, 8)]);
+    }
+}

@@ -13,6 +13,7 @@ mod backend;
 mod patch_alloc;
 mod stats;
 mod straddler;
+mod syscall_fallback;
 
 pub use backend::COORDINATOR_ENV;
 pub use backend::LiteinstBackend;
@@ -226,21 +227,19 @@ pub extern "C" fn reverie_liteinst_site_hook_count(address: u64) -> u64 {
 }
 
 // TODO-HUMAN-REVIEW(PR-249): Review public fallback-surface observability counters.
-/// Total syscalls that reached LiteInst's fail-closed escape surface.
+/// Total syscalls that reached LiteInst's fallback dispatch path.
 ///
-/// The escape surface is the dispatch path for a trapped site the runtime could
-/// not route to the Tool (un-patchable `SITE_FALLBACK`, or an unclaimable site),
-/// which fails closed with `EOPNOTSUPP`. For Detcore this counts syscalls that
-/// bypass the determinism tool, so it is the by-syscall-number analog of the
-/// per-site `reverie_liteinst_site_trap_count`/`_hook_count` exports and the
-/// direct counterpart of `reverie_e9patch_fallback_dispatch_count` (round 4).
+/// These sites have no installed hook. Typed Tool mode can dispatch them after
+/// signal return, so the count includes successful Tool calls and is not a
+/// syscall-failure count. The per-syscall-number breakdown uses the same keys
+/// as `reverie_e9patch_fallback_dispatch_count`.
 #[unsafe(no_mangle)]
 pub extern "C" fn reverie_liteinst_fallback_dispatch_count() -> u64 {
     runtime::fallback_dispatch_count()
 }
 
 // TODO-HUMAN-REVIEW(PR-249): Review public fallback-surface observability counters.
-/// Number of times syscall `number` reached LiteInst's fail-closed escape surface.
+/// Number of times syscall `number` reached LiteInst's fallback dispatch path.
 ///
 /// The per-syscall-number analog of the per-site counters, keyed by syscall
 /// number to match `reverie_e9patch_fallback_syscall_count`. Returns `0` for a
@@ -249,6 +248,22 @@ pub extern "C" fn reverie_liteinst_fallback_dispatch_count() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn reverie_liteinst_fallback_syscall_count(number: i64) -> u64 {
     runtime::fallback_syscall_count(number)
+}
+
+/// Fallback attempts refused by the runtime before ordinary Tool dispatch.
+///
+/// This is a subset of [`reverie_liteinst_fallback_dispatch_count`]. Errors
+/// returned by a successfully invoked Tool are not runtime refusals.
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_liteinst_fallback_refusal_count() -> u64 {
+    runtime::fallback_refusal_count()
+}
+
+/// Per-syscall breakdown of [`reverie_liteinst_fallback_refusal_count`].
+/// Numbers outside the tracked table contribute only to the total.
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_liteinst_fallback_syscall_refusal_count(number: i64) -> u64 {
+    runtime::fallback_syscall_refusal_count(number)
 }
 
 #[cfg(feature = "preload-constructor")]

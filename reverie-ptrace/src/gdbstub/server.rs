@@ -24,6 +24,8 @@ use tokio::sync::oneshot;
 use super::error::Error;
 use super::inferior::StoppedInferior;
 use super::packet::Packet;
+use super::packet::PacketParseError;
+use super::packet::checksum_delimiter;
 use super::session::Session;
 
 /// GdbServer controller
@@ -106,6 +108,9 @@ impl GdbServer {
 
 struct GdbServerImpl {
     reader: Box<dyn AsyncRead + Send + Unpin>,
+    // TCP reads may split a packet or contain several packets. Keep all bytes
+    // until their complete frame (including both checksum digits) is consumed.
+    rx_buf: BytesMut,
     /// ⚠️ `Option` SO THE RELAY CAN DROP IT. The session's command loop ends
     /// only when every sender on this channel is gone; holding it in `self` for
     /// the lifetime of [`GdbServerImpl::run`] made that impossible. See the
@@ -160,7 +165,9 @@ enum PacketWithAck {
     WithAck(Packet),
 }
 
-const PACKET_BUFFER_CAPACITY: usize = 0x8000;
+// The qSupported PacketSize limit counts data, excluding '$' and '#xx'.
+const PACKET_DATA_CAPACITY: usize = 0x8000;
+const PACKET_BUFFER_CAPACITY: usize = PACKET_DATA_CAPACITY + 4;
 
 impl GdbServerImpl {
     /// Creates a new gdbserver, by accepting remote connection at `addr`.
@@ -180,6 +187,7 @@ impl GdbServerImpl {
 
         Ok(GdbServerImpl {
             reader: Box::new(reader),
+            rx_buf: BytesMut::with_capacity(PACKET_BUFFER_CAPACITY),
             pkt_tx: Some(tx),
             server_rx: Some(server_rx),
             session: Some(session),
@@ -204,6 +212,7 @@ impl GdbServerImpl {
 
         Ok(GdbServerImpl {
             reader: Box::new(reader),
+            rx_buf: BytesMut::with_capacity(PACKET_BUFFER_CAPACITY),
             pkt_tx: Some(tx),
             server_rx: Some(server_rx),
             session: Some(session),
@@ -211,18 +220,73 @@ impl GdbServerImpl {
     }
 
     async fn recv_packet(&mut self) -> Result<PacketWithAck, Error> {
-        let mut rx_buf = BytesMut::with_capacity(PACKET_BUFFER_CAPACITY);
-        self.reader
-            .read_buf(&mut rx_buf)
-            .await
-            .map_err(|_| Error::ConnReset)?;
+        let mut with_ack = false;
+        let mut searched = 0;
+        let mut escaped = false;
+        let mut frame_len = None;
+        loop {
+            if let Some(&first) = self.rx_buf.first() {
+                // Preserve the existing combined ACK/packet representation.
+                // A standalone ACK is still returned without waiting for more.
+                if first == b'+' && !with_ack && self.rx_buf.len() > 1 {
+                    let _ack = self.rx_buf.split_to(1);
+                    with_ack = true;
+                    continue;
+                }
 
-        // packet to follow, such as `+StartNoAckMode`.
-        Ok(if rx_buf.starts_with(b"+") && rx_buf.len() > 1 {
-            PacketWithAck::WithAck(Packet::new(rx_buf.split_off(1))?)
-        } else {
-            PacketWithAck::JustPacket(Packet::new(rx_buf.split())?)
-        })
+                if first == b'$' {
+                    if frame_len.is_none() {
+                        frame_len = checksum_delimiter(&self.rx_buf[searched..], &mut escaped)
+                            .map(|offset| searched + offset + 3);
+                        searched = self.rx_buf.len();
+                    }
+                } else {
+                    // ACK, NACK and interrupt are single-byte packets. Let the
+                    // existing parser reject any other leading byte.
+                    frame_len = Some(1);
+                }
+
+                if let Some(len) = frame_len {
+                    if len > PACKET_BUFFER_CAPACITY {
+                        return Err(PacketParseError::PacketTooLarge {
+                            limit: PACKET_DATA_CAPACITY,
+                        }
+                        .into());
+                    }
+                    if self.rx_buf.len() >= len {
+                        let packet = Packet::new(self.rx_buf.split_to(len))?;
+                        return Ok(if with_ack {
+                            PacketWithAck::WithAck(packet)
+                        } else {
+                            PacketWithAck::JustPacket(packet)
+                        });
+                    }
+                }
+            }
+
+            let remaining = PACKET_BUFFER_CAPACITY - self.rx_buf.len();
+            if remaining == 0 {
+                return Err(PacketParseError::PacketTooLarge {
+                    limit: PACKET_DATA_CAPACITY,
+                }
+                .into());
+            }
+            let read = self
+                .reader
+                .as_mut()
+                .take(remaining as u64)
+                .read_buf(&mut self.rx_buf)
+                .await
+                .map_err(|_| Error::ConnReset)?;
+            if read == 0 {
+                return Err(if self.rx_buf.is_empty() {
+                    PacketParseError::EmptyBuf
+                } else {
+                    PacketParseError::MissingChecksum
+                }
+                .into());
+            }
+        }
     }
 
     async fn send_packet(&mut self, packet: Packet) -> Result<(), Error> {
@@ -331,6 +395,298 @@ mod tests {
 
     use super::*;
 
+    // A transport read is deliberately one selected chunk, irrespective of
+    // packet boundaries. No socket, inferior, timer, or GDB process is needed.
+    struct FramingChunks(std::collections::VecDeque<Vec<u8>>);
+
+    impl tokio::io::AsyncRead for FramingChunks {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if let Some(mut chunk) = self.0.pop_front() {
+                let count = chunk.len().min(buf.remaining());
+                let remaining = chunk.split_off(count);
+                buf.put_slice(&chunk);
+                if !remaining.is_empty() {
+                    self.0.push_front(remaining);
+                }
+            }
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    fn framing_server(chunks: Vec<Vec<u8>>) -> GdbServerImpl {
+        GdbServerImpl {
+            reader: Box::new(FramingChunks(chunks.into())),
+            rx_buf: BytesMut::with_capacity(PACKET_BUFFER_CAPACITY),
+            pkt_tx: None,
+            server_rx: None,
+            session: None,
+        }
+    }
+
+    fn assert_framed_pread(packet: PacketWithAck, expected_offset: isize) {
+        use crate::gdbstub::commands::Base;
+        use crate::gdbstub::commands::Command;
+        use crate::gdbstub::commands::vFile;
+
+        match packet {
+            PacketWithAck::JustPacket(Packet::Command(Command::Base(command))) => {
+                assert_eq!(
+                    command,
+                    Base::vFile(vFile::Pread(31, 4096, expected_offset))
+                );
+            }
+            _ => panic!("the valid vFile:pread frame did not produce its exact command"),
+        }
+    }
+
+    #[tokio::test]
+    async fn vfile_frames_survive_fragmented_reads() {
+        const FRAME: &[u8] = b"$vFile:pread:1f,1000,0#56";
+        let mut whole = framing_server(vec![FRAME.to_vec()]);
+        assert_framed_pread(
+            whole
+                .recv_packet()
+                .await
+                .expect("complete frame must decode"),
+            0,
+        );
+
+        for boundary in 1..FRAME.len() {
+            let mut split =
+                framing_server(vec![FRAME[..boundary].to_vec(), FRAME[boundary..].to_vec()]);
+            let packet = split.recv_packet().await.unwrap_or_else(|error| {
+                panic!("valid vFile frame rejected at read boundary {boundary}: {error:?}")
+            });
+            assert_framed_pread(packet, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn vfile_frames_survive_coalesced_reads() {
+        const FIRST: &[u8] = b"$vFile:pread:1f,1000,0#56";
+        const SECOND: &[u8] = b"$vFile:pread:1f,1000,1000#e7";
+        let mut server = framing_server(vec![[FIRST, SECOND].concat()]);
+        assert_framed_pread(
+            server.recv_packet().await.expect("first frame must decode"),
+            0,
+        );
+        assert_framed_pread(
+            server
+                .recv_packet()
+                .await
+                .expect("coalesced second frame must remain available"),
+            4096,
+        );
+    }
+
+    #[tokio::test]
+    async fn framing_preserves_ack_nack_interrupt_and_combined_ack() {
+        const FRAME: &[u8] = b"$vFile:pread:1f,1000,0#56";
+        let mut server = framing_server(vec![
+            b"+".to_vec(),
+            [b"+".as_slice(), FRAME, b"-\x03".as_slice()].concat(),
+        ]);
+        assert!(matches!(
+            server.recv_packet().await,
+            Ok(PacketWithAck::JustPacket(Packet::Ack))
+        ));
+        match server
+            .recv_packet()
+            .await
+            .expect("combined ACK must decode")
+        {
+            PacketWithAck::WithAck(packet) => {
+                assert_framed_pread(PacketWithAck::JustPacket(packet), 0);
+            }
+            _ => panic!("coalesced leading ACK was not retained"),
+        }
+        assert!(matches!(
+            server.recv_packet().await,
+            Ok(PacketWithAck::JustPacket(Packet::Nack))
+        ));
+        assert!(matches!(
+            server.recv_packet().await,
+            Ok(PacketWithAck::JustPacket(Packet::Interrupt))
+        ));
+
+        let mut split = framing_server(vec![b"+$vFile:".to_vec(), b"pread:1f,1000,0#56".to_vec()]);
+        match split
+            .recv_packet()
+            .await
+            .expect("ACK plus split frame must decode")
+        {
+            PacketWithAck::WithAck(packet) => {
+                assert_framed_pread(PacketWithAck::JustPacket(packet), 0);
+            }
+            _ => panic!("leading ACK was lost while assembling its frame"),
+        }
+    }
+
+    #[tokio::test]
+    async fn framing_preserves_binary_escapes_at_every_read_boundary() {
+        use crate::gdbstub::commands::Base;
+        use crate::gdbstub::commands::Command;
+        use crate::gdbstub::commands::X;
+
+        const FRAME: &[u8] = b"$X1,4:}\x03}\x04}]}\x0a#85";
+        for boundary in 1..FRAME.len() {
+            let mut server =
+                framing_server(vec![FRAME[..boundary].to_vec(), FRAME[boundary..].to_vec()]);
+            match server
+                .recv_packet()
+                .await
+                .expect("escaped frame must decode")
+            {
+                PacketWithAck::JustPacket(Packet::Command(Command::Base(command))) => {
+                    assert_eq!(
+                        command,
+                        Base::X(X {
+                            addr: 1,
+                            length: 4,
+                            vals: vec![b'#', b'$', b'}', b'*'],
+                        })
+                    );
+                }
+                _ => panic!("escaped binary frame did not preserve its exact command"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn framing_preserves_an_escaped_checksum_marker() {
+        use crate::gdbstub::commands::Base;
+        use crate::gdbstub::commands::Command;
+        use crate::gdbstub::commands::X;
+
+        // Escaping XORs the following byte with 0x20. An escaped '#' is data,
+        // and an escaped '}' must not make the following real '#' disappear.
+        for (frame, value) in [
+            (b"$X1,1:}##c0".as_slice(), 0x03),
+            (b"$X1,1:}]#fa".as_slice(), b'}'),
+            (b"$X1,1:}}#1a".as_slice(), b']'),
+        ] {
+            for boundary in 1..frame.len() {
+                let mut server = framing_server(vec![
+                    frame[..boundary].to_vec(),
+                    [&frame[boundary..], b"$vFile:pread:1f,1000,0#56".as_slice()].concat(),
+                ]);
+                match server.recv_packet().await.unwrap_or_else(|error| {
+                    panic!("escaped delimiter rejected at read boundary {boundary}: {error:?}")
+                }) {
+                    PacketWithAck::JustPacket(Packet::Command(Command::Base(command))) => {
+                        assert_eq!(
+                            command,
+                            Base::X(X {
+                                addr: 1,
+                                length: 1,
+                                vals: vec![value],
+                            })
+                        );
+                    }
+                    _ => panic!("escaped delimiter changed the binary command"),
+                }
+                assert_framed_pread(
+                    server.recv_packet().await.expect("trailing frame was lost"),
+                    0,
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn framing_keeps_checksum_header_and_incomplete_eof_refusals() {
+        for partial in [
+            b"$".as_slice(),
+            b"$qC".as_slice(),
+            b"$qC#".as_slice(),
+            b"$qC#b".as_slice(),
+        ] {
+            let mut server = framing_server(vec![partial.to_vec()]);
+            assert!(matches!(
+                server.recv_packet().await,
+                Err(Error::PacketError(PacketParseError::MissingChecksum))
+            ));
+        }
+        let mut bad_checksum = framing_server(vec![b"$qC#00".to_vec()]);
+        assert!(matches!(
+            bad_checksum.recv_packet().await,
+            Err(Error::PacketError(PacketParseError::ChecksumMismatched {
+                checksum: 0,
+                calculated: 0xb4
+            }))
+        ));
+        let mut malformed_checksum = framing_server(vec![b"$qC#zz".to_vec()]);
+        assert!(matches!(
+            malformed_checksum.recv_packet().await,
+            Err(Error::PacketError(PacketParseError::MalformedChecksum))
+        ));
+        let mut bad_header = framing_server(vec![b"!".to_vec()]);
+        assert!(matches!(
+            bad_header.recv_packet().await,
+            Err(Error::PacketError(PacketParseError::UnexpectedHeader(b'!')))
+        ));
+        let mut empty = framing_server(vec![]);
+        assert!(matches!(
+            empty.recv_packet().await,
+            Err(Error::PacketError(PacketParseError::EmptyBuf))
+        ));
+    }
+
+    #[tokio::test]
+    async fn framing_honors_the_advertised_packet_limit() {
+        use crate::gdbstub::commands::Command;
+
+        const ADVERTISED_LIMIT: usize = 0x8000;
+        fn packet(data_len: usize) -> Vec<u8> {
+            let mut body = vec![b'x'; data_len];
+            body[0] = b'q';
+            let checksum = body.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+            [
+                b"$".as_slice(),
+                &body,
+                format!("#{checksum:02x}").as_bytes(),
+            ]
+            .concat()
+        }
+        // PacketSize counts data characters, excluding '$' and '#xx'. Keep
+        // the earlier full-frame boundary and the actual payload boundary.
+        for data_len in [ADVERTISED_LIMIT - 4, ADVERTISED_LIMIT] {
+            let exact = packet(data_len);
+            assert_eq!(exact.len(), data_len + 4);
+            for boundary in [1, exact.len() - 3, exact.len() - 1] {
+                let mut server =
+                    framing_server(vec![exact[..boundary].to_vec(), exact[boundary..].to_vec()]);
+                match server.recv_packet().await.unwrap_or_else(|error| {
+                    panic!(
+                        "{data_len}-byte payload rejected at read boundary {boundary}: {error:?}"
+                    )
+                }) {
+                    PacketWithAck::JustPacket(Packet::Command(Command::Unknown(body))) => {
+                        assert_eq!(body.as_ref(), &exact[1..exact.len() - 3]);
+                    }
+                    _ => panic!("the exact-limit packet changed its command"),
+                }
+            }
+        }
+        let mut oversized = framing_server(vec![packet(ADVERTISED_LIMIT + 1)]);
+        assert!(matches!(
+            oversized.recv_packet().await,
+            Err(Error::PacketError(PacketParseError::PacketTooLarge {
+                limit: ADVERTISED_LIMIT
+            }))
+        ));
+        let mut unterminated = framing_server(vec![vec![b'$'; ADVERTISED_LIMIT + 4]]);
+        assert!(matches!(
+            unterminated.recv_packet().await,
+            Err(Error::PacketError(PacketParseError::PacketTooLarge {
+                limit: ADVERTISED_LIMIT
+            }))
+        ));
+    }
     /// ⚠️ THIS DRIVES `relay_gdb_packets` ITSELF. AN EARLIER VERSION DID NOT, AND
     /// THAT VERSION WAS WORTHLESS.
     ///
@@ -364,6 +720,7 @@ mod tests {
 
         let mut server = GdbServerImpl {
             reader: Box::new(reader),
+            rx_buf: BytesMut::with_capacity(PACKET_BUFFER_CAPACITY),
             pkt_tx: Some(tx),
             server_rx: Some(server_rx),
             // `relay_gdb_packets` never touches the session; `run` does, and a

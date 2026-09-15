@@ -40,3 +40,8 @@ tokio = { version = "1.52.4", features = ["macros", "rt"] }
 
 [build-dependencies]
 goblin = { version = "0.10.7", features = ["elf64"] }
+
+[[example]]
+name = "pkey_nested_tool"
+path = "tests/fixtures/pkey_nested_tool.rs"
+crate-type = ["cdylib"]

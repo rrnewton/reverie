@@ -142,6 +142,7 @@ unsafe fn install_tool_inner<T>(
 where
     T: Tool + 'static,
 {
+    crate::syscall_fallback::initialize()?;
     let rpc = CoordinatorRpc::<T::GlobalState>::connect(coordinator)?;
     runtime::reserve_coordinator_fd(rpc.raw_fd())?;
     let stats =
@@ -398,6 +399,8 @@ where
             instruction_pointer: context.instruction_pointer,
             result: 0,
             context: context as *mut HookContext as usize,
+            dispatch: runtime::SyscallDispatch::InstalledHook,
+            guest_pkru: None,
         };
         let mut guest = LiteinstGuest::<T> {
             event: &mut event,
@@ -485,9 +488,9 @@ fn finish_fork_child<T: Tool>(
     *tool_slot = Some(child_tool);
     runtime::reset_fallback_observability();
     stats.reset_after_fork();
-    if event.context != 0 {
-        runtime::record_fork_child_direct_hook(event.instruction_pointer);
-    }
+    // Both installed hooks and deferred fallback carry a register context.
+    // Attribute the child's first event to the path that actually entered it.
+    runtime::record_fork_child_dispatch(event, stats);
 
     let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
     let state = states

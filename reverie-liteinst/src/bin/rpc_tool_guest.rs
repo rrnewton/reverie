@@ -27,6 +27,9 @@ use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_rpc_transport::RpcServer;
 
+#[path = "rpc_tool_guest/syscall_fallback.rs"]
+mod syscall_fallback_guest;
+
 const CALLS: u64 = 32;
 const TOOL_CPUID_EAX: u32 = 0x1111_1111;
 const TOOL_CPUID_EBX: u32 = 0x2222_2222;
@@ -1308,6 +1311,12 @@ fn main() {
     match mode.to_str() {
         Some("coordinator") => coordinator(Path::new(&path)),
         Some("guest") => guest(Path::new(&path)),
+        Some("syscall-fallback") => syscall_fallback_guest::run(Path::new(&path)),
+        Some("syscall-fallback-xstate") => syscall_fallback_guest::run_xstate(Path::new(&path)),
+        Some("syscall-fallback-refusal") => syscall_fallback_guest::run_refusal(),
+        Some("syscall-fallback-fork") => syscall_fallback_guest::run_fork(Path::new(&path), false),
+        Some("syscall-installed-fork") => syscall_fallback_guest::run_fork(Path::new(&path), true),
+        Some("syscall-fallback-pkey") => syscall_fallback_guest::run_pkey(Path::new(&path)),
         Some("preinstalled-handler") => preinstalled_handler_guest(Path::new(&path)),
         Some("pending-sigsys") => pending_sigsys_guest(Path::new(&path)),
         Some("preblocked-sigsys") => preblocked_sigsys_guest(Path::new(&path)),

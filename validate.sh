@@ -81,8 +81,10 @@ while [[ $# -gt 0 ]]; do
         --no-label-pr) LABEL_PR=0; shift ;;
         --self-test-gate-counts) SELF_TEST_GATE_COUNTS=1; shift ;;
         -h|--help)
-            echo "Usage: ./validate.sh [--label-pr|--no-label-pr]"
+            echo "Usage: ./validate.sh [--label-pr|--no-label-pr] [--self-test-gate-counts]"
             echo "A green exact-head run writes a receipt; the optional PR label is derived cache."
+            echo "  -h, --help                 Show this help"
+            echo "  --self-test-gate-counts    Exercise structured test-count evidence without validation"
             exit 0
             ;;
         *)
@@ -105,6 +107,7 @@ declare -a ledger_gate_names=()
 declare -a ledger_gate_statuses=()
 declare -a ledger_gate_durations=()
 declare -a ledger_gate_executed_tests=()
+declare -a ledger_gate_passed_tests=()
 declare -a ledger_gate_filtered_tests=()
 
 VALIDATION_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -150,13 +153,15 @@ readonly VALIDATION_CACHE_STATE VALIDATION_CPU_TIMES_FILE
 VALIDATION_TEST_COUNTS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/reverie-test-counts.XXXXXX")
 readonly VALIDATION_TEST_COUNTS_DIR
 readonly LIBTEST_COUNTS_TOOL="$ROOT_DIR/scripts/libtest-counts.rs"
+readonly MAX_LEDGER_TEST_COUNT=9223372036854775807
 
 record_ledger_gate() {
     ledger_gate_names+=("$1")
     ledger_gate_statuses+=("$2")
     ledger_gate_durations+=("$3")
     ledger_gate_executed_tests+=("$4")
-    ledger_gate_filtered_tests+=("$5")
+    ledger_gate_passed_tests+=("$5")
+    ledger_gate_filtered_tests+=("$6")
 }
 
 json_quote() {
@@ -184,6 +189,7 @@ ledger_gates_json() {
         gates_json+="\"real_seconds\":${ledger_gate_durations[i]}"
         if [[ ${ledger_gate_executed_tests[i]} != null ]]; then
             gates_json+=",\"executed_tests\":${ledger_gate_executed_tests[i]}"
+            gates_json+=",\"passed_tests\":${ledger_gate_passed_tests[i]}"
             gates_json+=",\"filtered_tests\":${ledger_gate_filtered_tests[i]}"
         fi
         gates_json+='}'
@@ -197,16 +203,18 @@ append_validation_ledger() {
     local wall_seconds=$2 cpu_user=$3 cpu_sys=$4
     local finished_at result gates_json line
     local commit_anchored_json tree_dirty_json
-    local executed_tests filtered_tests
+    local executed_tests passed_tests filtered_tests
+
+    read -r executed_tests passed_tests filtered_tests < <(aggregate_test_counts)
 
     finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    if ((exit_status == 0 && failures == 0)); then
+    if ((exit_status == 0 && failures == 0)) &&
+        [[ $executed_tests != null && $passed_tests != null ]] &&
+        ((executed_tests > 0 && passed_tests == executed_tests)); then
         result=pass
     else
         result=fail
     fi
-
-    read -r executed_tests filtered_tests < <(aggregate_test_counts)
 
     gates_json=$(ledger_gates_json)
 
@@ -220,7 +228,7 @@ append_validation_ledger() {
     # parent's qualifying-receipt `producer.known` list; an unregistered value is
     # REFUSED once `applies_from_finished_at` is set, which is exactly the drift
     # this field exists to make visible.
-    line="{\"schema_version\":3,\"producer\":\"reverie-validate-sh\",\"repo\":\"reverie\","
+    line="{\"schema_version\":4,\"producer\":\"reverie-validate-sh\",\"repo\":\"reverie\","
     line+="\"started_at\":$(json_quote "$VALIDATION_STARTED_AT"),"
     line+="\"finished_at\":$(json_quote "$finished_at"),\"host\":$(json_quote "$VALIDATION_HOST"),"
     line+="\"slot\":$(json_quote "$VALIDATION_SLOT"),\"cwd\":$(json_quote "$ROOT_DIR"),"
@@ -230,7 +238,8 @@ append_validation_ledger() {
     line+="\"git_ahead\":$VALIDATION_GIT_AHEAD,\"git_behind\":$VALIDATION_GIT_BEHIND,"
     line+="\"commit_anchored\":$commit_anchored_json,\"tree_dirty\":$tree_dirty_json,"
     line+="\"result\":\"$result\",\"exit_code\":$exit_status,"
-    line+="\"executed_tests\":$executed_tests,\"filtered_tests\":$filtered_tests,"
+    line+="\"executed_tests\":$executed_tests,\"passed_tests\":$passed_tests,"
+    line+="\"filtered_tests\":$filtered_tests,"
     line+="\"checks\":$checks,\"failures\":$failures,"
     line+="\"real_seconds\":$wall_seconds,\"user_seconds\":$cpu_user,\"sys_seconds\":$cpu_sys,"
     line+="\"log_file\":$(json_quote "$LOG_FILE"),\"gates\":$gates_json}"
@@ -277,11 +286,29 @@ interrupted() {
     exit 130
 }
 
+is_supported_test_count() {
+    local value=$1
+    [[ $value =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+    if ((${#value} < ${#MAX_LEDGER_TEST_COUNT})); then
+        return 0
+    fi
+    if ((${#value} > ${#MAX_LEDGER_TEST_COUNT})); then
+        return 1
+    fi
+    ((value >= 0))
+}
+
+checked_add_test_count() {
+    local left=$1 right=$2
+    ((right <= MAX_LEDGER_TEST_COUNT - left)) || return 1
+    printf '%s\n' "$((left + right))"
+}
+
 run_check_impl() {
     local name=$1 counts_file=$2
     shift 2
     local started=$SECONDS
-    local counts gate_executed=null gate_filtered=null
+    local counts counts_extra gate_executed=null gate_passed=null gate_filtered=null
     checks=$((checks + 1))
 
     {
@@ -297,10 +324,23 @@ run_check_impl() {
     fi
     if [[ -n $counts_file ]]; then
         if counts=$("$LIBTEST_COUNTS_TOOL" read "$counts_file" 2>>"$LOG_FILE") &&
-            read -r gate_executed gate_filtered <<<"$counts"; then
-            :
-        elif ((status == 0)); then
-            status=2
+            read -r gate_executed gate_passed gate_filtered counts_extra <<<"$counts" &&
+            [[ -z $counts_extra ]] &&
+            is_supported_test_count "$gate_executed" &&
+            is_supported_test_count "$gate_passed" &&
+            is_supported_test_count "$gate_filtered"; then
+            if ((status == 0 && gate_passed != gate_executed)); then
+                printf 'count evidence refused: passing gate recorded %s passed of %s executed tests; rerun the counted test command\n' \
+                    "$gate_passed" "$gate_executed" >>"$LOG_FILE"
+                status=2
+            fi
+        else
+            gate_executed=null
+            gate_passed=null
+            gate_filtered=null
+            if ((status == 0)); then
+                status=2
+            fi
         fi
     fi
     if ((status == 0)); then
@@ -311,24 +351,68 @@ run_check_impl() {
             "$name" "$status" "$((SECONDS - started))" "$LOG_FILE" >&2
     fi
     record_ledger_gate \
-        "$name" "$status" "$((SECONDS - started))" "$gate_executed" "$gate_filtered"
+        "$name" "$status" "$((SECONDS - started))" \
+        "$gate_executed" "$gate_passed" "$gate_filtered"
 }
 
 aggregate_test_counts() {
-    local executed=0 filtered=0 i
+    local executed=0 passed=0 filtered=0 i next
     for i in "${!ledger_gate_names[@]}"; do
         case "${ledger_gate_names[i]}" in
             "Test regular workspace cases"|"Documentation tests")
-                if [[ ${ledger_gate_executed_tests[i]} == null ]]; then
-                    printf 'null null\n'
+                if [[ ${ledger_gate_executed_tests[i]} == null ||
+                    ${ledger_gate_passed_tests[i]} == null ||
+                    ${ledger_gate_filtered_tests[i]} == null ]]; then
+                    printf 'null null null\n'
                     return
                 fi
-                executed=$((executed + ledger_gate_executed_tests[i]))
-                filtered=$((filtered + ledger_gate_filtered_tests[i]))
+                if ! is_supported_test_count "${ledger_gate_executed_tests[i]}" ||
+                    ! is_supported_test_count "${ledger_gate_passed_tests[i]}" ||
+                    ! is_supported_test_count "${ledger_gate_filtered_tests[i]}"; then
+                    printf 'test-count aggregation refused: gate %s has a count outside the nonnegative signed-64-bit range\n' \
+                        "${ledger_gate_names[i]}" >>"$LOG_FILE"
+                    printf 'null null null\n'
+                    return
+                fi
+                if ! next=$(checked_add_test_count \
+                    "$executed" "${ledger_gate_executed_tests[i]}"); then
+                    printf 'test-count aggregation refused: executed_tests sum exceeds the signed-64-bit range\n' \
+                        >>"$LOG_FILE"
+                    printf 'null null null\n'
+                    return
+                fi
+                executed=$next
+                if ! next=$(checked_add_test_count \
+                    "$passed" "${ledger_gate_passed_tests[i]}"); then
+                    printf 'test-count aggregation refused: passed_tests sum exceeds the signed-64-bit range\n' \
+                        >>"$LOG_FILE"
+                    printf 'null null null\n'
+                    return
+                fi
+                passed=$next
+                if ! next=$(checked_add_test_count \
+                    "$filtered" "${ledger_gate_filtered_tests[i]}"); then
+                    printf 'test-count aggregation refused: filtered_tests sum exceeds the signed-64-bit range\n' \
+                        >>"$LOG_FILE"
+                    printf 'null null null\n'
+                    return
+                fi
+                filtered=$next
                 ;;
         esac
     done
-    printf '%s %s\n' "$executed" "$filtered"
+    printf '%s %s %s\n' "$executed" "$passed" "$filtered"
+}
+
+aggregate_test_counts_are_passing() {
+    local counts executed passed filtered extra
+    counts=$(aggregate_test_counts)
+    read -r executed passed filtered extra <<<"$counts"
+    [[ -z $extra ]] || return 1
+    is_supported_test_count "$executed" || return 1
+    is_supported_test_count "$passed" || return 1
+    is_supported_test_count "$filtered" || return 1
+    ((executed > 0 && passed == executed))
 }
 
 run_check() {
@@ -347,59 +431,247 @@ run_test_check() {
 
 if ((SELF_TEST_GATE_COUNTS == 1)); then
     set -e
+    reset_self_test_gates() {
+        ledger_gate_names=()
+        ledger_gate_statuses=()
+        ledger_gate_durations=()
+        ledger_gate_executed_tests=()
+        ledger_gate_passed_tests=()
+        ledger_gate_filtered_tests=()
+    }
+    expect_count_refusal() {
+        local counts_file=$1
+        reset_self_test_gates
+        run_check_impl "Test regular workspace cases" "$counts_file" true
+        [[ ${ledger_gate_statuses[0]} == 2 ]]
+        [[ ${ledger_gate_executed_tests[0]} == null ]]
+        [[ ${ledger_gate_passed_tests[0]} == null ]]
+        [[ ${ledger_gate_filtered_tests[0]} == null ]]
+        local record
+        record=$(ledger_gates_json)
+        [[ $record != *'"executed_tests"'* ]]
+        [[ $record != *'"passed_tests"'* ]]
+        [[ $record != *'"filtered_tests"'* ]]
+        if aggregate_test_counts_are_passing; then
+            printf 'self-test accepted refused count evidence from %s\n' "$counts_file" >&2
+            exit 1
+        fi
+        grep -Fq 'rerun the counted test command' "$LOG_FILE"
+    }
+    expect_aggregate_refusal() {
+        local aggregate executed passed filtered
+        aggregate=$(aggregate_test_counts)
+        read -r executed passed filtered <<<"$aggregate"
+        [[ $executed == null && $passed == null && $filtered == null ]]
+        if aggregate_test_counts_are_passing; then
+            printf 'self-test accepted overflowing aggregate test counts\n' >&2
+            exit 1
+        fi
+    }
+
     fixed_output='test result: ok. 999 passed; 0 failed; 0 ignored; 0 measured; 999 filtered out;'
     first_counts="$VALIDATION_TEST_COUNTS_DIR/first.json"
     second_counts="$VALIDATION_TEST_COUNTS_DIR/second.json"
-    printf '%s\n' '{"schema_version":1,"executed_tests":2,"filtered_tests":3}' >"$first_counts"
+    printf '%s\n' \
+        '{"schema_version":2,"executed_tests":2,"passed_tests":2,"filtered_tests":3}' \
+        >"$first_counts"
     printf '%s\n' "$fixed_output" >>"$LOG_FILE"
     run_check_impl "Test regular workspace cases" "$first_counts" true
     [[ ${ledger_gate_executed_tests[0]} == 2 ]]
+    [[ ${ledger_gate_passed_tests[0]} == 2 ]]
     [[ ${ledger_gate_filtered_tests[0]} == 3 ]]
-    first_record=$(ledger_gates_json)
-    [[ $first_record == *'"executed_tests":2,"filtered_tests":3'* ]]
-    read -r first_executed first_filtered < <(aggregate_test_counts)
-    [[ $first_executed == 2 && $first_filtered == 3 ]]
-    ledger_gate_names=()
-    ledger_gate_statuses=()
-    ledger_gate_durations=()
-    ledger_gate_executed_tests=()
-    ledger_gate_filtered_tests=()
-    printf '%s\n' '{"schema_version":1,"executed_tests":5,"filtered_tests":1}' >"$second_counts"
+    printf '%s\n' \
+        '{"schema_version":2,"executed_tests":5,"passed_tests":5,"filtered_tests":1}' \
+        >"$second_counts"
     printf '%s\n' "$fixed_output" >>"$LOG_FILE"
-    run_check_impl "Test regular workspace cases" "$second_counts" true
-    [[ ${ledger_gate_executed_tests[0]} == 5 ]]
-    [[ ${ledger_gate_filtered_tests[0]} == 1 ]]
-    second_record=$(ledger_gates_json)
-    [[ $second_record == *'"executed_tests":5,"filtered_tests":1'* ]]
-    read -r second_executed second_filtered < <(aggregate_test_counts)
-    [[ $second_executed == 5 && $second_filtered == 1 ]]
-    [[ $first_record != "$second_record" ]]
-    [[ $first_executed != "$second_executed" ]]
-    ledger_gate_names=()
-    ledger_gate_statuses=()
-    ledger_gate_durations=()
-    ledger_gate_executed_tests=()
-    ledger_gate_filtered_tests=()
-    run_check_impl "Test regular workspace cases" \
-        "$VALIDATION_TEST_COUNTS_DIR/missing.json" true
+    run_check_impl "Documentation tests" "$second_counts" true
+    [[ ${ledger_gate_executed_tests[1]} == 5 ]]
+    [[ ${ledger_gate_passed_tests[1]} == 5 ]]
+    [[ ${ledger_gate_filtered_tests[1]} == 1 ]]
+    positive_record=$(ledger_gates_json)
+    [[ $positive_record == *'"executed_tests":2,"passed_tests":2,"filtered_tests":3'* ]]
+    [[ $positive_record == *'"executed_tests":5,"passed_tests":5,"filtered_tests":1'* ]]
+    read -r total_executed total_passed total_filtered < <(aggregate_test_counts)
+    [[ $total_executed == 7 && $total_passed == 7 && $total_filtered == 4 ]]
+    aggregate_test_counts_are_passing
+
+    mixed_fixture="$VALIDATION_TEST_COUNTS_DIR/mixed-fixture"
+    mixed_counts="$VALIDATION_TEST_COUNTS_DIR/mixed.json"
+    mkdir -p "$mixed_fixture/fails-first/src" "$mixed_fixture/passes-second/src"
+    printf '%s\n' \
+        '[workspace]' \
+        'members = ["fails-first", "passes-second"]' \
+        'resolver = "2"' >"$mixed_fixture/Cargo.toml"
+    printf '%s\n' \
+        '[package]' \
+        'name = "aaa-libtest-counts-fails"' \
+        'version = "0.0.0"' \
+        'edition = "2021"' >"$mixed_fixture/fails-first/Cargo.toml"
+    printf '%s\n' \
+        '#[cfg(test)]' \
+        'mod tests {' \
+        '    #[test]' \
+        '    fn fails() {' \
+        '        panic!("intentional count-fixture failure");' \
+        '    }' \
+        '}' >"$mixed_fixture/fails-first/src/lib.rs"
+    printf '%s\n' \
+        '[package]' \
+        'name = "zzz-libtest-counts-passes"' \
+        'version = "0.0.0"' \
+        'edition = "2021"' >"$mixed_fixture/passes-second/Cargo.toml"
+    printf '%s\n' \
+        '#[cfg(test)]' \
+        'mod tests {' \
+        '    #[test]' \
+        '    fn passes() {}' \
+        '}' >"$mixed_fixture/passes-second/src/lib.rs"
+    reset_self_test_gates
+    run_check_impl "Test regular workspace cases" "$mixed_counts" \
+        "$LIBTEST_COUNTS_TOOL" run "$mixed_counts" -- \
+        cargo test --workspace --manifest-path "$mixed_fixture/Cargo.toml"
+    [[ ${ledger_gate_statuses[0]} == 101 ]]
+    [[ ${ledger_gate_executed_tests[0]} == 2 ]]
+    [[ ${ledger_gate_passed_tests[0]} == 1 ]]
+    [[ ${ledger_gate_filtered_tests[0]} == 0 ]]
+    mixed_record=$(ledger_gates_json)
+    [[ $mixed_record == *'"result":"fail"'* ]]
+    [[ $mixed_record == *'"executed_tests":2,"passed_tests":1,"filtered_tests":0'* ]]
+    if aggregate_test_counts_are_passing; then
+        printf 'self-test treated a failed mixed test gate as passing\n' >&2
+        exit 1
+    fi
+
+    expect_count_refusal "$VALIDATION_TEST_COUNTS_DIR/missing.json"
+
+    missing_passed="$VALIDATION_TEST_COUNTS_DIR/missing-passed.json"
+    printf '%s\n' \
+        '{"schema_version":2,"executed_tests":2,"filtered_tests":3}' \
+        >"$missing_passed"
+    expect_count_refusal "$missing_passed"
+    grep -Fq "missing field \`passed_tests\`" "$LOG_FILE"
+
+    typed_executed="$VALIDATION_TEST_COUNTS_DIR/typed-executed.json"
+    printf '%s\n' \
+        '{"schema_version":2,"executed_tests":"2","passed_tests":2,"filtered_tests":3}' \
+        >"$typed_executed"
+    expect_count_refusal "$typed_executed"
+
+    typed_filtered="$VALIDATION_TEST_COUNTS_DIR/typed-filtered.json"
+    printf '%s\n' \
+        '{"schema_version":2,"executed_tests":2,"passed_tests":2,"filtered_tests":"3"}' \
+        >"$typed_filtered"
+    expect_count_refusal "$typed_filtered"
+
+    null_passed="$VALIDATION_TEST_COUNTS_DIR/null-passed.json"
+    printf '%s\n' \
+        '{"schema_version":2,"executed_tests":2,"passed_tests":null,"filtered_tests":3}' \
+        >"$null_passed"
+    expect_count_refusal "$null_passed"
+
+    typed_passed="$VALIDATION_TEST_COUNTS_DIR/typed-passed.json"
+    printf '%s\n' \
+        '{"schema_version":2,"executed_tests":2,"passed_tests":"2","filtered_tests":3}' \
+        >"$typed_passed"
+    expect_count_refusal "$typed_passed"
+
+    negative_passed="$VALIDATION_TEST_COUNTS_DIR/negative-passed.json"
+    printf '%s\n' \
+        '{"schema_version":2,"executed_tests":2,"passed_tests":-1,"filtered_tests":3}' \
+        >"$negative_passed"
+    expect_count_refusal "$negative_passed"
+
+    excessive_passed="$VALIDATION_TEST_COUNTS_DIR/excessive-passed.json"
+    printf '%s\n' \
+        '{"schema_version":2,"executed_tests":2,"passed_tests":3,"filtered_tests":3}' \
+        >"$excessive_passed"
+    expect_count_refusal "$excessive_passed"
+    grep -Fq 'passed_tests 3 exceeds executed_tests 2' "$LOG_FILE"
+
+    max_u64_counts="$VALIDATION_TEST_COUNTS_DIR/max-u64.json"
+    printf '%s\n' \
+        '{"schema_version":2,"executed_tests":18446744073709551615,"passed_tests":18446744073709551615,"filtered_tests":0}' \
+        >"$max_u64_counts"
+    expect_count_refusal "$max_u64_counts"
+    grep -Fq "exceeds the validation ledger's supported maximum" "$LOG_FILE"
+
+    mismatch_counts="$VALIDATION_TEST_COUNTS_DIR/mismatch.json"
+    printf '%s\n' \
+        '{"schema_version":2,"executed_tests":2,"passed_tests":1,"filtered_tests":3}' \
+        >"$mismatch_counts"
+    reset_self_test_gates
+    run_check_impl "Test regular workspace cases" "$mismatch_counts" true
     [[ ${ledger_gate_statuses[0]} == 2 ]]
-    [[ ${ledger_gate_executed_tests[0]} == null ]]
-    [[ ${ledger_gate_filtered_tests[0]} == null ]]
-    missing_record=$(ledger_gates_json)
-    [[ $missing_record != *'"executed_tests"'* ]]
-    ledger_gate_names=()
-    ledger_gate_statuses=()
-    ledger_gate_durations=()
-    ledger_gate_executed_tests=()
-    ledger_gate_filtered_tests=()
-    malformed_counts="$VALIDATION_TEST_COUNTS_DIR/malformed.json"
-    printf '%s\n' '{"schema_version":1,"executed_tests":"not-a-count"}' >"$malformed_counts"
-    run_check_impl "Test regular workspace cases" "$malformed_counts" true
-    [[ ${ledger_gate_statuses[0]} == 2 ]]
-    [[ ${ledger_gate_executed_tests[0]} == null ]]
-    [[ ${ledger_gate_filtered_tests[0]} == null ]]
+    [[ ${ledger_gate_executed_tests[0]} == 2 ]]
+    [[ ${ledger_gate_passed_tests[0]} == 1 ]]
+    [[ ${ledger_gate_filtered_tests[0]} == 3 ]]
+    mismatch_record=$(ledger_gates_json)
+    [[ $mismatch_record == *'"result":"fail"'* ]]
+    [[ $mismatch_record == *'"executed_tests":2,"passed_tests":1,"filtered_tests":3'* ]]
+    if aggregate_test_counts_are_passing; then
+        printf 'self-test accepted passed_tests != executed_tests for a passing command\n' >&2
+        exit 1
+    fi
+
+    legacy_counts="$VALIDATION_TEST_COUNTS_DIR/legacy.json"
+    printf '%s\n' \
+        '{"schema_version":1,"executed_tests":2,"filtered_tests":3}' \
+        >"$legacy_counts"
+    expect_count_refusal "$legacy_counts"
+    grep -Fq 'schema 1 has no authoritative passed_tests' "$LOG_FILE"
+
+    duplicate_counts="$VALIDATION_TEST_COUNTS_DIR/duplicate.json"
+    for duplicate_json in \
+        '{"schema_version":2,"executed_tests":2,"passed_tests":1,"filtered_tests":0,"executed_tests":1}' \
+        '{"schema_version":2,"executed_tests":1,"passed_tests":1,"filtered_tests":0,"executed_tests":1}' \
+        '{"schema_version":2,"executed_tests":1,"passed_tests":0,"filtered_tests":0,"passed_tests":1}' \
+        '{"schema_version":2,"executed_tests":1,"passed_tests":1,"filtered_tests":0,"passed_tests":1}' \
+        '{"schema_version":2,"executed_tests":1,"passed_tests":1,"filtered_tests":3,"filtered_tests":0}' \
+        '{"schema_version":2,"executed_tests":1,"passed_tests":1,"filtered_tests":0,"filtered_tests":0}' \
+        '{"schema_version":1,"executed_tests":1,"passed_tests":1,"filtered_tests":0,"schema_version":2}' \
+        '{"schema_version":2,"executed_tests":1,"passed_tests":1,"filtered_tests":0,"schema_version":2}'; do
+        printf '%s\n' "$duplicate_json" >"$duplicate_counts"
+        expect_count_refusal "$duplicate_counts"
+    done
+
+    reset_self_test_gates
+    record_ledger_gate "Test regular workspace cases" 1 0 \
+        "$MAX_LEDGER_TEST_COUNT" 0 0
+    record_ledger_gate "Documentation tests" 1 0 2 0 0
+    expect_aggregate_refusal
+    grep -Fq 'executed_tests sum exceeds the signed-64-bit range' "$LOG_FILE"
+
+    reset_self_test_gates
+    record_ledger_gate "Test regular workspace cases" 1 0 \
+        0 "$MAX_LEDGER_TEST_COUNT" 0
+    record_ledger_gate "Documentation tests" 1 0 0 2 0
+    expect_aggregate_refusal
+    grep -Fq 'passed_tests sum exceeds the signed-64-bit range' "$LOG_FILE"
+
+    reset_self_test_gates
+    record_ledger_gate "Test regular workspace cases" 1 0 \
+        0 0 "$MAX_LEDGER_TEST_COUNT"
+    record_ledger_gate "Documentation tests" 1 0 0 0 2
+    expect_aggregate_refusal
+    grep -Fq 'filtered_tests sum exceeds the signed-64-bit range' "$LOG_FILE"
+
+    reset_self_test_gates
+    record_ledger_gate "Test regular workspace cases" 1 0 \
+        18446744073709551615 18446744073709551615 0
+    record_ledger_gate "Documentation tests" 1 0 2 2 0
+    expect_aggregate_refusal
+    grep -Fq 'outside the nonnegative signed-64-bit range' "$LOG_FILE"
+
+    "$LIBTEST_COUNTS_TOOL" -h >/dev/null
+    "$LIBTEST_COUNTS_TOOL" --help >/dev/null
+    "$LIBTEST_COUNTS_TOOL" run -h >/dev/null
+    "$LIBTEST_COUNTS_TOOL" run --help >/dev/null
+    "$LIBTEST_COUNTS_TOOL" read -h >/dev/null
+    "$LIBTEST_COUNTS_TOOL" read --help >/dev/null
+    "$ROOT_DIR/validate.sh" -h >/dev/null
+    "$ROOT_DIR/validate.sh" --help >/dev/null
     "$LIBTEST_COUNTS_TOOL" --self-test || exit 1
-    printf 'PASS: typed per-gate counts drive the gate and aggregate records\n'
+    printf 'PASS: typed executed/passed/filtered counts drive gate and aggregate records\n'
     rm -f "$VALIDATION_CPU_TIMES_FILE"
     rm -r -- "$VALIDATION_TEST_COUNTS_DIR"
     exit 0
@@ -485,6 +757,12 @@ run_test_check "Test regular workspace cases" cargo test --workspace --all-featu
 run_test_check "Documentation tests" cargo test --workspace --doc
 run_check "Clippy" cargo clippy --workspace --all-targets --all-features -- -D warnings
 run_check "Rustfmt" cargo fmt --all -- --check
+
+if ((failures == 0)) && ! aggregate_test_counts_are_passing; then
+    failures=$((failures + 1))
+    printf 'FAIL: aggregate test-count evidence is missing, empty, or passed_tests != executed_tests (log: %s)\n' \
+        "$LOG_FILE" >&2
+fi
 
 passed=$((checks - failures))
 if ((failures == 0)); then
