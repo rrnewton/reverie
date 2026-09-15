@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import threading
@@ -45,6 +46,257 @@ def current_validation_handle(log: Path) -> dict[str, object]:
 
 
 class PaneWatchTest(unittest.TestCase):
+    def run_observer(self, root: Path) -> int:
+        return pane_watch.main(
+            [
+                "--unit", "validate-test.service",
+                "--target", "a" * 40,
+                "--checkout", str(root),
+                "--log", str(root / "validate.log"),
+                "--record", str(root / "runs/validate-test.json"),
+                "--appearance-seconds", "0",
+                "--poll-seconds", "0",
+            ]
+        )
+
+    def test_live_unknown_live_waits_for_real_terminal_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log = root / "validate.log"
+            record = root / "runs/validate-test.json"
+            log.write_text("")
+            run_registry.write_record(record, current_validation_handle(log))
+            observed = 0
+
+            def properties(_unit: str) -> dict[str, str] | None:
+                nonlocal observed
+                observed += 1
+                durable = run_registry.read_record(record)
+                self.assertEqual("running", durable["state"])
+                self.assertIsNone(durable.get("finished_at"))
+                self.assertIsNone(durable.get("exit_code"))
+                if observed == 2:
+                    return None
+                if observed in (1, 3):
+                    return {"ActiveState": "active", "MainPID": "0"}
+                self.assertEqual(4, observed)
+                log.write_text(
+                    "validate-lock: supervisor received signal 15\n"
+                    "# ci-hub/validate-lock tool COST ACTUAL wall=1s cpu=1s "
+                    "cpu_user=1s cpu_system=0s exit=143\n"
+                )
+                return {"ActiveState": "inactive", "MainPID": "0"}
+
+            output = io.StringIO()
+            with mock.patch.object(
+                pane_watch, "service_properties", side_effect=properties
+            ), contextlib.redirect_stdout(output):
+                rc = self.run_observer(root)
+
+            self.assertEqual(4, observed)
+            self.assertEqual(143, rc)
+            durable = run_registry.read_record(record)
+            self.assertEqual("killed", durable["state"])
+            self.assertEqual("terminated", durable["result"])
+            self.assertEqual(15, durable["signal"])
+            self.assertTrue(durable["finished_at"])
+            self.assertIn("OBSERVATION UNCERTAIN", output.getvalue())
+            self.assertIn("OBSERVATION RECOVERED", output.getvalue())
+            self.assertEqual(1, output.getvalue().count("VALIDATE FINISHED"))
+
+    def test_exhausted_observation_preserves_unfinished_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log = root / "validate.log"
+            record = root / "runs/validate-test.json"
+            log.write_text("")
+            original = current_validation_handle(log) | {
+                "service_result_schema": service_result.SCHEMA_VERSION,
+                "detail": "original producer detail",
+            }
+            run_registry.write_record(record, original)
+            output = io.StringIO()
+            with mock.patch.object(
+                pane_watch, "service_properties",
+                side_effect=[{"ActiveState": "active", "MainPID": "0"}] + [None] * 5,
+            ) as query, contextlib.redirect_stdout(output):
+                rc = self.run_observer(root)
+
+            self.assertEqual(6, query.call_count)
+            self.assertEqual(1, rc)
+            durable = run_registry.read_record(record)
+            for key, value in original.items():
+                self.assertEqual(value, durable[key], key)
+            self.assertIsNone(durable.get("finished_at"))
+            self.assertIsNone(durable.get("result"))
+            self.assertIsNone(durable.get("exit_code"))
+            self.assertIn("OBSERVATION UNCERTAIN", output.getvalue())
+            self.assertIn("service-result.json", output.getvalue())
+            self.assertNotIn("VALIDATE FINISHED", output.getvalue())
+
+    def test_service_query_rejects_malformed_or_unavailable_state(self) -> None:
+        for returncode, stdout in (
+            (1, ""),
+            (0, "LoadState=loaded\nInvocationID=abc\nMainPID=0\n"),
+            (0, "LoadState=loaded\nInvocationID=abc\nActiveState=garbled\nMainPID=0\n"),
+            (0, "LoadState=loaded\nInvocationID=abc\nActiveState=active\nMainPID=bad\n"),
+        ):
+            with self.subTest(returncode=returncode, stdout=stdout), mock.patch.object(
+                pane_watch.bounded_capture, "capture",
+                return_value=subprocess.CompletedProcess([], returncode, stdout, "unavailable"),
+            ):
+                self.assertIsNone(pane_watch.service_properties("validate-test.service"))
+        with mock.patch.object(
+            pane_watch.bounded_capture, "capture", side_effect=OSError("bus unavailable")
+        ):
+            self.assertIsNone(pane_watch.service_properties("validate-test.service"))
+        for state in ("active", "inactive", "failed"):
+            with self.subTest(state=state), mock.patch.object(
+                pane_watch.bounded_capture, "capture",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, f"LoadState=loaded\nInvocationID=abc\nActiveState={state}\nMainPID=0\n", ""
+                ),
+            ):
+                self.assertEqual(state, pane_watch.service_properties("validate-test.service")["ActiveState"])
+
+    def test_observer_preserves_concurrent_terminal_cause_and_time(self) -> None:
+        for terminal in (
+            {"state": "killed", "result": "terminated", "exit_code": 143, "signal": 15},
+            {
+                "state": "completed", "result": "exit-code", "exit_code": 1,
+                "final_validate_status": "FAILED",
+            },
+        ):
+            with self.subTest(state=terminal["state"]), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                log = root / "validate.log"
+                log.write_text("")
+                record = root / "runs/validate-test.json"
+                original = {
+                    "schema_version": 1,
+                    **terminal,
+                    "finished_at": "2026-09-15T20:00:00+00:00",
+                    "detail": "original terminal cause",
+                }
+                run_registry.write_record(record, current_validation_handle(log))
+
+                def stale_classification(*_args: object, **_kwargs: object) -> dict[str, object]:
+                    run_registry.write_record(record, original)
+                    return {"state": "unknown", "result": "unknown", "exit_code": None}
+
+                output = io.StringIO()
+                with mock.patch.object(
+                    pane_watch, "service_properties", return_value=None
+                ), mock.patch.object(
+                    service_result, "from_run_record", side_effect=stale_classification
+                ), contextlib.redirect_stdout(output):
+                    rc = self.run_observer(root)
+
+                self.assertEqual(terminal["exit_code"], rc)
+                self.assertIn(f"state={terminal['state']}", output.getvalue())
+                self.assertEqual(
+                    original | {"observed_safe_ci_cgroups": []},
+                    run_registry.read_record(record),
+                )
+
+    def test_terminal_guard_keeps_boxing_evidence_and_allows_unknown_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = Path(temporary) / "runs/validate-test.json"
+            run_registry.write_record(record, {
+                "schema_version": 1, "state": "unknown", "result": "unknown",
+                "finished_at": "2026-09-15T19:00:00+00:00",
+            })
+            terminal = run_registry.update_from_observer(
+                record, state="killed", result="terminated", exit_code=143, signal=15,
+                finished_at="2026-09-15T20:00:00+00:00",
+                observed_safe_ci_cgroups=["/safe-ci-first.scope"],
+            )
+            self.assertEqual("killed", terminal["state"])
+            self.assertEqual("2026-09-15T20:00:00+00:00", terminal["finished_at"])
+            updated = run_registry.update_from_observer(
+                record, state="unknown", result="unknown", exit_code=None,
+                observed_safe_ci_cgroups=["/safe-ci-second.scope"],
+            )
+            self.assertEqual(
+                ["/safe-ci-first.scope", "/safe-ci-second.scope"],
+                updated["observed_safe_ci_cgroups"],
+            )
+            for key, value in terminal.items():
+                if key != "observed_safe_ci_cgroups":
+                    self.assertEqual(value, updated[key], key)
+
+    def test_unfinished_observer_accumulates_boxing_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = Path(temporary) / "runs/validate-test.json"
+            run_registry.write_record(record, {
+                "schema_version": 1, "state": "running",
+                "observed_safe_ci_cgroups": ["/safe-ci-first.scope"],
+            })
+            updated = run_registry.update_from_observer(
+                record, observed_safe_ci_cgroups=[]
+            )
+            self.assertEqual(["/safe-ci-first.scope"], updated["observed_safe_ci_cgroups"])
+            updated = run_registry.update_from_observer(
+                record, observed_safe_ci_cgroups=["/safe-ci-second.scope"]
+            )
+            self.assertEqual(
+                ["/safe-ci-first.scope", "/safe-ci-second.scope"],
+                updated["observed_safe_ci_cgroups"],
+            )
+            self.assertEqual("running", updated["state"])
+            self.assertNotIn("finished_at", updated)
+
+    def test_uncertainty_preserves_concurrent_producer_detail(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log = root / "validate.log"
+            log.write_text("")
+            record = root / "runs/validate-test.json"
+            run_registry.write_record(record, current_validation_handle(log))
+
+            def stale_classification(*_args: object, **_kwargs: object) -> dict[str, object]:
+                run_registry.update_record(record, detail="first producer cause")
+                return {
+                    "state": "unknown", "result": "unknown", "exit_code": None,
+                    "detail": "observer could not read the result",
+                }
+
+            with mock.patch.object(
+                pane_watch, "service_properties", return_value=None
+            ), mock.patch.object(
+                service_result, "from_run_record", side_effect=stale_classification
+            ), contextlib.redirect_stdout(io.StringIO()):
+                rc = self.run_observer(root)
+            durable = run_registry.read_record(record)
+            self.assertEqual(1, rc)
+            self.assertEqual("first producer cause", durable["detail"])
+            self.assertEqual("running", durable["state"])
+            self.assertNotIn("result", durable)
+            self.assertNotIn("finished_at", durable)
+
+    def test_observed_terminal_with_missing_result_keeps_outcome_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log = root / "validate.log"
+            log.write_text("")
+            record = root / "runs/validate-test.json"
+            run_registry.write_record(record, current_validation_handle(log) | {
+                "service_result_schema": service_result.SCHEMA_VERSION,
+            })
+            output = io.StringIO()
+            with mock.patch.object(
+                pane_watch, "service_properties", return_value={"ActiveState": "inactive", "MainPID": "0"}
+            ), contextlib.redirect_stdout(output):
+                rc = self.run_observer(root)
+            durable = run_registry.read_record(record)
+            self.assertEqual(1, rc)
+            self.assertEqual("unknown", durable["state"])
+            self.assertEqual("unknown", durable["result"])
+            self.assertIsNone(durable["exit_code"])
+            self.assertTrue(durable["finished_at"])
+            self.assertIn("service-result.json", durable["detail"])
+            self.assertIn("VALIDATE FINISHED state=unknown", output.getvalue())
+
     def test_collected_killed_unit_uses_durable_inner_exit_not_success_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -218,7 +470,10 @@ class PaneWatchTest(unittest.TestCase):
                 )
             )
 
-            with mock.patch.object(pane_watch, "service_properties", return_value=None):
+            output = io.StringIO()
+            with mock.patch.object(
+                pane_watch, "service_properties", return_value=None
+            ), contextlib.redirect_stdout(output):
                 rc = pane_watch.main(
                     [
                         "--unit",
@@ -238,9 +493,15 @@ class PaneWatchTest(unittest.TestCase):
 
             self.assertEqual(1, rc)
             durable = run_registry.read_record(record)
-            self.assertEqual("unknown", durable["state"])
-            self.assertIsNone(durable["passed_tests"])
+            self.assertEqual("running", durable["state"])
+            self.assertNotIn("passed_tests", durable)
+            self.assertIsNone(durable.get("finished_at"))
+            self.assertIsNone(durable.get("result"))
+            self.assertIn("schema 5 expected", output.getvalue())
             self.assertIn("schema 5 expected", durable["detail"])
+            self.assertIn("observer uncertainty", durable["detail"])
+            self.assertIn("OBSERVATION UNCERTAIN", output.getvalue())
+            self.assertNotIn("VALIDATE FINISHED", output.getvalue())
 
     def test_historical_results_keep_passed_count_unknown(self) -> None:
         for version in (1, 2, 3):
@@ -272,9 +533,10 @@ class PaneWatchTest(unittest.TestCase):
                     result["selection_mode"] = "full"
                 service_result.result_path(record).write_text(json.dumps(result))
 
+                output = io.StringIO()
                 with mock.patch.object(
                     pane_watch, "service_properties", return_value=None
-                ):
+                ), contextlib.redirect_stdout(output):
                     rc = pane_watch.main(
                         [
                             "--unit",
@@ -292,11 +554,17 @@ class PaneWatchTest(unittest.TestCase):
                         ]
                     )
 
-                self.assertEqual(0, rc)
+                self.assertEqual(1, rc)
                 durable = run_registry.read_record(record)
-                self.assertEqual("unknown", durable["state"])
-                self.assertIsNone(durable["passed_tests"])
+                self.assertEqual("running", durable["state"])
+                self.assertNotIn("passed_tests", durable)
+                self.assertIsNone(durable.get("finished_at"))
+                self.assertIsNone(durable.get("result"))
+                self.assertIn(f"historical schema {version}", output.getvalue())
                 self.assertIn(f"historical schema {version}", durable["detail"])
+                self.assertIn("observer uncertainty", durable["detail"])
+                self.assertIn("OBSERVATION UNCERTAIN", output.getvalue())
+                self.assertNotIn("VALIDATE FINISHED", output.getvalue())
 
     def test_boxing_proof_is_bound_to_descendant_process_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

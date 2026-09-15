@@ -19,32 +19,45 @@ import bounded_capture  # noqa: E402
 
 
 TERMINAL_STATES = frozenset(("failed", "inactive"))
+# Complete systemd ActiveState enum; unfamiliar values remain uncertain.
+SERVICE_ACTIVE_STATES = TERMINAL_STATES | {
+    "active", "activating", "deactivating", "reloading", "refreshing", "maintenance"
+}
+# Match start_unit.wait_for_unit's bounded tolerance after observing a unit.
+MISSING_OBSERVATION_LIMIT = 5
 
 
 def service_properties(unit: str) -> dict[str, str] | None:
-    result = bounded_capture.capture(
-        [
-            "systemctl",
-            "--user",
-            "show",
-            unit,
-            "--property=ActiveState",
-            "--property=LoadState",
-            "--property=SubState",
-            "--property=ExecMainCode",
-            "--property=ExecMainStatus",
-            "--property=Result",
-            "--property=InvocationID",
-            "--property=MainPID",
-            "--no-pager",
-        ],
-    )
+    command = [
+        "systemctl",
+        "--user",
+        "show",
+        unit,
+        "--property=ActiveState",
+        "--property=LoadState",
+        "--property=SubState",
+        "--property=ExecMainCode",
+        "--property=ExecMainStatus",
+        "--property=Result",
+        "--property=InvocationID",
+        "--property=MainPID",
+        "--no-pager",
+    ]
+    try:
+        result = bounded_capture.capture(command)
+    except OSError:
+        return None
     if result.returncode != 0:
         return None
     properties = dict(
         line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
     )
     if properties.get("LoadState") != "loaded" or not properties.get("InvocationID"):
+        return None
+    if (
+        properties.get("ActiveState") not in SERVICE_ACTIVE_STATES
+        or not properties.get("MainPID", "").isdigit()
+    ):
         return None
     return properties
 
@@ -124,6 +137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     offset = 0
     seen = False
+    missing = 0
     observed_groups: set[str] = set()
     deadline = time.monotonic() + args.appearance_seconds
     final: dict[str, str] | None = None
@@ -131,10 +145,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         offset = emit_log(args.log, offset)
         properties = service_properties(args.unit)
         if properties is None:
-            if not seen and time.monotonic() < deadline:
+            missing += 1
+            if missing == 1:
+                print(
+                    "CI-HUB VALIDATE OBSERVATION UNCERTAIN: service query "
+                    "unavailable or malformed; no terminal state observed",
+                    flush=True,
+                )
+            if (seen and missing < MISSING_OBSERVATION_LIMIT) or (
+                not seen and time.monotonic() < deadline
+            ):
                 time.sleep(args.poll_seconds)
                 continue
             break
+        if missing:
+            print("CI-HUB VALIDATE OBSERVATION RECOVERED", flush=True)
+        missing = 0
         seen = True
         try:
             main_pid = int(properties.get("MainPID", "0"))
@@ -151,12 +177,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         time.sleep(args.poll_seconds)
 
     offset = emit_log(args.log, offset)
-    finished_at = datetime.now(timezone.utc).isoformat()
     try:
         durable = read_record(args.record)
     except RuntimeError:
         durable = {}
-    if final is None:
+    if final is None or service_result.is_evidenced_terminal(durable):
         if durable.get("state") == "refused":
             classified = {
                 "state": "refused",
@@ -187,12 +212,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         classified = service_result.from_run_record(
             args.record, durable, args.log, properties=final
         )
-    durable = update_from_observer(
-        args.record,
-        **classified,
-        finished_at=finished_at,
-        observed_safe_ci_cgroups=sorted(observed_groups),
+    terminal = final is not None or (
+        classified.get("state") != "unknown"
+        and (
+            type(classified.get("exit_code")) is int
+            or service_result.is_evidenced_terminal(durable)
+        )
     )
+    fields: dict[str, object] = {"observed_safe_ci_cgroups": sorted(observed_groups)}
+    if terminal:
+        fields.update(classified)
+        fields["finished_at"] = datetime.now(timezone.utc).isoformat()
+    observation_detail = None if terminal else (
+        "observer uncertainty: service query unavailable or malformed; "
+        f"{classified.get('detail') or 'no terminal evidence available'}"
+    )
+    durable = update_from_observer(
+        args.record, observation_detail=observation_detail, **fields
+    )
+    if not terminal and not service_result.is_evidenced_terminal(durable):
+        print(
+            "\nCI-HUB VALIDATE OBSERVATION UNCERTAIN: "
+            f"{classified.get('detail') or 'no terminal evidence available'}; "
+            "run outcome and finish time unchanged",
+            flush=True,
+        )
+        return 1
     state = durable["state"]
     result = durable["result"]
     status = durable.get("exit_code")

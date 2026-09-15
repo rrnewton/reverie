@@ -1322,16 +1322,31 @@ def confirm_termination_request(
         return cast(TerminationRequestRecord, dict(match))
 
 
-def update_from_observer(path: Path, **fields: Any) -> dict[str, Any]:
+def update_from_observer(
+    path: Path, *, observation_detail: str | None = None, **fields: Any
+) -> dict[str, Any]:
     """Publish observer evidence without overwriting a producer terminal state.
 
-    The producer can refuse before systemd creates the unit while ``pane_watch``
-    is waiting for that unit to appear.  The observer's earlier snapshot is not
-    allowed to replace that typed refusal with ``unknown`` after the fact.
+    The producer can publish a refusal, cancellation, or completed result after
+    the observer reads its snapshot. Preserve that evidenced terminal cause and
+    finish time under the same lock as the update. Unknown is not terminal and
+    can still be repaired by a later observation with evidence. Observed cgroups
+    accumulate on every row. Observation uncertainty uses the existing detail
+    field only when no producer detail is present, without changing the outcome.
     """
     with exclusive_record(path):
         value = read_record(path)
-        if value.get("state") != RunState.REFUSED.value:
+        has_groups = "observed_safe_ci_cgroups" in fields
+        groups = fields.pop("observed_safe_ci_cgroups", ())
+        if service_result.is_evidenced_terminal(value):
+            fields = {}
+        elif observation_detail and not value.get("detail"):
+            fields["detail"] = observation_detail
+        if has_groups:
+            fields["observed_safe_ci_cgroups"] = sorted(
+                set(value.get("observed_safe_ci_cgroups", [])) | set(groups)
+            )
+        if fields:
             value.update(fields)
             _write_unlocked(path, value)
     return value
