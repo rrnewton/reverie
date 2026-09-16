@@ -1763,6 +1763,9 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
         result["launcher_log"] = str(launcher_log)
         unit = f"validate-owner-checkout-{attempt_id.lower()}"
         run_record = run_registry.record_path(state_root, unit)
+        # Inherit validate-run's canonical full-validation deadline. A separate
+        # 1800s override derived only 1619s and refused the committed 2400s lint
+        # node before execution. The launcher owns the inner/outer ordering.
         command = [
             "env",
             f"DEV_HERMIT_PARENT={state_root}",
@@ -1784,8 +1787,6 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
             validate_log,
             "--wait",
             "1",
-            "--child-deadline",
-            "1800",
             "--caller-poll-seconds",
             "5",
         ]

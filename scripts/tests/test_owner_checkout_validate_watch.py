@@ -246,6 +246,23 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
             )
             return rc, result, launched
 
+    def test_launch_inherits_the_canonical_full_validation_deadline(self) -> None:
+        _rc, _result, launched = self._run(
+            returncode=2,
+            canonical=unvalidated_status,
+            write_log=lambda log, _sha: log.write_text("fixture admission refusal\n"),
+            admission_result=refused_result("stale-base"),
+        )
+
+        launched.assert_called_once()
+        argv = [str(item) for item in launched.call_args.args[0]]
+        # The former 1800s override derived a 1619s run bound and could not
+        # admit the committed 2400s lint node. The launcher owns this budget.
+        self.assertFalse(any(arg.startswith("--child-deadline") for arg in argv))
+        self.assertIn("--in-place", argv)
+        self.assertIn("--make-validate", argv)
+        self.assertEqual("1", argv[argv.index("--wait") + 1])
+
     def test_unchanged_already_green_sha_reports_green_citing_the_prior_receipt(self) -> None:
         rc, result, launched = self._run(
             returncode=2,
