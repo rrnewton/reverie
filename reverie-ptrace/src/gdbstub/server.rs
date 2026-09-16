@@ -395,6 +395,110 @@ mod tests {
 
     use super::*;
 
+    // Use the actual framed reader, relay and Session::run over a duplex
+    // connection. The initial stop is inert test data; these requests neither
+    // resume an inferior nor perform host filesystem I/O.
+    async fn vfile_test_connection() -> (tokio::io::DuplexStream, GdbServerImpl) {
+        use reverie::Pid;
+
+        use crate::gdbstub::commands::ExpediatedRegs;
+        use crate::gdbstub::commands::StopEvent;
+        use crate::gdbstub::commands::StopReason;
+
+        let (client, transport) = tokio::io::duplex(1024);
+        let (reader, writer) = tokio::io::split(transport);
+        let (pkt_tx, pkt_rx) = mpsc::channel(1);
+        let (stop_tx, stop_rx) = mpsc::channel(1);
+        let (request_tx, _request_rx) = mpsc::channel(1);
+        let (resume_tx, _resume_rx) = mpsc::channel(1);
+        let (start_tx, start_rx) = oneshot::channel();
+        // SAFETY: user_regs_struct contains only integer register values.
+        let regs: libc::user_regs_struct = unsafe { std::mem::zeroed() };
+        stop_tx
+            .send(StoppedInferior {
+                reason: StopReason::stopped(
+                    Pid::from_raw(1),
+                    Pid::from_raw(1),
+                    StopEvent::SwBreak,
+                    ExpediatedRegs::from(regs),
+                ),
+                request_tx,
+                resume_tx,
+            })
+            .await
+            .expect("initial inert stop must fit the channel");
+        start_tx
+            .send(())
+            .expect("session start receiver must exist");
+        let server = GdbServerImpl {
+            reader: Box::new(reader),
+            rx_buf: BytesMut::with_capacity(PACKET_BUFFER_CAPACITY),
+            pkt_tx: Some(pkt_tx),
+            server_rx: Some(start_rx),
+            session: Some(Session::new(Box::new(writer), pkt_rx, stop_rx)),
+        };
+        (client, server)
+    }
+
+    fn vfile_test_frame(body: &str) -> String {
+        let checksum = body.bytes().fold(0u8, u8::wrapping_add);
+        format!("${body}#{checksum:02x}")
+    }
+
+    #[tokio::test]
+    async fn unsupported_vfile_operations_keep_session_connected() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let (mut client, server) = vfile_test_connection().await;
+            let exchange = async {
+                for packet in [
+                    "vFile:lstat:2f746573742f6d697373696e67",
+                    "vFile:open-extra:zz",
+                    "vFile:future-operation:",
+                ] {
+                    client
+                        .write_all(vfile_test_frame(packet).as_bytes())
+                        .await
+                        .unwrap();
+                    let mut reply = [0; 5];
+                    client
+                        .read_exact(&mut reply)
+                        .await
+                        .expect("unsupported vFile must reply, not close the connection");
+                    assert_eq!(&reply, b"+$#00", "unsupported is not host-I/O success");
+                    client.write_all(b"+$!#21").await.unwrap();
+                    let mut reply = [0; 7];
+                    client
+                        .read_exact(&mut reply)
+                        .await
+                        .expect("the same session must handle the next supported request");
+                    assert_eq!(&reply, b"+$OK#9a");
+                }
+                client.shutdown().await.unwrap();
+            };
+            let (server_result, ()) = tokio::join!(server.run(), exchange);
+            server_result.expect("server must finish after client shutdown");
+        })
+        .await
+        .expect("vFile session exchange must finish within the hang backstop");
+    }
+
+    #[tokio::test]
+    async fn malformed_vfile_operations_close_session() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            for packet in ["vFile:open:zz,0,0", "vFile:open", "vFile:pread:1,2"] {
+                let (mut client, server) = vfile_test_connection().await;
+                let exchange = async {
+                    client.write_all(vfile_test_frame(packet).as_bytes()).await.unwrap();
+                    let mut reply = [0; 1];
+                    assert_eq!(client.read(&mut reply).await.unwrap(), 0,
+                        "malformed supported command must close without an unsupported reply: {packet}");
+                };
+                let (server_result, ()) = tokio::join!(server.run(), exchange);
+                server_result.expect("malformed input must end both server halves");
+            }
+        }).await.expect("malformed vFile closure must finish within the hang backstop");
+    }
+
     // A transport read is deliberately one selected chunk, irrespective of
     // packet boundaries. No socket, inferior, timer, or GDB process is needed.
     struct FramingChunks(std::collections::VecDeque<Vec<u8>>);
