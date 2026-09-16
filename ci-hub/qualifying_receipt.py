@@ -31,10 +31,13 @@ zero-execution floor. See the JSON `_completeness_is_coverage_not_count` note.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import tempfile
 import sys
@@ -68,6 +71,212 @@ PREDICATE_ENV = "QUALIFYING_RECEIPT_PREDICATE"
 PREDICATE_REL = "validate/qualifying-receipt.json"
 
 _ACTIVE: dict[str, Any] | None = None
+
+
+class ValidationEvidenceReaderFault(RuntimeError):
+    """The retained-artifact checker could not judge a receipt."""
+
+
+@dataclass(frozen=True)
+class _ValidationEvidence:
+    row_sha256: str
+    status: str
+    reason: str | None = None
+    evidence: dict[str, Any] | None = None
+    full_validation_refusal: str | None = None
+    backend_parity_matches: tuple[dict[str, Any], ...] = ()
+
+
+_VALIDATION_EVIDENCE_BATCHES: list[dict[str, _ValidationEvidence]] = []
+
+
+def _evidence_row_json(row: dict[str, Any]) -> str:
+    return json.dumps(row, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _native_identity_shape_valid(value: Any) -> bool:
+    return (
+        isinstance(value, dict) and set(value) == set(_CELL_IDENTITY_KEYS)
+        and all(isinstance(part, str) and bool(part.strip()) for part in value.values())
+    )
+
+
+def _native_evidence_shape_valid(evidence: Any, row: dict[str, Any]) -> bool:
+    """Check the native response envelope, not the report/comparator policy."""
+    fields = {
+        "cell_results", "test_results", "observations", "missing_cells",
+        "missing_backend_parity", "missing_test_producers", "full_test_results",
+        "full_backend_parity",
+    }
+    if not isinstance(evidence, dict) or set(evidence) != fields:
+        return False
+    if not isinstance(evidence["cell_results"], dict) or evidence["cell_results"] != row.get("cell_results"):
+        return False
+    if not isinstance(evidence["test_results"], dict):
+        return False
+    for key in ("missing_cells", "missing_backend_parity", "missing_test_producers", "observations"):
+        if not isinstance(evidence[key], list) or not all(isinstance(value, dict) for value in evidence[key]):
+            return False
+    if any(type(evidence[key]) is not bool for key in ("full_test_results", "full_backend_parity")):
+        return False
+    for observation in evidence["observations"]:
+        if set(observation) != {"identity", "relation", "outer_attempt", "verdict"}:
+            return False
+        if not _native_identity_shape_valid(observation["identity"]) or not isinstance(observation["relation"], dict) or not isinstance(observation["verdict"], dict):
+            return False
+        ordinal = observation["outer_attempt"]
+        if ordinal is not None and (type(ordinal) is not int or not 1 <= ordinal <= U64_MAX):
+            return False
+        relation = observation["relation"]
+        kind = relation.get("kind")
+        if kind == "ordinary":
+            if set(relation) != {"kind"}:
+                return False
+        elif kind == "reference":
+            if set(relation) != {"kind", "candidate"} or not _native_identity_shape_valid(relation["candidate"]):
+                return False
+        elif kind == "backend_parity":
+            if set(relation) != {"kind", "reference_backend", "record_envelope"} or not all(isinstance(relation[key], str) and relation[key] for key in ("reference_backend", "record_envelope")):
+                return False
+        else:
+            return False
+        verdict = observation["verdict"]
+        if verdict.get("state") in {"matched", "diverged"}:
+            if set(verdict) != {"state"}:
+                return False
+        elif verdict.get("state") == "unavailable-with-reason":
+            if set(verdict) != {"state", "reason"} or not isinstance(verdict["reason"], str) or not verdict["reason"].strip():
+                return False
+        else:
+            return False
+    return True
+
+
+def _check_validation_evidence(
+    rows: list[dict[str, Any]], artifact_root: Path | None
+) -> dict[str, _ValidationEvidence]:
+    """One native launch for the supplied rows; no receipt can supply its result.
+
+    The transport waits for the direct child with regular files for all three
+    streams. Its five-minute wall bound matches the existing shared event
+    checker. A timeout or bad response is a reader fault, never a receipt
+    refusal. Killing the process group also ends a compiler started by the
+    ordinary rust-script launcher.
+    """
+    requests = {}
+    for row in rows:
+        raw = _evidence_row_json(row)
+        requests[hashlib.sha256(raw.encode()).hexdigest()] = raw
+    if not requests:
+        return {}
+    command = [str(_CI_HUB_DIR / "ci-hub"), "validate-evidence"]
+    if artifact_root is not None:
+        command += ["--artifact-root", str(artifact_root)]
+
+    def fault(reason: str) -> dict[str, _ValidationEvidence]:
+        return {
+            digest: _ValidationEvidence(digest, "reader-fault", reason)
+            for digest in requests
+        }
+
+    try:
+        with tempfile.TemporaryFile() as source, tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+            for raw in requests.values():
+                source.write(json.dumps({"row_json": raw}, separators=(",", ":")).encode() + b"\n")
+            source.seek(0)
+            process = subprocess.Popen(
+                command, stdin=source, stdout=output, stderr=errors,
+                start_new_session=True,
+            )
+            try:
+                returncode = process.wait(timeout=300)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+                return fault("validation artifact checker timed out")
+            if returncode != 0:
+                errors.seek(0)
+                detail = errors.read(8192).decode(errors="replace").strip()
+                return fault(f"validation artifact checker exited {returncode}: {detail}")
+            output.seek(0)
+            reports = {}
+            for line in output:
+                report = json.loads(line)
+                if not isinstance(report, dict):
+                    return fault("validation artifact checker returned a non-object response")
+                digest = report.get("row_sha256")
+                status = report.get("status")
+                if digest not in requests or digest in reports:
+                    return fault("validation artifact checker returned an unexpected or repeated row digest")
+                if status == "verified":
+                    if (
+                        set(report) != {"row_sha256", "status", "evidence", "full_validation_refusal", "backend_parity_matches"}
+                        or not _native_evidence_shape_valid(report["evidence"], json.loads(requests[digest]))
+                        or not isinstance(report["backend_parity_matches"], list)
+                        or not all(_native_identity_shape_valid(cell) for cell in report["backend_parity_matches"])
+                        or (report["full_validation_refusal"] is not None and not isinstance(report["full_validation_refusal"], str))
+                    ):
+                        return fault("validation artifact checker returned a malformed verified response")
+                    reports[digest] = _ValidationEvidence(
+                        digest, status, evidence=report["evidence"],
+                        full_validation_refusal=report["full_validation_refusal"],
+                        backend_parity_matches=tuple(report["backend_parity_matches"]),
+                    )
+                elif status in {"refused", "reader-fault"}:
+                    if set(report) != {"row_sha256", "status", "reason"} or not isinstance(report["reason"], str) or not report["reason"].strip():
+                        return fault("validation artifact checker returned a malformed failure response")
+                    reports[digest] = _ValidationEvidence(digest, status, report["reason"])
+                else:
+                    return fault("validation artifact checker returned an unknown status")
+            if set(reports) != set(requests):
+                return fault("validation artifact checker omitted a requested row")
+            return reports
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        return fault(f"validation artifact checker could not complete: {error}")
+
+
+@contextmanager
+def validation_evidence_batch(
+    rows: list[dict[str, Any]], *, artifact_root: Path | None = None,
+    predicate: dict[str, Any] | None = None,
+):
+    """Retain native results only for one reader operation, bound to exact rows.
+
+    Preparing a batch does not itself refuse rows. A fault is raised only if a
+    caller reaches its artifact clause, preserving earlier refusal reasons.
+    """
+    pred = predicate if predicate is not None else active()
+    clause = pred.get("cell_results")
+    enabled = isinstance(clause, dict) and (
+        isinstance(clause.get("applies_at_schema_min"), int)
+        and isinstance(clause.get("supported_schema_max"), int)
+        and clause["applies_at_schema_min"] <= 10 <= clause["supported_schema_max"]
+    )
+    selected = [row for row in rows if row.get("schema_version") == 10] if enabled else []
+    batch = _check_validation_evidence(selected, artifact_root)
+    _VALIDATION_EVIDENCE_BATCHES.append(batch)
+    try:
+        yield
+    finally:
+        assert _VALIDATION_EVIDENCE_BATCHES[-1] is batch
+        _VALIDATION_EVIDENCE_BATCHES.pop()
+
+
+def validation_evidence(row: dict[str, Any]) -> _ValidationEvidence:
+    """Read checker-owned evidence; fields inside ``row`` never satisfy this."""
+    digest = hashlib.sha256(_evidence_row_json(row).encode()).hexdigest()
+    for batch in reversed(_VALIDATION_EVIDENCE_BATCHES):
+        if digest in batch:
+            result = batch[digest]
+            break
+    else:
+        if _VALIDATION_EVIDENCE_BATCHES:
+            raise ValidationEvidenceReaderFault("row changed or was not included in the validation artifact batch")
+        result = _check_validation_evidence([row], None)[digest]
+    return result
 
 
 class ProducerDefinitionError(RuntimeError):
@@ -652,11 +861,13 @@ class CellResultsVerdict(Enum):
     PATH_MISMATCH = "path-mismatch"
     POPULATION_MISMATCH = "population-mismatch"
     VERDICT_INVALID = "cell-verdict-invalid"
+    ARTIFACT_REFUSED = "artifact-refused"
+    READER_FAULT = "reader-fault"
 
 
 _CELL_IDENTITY_KEYS = ("lane", "category", "test", "mode", "backend")
 _CELL_RESULTS_PATH_SCHEMA = 8
-_SUPPORTED_CELL_RESULTS_SCHEMAS = {6, 7, 8}
+_SUPPORTED_CELL_RESULTS_SCHEMAS = {6, 7, 8, 10}
 _VALIDATE_PATHS = {"quick", "full", "super"}
 _COMPARISON_KEYS = {
     "strictness",
@@ -879,6 +1090,15 @@ def cell_results_verdict(
         )
     if schema > schema_max or schema not in _SUPPORTED_CELL_RESULTS_SCHEMAS:
         return CellResultsVerdict.SCHEMA_UNAVAILABLE
+    if schema == 10:
+        checked = validation_evidence(row)
+        if checked.status == "reader-fault":
+            return CellResultsVerdict.READER_FAULT
+        return (
+            CellResultsVerdict.SATISFIED
+            if checked.status == "verified"
+            else CellResultsVerdict.ARTIFACT_REFUSED
+        )
     if evidence is None:
         return CellResultsVerdict.MISSING
     expected_keys = {
@@ -1031,6 +1251,9 @@ def cell_scorecard_projection(
             "cells": None,
         }
     evidence = row["cell_results"]
+    checked = validation_evidence(row) if row.get("schema_version") == 10 else None
+    if checked is not None:
+        evidence = checked.evidence["cell_results"]
     cells = [
         {
             **{key: cell[key] for key in _CELL_IDENTITY_KEYS},
@@ -1038,9 +1261,23 @@ def cell_scorecard_projection(
             "comparison_tier": cell["cell_verdict"]["comparison_tier"],
             "scorecard_green": cell_scorecard_green(cell),
         }
-        for cell in row["cell_results"]["cells"]
+        for cell in evidence["cells"]
     ]
-    return {
+    if checked is not None:
+        parity_matches = {
+            tuple(cell[key] for key in _CELL_IDENTITY_KEYS)
+            for cell in checked.backend_parity_matches
+        }
+        for projected, cell in zip(cells, evidence["cells"]):
+            ordinary_green = projected["scorecard_green"]
+            parity = cell["backend_parity"]
+            projected["ordinary_scorecard_green"] = ordinary_green
+            projected["backend_parity"] = parity
+            if parity is not None:
+                projected["scorecard_green"] = ordinary_green and (
+                    tuple(cell[key] for key in _CELL_IDENTITY_KEYS) in parity_matches
+                )
+    projection = {
         "eligible": True,
         "cell_results_satisfied": True,
         "status": status.value,
@@ -1052,6 +1289,15 @@ def cell_scorecard_projection(
         "green_count": sum(cell["scorecard_green"] for cell in cells),
         "cells": cells,
     }
+    if checked is not None:
+        projection.update({
+            "ordinary_green_count": sum(cell["ordinary_scorecard_green"] for cell in cells),
+            "selected_backend_parity": evidence["selected_backend_parity"],
+            "backend_parity_selected_count": len(evidence["selected_backend_parity"]),
+            "backend_parity_recorded_count": sum(cell["backend_parity"] is not None for cell in cells),
+            "backend_parity_green_count": len(parity_matches),
+        })
+    return projection
 
 
 class AdmissionVerdict(Enum):
@@ -1650,7 +1896,7 @@ def green_class_of(row: dict[str, Any]) -> str:
     return _green_class.derive_class(row)[0]
 
 
-def row_qualification(
+def _row_qualification_with_evidence(
     row: dict[str, Any], sha: str, pred: dict[str, Any]
 ) -> tuple[bool, str]:
     """THE qualifying-receipt predicate, plus the green-CLASS clause.
@@ -1680,16 +1926,40 @@ def row_qualification(
     coverage_schema = coverage_schema_verdict(row, pred)
     base = base_evidence_verdict(row, pred)
     admission = admission_verdict(row, pred)
+    if row.get("schema_version") == 10:
+        common_reason = shared_evidence_reason(coverage_schema, base, admission)
+        if common_reason != "qualifies":
+            return False, common_reason
     cell_results = cell_results_verdict(row, pred)
+    if cell_results is CellResultsVerdict.READER_FAULT:
+        raise ValidationEvidenceReaderFault(validation_evidence(row).reason)
     evidence_reason = shared_evidence_reason(
         coverage_schema, base, admission, cell_results
     )
+    if row.get("schema_version") == 10 and evidence_reason in (
+        "qualifies", "cell_results artifact-refused"
+    ):
+        checked = validation_evidence(row)
+        if checked.status == "refused":
+            return False, f"cell_results {checked.reason}"
+        if checked.full_validation_refusal is not None:
+            return False, checked.full_validation_refusal
     if evidence_reason != "qualifies":
         return False, evidence_reason
     green_class, class_reason = _green_class.derive_class(row)
     if green_class not in _green_class.accepted_classes(pred):
         return False, f"green_class={green_class!r}: {class_reason}"
     return True, "qualifies"
+
+
+def row_qualification(
+    row: dict[str, Any], sha: str, pred: dict[str, Any]
+) -> tuple[bool, str]:
+    """Judge one row, reusing the enclosing batch when there is one."""
+    if row.get("schema_version") == 10 and not _VALIDATION_EVIDENCE_BATCHES:
+        with validation_evidence_batch([row], predicate=pred):
+            return _row_qualification_with_evidence(row, sha, pred)
+    return _row_qualification_with_evidence(row, sha, pred)
 
 
 def row_qualifies(row: dict[str, Any], sha: str, pred: dict[str, Any]) -> bool:
@@ -1728,7 +1998,7 @@ def authoritative_row_qualifies(
     )[0]
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None, evidence_scopes: ExitStack) -> int:
     """Semantic row-verifier CLI used by non-Python authority consumers."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sha")
@@ -1739,6 +2009,11 @@ def main(argv: list[str] | None = None) -> int:
         dest="evidence_only",
         action="store_true",
         help="verify shared coverage-schema, admission, producer, and base evidence",
+    )
+    parser.add_argument(
+        "--coverage-base-admission-only",
+        action="store_true",
+        help="check these three clauses only; does not judge cells or the whole receipt",
     )
     parser.add_argument(
         "--merge-boundary",
@@ -1755,6 +2030,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo-checkout")
     parser.add_argument("--reverie-checkout")
     args = parser.parse_args(argv)
+    if args.coverage_base_admission_only and any(
+        (args.evidence_only, args.merge_boundary, args.producer_definition_row)
+    ):
+        parser.error("--coverage-base-admission-only cannot be combined with another evidence mode")
     if args.producer_definition_row:
         if args.sha is None or _SHA40.fullmatch(args.sha) is None:
             parser.error("--producer-definition-row requires --sha as 40 lowercase hex")
@@ -1810,7 +2089,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
-    if args.evidence_only:
+    if args.evidence_only or args.coverage_base_admission_only:
         try:
             request = json.load(sys.stdin)
             if not isinstance(request, dict) or not isinstance(request.get("row"), dict):
@@ -1822,10 +2101,13 @@ def main(argv: list[str] | None = None) -> int:
                 "coverage": request.get("coverage"),
                 "cell_results": request.get("cell_results"),
             }
+            if not args.coverage_base_admission_only:
+                evidence_scopes.enter_context(validation_evidence_batch([request["row"]], predicate=pred))
             verdict = admission_verdict(request["row"], pred)
             base = base_evidence_verdict(request["row"], pred)
             coverage_schema = coverage_schema_verdict(request["row"], pred)
-            cell_results = cell_results_verdict(request["row"], pred)
+            if not args.coverage_base_admission_only:
+                cell_results = cell_results_verdict(request["row"], pred)
         except (ValueError, json.JSONDecodeError) as error:
             print(f"qualifying-receipt: {error}", file=sys.stderr)
             return 2
@@ -1833,6 +2115,25 @@ def main(argv: list[str] | None = None) -> int:
             True if verdict is AdmissionVerdict.SATISFIED else
             None if verdict is AdmissionVerdict.GRANDFATHERED_UNKNOWN else False
         )
+        if args.coverage_base_admission_only:
+            reason = shared_evidence_reason(coverage_schema, base, verdict)
+            print(json.dumps({
+                "scope": "coverage-base-admission/v1",
+                "refusal": None if reason == "qualifies" else reason,
+                "admission_satisfied": satisfied,
+                "admission_status": verdict.value,
+                "base_satisfied": (
+                    True if base is BaseVerdict.SATISFIED else
+                    None if base is BaseVerdict.GRANDFATHERED_UNKNOWN else False
+                ),
+                "base_status": base.value,
+                "coverage_schema_satisfied": (
+                    True if coverage_schema is CoverageSchemaVerdict.SATISFIED else
+                    None if coverage_schema is CoverageSchemaVerdict.GRANDFATHERED_UNKNOWN else False
+                ),
+                "coverage_schema_status": coverage_schema.value,
+            }, sort_keys=True))
+            return 0 if reason == "qualifies" else 1
         accepted = (
             admission_accepted(verdict)
             and base_accepted(base)
@@ -1935,6 +2236,7 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(row, dict):
             raise ValueError("ledger row is not an object")
         pred = active()
+        evidence_scopes.enter_context(validation_evidence_batch([row], predicate=pred))
         green_class, reason = _green_class.derive_class(row)
         accepted = row_qualifies(row, args.sha, pred)
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
@@ -1989,6 +2291,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"REFUSED {args.sha} class={green_class}: {reason}")
     return 0 if accepted else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Keep one native evidence batch alive through the complete CLI report."""
+    with ExitStack() as evidence_scopes:
+        return _main(argv, evidence_scopes)
 
 
 if __name__ == "__main__":

@@ -55,6 +55,8 @@ _WEBSITE_SELECTION_RETIREMENTS = {
     },
 }
 _READER_PATHS = (
+    Path("ci-hub/ci-hub"),
+    Path("ci-hub/ci-hub.rs"),
     Path("ci-hub/compatibility-website/export_inputs.py"),
     Path("ci-hub/ledger/check-ledger-events.rs"),
     Path("ci-hub/ledger/ledger.py"),
@@ -62,6 +64,7 @@ _READER_PATHS = (
     Path("ci-hub/ledger/validate_rows.py"),
     Path("ci-hub/lib/bounded_capture.py"),
     Path("ci-hub/lib/ledger_event.rs"),
+    Path("ci-hub/lib/validation_evidence.rs"),
     Path("ci-hub/qualifying_receipt.py"),
     Path("ci-hub/series/check-series-rows.rs"),
     Path("ci-hub/series/series.py"),

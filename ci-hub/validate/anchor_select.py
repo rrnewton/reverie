@@ -340,23 +340,24 @@ def select_anchor(
     rows, malformed = load_ledger(ledger_path)
     qualifying: dict[str, dict] = {}
     refusals: dict[str, int] = {}
-    for row in rows:
-        sha = row.get("commit")
-        ok, reason = qualifying_receipt.authoritative_row_qualification(
-            row,
-            sha if isinstance(sha, str) else "",
-            predicate,
-            repositories=[checkout],
-        )
-        if not ok:
-            refusals[reason.split("=")[0]] = refusals.get(reason.split("=")[0], 0) + 1
-            continue
-        sha = row["commit"]
-        prev = qualifying.get(sha)
-        # Keep the newest qualifying receipt per commit so the record cites the
-        # receipt actually relied on.
-        if prev is None or (row.get("finished_at") or "") > (prev.get("finished_at") or ""):
-            qualifying[sha] = row
+    with qualifying_receipt.validation_evidence_batch(rows, predicate=predicate):
+        for row in rows:
+            sha = row.get("commit")
+            ok, reason = qualifying_receipt.authoritative_row_qualification(
+                row,
+                sha if isinstance(sha, str) else "",
+                predicate,
+                repositories=[checkout],
+            )
+            if not ok:
+                refusals[reason.split("=")[0]] = refusals.get(reason.split("=")[0], 0) + 1
+                continue
+            sha = row["commit"]
+            prev = qualifying.get(sha)
+            # Keep the newest qualifying receipt per commit so the record cites the
+            # receipt actually relied on.
+            if prev is None or (row.get("finished_at") or "") > (prev.get("finished_at") or ""):
+                qualifying[sha] = row
 
     # Step 3: ancestry bound.
     candidates = []

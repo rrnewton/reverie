@@ -545,8 +545,17 @@ def _require_cell_results(row: dict, root: Path) -> None:
     verdict = qualifying_receipt.cell_results_verdict(row, predicate)
     if verdict is qualifying_receipt.CellResultsVerdict.GRANDFATHERED_UNKNOWN:
         return
+    if verdict is qualifying_receipt.CellResultsVerdict.READER_FAULT:
+        raise qualifying_receipt.ValidationEvidenceReaderFault(
+            qualifying_receipt.validation_evidence(row).reason
+        )
     if verdict is not qualifying_receipt.CellResultsVerdict.SATISFIED:
         raise ValueError(f"cell_results {verdict.value}")
+    if row.get("schema_version") == 10:
+        # The shared verifier has read and bound all three artifacts, including
+        # the full attempt records that intentionally are not copied into the
+        # compact ledger summary. Never compare that artifact using V8 keys.
+        return
 
     evidence = row["cell_results"]
     artifact_spec = evidence["artifact"]
@@ -628,7 +637,33 @@ def _require_gate_failure_bindings(row: dict) -> None:
         )
 
 
-def _enrich_failure_classification(row: dict, root: Path) -> None:
+def _bind_comparison_failures(row: dict, observations: list[dict]) -> None:
+    """Persist shared comparison attribution without changing its relation."""
+    failures = [
+        observation for observation in observations
+        if observation["verdict"]["state"] != "matched"
+    ]
+    if "failed_comparisons" in row and row["failed_comparisons"] != failures:
+        raise ValueError("failed_comparisons differ from the verified artifact observations")
+    row["failed_comparisons"] = failures
+    ordinary_failures = sorted({
+        "/".join(observation["identity"][key] for key in ("test", "mode", "backend"))
+        for observation in failures
+        if observation["relation"]["kind"] == "ordinary"
+        and observation["verdict"]["state"] == "diverged"
+    })
+    if "failed_cells" in row and row["failed_cells"] != ordinary_failures:
+        raise ValueError("failed_cells differ from the verified ordinary attempt history")
+    row["failed_cells"] = ordinary_failures
+    if row.get("known_flaky_failure") is True and any(
+        observation["relation"]["kind"] != "ordinary" for observation in failures
+    ):
+        raise ValueError("ordinary flake classification cannot cover reference or backend parity failures")
+
+
+def _enrich_failure_classification(
+    row: dict, root: Path, *, comparison_observations: list[dict] | None = None
+) -> None:
     """Bind a completed red row to the failure facts in its own durable log.
 
     ``validate-status`` intentionally refuses a bare red: it needs an observed
@@ -658,7 +693,7 @@ def _enrich_failure_classification(row: dict, root: Path) -> None:
     import failure_evidence  # noqa: PLC0415
 
     has_cell_results, exact_failed, _ = failure_evidence.failed_cells(
-        row.get("cell_results")
+        row.get("cell_results"), comparison_observations=comparison_observations
     )
     if has_cell_results and "failed_cells" in row and row["failed_cells"] != exact_failed:
         raise ValueError("failed_cells differ from the validated cell_results summary")
@@ -708,6 +743,7 @@ def _enrich_failure_classification(row: dict, root: Path) -> None:
                 else None
             ),
             failure_classes=typed_failure_classes,
+            comparison_observations=comparison_observations,
         )
     except (OSError, ValueError, json.JSONDecodeError):
         return
@@ -867,8 +903,17 @@ def record(row: dict, *, root: Path | None = None) -> dict:
             "acceptance fixture producer is not allowed in the production ledger"
         )
     _require_local_commit(row)
-    _require_cell_results(row, root)
-    _enrich_failure_classification(row, root)
+    comparison_observations = None
+    with qualifying_receipt.validation_evidence_batch([row], artifact_root=root):
+        _require_cell_results(row, root)
+        if row.get("schema_version") == 10:
+            comparison_observations = qualifying_receipt.validation_evidence(row).evidence["observations"]
+    if comparison_observations is not None:
+        _bind_comparison_failures(row, comparison_observations)
+    if comparison_observations is None:
+        _enrich_failure_classification(row, root)
+    else:
+        _enrich_failure_classification(row, root, comparison_observations=comparison_observations)
     _require_gate_failure_bindings(row)
     event = _event_for_row(row, root)
     target = spool(live_spool_dir(root), event["team"], event["host"], [event])

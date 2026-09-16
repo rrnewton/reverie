@@ -142,7 +142,7 @@ def canonical_state(root: Path, sha: str) -> tuple[str, str]:
     if rows.returncode != 0:
         return "UNKNOWN", (rows.stderr or rows.stdout).strip()
     predicate = qualifying_receipt.active()
-    matched = 0
+    candidates = []
     for line in rows.stdout.splitlines():
         try:
             row = json.loads(line)
@@ -152,11 +152,16 @@ def canonical_state(root: Path, sha: str) -> tuple[str, str]:
             continue
         if row.get("repo") not in (None, "hermit", "rrnewton/hermit"):
             continue
-        matched += 1
-        accepted, _reason = qualifying_receipt.row_qualification(row, sha, predicate)
-        if accepted:
-            return "HARD_GREEN", "canonical exact-SHA qualifying receipt found"
-    return "NO_RESULT", f"canonical ledger has {matched} row(s) for exact main without qualifying hard green"
+        candidates.append(row)
+    try:
+        with qualifying_receipt.validation_evidence_batch(candidates, artifact_root=root, predicate=predicate):
+            for row in candidates:
+                accepted, _reason = qualifying_receipt.row_qualification(row, sha, predicate)
+                if accepted:
+                    return "HARD_GREEN", "canonical exact-SHA qualifying receipt found"
+    except qualifying_receipt.ValidationEvidenceReaderFault as error:
+        return "UNKNOWN", str(error)
+    return "NO_RESULT", f"canonical ledger has {len(candidates)} row(s) for exact main without qualifying hard green"
 
 
 def current_main_state(

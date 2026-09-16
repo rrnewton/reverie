@@ -393,7 +393,9 @@ def flaky_cells(path: Path, commit: str | None = None) -> set[str]:
     return flaky_registry.cells_for_tree(registry, commit)
 
 
-def failed_cells(cell_results: object) -> tuple[bool, list[str], list[str]]:
+def failed_cells(
+    cell_results: object, *, comparison_observations: list[dict] | None = None
+) -> tuple[bool, list[str], list[str]]:
     """Return (evidence present, diverged cells, cells without a comparison)."""
     if not isinstance(cell_results, Mapping):
         return False, [], []
@@ -402,6 +404,20 @@ def failed_cells(cell_results: object) -> tuple[bool, list[str], list[str]]:
         return False, [], []
     diverged: set[str] = set()
     unavailable: set[str] = set()
+    if comparison_observations is not None:
+        # These observations come from the shared artifact verifier. A reference
+        # failure has a separate role even when its backend is also selected by
+        # another ordinary cell, and cannot enter this registry's ordinary key.
+        for observation in comparison_observations:
+            if observation["relation"]["kind"] != "ordinary":
+                continue
+            identity = "/".join(observation["identity"][key] for key in ("test", "mode", "backend"))
+            state = observation["verdict"]["state"]
+            if state == "diverged":
+                diverged.add(identity)
+            elif state == "unavailable-with-reason":
+                unavailable.add(identity)
+        return True, sorted(diverged), sorted(unavailable)
     for cell in cells:
         if not isinstance(cell, Mapping):
             continue
@@ -1216,6 +1232,7 @@ def build_evidence(
     cell_results: object = None,
     failed_nodes: list[str] | None = None,
     failure_classes: Mapping[str, tuple[str, str | None]] | None = None,
+    comparison_observations: list[dict] | None = None,
 ) -> dict[str, object]:
     cells = (
         sorted(set(failed_nodes))
@@ -1223,7 +1240,9 @@ def build_evidence(
         else failed_substeps(log_text)
     )
     cell_set = set(cells)
-    has_cell_results, exact_failed, unavailable = failed_cells(cell_results)
+    has_cell_results, exact_failed, unavailable = failed_cells(
+        cell_results, comparison_observations=comparison_observations
+    )
     exact_failed_set = set(exact_failed)
     flaky_failed_cells = sorted(exact_failed_set.intersection(registry))
     # Schema-1 registries named DAG nodes. Keep their read path for historical
@@ -1280,6 +1299,11 @@ def build_evidence(
         and bool(exact_failed)
         and len(flaky_failed_cells) == len(exact_failed)
         and not unavailable
+        and not any(
+            observation["relation"]["kind"] != "ordinary"
+            and observation["verdict"]["state"] != "matched"
+            for observation in comparison_observations or []
+        )
         and bool(cells)
         and all(_manifest_result_node(node) for node in cells)
     )

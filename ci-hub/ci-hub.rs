@@ -72,6 +72,8 @@ mod records;
 mod validate_lock;
 #[path = "lib/validate_run_handle.rs"]
 mod validate_run_handle;
+#[path = "lib/validation_evidence.rs"]
+mod validation_evidence;
 // The legacy assessment type remains exercised by its compatibility tests;
 // production consumers below use the stricter canonical receipt assessment.
 #[allow(dead_code)]
@@ -259,6 +261,8 @@ enum HubCommand {
     HostedStatus(HostedStatusArgs),
     /// Recompute the canonical digest of one HistoryRow read from stdin.
     ReceiptDigest(ReceiptDigestArgs),
+    /// Verify retained validation artifacts for a JSONL batch of exact rows.
+    ValidateEvidence(ValidateEvidenceArgs),
     /// Launch a detached validation whose service enters through validate-lock.
     ValidateRun(PassthroughArgs),
     /// Stop detached validate-* user units and verify they terminated.
@@ -595,6 +599,13 @@ enum ValidateStatusTimes {
     Relative,
     Local,
     Utc,
+}
+
+#[derive(Args, Clone, Debug)]
+struct ValidateEvidenceArgs {
+    /// Parent directory containing ignored/validate/artifacts.
+    #[arg(long, value_name = "PATH")]
+    artifact_root: Option<PathBuf>,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -1371,6 +1382,7 @@ impl HubCommand {
             | Self::Batch(_)
             | Self::ValidateStatus(_)
             | Self::ReceiptDigest(_)
+            | Self::ValidateEvidence(_)
             | Self::ValidateRun(_)
             | Self::ValidateStop(_)
             | Self::CorrectOwnerWatchHandles(_)
@@ -1521,7 +1533,12 @@ fn main() -> ExitCode {
     // receipt and prints only when the current tip is recorded soft-green but
     // is not yet hard-green. It is advisory: a broken warning probe must say
     // UNKNOWN without changing the command the caller actually requested.
-    warn_if_main_is_soft_green(&root);
+    // The artifact verifier is used by this advisory classifier's Python
+    // reader. Calling the classifier from the verifier would recursively
+    // launch another verifier for the same receipt.
+    if !matches!(&cli.command, HubCommand::ValidateEvidence(_)) {
+        warn_if_main_is_soft_green(&root);
+    }
 
     match execute(&root, cli.command) {
         Ok(code) => to_exit_code(code),
@@ -1771,6 +1788,15 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
         }
         HubCommand::LocalHistory(args) => run_local_history(root, args),
         HubCommand::ReceiptDigest(args) => run_receipt_digest(args),
+        HubCommand::ValidateEvidence(args) => {
+            let artifact_root = match args.artifact_root {
+                Some(root) => root,
+                None => operational_state_root(root)?,
+            };
+            validation_evidence::run_batch(&artifact_root)
+                .map(|()| 0)
+                .map_err(CiHubError::ValidateStatus)
+        }
         HubCommand::HostedStatus(args) => {
             let mut forwarded = vec![OsString::from("hosted-status")];
             push_option(&mut forwarded, "--repo", args.repo);
@@ -2049,10 +2075,16 @@ const LOCAL_VALIDATION_STATUS_CONTEXT: &str = "Local validation";
 fn local_validation_status_description(row: &HistoryRow) -> String {
     let profile = row.profile.as_deref().unwrap_or("unknown profile");
     let mut coverage = Vec::new();
-    if let Some(selected) = row
-        .cell_results_evidence()
-        .map(|value| value.selected_count)
-    {
+    let selected = if row.schema_version == Some(10) {
+        row.schema10_cell_results()
+            .ok()
+            .flatten()
+            .map(|value| value.selected_count)
+    } else {
+        row.cell_results_evidence()
+            .map(|value| value.selected_count)
+    };
+    if let Some(selected) = selected {
         coverage.push(format!("{selected} cells selected by {profile}"));
     }
     if let Some(nodes) = &row.coverage {
@@ -9736,12 +9768,17 @@ fn run_validate_status(
                         assessment.unresolved_failure_obligations.len(),
                     );
                     for obligation in &assessment.unresolved_failure_obligations {
+                        let relation = obligation
+                            .comparison_description()
+                            .map(|description| format!(" ({description})"))
+                            .unwrap_or_default();
                         println!(
-                            "#   {}/{} {} {}: target has {} clean leg(s), {} failure(s); needs {} clean leg(s) after {}/{} baseline failures at {}",
+                            "#   {}/{} {} {}{}: target has {} clean leg(s), {} failure(s); needs {} clean leg(s) after {}/{} baseline failures at {}",
                             obligation.category,
                             obligation.test,
                             obligation.mode,
                             obligation.backend,
+                            relation,
                             obligation.observed_clean_legs_at_target,
                             obligation.target_failures,
                             obligation.required_clean_legs,

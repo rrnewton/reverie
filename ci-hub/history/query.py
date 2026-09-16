@@ -1066,7 +1066,10 @@ def green_time(parent: str, repo: str, since: str | None,
     # Split the GREEN bucket into ledger-corroborated vs conclusion-only. These
     # are reported SEPARATELY; green_pct stays the combined figure for back-compat.
     ledger_idx = load_ledger_index(parent)
-    g_led_sec, g_concl_sec = _split_green_by_ledger(intervals, ledger_idx)
+    with qualifying_receipt.validation_evidence_batch(
+        [row for rows in ledger_idx.values() for row in rows], artifact_root=Path(parent)
+    ):
+        g_led_sec, g_concl_sec = _split_green_by_ledger(intervals, ledger_idx)
     green_ledger_hours = round(g_led_sec / 3600.0, 2)
     green_conclusion_only_hours = round(g_concl_sec / 3600.0, 2)
     green_ledger_pct = (round(100.0 * g_led_sec / authoritative, 2)

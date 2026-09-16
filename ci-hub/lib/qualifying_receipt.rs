@@ -585,6 +585,55 @@ struct SharedEvidenceReport {
     cell_results_status: String,
 }
 
+/// This response judges exactly three clauses. It carries neither a cell
+/// verdict nor permission to qualify the whole receipt.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CoverageBaseAdmissionReport {
+    scope: String,
+    refusal: Option<String>,
+    admission_satisfied: Option<bool>,
+    admission_status: String,
+    base_satisfied: Option<bool>,
+    base_status: String,
+    coverage_schema_satisfied: Option<bool>,
+    coverage_schema_status: String,
+}
+
+impl CoverageBaseAdmissionReport {
+    fn outcome(self, exit_code: Option<i32>) -> BoundaryOutcome {
+        let clauses = [
+            (
+                "coverage schema",
+                self.coverage_schema_status.as_str(),
+                self.coverage_schema_satisfied,
+            ),
+            ("base", self.base_status.as_str(), self.base_satisfied),
+            (
+                "admission",
+                self.admission_status.as_str(),
+                self.admission_satisfied,
+            ),
+        ];
+        let expected = clauses.iter().find_map(|(prefix, status, _)| {
+            (!evidence_status_accepted(status)).then(|| format!("{prefix} {status}"))
+        });
+        if self.scope != "coverage-base-admission/v1"
+            || !clauses
+                .iter()
+                .all(|(_, status, satisfied)| evidence_status_matches(status, *satisfied))
+            || self.refusal != expected
+            || exit_code != Some(i32::from(expected.is_some()))
+        {
+            return BoundaryOutcome::Indeterminate("verifier-self-inconsistent");
+        }
+        match expected {
+            Some(reason) => BoundaryOutcome::Refused(reason),
+            None => BoundaryOutcome::Accepted,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct BaseBoundaryReport {
     accepted: bool,
@@ -868,11 +917,46 @@ fn shared_evidence_outcome(row: &HistoryRow, pred: &QualifyingPredicate) -> Boun
     };
     let Ok(output) = Command::new("python3")
         .arg(verifier)
-        .arg("--evidence-only")
+        .arg(if row.schema_version == Some(10) {
+            "--coverage-base-admission-only"
+        } else {
+            "--evidence-only"
+        })
         .bounded_output_with_input(&request_bytes)
     else {
         return BoundaryOutcome::Indeterminate("verifier-not-reaped");
     };
+    if row.schema_version == Some(10) {
+        let Ok(report) = serde_json::from_slice::<CoverageBaseAdmissionReport>(&output.stdout)
+        else {
+            return BoundaryOutcome::Indeterminate("verifier-output-unparseable");
+        };
+        let common = report.outcome(output.status.code());
+        if !common.accepted() {
+            return common;
+        }
+        if 10 < pred.cell_results.applies_at_schema_min
+            || 10 > pred.cell_results.supported_schema_max
+        {
+            return BoundaryOutcome::Refused("cell_results schema-unavailable".into());
+        }
+        return match crate::validation_evidence::verify_current_store(row) {
+            crate::validation_evidence::EvidenceOutcome::Verified {
+                full_validation_refusal,
+                ..
+            } => match full_validation_refusal {
+                Some(reason) => BoundaryOutcome::Refused(reason),
+                None => BoundaryOutcome::Accepted,
+            },
+            crate::validation_evidence::EvidenceOutcome::Refused { reason } => {
+                BoundaryOutcome::Refused(format!("cell_results {reason}"))
+            }
+            crate::validation_evidence::EvidenceOutcome::ReaderFault { reason } => {
+                eprintln!("validation evidence: {reason}");
+                BoundaryOutcome::Indeterminate("validation-evidence-artifacts-unreadable")
+            }
+        };
+    }
     let Ok(report) = serde_json::from_slice::<SharedEvidenceReport>(&output.stdout) else {
         return BoundaryOutcome::Indeterminate("verifier-output-unparseable");
     };

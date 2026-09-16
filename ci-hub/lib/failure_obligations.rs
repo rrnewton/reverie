@@ -10,8 +10,9 @@
 //! ordinary full validation is neither repeated nor slowed down.
 
 use crate::records::{
-    CellIdentity, CellResult, CellResultsEvidence, CellVerdict, ComparisonStrictness,
-    ComparisonTier, HistoryRow, RequiredNullable, ValidatePath,
+    CellIdentity, CellResult, CellResultsEvidence, CellVerdict, ComparisonObservationVerdictV10,
+    ComparisonRelationV10, ComparisonStrictness, ComparisonTier, HistoryRow, RequiredNullable,
+    ValidatePath, VerifiedValidationEvidenceV10,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -32,6 +33,7 @@ struct CellKey {
     test: String,
     mode: String,
     backend: String,
+    relation: ComparisonRelationV10,
 }
 
 impl From<&CellIdentity> for CellKey {
@@ -42,6 +44,7 @@ impl From<&CellIdentity> for CellKey {
             test: cell.test.clone(),
             mode: cell.mode.clone(),
             backend: cell.backend.clone(),
+            relation: ComparisonRelationV10::Ordinary,
         }
     }
 }
@@ -54,6 +57,19 @@ impl From<&CellResult> for CellKey {
             test: cell.test.clone(),
             mode: cell.mode.clone(),
             backend: cell.backend.clone(),
+            relation: ComparisonRelationV10::Ordinary,
+        }
+    }
+}
+
+impl CellKey {
+    fn selected_candidate(&self) -> Self {
+        match &self.relation {
+            ComparisonRelationV10::Reference { candidate } => CellKey::from(candidate),
+            _ => Self {
+                relation: ComparisonRelationV10::Ordinary,
+                ..self.clone()
+            },
         }
     }
 }
@@ -71,6 +87,7 @@ struct CommitObservation {
     tree: String,
     toolchain: String,
     observation: Observation,
+    complete: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,7 +98,17 @@ struct RunFingerprint {
     // `cell_results_evidence` normalizes schema 8 to the legacy evidence
     // fields, so retain its path separately as part of physical-run identity.
     validate_path: Option<ValidatePath>,
-    evidence: CellResultsEvidence,
+    evidence: RunEvidence,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RunEvidence {
+    Legacy(CellResultsEvidence),
+    Schema10(serde_json::Value),
+}
+
+fn ordinary_relation(relation: &ComparisonRelationV10) -> bool {
+    matches!(relation, ComparisonRelationV10::Ordinary)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -91,12 +118,32 @@ pub struct UnresolvedFailureObligation {
     pub test: String,
     pub mode: String,
     pub backend: String,
+    #[serde(skip_serializing_if = "ordinary_relation")]
+    pub relation: ComparisonRelationV10,
     pub failing_commit: String,
     pub baseline_failures: u64,
     pub baseline_legs: u64,
     pub required_clean_legs: u64,
     pub observed_clean_legs_at_target: u64,
     pub target_failures: u64,
+}
+
+impl UnresolvedFailureObligation {
+    pub fn comparison_description(&self) -> Option<String> {
+        match &self.relation {
+            ComparisonRelationV10::Ordinary => None,
+            ComparisonRelationV10::Reference { candidate } => Some(format!(
+                "reference comparison for {} {}/{}",
+                candidate.backend, candidate.test, candidate.mode,
+            )),
+            ComparisonRelationV10::BackendParity {
+                reference_backend,
+                record_envelope,
+            } => Some(format!(
+                "parity comparison with {reference_backend}, {record_envelope:?}"
+            )),
+        }
+    }
 }
 
 /// Return the number of consecutive clean legs needed to observe no recurrence
@@ -383,11 +430,107 @@ fn validated_evidence<'a>(
     Ok(Some(evidence))
 }
 
+enum ValidatedEvidence<'a> {
+    Legacy(Cow<'a, CellResultsEvidence>),
+    Schema10(Box<VerifiedValidationEvidenceV10>),
+}
+
+impl ValidatedEvidence<'_> {
+    fn selected(&self) -> &[CellIdentity] {
+        match self {
+            Self::Legacy(evidence) => &evidence.selected,
+            Self::Schema10(evidence) => &evidence.cell_results.selected,
+        }
+    }
+
+    fn fingerprint(&self, row: &HistoryRow) -> RunEvidence {
+        match self {
+            Self::Legacy(evidence) => RunEvidence::Legacy(evidence.as_ref().clone()),
+            Self::Schema10(evidence) => RunEvidence::Schema10(serde_json::json!({
+                "cell_results": evidence.cell_results,
+                "test_results": row.test_results,
+                "constructed_plan": row.extra.get("constructed_plan"),
+            })),
+        }
+    }
+
+    fn validate_path(&self, row: &HistoryRow) -> Option<ValidatePath> {
+        match self {
+            Self::Legacy(_) => row.cell_results_validate_path(),
+            Self::Schema10(evidence) => Some(evidence.cell_results.path),
+        }
+    }
+
+    /// None is an observed unavailable attempt, not a clean comparison. Old
+    /// summaries retain their established canonical-observation rules.
+    fn observations(&self) -> Vec<(CellKey, Option<Observation>)> {
+        match self {
+            Self::Legacy(evidence) => evidence
+                .cells
+                .iter()
+                .filter_map(|cell| {
+                    canonical_observation(cell)
+                        .map(|observation| (CellKey::from(cell), Some(observation)))
+                })
+                .collect(),
+            Self::Schema10(evidence) => evidence
+                .observations
+                .iter()
+                .map(|observation| {
+                    let mut key = CellKey::from(&observation.identity);
+                    key.relation = observation.relation.clone();
+                    let value = match observation.verdict {
+                        ComparisonObservationVerdictV10::Matched => Some(Observation {
+                            legs: 2,
+                            failures: 0,
+                        }),
+                        ComparisonObservationVerdictV10::Diverged => Some(Observation {
+                            legs: 2,
+                            failures: 1,
+                        }),
+                        ComparisonObservationVerdictV10::UnavailableWithReason { .. } => None,
+                    };
+                    (key, value)
+                })
+                .collect(),
+        }
+    }
+}
+
+fn validated_observation_evidence<'a>(
+    row: &'a HistoryRow,
+    schema_min: u32,
+    schema_max: u32,
+    artifact_root: Option<&Path>,
+) -> Result<Option<ValidatedEvidence<'a>>, String> {
+    if row.schema_version != Some(10) {
+        return validated_evidence(row, schema_min, schema_max)
+            .map(|value| value.map(ValidatedEvidence::Legacy));
+    }
+    if 10 < schema_min || 10 > schema_max {
+        return Ok(None);
+    }
+    let outcome = match artifact_root {
+        Some(root) => crate::validation_evidence::verify(row, root),
+        None => crate::validation_evidence::verify_current_store(row),
+    };
+    match outcome {
+        crate::validation_evidence::EvidenceOutcome::Verified { evidence, .. } => {
+            Ok(Some(ValidatedEvidence::Schema10(evidence)))
+        }
+        crate::validation_evidence::EvidenceOutcome::Refused { reason } => Err(reason),
+        crate::validation_evidence::EvidenceOutcome::ReaderFault { reason } => {
+            Err(format!("validation evidence reader fault: {reason}"))
+        }
+    }
+}
+
 /// Reviewed calibration policy for cells whose observed failure is rarer than
 /// one ordinary verify pair can measure. Ledger rows cannot self-declare this:
 /// changing the budget is a code-reviewed policy change bound to an exact cell.
 fn trusted_calibration(cell: &CellKey) -> Option<Observation> {
-    (cell.lane == "portable"
+    (ordinary_relation(&cell.relation)
+        && cell.lane == "portable"
         && cell.category == "c-programs"
         && cell.test == "c-programs/perf-event-open-enosys"
         && cell.mode == "verify"
@@ -416,6 +559,29 @@ pub fn unresolved<F>(
     qualifying_target_rows: &[HistoryRow],
     cell_results_schema_min: u32,
     cell_results_schema_max: u32,
+    is_ancestor: F,
+) -> Result<Vec<UnresolvedFailureObligation>, String>
+where
+    F: FnMut(&str, &str) -> Result<bool, String>,
+{
+    unresolved_in_store(
+        rows,
+        target_sha,
+        qualifying_target_rows,
+        cell_results_schema_min,
+        cell_results_schema_max,
+        None,
+        is_ancestor,
+    )
+}
+
+fn unresolved_in_store<F>(
+    rows: &[HistoryRow],
+    target_sha: &str,
+    qualifying_target_rows: &[HistoryRow],
+    cell_results_schema_min: u32,
+    cell_results_schema_max: u32,
+    artifact_root: Option<&Path>,
     mut is_ancestor: F,
 ) -> Result<Vec<UnresolvedFailureObligation>, String>
 where
@@ -434,12 +600,15 @@ where
         .iter()
         .filter(|row| row.commit.as_deref() == Some(target_sha))
     {
-        if let Some(evidence) =
-            validated_evidence(row, cell_results_schema_min, cell_results_schema_max)?
-        {
+        if let Some(evidence) = validated_observation_evidence(
+            row,
+            cell_results_schema_min,
+            cell_results_schema_max,
+            artifact_root,
+        )? {
             target_selected
                 .get_or_insert_default()
-                .extend(evidence.selected.iter().map(CellKey::from));
+                .extend(evidence.selected().iter().map(CellKey::from));
         }
     }
     let mut by_cell_commit: BTreeMap<(CellKey, String, String, String), CommitObservation> =
@@ -456,8 +625,12 @@ where
         let Some(commit) = row.commit.as_deref() else {
             continue;
         };
-        let Some(evidence) =
-            validated_evidence(row, cell_results_schema_min, cell_results_schema_max)?
+        let Some(evidence) = validated_observation_evidence(
+            row,
+            cell_results_schema_min,
+            cell_results_schema_max,
+            artifact_root,
+        )?
         else {
             continue;
         };
@@ -475,8 +648,8 @@ where
             commit: commit.to_owned(),
             tree: tree.to_owned(),
             toolchain: toolchain.to_owned(),
-            validate_path: row.cell_results_validate_path(),
-            evidence: evidence.as_ref().clone(),
+            validate_path: evidence.validate_path(row),
+            evidence: evidence.fingerprint(row),
         };
         if let Some(existing) = runs.get(run_id) {
             if existing != &fingerprint {
@@ -485,12 +658,9 @@ where
             continue;
         }
         runs.insert(run_id.to_owned(), fingerprint);
-        for cell in &evidence.cells {
-            let Some(observation) = canonical_observation(cell) else {
-                continue;
-            };
+        for (cell, observation) in evidence.observations() {
             let key = (
-                CellKey::from(cell),
+                cell,
                 commit.to_owned(),
                 tree.to_owned(),
                 toolchain.to_owned(),
@@ -503,12 +673,18 @@ where
                     tree: tree.to_owned(),
                     toolchain: toolchain.to_owned(),
                     observation: Observation::default(),
+                    complete: true,
                 });
             if at < aggregate.first_seen.as_str() {
                 aggregate.first_seen = at.to_owned();
             }
-            aggregate.observation.legs += observation.legs;
-            aggregate.observation.failures += observation.failures;
+            match observation {
+                Some(observation) => {
+                    aggregate.observation.legs += observation.legs;
+                    aggregate.observation.failures += observation.failures;
+                }
+                None => aggregate.complete = false,
+            }
         }
     }
 
@@ -523,7 +699,7 @@ where
         // the candidate has no typed selected set at all, fail closed: absence
         // cannot prove that a previously failing cell is no longer selected.
         if let Some(selected) = &target_selected {
-            if !selected.contains(cell) {
+            if !selected.contains(&cell.selected_candidate()) {
                 continue;
             }
         }
@@ -552,6 +728,7 @@ where
             if observation.first_seen >= failing.first_seen
                 && observation.commit != failing.commit
                 && observation.observation.failures == 0
+                && observation.complete
                 && observation.observation.legs >= required
                 && is_ancestor(&failing.commit, &observation.commit)?
                 && is_ancestor(&observation.commit, target_sha)?
@@ -573,6 +750,7 @@ where
             test: cell.test.clone(),
             mode: cell.mode.clone(),
             backend: cell.backend.clone(),
+            relation: cell.relation.clone(),
             failing_commit: failing.commit.clone(),
             baseline_failures: rate.failures,
             baseline_legs: rate.legs,
@@ -1429,5 +1607,129 @@ mod tests {
             error,
             "malformed HistoryRow tree: expected exactly 40 hexadecimal characters"
         );
+    }
+
+    fn schema10_obligations(rows: &[HistoryRow], store: &Path) -> Vec<UnresolvedFailureObligation> {
+        unresolved_in_store(
+            rows,
+            FIX,
+            &target_rows(rows, FIX),
+            6,
+            10,
+            Some(store),
+            |ancestor, descendant| {
+                Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
+            },
+        )
+        .unwrap()
+    }
+
+    fn schema8_candidate_target(source: &HistoryRow, ordinal: u64) -> HistoryRow {
+        let evidence = source.schema10_cell_results().unwrap().unwrap();
+        let mut target = serde_json::to_value(schema8_row(FIX, ordinal, true, "full")).unwrap();
+        target["cell_results"]["selected"] = serde_json::to_value(&evidence.selected).unwrap();
+        target["cell_results"]["cells"] = serde_json::json!([evidence.cells[0].ordinary()]);
+        target["cell_results"]["population_sha256"] =
+            serde_json::json!(population_sha256(&evidence.selected));
+        target["finished_at"] = serde_json::json!(format!("2026-09-16T00:{ordinal:02}:00Z"));
+        serde_json::from_value(target).unwrap()
+    }
+
+    #[test]
+    fn schema10_ordinary_candidate_pass_cannot_clear_parity_or_reference_failure() {
+        use crate::validation_evidence::fixtures::{Fixture, Store};
+        for (name, reference) in [
+            ("cross-diverged-then-matched", false),
+            ("reference-diverged", true),
+        ] {
+            let store = Store::new();
+            let failed = Fixture::new(name, "failed", BAD, 1).write(&store.0);
+            let target = schema8_candidate_target(&failed, 2);
+            let obligations = schema10_obligations(&[failed, target], &store.0);
+            assert_eq!(obligations.len(), 1);
+            let obligation = &obligations[0];
+            assert_eq!(obligation.observed_clean_legs_at_target, 0);
+            assert_eq!(obligation.target_failures, 0);
+            assert_eq!(obligation.backend, if reference { "ptrace" } else { "kvm" });
+            assert_eq!(
+                matches!(obligation.relation, ComparisonRelationV10::Reference { .. }),
+                reference
+            );
+            assert!(!matches!(
+                obligation.relation,
+                ComparisonRelationV10::Ordinary
+            ));
+            let description = obligation.comparison_description().unwrap();
+            assert!(description.contains(if reference {
+                "reference comparison"
+            } else {
+                "parity comparison with ptrace"
+            }));
+            assert!(serde_json::to_value(obligation)
+                .unwrap()
+                .get("relation")
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn schema10_only_enough_clean_evidence_for_the_same_relation_clears_failure() {
+        use crate::validation_evidence::fixtures::{Fixture, Store};
+        let store = Store::new();
+        let failed = Fixture::new("cross-diverged-then-matched", "failed", BAD, 1).write(&store.0);
+        let mut rows = vec![failed];
+        for ordinal in 0..10 {
+            rows.push(
+                Fixture::new("matched", &format!("clean-{ordinal}"), FIX, ordinal + 2)
+                    .write(&store.0),
+            );
+        }
+        let obligations = schema10_obligations(&rows, &store.0);
+        assert_eq!(obligations.len(), 1);
+        assert_eq!(obligations[0].baseline_legs, 4);
+        assert_eq!(obligations[0].baseline_failures, 1);
+        assert_eq!(obligations[0].required_clean_legs, 21);
+        assert_eq!(obligations[0].observed_clean_legs_at_target, 20);
+        rows.push(Fixture::new("matched", "clean-10", FIX, 12).write(&store.0));
+        assert!(schema10_obligations(&rows, &store.0).is_empty());
+
+        // A target's earlier unavailable cross comparison prevents its later
+        // matches from constituting a clean commit, even with enough legs.
+        rows.push(Fixture::new("reference-diverged", "unavailable", FIX, 13).write(&store.0));
+        let obligations = schema10_obligations(&rows, &store.0);
+        let cross = obligations
+            .iter()
+            .find(|obligation| {
+                matches!(
+                    obligation.relation,
+                    ComparisonRelationV10::BackendParity { .. }
+                )
+            })
+            .unwrap();
+        assert_eq!(cross.observed_clean_legs_at_target, 22);
+        assert_eq!(cross.target_failures, 0);
+    }
+
+    #[test]
+    fn schema10_corrections_cannot_change_a_physical_runs_bound_identity() {
+        use crate::validation_evidence::fixtures::{Fixture, Store};
+        let store = Store::new();
+        let failed = Fixture::new("cross-diverged-then-matched", "failed", BAD, 1).write(&store.0);
+        let mut correction = failed.clone();
+        correction
+            .extra
+            .insert("toolchain".into(), serde_json::json!("changed-toolchain"));
+        let target = schema8_candidate_target(&failed, 2);
+        let error = unresolved_in_store(
+            &[failed, correction, target.clone()],
+            FIX,
+            &[target],
+            6,
+            10,
+            Some(&store.0),
+            |_, _| Ok(true),
+        )
+        .unwrap_err();
+        assert_eq!(error, "conflicting correction rows for run_id failed");
     }
 }
