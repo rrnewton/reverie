@@ -4030,6 +4030,11 @@ def _cell_with_many_evidence_rows(count: int) -> tuple[dict[str, Any], dict[str,
         event_id = f"event-bulk-{index:04d}"
         tree = f"{index:040d}"
         row.update(
+            # ASCENDING emitted_at, deliberately. Without distinct increasing
+            # stamps every row ties and a reverse-order assertion is vacuous --
+            # it holds whether or not anything sorts. This makes the INPUT
+            # chronological ascending, which is the condition being fixed.
+            emitted_at=f"2026-09-{1 + index // 24:02d}T{index % 24:02d}:00:00Z",
             event_id=event_id,
             producer="pressure-test",
             product_result=None,
@@ -4498,3 +4503,84 @@ def test_red_cell_sentence_handles_a_snapshot_with_no_failures() -> None:
     )
     assert "No cell in this snapshot carries a recorded failure." in reading
 
+
+
+def test_every_time_ordered_list_defaults_to_newest_first() -> None:
+    """Owner directive 2026-09-16: reverse chronological everywhere, by default.
+
+    Covers all three instances in ONE test because they are one requirement in
+    two mechanisms: the cell-detail evidence list has no sort control, so its
+    order is the order the generator emits, while the two run-page lists are
+    governed by a declared `default_direction`. A test touching only one
+    mechanism would pass while the other stayed ascending.
+    """
+    data = _validated(data_with_all_three_states_and_one_omitted_row())
+    files = render_page.render_site(_build(data), data)
+
+    # 1. The run-page lists. One helper call emits both sections, so assert the
+    #    declared default on each rendered section rather than on the call.
+    run_pages = [p for p in files if p.startswith("runs/") and p.endswith(".html")]
+    assert run_pages, "fixture must render at least one run page"
+    checked = 0
+    for path in run_pages:
+        page = files[path].decode()
+        for collection in ("recorded-cells", "recorded-not-selected"):
+            marker = f'data-list-controls="{collection}"'
+            index = page.find(marker)
+            if index < 0:
+                continue
+            form = page[index : page.find(">", index)]
+            assert 'data-default-sort="recorded"' in form, collection
+            assert 'data-default-direction="desc"' in form, (
+                f"{collection} on {path} still defaults to ascending; "
+                "`recorded` resolves to an ordinal, which is a time order"
+            )
+            checked += 1
+    assert checked, "no run-page recorded list was rendered, so this proved nothing"
+
+    # 2. The cell-detail evidence list, which has no control at all.
+    #    Driven from a cell with MANY rows carrying DISTINCT ASCENDING stamps.
+    #    The three-state fixture's cell has exactly one evidence row, so the
+    #    reverse-order assertion held against it whether or not anything sorted;
+    #    the control caught that and this is the repair.
+    bulk_data, bulk_cell = _cell_with_many_evidence_rows(8)
+    bulk_files = render_page.render_site(_build(bulk_data), bulk_data)
+    digest = _digest_for_identity(bulk_cell["cell"])
+    shard = _browser_payload(bulk_files, f"data/detail-{digest[0]}.json.gz")
+    record = next(item for item in shard["records"] if item["digest"] == digest)
+    stamps = [item["emitted_at"] for item in record["evidence"]]
+    assert len(set(stamps)) > 1, (
+        "evidence stamps all tie, so ordering cannot be observed and this "
+        f"assertion would prove nothing: {stamps}"
+    )
+    assert stamps == sorted(stamps, reverse=True), (
+        f"recorded evidence is not newest first: {stamps}"
+    )
+
+
+def test_recorded_evidence_order_is_total_so_the_build_stays_reproducible() -> None:
+    """Ties must not leave the order to chance.
+
+    The artifact identity is a digest over the emitted bytes, so a comparison
+    that treats two rows as equal would let the same input produce two different
+    artifacts. The tiebreak on event_id is what keeps it total.
+    """
+    data = _validated(data_with_all_three_states_and_one_omitted_row())
+    build = _build(data)
+    first = render_page.render_site(build, data)
+    second = render_page.render_site(build, data)
+    cell = data["cells"][0]
+    digest = _digest_for_identity(cell["cell"])
+    path = f"data/detail-{digest[0]}.json.gz"
+
+    def order(files):
+        record = next(
+            item
+            for item in _browser_payload(files, path)["records"]
+            if item["digest"] == digest
+        )
+        return [(i["emitted_at"], i["event_id"]) for i in record["evidence"]]
+
+    assert order(first) == order(second)
+    keys = order(first)
+    assert keys == sorted(keys, reverse=True)

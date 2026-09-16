@@ -2678,6 +2678,13 @@ def _recorded_cells(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
                 ("details", "Recorded comparison details"),
             ),
             default_sort="recorded",
+            # NEWEST FIRST. `recorded` resolves to sort_sources "ordinal", the
+            # order rows were recorded -- a time order wearing another name. This
+            # single call emits BOTH the "recorded-cells" and
+            # "recorded-not-selected" sections, so one direction fixes both; a
+            # change that touched only one would leave the other ascending.
+            default_direction="desc",
+            tie_direction="desc",
             filter_sources={
                 "test_result": "value:test_result",
                 "verdict": "value:verdict",
@@ -2849,6 +2856,21 @@ def _browser_cell_record(model: SiteModel, cell: Mapping[str, Any]) -> dict[str,
         if run is not None:
             item["run"] = run
         evidence.append(item)
+    # NEWEST FIRST. Owner directive 2026-09-16: every time-ordered list on this
+    # site defaults to reverse chronological.
+    #
+    # This list has NO sort control, so its order is simply the order emitted
+    # here, and that order was `model.series_by_cell`, which is built by
+    # appending rows in captured input order. The ledger is append-only, so that
+    # was chronological ASCENDING -- oldest evidence first on every cell page.
+    #
+    # Sorted on `emitted_at` rather than on the row's `observed_at`, and the
+    # choice is load-bearing: both exist, and a descending sort on the wrong one
+    # looks correct. The page renders `emitted_at` under the label "Recorded", so
+    # it is the date a reader can actually see, and asking for newest first means
+    # that date should order the list. `event_id` breaks ties so the order stays
+    # total and the build stays byte-identical for identical input.
+    evidence.sort(key=lambda item: (str(item["emitted_at"]), str(item["event_id"])), reverse=True)
     selection: dict[str, list[dict[str, Any]]] = {}
     for path, facts in sorted(cell["selected_by"].items()):
         selected_facts = []
