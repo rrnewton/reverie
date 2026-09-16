@@ -1048,6 +1048,7 @@ class BaseVerdict(Enum):
     REVERIE_TREE_MISSING = "reverie-base-tree-missing"
     REVERIE_TREE_INVALID = "reverie-base-tree-invalid"
     BASE_NOT_CURRENT = "base-not-current"
+    BASE_TOO_STALE = "base-too-stale"
     BASE_NOT_CONTAINED = "base-not-contained"
     BASE_TREE_MISMATCH = "base-tree-mismatch"
     REVERIE_BASE_NOT_CURRENT = "reverie-base-not-current"
@@ -1117,6 +1118,58 @@ def git_tree(checkout: str, sha: str) -> str:
     return value
 
 
+# Default lag bound, reused from `scripts/check-gitlink-currency.sh`'s FAIL
+# threshold rather than invented here. That file derived it by REVIEWABILITY:
+# past this many commits "a bump stops being reviewable and becomes a leap of
+# faith". Like its source this is calibration, not law; re-derive the churn
+# before trusting it. `0` disables the bound entirely, which restores the pure
+# ancestry rule for anyone who wants it.
+RECEIPT_BASE_MAX_LAG_COMMITS_DEFAULT = 200
+
+
+def _receipt_base_max_lag_commits() -> "int | None":
+    """The bound, or None when explicitly disabled. A malformed value is fatal.
+
+    A silently ignored override is how a gate ends up measuring something other
+    than what its operator asked for, so an unparseable value raises rather than
+    falling back to the default.
+    """
+    raw = os.environ.get("RECEIPT_BASE_MAX_LAG_COMMITS")
+    if raw is None or raw.strip() == "":
+        return RECEIPT_BASE_MAX_LAG_COMMITS_DEFAULT
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        raise RuntimeError(
+            f"RECEIPT_BASE_MAX_LAG_COMMITS is not an integer: {raw!r}"
+        ) from None
+    if value < 0:
+        raise RuntimeError(
+            f"RECEIPT_BASE_MAX_LAG_COMMITS must not be negative: {value}"
+        )
+    return None if value == 0 else value
+
+
+def git_commit_count(checkout: str, start: str, end: str) -> int:
+    """How many commits `end` has that `start` does not."""
+    result = _capture(
+        ["git", "-C", checkout, "rev-list", "--count", f"{start}..{end}"],
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"exit {result.returncode}"
+        raise RuntimeError(
+            f"git -C {checkout} rev-list --count {start}..{end}: {detail}"
+        )
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        raise RuntimeError(
+            f"git -C {checkout} rev-list --count {start}..{end}: "
+            f"non-numeric output {result.stdout.strip()!r}"
+        ) from None
+
+
 def git_is_ancestor(checkout: str, ancestor: str, descendant: str) -> bool:
     result = _capture(
         ["git", "-C", checkout, "merge-base", "--is-ancestor", ancestor, descendant],
@@ -1159,12 +1212,75 @@ def base_boundary_verdict(
             return BaseVerdict.BASE_NOT_CONTAINED
         if not git_is_ancestor(repo_checkout, recorded_base, receipt_commit):
             return BaseVerdict.BASE_NOT_CONTAINED
-        # Currency is a live ancestry question.  A no-op rebase produces no
-        # provenance record because its result is the already-validated head;
-        # that head remains current when it already contains freshly fetched
-        # main, even if main advanced after the validation began.
-        if not git_is_ancestor(repo_checkout, current_base, receipt_commit):
-            return BaseVerdict.BASE_NOT_CONTAINED
+        # CURRENCY IS ANCESTRY, NOT CONTAINMENT OF THE TIP.  The recorded base
+        # must be real `main` history.  The validated commit need NOT contain
+        # whatever tip `main` has reached by the time this runs.
+        #
+        # The rule is stated once, with its reasoning, in Hermit's
+        # `scripts/check-reverie-pin.rs` OWNER-APPROVED RULE block (2026-08-08,
+        # replacing equality-to-the-tip).  Read it there rather than relying on
+        # a restatement here.  The Reverie leg below already cites that block
+        # and already asks this question in this direction; until now the two
+        # legs of this one function applied OPPOSITE rules, which is the defect
+        # this closes.
+        #
+        # Requiring the tip made the verdict a property of WHEN it was checked.
+        # `main` advances continuously, so a receipt taken minutes earlier
+        # failed for a reason having nothing to do with the tree it measured,
+        # and landing serialised behind re-validation that proved nothing new.
+        # Admission is a SEPARATE question with the opposite answer, and it is
+        # already enforced elsewhere: `scripts/validate.rs` refuses to START a
+        # run whose head is behind `origin/main`, because a run must measure a
+        # commit containing everything available when it began.  Nothing here
+        # weakens that; this decides only whether an existing receipt still
+        # speaks for its tree at the landing boundary.
+        if not git_is_ancestor(repo_checkout, recorded_base, current_base):
+            return BaseVerdict.BASE_NOT_CURRENT
+        # ⚠️ ANCESTRY ALONE IS NOT THE RULE, AND STOPPING HERE WOULD BE HALF OF IT.
+        #
+        # Clause 2 of the block cited above says the pin "may only advance",
+        # because "ancestry ALONE would accept a pin walked backwards, because an
+        # ancient commit is also an ancestor".  The same gap exists here in the
+        # forward direction: every base ever merged stays an ancestor forever, so
+        # ancestry admits a receipt of ANY age.  Measured on a fixture while this
+        # was being written: recorded base at the repository ROOT, head 58 commits
+        # behind, verdict `satisfied`.
+        #
+        # This project has already applied the same owner ruling to a non-pin case
+        # and reached the same conclusion independently.  `scripts/check-gitlink-currency.sh`
+        # records it: "ancestry ALONE is what permitted 374 commits. So the rule is
+        # ancestry PLUS a bounded lag."  Its FAIL threshold of 200 commits is
+        # borrowed here for its ORDER OF MAGNITUDE, and the borrowing is partial on
+        # purpose:
+        #
+        #   ⚠️ ITS STATED RATIONALE DOES NOT TRANSFER.  That bound was calibrated by
+        #   REVIEWABILITY -- past 200 "a bump stops being reviewable and becomes a
+        #   leap of faith", because a human reviewer must be able to say what they
+        #   are accepting.  THERE IS NO REVIEWER AT THIS BOUNDARY; the consumer is an
+        #   automated gate.  The hazard here is instead "did `main` change something
+        #   this receipt's evidence depended on", and a commit count is a BLUNT PROXY
+        #   for that rather than a measurement of it.
+        #
+        # A sharper measure was looked for and is not cheaply available.  Wall-clock
+        # receipt age is no less arbitrary and is gameable.  Intersecting the pull
+        # request's paths with `recorded_base..current_base` covers only the TEXTUAL
+        # half, which the conflict graph and a rebase merge already catch; the
+        # semantic half is not measurable without re-running the tests, which is the
+        # very thing being lifted.  So: keep the axis, borrow the magnitude, and do
+        # not pretend the original reason carries over.
+        #
+        # Like its source this is CALIBRATION, NOT LAW -- re-derive the churn before
+        # trusting it, and override with RECEIPT_BASE_MAX_LAG_COMMITS.
+        #
+        # This is deliberately far looser than the tip-equality gate it replaces.
+        # Tip equality was unsatisfiable because `main` moves continuously; 200
+        # commits of lag is roughly two days of this repository's throughput and
+        # refuses only the receipts nobody could review the delta of.
+        lag_bound = _receipt_base_max_lag_commits()
+        if lag_bound is not None:
+            lag = git_commit_count(repo_checkout, recorded_base, current_base)
+            if lag > lag_bound:
+                return BaseVerdict.BASE_TOO_STALE
     except RuntimeError:
         return BaseVerdict.POLICY_UNAVAILABLE
     try:
@@ -1729,8 +1845,30 @@ def main(argv: list[str] | None = None) -> int:
             print(f"qualifying-receipt: {error}", file=sys.stderr)
             return 2
         accepted = base_accepted(verdict)
+        # RECORD THE BOUND AND THE LAG IT WAS MEASURED AGAINST, not just the
+        # verdict. RECEIPT_BASE_MAX_LAG_COMMITS propagates by plain environment
+        # inheritance all the way down the landing path, so without these two
+        # fields a run with the bound disabled is indistinguishable in the
+        # artifact from one where the lag was simply small. An auditor holding
+        # the checkout could recompute it from the two shas; an auditor holding
+        # only the report could not. `check-gitlink-currency.sh` prints its
+        # observed count for the same reason.
+        try:
+            base_max_lag = _receipt_base_max_lag_commits()
+        except RuntimeError:
+            base_max_lag = None
+        base_lag = None
+        try:
+            if _SHA40.fullmatch(str(row.get("base_sha") or "")):
+                base_lag = git_commit_count(
+                    args.repo_checkout, row["base_sha"], args.current_base
+                )
+        except (OSError, RuntimeError):
+            base_lag = None
         print(json.dumps({
             "accepted": accepted,
+            "base_lag": base_lag,
+            "base_max_lag": base_max_lag,
             "base_satisfied": (
                 True if verdict is BaseVerdict.SATISFIED else
                 None if verdict is BaseVerdict.GRANDFATHERED_UNKNOWN else False
