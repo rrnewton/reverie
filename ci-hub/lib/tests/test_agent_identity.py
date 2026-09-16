@@ -661,17 +661,21 @@ class ResolutionTests(IdentityFixture):
             caller_cmdline=("claude", "--session-id", "abc12345-0003")
         )
         result = self.resolve(transcript_root=root)
-        self.assertEqual("unresolved", result.model)
+        # The ambiguity is still refused at its own rung -- neither candidate is
+        # chosen -- and the answer degrades to the family rather than picking.
         signal = next(s for s in result.signals if s.source == "session-model")
         self.assertEqual("ambiguous", signal.state)
+        self.assertEqual("claude-family-by-ancestry", result.model)
+        self.assertNotIn("opus", result.model)
+        self.assertNotIn("gpt", result.model)
 
     def test_no_session_identifier_leaves_the_model_unresolved(self) -> None:
         root = self._transcript("abc12345-0004", ["claude-opus-5"])
         self.standard_processes(caller_cmdline=("claude", "--dangerously-skip-permissions"))
         result = self.resolve(transcript_root=root)
-        self.assertEqual("unresolved", result.model)
         signal = next(s for s in result.signals if s.source == "session-model")
         self.assertEqual("unavailable", signal.state)
+        self.assertEqual("claude-family-by-ancestry", result.model)
 
     def test_a_missing_transcript_is_unavailable_rather_than_an_error(self) -> None:
         root = Path(self.temp.name) / "projects"
@@ -680,7 +684,7 @@ class ResolutionTests(IdentityFixture):
             caller_cmdline=("claude", "--session-id", "abc12345-9999")
         )
         result = self.resolve(transcript_root=root)
-        self.assertEqual("unresolved", result.model)
+        self.assertEqual("claude-family-by-ancestry", result.model)
         self.assertEqual("AGREEMENT", result.state)
 
     def test_the_tail_read_finds_a_model_past_the_bound(self) -> None:
@@ -752,8 +756,32 @@ class ResolutionTests(IdentityFixture):
         result = self.resolve()
         self.assertEqual("gpt-5.6-sol", result.model)
 
-    def test_absent_explicit_model_is_literal_unresolved_not_a_guess(self) -> None:
+    def test_absent_explicit_model_degrades_to_the_family_not_to_a_guess(self) -> None:
+        """No declared model: name the family, never invent a slug.
+
+        ⚠️ THIS TEST USED TO ASSERT ``unresolved`` AND THE PROPERTY IT PROTECTS
+        HAS NOT CHANGED: the resolver must not manufacture a model it was not
+        told. What changed is that a named family is a TRUE statement which
+        "unresolved" throws away, and for one whole client family the declared
+        source is structurally absent because the launcher correctly refuses to
+        pass the flag. The value carries its own weakness so no reader can
+        mistake it for a slug.
+        """
         self.standard_processes(caller_cmdline=("codex", "exec", "task"))
+        result = self.resolve()
+        self.assertEqual("codex-family-by-ancestry", result.model)
+        self.assertEqual("process-ancestry", result.model_source)
+        self.assertNotIn("gpt", result.model)
+
+    def test_without_a_recognised_client_the_model_stays_unresolved(self) -> None:
+        """The floor. The ancestry rung must not fire when there is no client.
+
+        ⚠️ THIS IS THE CONTROL FOR THE FAMILY FALLBACK. If it ever resolves, the
+        fallback has started answering from something other than a recognised
+        client process, which is the point at which a weaker source becomes a
+        fabricated one.
+        """
+        self.standard_processes(caller_cmdline=("bash", "-lc", "true"))
         result = self.resolve()
         self.assertEqual("unresolved", result.model)
         self.assertIsNone(result.model_source)
@@ -954,7 +982,7 @@ class CliTests(IdentityFixture):
         )
         result = self.run_default()
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("[hermit2, degraded-unresolved, unresolved, ", result.stdout)
+        self.assertIn("[hermit2, degraded-unresolved, codex-family-by-ancestry, ", result.stdout)
         self.assertTrue(result.stdout.endswith(", role=impl]"))
         self.assertIn("DEGRADED", result.stderr)
 

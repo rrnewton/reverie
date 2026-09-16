@@ -49,6 +49,11 @@ IDENTITY_VAR = "DG_AGENT_NAME"
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@+-]*$")
 MODEL_RE = re.compile(r"^[^,\[\]\r\n]+$")
 MODEL_UNRESOLVED = "unresolved"
+# ⚠️ A FAMILY IS NOT A MODEL, AND THE VALUE MUST SAY SO ON ITS FACE. A reader of
+# a commit body sees the tag and nothing else -- not ``model_source`` -- so the
+# weakness has to travel inside the value itself. "claude-family-by-ancestry"
+# cannot be mistaken for a model slug; "claude" could be.
+FAMILY_BY_ANCESTRY_SUFFIX = "-family-by-ancestry"
 PANE_RE = re.compile(r"^%[0-9]+$")
 ACTIVE_TASK_STATES = frozenset({"IN_PROGRESS", "IN PROGRESS"})
 
@@ -1023,6 +1028,21 @@ def resolve_identity(
             model, model_source = transcript_model, transcript_source
     process_family_signal, client_family = client_family_signal(contexts)
     signals.append(process_family_signal)
+    if model == MODEL_UNRESOLVED and client_family is not None:
+        # ⚠️ THE WEAKEST RUNG, AND DELIBERATELY LAST. An ancestor's process name
+        # establishes the FAMILY and nothing more: not the model, not the
+        # version. It is consulted only after the explicit launch flag and the
+        # client's own transcript have both failed, so it can never displace a
+        # declared value, and it never invents one -- the family is read from
+        # /proc and the suffix is fixed text.
+        #
+        # It exists because the alternative is worse. The launcher correctly
+        # refuses to pass --model for claude (not repeatable; its self-test
+        # fails if it appears), so for one whole family the declared source is
+        # structurally absent. A named family is a true statement and is more
+        # than "unresolved", which says only that nothing was established.
+        model = f"{client_family}{FAMILY_BY_ANCESTRY_SUFFIX}"
+        model_source = "process-ancestry"
 
     cwd, cwd_detail = _read_cwd(pid, proc_root)
     slot_signal, derived_tasks = slot_owner_signal(cwd, cwd_detail, registry, root)
