@@ -694,7 +694,7 @@ def evaluate(
                     "so it retired nothing: "
                     + ", ".join(f"comment {target}" for target in non_refusal_targets),
                 )
-            unresolved = grammar.unresolved_review_objections(
+            unresolved, unreadable = grammar.review_objections_and_unreadable(
                 ordered_records, head
             )
             accepted = grammar.accepted_exact_retirements(
@@ -705,6 +705,24 @@ def evaluate(
                 INDETERMINATE,
                 f"review event order is unreadable: {error}. A retirement cannot "
                 "be credited without the immutable refusal and withdrawal times",
+            )
+        # DEGRADE, DO NOT BLIND. An unreadable marker-shaped line is a blocking
+        # finding that is NAMED, not a reason to withhold the objections that
+        # parsed. INDETERMINATE stays for what it means: records that could not
+        # be fetched or ordered at all, which is the `except` above.
+        unreadable_note = ""
+        if unreadable:
+            unreadable_note = (
+                f"; {len(unreadable)} unreadable review line(s) must be repaired "
+                "(marker-shaped prose that is not a verdict): "
+                + ", ".join(f"{where} | {text}" for where, text in unreadable)
+            )
+        if unreadable and not unresolved:
+            return (
+                BLOCKED,
+                "no unresolved refusal parsed, but this pull request cannot be "
+                "cleared until its review record is readable"
+                + unreadable_note,
             )
         if unresolved:
             attempted_retirements = sum(
@@ -720,7 +738,8 @@ def evaluate(
                     INDETERMINATE,
                     f"{len(unbindable)} refusal record(s) have no exact reviewed head "
                     "(no readable sha); "
-                    "refusing because an unreadable binding is not a resolved objection",
+                    "refusing because an unreadable binding is not a resolved objection"
+                    + unreadable_note,
                 )
             current = [
                 item
@@ -743,7 +762,8 @@ def evaluate(
                     f"{len(current)} unresolved refusal(s) bind the exact head "
                     f"{head[:12]}; a later canonical current-head withdrawal "
                     "or exact authorized RETIRES evidence is required"
-                    + retirement_note,
+                    + retirement_note
+                    + unreadable_note,
                 )
             detail = ", ".join(
                 f"{item.get('lane') or '<no lane>'}@"
@@ -766,7 +786,8 @@ def evaluate(
                     )
                     if accepted
                     else ""
-                ),
+                )
+                + unreadable_note,
             )
         if accepted:
             details = "; ".join(

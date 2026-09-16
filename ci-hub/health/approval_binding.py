@@ -2510,16 +2510,79 @@ def canonical_review_lane_rows(
     return rows
 
 
-def unresolved_review_objections(
-    records: "Sequence[dict[str, Any]]", current_head: str
-) -> list[dict[str, Any]]:
-    """Return every unresolved objection from all supported GitHub surfaces.
+# ---------------------------------------------------------------------------
+# ⚠️ REPAIRING AN UNREADABLE LINE IN A LIVE COMMENT: TWO WAYS TO GET IT WRONG.
+# Both were hit while clearing the three affected pull requests on 2026-09-16,
+# and both produce a repair that LOOKS correct.
+#
+# 1. DO NOT SEARCH-AND-REPLACE FOR THE OFFENDING TEXT. On hermit#2694 the same
+#    string is also QUOTED, in a second comment that already contains fenced
+#    blocks. Adding a fence there flips that comment's fence parity, which
+#    un-fences text that was previously inside a block and RE-SURFACES the
+#    line. Fencing both comments still raised. A grep finds both occurrences and
+#    only one of them is the defect.
+#
+#    Repair ONLY the comment `lane_shas` names, and confirm by re-running it.
+#
+# 2. DO NOT IDENTIFY THE LINE WITH YOUR OWN FILTER. `marker_lines` plus
+#    `marker_occurrences` is a broader net than what `lane_shas` counts as
+#    malformed: on hermit#2907 it flagged two lines in one comment where the
+#    gate counts one. Repairing on the broader filter edits a line that is not
+#    the problem and leaves the one that is.
+#
+# THE MINIMAL REPAIR is to wrap the offending word in backticks -- two bytes, no
+# wording changed -- because `strip_decoration` only unwraps a code span when it
+# encloses the WHOLE line. A mid-sentence span stays prose.
+#
+# AND CHECK YOUR OWN DRAFT. Writing about this defect recreates it: three
+# comments drafted about this mechanism on 2026-09-16 each contained a fresh
+# marker-shaped line, caught only by running this parser over them before
+# posting. Naming the token in prose is how you add the very line you came to
+# remove.
+# ---------------------------------------------------------------------------
 
-    This is the shared decision used by approval reporting and both merge
-    boundaries. The lane evaluator owns chronology and the exact-retirement
-    rule; this wrapper merely runs it for the two existing
-    review lanes and removes the duplicate produced by a lane-less native
-    GitHub refusal.
+
+def review_objections_and_unreadable(
+    records: "Sequence[dict[str, Any]]", current_head: str
+) -> "tuple[list[dict[str, Any]], list[tuple[str, str]]]":
+    """Return ``(unresolved objections, unreadable marker-shaped lines)``.
+
+    DEGRADE, DO NOT BLIND. This is the same computation
+    `unresolved_review_objections` has always performed; the difference is that
+    an unreadable line is RETURNED as a finding instead of discarding the
+    objections that parsed. Both lists are answers. A caller must treat a
+    non-empty second list as blocking -- it is syntax that could not be read,
+    not an absence of objection -- but it must not lose the first list to it.
+
+    ⚠️ WHY THIS EXISTS, MEASURED 2026-09-16 ON THREE PULL REQUESTS. The previous
+    shape ran both lanes, fully populated the objection list, and then raised if
+    any malformed line existed. It computed the answer and threw it away. One
+    such line made `changes-requested-gate` return rc=2 INDETERMINATE at EVERY
+    head of that pull request, and rc=2 reads as a tooling problem rather than a
+    verdict:
+
+        hermit#2694  hid 6 objections, 2 of them binding the exact head
+        hermit#1689  hid 1 outrun refusal, codex@5b6ce1fe8095
+        hermit#2907  hid CLEAR -- nothing was wrong with it at all
+
+    #2907 is why the fail-closed argument does not hold here: the failure is
+    SYMMETRIC. It conceals admission as readily as objection, so it costs drain
+    throughput as well as review integrity, and a fail-closed argument only
+    holds when the failure is conservative in one direction.
+
+    ⚠️ AND THE TRIGGER IS TEXT WRAPPING, WHICH NO REVIEWER CONTROLS. Two of the
+    three were ordinary English sentences where a line wrap happened to put a
+    verdict word at column 0, mid-sentence. There is no discipline an author
+    could adopt to prevent it, so "do not write marker-shaped lines" was never
+    an available fix.
+
+    THIS DOES NOT WIDEN WHAT IS ADMISSIBLE. An unreadable refusal-shaped line
+    already blocks one layer down, inside `lane_shas`, which clears that lane's
+    approvals when an asserted refusal cannot be parsed. What the discarded
+    answer uniquely covered was the malformed APPROVAL-shaped line -- and an
+    unparseable approval grants nothing anyway, because an approval must be
+    canonical to count. That was exactly #2694: an approval-shaped placeholder,
+    costing six objections.
     """
     ordered = canonical_review_records(records)
     malformed: list[tuple[str, str]] = []
@@ -2534,9 +2597,6 @@ def unresolved_review_objections(
             current_head=current_head,
         )
         unresolved.extend(lane_unresolved)
-    if malformed:
-        detail = "; ".join(sorted({message for _where, message in malformed}))
-        raise ReviewRecordError(detail)
 
     unique: dict[tuple[object, ...], dict[str, Any]] = {}
     for item in unresolved:
@@ -2551,7 +2611,32 @@ def unresolved_review_objections(
             item.get("message"),
         )
         unique.setdefault(key, item)
-    return list(unique.values())
+    # `lane_shas` is called once per lane and reports the same source line each
+    # time, so deduplicate here rather than reporting one defect as two.
+    return list(unique.values()), sorted({(where, text) for where, text in malformed})
+
+
+def unresolved_review_objections(
+    records: "Sequence[dict[str, Any]]", current_head: str
+) -> list[dict[str, Any]]:
+    """Return every unresolved objection from all supported GitHub surfaces.
+
+    This is the shared decision used by approval reporting and both merge
+    boundaries. The lane evaluator owns chronology and the exact-retirement
+    rule; this wrapper merely runs it for the two existing
+    review lanes and removes the duplicate produced by a lane-less native
+    GitHub refusal.
+
+    RAISES ON AN UNREADABLE LINE, and that contract is deliberately preserved
+    for any caller not yet moved across. Callers that must report rather than
+    abort use `review_objections_and_unreadable` and surface both lists; the
+    gate and the lander both do.
+    """
+    unresolved, unreadable = review_objections_and_unreadable(records, current_head)
+    if unreadable:
+        detail = "; ".join(sorted({message for _where, message in unreadable}))
+        raise ReviewRecordError(detail)
+    return unresolved
 
 
 def local_receipt_heads(comments: list[dict[str, Any]], repo: str) -> list[str]:

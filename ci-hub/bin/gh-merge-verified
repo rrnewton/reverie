@@ -808,6 +808,9 @@ def _github_review_records(pr: str, repo: str, grammar) -> "list[dict] | None":
     return records
 
 
+UNREADABLE_REVIEW_LINE = "UNREADABLE REVIEW LINE (repair it; it is not a verdict):"
+
+
 def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     """Anchored refusals that name THIS head and have not been withdrawn.
 
@@ -856,10 +859,24 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     except grammar.ReviewRecordError:
         return ["__UNREADABLE__"]
     try:
-        unresolved = grammar.unresolved_review_objections(records, head)
+        unresolved, unreadable = grammar.review_objections_and_unreadable(records, head)
     except grammar.ReviewRecordError:
         return ["__UNREADABLE__"]
-    return [str(item.get("message") or "unresolved review objection") for item in unresolved]
+    # DEGRADE, DO NOT BLIND, AND DO NOT WIDEN. An unreadable marker-shaped line
+    # still blocks -- it is returned as a problem, so this function's non-empty
+    # result still refuses the merge. What changes is that the line is NAMED
+    # instead of collapsing every objection into `__UNREADABLE__`, which claims
+    # the comments could not be read when in fact they were read and discarded.
+    # `__UNREADABLE__` is kept for the genuine case above: records that could not
+    # be fetched or canonically ordered at all.
+    problems = [
+        str(item.get("message") or "unresolved review objection")
+        for item in unresolved
+    ]
+    problems.extend(
+        f"{UNREADABLE_REVIEW_LINE} {where} | {text}" for where, text in unreadable
+    )
+    return problems
 
 def review_admission_problems(pr: str, repo: str, head: str) -> list[str]:
     """Missing canonical exact-head review evidence for the configured set.
@@ -1123,8 +1140,18 @@ def main() -> None:
                 "something",
                 "  may have happened. 8 means the CHECK never ran and nothing did.")
         if blocking:
-            die(5, f"gh-merge-verified: REFUSING TO MERGE #{pr} -- a changes-request names this "
-                   f"exact head {head[:12]}.",
+            only_unreadable = all(
+                b.startswith(UNREADABLE_REVIEW_LINE) for b in blocking
+            )
+            headline = (
+                f"gh-merge-verified: REFUSING TO MERGE #{pr} -- the review record for this "
+                f"head {head[:12]} contains line(s) that cannot be read as a verdict. "
+                "No refusal parsed; the record must be repaired before admission."
+                if only_unreadable
+                else f"gh-merge-verified: REFUSING TO MERGE #{pr} -- a changes-request names this "
+                     f"exact head {head[:12]}."
+            )
+            die(5, headline,
                 *[f"    {b}" for b in blocking],
                 "",
                 "  TO PROCEED: after resolving the objection, post a canonical withdrawal",

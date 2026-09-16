@@ -731,12 +731,36 @@ def main() -> int:
             failures.append(name)
 
     # STRUCTURAL: the grammar must come from the authority, not from here.
+    #
+    # Either shared objection entry point satisfies this. The invariant is that
+    # the lander asks `approval_binding` rather than parsing markers itself, not
+    # which of the two shapes it asks for. `review_objections_and_unreadable`
+    # reports an unreadable line instead of discarding the objections that
+    # parsed; `unresolved_review_objections` raises. The lander uses the
+    # reporting form so a wrapped prose line names itself rather than collapsing
+    # every objection into `__UNREADABLE__`. Both live in the same authority.
     source = LANDER.read_text()
-    if "unresolved_review_objections" not in source:
+    shared_entry_points = (
+        "review_objections_and_unreadable",
+        "unresolved_review_objections",
+    )
+    # ⚠️ MATCH A CALL, NOT A MENTION. The looser `name in source` passed while
+    # the lander had been severed from the authority, because a COMMENT naming
+    # the function satisfied it. Caught by this test's own control on
+    # 2026-09-16, in the same change that widened it.
+    called = [
+        name
+        for name in shared_entry_points
+        if re.search(rf"grammar\.{name}\s*\(", source)
+    ]
+    if not called:
         failures.append("lander no longer calls the shared review authority")
-        print("  FAIL  lander does not call unresolved_review_objections")
+        print(
+            "  FAIL  lander calls neither "
+            + " nor ".join(shared_entry_points)
+        )
     else:
-        print("  PASS  lander calls the shared review authority")
+        print(f"  PASS  lander calls the shared review authority ({called[0]})")
 
     private = re.findall(r"CHANGES-REQUESTED-AT[\"']\s*\)", source)
     if private:
