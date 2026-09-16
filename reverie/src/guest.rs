@@ -213,10 +213,9 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// ordinary exit injection already provides this contract use that path.
     /// An already-established backend exit retains its status.
     ///
-    /// Backend process-lifetime limits still apply. In particular, KVM currently
-    /// treats leader exit as process completion; cancelling a leader while live
-    /// siblings must survive is unsupported. Nonleader cancellation leaves live
-    /// siblings running.
+    /// Backend process-lifetime limits still apply. Explicit KVM leader cancellation
+    /// cancels live siblings, while normal raw leader `SYS_exit` leaves them running.
+    /// Nonleader cancellation also leaves live siblings running.
     async fn cancel_current_thread(&mut self) -> Never {
         self.tail_inject(reverie_syscalls::Exit::default()).await
     }
