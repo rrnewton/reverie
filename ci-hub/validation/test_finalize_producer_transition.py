@@ -66,13 +66,14 @@ OUTGOING_PRIMARY = {
     "scripts/lib/validate_runtime.rs": "721df0c7330851ea4cc09516d3ee6a4f680943b3",
     "scripts/validate.rs": "5c72a835bd766af63e35b9219eac077c1b927db7",
 }
-LIVE_PRIMARY = {
+STAGED_PRIMARY = {
     **OUTGOING_PRIMARY,
     "scripts/validate.rs": "66681b61cda77c79a61634973f3d887bc424b428",
 }
 
 
 PR_3018_HEAD = "631131d42972398fdceabef7023a67116fb43d59"
+PR_3018_MERGE = "ce1aca3aba3a4bb1db244e1ca2ab6903ea4bb7a8"
 LIVE_CANDIDATE = {
     ".config/nextest.toml": "5989ccd378adc871597969880082fd3b36b3d170",
     ".github/workflows/ci-portable.yml": "172ecf07418f284dfabd3e919eec3ca934ce9b8a",
@@ -122,31 +123,69 @@ PRE_STAGE_LEGACY_DIGEST = (
 )
 
 
-def test_live_registry_stages_pr_3018_without_advancing_primary():
+STAGED_TRANSITION = {
+    "id": "rrnewton-hermit-pr-3018",
+    "registered_at": PR_3018_HEAD,
+    "provenance": {
+        "repository": "rrnewton/hermit",
+        "pull_request": 3018,
+        "head": PR_3018_HEAD,
+    },
+    "candidate_coverage_status": "complete",
+    "candidate": LIVE_CANDIDATE,
+    "added_paths": LIVE_ADDED_PATHS,
+    "finalize_after": STAGED_FINALIZE_AFTER,
+    "expires_at": STAGED_EXPIRES_AT,
+}
+
+# Reconstruct the exact published pre-finalization fixture without requiring Git
+# history or copying its 18 unchanged legacy records into a second source file.
+# The independent digest freezes every field; current registry drift cannot
+# silently change the fixture used for provenance and expiry refusal controls.
+STAGED_REGISTRY_DIGEST = (
+    "24def8be04dd3a1745568111e39baaaf6a52344826c1f2a52b42ee51a06ce32c"
+)
+
+
+def pre_finalized_stage_registry():
+    registry = json.loads(LIVE_REGISTRY.read_text())
+    assert registry["registered_at"] == PR_3018_MERGE
+    assert registry["registered"] == LIVE_CANDIDATE
+    assert "transition" not in registry
+    assert registry["legacy"][-1] == {
+        "id": "pre-rrnewton-hermit-pr-3018",
+        "registered_at": "4d8f866102882b6eeabdf99cc7e81433cc3c95c5",
+        "coverage_status": "complete",
+        "valid_commits": ["4d8f866102882b6eeabdf99cc7e81433cc3c95c5"],
+        "definition": STAGED_PRIMARY,
+    }
+    registry["registered_at"] = "4d8f866102882b6eeabdf99cc7e81433cc3c95c5"
+    registry["registered"] = copy.deepcopy(STAGED_PRIMARY)
+    registry["legacy"] = registry["legacy"][:-1]
+    registry["transition"] = copy.deepcopy(STAGED_TRANSITION)
+    assert (
+        hashlib.sha256(
+            json.dumps(registry, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        == STAGED_REGISTRY_DIGEST
+    )
+    return registry
+
+
+def test_live_registry_finalizes_pr_3018_without_half_applied_transition():
     registry = json.loads(LIVE_REGISTRY.read_text())
 
-    assert registry["registered_at"] == "4d8f866102882b6eeabdf99cc7e81433cc3c95c5"
+    assert registry["registered_at"] == PR_3018_MERGE
     assert registry["registered_coverage_status"] == "complete"
-    assert registry["registered"] == LIVE_PRIMARY
-    assert registry["transition"] == {
-        "id": "rrnewton-hermit-pr-3018",
-        "registered_at": PR_3018_HEAD,
-        "provenance": {
-            "repository": "rrnewton/hermit",
-            "pull_request": 3018,
-            "head": PR_3018_HEAD,
-        },
-        "candidate_coverage_status": "complete",
-        "candidate": LIVE_CANDIDATE,
-        "added_paths": LIVE_ADDED_PATHS,
-        "finalize_after": STAGED_FINALIZE_AFTER,
-        "expires_at": STAGED_EXPIRES_AT,
-    }
-    assert len(registry["legacy"]) == 18
+    assert registry["registered"] == LIVE_CANDIDATE
+
+    assert "transition" not in registry
+    assert "registered_valid_commits" not in registry
+    assert len(registry["legacy"]) == 19
     assert (
         hashlib.sha256(
             json.dumps(
-                registry["legacy"], sort_keys=True, separators=(",", ":")
+                registry["legacy"][:-1], sort_keys=True, separators=(",", ":")
             ).encode()
         ).hexdigest()
         == PRE_STAGE_LEGACY_DIGEST
@@ -167,9 +206,12 @@ def test_live_registry_stages_pr_3018_without_advancing_primary():
         }
     ]
 
+    # The nineteenth record is the outgoing primary, bounded to its old commit.
+    assert pre_finalized_stage_registry()["transition"] == STAGED_TRANSITION
+
 
 def check_live_definition(
-    tmp_path, definition, *, registry=LIVE_REGISTRY, sha=PR_3018_HEAD
+    tmp_path, definition, *, registry=LIVE_REGISTRY, sha=PR_3018_MERGE
 ):
     definition_path = tmp_path / "definition.json"
     definition_path.write_text(json.dumps(definition))
@@ -200,7 +242,7 @@ def test_live_candidate_requires_every_added_path_and_one_whole_map(tmp_path):
         assert check_live_definition(tmp_path, partial).returncode == 1, missing
     crossed = {
         **LIVE_CANDIDATE,
-        "scripts/validate.rs": LIVE_PRIMARY["scripts/validate.rs"],
+        "scripts/validate.rs": STAGED_PRIMARY["scripts/validate.rs"],
     }
     assert crossed != LIVE_CANDIDATE
     assert check_live_definition(tmp_path, crossed).returncode == 1
@@ -209,13 +251,15 @@ def test_live_candidate_requires_every_added_path_and_one_whole_map(tmp_path):
 
 
 def test_live_candidate_expiry_and_provenance_refuse_without_losing_primary(tmp_path):
-    source = json.loads(LIVE_REGISTRY.read_text())
+    source = pre_finalized_stage_registry()
     wrong_head = copy.deepcopy(source)
     wrong_head["transition"]["provenance"]["head"] = "f" * 40
     malformed = tmp_path / "wrong-provenance.json"
     malformed.write_text(json.dumps(wrong_head))
     assert (
-        check_live_definition(tmp_path, LIVE_CANDIDATE, registry=malformed).returncode
+        check_live_definition(
+            tmp_path, LIVE_CANDIDATE, registry=malformed, sha=PR_3018_HEAD
+        ).returncode
         == 2
     )
 
@@ -226,13 +270,13 @@ def test_live_candidate_expiry_and_provenance_refuse_without_losing_primary(tmp_
     expired_path.write_text(json.dumps(expired))
     assert (
         check_live_definition(
-            tmp_path, LIVE_CANDIDATE, registry=expired_path
+            tmp_path, LIVE_CANDIDATE, registry=expired_path, sha=PR_3018_HEAD
         ).returncode
         == 1
     )
     assert (
         check_live_definition(
-            tmp_path, LIVE_PRIMARY, registry=expired_path, sha=source["registered_at"]
+            tmp_path, STAGED_PRIMARY, registry=expired_path, sha=source["registered_at"]
         ).returncode
         == 0
     )
@@ -240,7 +284,7 @@ def test_live_candidate_expiry_and_provenance_refuse_without_losing_primary(tmp_
 
 def test_live_legacy_definitions_keep_their_exact_commit_bounds(tmp_path):
     registry = json.loads(LIVE_REGISTRY.read_text())
-    assert len(registry["legacy"]) == 18
+    assert len(registry["legacy"]) == 19
     for record in registry["legacy"]:
         for sha in record["valid_commits"]:
             result = check_live_definition(tmp_path, record["definition"], sha=sha)

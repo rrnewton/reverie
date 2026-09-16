@@ -43,24 +43,42 @@ cat >"$tmp/producer-registry.json" <<REG
 REG
 export PRODUCER_DEFINITION_REGISTRY=$tmp/producer-registry.json
 
-# Exact production primary under review. Keep the previous pair as a planted
-# negative: yesterday's once-valid producer must not authorize while the exact
-# registered primary remains accepted. A time-bounded production transition may
-# coexist with that primary; its exact behavior is exercised with the synthetic
-# repository below so this test never embeds an in-flight PR head or candidate
-# blob. The live verifier positive below still fails closed if any coexisting
-# transition is malformed.
+# Exact landed production primary under review. The independent literal below
+# binds all 23 paths and blobs, including the complete key set. Finalization
+# leaves no half-applied transition. Historical maps remain planted negatives
+# at the current commit and positives only at their exact bounded commits.
+# The synthetic repository below retains all transition lifecycle controls.
 production_registry=$script_dir/../validate/producer-definition.json
 production_repo=$root/hermit
-production_registered_at=4d8f866102882b6eeabdf99cc7e81433cc3c95c5
-production_rust=66681b61cda77c79a61634973f3d887bc424b428
-production_history=fb5bda65ac9ceb16bd7ded72c4f8f1b1b1615bde
-production_plan=820806e5a50d7044175ed8d0822b1fe979e2358d
-production_receipt=15fa8d4b4ecdf89bdeb6ce33f460de11cf43d79c
-production_runtime=721df0c7330851ea4cc09516d3ee6a4f680943b3
-production_portable=78167c8dccfa757a5348d96d479f72b1c8e63a3d
-production_nextest_config=5754a6d6983000ded67562250cedcc6c1ce53cf5
-production_nextest_wrapper=ca88efe6d3d270881ecbe7205373f642369ce53d
+production_registered_at=ce1aca3aba3a4bb1db244e1ca2ab6903ea4bb7a8
+production_definition=$(cat <<'PRODUCTION_DEFINITION'
+{
+  ".config/nextest.toml": "5989ccd378adc871597969880082fd3b36b3d170",
+  ".github/workflows/ci-portable.yml": "172ecf07418f284dfabd3e919eec3ca934ce9b8a",
+  "ci/manifest-plan/src/bin/nextest-cpu-wrapper.rs": "1f827317df1af81991743edb99ded0fc22094a5a",
+  "ci/manifest-plan/src/ledger.rs": "0d737c4dc0d4facac7ebad0be2cda3cf16f69acb",
+  "ci/manifest-plan/src/lib.rs": "506a5c5832661a31727ef918ad40fa6a3171b1b4",
+  "ci/manifest-plan/src/nextest_binaries.rs": "aa10f24d085f3f59cb8b1f68d6a9063471b67a6a",
+  "ci/manifest-plan/src/nextest_cpu.rs": "35e03425d8fed1f319fe2a2bbfce4879ba0a9fc1",
+  "ci/manifest-plan/src/runner.rs": "40bd930a76340075dfe3c7913b2c5ee32239d908",
+  "ci/manifest-plan/src/service_result.rs": "b138f1937c2af8269755cfeb3311c4f2dec3c8b8",
+  "ci/manifest-plan/src/timeouts.rs": "d4cfe464f851df78ddf72e7980220bf32b66c609",
+  "ci/nextest-binaries.rs": "fa5722934022d53723490675e983778735402693",
+  "ci/nextest-test-results.rs": "d1a2f1141250267461bf64141c5368f5102782ff",
+  "ci/nextest-timeout-config.rs": "a005fc8ba8b987923db21ea8a0b24daf4f58eccb",
+  "ci/run-nextest-counted.sh": "7839b9d80b2563d1221690ef69d388fface5d325",
+  "hermit-cli/src/canonical_verdict.rs": "7786342c9f284857cf8a5e97f8536d8b176438e4",
+  "scripts/lib/safe_ci_scope.rs": "8f3f95f7fc56a3a9540545391e65c32101632f21",
+  "scripts/lib/validate_cell_results.rs": "fe0f4c75299ada11d1c138421158425ee9d05b0e",
+  "scripts/lib/validate_classification.rs": "5dff66ce5321e0bb7f13cb705ab6853fd5996872",
+  "scripts/lib/validate_history.rs": "2fd9aeba20d8d05f5ff1318bb8d3b4949b5bac7d",
+  "scripts/lib/validate_plan.rs": "cd5b3a686fa17fc8513b5f4f04398c4d8e5dea43",
+  "scripts/lib/validate_receipt.rs": "15fa8d4b4ecdf89bdeb6ce33f460de11cf43d79c",
+  "scripts/lib/validate_runtime.rs": "4e6e4e0ab5d73ef0780b4411e1978c11db57506a",
+  "scripts/validate.rs": "33b4f778185b4d572c423291d5290be93763d937"
+}
+PRODUCTION_DEFINITION
+)
 outgoing_registered_at=2d3876bdf5d310eb4cd55e7a3613d3dbc39bdc5c
 outgoing_rust=5c72a835bd766af63e35b9219eac077c1b927db7
 outgoing_history=fb5bda65ac9ceb16bd7ded72c4f8f1b1b1615bde
@@ -74,35 +92,12 @@ previous_rust=15879c97c0ddcfeafaed18deaab0cba2fab30312
 previous_portable=0fb49d65b8b6571a681b253d076f57a82f2edb55
 if ! jq -e \
     --arg at "$production_registered_at" \
-    --arg rust "$production_rust" \
-    --arg history "$production_history" \
-    --arg plan "$production_plan" \
-    --arg receipt "$production_receipt" \
-    --arg runtime "$production_runtime" \
-    --arg portable "$production_portable" \
-    --arg nextest_config "$production_nextest_config" \
-    --arg nextest_wrapper "$production_nextest_wrapper" '
+    --argjson definition "$production_definition" '
       .registered_at == $at
       and .registered_coverage_status == "complete"
       and (has("registered_valid_commits") | not)
-      and (.registered | keys | sort) == [
-        ".config/nextest.toml",
-        ".github/workflows/ci-portable.yml",
-        "ci/run-nextest-counted.sh",
-        "scripts/lib/validate_history.rs",
-        "scripts/lib/validate_plan.rs",
-        "scripts/lib/validate_receipt.rs",
-        "scripts/lib/validate_runtime.rs",
-        "scripts/validate.rs"
-      ]
-      and .registered["scripts/validate.rs"] == $rust
-      and .registered["scripts/lib/validate_history.rs"] == $history
-      and .registered["scripts/lib/validate_plan.rs"] == $plan
-      and .registered["scripts/lib/validate_receipt.rs"] == $receipt
-      and .registered["scripts/lib/validate_runtime.rs"] == $runtime
-      and .registered[".github/workflows/ci-portable.yml"] == $portable
-      and .registered[".config/nextest.toml"] == $nextest_config
-      and .registered["ci/run-nextest-counted.sh"] == $nextest_wrapper
+      and (has("transition") | not)
+      and .registered == $definition
     ' "$production_registry" >/dev/null; then
     echo "FAIL: production producer-definition registry does not match the audited primary" >&2
     exit 1
@@ -285,34 +280,9 @@ base_evidence=$("$verifier" --sha "$sha" --comments "$tmp/comments.json" \
 # only on producer-definition/head binding, not on a stale outer checksum.
 retarget_receipt "$tmp/receipt.json" "$tmp/production-current-retargeted.json" \
     "$production_registered_at"
-jq -cS --arg rust "$production_rust" \
-  --arg history "$production_history" \
-  --arg plan "$production_plan" \
-  --arg receipt "$production_receipt" \
-  --arg runtime "$production_runtime" \
-  --arg portable "$production_portable" \
-  --arg nextest_config "$production_nextest_config" \
-  --arg nextest_wrapper "$production_nextest_wrapper" '
-  .producer.definition = {
-    "scripts/validate.rs": $rust,
-    "scripts/lib/validate_history.rs": $history,
-    "scripts/lib/validate_plan.rs": $plan,
-    "scripts/lib/validate_receipt.rs": $receipt,
-    "scripts/lib/validate_runtime.rs": $runtime,
-    ".github/workflows/ci-portable.yml": $portable,
-    ".config/nextest.toml": $nextest_config,
-    "ci/run-nextest-counted.sh": $nextest_wrapper
-  }
-  | .producer.paths = [
-      ".config/nextest.toml",
-      ".github/workflows/ci-portable.yml",
-      "ci/run-nextest-counted.sh",
-      "scripts/lib/validate_history.rs",
-      "scripts/lib/validate_plan.rs",
-      "scripts/lib/validate_receipt.rs",
-      "scripts/lib/validate_runtime.rs",
-      "scripts/validate.rs"
-    ]
+jq -cS --argjson definition "$production_definition" '
+  .producer.definition = $definition
+  | .producer.paths = ($definition | keys | sort)
   | .producer.coverage_status = "complete"
   | del(.producer.valid_commits)
 ' "$tmp/production-current-retargeted.json" >"$tmp/production-current.json"
