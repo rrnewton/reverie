@@ -171,7 +171,6 @@ Before reviewing code or dispatching an adversarial review, follow [code-review]
 the review method and the complete goalpost-moving prompt block.
 
 
-
 # Report substance not fluff
 
 Never say that "progress over the last 3 hours was closing 50 tasks"--meaningless, motion is not progress. Don't fall into a trance, moving around named tasks without knowing WHAT THEY MEAN. The moment you see something you don't understand, ask your subagent or READ THE CODE yourself.
