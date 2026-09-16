@@ -1611,6 +1611,33 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             qualifying_receipt.CellResultsVerdict.POPULATION_MISMATCH,
         )
 
+    def test_schema8_full_population_refusal_precedes_policy_window(self) -> None:
+        for maximum in (7, 8):
+            for empty in (False, True):
+                with self.subTest(maximum=maximum, empty=empty):
+                    predicate = _schema8_reader_policy()
+                    predicate["cell_results"]["supported_schema_max"] = maximum
+                    row = _schema8_cell_row(SHA)
+                    if empty:
+                        row["cell_results"].update(
+                            selected=[], cells=[], selected_count=0, recorded_count=0
+                        )
+                        row["cell_results"]["artifact"]["row_count"] = 0
+                    else:
+                        second = copy.deepcopy(row["cell_results"]["selected"][0])
+                        second["test"] = "second"
+                        row["cell_results"]["selected"].append(second)
+                        row["cell_results"]["selected_count"] = 2
+                    row["cell_results"]["population_sha256"] = (
+                        qualifying_receipt.cell_population_sha256(
+                            row["cell_results"]["selected"]
+                        )
+                    )
+                    self.assertEqual(
+                        qualifying_receipt.row_qualification(row, SHA, predicate),
+                        (False, "cell_results incomplete for full validation"),
+                    )
+
     def test_schema8_path_must_match_the_enclosing_validation_row(self) -> None:
         predicate = _schema8_reader_policy()
         for path in ("quick", "full", "super"):

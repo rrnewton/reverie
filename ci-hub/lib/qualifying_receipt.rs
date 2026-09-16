@@ -1018,11 +1018,9 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
     if pred.gate_filtered_tests && row.filtered_tests != Some(0) {
         return Qualification::refused("filtered_tests != 0");
     }
-    if schema == 8
-        && schema >= pred.cell_results.applies_at_schema_min
-        && schema <= pred.cell_results.supported_schema_max
-        && row.cell_results_validate_path() == Some(ValidatePath::Full)
-    {
+    // Match Python's full-population refusal before checking the supported
+    // schema window; unsupported incomplete rows still retain this first cause.
+    if schema == 8 && row.cell_results_validate_path() == Some(ValidatePath::Full) {
         if let Some(evidence) = row.cell_results_evidence() {
             if evidence.selected_count == 0 || evidence.recorded_count != evidence.selected_count {
                 return Qualification::refused("cell_results incomplete for full validation");
@@ -1362,14 +1360,14 @@ mod tests {
     }
 
     #[test]
-    fn schema8_path_refusal_precedes_full_population_completeness() {
+    fn schema8_full_population_refusal_precedes_policy_window() {
         let sha = "b".repeat(40);
         let mut pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
         pred.cell_results.supported_schema_max = 7;
         let unsupported = schema8_empty_cell_results_row(&sha, "full");
         assert_eq!(
             refusal_reason(row_qualification(&unsupported, &sha, &pred)),
-            "cell_results schema-unavailable"
+            "cell_results incomplete for full validation"
         );
         pred.cell_results.supported_schema_max = 8;
 

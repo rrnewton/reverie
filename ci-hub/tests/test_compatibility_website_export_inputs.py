@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import os
@@ -638,11 +639,11 @@ def test_other_pre_comparison_field_row_remains_visible_to_fail_closed_consumers
     assert incomplete == []
 
 
-def test_schema8_validate_path_and_selected_population_are_preserved(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_schema8_exported_rows_are_admitted_by_the_real_cell_reader():
     row = {
         "schema_version": 8,
+        "commit": "a" * 40,
+        "tree_dirty": False,
         "record_id": "schema8-run",
         "run_id": "schema8-run",
         "profile": "quick",
@@ -669,19 +670,37 @@ def test_schema8_validate_path_and_selected_population_are_preserved(
             ],
         },
     }
-    monkeypatch.setattr(
-        export_inputs.validation_ledger,
-        "current_validation_run_rows",
-        lambda rows: rows,
+    reader = export_inputs.validation_ledger.qualifying_receipt
+    predicate = copy.deepcopy(reader.active())
+    predicate["cell_results"]["supported_schema_max"] = 8
+    row["cell_results"]["population_sha256"] = reader.cell_population_sha256(
+        row["cell_results"]["selected"]
     )
 
+    # Keep the real current-run reader and pass the actual exported payload to
+    # the canonical cell reader. Export alone does not imply cell admission.
     current, incomplete = export_inputs._website_current_validation_rows([row])
-
-    assert current == [row]
-    assert current[0]["cell_results"]["path"] == "quick"
-    assert current[0]["cell_results"]["selected_count"] == 2
-    assert current[0]["cell_results"]["recorded_count"] == 1
     assert incomplete == []
+    assert len(current) == 1
+    assert (
+        reader.cell_results_verdict(current[0], predicate)
+        is reader.CellResultsVerdict.SATISFIED
+    )
+    projection = reader.cell_scorecard_projection(current[0], predicate)
+    assert projection["eligible"] is True
+    assert projection["path"] == "quick"
+    assert projection["selected"] == row["cell_results"]["selected"]
+    assert len(projection["selected"]) == 2
+    assert len(projection["cells"]) == 1
+    assert projection["green_count"] == 0
+
+    changed = copy.deepcopy(current[0])
+    changed["cell_results"]["path"] = "super"
+    assert (
+        reader.cell_results_verdict(changed, predicate)
+        is reader.CellResultsVerdict.PATH_MISMATCH
+    )
+    assert reader.cell_scorecard_projection(changed, predicate)["eligible"] is False
 
 
 def test_validation_acceptance_fixture_is_excluded_by_the_canonical_reader(

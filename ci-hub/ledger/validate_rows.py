@@ -663,9 +663,9 @@ def _enrich_failure_classification(row: dict, root: Path) -> None:
     if has_cell_results and "failed_cells" in row and row["failed_cells"] != exact_failed:
         raise ValueError("failed_cells differ from the validated cell_results summary")
     if has_cell_results:
-        # This field comes from the already-validated schema-6 summary, not the
-        # diagnostic log. Preserve it even if the log-side classification below
-        # is unavailable.
+        # This field describes failures among the recorded cells in the
+        # validated summary. Preserve it when log-side classification is
+        # unavailable; selected cells without a result do not imply success.
         row["failed_cells"] = exact_failed
 
     log_file = row.get("log_file")

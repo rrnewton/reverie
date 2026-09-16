@@ -1109,6 +1109,16 @@ mod tests {
     }
 
     #[test]
+    fn schema8_policy_maximum_alone_cannot_grant_schema9_observation_authority() {
+        let mut row = schema8_row(OTHER, 1, false, "full");
+        row.schema_version = Some(9);
+        // The shared dependency already decodes the V9 summary. This positive
+        // control makes the parent's explicit schema membership guard necessary.
+        assert!(row.cell_results_evidence().is_some());
+        assert!(validated_evidence(&row, 6, 9).unwrap().is_none());
+    }
+
+    #[test]
     fn unselected_failed_cell_does_not_slow_an_unrelated_candidate() {
         let failed = row(BAD, 1, false);
         let mut unrelated = row(FIX, 2, true);
