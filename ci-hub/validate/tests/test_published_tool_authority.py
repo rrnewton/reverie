@@ -33,13 +33,15 @@ WHAT IT DOES NOT, AND THIS FILE DOES. Measured 2026-09-16 against
   4. THE LOADED TOOL'S INODE. Mode and link checks are covered; an inode that
      does not match the loaded descriptor is not asserted as its own refusal.
 
-NOT COVERED HERE, AND NOT CLAIMED. Two further legs the task names require the
-wrkslots bridge, which is not published: the Agent Utils checkpoint carrying it
-is not on the Agent Utils remote, and no file on that remote or on the revision
-Hermit's gitlink names knows `DEV_HERMIT_TOOL_AUTHORITY` or the
-`dev-hermit-tool-authority-v1` schema. Those legs are the bridge round trip and
-the installed full-tree timing check. They are absent rather than stubbed,
-because a stub here would recreate exactly the defect this file exists to close.
+The bridge tests below additionally load the committed nested Agent Utils
+package in a separate process and execute its real authenticated verifier
+loader. One local three-repository fixture serves all negative cases. Its
+qualifying revisions and source bytes come from this checkout's actual pins;
+deliberately committed verifier variants are negative fixtures only.
+
+The installed-wrapper/full-tree timing observation remains separate evidence.
+These tests neither dispatch the installed wrapper nor measure its deployment
+cost, and they do not change the bridge's production 15-second timeout.
 
 EVERY CASE BELOW WAS DEMONSTRATED FAILING against a real producer change before
 being accepted. A case that cannot fail certifies the gap instead of closing it.
@@ -48,6 +50,7 @@ being accepted. A case that cannot fail certifies the gap instead of closing it.
 from __future__ import annotations
 
 import fcntl
+import contextlib
 import hashlib
 import json
 import os
@@ -221,19 +224,26 @@ class PublishedAuthorityFixture:
         *,
         sealed: bool = True,
         update: dict[str, object] | None = None,
+        tool_root: Path | None = None,
+        state_root: Path | None = None,
+        target_root: Path | None = None,
+        bootstrap_sha256: str | None = None,
     ) -> None:
         # The verifier requires the cached target to be canonical
         # `trees/<parent-sha>`, which is why the real parent head is
         # load-bearing here rather than a decorative field.
-        target_root = base / "trees" / heads["parent_sha"]
-        target_root.mkdir(parents=True)
-        state_root = base / "state"
-        state_root.mkdir()
-        tool_root = base / "tool"
-        tool_root.mkdir()
-        (tool_root / "published-entrypoint").write_text("#!/bin/sh\nexit 0\n")
-        make_tree_read_only(tool_root)
-        make_tree_read_only(target_root)
+        if target_root is None:
+            target_root = base / "trees" / heads["parent_sha"]
+            target_root.mkdir(parents=True)
+            make_tree_read_only(target_root)
+        if state_root is None:
+            state_root = base / "state"
+            state_root.mkdir()
+        if tool_root is None:
+            tool_root = base / "tool"
+            tool_root.mkdir()
+            (tool_root / "published-entrypoint").write_text("#!/bin/sh\nexit 0\n")
+            make_tree_read_only(tool_root)
 
         self.root_fd = os.open(
             tool_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -272,7 +282,8 @@ class PublishedAuthorityFixture:
             "parent_sha": heads["parent_sha"],
             "hermit_sha": heads["hermit_sha"],
             "agent_utils_sha": heads["agent_utils_sha"],
-            "bootstrap_sha256": hashlib.sha256(b"published-bootstrap").hexdigest(),
+            "bootstrap_sha256": bootstrap_sha256
+            or hashlib.sha256(b"published-bootstrap").hexdigest(),
         }
         self.record.update(update or {})
         os.write(
@@ -297,7 +308,9 @@ class PublishedAuthorityFixture:
     def environment(self, **override: str) -> dict[str, str]:
         environment = {
             authority_module.TOOL_AUTHORITY_ENV: str(self.authority_path),
-            authority_module.TOOL_CONTENT_SHA256_ENV: str(self.record["content_sha256"]),
+            authority_module.TOOL_CONTENT_SHA256_ENV: str(
+                self.record["content_sha256"]
+            ),
             authority_module.TOOL_PARENT_SHA_ENV: str(self.record["parent_sha"]),
             authority_module.TOOL_HERMIT_SHA_ENV: str(self.record["hermit_sha"]),
             authority_module.TOOL_AGENT_UTILS_SHA_ENV: str(
@@ -356,7 +369,9 @@ class PublishedToolAuthorityTests(unittest.TestCase):
             f"{PRODUCTION_INTERPRETER} is absent; production loads the verifier under it",
         )
         metadata = PRODUCTION_INTERPRETER.stat()
-        self.assertEqual(metadata.st_uid, 0, "the production interpreter must be root-owned")
+        self.assertEqual(
+            metadata.st_uid, 0, "the production interpreter must be root-owned"
+        )
 
     def test_published_verifier_loads_under_the_production_interpreter(self) -> None:
         """The real bytes, the real interpreter, a real held authority.
@@ -468,6 +483,413 @@ class PublishedToolAuthorityTests(unittest.TestCase):
             authority_module.read_immutable_tool_authority(
                 fixture.tool_root, fixture.state_root, fixture.environment()
             )
+
+
+# This child imports the actual nested package, not a copied function or the
+# generic contract stub. The observer delegates every command unchanged and
+# records the interpreter/bounds selected by production, including on refusal.
+BRIDGE_PROGRAM = r"""
+import hashlib, json, sys
+from pathlib import Path
+
+tool = Path(sys.argv[1])
+state = Path(sys.argv[2])
+sys.path.insert(0, str(tool / "hermit/agent-utils/py"))
+from wrkslots import cli
+
+loaded = Path(cli.__file__).resolve(strict=True)
+assert loaded == tool / "hermit/agent-utils/py/wrkslots/cli.py"
+config = cli.Config(
+    root=state, config_path=state / ".wrkslots.yml",
+    worktrees=state / "worktrees", control=state / "worktrees",
+    machine="published-authority-fixture", default_remote="origin",
+    default_landed_ref="refs/remotes/origin/main", heartbeat_ttl_seconds=60,
+    liveness_command=state / "unused-liveness.py",
+)
+commands = []
+real_command = cli._run_bounded_read_only_command
+def observed_command(command, **kwargs):
+    if "-c" in command and command[command.index("-c") + 1] == cli._FROZEN_TOOL_AUTHORITY_BOOTSTRAP:
+        commands.append({
+            "interpreter": command[0],
+            "flags": list(command[1:3]),
+            "timeout_seconds": kwargs["timeout_seconds"],
+            "stdout_limit": kwargs["stdout_limit"],
+            "stderr_limit": kwargs["stderr_limit"],
+            "snapshot_sha256": hashlib.sha256(Path(command[-1]).read_bytes()).hexdigest(),
+        })
+    return real_command(command, **kwargs)
+cli._run_bounded_read_only_command = observed_command
+report = {"loaded_module": str(loaded), "loaded_sha256": hashlib.sha256(loaded.read_bytes()).hexdigest()}
+try:
+    authority, head, blobs = cli._authenticated_frozen_parser_blobs(config)
+except cli.Refusal as error:
+    report.update(state="refused", detail=str(error))
+    code = 3
+else:
+    report.update(state="accepted", authority=str(authority), head=head,
+                  blobs={name: hashlib.sha256(value).hexdigest() for name, value in blobs.items()})
+    code = 0
+report["verifier_commands"] = commands
+print(json.dumps(report, sort_keys=True))
+raise SystemExit(code)
+"""
+
+
+class PublishedWrkslotsBridgeTests(unittest.TestCase):
+    """Real loaded Git chain and producer, with no verifier/Git result mocks."""
+
+    @staticmethod
+    def git(path: Path, *arguments: str) -> str:
+        result = subprocess.run(
+            [
+                "/usr/bin/git",
+                "--no-replace-objects",
+                "-c",
+                "core.hooksPath=/dev/null",
+                *arguments,
+            ],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=dict(
+                os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null"
+            ),
+        )
+        if result.returncode:
+            raise AssertionError(f"fixture git {arguments!r}: {result.stderr}")
+        return result.stdout.strip()
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # Do not convert missing prerequisites into an all-green skipped bridge.
+        if LOADED_HEADS is None:
+            raise AssertionError(
+                f"real bridge requires initialized pins: {HEADS_UNAVAILABLE_REASON}"
+            )
+        cls.temporary = tempfile.TemporaryDirectory(prefix="published-wrkslots-bridge-")
+        cls.addClassCleanup(cls.temporary.cleanup)
+        cls.base = Path(cls.temporary.name).resolve()
+        cls.addClassCleanup(cls.restore_fixture_modes)
+        cls.tool = cls.base / "tool"
+        cls.state = cls.base / "state"
+        cls.other_state = cls.base / "other-state"
+        # --shared borrows immutable Git objects, not working files. All index,
+        # ref and working-file mutations below stay in the disposable clones.
+        for relative, pin in (
+            ("", "parent_sha"),
+            ("hermit", "hermit_sha"),
+            ("hermit/agent-utils", "agent_utils_sha"),
+        ):
+            source = CHECKOUT_ROOT / relative
+            destination = cls.tool / relative
+            if cls.git(source, "rev-parse", "HEAD") != LOADED_HEADS[pin]:
+                raise AssertionError(
+                    f"materialized {relative or 'parent'} HEAD differs from its recorded pin"
+                )
+            cls.git(
+                cls.base,
+                "clone",
+                "--quiet",
+                "--shared",
+                "--no-recurse-submodules",
+                str(source),
+                str(destination),
+            )
+            cls.git(destination, "checkout", "--quiet", "--detach", LOADED_HEADS[pin])
+        for state in (cls.state, cls.other_state):
+            cls.git(
+                cls.base,
+                "clone",
+                "--quiet",
+                "--shared",
+                "--no-checkout",
+                str(CHECKOUT_ROOT),
+                str(state),
+            )
+        cls.module = cls.tool / "ci-hub/validate/immutable_tool_authority.py"
+        if cls.module.read_bytes() != VERIFIER_PATH.read_bytes():
+            raise AssertionError(
+                "working verifier differs from the committed fixture source"
+            )
+        cls.agent_sha256 = hashlib.sha256(
+            (cls.tool / "hermit/agent-utils/py/wrkslots/cli.py").read_bytes()
+        ).hexdigest()
+        cls.bootstrap_sha256 = hashlib.sha256(
+            (cls.tool / "scripts/hermit-health-tick.sh").read_bytes()
+        ).hexdigest()
+        cls.other_tool = cls.base / "other-tool"
+        cls.other_tool.mkdir()
+        (cls.other_tool / "payload").write_bytes(
+            b"authority for a different loaded directory\n"
+        )
+        make_tree_read_only(cls.other_tool)
+        # The producer excludes the three Git administration directories from
+        # its digest. Keep those fixture-only directories writable for explicit
+        # negative HEAD variants; freeze every executable-tree byte and mode.
+        for directory, children, files in os.walk(cls.tool):
+            children[:] = [name for name in children if name != ".git"]
+            for name in files:
+                path = Path(directory) / name
+                if not path.is_symlink():
+                    path.chmod(0o555 if path.stat().st_mode & 0o111 else 0o444)
+            Path(directory).chmod(0o555)
+
+    @classmethod
+    def restore_fixture_modes(cls) -> None:
+        for directory, _children, files in os.walk(cls.base):
+            Path(directory).chmod(0o755)
+            for name in files:
+                path = Path(directory) / name
+                if not path.is_symlink():
+                    path.chmod(0o644)
+
+    def setUp(self) -> None:
+        self.assertEqual(
+            self.git(self.tool, "rev-parse", "HEAD"), LOADED_HEADS["parent_sha"]
+        )
+        self.assertEqual(self.module.read_bytes(), VERIFIER_PATH.read_bytes())
+
+    @contextlib.contextmanager
+    def authority(self, *, update=None, sealed=True, other_tool=False):
+        heads = dict(LOADED_HEADS, parent_sha=self.git(self.tool, "rev-parse", "HEAD"))
+        record_heads = dict(
+            heads,
+            **{key: value for key, value in (update or {}).items() if key in heads},
+        )
+        case = Path(tempfile.mkdtemp(dir=self.base))
+        fixture = PublishedAuthorityFixture(
+            case,
+            record_heads,
+            sealed=sealed,
+            update=update,
+            tool_root=self.other_tool if other_tool else self.tool,
+            state_root=self.state,
+            bootstrap_sha256=self.bootstrap_sha256,
+        )
+        try:
+            yield fixture
+        finally:
+            fixture.close()
+
+    @contextlib.contextmanager
+    def changed_bytes(self, path: Path, data: bytes):
+        before = path.read_bytes()
+        mode = stat.S_IMODE(path.stat().st_mode)
+        path.chmod(0o600)
+        path.write_bytes(data)
+        path.chmod(mode)
+        try:
+            yield
+        finally:
+            path.chmod(0o600)
+            path.write_bytes(before)
+            path.chmod(mode)
+
+    @contextlib.contextmanager
+    def committed_verifier_variant(self, addition: bytes):
+        """An actual incompatible producer commit, only in the owned fixture."""
+        original = self.git(self.tool, "rev-parse", "HEAD")
+        with self.changed_bytes(self.module, self.module.read_bytes() + addition):
+            self.git(self.tool, "add", "ci-hub/validate/immutable_tool_authority.py")
+            self.git(
+                self.tool,
+                "-c",
+                "user.name=Authority fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--quiet",
+                "--no-gpg-sign",
+                "-m",
+                "Deliberately incompatible verifier fixture",
+            )
+            variant = self.git(self.tool, "rev-parse", "HEAD")
+            try:
+                yield
+            finally:
+                self.git(self.tool, "read-tree", original)
+                self.git(self.tool, "update-ref", "HEAD", original, variant)
+
+    def run_bridge(self, fixture, *, refusal=None, state=None, verifier_called=True):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                BRIDGE_PROGRAM,
+                str(self.tool),
+                str(state or self.state),
+            ],
+            env=dict(os.environ, **fixture.environment()),
+            cwd=self.base,
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+        self.assertEqual(
+            result.returncode, 3 if refusal else 0, result.stdout + result.stderr
+        )
+        self.assertEqual(result.stderr, "")
+        report = json.loads(result.stdout)
+        print(
+            "BRIDGE_CASE "
+            + json.dumps(
+                {"test": self.id(), "returncode": result.returncode, **report},
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        self.assertEqual(
+            report["loaded_module"],
+            str(self.tool / "hermit/agent-utils/py/wrkslots/cli.py"),
+        )
+        self.assertEqual(report["loaded_sha256"], self.agent_sha256)
+        self.assertEqual(len(report["verifier_commands"]), int(verifier_called))
+        if verifier_called:
+            self.assertEqual(
+                report["verifier_commands"][0],
+                {
+                    "interpreter": str(PRODUCTION_INTERPRETER),
+                    "flags": ["-I", "-B"],
+                    "timeout_seconds": 15,
+                    "stdout_limit": 16 * 1024,
+                    "stderr_limit": 16 * 1024,
+                    "snapshot_sha256": hashlib.sha256(
+                        self.module.read_bytes()
+                    ).hexdigest(),
+                },
+            )
+        if refusal:
+            self.assertEqual(report["state"], "refused")
+            self.assertIn(refusal, report["detail"])
+        else:
+            self.assertEqual(report["state"], "accepted")
+            self.assertEqual(report["authority"], str(self.tool))
+            self.assertEqual(report["head"], LOADED_HEADS["parent_sha"])
+            self.assertEqual(
+                report["blobs"],
+                {
+                    f"ci-hub/validate/{name}.py": hashlib.sha256(
+                        (self.tool / f"ci-hub/validate/{name}.py").read_bytes()
+                    ).hexdigest()
+                    for name in (
+                        "run_registry",
+                        "service_result",
+                        "final_validate_status",
+                    )
+                },
+            )
+
+    def test_separate_state_clone_passes_the_real_loaded_bridge(self) -> None:
+        self.assertNotEqual(
+            self.git(
+                self.tool, "rev-parse", "--path-format=absolute", "--git-common-dir"
+            ),
+            self.git(
+                self.state, "rev-parse", "--path-format=absolute", "--git-common-dir"
+            ),
+        )
+        with self.authority() as fixture:
+            self.run_bridge(fixture)
+
+    def test_materialized_heads_must_match_both_enclosing_gitlinks(self) -> None:
+        for relative, detail in (
+            ("hermit/agent-utils", "loaded agent-utils HEAD differs"),
+            ("hermit", "enclosing checkout HEAD differs"),
+        ):
+            with self.subTest(repository=relative):
+                repository = self.tool / relative
+                original = self.git(repository, "rev-parse", "HEAD")
+                previous = self.git(
+                    repository,
+                    "-c",
+                    "user.name=Authority fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "commit-tree",
+                    "HEAD^{tree}",
+                    "-p",
+                    original,
+                    "-m",
+                    "Fixture HEAD disagreement with enclosing Gitlink",
+                )
+                with self.authority() as fixture:
+                    self.git(repository, "update-ref", "HEAD", previous, original)
+                    try:
+                        self.run_bridge(fixture, refusal=detail, verifier_called=False)
+                    finally:
+                        self.git(repository, "update-ref", "HEAD", original, previous)
+
+    def test_unsealed_descriptor_refuses_through_the_bridge(self) -> None:
+        with self.authority(sealed=False) as fixture:
+            self.run_bridge(fixture, refusal="not bounded, anonymous and sealed")
+
+    def test_changed_signed_content_refuses_through_the_bridge(self) -> None:
+        path = self.tool / "ci-hub/validate/final_validate_status.py"
+        with self.authority() as fixture, self.changed_bytes(
+            path, path.read_bytes() + b"\n# changed after signing\n"
+        ):
+            self.run_bridge(fixture, refusal="immutable tool content digest is")
+
+    def test_each_sealed_pin_must_match_the_actual_loaded_git_chain(self) -> None:
+        for pin in ("parent_sha", "hermit_sha", "agent_utils_sha"):
+            with self.subTest(pin=pin), self.authority(
+                update={pin: "e" * 40}
+            ) as fixture:
+                self.run_bridge(
+                    fixture,
+                    refusal="sealed tool pins differ from the loaded enclosing Git chain",
+                )
+
+    def test_valid_authority_for_another_loaded_inode_refuses(self) -> None:
+        with self.authority(other_tool=True) as fixture:
+            self.run_bridge(
+                fixture,
+                refusal="sealed tool root_ino differs from the loaded authority/state root",
+            )
+
+    def test_valid_authority_for_another_state_clone_refuses(self) -> None:
+        with self.authority() as fixture:
+            self.run_bridge(
+                fixture,
+                state=self.other_state,
+                refusal="does not match immutable tool authority state root",
+            )
+
+    def test_changed_verifier_bytes_refuse_before_execution(self) -> None:
+        with self.authority() as fixture, self.changed_bytes(
+            self.module, self.module.read_bytes() + b"\n# uncommitted verifier change\n"
+        ):
+            self.run_bridge(
+                fixture,
+                refusal="tool authority module differs from authenticated HEAD",
+                verifier_called=False,
+            )
+
+    def test_incompatible_protocol_refuses_through_the_bridge(self) -> None:
+        for update, detail in (
+            ({"schema": "dev-hermit-tool-authority-v2"}, "unsupported schema"),
+            ({"unknown_field": 1}, "fields are incomplete or unknown"),
+        ):
+            with self.subTest(update=update), self.authority(update=update) as fixture:
+                self.run_bridge(fixture, refusal=detail)
+
+    def test_real_python39_rejects_incompatible_committed_verifiers(self) -> None:
+        cases = (
+            (b"\nmatch 1:\n    case 1:\n        pass\n", "SyntaxError"),
+            (
+                b"\ndef read_immutable_tool_authority(tool_root, state_root):\n    raise AssertionError('must fail at the call signature')\n",
+                "TypeError",
+            ),
+        )
+        for addition, detail in cases:
+            with self.subTest(detail=detail), self.committed_verifier_variant(
+                addition
+            ), self.authority() as fixture:
+                self.run_bridge(fixture, refusal=detail)
 
 
 class ChainAvailabilityGuard(unittest.TestCase):
