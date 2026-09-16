@@ -2892,6 +2892,70 @@ class HealthTickParentSyncTests(unittest.TestCase):
         self.assertFalse((cached / ".git" / "commondir").exists())
         self.assert_private_run_pool_is_reusable()
 
+    def test_direct_tick_exports_verified_installed_launcher(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        self.env["DEV_HERMIT_OPERATIONAL_TOOL"] = "/unverified/inherited-tool"
+        target = self.advance_remote(
+            health_script=(
+                "#!/usr/bin/env bash\nset -eu\n"
+                "printf 'operational_tool=%s\\ncache=%s\\nparent=%s\\n' "
+                '"$DEV_HERMIT_OPERATIONAL_TOOL" "$DEV_HERMIT_TOOL_CACHE" '
+                '"$DEV_HERMIT_TOOL_PARENT_SHA"\n'
+                'cat "$DEV_HERMIT_TOOL_AUTHORITY"\n'
+            )
+        )
+
+        result = self.run_tick()
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        report = (self.home / ".local/state/hermit-health-tick-last-report.txt").read_text()
+        self.assertIn(f"operational_tool={bootstrap}\n", report)
+        self.assertIn(f"cache={self.env['HERMIT_HEALTH_TOOL_CACHE']}\n", report)
+        self.assertIn(f"parent={target}\n", report)
+        authority = json.loads(next(line for line in report.splitlines() if line.startswith("{")))
+        self.assertEqual(target, authority["parent_sha"])
+        self.assertEqual(self.hermit_head, authority["hermit_sha"])
+        self.assertEqual(self.agent_utils_head, authority["agent_utils_sha"])
+        self.assertEqual(str(self.repo), authority["state_root"])
+        self.assertNotIn("/unverified/inherited-tool", report)
+        self.assert_private_run_pool_is_reusable()
+
+    def test_direct_tick_does_not_export_invalid_installed_launcher(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        original = bootstrap.read_bytes()
+        self.env["DEV_HERMIT_OPERATIONAL_TOOL"] = str(bootstrap)
+        self.advance_remote(
+            health_script=(
+                "#!/usr/bin/env bash\nset -eu\n"
+                "printf 'operational_tool=<%s>\\ncache=%s\\n' "
+                '"$DEV_HERMIT_OPERATIONAL_TOOL" "$DEV_HERMIT_TOOL_CACHE"\n'
+            )
+        )
+        for invalid in (
+            "absent", "symlink", "owner-writable", "group-writable",
+            "other-writable", "non-executable", "mismatched",
+        ):
+            with self.subTest(invalid=invalid):
+                bootstrap.unlink(missing_ok=True)
+                if invalid == "symlink":
+                    bootstrap.symlink_to(self.repo / "scripts/hermit-health-tick.sh")
+                elif invalid != "absent":
+                    bootstrap.write_bytes(original + (b"# stale installation\n" if invalid == "mismatched" else b""))
+                    bootstrap.chmod({
+                        "owner-writable": 0o755,
+                        "group-writable": 0o535,
+                        "other-writable": 0o553,
+                        "non-executable": 0o444,
+                    }.get(invalid, 0o555))
+
+                result = self.run_tick()
+
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                report = (self.home / ".local/state/hermit-health-tick-last-report.txt").read_text()
+                self.assertIn("operational_tool=<>\n", report)
+                self.assertIn(f"cache={self.env['HERMIT_HEALTH_TOOL_CACHE']}\n", report)
+                self.assert_private_run_pool_is_reusable()
+
     def test_installed_bootstrap_runs_entire_wrkslots_audit_chain_from_current_tool(
         self,
     ) -> None:

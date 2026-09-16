@@ -2334,6 +2334,18 @@ materialize_current_tool_root() {
     exec 8>&-
 }
 
+# A detached launcher must outlive this tick's private tool snapshot. Establish
+# its stable entrypoint from the installation, never from an inherited hint.
+verified_installed_operational_tool() {
+    local installed_operational_tool="$HOME/.local/libexec/dev-hermit/operational-tool"
+    if [[ ! -L $installed_operational_tool && -f $installed_operational_tool && \
+          -x $installed_operational_tool ]] && \
+       [[ $(stat -Lc '%a' "$installed_operational_tool") =~ ^[0-7]*[0145][0145][0145]$ ]] && \
+       cmp --silent -- "${BASH_SOURCE[0]}" "$installed_operational_tool"; then
+        printf '%s' "$installed_operational_tool"
+    fi
+}
+
 run_current_tool() {
     local state_root="${DEV_HERMIT_PARENT:-$ROOT}"
     local cache_root="$TOOL_CACHE"
@@ -2518,14 +2530,8 @@ PY
             "$parent_sha" "$requested_parent_sha" >&2
         return 1
     fi
-    local installed_operational_tool="$HOME/.local/libexec/dev-hermit/operational-tool"
-    local operational_tool=""
-    if [[ ! -L $installed_operational_tool && -f $installed_operational_tool && \
-          -x $installed_operational_tool ]] && \
-       [[ $(stat -Lc '%a' "$installed_operational_tool") =~ ^[0-7]*[0-5][0-5][0-5]$ ]] && \
-       cmp --silent -- "${BASH_SOURCE[0]}" "$installed_operational_tool"; then
-        operational_tool=$installed_operational_tool
-    fi
+    local operational_tool
+    operational_tool=$(verified_installed_operational_tool)
 
     printf 'operational-tool: bootstrap_sha256=%s parent_sha=%s hermit_sha=%s agent_utils_sha=%s tool_root=%s state_root=%s entrypoint=%s\n' \
         "$bootstrap_sha" "$parent_sha" "$hermit_sha" "$agent_utils_sha" \
@@ -2656,6 +2662,8 @@ if [[ $tool_root_rc -ne 0 ]]; then
 else
     tool_root=$TOOL_ROOT_RESULT
     tool_root_sha=$TOOL_PARENT_SHA
+    local operational_tool
+    operational_tool=$(verified_installed_operational_tool)
     printf '%s tool_root=%s tool_root_sha=%s state_root=%s\n' \
         "$start" "$tool_root" "$tool_root_sha" "$ROOT" >>"$INVLOG"
     # Keep the measured tick in its own process group so either outer bound can
@@ -2683,6 +2691,8 @@ else
             DEV_HERMIT_TOOL_HERMIT_SHA="$TOOL_HERMIT_SHA" \
             DEV_HERMIT_TOOL_AGENT_UTILS_SHA="$TOOL_AGENT_UTILS_SHA" \
             DEV_HERMIT_TOOL_BOOTSTRAP_SHA256="$TOOL_BOOTSTRAP_SHA256" \
+            DEV_HERMIT_TOOL_CACHE="$TOOL_CACHE" \
+            DEV_HERMIT_OPERATIONAL_TOOL="$operational_tool" \
             PYTHONDONTWRITEBYTECODE=1 \
             with-proxy "$tool_root/ci-hub/bin/health-tick" --flush --no-header \
             >"$TICK_OUTPUT_PIPE" 2>&1 &
