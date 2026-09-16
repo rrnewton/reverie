@@ -313,5 +313,60 @@
         "scripts/validate.rs": "5c72a835bd766af63e35b9219eac077c1b927db7"
       }
     }
-  ]
+  ],
+  "_transition_2026_09_16_pr3018": "Stages https://github.com/rrnewton/hermit/pull/3018 at exact published head 631131d42972398fdceabef7023a67116fb43d59. The whole map retains all eight selected paths and explicitly adds fifteen full-profile receipt, typed-count, timeout and local module-wiring implementations. Level::Super, focused envelope, workload manifests and test populations remain outside this producer boundary; dependency revisions remain independently bound by the exact recorded commit/tree. The old primary and all eighteen legacy records remain unchanged. This registration is not a passing Hermit validation receipt. Finalization requires fresh canonical PR merge and target-main whole-map proof; neither timestamp is merge evidence.",
+  "transition": {
+    "id": "rrnewton-hermit-pr-3018",
+    "registered_at": "631131d42972398fdceabef7023a67116fb43d59",
+    "provenance": {
+      "repository": "rrnewton/hermit",
+      "pull_request": 3018,
+      "head": "631131d42972398fdceabef7023a67116fb43d59"
+    },
+    "finalize_after": "2026-09-16T11:12:26Z",
+    "expires_at": "2026-09-17T11:12:26Z",
+    "candidate_coverage_status": "complete",
+    "added_paths": [
+      "ci/manifest-plan/src/bin/nextest-cpu-wrapper.rs",
+      "ci/manifest-plan/src/ledger.rs",
+      "ci/manifest-plan/src/lib.rs",
+      "ci/manifest-plan/src/nextest_binaries.rs",
+      "ci/manifest-plan/src/nextest_cpu.rs",
+      "ci/manifest-plan/src/runner.rs",
+      "ci/manifest-plan/src/service_result.rs",
+      "ci/manifest-plan/src/timeouts.rs",
+      "ci/nextest-binaries.rs",
+      "ci/nextest-test-results.rs",
+      "ci/nextest-timeout-config.rs",
+      "hermit-cli/src/canonical_verdict.rs",
+      "scripts/lib/safe_ci_scope.rs",
+      "scripts/lib/validate_cell_results.rs",
+      "scripts/lib/validate_classification.rs"
+    ],
+    "candidate": {
+      ".config/nextest.toml": "5989ccd378adc871597969880082fd3b36b3d170",
+      ".github/workflows/ci-portable.yml": "172ecf07418f284dfabd3e919eec3ca934ce9b8a",
+      "ci/manifest-plan/src/bin/nextest-cpu-wrapper.rs": "1f827317df1af81991743edb99ded0fc22094a5a",
+      "ci/manifest-plan/src/ledger.rs": "0d737c4dc0d4facac7ebad0be2cda3cf16f69acb",
+      "ci/manifest-plan/src/lib.rs": "506a5c5832661a31727ef918ad40fa6a3171b1b4",
+      "ci/manifest-plan/src/nextest_binaries.rs": "aa10f24d085f3f59cb8b1f68d6a9063471b67a6a",
+      "ci/manifest-plan/src/nextest_cpu.rs": "35e03425d8fed1f319fe2a2bbfce4879ba0a9fc1",
+      "ci/manifest-plan/src/runner.rs": "40bd930a76340075dfe3c7913b2c5ee32239d908",
+      "ci/manifest-plan/src/service_result.rs": "b138f1937c2af8269755cfeb3311c4f2dec3c8b8",
+      "ci/manifest-plan/src/timeouts.rs": "d4cfe464f851df78ddf72e7980220bf32b66c609",
+      "ci/nextest-binaries.rs": "fa5722934022d53723490675e983778735402693",
+      "ci/nextest-test-results.rs": "d1a2f1141250267461bf64141c5368f5102782ff",
+      "ci/nextest-timeout-config.rs": "a005fc8ba8b987923db21ea8a0b24daf4f58eccb",
+      "ci/run-nextest-counted.sh": "7839b9d80b2563d1221690ef69d388fface5d325",
+      "hermit-cli/src/canonical_verdict.rs": "7786342c9f284857cf8a5e97f8536d8b176438e4",
+      "scripts/lib/safe_ci_scope.rs": "8f3f95f7fc56a3a9540545391e65c32101632f21",
+      "scripts/lib/validate_cell_results.rs": "fe0f4c75299ada11d1c138421158425ee9d05b0e",
+      "scripts/lib/validate_classification.rs": "5dff66ce5321e0bb7f13cb705ab6853fd5996872",
+      "scripts/lib/validate_history.rs": "2fd9aeba20d8d05f5ff1318bb8d3b4949b5bac7d",
+      "scripts/lib/validate_plan.rs": "cd5b3a686fa17fc8513b5f4f04398c4d8e5dea43",
+      "scripts/lib/validate_receipt.rs": "15fa8d4b4ecdf89bdeb6ce33f460de11cf43d79c",
+      "scripts/lib/validate_runtime.rs": "4e6e4e0ab5d73ef0780b4411e1978c11db57506a",
+      "scripts/validate.rs": "33b4f778185b4d572c423291d5290be93763d937"
+    }
+  }
 }
