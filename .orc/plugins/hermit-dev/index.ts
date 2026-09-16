@@ -1369,113 +1369,6 @@ export async function diskPathHeartbeat(wf: WfContext): Promise<void> {
   });
 }
 
-// --- heartbeat declaration ---------------------------------------------------
-// MEASURED 2026-09-14, and the reason the five heartbeats below are declared
-// from a startup hook instead of from a plain module-scope `orc.workflow()`
-// call.
-//
-// When a declaration UPDATES a durable specification that already exists, ORC
-// re-materialises the registration by importing this file through its absolute
-// path from the workflow compiler. The workflow runtime only accepts absolute
-// module specifiers under the ORC stdlib plugin root, `~/.orc/plugins` and
-// `~/.orc/packages`. This is a project plugin, so that import is refused and
-// every affected workflow is rejected and then retired:
-//
-//   unsupported module specifier '<this file>' from 'orc-internal:workflow-compiler'
-//
-// The specification fingerprint is per MODULE, not per workflow, so ANY edit to
-// this file marks all five as updated and kills all five at the next boot. They
-// return only at the boot after that, because the retirement deletes the
-// specification and the declaration is then an addition again. That is what
-// left four of them dead for eleven hours while disk-paths, which happened to
-// be an addition, kept running three lines away from a rejected twin.
-//
-// Reproduced outside the coordinator with a throwaway two-workflow project
-// plugin: module-scope declaration plus one comment appended to the file
-// rejects both; killing the durable specification first and declaring from a
-// startup hook accepts both across two consecutive edits. Declaring in BOTH
-// places was also measured, and is rejected — the module-scope declaration is
-// the one ORC acts on, so it has to go.
-async function retireDurableWorkflowSpec(name: string): Promise<void> {
-  if (!hasOrcSurface("killWorkflow")) {
-    return;
-  }
-  try {
-    await orc.killWorkflow(name);
-  } catch (_err) {
-    // Absent in a fresh session, and absent again after ORC has already
-    // retired it. Neither case is a fault, and neither may stop the
-    // declarations that follow.
-  }
-}
-
-/** Report whether every heartbeat this plugin owns is present in the live
- * workflow registry. Deliberately NOT part of the startup self-test: startup
- * hooks run before ORC applies its candidate workflow inventory, so a reading
- * taken there passes even when the inventory is about to reject every one of
- * them, which is exactly the reassuring silence that hid this outage. */
-async function verifyRegisteredWorkflows(): Promise<SelfTestResult> {
-  const required = [
-    OPERATIONAL_TICK_WORKFLOW_NAME,
-    AGENT_SNAPSHOT_WORKFLOW_NAME,
-    DISK_FREE_WORKFLOW_NAME,
-    DISK_PATH_WORKFLOW_NAME,
-    POLICY_RELOAD_WORKFLOW_NAME,
-  ];
-  const checks: SelfTestCheck[] = [];
-  let listed: unknown = null;
-  try {
-    listed = await orc.listWorkflows();
-    checks.push({
-      name: "workflow-registry-readable",
-      pass: Array.isArray(listed),
-      severity: "error",
-      detail: Array.isArray(listed)
-        ? listed.length + " workflows enumerated"
-        : "orc.listWorkflows() returned " + typeof listed,
-    });
-  } catch (err) {
-    checks.push({
-      name: "workflow-registry-readable",
-      pass: false,
-      severity: "error",
-      detail: "orc.listWorkflows() failed: " + String(err),
-    });
-  }
-  const missing = missingRegisteredNames(listed, required);
-  checks.push({
-    name: "registered-workflows-present",
-    pass: missing.length === 0,
-    severity: "error",
-    detail: missing.length === 0
-      ? required.length + "/" + required.length +
-        " heartbeats enumerated by orc.listWorkflows()"
-      : "absent from orc.listWorkflows(): " + missing.join(", ") +
-        ". A workflow rejected at load is retired and deleted, so check the " +
-        "session log for 'workflow declaration rejected by compiler'.",
-  });
-  const retired = [
-    LEGACY_PR_HEALTH_WORKFLOW_NAME,
-    LEGACY_POLICY_RELOAD_WORKFLOW_NAME,
-    LEGACY_SPECULATIVE_LAND_WORKFLOW_NAME,
-  ];
-  const stillPresent = retired.filter((name) =>
-    missingRegisteredNames(listed, [name]).length === 0
-  );
-  checks.push({
-    name: "retired-workflows-absent",
-    pass: stillPresent.length === 0,
-    severity: "error",
-    detail: stillPresent.length === 0
-      ? retired.length + " retired workflow IDs absent"
-      : "still registered: " + stillPresent.join(", "),
-  });
-  return {
-    pass: checks.every((check) => check.pass || check.severity === "notice"),
-    checks,
-  };
-}
-
 // --- registration ----------------------------------------------------------
 // Every side effect this module has lives in here, and it is reached only
 // through the reduced-context guard at the bottom of the file. Nothing above
@@ -1706,86 +1599,49 @@ function registerPluginSurface(): void {
     },
   );
 
-  orc.exposeFunction(
-    PLUGIN_NAME + ".verifyWorkflows",
-    verifyRegisteredWorkflows,
+  orc.workflow(
+    operationalHealthHeartbeat,
+    "Run tick-hub operational checks and hard-warn the coordinator on failures",
     {
-      description:
-        "Report whether every hermit-dev heartbeat is in the live workflow registry",
-      params: [],
-      sig: 'await orc["hermit-dev.verifyWorkflows"]()',
+      name: OPERATIONAL_TICK_WORKFLOW_NAME,
+      restartable: HEARTBEAT_RESTARTABLE,
     },
   );
 
-  // Retire the durable specification before declaring, and declare from a
-  // startup hook rather than here. See "heartbeat declaration" above: a
-  // module-scope declaration that updates an existing specification makes ORC
-  // re-import this file by absolute path, which a project plugin is not
-  // allowed to do, and the workflow is rejected and retired. Declaring here as
-  // well as in the hook was measured and is also rejected.
-  orc.registerStartup(
-    PLUGIN_NAME + ".workflows",
-    async function hermitDevWorkflows() {
-      for (
-        const heartbeat of [
-          OPERATIONAL_TICK_WORKFLOW_NAME,
-          AGENT_SNAPSHOT_WORKFLOW_NAME,
-          DISK_FREE_WORKFLOW_NAME,
-          DISK_PATH_WORKFLOW_NAME,
-          POLICY_RELOAD_WORKFLOW_NAME,
-        ]
-      ) {
-        await retireDurableWorkflowSpec(heartbeat);
-      }
+  orc.workflow(
+    agentSnapshotHeartbeat,
+    "Refresh the complete ORC agent snapshot inside its freshness window",
+    {
+      name: AGENT_SNAPSHOT_WORKFLOW_NAME,
+      restartable: HEARTBEAT_RESTARTABLE,
+    },
+  );
 
-      // Five separate calls, not a loop: the workflow compiler reads the entry
-      // name from the argument expression at the call site, so the function
-      // has to be named there literally.
-      orc.workflow(
-        operationalHealthHeartbeat,
-        "Run tick-hub operational checks and hard-warn the coordinator on failures",
-        {
-          name: OPERATIONAL_TICK_WORKFLOW_NAME,
-          restartable: HEARTBEAT_RESTARTABLE,
-        },
-      );
+  orc.workflow(
+    diskFreeHeartbeat,
+    "Publish a fresh btrfs free-space reading every fifteen minutes",
+    {
+      name: DISK_FREE_WORKFLOW_NAME,
+      restartable: HEARTBEAT_RESTARTABLE,
+    },
+  );
 
-      orc.workflow(
-        agentSnapshotHeartbeat,
-        "Refresh the complete ORC agent snapshot inside its freshness window",
-        {
-          name: AGENT_SNAPSHOT_WORKFLOW_NAME,
-          restartable: HEARTBEAT_RESTARTABLE,
-        },
-      );
+  orc.workflow(
+    diskPathHeartbeat,
+    "Publish physical usage for top-level disk populations every fifteen minutes",
+    {
+      name: DISK_PATH_WORKFLOW_NAME,
+      restartable: HEARTBEAT_RESTARTABLE,
+    },
+  );
 
-      orc.workflow(
-        diskFreeHeartbeat,
-        "Publish a fresh btrfs free-space reading every fifteen minutes",
-        {
-          name: DISK_FREE_WORKFLOW_NAME,
-          restartable: HEARTBEAT_RESTARTABLE,
-        },
-      );
-
-      orc.workflow(
-        diskPathHeartbeat,
-        "Publish physical usage for top-level disk populations every fifteen minutes",
-        {
-          name: DISK_PATH_WORKFLOW_NAME,
-          restartable: HEARTBEAT_RESTARTABLE,
-        },
-      );
-
-      orc.workflow(
-        policyReloadHeartbeat,
-        "Re-inject AGENTS.md into coordinator context every two hours and report " +
-          "a distinct failure when injection does not complete",
-        {
-          name: POLICY_RELOAD_WORKFLOW_NAME,
-          restartable: HEARTBEAT_RESTARTABLE,
-        },
-      );
+  orc.workflow(
+    policyReloadHeartbeat,
+    "Re-inject AGENTS.md into coordinator context every two hours and report " +
+      "a distinct failure when injection does not complete",
+    {
+      name: POLICY_RELOAD_WORKFLOW_NAME,
+      restartable: HEARTBEAT_RESTARTABLE,
     },
   );
 
