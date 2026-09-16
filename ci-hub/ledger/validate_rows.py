@@ -540,7 +540,7 @@ def _artifact_cell(record: dict) -> dict:
 
 
 def _require_cell_results(row: dict, root: Path) -> None:
-    """Bind schema-6 summary evidence to its retained per-cell artifact."""
+    """Bind supported summary evidence to its retained per-cell artifact."""
     predicate = qualifying_receipt.active()
     verdict = qualifying_receipt.cell_results_verdict(row, predicate)
     if verdict is qualifying_receipt.CellResultsVerdict.GRANDFATHERED_UNKNOWN:
@@ -554,8 +554,10 @@ def _require_cell_results(row: dict, root: Path) -> None:
     raw = artifact.read_bytes()
     if hashlib.sha256(raw).hexdigest() != artifact_spec["sha256"]:
         raise ValueError("cell_results artifact sha256 mismatch")
-    if not raw or not raw.endswith(b"\n"):
-        raise ValueError("cell_results artifact is empty or has a truncated final line")
+    if raw and not raw.endswith(b"\n"):
+        raise ValueError("cell_results artifact has a truncated final line")
+    if not raw and artifact_spec["row_count"] != 0:
+        raise ValueError("cell_results artifact is empty but row_count is nonzero")
     records: list[dict] = []
     for number, line in enumerate(raw.splitlines(), 1):
         try:

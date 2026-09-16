@@ -638,6 +638,52 @@ def test_other_pre_comparison_field_row_remains_visible_to_fail_closed_consumers
     assert incomplete == []
 
 
+def test_schema8_validate_path_and_selected_population_are_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    row = {
+        "schema_version": 8,
+        "record_id": "schema8-run",
+        "run_id": "schema8-run",
+        "profile": "quick",
+        "selection_mode": "full",
+        "cell_results": {
+            "path": "quick",
+            "run_id": "schema8-run",
+            "hermit_sha": "a" * 40,
+            "source_tree_dirty": False,
+            "selected_count": 2,
+            "recorded_count": 1,
+            "population_sha256": "b" * 64,
+            "artifact": {
+                "path": "ignored/validate/artifacts/schema8-run/cell-results.jsonl",
+                "sha256": "c" * 64,
+                "row_count": 1,
+            },
+            "selected": [
+                {"lane": "portable", "category": "c-programs", "test": "one", "mode": "verify", "backend": "ptrace"},
+                {"lane": "portable", "category": "c-programs", "test": "two", "mode": "verify", "backend": "ptrace"},
+            ],
+            "cells": [
+                {"lane": "portable", "category": "c-programs", "test": "one", "mode": "verify", "backend": "ptrace", "cell_verdict": {"state": "unavailable-with-reason", "comparison_tier": "declared-but-unverifiable", "reason": "fixture"}},
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        export_inputs.validation_ledger,
+        "current_validation_run_rows",
+        lambda rows: rows,
+    )
+
+    current, incomplete = export_inputs._website_current_validation_rows([row])
+
+    assert current == [row]
+    assert current[0]["cell_results"]["path"] == "quick"
+    assert current[0]["cell_results"]["selected_count"] == 2
+    assert current[0]["cell_results"]["recorded_count"] == 1
+    assert incomplete == []
+
+
 def test_validation_acceptance_fixture_is_excluded_by_the_canonical_reader(
     tmp_path: Path,
 ):

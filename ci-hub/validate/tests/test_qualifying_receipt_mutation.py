@@ -259,6 +259,33 @@ def _schema6_cell_row(
     return row
 
 
+def _schema8_reader_policy() -> dict:
+    predicate = copy.deepcopy(qualifying_receipt.active())
+    predicate["cell_results"]["supported_schema_max"] = 8
+    return predicate
+
+
+def _schema8_cell_row(
+    sha: str,
+    state: str = "compared-and-matched",
+    *,
+    path: str = "full",
+) -> dict:
+    """A schema-8 row with its validate path and retained-result subset."""
+    row = _schema6_cell_row(sha, state)
+    row["schema_version"] = 8
+    row["record_id"] = "schema8-test"
+    row["run_id"] = "schema8-test"
+    row["profile"] = path
+    row["selection_mode"] = "full"
+    row["cell_results"]["run_id"] = "schema8-test"
+    row["cell_results"]["path"] = path
+    row["cell_results"]["artifact"]["path"] = (
+        "ignored/validate/artifacts/schema8-test/cells.jsonl"
+    )
+    return row
+
+
 def _make_stripped(verdict: dict) -> None:
     verdict["comparison"].update(
         strictness="stripped",
@@ -1482,6 +1509,158 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         self.assertIs(
             qualifying_receipt.cell_results_verdict(malformed_supported, predicate),
             qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
+        )
+
+    def test_schema8_version_bounds_cell_results_authority(self) -> None:
+        predicate = _schema8_reader_policy()
+        current = _schema8_cell_row(SHA)
+        self.assertEqual(predicate["cell_results"]["supported_schema_max"], 8)
+        self.assertEqual(
+            qualifying_receipt.row_qualification(current, SHA, predicate),
+            (True, "qualifies"),
+        )
+
+        schema7 = _schema6_cell_row(SHA, "compared-and-matched")
+        schema7["schema_version"] = 7
+        self.assertEqual(
+            qualifying_receipt.row_qualification(schema7, SHA, predicate),
+            (True, "qualifies"),
+        )
+
+        newer = copy.deepcopy(current)
+        newer["schema_version"] += 1
+        newer["cell_results"]["future_field"] = True
+        self.assertEqual(
+            qualifying_receipt.row_qualification(newer, SHA, predicate),
+            (False, "cell_results schema-unavailable"),
+        )
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(newer, predicate),
+            qualifying_receipt.CellResultsVerdict.SCHEMA_UNAVAILABLE,
+        )
+
+        malformed_supported = copy.deepcopy(current)
+        del malformed_supported["cell_results"]["cells"][0]["cell_verdict"][
+            "comparison"
+        ]["display_name"]
+        self.assertEqual(
+            qualifying_receipt.row_qualification(malformed_supported, SHA, predicate),
+            (False, "cell_results cell-verdict-invalid"),
+        )
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(malformed_supported, predicate),
+            qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
+        )
+
+    def test_schema_policy_maximum_alone_does_not_grant_a_new_schema_authority(self) -> None:
+        predicate = _schema8_reader_policy()
+        predicate["cell_results"]["supported_schema_max"] = 9
+        for schema in (9, 10):
+            with self.subTest(schema=schema):
+                row = _schema8_cell_row(SHA)
+                row["schema_version"] = schema
+                self.assertIs(
+                    qualifying_receipt.cell_results_verdict(row, predicate),
+                    qualifying_receipt.CellResultsVerdict.SCHEMA_UNAVAILABLE,
+                )
+
+    def test_schema8_path_population_and_retained_subset_are_distinct(self) -> None:
+        predicate = _schema8_reader_policy()
+        current = _schema8_cell_row(SHA)
+        second = copy.deepcopy(current["cell_results"]["selected"][0])
+        second["test"] = "second"
+        current["cell_results"]["selected"].append(second)
+        current["cell_results"]["selected_count"] = 2
+        current["cell_results"]["population_sha256"] = (
+            qualifying_receipt.cell_population_sha256(
+                current["cell_results"]["selected"]
+            )
+        )
+
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(current, predicate),
+            qualifying_receipt.CellResultsVerdict.SATISFIED,
+        )
+        self.assertEqual(
+            qualifying_receipt.row_qualification(current, SHA, predicate),
+            (False, "cell_results incomplete for full validation"),
+        )
+
+        outside = copy.deepcopy(current)
+        outside["cell_results"]["cells"][0]["test"] = "outside"
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(outside, predicate),
+            qualifying_receipt.CellResultsVerdict.POPULATION_MISMATCH,
+        )
+
+        duplicate = copy.deepcopy(current)
+        duplicate["cell_results"]["cells"].append(
+            copy.deepcopy(duplicate["cell_results"]["cells"][0])
+        )
+        duplicate["cell_results"]["recorded_count"] = 2
+        duplicate["cell_results"]["artifact"]["row_count"] = 2
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(duplicate, predicate),
+            qualifying_receipt.CellResultsVerdict.POPULATION_MISMATCH,
+        )
+
+        mutated_selected = copy.deepcopy(current)
+        mutated_selected["cell_results"]["selected"][0]["test"] = "mutated"
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(mutated_selected, predicate),
+            qualifying_receipt.CellResultsVerdict.POPULATION_MISMATCH,
+        )
+
+    def test_schema8_path_must_match_the_enclosing_validation_row(self) -> None:
+        predicate = _schema8_reader_policy()
+        for path in ("quick", "full", "super"):
+            with self.subTest(path=path):
+                row = _schema8_cell_row(SHA, path=path)
+                self.assertIs(
+                    qualifying_receipt.cell_results_verdict(row, predicate),
+                    qualifying_receipt.CellResultsVerdict.SATISFIED,
+                )
+
+        substituted = _schema8_cell_row(SHA, path="quick")
+        substituted["cell_results"]["path"] = "super"
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(substituted, predicate),
+            qualifying_receipt.CellResultsVerdict.PATH_MISMATCH,
+        )
+
+        selective = _schema8_cell_row(SHA)
+        selective["selection_mode"] = "selective"
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(selective, predicate),
+            qualifying_receipt.CellResultsVerdict.PATH_MISMATCH,
+        )
+
+    def test_schema8_explicit_empty_population_is_readable_but_not_full_green(self) -> None:
+        predicate = _schema8_reader_policy()
+        empty = _schema8_cell_row(SHA, path="super")
+        empty["cell_results"]["selected_count"] = 0
+        empty["cell_results"]["recorded_count"] = 0
+        empty["cell_results"]["selected"] = []
+        empty["cell_results"]["cells"] = []
+        empty["cell_results"]["artifact"]["row_count"] = 0
+        empty["cell_results"]["population_sha256"] = (
+            qualifying_receipt.cell_population_sha256([])
+        )
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(empty, predicate),
+            qualifying_receipt.CellResultsVerdict.SATISFIED,
+        )
+        projection = qualifying_receipt.cell_scorecard_projection(empty, predicate)
+        self.assertTrue(projection["eligible"])
+        self.assertEqual(projection["path"], "super")
+        self.assertEqual(projection["selected"], [])
+        self.assertEqual(projection["cells"], [])
+
+        empty["profile"] = "full"
+        empty["cell_results"]["path"] = "full"
+        self.assertEqual(
+            qualifying_receipt.row_qualification(empty, SHA, predicate),
+            (False, "cell_results incomplete for full validation"),
         )
 
     def test_validate_status_cli_keeps_newer_shape_readable_without_authority(

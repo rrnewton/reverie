@@ -11,10 +11,11 @@
 
 use crate::records::{
     CellIdentity, CellResult, CellResultsEvidence, CellVerdict, ComparisonStrictness,
-    ComparisonTier, HistoryRow, RequiredNullable,
+    ComparisonTier, HistoryRow, RequiredNullable, ValidatePath,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
@@ -70,6 +71,17 @@ struct CommitObservation {
     tree: String,
     toolchain: String,
     observation: Observation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RunFingerprint {
+    commit: String,
+    tree: String,
+    toolchain: String,
+    // `cell_results_evidence` normalizes schema 8 to the legacy evidence
+    // fields, so retain its path separately as part of physical-run identity.
+    validate_path: Option<ValidatePath>,
+    evidence: CellResultsEvidence,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -266,11 +278,11 @@ fn cell_key_nonblank(cell: &CellKey) -> bool {
 /// repetition evidence.
 /// The canonical ledger adapter additionally binds the retained artifact bytes;
 /// this check prevents any direct caller from bypassing the summary contract.
-fn validated_evidence(
-    row: &HistoryRow,
+fn validated_evidence<'a>(
+    row: &'a HistoryRow,
     schema_min: u32,
     schema_max: u32,
-) -> Result<Option<&CellResultsEvidence>, String> {
+) -> Result<Option<Cow<'a, CellResultsEvidence>>, String> {
     let schema = row.schema_version.unwrap_or(0);
     let evidence = row.cell_results.as_ref();
     if schema < schema_min {
@@ -280,12 +292,12 @@ fn validated_evidence(
             Err("legacy row illegally claims cell_results".into())
         };
     }
-    if schema > schema_max {
+    if schema > schema_max || !matches!(schema, 6 | 7 | 8) {
         return Ok(None);
     }
-    let evidence = evidence
-        .ok_or_else(|| format!("schema-{schema} row omits cell_results"))?
-        .typed()
+    evidence.ok_or_else(|| format!("schema-{schema} row omits cell_results"))?;
+    let evidence = row
+        .cell_results_evidence()
         .ok_or_else(|| format!("schema-{schema} row has malformed cell_results"))?;
     let run_id = row
         .run_id
@@ -301,37 +313,49 @@ fn validated_evidence(
     if evidence.source_tree_dirty {
         return Err("cell_results came from a dirty source tree".into());
     }
-    if evidence.selected_count == 0
-        || evidence.recorded_count == 0
-        || evidence.selected_count != evidence.selected.len() as u64
-        || evidence.recorded_count != evidence.cells.len() as u64
-        || evidence.artifact.row_count != evidence.recorded_count
-        || !retained_artifact_path(&evidence.artifact.path)
-        || !sha256(&evidence.artifact.sha256)
+    let selected = &evidence.selected;
+    let cells = &evidence.cells;
+    let artifact = &evidence.artifact;
+    let selected_count = evidence.selected_count;
+    let recorded_count = evidence.recorded_count;
+    if selected_count != selected.len() as u64
+        || recorded_count != cells.len() as u64
+        || artifact.row_count != recorded_count
+        || !retained_artifact_path(&artifact.path)
+        || !sha256(&artifact.sha256)
         || !sha256(&evidence.population_sha256)
     {
         return Err("cell_results counts or artifact identity are malformed".into());
     }
-    let selected: Vec<CellKey> = evidence.selected.iter().map(CellKey::from).collect();
-    let cells: Vec<CellKey> = evidence.cells.iter().map(CellKey::from).collect();
-    if selected.iter().any(|cell| !cell_key_nonblank(cell))
-        || cells.iter().any(|cell| !cell_key_nonblank(cell))
-        || selected.iter().collect::<BTreeSet<_>>().len() != selected.len()
-        || cells.iter().collect::<BTreeSet<_>>().len() != cells.len()
+    if schema < 8 && (selected_count == 0 || recorded_count == 0) {
+        return Err("cell_results counts or artifact identity are malformed".into());
+    }
+    if schema == 8
+        && (row.cell_results_validate_path().map(|path| path.as_str()) != row.profile.as_deref()
+            || row.selection_mode.as_deref() != Some("full"))
+    {
+        return Err("cell_results path differs from enclosing validation row".into());
+    }
+    let selected_keys: Vec<CellKey> = selected.iter().map(CellKey::from).collect();
+    let cell_keys: Vec<CellKey> = cells.iter().map(CellKey::from).collect();
+    if selected_keys.iter().any(|cell| !cell_key_nonblank(cell))
+        || cell_keys.iter().any(|cell| !cell_key_nonblank(cell))
+        || selected_keys.iter().collect::<BTreeSet<_>>().len() != selected_keys.len()
+        || cell_keys.iter().collect::<BTreeSet<_>>().len() != cell_keys.len()
     {
         return Err("cell_results contain blank or duplicate identities".into());
     }
-    let mut selected_sorted = selected;
-    let mut cells_sorted = cells;
-    selected_sorted.sort();
-    cells_sorted.sort();
-    if selected_sorted != cells_sorted {
+    let selected_set = selected_keys.iter().collect::<BTreeSet<_>>();
+    let cell_set = cell_keys.iter().collect::<BTreeSet<_>>();
+    if (schema < 8 && selected_set != cell_set)
+        || (schema == 8 && !cell_set.is_subset(&selected_set))
+    {
         return Err("cell_results selected population differs from recorded cells".into());
     }
-    if population_sha256(&evidence.selected) != evidence.population_sha256 {
+    if population_sha256(selected) != evidence.population_sha256 {
         return Err("cell_results population_sha256 does not bind selected identities".into());
     }
-    if evidence.cells.iter().any(|cell| {
+    if cells.iter().any(|cell| {
         !known_cell_mode(&cell.mode)
             || match &cell.cell_verdict {
                 CellVerdict::ComparedAndMatched { .. }
@@ -402,8 +426,10 @@ where
     };
     // Only obligations for cells selected by this candidate can block it. A
     // disabled/red cell remains visible in the scorecard but must not multiply
-    // unrelated validation work. Schema-6 binds this exact selected set.
-    let mut target_selected = BTreeSet::new();
+    // unrelated validation work. `None` means no supported evidence was
+    // available and therefore cannot narrow the obligations; `Some(empty)` is
+    // schema-8's explicit empty selection and must remain empty.
+    let mut target_selected: Option<BTreeSet<CellKey>> = None;
     for row in qualifying_target_rows
         .iter()
         .filter(|row| row.commit.as_deref() == Some(target_sha))
@@ -411,12 +437,14 @@ where
         if let Some(evidence) =
             validated_evidence(row, cell_results_schema_min, cell_results_schema_max)?
         {
-            target_selected.extend(evidence.selected.iter().map(CellKey::from));
+            target_selected
+                .get_or_insert_default()
+                .extend(evidence.selected.iter().map(CellKey::from));
         }
     }
     let mut by_cell_commit: BTreeMap<(CellKey, String, String, String), CommitObservation> =
         BTreeMap::new();
-    let mut runs: BTreeMap<String, (String, String, String, CellResultsEvidence)> = BTreeMap::new();
+    let mut runs: BTreeMap<String, RunFingerprint> = BTreeMap::new();
 
     for row in rows {
         let Some(at) = row.finished_at.as_deref() else {
@@ -443,12 +471,13 @@ where
             .run_id
             .as_deref()
             .expect("validated cell-results run_id");
-        let fingerprint = (
-            commit.to_owned(),
-            tree.to_owned(),
-            toolchain.to_owned(),
-            evidence.clone(),
-        );
+        let fingerprint = RunFingerprint {
+            commit: commit.to_owned(),
+            tree: tree.to_owned(),
+            toolchain: toolchain.to_owned(),
+            validate_path: row.cell_results_validate_path(),
+            evidence: evidence.as_ref().clone(),
+        };
         if let Some(existing) = runs.get(run_id) {
             if existing != &fingerprint {
                 return Err(format!("conflicting correction rows for run_id {run_id}"));
@@ -490,11 +519,13 @@ where
 
     let mut unresolved = Vec::new();
     for (cell, observations) in &mut by_cell {
-        // With a schema-6 selected set, only selected cells carry forward. If
+        // With a supported selected set, only selected cells carry forward. If
         // the candidate has no typed selected set at all, fail closed: absence
         // cannot prove that a previously failing cell is no longer selected.
-        if !target_selected.is_empty() && !target_selected.contains(cell) {
-            continue;
+        if let Some(selected) = &target_selected {
+            if !selected.contains(cell) {
+                continue;
+            }
         }
         observations.sort_by(|left, right| {
             left.first_seen
@@ -571,7 +602,7 @@ mod tests {
     const OTHER: &str = "3333333333333333333333333333333333333333";
     const OLD: &str = "0000000000000000000000000000000000000000";
     const CELL_RESULTS_SCHEMA_MIN: u32 = 6;
-    const CELL_RESULTS_SCHEMA_MAX: u32 = 7;
+    const CELL_RESULTS_SCHEMA_MAX: u32 = 8;
 
     fn comparison() -> ComparisonSpec {
         ComparisonSpec {
@@ -672,6 +703,15 @@ mod tests {
                 panic!("test row has a compared verdict")
             }
         }
+    }
+
+    fn schema8_row(commit: &str, ordinal: u64, matched: bool, path: &str) -> HistoryRow {
+        let mut value = serde_json::to_value(row(commit, ordinal, matched)).unwrap();
+        value["schema_version"] = serde_json::json!(8);
+        value["profile"] = serde_json::json!(path);
+        value["selection_mode"] = serde_json::json!("full");
+        value["cell_results"]["path"] = serde_json::json!(path);
+        serde_json::from_value(value).unwrap()
     }
 
     fn target_rows(rows: &[HistoryRow], target: &str) -> Vec<HistoryRow> {
@@ -913,7 +953,7 @@ mod tests {
     #[test]
     fn schema7_requires_the_current_exact_shape() {
         let mut current = row(FIX, 1, true);
-        current.schema_version = Some(CELL_RESULTS_SCHEMA_MAX);
+        current.schema_version = Some(7);
         assert!(
             validated_evidence(&current, CELL_RESULTS_SCHEMA_MIN, CELL_RESULTS_SCHEMA_MAX,)
                 .unwrap()
@@ -931,6 +971,104 @@ mod tests {
     }
 
     #[test]
+    fn schema8_keeps_selected_population_distinct_from_recorded_cells() {
+        let mut current = schema8_row(FIX, 1, true, "full");
+        let mut value = serde_json::to_value(&current).unwrap();
+        let mut second = value["cell_results"]["selected"][0].clone();
+        second["test"] = serde_json::json!("second-cell");
+        value["cell_results"]["selected"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+        value["cell_results"]["selected_count"] = serde_json::json!(2);
+        let selected: Vec<CellIdentity> =
+            serde_json::from_value(value["cell_results"]["selected"].clone()).unwrap();
+        value["cell_results"]["population_sha256"] =
+            serde_json::json!(population_sha256(&selected));
+        current = serde_json::from_value(value).unwrap();
+
+        let evidence =
+            validated_evidence(&current, CELL_RESULTS_SCHEMA_MIN, CELL_RESULTS_SCHEMA_MAX)
+                .unwrap()
+                .unwrap();
+        assert_eq!(evidence.selected_count, 2);
+        assert_eq!(evidence.recorded_count, 1);
+
+        let mut outside = serde_json::to_value(&current).unwrap();
+        outside["cell_results"]["cells"][0]["test"] = serde_json::json!("outside");
+        let outside: HistoryRow = serde_json::from_value(outside).unwrap();
+        assert_eq!(
+            validated_evidence(&outside, CELL_RESULTS_SCHEMA_MIN, CELL_RESULTS_SCHEMA_MAX,)
+                .unwrap_err(),
+            "cell_results selected population differs from recorded cells"
+        );
+    }
+
+    #[test]
+    fn schema8_requires_the_recorded_path_to_match_the_row() {
+        for path in ["quick", "full", "super"] {
+            let current = schema8_row(FIX, 1, true, path);
+            assert!(
+                validated_evidence(&current, CELL_RESULTS_SCHEMA_MIN, CELL_RESULTS_SCHEMA_MAX,)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+
+        let mut substituted = schema8_row(FIX, 1, true, "quick");
+        substituted.profile = Some("super".into());
+        assert_eq!(
+            validated_evidence(
+                &substituted,
+                CELL_RESULTS_SCHEMA_MIN,
+                CELL_RESULTS_SCHEMA_MAX,
+            )
+            .unwrap_err(),
+            "cell_results path differs from enclosing validation row"
+        );
+    }
+
+    #[test]
+    fn schema8_explicit_empty_population_is_readable() {
+        let current = schema8_row(FIX, 1, true, "super");
+        let mut value = serde_json::to_value(current).unwrap();
+        value["cell_results"]["selected_count"] = serde_json::json!(0);
+        value["cell_results"]["recorded_count"] = serde_json::json!(0);
+        value["cell_results"]["selected"] = serde_json::json!([]);
+        value["cell_results"]["cells"] = serde_json::json!([]);
+        value["cell_results"]["artifact"]["row_count"] = serde_json::json!(0);
+        value["cell_results"]["population_sha256"] = serde_json::json!(population_sha256(&[]));
+        let current: HistoryRow = serde_json::from_value(value).unwrap();
+        assert!(
+            validated_evidence(&current, CELL_RESULTS_SCHEMA_MIN, CELL_RESULTS_SCHEMA_MAX,)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn schema8_same_run_cannot_change_validate_path() {
+        let quick = schema8_row(FIX, 2, true, "quick");
+        let full = schema8_row(FIX, 2, true, "full");
+        let rows = [quick, full.clone()];
+
+        let error = unresolved(
+            &rows,
+            FIX,
+            &[full],
+            CELL_RESULTS_SCHEMA_MIN,
+            CELL_RESULTS_SCHEMA_MAX,
+            |ancestor, descendant| Ok(ancestor == descendant),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "conflicting correction rows for run_id run-2222222222222222222222222222222222222222-2"
+        );
+    }
+
+    #[test]
     fn newer_cell_results_are_readable_but_have_no_observation_authority() {
         let mut newer = row(OTHER, 1, false);
         newer.schema_version = Some(CELL_RESULTS_SCHEMA_MAX + 1);
@@ -945,6 +1083,24 @@ mod tests {
 
         let target = row(FIX, 2, true);
         assert!(evaluate(&[newer.clone(), target], FIX).unwrap().is_empty());
+
+        let mut known_shape_at_future_schema = schema8_row(OTHER, 1, false, "full");
+        known_shape_at_future_schema.schema_version = Some(CELL_RESULTS_SCHEMA_MAX + 1);
+        assert!(matches!(
+            known_shape_at_future_schema.cell_results,
+            Some(crate::records::CellResultsValue::Other(_))
+        ));
+        assert!(validated_evidence(
+            &known_shape_at_future_schema,
+            CELL_RESULTS_SCHEMA_MIN,
+            CELL_RESULTS_SCHEMA_MAX,
+        )
+        .unwrap()
+        .is_none());
+        let target = row(FIX, 2, true);
+        assert!(evaluate(&[known_shape_at_future_schema, target], FIX)
+            .unwrap()
+            .is_empty());
 
         newer.schema_version = Some(CELL_RESULTS_SCHEMA_MAX);
         assert!(
@@ -990,6 +1146,35 @@ mod tests {
         .unwrap();
         assert_eq!(obligations.len(), 1);
         assert_eq!(obligations[0].observed_clean_legs_at_target, 0);
+    }
+
+    #[test]
+    fn schema8_explicit_empty_selection_does_not_borrow_an_older_population() {
+        let failed = row(BAD, 1, false);
+        let empty = schema8_row(FIX, 2, true, "super");
+        let mut value = serde_json::to_value(empty).unwrap();
+        value["cell_results"]["selected_count"] = serde_json::json!(0);
+        value["cell_results"]["recorded_count"] = serde_json::json!(0);
+        value["cell_results"]["selected"] = serde_json::json!([]);
+        value["cell_results"]["cells"] = serde_json::json!([]);
+        value["cell_results"]["artifact"]["row_count"] = serde_json::json!(0);
+        value["cell_results"]["population_sha256"] = serde_json::json!(population_sha256(&[]));
+        let empty: HistoryRow = serde_json::from_value(value).unwrap();
+        let rows = [failed, empty.clone()];
+
+        let obligations = unresolved(
+            &rows,
+            FIX,
+            &[empty],
+            CELL_RESULTS_SCHEMA_MIN,
+            CELL_RESULTS_SCHEMA_MAX,
+            |ancestor, descendant| {
+                Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
+            },
+        )
+        .unwrap();
+
+        assert!(obligations.is_empty());
     }
 
     #[test]

@@ -46,7 +46,7 @@
 //! very drift this module exists to prevent.
 
 use crate::bounded_output::BoundedOutput;
-use crate::records::{CoverageRow, HistoryRow};
+use crate::records::{CoverageRow, HistoryRow, ValidatePath};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -1018,6 +1018,17 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
     if pred.gate_filtered_tests && row.filtered_tests != Some(0) {
         return Qualification::refused("filtered_tests != 0");
     }
+    if schema == 8
+        && schema >= pred.cell_results.applies_at_schema_min
+        && schema <= pred.cell_results.supported_schema_max
+        && row.cell_results_validate_path() == Some(ValidatePath::Full)
+    {
+        if let Some(evidence) = row.cell_results_evidence() {
+            if evidence.selected_count == 0 || evidence.recorded_count != evidence.selected_count {
+                return Qualification::refused("cell_results incomplete for full validation");
+            }
+        }
+    }
     let count_capable = schema >= pred.counts_schema;
     if count_capable && !gate_accounting_complete(row) {
         return Qualification::refused("outer gate accounting incomplete");
@@ -1239,6 +1250,34 @@ mod tests {
         .unwrap()
     }
 
+    fn schema8_empty_cell_results_row(sha: &str, path: &str) -> HistoryRow {
+        let mut value = serde_json::to_value(row_with_producer(
+            sha,
+            "2026-08-08T09:00:00Z",
+            Some("hermit-validate-sh"),
+        ))
+        .unwrap();
+        value["schema_version"] = serde_json::json!(8);
+        value["run_id"] = serde_json::json!("schema8-order");
+        value["cell_results"] = serde_json::json!({
+            "path": path,
+            "run_id": "schema8-order",
+            "hermit_sha": sha,
+            "source_tree_dirty": false,
+            "selected_count": 0,
+            "recorded_count": 0,
+            "population_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "artifact": {
+                "path": "ignored/validate/artifacts/schema8-order/cell-results.jsonl",
+                "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "row_count": 0,
+            },
+            "selected": [],
+            "cells": [],
+        });
+        serde_json::from_value(value).unwrap()
+    }
+
     /// The shipped predicate with the provenance epoch FLIPPED ON. The live file
     /// is deliberately inert until all four writers deploy, so every refusal
     /// assertion must mutate it -- otherwise the test proves only that the gate
@@ -1319,6 +1358,31 @@ mod tests {
         assert_eq!(
             refusal_reason(row_qualification(&above_limit, &sha, &pred)),
             "admission concurrent-validates-invalid"
+        );
+    }
+
+    #[test]
+    fn schema8_path_refusal_precedes_full_population_completeness() {
+        let sha = "b".repeat(40);
+        let mut pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
+        pred.cell_results.supported_schema_max = 7;
+        let unsupported = schema8_empty_cell_results_row(&sha, "full");
+        assert_eq!(
+            refusal_reason(row_qualification(&unsupported, &sha, &pred)),
+            "cell_results schema-unavailable"
+        );
+        pred.cell_results.supported_schema_max = 8;
+
+        let mismatched = schema8_empty_cell_results_row(&sha, "quick");
+        assert_eq!(
+            refusal_reason(row_qualification(&mismatched, &sha, &pred)),
+            "cell_results path-mismatch"
+        );
+
+        let matching_path = schema8_empty_cell_results_row(&sha, "full");
+        assert_eq!(
+            refusal_reason(row_qualification(&matching_path, &sha, &pred)),
+            "cell_results incomplete for full validation"
         );
     }
 

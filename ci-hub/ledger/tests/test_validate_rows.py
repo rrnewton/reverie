@@ -247,6 +247,47 @@ def with_cell_results(
     return source
 
 
+@pytest.fixture
+def schema8_reader_policy(monkeypatch: pytest.MonkeyPatch):
+    predicate = copy.deepcopy(validate_rows.qualifying_receipt.active())
+    predicate["cell_results"]["supported_schema_max"] = 8
+    monkeypatch.setattr(validate_rows.qualifying_receipt, "active", lambda: predicate)
+
+
+def with_schema8_cell_results(
+    source: dict,
+    root: Path,
+    *,
+    path: str = "full",
+    selected_count: int = 1,
+    recorded_count: int = 1,
+) -> dict:
+    source = with_cell_results(source, root)
+    source["schema_version"] = 8
+    source["profile"] = path
+    source["selection_mode"] = "full"
+    evidence = source["cell_results"]
+    evidence["path"] = path
+    if selected_count == 0:
+        evidence["selected"] = []
+    elif selected_count == 2:
+        second = {**evidence["selected"][0], "test": "second"}
+        evidence["selected"].append(second)
+    evidence["selected_count"] = selected_count
+    if recorded_count == 0:
+        evidence["cells"] = []
+    evidence["recorded_count"] = recorded_count
+    evidence["population_sha256"] = (
+        validate_rows.qualifying_receipt.cell_population_sha256(evidence["selected"])
+    )
+    artifact = root / evidence["artifact"]["path"]
+    raw = b"" if recorded_count == 0 else artifact.read_bytes()
+    artifact.write_bytes(raw)
+    evidence["artifact"]["sha256"] = hashlib.sha256(raw).hexdigest()
+    evidence["artifact"]["row_count"] = recorded_count
+    return source
+
+
 def test_record_is_immediately_visible_through_canonical_union(tmp_path: Path):
     source = row(tmp_path)
     report = validate_rows.record(source, root=tmp_path)
@@ -1022,6 +1063,65 @@ def test_schema6_accepts_each_closed_cell_verdict(tmp_path: Path, state: str):
     assert event["event_id"] == source["record_id"]
     assert event["run_id"] == source["run_id"]
     assert validate_rows.rows(root=tmp_path) == [source]
+
+
+def test_schema8_accepts_a_retained_subset_of_the_selected_path(tmp_path: Path, schema8_reader_policy):
+    source = with_schema8_cell_results(
+        row(tmp_path), tmp_path, path="quick", selected_count=2, recorded_count=1
+    )
+
+    validate_rows.record(source, root=tmp_path)
+
+    [recorded] = validate_rows.rows(root=tmp_path)
+    assert recorded["cell_results"]["path"] == "quick"
+    assert recorded["cell_results"]["selected_count"] == 2
+    assert recorded["cell_results"]["recorded_count"] == 1
+
+
+def test_schema8_accepts_an_explicit_empty_selected_population(tmp_path: Path, schema8_reader_policy):
+    source = with_schema8_cell_results(
+        row(tmp_path), tmp_path, path="super", selected_count=0, recorded_count=0
+    )
+
+    validate_rows.record(source, root=tmp_path)
+
+    [recorded] = validate_rows.rows(root=tmp_path)
+    assert recorded["cell_results"]["path"] == "super"
+    assert recorded["cell_results"]["selected"] == []
+    assert recorded["cell_results"]["cells"] == []
+
+
+def test_schema8_refuses_path_substitution_before_spool(tmp_path: Path, schema8_reader_policy):
+    source = with_schema8_cell_results(row(tmp_path), tmp_path, path="quick")
+    source["cell_results"]["path"] = "super"
+
+    with pytest.raises(ValueError, match="cell_results path-mismatch"):
+        validate_rows.record(source, root=tmp_path)
+
+    assert not validate_rows.live_spool_dir(tmp_path).exists()
+
+
+def test_schema8_refuses_a_recorded_cell_outside_selected(tmp_path: Path, schema8_reader_policy):
+    source = with_schema8_cell_results(
+        row(tmp_path), tmp_path, path="quick", selected_count=2, recorded_count=1
+    )
+    source["cell_results"]["cells"][0]["test"] = "outside"
+
+    with pytest.raises(ValueError, match="cell_results population-mismatch"):
+        validate_rows.record(source, root=tmp_path)
+
+    assert not validate_rows.live_spool_dir(tmp_path).exists()
+
+
+def test_schema7_refuses_the_schema8_path_field(tmp_path: Path, schema8_reader_policy):
+    source = with_cell_results(row(tmp_path), tmp_path)
+    source["schema_version"] = 7
+    source["cell_results"]["path"] = "full"
+
+    with pytest.raises(ValueError, match="cell_results malformed"):
+        validate_rows.record(source, root=tmp_path)
+
+    assert not validate_rows.live_spool_dir(tmp_path).exists()
 
 
 def test_raw_no_result_is_not_a_fifth_cell_verdict(tmp_path: Path):

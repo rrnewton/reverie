@@ -2050,9 +2050,7 @@ fn local_validation_status_description(row: &HistoryRow) -> String {
     let profile = row.profile.as_deref().unwrap_or("unknown profile");
     let mut coverage = Vec::new();
     if let Some(selected) = row
-        .cell_results
-        .as_ref()
-        .and_then(|value| value.typed())
+        .cell_results_evidence()
         .map(|value| value.selected_count)
     {
         coverage.push(format!("{selected} cells selected by {profile}"));
@@ -13901,6 +13899,7 @@ mod tests {
     #[test]
     fn local_validation_status_names_the_path_that_selected_cells() {
         let mut row: HistoryRow = serde_json::from_value(serde_json::json!({
+            "schema_version": 7,
             "profile": "full",
             "executed_tests": 2156,
             "gates_run": 76,

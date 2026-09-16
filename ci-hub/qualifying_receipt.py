@@ -649,11 +649,15 @@ class CellResultsVerdict(Enum):
     RUN_MISMATCH = "run-mismatch"
     WRONG_SHA = "wrong-sha"
     DIRTY_SOURCE = "dirty-source"
+    PATH_MISMATCH = "path-mismatch"
     POPULATION_MISMATCH = "population-mismatch"
     VERDICT_INVALID = "cell-verdict-invalid"
 
 
 _CELL_IDENTITY_KEYS = ("lane", "category", "test", "mode", "backend")
+_CELL_RESULTS_PATH_SCHEMA = 8
+_SUPPORTED_CELL_RESULTS_SCHEMAS = {6, 7, 8}
+_VALIDATE_PATHS = {"quick", "full", "super"}
 _COMPARISON_KEYS = {
     "strictness",
     "display_name",
@@ -873,11 +877,11 @@ def cell_results_verdict(
             if evidence is None
             else CellResultsVerdict.LEGACY_CLAIMS_CELL_RESULTS
         )
-    if schema > schema_max:
+    if schema > schema_max or schema not in _SUPPORTED_CELL_RESULTS_SCHEMAS:
         return CellResultsVerdict.SCHEMA_UNAVAILABLE
     if evidence is None:
         return CellResultsVerdict.MISSING
-    if not isinstance(evidence, dict) or set(evidence) != {
+    expected_keys = {
         "run_id",
         "hermit_sha",
         "source_tree_dirty",
@@ -887,7 +891,10 @@ def cell_results_verdict(
         "artifact",
         "selected",
         "cells",
-    }:
+    }
+    if schema == _CELL_RESULTS_PATH_SCHEMA:
+        expected_keys.add("path")
+    if not isinstance(evidence, dict) or set(evidence) != expected_keys:
         return CellResultsVerdict.MALFORMED
     if (
         not _nonblank(row.get("run_id"))
@@ -899,6 +906,12 @@ def cell_results_verdict(
         return CellResultsVerdict.WRONG_SHA
     if evidence.get("source_tree_dirty") is not False:
         return CellResultsVerdict.DIRTY_SOURCE
+    if schema == _CELL_RESULTS_PATH_SCHEMA and (
+        evidence.get("path") not in _VALIDATE_PATHS
+        or evidence.get("path") != row.get("profile")
+        or row.get("selection_mode") != "full"
+    ):
+        return CellResultsVerdict.PATH_MISMATCH
     selected_count = evidence.get("selected_count")
     recorded_count = evidence.get("recorded_count")
     selected = evidence.get("selected")
@@ -906,10 +919,12 @@ def cell_results_verdict(
     if (
         not _u64(selected_count)
         or not _u64(recorded_count)
-        or selected_count == 0
-        or recorded_count == 0
         or not isinstance(selected, list)
         or not isinstance(cells, list)
+    ):
+        return CellResultsVerdict.EMPTY
+    if schema < _CELL_RESULTS_PATH_SCHEMA and (
+        selected_count == 0 or recorded_count == 0
     ):
         return CellResultsVerdict.EMPTY
     artifact = evidence.get("artifact")
@@ -939,12 +954,32 @@ def cell_results_verdict(
         or len(cells) != recorded_count
         or len(set(identities)) != len(identities)
         or len(set(cell_identities)) != len(cell_identities)
-        or sorted(identities) != sorted(cell_identities)
         or not _sha256(evidence.get("population_sha256"))
         or cell_population_sha256(selected) != evidence["population_sha256"]
     ):
         return CellResultsVerdict.POPULATION_MISMATCH
+    selected_identities = set(identities)
+    recorded_identities = set(cell_identities)
+    if schema < _CELL_RESULTS_PATH_SCHEMA:
+        if selected_identities != recorded_identities:
+            return CellResultsVerdict.POPULATION_MISMATCH
+    elif not recorded_identities.issubset(selected_identities):
+        return CellResultsVerdict.POPULATION_MISMATCH
     return CellResultsVerdict.SATISFIED
+
+
+def cell_results_complete_for_full_validation(row: dict[str, Any]) -> bool:
+    """Keep schema-8 subset evidence from satisfying a complete full run."""
+    if row.get("schema_version") != _CELL_RESULTS_PATH_SCHEMA:
+        return True
+    evidence = row.get("cell_results")
+    if not isinstance(evidence, dict) or evidence.get("path") != "full":
+        return True
+    selected_count = evidence.get("selected_count")
+    recorded_count = evidence.get("recorded_count")
+    if not _u64(selected_count) or not _u64(recorded_count):
+        return True
+    return selected_count > 0 and recorded_count == selected_count
 
 
 def cell_results_accepted(verdict: CellResultsVerdict) -> bool:
@@ -990,9 +1025,12 @@ def cell_scorecard_projection(
                 None if status is CellResultsVerdict.GRANDFATHERED_UNKNOWN else False
             ),
             "status": status.value,
+            "path": None,
+            "selected": None,
             "green_count": None,
             "cells": None,
         }
+    evidence = row["cell_results"]
     cells = [
         {
             **{key: cell[key] for key in _CELL_IDENTITY_KEYS},
@@ -1006,6 +1044,11 @@ def cell_scorecard_projection(
         "eligible": True,
         "cell_results_satisfied": True,
         "status": status.value,
+        "path": evidence.get("path"),
+        "selected": [
+            {key: cell[key] for key in _CELL_IDENTITY_KEYS}
+            for cell in evidence["selected"]
+        ],
         "green_count": sum(cell["scorecard_green"] for cell in cells),
         "cells": cells,
     }
@@ -1561,6 +1604,8 @@ def _row_qualification_without_class(
         return False, PASSED_TESTS_REFUSAL_REASON
     if pred.get("gate_filtered_tests") and row.get("filtered_tests") != 0:
         return False, "filtered_tests!=0"
+    if not cell_results_complete_for_full_validation(row):
+        return False, "cell_results incomplete for full validation"
     if schema >= pred["counts_schema"]:
         gates_ok, gates_reason = gates_complete(row)
         if not gates_ok:

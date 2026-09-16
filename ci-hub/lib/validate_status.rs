@@ -2341,13 +2341,13 @@ mod tests {
     #[test]
     fn parse_ledger_reads_outer_version_before_deciding_newer_cell_results_shape() {
         let newer = format!(
-            r#"{{"schema_version":8,"record_id":"future-row","commit":"{OTHER_SHA}","cell_results":{{"future_field":true}}}}"#
+            r#"{{"schema_version":9,"record_id":"future-row","commit":"{OTHER_SHA}","cell_results":{{"future_field":true}}}}"#
         );
         let known = serde_json::to_string(&clean_full_pass(PASS_SHA)).unwrap();
         let (rows, failures) = parse_ledger(&format!("{newer}\n{known}\n"));
         assert!(failures.is_empty());
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].schema_version, Some(8));
+        assert_eq!(rows[0].schema_version, Some(9));
         assert!(matches!(
             rows[0].cell_results,
             Some(crate::records::CellResultsValue::Other(_))
