@@ -114,44 +114,82 @@ print(
 """
 
 
-def git_output(arguments: list[str], *, cwd: Path) -> str:
-    """One committed Git fact, or a refusal that names what was unreadable."""
-    result = subprocess.run(
-        ["git", *arguments], cwd=cwd, capture_output=True, text=True, timeout=120
-    )
-    if result.returncode != 0:
-        raise unittest.SkipTest(
-            f"git {' '.join(arguments)} in {cwd} failed: {result.stderr.strip()[:200]}"
+def git_text(arguments: list[str], *, cwd: Path) -> "str | None":
+    """One committed Git fact, or ``None`` when this checkout cannot supply it."""
+    try:
+        result = subprocess.run(
+            ["git", *arguments], cwd=cwd, capture_output=True, text=True, timeout=120
         )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
     return result.stdout.strip()
 
 
-def loaded_git_heads() -> dict[str, str]:
+def resolve_loaded_heads() -> "tuple[dict[str, str] | None, str]":
     """The three heads the authority binds, read from this actual checkout.
 
-    Not synthetic. `parent_sha` is this checkout's HEAD, `hermit_sha` is the
-    gitlink it records for Hermit, and `agent_utils_sha` is the gitlink that
-    Hermit commit records for Agent Utils. That is the published order, and the
-    authority binds all three, so a chain that is internally inconsistent is a
-    thing this file can see and a stub cannot.
+    Returns ``(heads, reason)``. ``heads`` is ``None`` when this checkout cannot
+    present the chain -- a linked worktree has an EMPTY `hermit` directory with
+    no `.git`, so the nested gitlink is unreadable there.
+
+    ⚠️ THIS RETURNS RATHER THAN SKIPPING, AND THAT IS THE WHOLE POINT. An earlier
+    version raised SkipTest from setUp. Measured 2026-09-16 in a linked worktree
+    at the landed tip: ALL EIGHT CASES SKIPPED and the suite reported `OK`. A
+    file written to close a "cannot fail for the reason it names" gap had become
+    exactly that. Only the chain leg needs these heads; every other leg runs
+    without them, and `test_the_chain_leg_is_absent_only_for_a_known_reason`
+    refuses a lookup that broke for any other cause.
     """
-    parent_sha = git_output(["rev-parse", "HEAD"], cwd=CHECKOUT_ROOT)
-    hermit_entry = git_output(["ls-tree", "HEAD", "hermit"], cwd=CHECKOUT_ROOT)
-    hermit_sha = hermit_entry.split()[2] if len(hermit_entry.split()) > 2 else ""
-    agent_utils_entry = git_output(
+    parent_sha = git_text(["rev-parse", "HEAD"], cwd=CHECKOUT_ROOT)
+    if parent_sha is None:
+        return None, "this checkout has no readable HEAD"
+    hermit_entry = git_text(["ls-tree", "HEAD", "hermit"], cwd=CHECKOUT_ROOT)
+    if hermit_entry is None or len(hermit_entry.split()) < 3:
+        return None, "this checkout records no hermit gitlink"
+    hermit_sha = hermit_entry.split()[2]
+    if not (CHECKOUT_ROOT / "hermit" / ".git").exists():
+        return None, "the hermit submodule is not initialized in this checkout"
+    agent_utils_entry = git_text(
         ["ls-tree", hermit_sha, "agent-utils"], cwd=CHECKOUT_ROOT / "hermit"
     )
-    parts = agent_utils_entry.split()
-    agent_utils_sha = parts[2] if len(parts) > 2 else ""
-    if not (len(parent_sha) == 40 and len(hermit_sha) == 40 and len(agent_utils_sha) == 40):
-        raise unittest.SkipTest(
-            "this checkout does not expose all three loaded heads: "
-            f"parent={parent_sha!r} hermit={hermit_sha!r} agent_utils={agent_utils_sha!r}"
-        )
+    if agent_utils_entry is None or len(agent_utils_entry.split()) < 3:
+        return None, "the hermit checkout cannot resolve its agent-utils gitlink"
+    agent_utils_sha = agent_utils_entry.split()[2]
+    for name, value in (
+        ("parent", parent_sha),
+        ("hermit", hermit_sha),
+        ("agent-utils", agent_utils_sha),
+    ):
+        if len(value) != 40:
+            return None, f"the {name} head is not a full sha: {value!r}"
+    return (
+        {
+            "parent_sha": parent_sha,
+            "hermit_sha": hermit_sha,
+            "agent_utils_sha": agent_utils_sha,
+        },
+        "",
+    )
+
+
+LOADED_HEADS, HEADS_UNAVAILABLE_REASON = resolve_loaded_heads()
+
+
+def fixture_heads() -> dict[str, str]:
+    """Heads for the legs that do not assert the chain, so they always run.
+
+    The parent value must be a full 40-hex because the verifier requires the
+    cached target to be canonical ``trees/<parent-sha>``; it does not have to be
+    the loaded head for the interpreter, byte-pin and inode legs.
+    """
+    if LOADED_HEADS is not None:
+        return LOADED_HEADS
     return {
-        "parent_sha": parent_sha,
-        "hermit_sha": hermit_sha,
-        "agent_utils_sha": agent_utils_sha,
+        "parent_sha": "0" * 40,
+        "hermit_sha": "1" * 40,
+        "agent_utils_sha": "2" * 40,
     }
 
 
@@ -291,7 +329,7 @@ class PublishedToolAuthorityTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name)
         self.addCleanup(self.restore_writability)
-        self.heads = loaded_git_heads()
+        self.heads = fixture_heads()
 
     def restore_writability(self) -> None:
         for path in sorted(self.base.rglob("*"), reverse=True):
@@ -353,6 +391,7 @@ class PublishedToolAuthorityTests(unittest.TestCase):
         self.assertEqual(loaded["parent_sha"], self.heads["parent_sha"])
         self.assertEqual(loaded["hermit_sha"], self.heads["hermit_sha"])
         self.assertEqual(loaded["agent_utils_sha"], self.heads["agent_utils_sha"])
+        self.assertEqual(loaded["content_sha256"], fixture.record["content_sha256"])
 
     # -- 2. the verifier's own bytes ---------------------------------------
 
@@ -370,16 +409,18 @@ class PublishedToolAuthorityTests(unittest.TestCase):
     # -- 3. the three loaded Git heads -------------------------------------
 
     def test_three_loaded_git_heads_round_trip_through_the_authority(self) -> None:
+        if LOADED_HEADS is None:
+            self.skipTest(HEADS_UNAVAILABLE_REASON)
         fixture = self.fixture()
         authority = authority_module.read_immutable_tool_authority(
             fixture.tool_root, fixture.state_root, fixture.environment()
         )
-        self.assertEqual(authority.parent_sha, self.heads["parent_sha"])
-        self.assertEqual(authority.hermit_sha, self.heads["hermit_sha"])
-        self.assertEqual(authority.agent_utils_sha, self.heads["agent_utils_sha"])
+        self.assertEqual(authority.parent_sha, LOADED_HEADS["parent_sha"])
+        self.assertEqual(authority.hermit_sha, LOADED_HEADS["hermit_sha"])
+        self.assertEqual(authority.agent_utils_sha, LOADED_HEADS["agent_utils_sha"])
         # The parent head is load-bearing, not decorative: the cached target must
         # be canonical trees/<parent-sha>.
-        self.assertEqual(authority.target_root.name, self.heads["parent_sha"])
+        self.assertEqual(authority.target_root.name, LOADED_HEADS["parent_sha"])
         self.assertEqual(authority.target_root.parent.name, "trees")
 
     def test_each_loaded_head_must_match_its_environment_binding(self) -> None:
@@ -427,6 +468,30 @@ class PublishedToolAuthorityTests(unittest.TestCase):
             authority_module.read_immutable_tool_authority(
                 fixture.tool_root, fixture.state_root, fixture.environment()
             )
+
+
+class ChainAvailabilityGuard(unittest.TestCase):
+    """The chain leg may be absent, but only for a reason this file recognises.
+
+    Without this, a lookup that broke for ANY new cause would silently downgrade
+    the chain leg to a skip and the suite would still report OK -- which is how
+    all eight cases skipped in a linked worktree before it existed.
+    """
+
+    KNOWN_ABSENCES = frozenset(
+        {"the hermit submodule is not initialized in this checkout"}
+    )
+
+    def test_the_chain_leg_is_absent_only_for_a_known_reason(self) -> None:
+        if LOADED_HEADS is not None:
+            return
+        self.assertIn(
+            HEADS_UNAVAILABLE_REASON,
+            self.KNOWN_ABSENCES,
+            "the loaded-head lookup failed for an unrecognised reason, so the "
+            "chain leg was downgraded to a skip rather than measured: "
+            f"{HEADS_UNAVAILABLE_REASON!r}",
+        )
 
 
 if __name__ == "__main__":
