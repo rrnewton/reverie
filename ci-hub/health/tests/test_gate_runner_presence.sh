@@ -264,6 +264,54 @@ got = harvest(m.report_lines(m.PRESENT, "svc", "/root", allp))["summary"]
 assert got == "PRESENT: all 4 surfaces PRESENT", got
 PY
 
+# The detector executes from an immutable tool snapshot while the installation
+# lives in the canonical state root. Exercise its real argument parser from a
+# different source path; the surface checks themselves are bracketed above.
+python3 - "$DETECTOR" <<'ROOT_SELECTION_PY' && { echo "  PASS  canonical state default, standalone fallback, and explicit override"; pass=$((pass + 1)); } || { echo "  FAIL  installation root selection"; fail=$((fail + 1)); }
+import contextlib
+import importlib.util
+import io
+import os
+from pathlib import Path
+import shutil
+import sys
+import tempfile
+from unittest import mock
+
+with tempfile.TemporaryDirectory(prefix="gate-runner-roots-") as temporary:
+    root = Path(temporary)
+    tool = root / "tool snapshot"
+    detector = tool / "ci-hub" / "health" / "gate_runner_presence.py"
+    detector.parent.mkdir(parents=True)
+    shutil.copy2(sys.argv[1], detector)
+    state = root / "operational state"
+    override = root / "explicit installation"
+    for label, state_root, arguments, expected in (
+        ("canonical state", state, [], state / "ci-runner" / "state-gate"),
+        ("standalone fallback", None, [], tool / "ci-runner" / "state-gate"),
+        ("explicit override", state, ["--install-root", str(override)], override),
+    ):
+        environment = dict(os.environ)
+        environment.pop("DEV_HERMIT_PARENT", None)
+        if state_root is not None:
+            environment["DEV_HERMIT_PARENT"] = str(state_root)
+        with mock.patch.dict(os.environ, environment, clear=True):
+            spec = importlib.util.spec_from_file_location("grp_roots", detector)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+            assert module.REPO_ROOT == tool, module.REPO_ROOT
+            with mock.patch.object(sys, "argv", [str(detector), *arguments]), \
+                    mock.patch.object(module, "evaluate", return_value=(module.NO_RESULT, [])) as evaluate, \
+                    mock.patch.object(module, "write_record") as write_record, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                assert module.main() == 2
+            evaluate.assert_called_once()
+            actual = Path(evaluate.call_args.args[0].install_root)
+            assert actual == expected, f"{label}: {actual} != {expected}"
+            write_record.assert_not_called()
+ROOT_SELECTION_PY
+
 echo
 echo "brackets: ${pass} passed, ${fail} failed"
 [[ $fail -eq 0 ]]

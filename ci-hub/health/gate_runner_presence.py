@@ -45,7 +45,11 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_INSTALL_ROOT = str(REPO_ROOT / "ci-runner" / "state-gate")
+# Immutable tool snapshots hold code; the runner installation belongs to the
+# canonical operational state root. Standalone invocations keep the repo default.
+DEFAULT_INSTALL_ROOT = str(
+    Path(os.environ.get("DEV_HERMIT_PARENT", REPO_ROOT)) / "ci-runner" / "state-gate"
+)
 DEFAULT_SERVICE = "hermit-gate-runner.service"
 DEFAULT_REPO = "rrnewton/hermit"
 
