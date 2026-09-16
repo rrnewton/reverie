@@ -214,7 +214,19 @@ class IdentityFixture(unittest.TestCase):
             cmdline=caller_cmdline,
         )
 
-    def resolve(self, *, task: str | None = "task-a") -> agent_identity.Resolution:
+    def resolve(
+        self,
+        *,
+        task: str | None = "task-a",
+        transcript_root: Path | None = None,
+    ) -> agent_identity.Resolution:
+        # A test must never read the real ~/.claude transcripts. Absent an
+        # explicit root, point at an empty directory inside the fixture so the
+        # fallback is exercised and finds nothing, rather than finding this
+        # machine's own sessions.
+        if transcript_root is None:
+            transcript_root = Path(self.temp.name) / "no-transcripts"
+            transcript_root.mkdir(parents=True, exist_ok=True)
         return agent_identity.resolve_identity(
             100,
             proc_root=self.proc,
@@ -222,6 +234,7 @@ class IdentityFixture(unittest.TestCase):
             state_path=self.state,
             task_id=task,
             task_db=self.db,
+            transcript_root=transcript_root,
         )
 
 
@@ -588,6 +601,103 @@ class ResolutionTests(IdentityFixture):
         self.assertEqual("process-cmdline", result.model_source)
         signal = next(s for s in result.signals if s.source == "process-model")
         self.assertEqual("resolved", signal.state)
+
+    # ------------------------------------------------------------------
+    # The transcript fallback. See session_model_signal for why it exists: the
+    # cmdline source is structurally unavailable for one whole client family
+    # because orc-launch.sh forbids the flag it reads, deliberately.
+
+    def _transcript(self, session_id: str, models: list[str]) -> Path:
+        root = Path(self.temp.name) / "projects" / "-some-project"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / f"{session_id}.jsonl"
+        with path.open("w", encoding="utf-8") as handle:
+            for model in models:
+                handle.write(json.dumps({"message": {"model": model}}) + "\n")
+        return Path(self.temp.name) / "projects"
+
+    def test_model_falls_back_to_the_transcript_the_client_wrote(self) -> None:
+        root = self._transcript("abc12345-0000", ["claude-opus-5", "claude-opus-5"])
+        self.standard_processes(
+            caller_cmdline=("claude", "--session-id", "abc12345-0000")
+        )
+        result = self.resolve(transcript_root=root)
+        self.assertEqual("claude-opus-5", result.model)
+        self.assertEqual("session-transcript", result.model_source)
+        # The cmdline source must still report honestly that it found nothing.
+        cmdline_signal = next(s for s in result.signals if s.source == "process-model")
+        self.assertEqual("unavailable", cmdline_signal.state)
+
+    def test_an_explicit_launch_model_still_wins_over_the_transcript(self) -> None:
+        """The fallback is additive and can never contradict an explicit flag."""
+        root = self._transcript("abc12345-0001", ["claude-opus-5"])
+        self.standard_processes(
+            caller_cmdline=(
+                "claude", "--model", "claude-sonnet-5", "--session-id", "abc12345-0001",
+            )
+        )
+        result = self.resolve(transcript_root=root)
+        self.assertEqual("claude-sonnet-5", result.model)
+        self.assertEqual("process-cmdline", result.model_source)
+
+    def test_a_synthetic_placeholder_is_not_a_second_model(self) -> None:
+        """⚠️ THE CONTROL FOR THE PLACEHOLDER FILTER.
+
+        ``<synthetic>`` appears alongside the real slug in 12 of 83 sessions
+        measured on this host. Counting it as a value would make every one of
+        those ambiguous, which resolves to ``unresolved`` -- turning a working
+        source into a silently empty one.
+        """
+        root = self._transcript("abc12345-0002", ["claude-opus-5", "<synthetic>"])
+        self.standard_processes(
+            caller_cmdline=("claude", "--session-id", "abc12345-0002")
+        )
+        result = self.resolve(transcript_root=root)
+        self.assertEqual("claude-opus-5", result.model)
+
+    def test_two_real_models_in_one_transcript_are_unresolved_not_a_guess(self) -> None:
+        root = self._transcript("abc12345-0003", ["claude-opus-5", "gpt-6-astra"])
+        self.standard_processes(
+            caller_cmdline=("claude", "--session-id", "abc12345-0003")
+        )
+        result = self.resolve(transcript_root=root)
+        self.assertEqual("unresolved", result.model)
+        signal = next(s for s in result.signals if s.source == "session-model")
+        self.assertEqual("ambiguous", signal.state)
+
+    def test_no_session_identifier_leaves_the_model_unresolved(self) -> None:
+        root = self._transcript("abc12345-0004", ["claude-opus-5"])
+        self.standard_processes(caller_cmdline=("claude", "--dangerously-skip-permissions"))
+        result = self.resolve(transcript_root=root)
+        self.assertEqual("unresolved", result.model)
+        signal = next(s for s in result.signals if s.source == "session-model")
+        self.assertEqual("unavailable", signal.state)
+
+    def test_a_missing_transcript_is_unavailable_rather_than_an_error(self) -> None:
+        root = Path(self.temp.name) / "projects"
+        root.mkdir(parents=True, exist_ok=True)
+        self.standard_processes(
+            caller_cmdline=("claude", "--session-id", "abc12345-9999")
+        )
+        result = self.resolve(transcript_root=root)
+        self.assertEqual("unresolved", result.model)
+        self.assertEqual("AGREEMENT", result.state)
+
+    def test_the_tail_read_finds_a_model_past_the_bound(self) -> None:
+        """Transcripts reach 26 MB here, so the read is bounded to a tail."""
+        root = Path(self.temp.name) / "projects" / "-big"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / "abc12345-0005.jsonl"
+        filler = json.dumps({"message": {"content": "x" * 4000}}) + "\n"
+        with path.open("w", encoding="utf-8") as handle:
+            while handle.tell() < agent_identity.TRANSCRIPT_TAIL_BYTES * 2:
+                handle.write(filler)
+            handle.write(json.dumps({"message": {"model": "claude-opus-5"}}) + "\n")
+        self.standard_processes(
+            caller_cmdline=("claude", "--session-id", "abc12345-0005")
+        )
+        result = self.resolve(transcript_root=Path(self.temp.name) / "projects")
+        self.assertEqual("claude-opus-5", result.model)
 
     def test_codex_client_family_is_resolved_without_an_explicit_model(self) -> None:
         self.standard_processes(caller_cmdline=("codex", "exec", "task"))

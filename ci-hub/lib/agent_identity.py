@@ -395,6 +395,171 @@ def model_signal(contexts: Sequence[ProcessContext]) -> tuple[Signal, str, str |
     return Signal("process-model", "unavailable", detail=detail), MODEL_UNRESOLVED, None
 
 
+SESSION_ID_FLAG = "--session-id"
+TRANSCRIPT_TAIL_BYTES = 524_288
+DEFAULT_TRANSCRIPT_ROOT = Path.home() / ".claude" / "projects"
+
+
+def _session_ids(argv: Sequence[str]) -> list[str]:
+    """Session identifiers a recognized client was launched with."""
+
+    start = _recognized_client_index(argv)
+    if start is None:
+        return []
+    args = list(argv[start + 1 :])
+    found: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        raw: str | None = None
+        consumed = 1
+        if arg == SESSION_ID_FLAG:
+            if index + 1 < len(args):
+                raw = args[index + 1]
+                consumed = 2
+        elif arg.startswith(SESSION_ID_FLAG + "="):
+            raw = arg.split("=", 1)[1]
+        if raw is not None and SESSION_ID_RE.fullmatch(raw):
+            found.append(raw)
+        index += consumed
+    return found
+
+
+SESSION_ID_RE = re.compile(r"[0-9a-fA-F-]{8,64}")
+
+
+def _transcript_models(path: Path) -> set[str]:
+    """Model slugs the client itself wrote into its own session transcript.
+
+    Reads a BOUNDED TAIL rather than the whole file: transcripts here reach
+    26 MB, and this resolver runs on every disclosure. Measured on the largest
+    one present, the last 512 KiB already carries the model.
+    """
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > TRANSCRIPT_TAIL_BYTES:
+                handle.seek(size - TRANSCRIPT_TAIL_BYTES)
+            blob = handle.read().decode("utf-8", "replace")
+    except OSError:
+        return set()
+    lines = blob.splitlines()
+    if size > TRANSCRIPT_TAIL_BYTES and lines:
+        # The first line of a mid-file seek is a fragment, not a record.
+        lines = lines[1:]
+    models: set[str] = set()
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        message = record.get("message")
+        raw = None
+        if isinstance(message, dict):
+            raw = message.get("model")
+        if raw is None:
+            raw = record.get("model")
+        if not isinstance(raw, str):
+            continue
+        # ⚠️ ``<synthetic>`` IS NOT A MODEL. It appears in 12 of 83 sessions
+        # measured here, and treating it as a second value would make every one
+        # of those ambiguous and therefore unresolved -- turning a working
+        # source into a silent one.
+        if raw.startswith("<") and raw.endswith(">"):
+            continue
+        model = _safe_model(raw)
+        if model is not None:
+            models.add(model)
+    return models
+
+
+def session_model_signal(
+    contexts: Sequence[ProcessContext],
+    transcript_root: Path | None = None,
+) -> tuple[Signal, str, str | None]:
+    """Resolve the model from the client's own transcript, or report unresolved.
+
+    ⚠️ WHY A SECOND SOURCE EXISTS AT ALL. :func:`model_signal` can only read a
+    model that was passed on the client's command line, and ``orc-launch.sh``
+    FORBIDS that flag -- "``--sandbox`` and ``--model`` are NOT repeatable", with
+    a self-test that fails if either appears. Codex is unaffected because the
+    launcher passes its model through the repeatable ``--config model=`` form,
+    which the cmdline parser reads. Claude has no equivalent there, so for one
+    whole client family the single source is structurally unavailable: measured
+    on this host, 3 of 128 live clients carried a model flag and all 3 were
+    codex. That is not a degradation to wait out, and working around the
+    launcher's prohibition would defeat a guard that is correct.
+
+    The transcript is machine-written by the client itself, and the session
+    identifier linking a process to it is already on the same cmdline this
+    resolver parses -- so nothing here is typed by a human, which is the
+    property the disclosure rule exists to protect.
+
+    ⚠️ AMBIGUITY IS UNRESOLVED, NOT A GUESS, matching :func:`model_signal`. Two
+    distinct slugs in one session resolve to nothing rather than to the nearest.
+    """
+    root = transcript_root if transcript_root is not None else DEFAULT_TRANSCRIPT_ROOT
+    session_ids: list[str] = []
+    for context in contexts:
+        if context.cmdline is None:
+            continue
+        for session_id in _session_ids(context.cmdline):
+            if session_id not in session_ids:
+                session_ids.append(session_id)
+    if not session_ids:
+        return (
+            Signal(
+                "session-model",
+                "unavailable",
+                detail="no recognized client cmdline carries a session identifier",
+            ),
+            MODEL_UNRESOLVED,
+            None,
+        )
+    models: set[str] = set()
+    read: list[str] = []
+    for session_id in session_ids:
+        for path in sorted(root.glob(f"*/{session_id}.jsonl")):
+            found = _transcript_models(path)
+            if found:
+                read.append(session_id)
+                models |= found
+    unique = tuple(sorted(models, key=str.casefold))
+    if len(unique) > 1:
+        return (
+            Signal(
+                "session-model",
+                "ambiguous",
+                detail="session transcript(s) record different models",
+                candidates=unique,
+            ),
+            MODEL_UNRESOLVED,
+            None,
+        )
+    if len(unique) == 1:
+        return (
+            Signal(
+                "session-model",
+                "resolved",
+                detail=f"model={unique[0]} recorded in transcript for session(s) "
+                + ",".join(read),
+            ),
+            unique[0],
+            "session-transcript",
+        )
+    return (
+        Signal(
+            "session-model",
+            "unavailable",
+            detail="no transcript found for session(s) " + ",".join(session_ids),
+        ),
+        MODEL_UNRESOLVED,
+        None,
+    )
+
+
 def _identity_signals(
     contexts: Sequence[ProcessContext], ancestry_error: str | None
 ) -> tuple[list[Signal], str | None, str | None, dict[str, str]]:
@@ -827,6 +992,7 @@ def resolve_identity(
     state_path: Path | None = None,
     task_id: str | None = None,
     task_db: Path | None = None,
+    transcript_root: Path | None = None,
 ) -> Resolution:
     """Resolve one caller, preserving every readable and unreadable basis."""
 
@@ -845,6 +1011,16 @@ def resolve_identity(
     signals, primary, primary_source, inherited_env = _identity_signals(contexts, ancestry_error)
     process_model_signal, model, model_source = model_signal(contexts)
     signals.append(process_model_signal)
+    if model == MODEL_UNRESOLVED:
+        # The cmdline source is structurally unavailable for one whole client
+        # family; see session_model_signal. Consulted only as a fallback, so an
+        # explicit launch model always wins and this can never contradict one.
+        transcript_signal, transcript_model, transcript_source = session_model_signal(
+            contexts, transcript_root
+        )
+        signals.append(transcript_signal)
+        if transcript_model != MODEL_UNRESOLVED:
+            model, model_source = transcript_model, transcript_source
     process_family_signal, client_family = client_family_signal(contexts)
     signals.append(process_family_signal)
 
