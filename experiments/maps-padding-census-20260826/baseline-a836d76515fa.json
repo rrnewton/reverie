@@ -1,0 +1,16 @@
+{
+  "head": "a836d76515fabd58fa08eed69c1c4c41107c05ae",
+  "note": "pre-fix baseline: last head before hermit#2693 landed",
+  "wall": "37m59s", "exit_code": 1,
+  "failing_tests_by_node": {
+    "test.liteinst_strict": ["liteinst_detcore_strict_verify_micro_suite","liteinst_fork_fails_closed_without_hanging","liteinst_strict_verify_encoding_and_digest_utilities","liteinst_strict_verify_file_and_text_utilities","liteinst_strict_verify_formatting_and_sequence_utilities","liteinst_strict_verify_identity_utilities","liteinst_strict_verify_path_and_language_utilities","liteinst_strict_verify_python_random_example","liteinst_strict_verify_round2_arithmetic_and_predicate_utilities","liteinst_strict_verify_round2_encoding_and_comparison_utilities","liteinst_strict_verify_round2_representation_and_path_utilities","liteinst_strict_verify_round3_portable_system_utilities","liteinst_strict_verify_round3_stdin_filter_utilities","liteinst_strict_verify_semantic_file_and_sqlite_utilities","liteinst_strict_verify_semantic_text_utilities","liteinst_strict_verify_virtual_identity_and_time","liteinst_thread_clone_fails_closed_without_sigsys"],
+    "test.cli": ["run_dbt_verifies_queued_self_signals","run_dbt_verifies_self_prlimit","run_liteinst_rejects_a_non_runtime_override_before_activation_claim","run_liteinst_rejects_an_inert_dso_before_activation_claim","run_liteinst_verifies_detcore_backend"],
+    "test.hermit_modes": ["verify_reports_exit_status_divergence","verify_reports_stdout_divergence","verify_verbose_compares_the_full_trace"],
+    "test.hermit_integration": ["sigsuspend_without_signal_reports_terminal_deadlock"],
+    "test.sabre_examples": ["sabre_non_racy_examples_verify_current_envelope"]
+  },
+  "e2e_cells": ["c-programs/arch-prctl-determinism (verify/ptrace)","c-programs/unix-autobind-stream (verify/liteinst)","language-runtimes/python-dict-hash-iteration (verify/ptrace)"],
+  "maps_attributed": 15,
+  "maps_attributed_all_in": "test.liteinst_strict",
+  "prediction": {"clear": 15, "remain": 12, "liteinst_strict_after": 2}
+}

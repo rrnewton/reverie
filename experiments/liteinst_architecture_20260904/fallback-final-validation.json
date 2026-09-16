@@ -1,0 +1,18 @@
+{
+  "mem_cap_factor": 1.0,
+  "mem_cap_floor_bytes": 8589934592,
+  "steps": [
+    {
+      "group": "test", "job": "final-rpc", "desc": "Rebuilt unpatchable fallback and adjacent installed-hook regression",
+      "cmd": "set -eu; cd /home/newton/work/dev-hermit/worktrees/slots/liteinst-syscall-fallback; ulimit -c 0; ulimit -f 65536; binary=/home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/target/debug/deps/rpc_tool-7ce51afa73642c97; date -u +%FT%TZ; sha256sum \"$binary\"; set +e; \"$binary\" unpatchable_syscall_dispatches_tool_after_signal_return --exact --nocapture --test-threads=1 > /home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/final-fallback.log 2>&1; fallback_status=$?; printf '%s\\n' \"$fallback_status\" > /home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/final-fallback.exit; \"$binary\" installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc --exact --nocapture --test-threads=1 > /home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/final-adjacent.log 2>&1; adjacent_status=$?; printf '%s\\n' \"$adjacent_status\" > /home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/final-adjacent.exit; date -u +%FT%TZ; test \"$fallback_status\" -eq 0 && test \"$adjacent_status\" -eq 0",
+      "timeout": 120, "cpu_timeout": 240,
+      "hint": {"rss_baseline_bytes":8589934592,"hard_mem_max_bytes":8589934592}
+    },
+    {
+      "group": "build", "job": "preload-unit", "desc": "Offline narrow shared syscall-driver unit build",
+      "cmd": "set -eu; cd /home/newton/work/dev-hermit/worktrees/slots/liteinst-syscall-fallback; export CARGO_TARGET_DIR=/home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/target CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=2; cargo test --locked --offline -j2 -p reverie-preload --no-default-features --features coordinator-rpc --lib --no-run > /home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/preload-unit-build.log 2>&1",
+      "timeout": 900, "cpu_timeout": 1800,
+      "hint": {"rss_baseline_bytes":8589934592,"hard_mem_max_bytes":8589934592}
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+run_id	test	backend	status	bitwise_parity	info_left	info_right	duration_ms	elf_linkage
+01_ioctl_ptrace	c-programs/ioctl-fioclex	ptrace	0	true	144	144	1027	dynamic
+02_ioctl_liteinst	c-programs/ioctl-fioclex	host-hybrid-liteinst	0	true	1172	1172	2739	dynamic
+03_tmpfile_ptrace	backend-parity-c/o-tmpfile-anon	ptrace	0	true	135	135	1007	dynamic
+04_tmpfile_liteinst	backend-parity-c/o-tmpfile-anon	host-hybrid-liteinst	0	true	1169	1169	2802	dynamic
+05_lock_ptrace	backend-parity-c/record-lock	ptrace	0	true	136	136	1000	dynamic
+06_lock_liteinst	backend-parity-c/record-lock	host-hybrid-liteinst	0	true	1164	1164	2740	dynamic

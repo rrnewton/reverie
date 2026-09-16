@@ -1,0 +1,1107 @@
+diff --git a/py/wrkslots/cli.py b/py/wrkslots/cli.py
+index 37cafc2..a74f2e4 100755
+--- a/py/wrkslots/cli.py
++++ b/py/wrkslots/cli.py
+@@ -238,9 +238,10 @@ class CacheDirectory:
+ 
+ 
+ @dataclasses.dataclass(frozen=True)
+-class ValidationRecoveryAuthorization:
+-    """Coordinator-authorized facts for one unregistered validation path."""
++class OwnerlessRecoveryAuthorization:
++    """Coordinator-authorized facts for one unregistered worktree or cache."""
+ 
++    slot_type: str
+     target_kind: str
+     path: str
+     identity: tuple[int, int, int]
+@@ -252,6 +253,8 @@ class ValidationRecoveryAuthorization:
+     head: str | None = None
+     remote_url_sha256: str | None = None
+     parent_identity: tuple[int, int, int] | None = None
++    repository_facts: tuple[Mapping[str, object], ...] = ()
++    content_sha256: str | None = None
+ 
+ 
+ def _utc_now() -> str:
+@@ -2849,11 +2852,18 @@ class _GitVcs:
+         _validate_ref(branch, "branch")
+         return branch
+ 
+-    def status(self, checkout: Path, cache_globs: Sequence[str] = ()) -> str:
++    def status(
++        self,
++        checkout: Path,
++        cache_globs: Sequence[str] = (),
++        *,
++        ignore_submodule_dirt: bool = False,
++    ) -> str:
+         pathspecs = ["."]
+         for pattern in cache_globs:
+             pathspecs.append(f":(exclude,glob){pattern}")
+             pathspecs.append(f":(exclude,glob){pattern}/**")
++        submodule_args = ["--ignore-submodules=dirty"] if ignore_submodule_dirt else []
+         result = self._run(
+             checkout,
+             [
+@@ -2861,6 +2871,7 @@ class _GitVcs:
+                 "--porcelain=v2",
+                 "--untracked-files=all",
+                 "--ignored=matching",
++                *submodule_args,
+                 "--",
+                 *pathspecs,
+             ],
+@@ -9875,30 +9886,61 @@ def _recover_legacy_validate_remove(
+     )
+ 
+ 
+-def _validation_recovery_target(
+-    config: Config, raw: str, target_kind: str
++def _ownerless_recovery_target(
++    config: Config, raw: str, slot_type: str, target_kind: str
+ ) -> tuple[str, Path, tuple[str, str] | None]:
+-    relative, target = _relative_inside(config.root, raw, "validation recovery path")
++    relative, target = _relative_inside(config.root, raw, "ownerless recovery path")
+     validate_root = _validate_slots_directory(config)
+-    if target_kind == "checkout":
++    if slot_type == "agent":
++        allowed_path = (
++            target_kind == "checkout"
++            and target.parent == config.worktrees
++            and target.name != "ignored"
++        )
++        allowed = ("agent", target.name) if allowed_path else None
++    elif target_kind == "checkout":
+         allowed = target.parent == validate_root or (
+             target.parent == config.root / "ignored"
+             and target.name.startswith("validate-fresh-")
+         )
++        allowed = ("validate", target.name) if allowed and target.parent == validate_root else None
+     elif target_kind == "cargo-home":
+-        allowed = target.name.startswith("validate-cargo-") and target.parent in {
++        allowed_path = target.name.startswith("validate-cargo-") and target.parent in {
+             validate_root,
+             config.root / "ignored" / "validate" / "cargo-homes",
+         }
++        allowed = (
++            ("validate", target.name)
++            if allowed_path and target.parent == validate_root
++            else None
++        )
+     else:
+-        raise StateError(f"unknown validation recovery target kind {target_kind!r}")
+-    if not allowed:
++        raise StateError(f"unknown ownerless recovery target kind {target_kind!r}")
++    if slot_type not in SLOT_TYPES:
++        raise StateError(f"unknown ownerless recovery slot type {slot_type!r}")
++    if slot_type == "agent" and not allowed_path:
++        raise Refusal(
++            f"agent checkout path is outside the exact managed agent directory: {target}"
++        )
++    if slot_type == "validate" and target_kind == "checkout":
++        allowed_path = target.parent == validate_root or (
++            target.parent == config.root / "ignored"
++            and target.name.startswith("validate-fresh-")
++        )
++    if slot_type == "validate" and not allowed_path:
+         raise Refusal(
+             f"{target_kind} path is outside the exact validation directories: {target}"
+         )
+-    _validate_name(target.name, "validation recovery path name")
+-    slot = ("validate", target.name) if target.parent == validate_root else None
+-    return relative, target, slot
++    _validate_name(target.name, "ownerless recovery path name")
++    return relative, target, allowed
++
++
++def _validation_recovery_target(
++    config: Config, raw: str, target_kind: str
++) -> tuple[str, Path, tuple[str, str] | None]:
++    """Compatibility entry point for validation-only callers."""
++
++    return _ownerless_recovery_target(config, raw, "validate", target_kind)
+ 
+ 
+ def _terminal_validation_record(
+@@ -9983,7 +10025,7 @@ def _recordless_validation_evidence(
+     return {"kind": "coordinator-determination", "note": note.strip(), "no_retained_record": True}
+ 
+ 
+-def _ownerless_validation_blocking_status(
++def _ownerless_worktree_blocking_status(
+     status: str, cache_globs: Sequence[str]
+ ) -> str:
+     """Keep every porcelain record except ignored paths under explicit safe roots."""
+@@ -9998,48 +10040,245 @@ def _ownerless_validation_blocking_status(
+     return "\n".join(blocking)
+ 
+ 
+-def _validation_checkout_facts(
++def _ownerless_validation_blocking_status(
++    status: str, cache_globs: Sequence[str]
++) -> str:
++    """Compatibility name for the ownerless-worktree porcelain classifier."""
++
++    return _ownerless_worktree_blocking_status(status, cache_globs)
++
++
++def _ownerless_repository_paths(
++    config: Config,
++    checkout: Path,
++    repository: Path,
++    vcs: _GitVcs,
++) -> tuple[tuple[str, Path, Path], ...]:
++    result: list[tuple[str, Path, Path]] = [(".", checkout, repository)]
++    for relative_value in vcs.initialized_submodules(checkout):
++        relative = Path(relative_value)
++        managed = checkout / relative
++        source = repository / relative
++        _ensure_no_symlink_components(checkout, managed, "nested repository")
++        _ensure_no_symlink_components(config.root, source, "source submodule")
++        if managed.is_symlink() or not managed.is_dir():
++            raise Refusal(f"nested repository path is unsafe: {managed}")
++        if source.is_symlink() or not source.is_dir():
++            raise Refusal(
++                f"source submodule is unavailable for {relative_value}: {source}"
++            )
++        if vcs.repository_root(managed) != managed.absolute():
++            raise Refusal(f"nested repository is not rooted at its recorded path: {managed}")
++        if vcs.repository_root(source) != source.absolute():
++            raise Refusal(f"source submodule is not a Git root: {source}")
++        result.append((relative.as_posix(), managed, source))
++    return tuple(result)
++
++
++def _ownerless_rescue_ref(
++    config: Config, target: Path, relative: str, head: str
++) -> str:
++    repository_name = "root" if relative == "." else relative.replace("/", "-")
++    ref = (
++        f"refs/heads/rescue/wrkslots/{config.machine}/{target.name}/"
++        f"{repository_name}-{head[:12]}"
++    )
++    _validate_full_ref(ref, "ownerless worktree rescue ref")
++    return ref
++
++
++def _ownerless_snapshot_excluded(
++    relative: Path,
++    repository_paths: Sequence[str],
++    safe_roots: Sequence[str],
++) -> bool:
++    for repository_value in repository_paths:
++        repository_relative = Path(repository_value)
++        try:
++            local = relative if repository_value == "." else relative.relative_to(repository_relative)
++        except ValueError:
++            continue
++        if local == Path(".git") or ".git" in local.parents:
++            return True
++        local_value = local.as_posix()
++        if local_value != "." and any(
++            _cache_glob_contains_path(pattern, local_value) for pattern in safe_roots
++        ):
++            return True
++    return False
++
++
++def _ownerless_worktree_content_sha256(
++    checkout: Path,
++    repository_paths: Sequence[str],
++    safe_roots: Sequence[str],
++) -> str:
++    """Hash non-cache checkout contents without consulting Git after a path fence."""
++
++    digest = hashlib.sha256()
++
++    def add(value: bytes) -> None:
++        digest.update(len(value).to_bytes(8, "big"))
++        digest.update(value)
++
++    def visit(directory: Path, relative: Path) -> None:
++        try:
++            entries = sorted(os.scandir(directory), key=lambda item: os.fsencode(item.name))
++        except OSError as exc:
++            raise Refusal(f"cannot inspect ownerless worktree contents at {directory}: {exc}") from exc
++        for entry in entries:
++            child_relative = relative / entry.name
++            if _ownerless_snapshot_excluded(
++                child_relative, repository_paths, safe_roots
++            ):
++                continue
++            try:
++                before = entry.stat(follow_symlinks=False)
++            except OSError as exc:
++                raise Refusal(
++                    f"cannot inspect ownerless worktree entry {directory / entry.name}: {exc}"
++                ) from exc
++            add(os.fsencode(child_relative.as_posix()))
++            add(str(stat.S_IMODE(before.st_mode)).encode("ascii"))
++            child = directory / entry.name
++            if stat.S_ISDIR(before.st_mode):
++                add(b"directory")
++                visit(child, child_relative)
++            elif stat.S_ISREG(before.st_mode):
++                add(b"file")
++                try:
++                    contents = child.read_bytes()
++                    after = child.stat(follow_symlinks=False)
++                except OSError as exc:
++                    raise Refusal(
++                        f"cannot read ownerless worktree entry {child}: {exc}"
++                    ) from exc
++                if (
++                    not stat.S_ISREG(after.st_mode)
++                    or before.st_dev != after.st_dev
++                    or before.st_ino != after.st_ino
++                    or before.st_size != after.st_size
++                    or before.st_mtime_ns != after.st_mtime_ns
++                ):
++                    raise Refusal(f"ownerless worktree changed while reading {child}")
++                add(contents)
++            elif stat.S_ISLNK(before.st_mode):
++                add(b"symlink")
++                try:
++                    add(os.fsencode(os.readlink(child)))
++                except OSError as exc:
++                    raise Refusal(
++                        f"cannot read ownerless worktree symlink {child}: {exc}"
++                    ) from exc
++            else:
++                raise Refusal(f"ownerless worktree contains a special file: {child}")
++
++    visit(checkout, Path())
++    return digest.hexdigest()
++
++
++def _ownerless_worktree_facts(
+     config: Config,
+     checkout: Path,
+     repository: Path,
+     *,
++    slot_type: str,
+     expected_head: str | None = None,
+     expected_remote: str | None = None,
+-) -> tuple[str, str]:
++    expected_repositories: Sequence[Mapping[str, object]] = (),
++    expected_content_sha256: str | None = None,
++) -> tuple[str, str, tuple[Mapping[str, object], ...], str]:
+     if repository == checkout or _path_is_within(repository, checkout):
+         raise Refusal("repository must survive removal and cannot be inside the checkout")
+     if checkout.is_symlink() or not checkout.is_dir():
+-        raise Refusal(f"validation checkout is absent or unsafe: {checkout}")
+-    _ensure_no_mount_components(checkout.parent, checkout, "validation checkout")
+-    _assert_no_mountinfo_crossing(checkout, checkout, "validation checkout")
+-    if (checkout / "HANDOFF.md").exists() or (checkout / "HANDOFF.md").is_symlink():
+-        raise Refusal(f"validation checkout contains HANDOFF.md: {checkout}")
++        raise Refusal(f"ownerless worktree is absent or unsafe: {checkout}")
++    _ensure_no_mount_components(checkout.parent, checkout, "ownerless worktree")
++    _assert_no_mountinfo_crossing(checkout, checkout, "ownerless worktree")
+     vcs = _GitVcs()
+     head = vcs.verify_existing_worktree(repository, checkout)
+     if expected_head is not None and head != expected_head:
+-        raise Refusal("validation checkout HEAD changed after recovery was authorized")
+-    vcs.assert_ordinary_history(checkout)
+-    vcs.assert_ordinary_index(checkout)
+-    _assert_cache_policy_untracked_path(
+-        config, "ownerless-validation", checkout, vcs, config.cache_globs
++        raise Refusal("ownerless worktree HEAD changed after recovery was authorized")
++    repositories = _ownerless_repository_paths(config, checkout, repository, vcs)
++    safe_roots = (
++        ("ignored", *config.cache_globs)
++        if slot_type == "validate"
++        else config.cache_globs
+     )
+-    status = _ownerless_validation_blocking_status(
+-        vcs.status(checkout, config.cache_globs), ("ignored", *config.cache_globs)
+-    )
+-    if status:
+-        raise Refusal(f"validation checkout is dirty ({status.splitlines()[0]}); preserve it")
+     remote = config.default_remote
+     landed_ref = _landed_ref_for_remote(config, remote)
+-    remote_digest = vcs.remote_url_sha256(checkout, remote)
+-    if expected_remote is not None and remote_digest != expected_remote:
+-        raise Refusal("validation checkout remote changed after recovery was authorized")
+-    vcs.fetch_remote(checkout, remote, landed_ref)
+-    if vcs.remote_url_sha256(checkout, remote) != remote_digest:
+-        raise Refusal("validation checkout remote changed during recovery fetch")
+-    if not vcs.remote_refs_containing(checkout, remote, head):
+-        raise Refusal(f"validation checkout HEAD {head} is not contained by remote {remote}")
++    facts: list[Mapping[str, object]] = []
++    for relative, managed, source in repositories:
++        handoff = managed / "HANDOFF.md"
++        if handoff.exists() or handoff.is_symlink():
++            raise Refusal(f"ownerless worktree contains HANDOFF.md: {managed}")
++        vcs.assert_ordinary_history(managed)
++        vcs.assert_ordinary_index(managed)
++        _assert_cache_policy_untracked_path(
++            config, "ownerless-worktree", managed, vcs, config.cache_globs
++        )
++        status = _ownerless_worktree_blocking_status(
++            vcs.status(
++                managed,
++                config.cache_globs,
++                ignore_submodule_dirt=True,
++            ),
++            safe_roots,
++        )
++        if status:
++            raise Refusal(
++                f"ownerless worktree is dirty ({relative}: {status.splitlines()[0]}); "
++                "preserve it"
++            )
++        nested_head = vcs.head(managed)
++        authorized_remote = vcs.remote_url_sha256(source, remote)
++        remote_digest = vcs.remote_url_sha256(managed, remote)
++        if remote_digest != authorized_remote:
++            raise Refusal(
++                f"ownerless worktree remote differs from its source at {relative}"
++            )
++        if relative == "." and expected_remote is not None and remote_digest != expected_remote:
++            raise Refusal("ownerless worktree remote changed after recovery was authorized")
++        vcs.fetch_remote(managed, remote, landed_ref)
++        if vcs.remote_url_sha256(managed, remote) != remote_digest:
++            raise Refusal(
++                f"ownerless worktree remote changed during recovery fetch at {relative}"
++            )
++        rescue_ref: str | None = None
++        if slot_type == "agent":
++            rescue_ref = _ownerless_rescue_ref(config, checkout, relative, nested_head)
++            vcs.push_salvage(managed, remote, nested_head, rescue_ref)
++            if vcs.remote_ref_sha(managed, remote, rescue_ref) != nested_head:
++                raise Refusal(
++                    f"ownerless worktree rescue ref changed during readback at {relative}"
++                )
++        elif not vcs.remote_refs_containing(managed, remote, nested_head):
++            raise Refusal(
++                f"ownerless worktree HEAD {nested_head} at {relative} is not contained "
++                f"by remote {remote}"
++            )
++        facts.append(
++            {
++                "path": relative,
++                "source_repository": source.relative_to(config.root).as_posix(),
++                "head": nested_head,
++                "remote": remote,
++                "remote_url_sha256": remote_digest,
++                "rescue_ref": rescue_ref,
++            }
++        )
++    if expected_repositories and not _json_equal(list(facts), list(expected_repositories)):
++        raise Refusal("ownerless worktree repository evidence changed after authorization")
++    repository_paths = tuple(
++        _as_str(item["path"], "ownerless repository path") for item in facts
++    )
++    content_sha256 = _ownerless_worktree_content_sha256(
++        checkout, repository_paths, safe_roots
++    )
++    if expected_content_sha256 is not None and content_sha256 != expected_content_sha256:
++        raise Refusal("ownerless worktree contents changed after recovery was authorized")
+     _assert_slot_unused(checkout)
+-    return head, remote_digest
++    root_remote = _as_str(facts[0]["remote_url_sha256"], "ownerless root remote")
++    return head, root_remote, tuple(facts), content_sha256
+ 
+ 
+ def _validation_cargo_facts(path: Path) -> tuple[int, int, int]:
+@@ -10055,8 +10294,8 @@ def _validation_cargo_facts(path: Path) -> tuple[int, int, int]:
+     return _open_directory_identity(path.parent, "validation Cargo-home parent")
+ 
+ 
+-def _validation_authorization_to_obj(
+-    value: ValidationRecoveryAuthorization,
++def _ownerless_authorization_to_obj(
++    value: OwnerlessRecoveryAuthorization,
+ ) -> dict[str, object]:
+     return {
+         **dataclasses.asdict(value),
+@@ -10064,58 +10303,109 @@ def _validation_authorization_to_obj(
+         "actor": _identity_to_obj(value.actor),
+         "evidence": dict(value.evidence),
+         "parent_identity": None if value.parent_identity is None else list(value.parent_identity),
++        "repository_facts": [dict(item) for item in value.repository_facts],
+     }
+ 
+ 
+-def _validation_authorization_from_obj(value: object) -> ValidationRecoveryAuthorization:
+-    raw = _as_mapping(value, "validation recovery authorization")
+-    required = {field.name for field in dataclasses.fields(ValidationRecoveryAuthorization)}
+-    _exact_keys(raw, required, set(), "validation recovery authorization")
+-    actor = _identity_from_obj(raw["actor"], "validation recovery actor")
++def _ownerless_authorization_from_obj(value: object) -> OwnerlessRecoveryAuthorization:
++    raw = _as_mapping(value, "ownerless recovery authorization")
++    legacy_required = {
++        "target_kind",
++        "path",
++        "identity",
++        "actor",
++        "evidence",
++        "no_authored_work",
++        "no_live_use",
++        "repository",
++        "head",
++        "remote_url_sha256",
++        "parent_identity",
++    }
++    optional = {"slot_type", "repository_facts", "content_sha256"}
++    _exact_keys(raw, legacy_required, optional, "ownerless recovery authorization")
++    actor = _identity_from_obj(raw["actor"], "ownerless recovery actor")
+     if actor is None or raw["no_authored_work"] is not True or raw["no_live_use"] is not True:
+-        raise StateError("validation recovery authorization is incomplete")
+-    identity = tuple(_as_int(item, "validation path identity") for item in _as_list(raw["identity"], "validation path identity"))
++        raise StateError("ownerless recovery authorization is incomplete")
++    identity = tuple(_as_int(item, "ownerless path identity") for item in _as_list(raw["identity"], "ownerless path identity"))
+     parent = None if raw["parent_identity"] is None else tuple(
+-        _as_int(item, "validation parent identity")
+-        for item in _as_list(raw["parent_identity"], "validation parent identity")
++        _as_int(item, "ownerless parent identity")
++        for item in _as_list(raw["parent_identity"], "ownerless parent identity")
+     )
+     if len(identity) != 3 or (parent is not None and len(parent) != 3):
+-        raise StateError("validation recovery directory identity must have three fields")
+-    return ValidationRecoveryAuthorization(
+-        target_kind=_as_str(raw["target_kind"], "validation target kind"),
+-        path=_as_str(raw["path"], "validation path"),
++        raise StateError("ownerless recovery directory identity must have three fields")
++    repository_facts = tuple(
++        _as_mapping(item, f"ownerless repository_facts[{index}]")
++        for index, item in enumerate(
++            _as_list(raw.get("repository_facts", []), "ownerless repository_facts")
++        )
++    )
++    slot_type = _as_str(raw.get("slot_type", "validate"), "ownerless slot type")
++    if slot_type not in SLOT_TYPES:
++        raise StateError(f"unknown ownerless slot type {slot_type!r}")
++    return OwnerlessRecoveryAuthorization(
++        slot_type=slot_type,
++        target_kind=_as_str(raw["target_kind"], "ownerless target kind"),
++        path=_as_str(raw["path"], "ownerless path"),
+         identity=identity,
+         actor=actor,
+-        evidence=_as_mapping(raw["evidence"], "validation recovery evidence"),
++        evidence=_as_mapping(raw["evidence"], "ownerless recovery evidence"),
+         no_authored_work=True,
+         no_live_use=True,
+-        repository=None if raw["repository"] is None else _as_str(raw["repository"], "validation repository"),
+-        head=None if raw["head"] is None else _as_str(raw["head"], "validation HEAD"),
+-        remote_url_sha256=None if raw["remote_url_sha256"] is None else _as_str(raw["remote_url_sha256"], "validation remote digest"),
++        repository=None if raw["repository"] is None else _as_str(raw["repository"], "ownerless repository"),
++        head=None if raw["head"] is None else _as_str(raw["head"], "ownerless HEAD"),
++        remote_url_sha256=None if raw["remote_url_sha256"] is None else _as_str(raw["remote_url_sha256"], "ownerless remote digest"),
+         parent_identity=parent,
++        repository_facts=repository_facts,
++        content_sha256=(
++            None
++            if raw.get("content_sha256") is None
++            else _as_str(raw["content_sha256"], "ownerless content digest")
++        ),
+     )
+ 
+ 
+-def _ownerless_validation_journal(
++def _ownerless_recovery_journal(
+     config: Config,
+     args: argparse.Namespace,
+     coordinator: ProcessIdentity,
+     states: Sequence[ActiveState],
+ ) -> tuple[dict[str, object], tuple[str, str] | None]:
+-    target_kind = "checkout" if args.ownerless_validate_checkout is not None else "cargo-home"
+-    raw_target = args.ownerless_validate_checkout or args.ownerless_validate_cargo_home
++    slot_type = "agent" if args.ownerless_agent_checkout is not None else "validate"
++    target_kind = (
++        "cargo-home"
++        if args.ownerless_validate_cargo_home is not None
++        else "checkout"
++    )
++    raw_target = (
++        args.ownerless_agent_checkout
++        or args.ownerless_validate_checkout
++        or args.ownerless_validate_cargo_home
++    )
+     assert raw_target is not None
+-    relative, target, allowed = _validation_recovery_target(config, raw_target, target_kind)
++    relative, target, allowed = _ownerless_recovery_target(
++        config, raw_target, slot_type, target_kind
++    )
+     for state in states:
+         for record in state.slots:
+             slot_path = _slot_directory(config, record.slot, record.slot_type)
+             if target == slot_path or _path_is_within(target, slot_path):
+-                raise Refusal(f"validation path belongs to registered slot {record.slot}")
+-    if args.completed_record is not None:
++                raise Refusal(f"ownerless path belongs to registered slot {record.slot}")
++    if slot_type == "agent":
++        if args.completed_record is not None:
++            raise Refusal("--completed-record applies only to validation recovery")
++        if args.recovery_note is None or not args.recovery_note.strip():
++            raise Refusal("ownerless agent recovery requires a non-empty --recovery-note")
++        evidence: Mapping[str, object] = {
++            "kind": "coordinator-determination",
++            "note": args.recovery_note.strip(),
++            "no_active_record": True,
++        }
++    elif args.completed_record is not None:
+         record_path, digest = _terminal_validation_record(
+             config, args.completed_record, target, target_kind
+         )
+-        evidence: Mapping[str, object] = {
++        evidence = {
+             "kind": "terminal-record",
+             "path": record_path,
+             "sha256": digest,
+@@ -10126,23 +10416,36 @@ def _ownerless_validation_journal(
+         evidence = _recordless_validation_evidence(
+             config, target, target_kind, args.recovery_note
+         )
+-    identity = _open_directory_identity(target, "validation recovery path")
++    identity = _open_directory_identity(target, "ownerless recovery path")
++    parent_identity = _open_directory_identity(
++        target.parent, "ownerless recovery parent"
++    )
+     repository_relative: str | None = None
+     head: str | None = None
+     remote_digest: str | None = None
+-    parent_identity: tuple[int, int, int] | None = None
++    repository_facts: tuple[Mapping[str, object], ...] = ()
++    content_sha256: str | None = None
+     if target_kind == "checkout":
+         if args.repository is None:
+-            raise Refusal("validation checkout recovery requires --repository")
++            raise Refusal("ownerless worktree recovery requires --repository")
+         repository_relative, repository = _repository_path(
+             config, args.repository, allow_managed=True
+         )
+-        head, remote_digest = _validation_checkout_facts(config, target, repository)
++        head, remote_digest, repository_facts, content_sha256 = (
++            _ownerless_worktree_facts(
++                config,
++                target,
++                repository,
++                slot_type=slot_type,
++            )
++        )
+     else:
+         if args.repository is not None:
+             raise Refusal("--repository applies only to validation checkouts")
+-        parent_identity = _validation_cargo_facts(target)
+-    authorization = ValidationRecoveryAuthorization(
++        if _validation_cargo_facts(target) != parent_identity:
++            raise Refusal("validation Cargo-home parent identity changed")
++    authorization = OwnerlessRecoveryAuthorization(
++        slot_type=slot_type,
+         target_kind=target_kind,
+         path=relative,
+         identity=identity,
+@@ -10154,23 +10457,25 @@ def _ownerless_validation_journal(
+         head=head,
+         remote_url_sha256=remote_digest,
+         parent_identity=parent_identity,
++        repository_facts=repository_facts,
++        content_sha256=content_sha256,
+     )
+-    fenced = target.with_name(f".{target.name}.ownerless-validate.{uuid.uuid4().hex}")
++    fenced = target.with_name(f".{target.name}.ownerless-worktree.{uuid.uuid4().hex}")
+     return {
+         "schema": SCHEMA,
+-        "kind": "ownerless-validate-remove",
++        "kind": "ownerless-worktree-remove",
+         "machine": config.machine,
+         "slot": target.name,
+         "phase": "prepared",
+         "fenced": fenced.relative_to(config.root).as_posix(),
+-        "authorization": _validation_authorization_to_obj(authorization),
++        "authorization": _ownerless_authorization_to_obj(authorization),
+     }, allowed
+ 
+ 
+-def _ownerless_validation_inputs(
++def _ownerless_recovery_inputs(
+     config: Config, raw: Mapping[str, object], *, recheck: bool
+ ) -> tuple[
+-    ValidationRecoveryAuthorization,
++    OwnerlessRecoveryAuthorization,
+     Path,
+     Path,
+     Path | None,
+@@ -10180,46 +10485,57 @@ def _ownerless_validation_inputs(
+         raw,
+         {"schema", "kind", "machine", "slot", "phase", "fenced", "authorization"},
+         set(),
+-        "ownerless validation journal",
++        "ownerless recovery journal",
+     )
++    kind = raw["kind"]
+     if (
+-        _as_int(raw["schema"], "ownerless validation journal.schema") != SCHEMA
+-        or raw["kind"] != "ownerless-validate-remove"
++        _as_int(raw["schema"], "ownerless recovery journal.schema") != SCHEMA
++        or kind not in {"ownerless-validate-remove", "ownerless-worktree-remove"}
+         or raw["machine"] != config.machine
+     ):
+-        raise StateError("ownerless validation journal identity is invalid")
+-    authorization = _validation_authorization_from_obj(raw["authorization"])
+-    _relative, target, _allowed = _validation_recovery_target(
+-        config, authorization.path, authorization.target_kind
++        raise StateError("ownerless recovery journal identity is invalid")
++    authorization = _ownerless_authorization_from_obj(raw["authorization"])
++    _relative, target, _allowed = _ownerless_recovery_target(
++        config,
++        authorization.path,
++        authorization.slot_type,
++        authorization.target_kind,
+     )
+-    if _as_str(raw["slot"], "ownerless validation slot") != target.name:
+-        raise StateError("ownerless validation journal slot differs from its path")
++    if _as_str(raw["slot"], "ownerless recovery slot") != target.name:
++        raise StateError("ownerless recovery journal slot differs from its path")
+     _relative, fenced = _relative_inside(
+-        config.root, _as_str(raw["fenced"], "fenced validation path"), "fenced path"
++        config.root, _as_str(raw["fenced"], "fenced ownerless path"), "fenced path"
++    )
++    legacy = kind == "ownerless-validate-remove"
++    prefix = (
++        f".{target.name}.ownerless-validate."
++        if legacy
++        else f".{target.name}.ownerless-worktree."
+     )
+-    prefix = f".{target.name}.ownerless-validate."
+     if (
+         fenced.parent != target.parent
+         or not fenced.name.startswith(prefix)
+         or not re.fullmatch(rf"{re.escape(prefix)}[0-9a-f]{{32}}", fenced.name)
+     ):
+-        raise StateError("fenced validation path does not match its target")
+-    phase = _as_str(raw["phase"], "ownerless validation journal.phase")
++        raise StateError("fenced ownerless path does not match its target")
++    phase = _as_str(raw["phase"], "ownerless recovery journal.phase")
+     if phase not in {"prepared", "fenced", "removed"}:
+-        raise StateError(f"unknown ownerless validation phase {phase!r}")
++        raise StateError(f"unknown ownerless recovery phase {phase!r}")
+     target_present = target.exists() or target.is_symlink()
+     fenced_present = fenced.exists() or fenced.is_symlink()
+     if target_present and fenced_present:
+-        raise Refusal("canonical and fenced validation paths both exist; preserve both")
++        raise Refusal("canonical and fenced ownerless paths both exist; preserve both")
+     active = target if target_present else fenced if fenced_present else None
+     if phase == "removed" and active is not None:
+-        raise Refusal("validation path reappeared after removal was recorded")
++        raise Refusal("ownerless path reappeared after removal was recorded")
+     if active is not None and (
+         active.is_symlink()
+         or not active.is_dir()
+-        or _open_directory_identity(active, "validation path") != authorization.identity
++        or _open_directory_identity(active, "ownerless path") != authorization.identity
+     ):
+-        raise Refusal("validation path identity changed; preserve it")
++        raise Refusal("ownerless path identity changed; preserve it")
++    if _open_directory_identity(target.parent, "ownerless recovery parent") != authorization.parent_identity:
++        raise Refusal("ownerless recovery parent identity changed")
+     repository: Path | None = None
+     if authorization.target_kind == "checkout":
+         if (
+@@ -10228,12 +10544,12 @@ def _ownerless_validation_inputs(
+             or authorization.remote_url_sha256 is None
+             or authorization.parent_identity is not None
+         ):
+-            raise StateError("validation checkout authorization is incomplete")
++            raise StateError("ownerless worktree authorization is incomplete")
+         _stored, repository = _repository_path(
+             config, authorization.repository, allow_managed=True
+         )
+         if repository == target or _path_is_within(repository, target):
+-            raise StateError("validation repository is inside the removal target")
++            raise StateError("ownerless repository is inside the removal target")
+     elif authorization.target_kind == "cargo-home":
+         if (
+             authorization.repository is not None
+@@ -10243,12 +10559,12 @@ def _ownerless_validation_inputs(
+         ):
+             raise StateError("validation Cargo-home authorization is incomplete")
+     else:
+-        raise StateError(f"unknown validation target kind {authorization.target_kind!r}")
++        raise StateError(f"unknown ownerless target kind {authorization.target_kind!r}")
+     evidence = authorization.evidence
+-    kind = _as_str(evidence.get("kind"), "validation recovery evidence.kind")
+-    if kind == "terminal-record":
++    evidence_kind = _as_str(evidence.get("kind"), "ownerless recovery evidence.kind")
++    if evidence_kind == "terminal-record":
+         _exact_keys(evidence, {"kind", "path", "sha256"}, set(), "terminal evidence")
+-        if recheck:
++        if recheck and active == target:
+             _terminal_validation_record(
+                 config,
+                 _as_str(evidence["path"], "terminal evidence.path"),
+@@ -10256,16 +10572,18 @@ def _ownerless_validation_inputs(
+                 authorization.target_kind,
+                 expected_digest=_as_str(evidence["sha256"], "terminal evidence.sha256"),
+             )
+-    elif kind == "coordinator-determination":
+-        _exact_keys(
+-            evidence,
+-            {"kind", "note", "no_retained_record"},
+-            set(),
+-            "coordinator determination",
+-        )
+-        if evidence["no_retained_record"] is not True:
+-            raise StateError("coordinator determination lacks no-record evidence")
+-        if recheck:
++    elif evidence_kind == "coordinator-determination":
++        required = {"kind", "note"}
++        extra = (
++            {"no_active_record"}
++            if authorization.slot_type == "agent"
++            else {"no_retained_record"}
++        )
++        _exact_keys(evidence, required | extra, set(), "coordinator determination")
++        marker = "no_active_record" if authorization.slot_type == "agent" else "no_retained_record"
++        if evidence[marker] is not True:
++            raise StateError(f"coordinator determination lacks {marker.replace('_', '-')} evidence")
++        if recheck and active == target and authorization.slot_type == "validate":
+             _recordless_validation_evidence(
+                 config,
+                 target,
+@@ -10273,130 +10591,145 @@ def _ownerless_validation_inputs(
+                 _as_str(evidence["note"], "coordinator determination.note"),
+             )
+     else:
+-        raise StateError(f"unknown validation recovery evidence kind {kind!r}")
+-    if recheck and active is not None:
++        raise StateError(f"unknown ownerless recovery evidence kind {evidence_kind!r}")
++    if recheck and active == target:
+         if authorization.target_kind == "checkout":
+             assert repository is not None
+-            if active == fenced:
+-                _GitVcs().repair_worktree(repository, fenced)
+-            _validation_checkout_facts(
++            _ownerless_worktree_facts(
+                 config,
+-                active,
++                target,
+                 repository,
++                slot_type=authorization.slot_type,
+                 expected_head=authorization.head,
+                 expected_remote=authorization.remote_url_sha256,
++                expected_repositories=authorization.repository_facts,
++                expected_content_sha256=authorization.content_sha256,
+             )
+         else:
+             assert authorization.parent_identity is not None
+-            if _validation_cargo_facts(active) != authorization.parent_identity:
++            if _validation_cargo_facts(target) != authorization.parent_identity:
+                 raise Refusal("validation Cargo-home parent identity changed")
+     return authorization, target, fenced, active, repository
+ 
+ 
+-def _rollback_validation_fence(
++def _rollback_ownerless_fence(
+     config: Config,
+     target: Path,
+     fenced: Path,
+-    authorization: ValidationRecoveryAuthorization,
+-    repository: Path | None,
+     journal: Mapping[str, object],
+ ) -> None:
+     if target.exists() or target.is_symlink() or fenced.is_symlink() or not fenced.is_dir():
+-        raise Refusal("cannot safely roll back validation path fence; preserve both paths")
++        raise Refusal("cannot safely roll back ownerless path fence; preserve both paths")
+     os.rename(fenced, target)
+     _fsync_directory(target.parent)
+-    if authorization.target_kind == "checkout":
+-        assert repository is not None
+-        _GitVcs().repair_worktree(repository, target)
+     _clear_journal(config, journal)
+ 
+ 
+-def _recover_ownerless_validation(
++def _recover_ownerless_worktree(
+     config: Config,
+     path: Path,
+     raw: Mapping[str, object],
+     coordinator: ProcessIdentity,
+ ) -> None:
+     if path != _journal_path(config):
+-        raise StateError("ownerless validation journal filename is invalid")
++        raise StateError("ownerless recovery journal filename is invalid")
+     _assert_caller_process(coordinator, "coordinator")
+-    authorization, target, fenced, active, repository = _ownerless_validation_inputs(
++    authorization, target, fenced, active, repository = _ownerless_recovery_inputs(
+         config, raw, recheck=False
+     )
+     journal = dict(raw)
+     if active is not None:
+-        try:
+-            authorization, target, fenced, active, repository = (
+-                _ownerless_validation_inputs(config, journal, recheck=True)
++        if active == fenced and authorization.target_kind == "checkout" and (
++            not authorization.repository_facts or authorization.content_sha256 is None
++        ):
++            _rollback_ownerless_fence(config, target, fenced, journal)
++            raise Refusal(
++                "legacy ownerless worktree journal was restored to its canonical path; "
++                "rerun recovery so recursive Git evidence can be recorded before fencing"
+             )
+-        except Refusal:
+-            if active == fenced and not target.exists():
+-                _rollback_validation_fence(
+-                    config, target, fenced, authorization, repository, journal
+-                )
+-            raise
+         if active == target:
++            authorization, target, fenced, active, repository = (
++                _ownerless_recovery_inputs(config, journal, recheck=True)
++            )
+             os.rename(target, fenced)
+             _fsync_directory(target.parent)
++            _interrupt_for_test("after-ownerless-worktree-path-fence-before-journal")
+             _interrupt_for_test("after-ownerless-validate-path-fence-before-journal")
+-            if authorization.target_kind == "checkout":
+-                assert repository is not None
+-                _GitVcs().repair_worktree(repository, fenced)
+             journal["phase"] = "fenced"
+             _write_journal(config, journal)
++            _interrupt_for_test("after-ownerless-worktree-path-fence")
+             _interrupt_for_test("after-ownerless-validate-path-fence")
++        authorization, target, fenced, active, repository = _ownerless_recovery_inputs(
++            config, journal, recheck=False
++        )
++        if active != fenced:
++            raise StateError("ownerless cleanup did not establish its path fence")
+         try:
+-            authorization, target, fenced, active, repository = (
+-                _ownerless_validation_inputs(config, journal, recheck=True)
+-            )
++            if authorization.target_kind == "checkout":
++                repository_paths = tuple(
++                    _as_str(item["path"], "ownerless repository path")
++                    for item in authorization.repository_facts
++                )
++                safe_roots = (
++                    ("ignored", *config.cache_globs)
++                    if authorization.slot_type == "validate"
++                    else config.cache_globs
++                )
++                if _ownerless_worktree_content_sha256(
++                    fenced, repository_paths, safe_roots
++                ) != authorization.content_sha256:
++                    raise Refusal(
++                        "ownerless worktree contents changed after its path was fenced"
++                    )
++                _assert_slot_unused(fenced)
++            else:
++                if _validation_cargo_facts(fenced) != authorization.parent_identity:
++                    raise Refusal("validation Cargo-home parent identity changed")
+         except Refusal as exc:
+             try:
+-                _rollback_validation_fence(
+-                    config, target, fenced, authorization, repository, journal
+-                )
++                _rollback_ownerless_fence(config, target, fenced, journal)
+             except Refusal as rollback:
+                 raise Refusal(f"{exc}; fence rollback failed: {rollback}") from rollback
+             raise
+-        if active != fenced:
+-            raise StateError("validation cleanup did not establish its path fence")
+-        if authorization.target_kind == "checkout":
+-            assert repository is not None
+-            _GitVcs().remove_worktree(repository, fenced, force=True)
+-        else:
+-            assert authorization.parent_identity is not None
+-            _remove_cache_directory(
+-                config,
+-                CacheDirectory(
+-                    path=fenced,
+-                    checkout_root=fenced.parent,
+-                    checkout_device=authorization.parent_identity[0],
+-                    checkout_inode=authorization.parent_identity[1],
+-                    checkout_mount_id=authorization.parent_identity[2],
+-                ),
+-                allow_git_metadata=True,
+-                expected_identity=authorization.identity,
+-            )
++        assert authorization.parent_identity is not None
++        _remove_cache_directory(
++            config,
++            CacheDirectory(
++                path=fenced,
++                checkout_root=fenced.parent,
++                checkout_device=authorization.parent_identity[0],
++                checkout_inode=authorization.parent_identity[1],
++                checkout_mount_id=authorization.parent_identity[2],
++            ),
++            allow_git_metadata=True,
++            expected_identity=authorization.identity,
++        )
+         journal["phase"] = "removed"
+         _write_journal(config, journal)
++        _interrupt_for_test("after-ownerless-worktree-remove")
+         _interrupt_for_test("after-ownerless-validate-remove")
+     if target.exists() or target.is_symlink() or fenced.exists() or fenced.is_symlink():
+-        raise Refusal("validation path still exists after removal")
+-    if authorization.target_kind == "checkout":
+-        assert repository is not None
+-        if target.absolute() in _GitVcs().listed_worktrees(repository) or fenced.absolute() in _GitVcs().listed_worktrees(repository):
+-            raise Refusal("Git still registers the removed validation checkout")
++        raise Refusal("ownerless path still exists after removal")
++    event_kind = (
++        "ownerless-validate-path-removed"
++        if authorization.slot_type == "validate"
++        else "ownerless-agent-path-removed"
++    )
+     _write_event_file(
+         config,
+         config.machine,
+-        "ownerless-validate-path-removed",
++        event_kind,
+         {
+             "slot": raw["slot"],
+-            "authorization": _validation_authorization_to_obj(authorization),
++            "authorization": _ownerless_authorization_to_obj(authorization),
+             "recovery_actor": _identity_to_obj(coordinator),
+         },
+     )
+     _clear_journal(config, journal)
+-    print(f"recovered ownerless validation {authorization.target_kind}={target}")
++    print(
++        f"recovered ownerless {authorization.slot_type} "
++        f"{authorization.target_kind}={target}"
++    )
+ 
+ 
+ def _cmd_recover(args: argparse.Namespace) -> int:
+@@ -10422,11 +10755,12 @@ def _cmd_recover(args: argparse.Namespace) -> int:
+         if legacy_requested and any(
+             value is not None
+             for value in (
++                args.ownerless_agent_checkout,
+                 args.ownerless_validate_checkout,
+                 args.ownerless_validate_cargo_home,
+             )
+         ):
+-            raise Refusal("legacy and ownerless validation path flags cannot be combined")
++            raise Refusal("legacy and ownerless recovery path flags cannot be combined")
+         if legacy_requested:
+             if args.completed_record is None or args.repository is None or args.recovery_note:
+                 raise Refusal(
+@@ -10436,6 +10770,7 @@ def _cmd_recover(args: argparse.Namespace) -> int:
+         requested_ownerless = any(
+             value is not None
+             for value in (
++                args.ownerless_agent_checkout,
+                 args.ownerless_validate_checkout,
+                 args.ownerless_validate_cargo_home,
+                 args.completed_record,
+@@ -10444,41 +10779,52 @@ def _cmd_recover(args: argparse.Namespace) -> int:
+             )
+         )
+         if requested_ownerless:
+-            _require_coordinator_authorized(args, "ownerless validation cleanup")
++            _require_coordinator_authorized(args, "ownerless worktree cleanup")
+             if sum(
+                 value is not None
+                 for value in (
++                    args.ownerless_agent_checkout,
+                     args.ownerless_validate_checkout,
+                     args.ownerless_validate_cargo_home,
+                 )
+             ) != 1:
+                 raise Refusal(
+-                    "ownerless validation cleanup requires exactly one target path"
++                    "ownerless cleanup requires exactly one target path"
+                 )
+             if _outstanding_journals(config):
+                 raise Refusal(
+                     "an interrupted mutation is already recorded. state: REFUSED -- the new "
+-                    "validation cleanup did not start. remedy: rerun 'wrkslots recover "
++                    "ownerless cleanup did not start. remedy: rerun 'wrkslots recover "
+                     "--coordinator-pid PID' without cleanup flags to finish the recorded "
+                     "operation first"
+                 )
+             states, archives = _validate_global_state(config)
+-            raw_target = args.ownerless_validate_checkout or args.ownerless_validate_cargo_home
+-            target_kind = "checkout" if args.ownerless_validate_checkout else "cargo-home"
++            raw_target = (
++                args.ownerless_agent_checkout
++                or args.ownerless_validate_checkout
++                or args.ownerless_validate_cargo_home
++            )
++            slot_type = "agent" if args.ownerless_agent_checkout else "validate"
++            target_kind = (
++                "cargo-home"
++                if args.ownerless_validate_cargo_home
++                else "checkout"
++            )
+             assert raw_target is not None
+-            _relative, _target, allowed = _validation_recovery_target(
+-                config, raw_target, target_kind
++            _relative, _target, allowed = _ownerless_recovery_target(
++                config, raw_target, slot_type, target_kind
+             )
+             _assert_command_registry_storage(
+                 config, states, args, allowed_unregistered_slot=allowed
+             )
+             before = _global_rows(states, archives)
+-            journal, _allowed = _ownerless_validation_journal(
++            journal, _allowed = _ownerless_recovery_journal(
+                 config, args, coordinator, states
+             )
+             _write_journal(config, journal)
+             if legacy_requested:
+                 _interrupt_for_test("after-legacy-validate-journal")
++            _interrupt_for_test("after-ownerless-worktree-journal")
+             _interrupt_for_test("after-ownerless-validate-journal")
+             path = _journal_path(config)
+             raw: Mapping[str, object] = journal
+@@ -10539,20 +10885,24 @@ def _cmd_recover(args: argparse.Namespace) -> int:
+                     "--retry-running-hook and --abort-create apply only to create journals"
+                 )
+             _recover_legacy_validate_remove(config, path, raw, coordinator)
+-        elif kind == "ownerless-validate-remove":
++        elif kind in {"ownerless-validate-remove", "ownerless-worktree-remove"}:
+             if args.retry_running_hook or args.abort_create:
+                 raise Refusal(
+                     "--retry-running-hook and --abort-create apply only to create journals"
+                 )
+-            _recover_ownerless_validation(config, path, raw, coordinator)
++            _recover_ownerless_worktree(config, path, raw, coordinator)
+         else:
+             raise StateError(f"unknown recovery journal kind {kind!r}")
+         after_states, after_archives = _validate_global_state(config)
+         after = _global_rows(after_states, after_archives)
+-        if kind in {"legacy-validate-remove", "ownerless-validate-remove"}:
++        if kind in {
++            "legacy-validate-remove",
++            "ownerless-validate-remove",
++            "ownerless-worktree-remove",
++        }:
+             if after != before:
+                 raise StateError(
+-                    "legacy validation cleanup changed the registered slot state"
++                    "ownerless cleanup changed the registered slot state"
+                 )
+         else:
+             slot = _as_str(raw.get("slot"), "journal.slot")
+@@ -11237,7 +11587,7 @@ usage or audit gate unknown, 3 fail-closed refusal.
+     recover.add_argument(
+         "--coordinator-authorized", action="store_true",
+         help=(
+-            "required when starting ownerless validation cleanup; an existing journal "
++            "required when starting ownerless worktree cleanup; an existing journal "
+             "can be resumed without repeating authorization"
+         ),
+     )
+@@ -11255,6 +11605,14 @@ usage or audit gate unknown, 3 fail-closed refusal.
+         ),
+     )
+     ownerless = recover.add_mutually_exclusive_group()
++    ownerless.add_argument(
++        "--ownerless-agent-checkout",
++        metavar="PATH",
++        help=(
++            "project-relative unregistered agent Git worktree; requires clean recursive "
++            "state and durable rescue refs"
++        ),
++    )
+     ownerless.add_argument(
+         "--ownerless-validate-checkout",
+         metavar="PATH",

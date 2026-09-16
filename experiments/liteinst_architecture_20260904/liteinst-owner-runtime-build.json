@@ -1,0 +1,13 @@
+{
+  "mem_cap_factor": 1.0,
+  "mem_cap_floor_bytes": 8589934592,
+  "steps": [{
+    "group": "build",
+    "job": "typed_runtime_build",
+    "desc": "Build and link the dirty Detcore LiteInst preload only; no guest execution",
+    "cmd": "set -eu; : \"${LITEINST_BUILD_CHECKOUT:?set the writer-owned checkout}\"; : \"${LITEINST_BUILD_TARGET:?set a private external target directory}\"; cd \"$LITEINST_BUILD_CHECKOUT\"; git rev-parse HEAD; git status --short; CARGO_TARGET_DIR=\"$LITEINST_BUILD_TARGET\" CARGO_BUILD_JOBS=2 cargo build --locked --offline -j2 --manifest-path liteinst-runtime-build/Cargo.toml -p hermit-liteinst-detcore-runtime --lib",
+    "timeout": 900,
+    "cpu_timeout": 1800,
+    "hint": {"rss_baseline_bytes": 8589934592, "hard_mem_max_bytes": 8589934592}
+  }]
+}

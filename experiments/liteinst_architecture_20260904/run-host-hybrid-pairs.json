@@ -1,0 +1,42 @@
+{
+  "mem_cap_factor": 1.0,
+  "mem_cap_floor_bytes": 8589934592,
+  "steps": [
+    {
+      "group": "sample", "job": "01_ioctl_ptrace", "desc": "Frozen ioctl-fioclex ptrace strict verify",
+      "cmd": "E2E_RUN_ID=01_ioctl_ptrace $PAIR_HARNESS run --lane portable --category c-programs --test c-programs/ioctl-fioclex --mode verify --backend ptrace --include-manual --jobs 1 >$PAIR_RAW/01_ioctl_ptrace.log 2>&1; status=$?; echo $status >$PAIR_RAW/01_ioctl_ptrace.exit; exit $status",
+      "timeout": 60, "cpu_timeout": 120,
+      "hint": {"rss_baseline_bytes": 8589934592, "hard_mem_max_bytes": 8589934592}
+    },
+    {
+      "group": "sample", "job": "02_ioctl_liteinst", "desc": "Frozen ioctl-fioclex HOST-HYBRID LiteInst strict verify",
+      "cmd": "E2E_RUN_ID=02_ioctl_liteinst $PAIR_HARNESS run --lane portable --category c-programs --test c-programs/ioctl-fioclex --mode verify --backend liteinst --include-manual --jobs 1 >$PAIR_RAW/02_ioctl_liteinst.log 2>&1; status=$?; echo $status >$PAIR_RAW/02_ioctl_liteinst.exit; exit $status",
+      "timeout": 60, "cpu_timeout": 120,
+      "hint": {"rss_baseline_bytes": 8589934592, "hard_mem_max_bytes": 8589934592}
+    },
+    {
+      "group": "sample", "job": "03_tmpfile_ptrace", "desc": "Frozen o-tmpfile-anon ptrace strict verify",
+      "cmd": "E2E_RUN_ID=03_tmpfile_ptrace $PAIR_HARNESS run --lane portable --category backend-parity-c --test backend-parity-c/o-tmpfile-anon --mode verify --backend ptrace --include-manual --jobs 1 >$PAIR_RAW/03_tmpfile_ptrace.log 2>&1; status=$?; echo $status >$PAIR_RAW/03_tmpfile_ptrace.exit; exit $status",
+      "timeout": 60, "cpu_timeout": 120,
+      "hint": {"rss_baseline_bytes": 8589934592, "hard_mem_max_bytes": 8589934592}
+    },
+    {
+      "group": "sample", "job": "04_tmpfile_liteinst", "desc": "Frozen o-tmpfile-anon HOST-HYBRID LiteInst strict verify",
+      "cmd": "E2E_RUN_ID=04_tmpfile_liteinst $PAIR_HARNESS run --lane portable --category backend-parity-c --test backend-parity-c/o-tmpfile-anon --mode verify --backend liteinst --include-manual --jobs 1 >$PAIR_RAW/04_tmpfile_liteinst.log 2>&1; status=$?; echo $status >$PAIR_RAW/04_tmpfile_liteinst.exit; exit $status",
+      "timeout": 60, "cpu_timeout": 120,
+      "hint": {"rss_baseline_bytes": 8589934592, "hard_mem_max_bytes": 8589934592}
+    },
+    {
+      "group": "sample", "job": "05_lock_ptrace", "desc": "Frozen record-lock ptrace strict verify",
+      "cmd": "E2E_RUN_ID=05_lock_ptrace $PAIR_HARNESS run --lane portable --category backend-parity-c --test backend-parity-c/record-lock --mode verify --backend ptrace --include-manual --jobs 1 >$PAIR_RAW/05_lock_ptrace.log 2>&1; status=$?; echo $status >$PAIR_RAW/05_lock_ptrace.exit; exit $status",
+      "timeout": 60, "cpu_timeout": 120,
+      "hint": {"rss_baseline_bytes": 8589934592, "hard_mem_max_bytes": 8589934592}
+    },
+    {
+      "group": "sample", "job": "06_lock_liteinst", "desc": "Frozen record-lock HOST-HYBRID LiteInst strict verify",
+      "cmd": "E2E_RUN_ID=06_lock_liteinst $PAIR_HARNESS run --lane portable --category backend-parity-c --test backend-parity-c/record-lock --mode verify --backend liteinst --include-manual --jobs 1 >$PAIR_RAW/06_lock_liteinst.log 2>&1; status=$?; echo $status >$PAIR_RAW/06_lock_liteinst.exit; exit $status",
+      "timeout": 60, "cpu_timeout": 120,
+      "hint": {"rss_baseline_bytes": 8589934592, "hard_mem_max_bytes": 8589934592}
+    }
+  ]
+}

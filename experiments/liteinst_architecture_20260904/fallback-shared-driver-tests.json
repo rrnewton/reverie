@@ -1,0 +1,10 @@
+{
+  "mem_cap_factor": 1.0,
+  "mem_cap_floor_bytes": 8589934592,
+  "steps": [{
+    "group": "test", "job": "shared-driver", "desc": "Existing shared Tool syscall handoff unit tests",
+    "cmd": "set -eu; cd /home/newton/work/dev-hermit/worktrees/slots/liteinst-syscall-fallback; ulimit -c 0; ulimit -f 65536; binary=/home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/target/debug/deps/reverie_preload-f8ff34a9bb54e306; date -u +%FT%TZ; sha256sum \"$binary\"; set +e; \"$binary\" tool_host::tests:: --nocapture --test-threads=1 > /home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/final-shared-driver.log 2>&1; result=$?; printf '%s\\n' \"$result\" > /home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/final-shared-driver.exit; date -u +%FT%TZ; exit \"$result\"",
+    "timeout": 60, "cpu_timeout": 120,
+    "hint": {"rss_baseline_bytes":8589934592,"hard_mem_max_bytes":8589934592}
+  }]
+}

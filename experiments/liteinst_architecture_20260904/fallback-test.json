@@ -1,0 +1,10 @@
+{
+  "mem_cap_factor": 1.0,
+  "mem_cap_floor_bytes": 8589934592,
+  "steps": [{
+    "group": "test", "job": "fallback", "desc": "Exact typed unpatchable syscall regression",
+    "cmd": "set -eu; cd /home/newton/work/dev-hermit/worktrees/slots/liteinst-syscall-fallback; ulimit -c 0; ulimit -f 65536; /home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/target/debug/deps/rpc_tool-7ce51afa73642c97 unpatchable_syscall_dispatches_tool_after_signal_return --exact --nocapture --test-threads=1 > /home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/test.log 2>&1",
+    "timeout": 60, "cpu_timeout": 120,
+    "hint": {"rss_baseline_bytes": 8589934592, "hard_mem_max_bytes": 8589934592}
+  }]
+}

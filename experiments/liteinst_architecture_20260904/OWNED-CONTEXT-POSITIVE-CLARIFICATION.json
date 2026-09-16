@@ -1,0 +1,14 @@
+{
+  "kind": "derivative wording clarification; no execution or assertion change",
+  "original_report_sha256": "12fc6a7eb3efb79231b792754af9f0aa032b95a52ba2eade6c76ba488377641d",
+  "original_result_json_sha256": "c3e3107babedd0d943c60637a54b3492ded55100a44c680854b6b62d9e819711",
+  "original_archive_sha256": "43f991cb3f78345f85d2a4d5960a1bd15f81e0ffb82cddc3f3ff90a2c8673c75",
+  "binary_sha256": "15875caa8ccf711d9910eb704ee819be72a9f58698f3e6e25882928c75564256",
+  "selected_fp_image_bytes_compared": 2228,
+  "includes_reserved_bytes": true,
+  "known_pkru_padding_bytes_included": 4,
+  "assertions_unchanged": true,
+  "author_new_executions": 0,
+  "reviewer_replay_exit": 0,
+  "review_scope": "normal one-shot positive only; no SUD, Tool, clock or reuse approval"
+}

@@ -1,0 +1,107 @@
+=== line 1336 UNPARSEABLE ===
+  serde error: invalid type: null, expected a sequence at line 1 column 1179
+  schema_version: 5
+  run_id: null
+  commit: "87f2f558301956985d6c874f527cae99e3ab05a9"
+  result: "fail"
+  repo: "hermit"
+  host: "devbig014"
+  started_at: "2026-08-17T21:19:08Z"
+  finished_at: "2026-08-17T21:19:38Z"
+  profile: "cell-requalification"
+  selection_mode: "targeted"
+  exit_code: 1
+  all keys: ["admission", "base_sha", "base_tree", "cache_state", "cell_results", "checks", "commit", "commit_anchored", "concurrency_proof", "concurrent_validates", "corrects", "coverage", "cwd", "dag_jobs", "env_block_retries", "executed_nodes", "executed_tests", "exit_code", "failures", "filtered_tests", "finished_at", "gates", "gates_expected", "gates_run", "git_ahead", "git_behind", "host", "interruption_signal", "log_file", "producer", "profile", "raw_result", "real_seconds", "record_id", "repo", "result", "reverie_base_sha", "reverie_base_tree", "reverie_pin_current", "run_id", "schema_version", "selection_mode", "skipped_nodes", "slot", "started_at", "sys_seconds", "timed_out_nodes", "toolchain", "tree", "tree_dirty", "user_seconds"]
+
+=== line 1338 UNPARSEABLE ===
+  serde error: invalid type: null, expected a sequence at line 1 column 1179
+  schema_version: 5
+  run_id: null
+  commit: "295ef0f22df6a7bae2df8e0c59c0902a51723805"
+  result: "fail"
+  repo: "hermit"
+  host: "devbig014"
+  started_at: "2026-08-17T21:20:53Z"
+  finished_at: "2026-08-17T21:33:32Z"
+  profile: "cell-requalification"
+  selection_mode: "targeted"
+  exit_code: 1
+  all keys: ["admission", "base_sha", "base_tree", "cache_state", "cell_results", "checks", "commit", "commit_anchored", "concurrency_proof", "concurrent_validates", "corrects", "coverage", "cwd", "dag_jobs", "env_block_retries", "executed_nodes", "executed_tests", "exit_code", "failures", "filtered_tests", "finished_at", "gates", "gates_expected", "gates_run", "git_ahead", "git_behind", "host", "interruption_signal", "log_file", "producer", "profile", "raw_result", "real_seconds", "record_id", "repo", "result", "reverie_base_sha", "reverie_base_tree", "reverie_pin_current", "run_id", "schema_version", "selection_mode", "skipped_nodes", "slot", "started_at", "sys_seconds", "timed_out_nodes", "toolchain", "tree", "tree_dirty", "user_seconds"]
+
+=== line 1340 UNPARSEABLE ===
+  serde error: invalid type: null, expected a sequence at line 1 column 2499
+  schema_version: 6
+  run_id: "portable-applications-applications-timed-progress-bar-verify-ptrace-repetition-0001"
+  commit: "99e378524b9a6a22f5b74ab24192b906ab371a13"
+  result: "pass"
+  repo: "hermit"
+  host: "devbig014"
+  started_at: "2026-08-17T21:37:30Z"
+  finished_at: "2026-08-17T21:48:22Z"
+  profile: "cell-requalification"
+  selection_mode: "targeted"
+  exit_code: 0
+  all keys: ["admission", "base_sha", "base_tree", "cache_state", "cell_results", "checks", "commit", "commit_anchored", "concurrency_proof", "concurrent_validates", "corrects", "coverage", "cwd", "dag_jobs", "env_block_retries", "executed_nodes", "executed_tests", "exit_code", "failures", "filtered_tests", "finished_at", "gates", "gates_expected", "gates_run", "git_ahead", "git_behind", "host", "interruption_signal", "log_file", "producer", "profile", "raw_result", "real_seconds", "record_id", "repo", "result", "reverie_base_sha", "reverie_base_tree", "reverie_pin_current", "run_id", "schema_version", "selection_mode", "skipped_nodes", "slot", "started_at", "sys_seconds", "timed_out_nodes", "toolchain", "tree", "tree_dirty", "user_seconds"]
+
+=== line 1341 UNPARSEABLE ===
+  serde error: invalid type: null, expected a sequence at line 1 column 2643
+  schema_version: 6
+  run_id: "validate-cell-requalification-88d4d61bfa9b-20260817T220655Z-pid1935623--portable-applications-applications-timed-progress-bar-verify-ptrace-repetition-0001"
+  commit: "88d4d61bfa9be43fa10513980485e9e55ef353dc"
+  result: "pass"
+  repo: "hermit"
+  host: "devbig014"
+  started_at: "2026-08-17T22:06:55Z"
+  finished_at: "2026-08-17T22:17:54Z"
+  profile: "cell-requalification"
+  selection_mode: "targeted"
+  exit_code: 0
+  all keys: ["admission", "base_sha", "base_tree", "cache_state", "cell_results", "checks", "commit", "commit_anchored", "concurrency_proof", "concurrent_validates", "corrects", "coverage", "cwd", "dag_jobs", "env_block_retries", "executed_nodes", "executed_tests", "exit_code", "failures", "filtered_tests", "finished_at", "gates", "gates_expected", "gates_run", "git_ahead", "git_behind", "host", "interruption_signal", "log_file", "producer", "profile", "raw_result", "real_seconds", "record_id", "repo", "result", "reverie_base_sha", "reverie_base_tree", "reverie_pin_current", "run_id", "schema_version", "selection_mode", "skipped_nodes", "slot", "started_at", "sys_seconds", "timed_out_nodes", "toolchain", "tree", "tree_dirty", "user_seconds"]
+
+=== line 1350 UNPARSEABLE ===
+  serde error: invalid type: null, expected a sequence at line 1 column 1164
+  schema_version: 5
+  run_id: null
+  commit: "fad796f6e45fc3436b5ae14cdc77b68b911b2feb"
+  result: "fail"
+  repo: "hermit"
+  host: "devbig014"
+  started_at: "2026-08-17T23:18:30Z"
+  finished_at: "2026-08-17T23:22:25Z"
+  profile: "full"
+  selection_mode: "full"
+  exit_code: 1
+  all keys: ["admission", "base_sha", "base_tree", "cache_state", "cell_results", "checks", "commit", "commit_anchored", "concurrency_proof", "concurrent_validates", "corrects", "coverage", "cwd", "dag_jobs", "env_block_retries", "executed_nodes", "executed_tests", "exit_code", "failures", "filtered_tests", "finished_at", "gates", "gates_expected", "gates_run", "git_ahead", "git_behind", "host", "interruption_signal", "log_file", "producer", "profile", "raw_result", "real_seconds", "record_id", "repo", "result", "reverie_base_sha", "reverie_base_tree", "reverie_pin_current", "run_id", "schema_version", "selection_mode", "skipped_nodes", "slot", "started_at", "sys_seconds", "timed_out_nodes", "toolchain", "tree", "tree_dirty", "user_seconds"]
+
+=== line 1355 UNPARSEABLE ===
+  serde error: invalid type: null, expected a sequence at line 1 column 1141
+  schema_version: 5
+  run_id: null
+  commit: "aca43df3a81cb27abd9f0f1c65fa980952137cd7"
+  result: "fail"
+  repo: "hermit"
+  host: "devbig014"
+  started_at: "2026-08-17T23:54:54Z"
+  finished_at: "2026-08-17T23:57:05Z"
+  profile: "full"
+  selection_mode: "full"
+  exit_code: 1
+  all keys: ["admission", "base_sha", "base_tree", "cache_state", "cell_results", "checks", "commit", "commit_anchored", "concurrency_proof", "concurrent_validates", "corrects", "coverage", "cwd", "dag_jobs", "env_block_retries", "executed_nodes", "executed_tests", "exit_code", "failures", "filtered_tests", "finished_at", "gates", "gates_expected", "gates_run", "git_ahead", "git_behind", "host", "interruption_signal", "log_file", "producer", "profile", "raw_result", "real_seconds", "record_id", "repo", "result", "reverie_base_sha", "reverie_base_tree", "reverie_pin_current", "run_id", "schema_version", "selection_mode", "skipped_nodes", "slot", "started_at", "sys_seconds", "timed_out_nodes", "toolchain", "tree", "tree_dirty", "user_seconds"]
+
+=== line 1373 UNPARSEABLE ===
+  serde error: invalid type: null, expected a sequence at line 1 column 1046
+  schema_version: 5
+  run_id: null
+  commit: "839cc97364fa7b49d471a15d7d3e2dcdea78b611"
+  result: "fail"
+  repo: "hermit"
+  host: "devbig014"
+  started_at: "2026-08-18T00:43:10Z"
+  finished_at: "2026-08-18T00:58:48Z"
+  profile: "full"
+  selection_mode: "full"
+  exit_code: 1
+  all keys: ["admission", "base_sha", "base_tree", "cache_state", "cell_results", "checks", "commit", "commit_anchored", "concurrency_proof", "concurrent_validates", "corrects", "coverage", "cwd", "dag_jobs", "env_block_retries", "executed_nodes", "executed_tests", "exit_code", "failures", "filtered_tests", "finished_at", "gates", "gates_expected", "gates_run", "git_ahead", "git_behind", "host", "interruption_signal", "log_file", "producer", "profile", "raw_result", "real_seconds", "record_id", "repo", "result", "reverie_base_sha", "reverie_base_tree", "reverie_pin_current", "run_id", "schema_version", "selection_mode", "skipped_nodes", "slot", "started_at", "sys_seconds", "timed_out_nodes", "toolchain", "tree", "tree_dirty", "user_seconds"]
+
+total non-empty lines: 1613
+unparseable as HistoryRow: 7

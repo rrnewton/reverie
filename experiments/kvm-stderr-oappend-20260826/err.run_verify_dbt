@@ -1,0 +1,7 @@
+hermit: [dbt backend] Detcore Tool active; running "/home/newton/work/dev-hermit/experiments/kvm-stderr-oappend-20260826/bin/stdio_flag_report" under DynamoRIO (/home/newton/work/dev-hermit/worktrees/108/hermit/target/release/reverie-dbt-native-cache/dynamorio-install-132d77130980c546c8867fc196d97e664bc4816b1dfa9ea9c18de4a94d109c4d/bin64/drrun)
+:: DBT Run1...
+:: DBT Run2...
+reverie-dbt: tool=Detcore branches=56253 syscalls=45 rewritten=44 stdin_reads=0 memory_hash=74a64d02b090de96
+:: Comparing DBT observed guest-memory hashes... 74a64d02b090de96 | 74a64d02b090de96
+:: DBT path confirmed: DynamoRIO client reported tool=Detcore
+:: Success: deterministic. Determinism verified.

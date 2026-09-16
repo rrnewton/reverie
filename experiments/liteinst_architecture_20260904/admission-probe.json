@@ -1,0 +1,13 @@
+{
+  "mem_cap_factor": 1.0,
+  "mem_cap_floor_bytes": 8589934592,
+  "steps": [{
+    "group": "probe",
+    "job": "host_only",
+    "desc": "Host-only resource admission probe; does not invoke Hermit or a compiler",
+    "cmd": "printf 'HOST_ONLY_ADMISSION_PROBE\\n'; cat /proc/self/cgroup",
+    "timeout": 10,
+    "cpu_timeout": 20,
+    "hint": {"rss_baseline_bytes": 8589934592, "hard_mem_max_bytes": 8589934592}
+  }]
+}

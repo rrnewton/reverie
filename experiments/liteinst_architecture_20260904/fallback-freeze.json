@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "task": "liteinst_90_percent_architecture",
+  "status": "uncommitted_snapshot_awaiting_independent_review",
+  "frozen_at_utc": "2026-09-04T21:55:10Z",
+  "worktree": "/home/newton/work/dev-hermit/worktrees/slots/liteinst-syscall-fallback",
+  "base_sha": "320412c5967790939ebe405c73e394ffd9c41459",
+  "liteinst2_sha": "95ee5e6917fa33191eb41c3f1606ea8b03c1b78c",
+  "dirty": true,
+  "modified_product_paths": 8,
+  "source_unchanged_during_final_validation": true,
+  "freeze_directory": "/home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/review-freeze",
+  "changed_sources_archive": {
+    "path": "changed-sources.tar.gz",
+    "sha256": "85f7b7424f924b23d1b8ae7d224c749bddc405794987ac183d7fb8889fc9611a",
+    "contents": "Eight changed product files plus ignored build Cargo.lock; unchanged source comes from pinned base"
+  },
+  "patch_sha256": "fe0a0ea382a1b9b7e9b35942596efaf5ef8b9803aeb897162ec1e65422d76842",
+  "source_files_manifest_sha256": "a8dbd8a3c39d7faa1f22e934b768ff5df8b64ba571c1583009d2a781d182fa7f",
+  "binaries": [
+    {"name":"rpc_tool-7ce51afa73642c97", "sha256":"0e62a60b1c9fdc0dd3f1648352e1eeb8bd1eb8f634b1a1dc479a5c7faecdc4c2", "role":"final rebuilt integration test executable"},
+    {"name":"reverie-liteinst-rpc-tool-guest", "sha256":"5024f991483fb2fe0eb9e634d6edd5290cbcf1e1b469790af54d62a4a6eadf5c", "role":"executed typed test Tool and coordinator modes; embeds runtime"},
+    {"name":"libreverie_liteinst.so", "sha256":"eec878ad39bec285929bd39c3f136167f6e96aac4bb5fdbcf0c157806d8e6ffc", "role":"built artifact only, not evidence of DSO execution in this test"},
+    {"name":"reverie_preload-f8ff34a9bb54e306", "sha256":"795c526ab45e6e4e78b077d943fec345a94cd5973d56360a0afd4e2271c7af4b", "role":"existing shared-driver unit tests"}
+  ],
+  "tests": [
+    {"name":"unpatchable_syscall_dispatches_tool_after_signal_return", "passed":1,"selected":1,"ignored":0,"filtered":1,"exit":0,"log":"final-fallback.log","utc":"2026-09-04T21:52:46Z"},
+    {"name":"installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc", "passed":1,"selected":1,"ignored":0,"filtered":1,"exit":0,"log":"final-adjacent.log","utc":"2026-09-04T21:52:46Z"},
+    {"name":"reverie-preload tool_host::tests::", "passed":10,"selected":10,"ignored":0,"filtered":27,"exit":0,"log":"final-shared-driver.log","utc":"2026-09-04T21:53:24Z"}
+  ],
+  "runtime_assertions": {"guest_calls":6,"site_traps":6,"installed_hooks":0,"rpc_callbacks":7,"rpc_senders":1,"original_site_bytes_unchanged":true,"non_native_tool_result":424242},
+  "commands": ["fallback-validation.json","fallback-final-validation.json","fallback-shared-driver-tests.json"],
+  "checks": {"focused_clippy_deny_warnings":"pass","touched_rust_format":"pass","diff_check":"pass","patch_applies_against_base_index":"pass"},
+  "resources": {"network":"offline","build_jobs":2,"cpu_cores_cap":2,"memory_bytes":8589934592,"swap_bytes":0,"build_step_timeout_seconds":900,"rpc_test_step_timeout_seconds":120,"shared_test_step_timeout_seconds":60,"test_file_limit_bytes":67108864,"core_dump_limit_bytes":0},
+  "assurance": "Focused Reverie typed test-Tool runtime regressions, not Hermit Detcore/CLI L2",
+  "log_level": "no inherited RUST_LOG or --log override; test harness --nocapture",
+  "determinism_relaxations_added": [],
+  "unqualified": ["exact branch accounting including assembly entry/return","timer internal TF and guest TRAP_TRACE distinction","arbitrary-PC asynchronous register preservation","nested asynchronous continuation ownership","excluded xstate and TLS base changes","arbitrary guests and static support"],
+  "frozen_reference_labels":340,
+  "target_required":306,
+  "new_qualifying_matrix_results":0,
+  "prior_failed_attempt": {"log":"test-attempt1-link-limit.log","classification":"linker SIGXFSZ from mistakenly applying test file-size guard during build; retained; subsequent build and test execution separated"},
+  "review_document":"fallback-review.md"
+}

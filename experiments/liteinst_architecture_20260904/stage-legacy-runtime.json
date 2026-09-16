@@ -1,0 +1,13 @@
+{
+  "mem_cap_factor": 1.0,
+  "mem_cap_floor_bytes": 8589934592,
+  "steps": [{
+    "group": "build",
+    "job": "legacy_runtime",
+    "desc": "Focused pinned legacy runtime staging, private target, offline two-job build",
+    "cmd": "set -eu; cd /home/newton/work/dev-hermit/worktrees/slots/liteinst-owner; test \"$(git rev-parse HEAD)\" = 4d8f866102882b6eeabdf99cc7e81433cc3c95c5; git diff --quiet; export CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=2; ./scripts/stage-liteinst-runtime.sh dev /home/newton/work/dev-hermit/ignored/liteinst-host-hybrid-pairs-20260904/runtime/libreverie_liteinst.so /home/newton/work/dev-hermit/ignored/liteinst-host-hybrid-pairs-20260904/stage-target",
+    "timeout": 900,
+    "cpu_timeout": 1800,
+    "hint": {"rss_baseline_bytes": 8589934592, "hard_mem_max_bytes": 8589934592}
+  }]
+}

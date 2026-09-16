@@ -1,0 +1,12 @@
+{
+  "mem_cap_factor": 1.0,
+  "mem_cap_floor_bytes": 8589934592,
+  "steps": [
+    {
+      "group":"check", "job":"focused", "desc":"Focused Clippy and rebuilt RPC regression executable",
+      "cmd":"set -eu; cd /home/newton/work/dev-hermit/worktrees/slots/liteinst-syscall-fallback; export CARGO_TARGET_DIR=/home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/target CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=2; cargo clippy --locked --offline -j2 -p reverie-liteinst --lib --bin reverie-liteinst-rpc-tool-guest --test rpc_tool -- -D warnings > /home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/clippy.log 2>&1; cargo test --locked --offline -j2 -p reverie-liteinst --test rpc_tool --no-run > /home/newton/work/dev-hermit/ignored/liteinst-syscall-fallback-20260904/final-compile.log 2>&1",
+      "timeout":900, "cpu_timeout":1800,
+      "hint":{"rss_baseline_bytes":8589934592,"hard_mem_max_bytes":8589934592}
+    }
+  ]
+}

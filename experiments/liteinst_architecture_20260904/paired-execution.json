@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "scope": "Three unchanged seeded samples: ptrace repeat verification versus explicitly HOST-HYBRID LiteInst repeat verification; not cross-backend log equality or in-process architecture qualification",
+  "started_utc": "2026-09-04T20:33:29.926287397Z",
+  "ended_utc": "2026-09-04T20:33:46.369486722Z",
+  "hermit_sha": "4d8f866102882b6eeabdf99cc7e81433cc3c95c5",
+  "reverie_sha_both_paths": "320412c5967790939ebe405c73e394ffd9c41459",
+  "tracked_source_dirty": false,
+  "untracked_foreign_work": "liteinst-runtime-build/detcore-runtime/; inactive and not used",
+  "binary": {
+    "path": "/home/newton/work/dev-hermit/ignored/liteinst-detcore-isolated-20260904/target/debug/hermit",
+    "sha256": "3a44db3be9052a19acffd3b611d7691a29dec6329f3af6bbdebccef0db64a478",
+    "embedded_build_sha": "4d8f86610288",
+    "mtime_utc": "2026-09-04T20:19:16.147261813Z",
+    "checked_source": "/home/newton/work/dev-hermit/ignored/liteinst-detcore-isolated-20260904/checked-source.json",
+    "checked_source_sha256": "f7cb184fe8faa894d8e6f4e49a3d2ee79fae2cb5b90548c3003eda365961fa9a",
+    "limitation": "Focused run evidence, not an exact-head full-validation receipt; preceding workspace test had unrelated record/replay unsupported gettimeofday failure"
+  },
+  "legacy_runtime": {
+    "path": "/home/newton/work/dev-hermit/ignored/liteinst-host-hybrid-pairs-20260904/runtime/libreverie_liteinst.so",
+    "sha256": "a0d560f2cd2bdc7b54a40b99f132dc1994603bc7a817c9f11dbee37d9588253e",
+    "mtime_utc": "2026-09-04T20:32:14.660589407Z",
+    "revision": "320412c5967790939ebe405c73e394ffd9c41459",
+    "revision_marker_sha256": "86241aa1d42e6b4383e9345f652e4ea6120e36d59fcc7f76e536c0cc6ff1da29",
+    "producer": "scripts/stage-liteinst-runtime.sh dev; existing locked helper generated and validated DSO plus genuine revision marker",
+    "private_target": "/home/newton/work/dev-hermit/ignored/liteinst-host-hybrid-pairs-20260904/stage-target-320412c5",
+    "build_exit": 0,
+    "build_wall_seconds_rounded": 114,
+    "network": "offline",
+    "admission": "GRANTED; 2 CPU bandwidth cores, 8 GiB memory, swap disabled, 900-second step bound; cgroups observed active"
+  },
+  "raw_root": "/home/newton/work/dev-hermit/ignored/liteinst-host-hybrid-pairs-20260904",
+  "artifact_index": "SHA256SUMS",
+  "runner_dag": "run-host-hybrid-pairs.json",
+  "stage_dag": "stage-legacy-runtime.json",
+  "method": "PAIRED-EXECUTION.md",
+  "frozen_sample": "sample.json",
+  "seed": "liteinst-baseline-20260904-v1",
+  "frozen_population": {
+    "denominator": 340,
+    "identity_sha256": "2cf9960cbe319f9214023d748482a6986e47f5822f728254c96ddfb7248bc530",
+    "cached_evidence_subset": 253,
+    "static_labels_retained": true,
+    "intended_in_process_target": 306,
+    "changed": false
+  },
+  "measurement": {
+    "ptrace": {"l2_successes": 3, "sample_denominator": 3, "failures": 0, "not_measured_in_frozen_340": 337},
+    "host_hybrid_liteinst": {"l2_successes": 3, "sample_denominator": 3, "failures": 0, "not_measured_in_frozen_340": 337},
+    "in_process": {"executed": 0, "qualification": "not measured"},
+    "actual_sample_elf_linkage": {"dynamic": 3, "static": 0, "unknown": 0},
+    "cell_observations": 6,
+    "guest_runs_within_verify": 12,
+    "retries_executed": 0,
+    "retained_logs": 12,
+    "relaxations": [],
+    "log_level": "info",
+    "retained_log_cap_bytes": 67108864,
+    "guard": "Official runner: 57-second wall / 22-second CPU bounds; admitted outer step 60 seconds, serial execution",
+    "interpretation": "All three historical LiteInst red labels failed to reproduce in this bounded sample. No label change, flakiness-clearance, full-population percentage, or intended in-process claim. Both backends compare their own repeated observations, not each other."
+  },
+  "cells": [
+    {"run_id":"01_ioctl_ptrace","test":"c-programs/ioctl-fioclex","backend":"ptrace","attempt":1,"status":0,"bitwise_parity":true,"info_left":144,"info_right":144,"duration_ms":1027},
+    {"run_id":"02_ioctl_liteinst","test":"c-programs/ioctl-fioclex","backend":"host-hybrid liteinst","attempt":1,"status":0,"bitwise_parity":true,"info_left":1172,"info_right":1172,"duration_ms":2739},
+    {"run_id":"03_tmpfile_ptrace","test":"backend-parity-c/o-tmpfile-anon","backend":"ptrace","attempt":1,"status":0,"bitwise_parity":true,"info_left":135,"info_right":135,"duration_ms":1007},
+    {"run_id":"04_tmpfile_liteinst","test":"backend-parity-c/o-tmpfile-anon","backend":"host-hybrid liteinst","attempt":1,"status":0,"bitwise_parity":true,"info_left":1169,"info_right":1169,"duration_ms":2802},
+    {"run_id":"05_lock_ptrace","test":"backend-parity-c/record-lock","backend":"ptrace","attempt":1,"status":0,"bitwise_parity":true,"info_left":136,"info_right":136,"duration_ms":1000},
+    {"run_id":"06_lock_liteinst","test":"backend-parity-c/record-lock","backend":"host-hybrid liteinst","attempt":1,"status":0,"bitwise_parity":true,"info_left":1164,"info_right":1164,"duration_ms":2740}
+  ]
+}

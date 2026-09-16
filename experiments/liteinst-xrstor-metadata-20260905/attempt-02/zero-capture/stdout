@@ -1,0 +1,15 @@
+mode=capture profile=zero pid=2998864 image_size=2440 mask=0x2e7
+vendor_words=68747541:69746e65:444d4163
+cpuid1=00b10f10:9fff0800:7efa320b:178bfbff
+cpuid7=00000001:f1bf97ab:19415fde:10000110
+xcr0=00000000:000002e7
+cpuid_d_0=000002e7:00000988:00000988:00000000
+cpuid_d_2=00000100:00000240:00000000:00000000
+cpuid_d_5=00000040:00000340:00000000:00000000
+cpuid_d_6=00000200:00000380:00000000:00000000
+cpuid_d_7=00000400:00000580:00000000:00000000
+cpuid_d_9=00000008:00000980:00000000:00000000
+before_xstate_bv=0x2a7 after_xstate_bv=0x2a7
+before_xcomp_bv=0x0 after_xcomp_bv=0x0
+voluntary_switches=0 involuntary_switches=0 quiet_after=1
+high_before_matches=1 high_after_matches=1 qualified=1 differences=0 whole_image_equal=1

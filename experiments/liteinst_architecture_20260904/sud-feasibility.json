@@ -1,0 +1,184 @@
+{
+  "schema": "liteinst-sud-feasibility-v1",
+  "scope": "external controlled syscall interception; no Detcore or backend assurance",
+  "started_utc": "2026-09-04T23:51:16Z",
+  "finished_utc": "2026-09-04T23:51:19Z",
+  "kernel": "7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf",
+  "product_reference": {
+    "reverie": "42d55f7db2c5d34e00b47800c561ec6da96f271e",
+    "hermit": "4d8f866102882b6eeabdf99cc7e81433cc3c95c5",
+    "own_fallback": "7b51e521fcacbbe876c93d1cd0893c442c1a52f6",
+    "product_changed": false
+  },
+  "reference_population": 340,
+  "coverage_credit": 0,
+  "exact_build_sha256": "13355573ea51b50fbecbc924d2798ba31dad67626a02f448b33debde9646996a  probe.c\nb5df60bd86a81a6eeee2facce2270f14c30ac119173d5a78beada2d7f699e031  probe.S\n3a231411584ff9fcaaf64004112250582f98b5a9a2db83181b25b39d15f0c556  preload.c\n788ce4d4d6d045f7aa0700c69222fd5b6a4d42aa0990fb3fce5651a99ef392e9  sud-probe\n6c90b8297ae137eee463648856a85487c5d9733d036b907127304daa3e2b5806  observer.so\n",
+  "platform_sha256": "ab4ed4d817235eae057cf085b51c07f3becab28a268ecba04c4282b91fdc4c2f  /usr/include/linux/prctl.h\nfd0cce03f3ed53b8d2598f905352cc150c84ba7b8005603a63a625024c012279  /usr/include/asm/prctl.h\n8686ed80ff376f4aded36e7069932c3d99d78b75364852a4b39acbf15abeb489  /usr/src/kernels/7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf/include/linux/syscall_user_dispatch.h\nd05a0b7d53c38d98f4effa41ddc09e2c0e61220c840be1636e6d89e5c357c04b  /usr/src/kernels/7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf/include/linux/syscall_user_dispatch_types.h\n008e34384d4bc082a053ba086588efa1546086ecb863c9464b7269f8928b7577  /lib64/ld-linux-x86-64.so.2\nd932cb6bc88da10cc709d5b7ecda57a1387b6571331689dba88023b4c0517776  /lib64/libc.so.6\n",
+  "raw_directory": "/home/newton/work/dev-hermit/ignored/liteinst-sud-20260904",
+  "total_cases": 20,
+  "matched_expectations": 17,
+  "aggregate_exit": 1,
+  "cases": [
+    {
+      "case": "api-errors",
+      "exit": 0,
+      "signal": 0,
+      "wait_status": 0,
+      "expected_signal": 0,
+      "matched_expectation": true
+    },
+    {
+      "case": "first-trap",
+      "exit": 0,
+      "signal": 0,
+      "wait_status": 0,
+      "expected_signal": 0,
+      "matched_expectation": true
+    },
+    {
+      "case": "selector-allow-control",
+      "exit": 0,
+      "signal": 0,
+      "wait_status": 0,
+      "expected_signal": 0,
+      "matched_expectation": true
+    },
+    {
+      "case": "invalid-selector",
+      "exit": -1,
+      "signal": 31,
+      "wait_status": 159,
+      "expected_signal": 31,
+      "matched_expectation": true
+    },
+    {
+      "case": "unreadable-selector",
+      "exit": -1,
+      "signal": 11,
+      "wait_status": 139,
+      "expected_signal": 11,
+      "matched_expectation": true
+    },
+    {
+      "case": "no-handler",
+      "exit": -1,
+      "signal": 31,
+      "wait_status": 159,
+      "expected_signal": 31,
+      "matched_expectation": true
+    },
+    {
+      "case": "outside-restorer",
+      "exit": -1,
+      "signal": 31,
+      "wait_status": 159,
+      "expected_signal": 31,
+      "matched_expectation": true
+    },
+    {
+      "case": "fork-reset",
+      "exit": 0,
+      "signal": 0,
+      "wait_status": 0,
+      "expected_signal": 0,
+      "matched_expectation": true
+    },
+    {
+      "case": "thread-reset",
+      "exit": 0,
+      "signal": 0,
+      "wait_status": 0,
+      "expected_signal": 0,
+      "matched_expectation": true
+    },
+    {
+      "case": "failed-exec",
+      "exit": 0,
+      "signal": 0,
+      "wait_status": 0,
+      "expected_signal": 0,
+      "matched_expectation": true
+    },
+    {
+      "case": "exec-plain",
+      "exit": -1,
+      "signal": 11,
+      "wait_status": 139,
+      "expected_signal": 0,
+      "matched_expectation": false
+    },
+    {
+      "case": "exec-rearm",
+      "exit": -1,
+      "signal": 11,
+      "wait_status": 139,
+      "expected_signal": 0,
+      "matched_expectation": false
+    },
+    {
+      "case": "ptrace-denied",
+      "exit": -1,
+      "signal": 31,
+      "wait_status": 159,
+      "expected_signal": 31,
+      "matched_expectation": true
+    },
+    {
+      "case": "null-selector",
+      "exit": 0,
+      "signal": 0,
+      "wait_status": 0,
+      "expected_signal": 0,
+      "matched_expectation": true
+    },
+    {
+      "case": "disable-control",
+      "exit": 0,
+      "signal": 0,
+      "wait_status": 0,
+      "expected_signal": 0,
+      "matched_expectation": true
+    },
+    {
+      "case": "instruction-faults",
+      "exit": 0,
+      "signal": 0,
+      "wait_status": 0,
+      "expected_signal": 0,
+      "matched_expectation": true
+    },
+    {
+      "case": "exec-sud-only",
+      "exit": 0,
+      "signal": 0,
+      "wait_status": 0,
+      "expected_signal": 0,
+      "matched_expectation": true
+    },
+    {
+      "case": "exec-cpuid-only",
+      "exit": 0,
+      "signal": 0,
+      "wait_status": 0,
+      "expected_signal": 0,
+      "matched_expectation": true
+    },
+    {
+      "case": "exec-tsc-only",
+      "exit": -1,
+      "signal": 11,
+      "wait_status": 139,
+      "expected_signal": 0,
+      "matched_expectation": false
+    },
+    {
+      "case": "exec-sud-rearm",
+      "exit": 0,
+      "signal": 0,
+      "wait_status": 0,
+      "expected_signal": 0,
+      "matched_expectation": true
+    }
+  ],
+  "limitation": "No kernel implementation/man body available; installed API headers read. Earliest observed exec point is preinit, not first loader syscall. TSC-related fatal PC not captured."
+}

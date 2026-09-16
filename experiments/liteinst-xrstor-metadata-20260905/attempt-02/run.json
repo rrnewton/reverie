@@ -1,0 +1,20 @@
+{
+  "mem_cap_factor": 1.0,
+  "mem_cap_floor_bytes": 2147483648,
+  "steps": [{
+    "group": "diagnostic",
+    "job": "direct_xrstor",
+    "desc": "Ordinary process self-XSAVE/XRSTOR only; no signals, SUD or runtime",
+    "jobs_flag": "",
+    "jobs_env": "CARGO_BUILD_JOBS",
+    "cmd": "bash /home/newton/work/dev-hermit/experiments/liteinst-xrstor-metadata-20260905/run.sh",
+    "timeout": 150,
+    "cpu_timeout": 300,
+    "hint": {
+      "rss_baseline_bytes": 2147483648,
+      "hard_mem_max_bytes": 2147483648,
+      "preferred_inner_jobs": 2,
+      "classification": "cpu-bound"
+    }
+  }]
+}
