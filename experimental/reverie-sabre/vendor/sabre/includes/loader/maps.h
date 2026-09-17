@@ -58,7 +58,7 @@ struct region {
   void *end;
   /** Region size */
   size_t size;
-  /** Access protection */
+  /** Original PROT_* access protections, without MAP_* mapping flags. */
   int perms;
   /** Region offset */
   ElfW(Addr) offset;

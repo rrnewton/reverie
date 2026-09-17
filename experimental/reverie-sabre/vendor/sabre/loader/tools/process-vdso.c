@@ -106,7 +106,6 @@ int main(int argc, char **argv, char **envp) {
   perms |= PROT_READ;
   perms |= PROT_WRITE;
   perms |= PROT_EXEC;
-  perms |= MAP_PRIVATE;
   reg->perms = perms;
   reg->type = REGION_VDSO;
 
