@@ -61,6 +61,31 @@ impl<G: GlobalTool, S: AsRawFd> AsRawFd for BlockingRpcClient<G, S> {
     }
 }
 
+impl<G: GlobalTool, S> BlockingRpcClient<G, S> {
+    /// Consume the client and return its stored TID, config and stream.
+    ///
+    /// This transfers ownership without acquiring the stream mutex, performing
+    /// I/O, cloning the config, or dropping either returned value. Poison does
+    /// not prevent extracting the owned stream; a live poisoned client's RPC
+    /// requests continue to fail normally.
+    ///
+    /// The caller controls when the returned values are used or destroyed.
+    /// Extraction does not make their callbacks or destructors safe after fork
+    /// or repair any separate synchronization in an enclosing runtime.
+    pub fn into_parts(self) -> (Tid, G::Config, S) {
+        let Self {
+            tid,
+            config,
+            stream,
+            _phantom: _,
+        } = self;
+        let stream = stream
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (tid, config, stream)
+    }
+}
+
 impl<G> BlockingRpcClient<G>
 where
     G: GlobalTool,
@@ -228,3 +253,170 @@ fn read_message(stream: &mut impl Read, max_len: usize) -> Result<Vec<u8>, RpcEr
 
 #[cfg(test)]
 mod io_scope_tests;
+
+#[cfg(test)]
+mod into_parts_tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use serde::Deserialize;
+    use serde::Serialize;
+
+    use super::*;
+
+    #[derive(Debug, Default)]
+    struct Counts {
+        clones: AtomicUsize,
+        config_drops: AtomicUsize,
+    }
+
+    #[derive(Debug, Default, Serialize, Deserialize)]
+    struct Config {
+        identity: u64,
+        #[serde(skip)]
+        counts: Arc<Counts>,
+    }
+    impl Clone for Config {
+        fn clone(&self) -> Self {
+            self.counts.clones.fetch_add(1, Ordering::SeqCst);
+            Self {
+                identity: self.identity,
+                counts: self.counts.clone(),
+            }
+        }
+    }
+    impl Drop for Config {
+        fn drop(&mut self) {
+            self.counts.config_drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    #[derive(Default)]
+    struct Global;
+    #[async_trait]
+    impl GlobalTool for Global {
+        type Request = u8;
+        type Response = u8;
+        type Config = Config;
+        async fn receive_rpc(&self, _: Tid, request: u8) -> u8 {
+            request
+        }
+    }
+    // Deliberately neither Send nor Read/Write: extraction only moves ownership.
+    struct Stream(Rc<Cell<usize>>);
+    impl Drop for Stream {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+    fn client() -> (
+        BlockingRpcClient<Global, Stream>,
+        Arc<Counts>,
+        Rc<Cell<usize>>,
+    ) {
+        let counts = Arc::new(Counts::default());
+        let drops = Rc::new(Cell::new(0));
+        (
+            BlockingRpcClient {
+                tid: Tid::from_raw(173),
+                config: Config {
+                    identity: 0x9182_7364,
+                    counts: counts.clone(),
+                },
+                stream: Mutex::new(Stream(drops.clone())),
+                _phantom: PhantomData,
+            },
+            counts,
+            drops,
+        )
+    }
+    fn assert_parts(
+        client: BlockingRpcClient<Global, Stream>,
+        counts: Arc<Counts>,
+        drops: Rc<Cell<usize>>,
+    ) {
+        let (tid, config, stream) = client.into_parts();
+        assert_eq!(tid, Tid::from_raw(173));
+        assert_eq!(config.identity, 0x9182_7364);
+        assert!(Arc::ptr_eq(&config.counts, &counts));
+        assert!(Rc::ptr_eq(&stream.0, &drops));
+        assert_eq!(counts.clones.load(Ordering::SeqCst), 0, "config was cloned");
+        assert_eq!(
+            counts.config_drops.load(Ordering::SeqCst),
+            0,
+            "config was dropped before transfer"
+        );
+        assert_eq!(drops.get(), 0, "stream was dropped before transfer");
+        drop(config);
+        assert_eq!(counts.config_drops.load(Ordering::SeqCst), 1);
+        assert_eq!(drops.get(), 0);
+        drop(stream);
+        assert_eq!(drops.get(), 1);
+    }
+    #[test]
+    fn exact_owners_move_without_callbacks_or_stream_bounds() {
+        let (client, counts, drops) = client();
+        assert_parts(client, counts, drops);
+    }
+    #[test]
+    fn poisoned_owned_stream_is_recovered_without_changing_live_poison_rules() {
+        let (client, counts, drops) = client();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = client.stream.lock().unwrap();
+            panic!("intentional owned mutex poison");
+        }));
+        assert!(panic.is_err());
+        assert!(client.stream.is_poisoned());
+        assert_parts(client, counts, drops);
+    }
+    #[test]
+    fn abandoned_lock_child() {
+        if std::env::var_os("RPC_INTO_PARTS_ABANDONED_LOCK_CHILD").is_none() {
+            return;
+        }
+        let (client, counts, drops) = client();
+        std::mem::forget(client.stream.lock().unwrap());
+        assert_parts(client, counts, drops);
+    }
+    #[test]
+    fn abandoned_lock_is_not_acquired_during_owned_extraction() {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "blocking_client::into_parts_tests::abandoned_lock_child",
+                "--nocapture",
+            ])
+            .env("RPC_INTO_PARTS_ABANDONED_LOCK_CHILD", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut exceeded = false;
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                exceeded = true;
+                child.kill().unwrap();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            !exceeded,
+            "owned extraction tried to acquire the abandoned mutex; child reaped with {:?}",
+            output.status
+        );
+        assert!(
+            output.status.success(),
+            "owned extraction child failed: {:?}\n{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
