@@ -1,16 +1,16 @@
-/* A forked child that execs after the session root has exited.
-
-   Exec after start cannot preserve the preload runtime. The child waits until
-   the kernel has reparented it, proving that the root exited before the
-   refused exec. The root would then wait forever for the child's Tool exit
-   callback if its process-exit bookkeeping ignored the session failure. */
+/* A forked child execs with the inherited preload by default. The explicit
+   drop-preload mode preserves the session-failure and pending-exit cleanup
+   controls using an image that really cannot activate the required runtime.
+   Waiting for reparenting proves the root has exited before the child execs. */
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/prctl.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 int main(int argc, char **argv) {
-  if (argc != 3 || prctl(PR_SET_NAME, argv[1], 0, 0, 0) != 0) {
+  if ((argc != 3 && argc != 4) || prctl(PR_SET_NAME, argv[1], 0, 0, 0) != 0) {
     return 9;
   }
   FILE *pid_file = fopen(argv[2], "w");
@@ -30,6 +30,10 @@ int main(int argc, char **argv) {
   if (child == 0) {
     while (getppid() == root) {
       usleep(1000);
+    }
+    if (argc == 4 && strcmp(argv[3], "drop-preload") == 0 &&
+        unsetenv("LD_PRELOAD") != 0) {
+      _exit(126);
     }
     execl("/bin/true", "true", (char *)NULL);
     _exit(127);

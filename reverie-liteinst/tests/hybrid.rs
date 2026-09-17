@@ -24,6 +24,8 @@ use reverie::Subscription;
 use reverie::Tid;
 use reverie::Tool;
 use reverie::process::Command;
+use reverie::syscalls::Addr;
+use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::SyscallInfo;
@@ -149,6 +151,310 @@ impl Tool for ActivationCpuEvents {
 
 #[derive(Default)]
 struct CountSyscalls;
+
+#[derive(Debug, Default)]
+struct ExecEvents {
+    events: std::sync::Mutex<Vec<(u64, u64, u64)>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for ExecEvents {
+    type Request = (u64, u64, u64);
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Tid, event: Self::Request) {
+        self.events.lock().unwrap().push(event);
+    }
+}
+
+#[derive(Default)]
+struct ExecTool;
+
+#[reverie::tool]
+impl Tool for ExecTool {
+    type GlobalState = ExecEvents;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        [Sysno::getpid, Sysno::execve, Sysno::execveat]
+            .into_iter()
+            .collect()
+    }
+
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), reverie::Errno> {
+        // A successful exec has a new initial stack. In particular, a Tool
+        // callback must not read registers from the replaced hook frame.
+        let regs = guest.regs().await;
+        let argc: u64 = guest
+            .memory()
+            .read_value(Addr::from_raw(regs.rsp as usize).unwrap())?;
+        guest.send_rpc((0, argc, 0)).await;
+        Ok(())
+    }
+
+    async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
+        self,
+        pid: Pid,
+        global_state: &G,
+        exit_status: ExitStatus,
+    ) -> Result<(), Error> {
+        global_state
+            .send_rpc((
+                4,
+                pid.as_raw() as u64,
+                u64::from(exit_status == ExitStatus::Exited(0)),
+            ))
+            .await;
+        Ok(())
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        let (nr, args) = syscall.into_parts();
+        if nr == Sysno::getpid && args.arg0 == 0x6e786578 {
+            guest
+                .send_rpc((1, args.arg1 as u64, args.arg2 as u64))
+                .await;
+            return Ok(0x4242);
+        }
+        if matches!(nr, Sysno::execve | Sysno::execveat) {
+            guest.send_rpc((2, nr as u64, 0)).await;
+        }
+        match guest.inject(syscall).await {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                guest
+                    .send_rpc((3, nr as u64, error.into_raw() as u64))
+                    .await;
+                Err(error.into())
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_reactivates_after_exec() {
+    let (_directory, guest) = compile_fixture("hybrid_exec_generation.c");
+    for mode in ["cold", "hot", "execveat"] {
+        let mut command = Command::new(&guest);
+        command.arg(mode).arg("0");
+        let (output, global) = tokio::time::timeout(
+            Duration::from_secs(10),
+            LiteinstBackend::run_host_with_output_and_preload::<ExecTool>(
+                command,
+                (),
+                preload_path(),
+            ),
+        )
+        .await
+        .expect("exec did not finish")
+        .unwrap();
+        assert!(output.status.success(), "mode={mode} output={output:?}");
+        assert_eq!(output.stdout, b"exec-generations-finished\n", "mode={mode}");
+        let events = global.events.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.0 == 0)
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![(0, 3, 0); 3],
+            "mode={mode} events={events:?}"
+        );
+        let next_exec = if mode == "execveat" {
+            Sysno::execveat
+        } else {
+            Sysno::execve
+        };
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.0 == 2)
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![
+                (2, Sysno::execve as u64, 0),
+                (2, next_exec as u64, 0),
+                (2, next_exec as u64, 0)
+            ],
+            "initial launch and two replacement execs: mode={mode} events={events:?}"
+        );
+        let stages = if mode == "cold" { 2..3 } else { 0..3 };
+        let expected = stages
+            .flat_map(|stage| (0..3).map(move |i| (1, stage, i)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.0 == 1)
+                .copied()
+                .collect::<Vec<_>>(),
+            expected,
+            "mode={mode} events={events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| e.0 == 3),
+            "mode={mode} events={events:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_failed_exec_preserves_installed_site() {
+    let (_directory, guest) = compile_fixture("hybrid_exec_generation.c");
+    let mut command = Command::new(guest);
+    command.arg("failed").arg("0");
+    let (output, global) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_host_with_output_and_preload::<ExecTool>(command, (), preload_path()),
+    )
+    .await
+    .expect("failed exec did not return")
+    .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"failed-exec-preserved\n");
+    let events = global.events.lock().unwrap();
+    assert_eq!(events.iter().filter(|e| e.0 == 0).count(), 1, "{events:?}");
+    assert_eq!(events.iter().filter(|e| e.0 == 1).count(), 6, "{events:?}");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.0 == 3)
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![
+            (3, Sysno::execve as u64, libc::ENOENT as u64),
+            (3, Sysno::execveat as u64, libc::ENOENT as u64)
+        ],
+        "{events:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_exec_requires_preload_and_selector_before_entry() {
+    let (_directory, guest) = compile_fixture("hybrid_exec_generation.c");
+    let markers = tempfile::tempdir().unwrap();
+    for mode in ["drop-preload", "drop-selector"] {
+        let marker = markers.path().join(mode);
+        let mut command = Command::new(&guest);
+        command.arg(mode).arg(&marker);
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            LiteinstBackend::run_host_with_output_and_preload::<ExecTool>(
+                command,
+                (),
+                preload_path(),
+            ),
+        )
+        .await
+        .expect("missing-runtime exec did not reach the entry guard");
+        let error = result.expect_err("exec without the required runtime reported success");
+        assert!(
+            error
+                .to_string()
+                .contains("verify LiteInst runtime before executable entry failed")
+                && error
+                    .to_string()
+                    .contains("before the required preload handshake completed"),
+            "mode={mode}: {error}"
+        );
+        assert!(
+            !marker.exists(),
+            "mode={mode} reached its first application side effect"
+        );
+        let pid = error
+            .to_string()
+            .split("tracee ")
+            .nth(1)
+            .and_then(|suffix| suffix.split(':').next())
+            .and_then(|pid| pid.parse::<u32>().ok())
+            .expect("entry guard omitted tracee identity");
+        assert_pid_reaped(pid);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_fork_child_exec_completes_before_and_after_root_exit() {
+    for fixture in ["hybrid_fork_exec.c", "hybrid_fork_exec_after_root_exit.c"] {
+        let (_directory, guest) = compile_fixture(fixture);
+        let name = unique_process_name();
+        let pids = tempfile::tempdir().unwrap();
+        let pid_file = pids.path().join("root.pid");
+        let mut command = Command::new(guest);
+        command.arg(&name).arg(&pid_file);
+        let (output, global) = tokio::time::timeout(
+            Duration::from_secs(10),
+            LiteinstBackend::run_host_with_output_and_preload::<ExecTool>(
+                command,
+                (),
+                preload_path(),
+            ),
+        )
+        .await
+        .expect("forked exec did not complete")
+        .unwrap();
+        assert_eq!(
+            output.status,
+            ExitStatus::Exited(0),
+            "fixture={fixture} {output:?}"
+        );
+        assert_eq!(
+            output.stdout, b"fork-exec-root-finished\n",
+            "fixture={fixture} {output:?}"
+        );
+        let events = global.events.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.0 == 0)
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![(0, 3, 0), (0, 1, 0)],
+            "fixture={fixture} {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.0 == 2)
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![(2, Sysno::execve as u64, 0); 2],
+            "fixture={fixture} {events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| e.0 == 3),
+            "fixture={fixture} {events:?}"
+        );
+        let exits = events
+            .iter()
+            .filter(|e| e.0 == 4)
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(exits.len(), 2, "fixture={fixture} {events:?}");
+        assert!(
+            exits.iter().all(|e| e.2 == 1),
+            "fixture={fixture} {events:?}"
+        );
+        assert_ne!(exits[0].1, exits[1].1, "fixture={fixture} {events:?}");
+        let root_pid: u32 = fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(
+            exits.iter().any(|e| e.1 == root_pid as u64),
+            "fixture={fixture} {events:?}"
+        );
+        for exit in exits {
+            assert_pid_reaped(exit.1 as u32);
+        }
+        assert_processes_named_eventually_reaped(&name, "completed exec left a process behind");
+    }
+}
 
 #[reverie::tool]
 impl Tool for CountSyscalls {
@@ -805,10 +1111,10 @@ async fn post_start_exec_that_drops_the_preload_fails_closed() {
     assert!(
         error
             .to_string()
-            .contains("reject LiteInst post-start exec failed")
+            .contains("verify LiteInst runtime before executable entry failed")
             && error
                 .to_string()
-                .contains("required preload runtime cannot be preserved across exec (phase Ready)"),
+                .contains("before the required preload handshake completed"),
         "post-start exec did not report the lost runtime boundary: {error}"
     );
 }
@@ -1185,19 +1491,10 @@ async fn hybrid_follows_a_grandchild() {
     run_multi_task_fixture::<PassthroughGetpid>("hybrid_fork_tree.c", "fork-tree-followed\n").await;
 }
 
-/// A child that execs fails the whole session; the root must not report the
-/// success it would otherwise reach.
-///
-/// Exec after start cannot preserve the preload runtime, and that refusal now
-/// happens in a task with no outer cleanup guard of its own. Two distinct
-/// regressions are covered, and they fail in different ways:
-///
-/// * without the session-wide failure record the root reaches its own clean
-///   exit and this run returns `Ok` -- a SILENT GREEN over a child that was
-///   released untraced, which is strictly worse than the refusal it replaced;
-/// * without releasing the failed non-root task from the tool, the
-///   deterministic scheduler waits forever for a thread whose tracee the error
-///   path already detached, and this test hangs rather than fails.
+/// A child that removes the required preload before exec fails the whole
+/// session; the root must not report the success it would otherwise reach.
+/// The original session failure and pending-exit cleanup controls remain
+/// necessary now that exec with an inherited preload is supported.
 #[tokio::test(flavor = "current_thread")]
 async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
     let (_directory, guest) = compile_fixture("hybrid_fork_exec.c");
@@ -1206,7 +1503,7 @@ async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
     let pid_file = pid_directory.path().join("root.pid");
     let exit_file = pid_directory.path().join("process-exits");
     let mut command = Command::new(guest);
-    command.arg(&name).arg(&pid_file);
+    command.arg(&name).arg(&pid_file).arg("drop-preload");
     let result =
         tokio::time::timeout(
             Duration::from_secs(60),
@@ -1254,7 +1551,7 @@ async fn post_start_exec_refusal_reaches_cleanup_while_process_exit_is_pending()
     let pid_directory = tempfile::tempdir().unwrap();
     let pid_file = pid_directory.path().join("root.pid");
     let mut command = Command::new(guest);
-    command.arg(&name).arg(&pid_file);
+    command.arg(&name).arg(&pid_file).arg("drop-preload");
 
     let result = tokio::time::timeout(
         Duration::from_secs(3),
@@ -1285,7 +1582,7 @@ async fn post_start_exec_refusal_cancels_root_join_while_process_exit_is_pending
     let pid_directory = tempfile::tempdir().unwrap();
     let pid_file = pid_directory.path().join("root.pid");
     let mut command = Command::new(guest);
-    command.arg(&name).arg(&pid_file);
+    command.arg(&name).arg(&pid_file).arg("drop-preload");
     let unrelated = UnrelatedStoppedProcess::spawn();
 
     let result = tokio::time::timeout(

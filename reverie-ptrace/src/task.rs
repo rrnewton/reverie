@@ -785,6 +785,14 @@ impl Default for LiteinstRuntimeState {
 }
 
 impl LiteinstRuntimeState {
+    fn after_exec(&self) -> Result<Self, Errno> {
+        Ok(Self {
+            phase: LiteinstRuntimePhase::Waiting,
+            generation: self.generation.checked_add(1).ok_or(Errno::EOVERFLOW)?,
+            ..Self::default()
+        })
+    }
+
     fn mapping_mutates_active_hook(&self, nr: Sysno, args: SyscallArgs, page_size: u64) -> bool {
         let operation_range = match nr {
             // AUTONOMOUS-BOT-IMPLEMENTED
@@ -1599,10 +1607,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         fields(pid = %task.pid())
     )]
     pub async fn tracee_preinit(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
+        // A forked child can initialize a replacement image too. It must not
+        // consume or overwrite the session root's held-stop cleanup lease.
         let held_root_stop = self
-            .global_state
-            .liteinst_runtime
-            .as_ref()
+            .liteinst_root_runtime(&task)
             .map(|runtime| Arc::clone(&runtime.held_root_stop));
         let reject_activation_signals = self.global_state.liteinst_runtime.is_some();
         let unexpected_preinit_signal = Arc::new(StdMutex::new(None));
@@ -2796,8 +2804,10 @@ impl<L: Tool + 'static> TracedTask<L> {
     // handle ptrace exec event
     async fn handle_exec_event(&mut self, task: Stopped) -> Result<Wait, TraceError> {
         if self.global_state.liteinst_runtime.is_some() {
-            let mut state = self.liteinst_runtime.lock().unwrap();
-            if state.phase != LiteinstRuntimePhase::PreExec {
+            let state = self.liteinst_runtime.lock().unwrap();
+            if state.phase != LiteinstRuntimePhase::PreExec
+                && !(state.phase == LiteinstRuntimePhase::Ready && self.is_main_thread())
+            {
                 let phase = state.phase;
                 drop(state);
                 self.record_liteinst_failure(
@@ -2806,19 +2816,36 @@ impl<L: Tool + 'static> TracedTask<L> {
                         self.tid(),
                         "reject LiteInst post-start exec",
                         format!(
-                            "the required preload runtime cannot be preserved across exec (phase {phase:?})"
+                            "exec requires an activated thread-group leader (phase {phase:?}, tid {}, pid {})",
+                            self.tid(), self.pid()
                         ),
                     ),
                 );
                 return Err(Errno::ENOTSUPP.into());
             }
-            state.generation = state.generation.wrapping_add(1);
-            state.phase = LiteinstRuntimePhase::Waiting;
-            state.frame = None;
-            state.ready_generation = None;
-            state.attempted_sites.clear();
-            state.fallback_sites.clear();
-            state.active_hooks.clear();
+            let next = state.after_exec();
+            drop(state);
+            let next = match next {
+                Ok(next) => next,
+                Err(error) => {
+                    self.record_liteinst_failure(
+                        LiteinstActivationFailureReason::PostStartExec,
+                        Error::runtime(
+                            self.tid(),
+                            "advance LiteInst execution generation",
+                            error.to_string(),
+                        ),
+                    );
+                    return Err(error.into());
+                }
+            };
+            // The kernel has replaced this address space. Other holders of the
+            // old image's state must not observe this reset, and no saved code
+            // or controller-stack address may be reused by the new image.
+            self.liteinst_runtime = Arc::new(StdMutex::new(next));
+            self.liteinst_entry_guard = None;
+            self.injected_syscall_frame = None;
+            self.pending_syscall_already_skipped = false;
         }
         // execve/execveat are tail injected, however, after exec, the new
         // program start as a clean slate, hence it is actually ok to do either
@@ -4470,22 +4497,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Err(err) => {
                     tracing::error!("Error in tracee tid {}: {}", tid, err);
 
-                    if matches!(
-                        liteinst_activation_failure_reason(&err),
-                        Some(
-                            LiteinstActivationFailureReason::PostStartExec
-                                | LiteinstActivationFailureReason::VforkUnsupported
-                        )
-                    ) {
-                        // LiteInst's session-level cleanup guard owns the exact
-                        // pidfd and notifier generation for every descendant.
-                        // Detaching a refused post-start exec lets its guest
-                        // parent reap it before the notifier can acknowledge
-                        // the terminal status. A failed vfork parent is instead
-                        // kernel-frozen behind its child. In both cases return
-                        // to the root: its shared failure slot rejects the
-                        // session, and the outer guard terminates and reaps the
-                        // entire bound tree without transferring wait ownership.
+                    if liteinst_activation_failure_reason(&err).is_some() {
+                        // Every typed LiteInst activation failure has already
+                        // notified the session root. Its cleanup guard owns the
+                        // exact pidfds and notifier handles for this tree.
+                        // Detaching here lets a guest parent consume the child
+                        // before that notifier acknowledges terminal status.
+                        // This includes failed reactivation after exec, as well
+                        // as a refused exec or a kernel-frozen vfork parent.
                         return ExitStatus::Exited(1);
                     }
 
@@ -6153,6 +6172,47 @@ mod tests {
             },
         );
         state
+    }
+
+    #[test]
+    fn exec_generation_replaces_image_state_without_changing_old_holders() {
+        let mut old = active_state();
+        old.phase = LiteinstRuntimePhase::Ready;
+        old.generation = 41;
+        old.ready_generation = Some(41);
+        old.frame = Some(LiteinstHandshakeFrame {
+            begin_rip: 0x7000_1000,
+            ..Default::default()
+        });
+        old.attempted_sites.insert(0x401005);
+        old.fallback_sites
+            .insert(0x401005, LiteinstPatchOutcome::PtraceOtherFallback);
+        let old = Arc::new(StdMutex::new(old));
+        let holder = Arc::clone(&old);
+        let next = Arc::new(StdMutex::new(old.lock().unwrap().after_exec().unwrap()));
+        assert!(!Arc::ptr_eq(&holder, &next));
+        let next = next.lock().unwrap();
+        assert_eq!(next.phase, LiteinstRuntimePhase::Waiting);
+        assert_eq!(next.generation, 42);
+        assert!(next.ready_generation.is_none());
+        assert!(next.frame.is_none());
+        assert!(next.attempted_sites.is_empty());
+        assert!(next.fallback_sites.is_empty());
+        assert!(next.active_hooks.is_empty());
+        let mut old = holder.lock().unwrap();
+        assert_eq!(old.phase, LiteinstRuntimePhase::Ready);
+        assert_eq!(old.ready_generation, Some(41));
+        assert_eq!(old.frame.unwrap().begin_rip, 0x7000_1000);
+        assert!(old.attempted_sites.contains(&0x401005));
+        assert_eq!(
+            old.fallback_sites.get(&0x401005),
+            Some(&LiteinstPatchOutcome::PtraceOtherFallback)
+        );
+        assert_eq!(old.active_hooks.len(), 1);
+        old.generation = u64::MAX;
+        assert_eq!(old.after_exec().unwrap_err(), Errno::EOVERFLOW);
+        assert_eq!(old.generation, u64::MAX);
+        assert_eq!(old.phase, LiteinstRuntimePhase::Ready);
     }
 
     #[test]
