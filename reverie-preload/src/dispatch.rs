@@ -125,6 +125,16 @@ impl SyscallEvent {
         self.result = Some(result);
     }
 
+    /// Commit a physical operation's result and observed permissions together,
+    /// including when its scalar result is a negative errno. A runtime-private
+    /// operation must not use this to replace the interrupted guest's rights.
+    pub fn set_native_result(&mut self, result: trap::NativeSyscallResult) {
+        self.result = Some(result.result);
+        if let Some(pkru) = result.pkru {
+            self.guest_pkru = Some(pkru);
+        }
+    }
+
     /// Set the result to `-errno`.
     pub fn fail(&mut self, errno: i32) {
         self.result = Some(-i64::from(errno));
@@ -152,14 +162,10 @@ impl SyscallEvent {
     /// it does not re-trap.
     pub fn forward(&mut self) -> i64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        let result = unsafe {
-            match self.guest_pkru {
-                Some(pkru) => trap::raw_syscall6_with_pkru(self.number, self.args, pkru),
-                None => trap::raw_syscall6(self.number, self.args),
-            }
-        };
-        self.result = Some(result);
-        result
+        let result =
+            unsafe { trap::raw_syscall6_with_result(self.number, self.args, self.guest_pkru) };
+        self.set_native_result(result);
+        result.result
     }
 
     pub(crate) fn resolved_result(&self) -> i64 {
@@ -178,6 +184,20 @@ impl SyscallEvent {
 pub trait SyscallDispatcher: Send + Sync {
     /// Handle one trapped syscall, setting `event`'s result.
     fn dispatch(&self, event: &mut SyscallEvent);
+
+    /// Recognize a backend-private completion before ordinary event creation.
+    /// Return true only after this genuine frame has been fully handled.
+    /// The borrow cannot outlive this signal handler. The same async-signal
+    /// safety requirements as `dispatch` apply.
+    fn dispatch_private_signal(&self, _frame: &mut trap::frame::SignalFrame<'_>) -> bool {
+        false
+    }
+
+    /// Dispatch a genuine signal event with explicitly scoped frame access.
+    /// Ordinary/direct dispatchers need no signal-frame implementation.
+    fn dispatch_signal(&self, event: &mut SyscallEvent, _frame: &mut trap::frame::SignalFrame<'_>) {
+        self.dispatch(event);
+    }
 }
 
 /// Whether `number` creates a new process/thread that must inherit the filter.

@@ -137,6 +137,12 @@ liteinst_dispatch_paths! {
     InGuestSigsys => "in_guest_sigsys",
     /// An actual in-guest `SIGSYS` was forwarded while a Tool callback was active.
     InGuestNestedSigsys => "in_guest_nested_sigsys",
+    /** A genuine kernel SIGSYS entered shared frame dispatch in this process.
+    Unlike guest-path attribution, this is not inherited/recreated at fork. */
+    InGuestPhysicalSigsys => "in_guest_physical_sigsys",
+    /** A genuine private fallback completion frame was handled successfully.
+    This counts handler completion, not an independently observed sigreturn. */
+    FallbackCompletionSigsys => "fallback_completion_sigsys",
     /** A cache-line-straddling site serviced by fallback: retained ptrace
     dispatch, or successful in-guest Tool dispatch. Refused in-guest attempts
     are counted by `FallbackRefusal` instead. */

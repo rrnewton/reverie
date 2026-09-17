@@ -227,6 +227,8 @@ struct GuestStatsCollector {
     coordinator: PathBuf,
     in_guest_sigsys: AtomicU64,
     in_guest_nested_sigsys: AtomicU64,
+    in_guest_physical_sigsys: AtomicU64,
+    fallback_completion_sigsys: AtomicU64,
     cacheline_straddler_fallback: AtomicU64,
     unpatchable_or_other_fallback: AtomicU64,
     fallback_refusal: AtomicU64,
@@ -237,6 +239,8 @@ impl GuestStatsCollector {
         match path {
             LiteinstDispatchPath::InGuestSigsys => &self.in_guest_sigsys,
             LiteinstDispatchPath::InGuestNestedSigsys => &self.in_guest_nested_sigsys,
+            LiteinstDispatchPath::InGuestPhysicalSigsys => &self.in_guest_physical_sigsys,
+            LiteinstDispatchPath::FallbackCompletionSigsys => &self.fallback_completion_sigsys,
             LiteinstDispatchPath::CachelineStraddlerFallback => &self.cacheline_straddler_fallback,
             LiteinstDispatchPath::UnpatchableOrOtherFallback => &self.unpatchable_or_other_fallback,
             LiteinstDispatchPath::FallbackRefusal => &self.fallback_refusal,
@@ -250,6 +254,14 @@ impl GuestStatsCollector {
 
     fn snapshot(&self, direct_hooks: u64) -> CounterSnapshot<LiteinstDispatchPath> {
         CounterSnapshot::new([
+            (
+                LiteinstDispatchPath::InGuestPhysicalSigsys,
+                self.in_guest_physical_sigsys.load(Ordering::Relaxed),
+            ),
+            (
+                LiteinstDispatchPath::FallbackCompletionSigsys,
+                self.fallback_completion_sigsys.load(Ordering::Relaxed),
+            ),
             (
                 LiteinstDispatchPath::InGuestSigsys,
                 self.in_guest_sigsys.load(Ordering::Relaxed),
@@ -277,6 +289,8 @@ impl GuestStatsCollector {
     fn reset(&self) {
         self.in_guest_sigsys.store(0, Ordering::Relaxed);
         self.in_guest_nested_sigsys.store(0, Ordering::Relaxed);
+        self.in_guest_physical_sigsys.store(0, Ordering::Relaxed);
+        self.fallback_completion_sigsys.store(0, Ordering::Relaxed);
         self.cacheline_straddler_fallback
             .store(0, Ordering::Relaxed);
         self.unpatchable_or_other_fallback
@@ -376,6 +390,8 @@ pub(crate) fn initialize_guest_stats(coordinator: &Path) -> io::Result<GuestStat
             coordinator: coordinator.to_path_buf(),
             in_guest_sigsys: AtomicU64::new(0),
             in_guest_nested_sigsys: AtomicU64::new(0),
+            in_guest_physical_sigsys: AtomicU64::new(0),
+            fallback_completion_sigsys: AtomicU64::new(0),
             cacheline_straddler_fallback: AtomicU64::new(0),
             unpatchable_or_other_fallback: AtomicU64::new(0),
             fallback_refusal: AtomicU64::new(0),
