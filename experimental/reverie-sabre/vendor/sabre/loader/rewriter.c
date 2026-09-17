@@ -16,6 +16,7 @@
 #include "debuginfo.h"
 #include "elf_loading.h"
 #include "global_vars.h"
+#include "ld_sc_handler.h"
 #include "macros.h"
 #include "maps.h"
 #include "stringutil.h"
@@ -509,28 +510,6 @@ static bool lib_name_match(const char *bare, const char *pathname) {
   return false;
 }
 
-// Returns a short version of the library (e.g. full path to libc.so.6 would
-// result in string "libc"
-static const char *lib_get_stripped_name(const char *pathname) {
-  const char *rtn_str = NULL;
-  for (int i = 0; i < registered_icept_cnt; ++i) {
-    if (lib_name_match(intercept_records[i].lib_name, pathname)) {
-      rtn_str = intercept_records[i].lib_name;
-      goto rtn;
-    }
-  }
-
-  for (const char **lib = known_syscall_libs; *lib != NULL; lib++) {
-    if (lib_name_match(*lib, pathname)) {
-      rtn_str = *lib;
-      goto rtn;
-    }
-  }
-
-rtn:
-  return rtn_str;
-}
-
 // Returns true if library defined by pathname has functions that we want to
 // intercept
 static bool lib_is_icepted(const char *pathname) {
@@ -613,17 +592,53 @@ static GElf_Sym find_ld_symbol(const char *ld_path, const char *fn_name) {
   assert(false && "We couldn't find one specific ld symbol");
 }
 
-static void patch_funcs(struct library *lib) {
+static bool find_intercept_target(struct library *lib, int record,
+                                  GElf_Sym *target) {
+  struct symbol *sym =
+      symbol_find(lib->symbol_hash, intercept_records[record].fn_name);
+  if (sym != NULL && sym->sym.st_value != 0) {
+    *target = sym->sym;
+    return true;
+  }
+  if (sym == NULL && !strcmp(intercept_records[record].lib_name, "ld")) {
+    *target = find_ld_symbol(lib->pathname, intercept_records[record].fn_name);
+    return true;
+  }
+  return false;
+}
+
+static void reject_overlapping_intercepts(struct library *lib) {
+  // Different declared names can resolve to one entry in this object. Reject
+  // that ambiguity before rewriting detour entry bytes or invoking a callback.
+  // Resolve from this object's original symbols each time; a persistent address
+  // set would incorrectly suppress a new mapping that reused an old address.
+  for (int i = 0; i < registered_icept_cnt; ++i) {
+    GElf_Sym target;
+    if (!lib_name_match(intercept_records[i].lib_name, lib->pathname) ||
+        !find_intercept_target(lib, i, &target))
+      continue;
+    for (int j = 0; j < i; ++j) {
+      GElf_Sym earlier;
+      if (lib_name_match(intercept_records[j].lib_name, lib->pathname) &&
+          find_intercept_target(lib, j, &earlier) &&
+          earlier.st_value == target.st_value)
+        _nx_fatal_printf("overlapping function intercept target\n");
+    }
+  }
+}
+
+static void patch_funcs(struct library *lib, int first, int end,
+                        const struct intercept_tls_context *tls) {
   if (!lib->valid)
     return;
+
+  reject_overlapping_intercepts(lib);
 
   int extra_len = 0;
   char *extra_space = NULL;
 
-  const char *short_libname = lib_get_stripped_name(lib->pathname);
-
-  for (int i = 0; i < registered_icept_cnt; ++i) {
-    if (!strcmp(short_libname, intercept_records[i].lib_name)) {
+  for (int i = first; i < end; ++i) {
+    if (lib_name_match(intercept_records[i].lib_name, lib->pathname)) {
       _nx_debug_printf("patching intercepts: %s\n", lib->pathname);
       struct section *scn = section_find(lib->section_hash, ".text");
       _nx_debug_printf(".text section %p\n", scn);
@@ -641,27 +656,15 @@ static void patch_funcs(struct library *lib) {
       }
       _nx_debug_printf("mprotect done\n");
 
-      struct symbol *sym =
-          symbol_find(lib->symbol_hash, intercept_records[i].fn_name);
-      if (sym != NULL && (void *)sym->sym.st_value != NULL) {
+      GElf_Sym target;
+      if (find_intercept_target(lib, i, &target)) {
         _nx_debug_printf("patching at address %lx\n",
-                         (long)lib->asr_offset + sym->sym.st_value);
-        api_detour_func(lib, lib->asr_offset + sym->sym.st_value,
-                        lib->asr_offset + sym->sym.st_value + sym->sym.st_size,
+                         (long)lib->asr_offset + target.st_value);
+        api_detour_func(lib, lib->asr_offset + target.st_value,
+                        lib->asr_offset + target.st_value + target.st_size,
                         intercept_records[i].callback,
                         intercept_records[i].copy_first_stack_arg, &extra_space,
-                        &extra_len);
-      } else if (sym == NULL && !strcmp(short_libname, "ld")) {
-        GElf_Sym gsym =
-            find_ld_symbol(lib->pathname, intercept_records[i].fn_name);
-
-        _nx_debug_printf("patching at address %lx\n",
-                         (long)lib->asr_offset + gsym.st_value);
-        api_detour_func(lib, lib->asr_offset + gsym.st_value,
-                        lib->asr_offset + gsym.st_value + gsym.st_size,
-                        intercept_records[i].callback,
-                        intercept_records[i].copy_first_stack_arg, &extra_space,
-                        &extra_len);
+                        &extra_len, tls);
       }
     }
   }
@@ -816,6 +819,28 @@ int which_lib_name_interesting(const char *interesting_libs[],
   return -1;
 }
 
+void memorymaps_patch_intercept(int index,
+                                const struct intercept_tls_context *tls) {
+  assert(index >= 0 && index < registered_icept_cnt && tls != NULL);
+  struct maps *maps = maps_read(NULL);
+  if (maps == NULL)
+    _nx_fatal_printf("could not inspect mappings for function intercept\n");
+
+  struct library *lib;
+  for_each_library(lib, maps) {
+    if (!lib_name_match(intercept_records[index].lib_name, lib->pathname))
+      continue;
+    // Only the new record is applied. Loader allocations and protection work
+    // use loader TLS; api_detour_func temporarily restores the callback's TLS.
+    if (parse_elf(lib, lib->pathname)) {
+      library_make_writable(lib, true);
+      patch_funcs(lib, index, index + 1, tls);
+      library_make_writable(lib, false);
+    }
+  }
+  maps_release(maps);
+}
+
 void memorymaps_rewrite_lib(const char *libname) {
   struct maps *maps = maps_read(libname);
   if (maps == NULL)
@@ -831,7 +856,7 @@ void memorymaps_rewrite_lib(const char *libname) {
       library_make_writable(l, true);
       patch_syscalls(l, false);
       if (lib_is_icepted(l->pathname))
-        patch_funcs(l);
+        patch_funcs(l, 0, registered_icept_cnt, NULL);
       library_make_writable(l, false);
     }
     guard++;
@@ -881,7 +906,7 @@ void memorymaps_rewrite_all(const char *libs[], const char *bin, bool loader) {
       library_make_writable(l, true);
       patch_syscalls(l, is_bin ? false : loader);
       if (lib_is_icepted(l->pathname))
-        patch_funcs(l);
+        patch_funcs(l, 0, registered_icept_cnt, NULL);
       library_make_writable(l, false);
     }
   }

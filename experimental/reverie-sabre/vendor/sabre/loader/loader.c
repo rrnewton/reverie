@@ -39,6 +39,7 @@
 #include "maps.h"
 #include "plugins/sbr_api_defs.h"
 #include "premain.h"
+#include "rewriter.h"
 #ifdef __NX_INTERCEPT_RDTSC
 #include "arch/handle_rdtsc.h"
 #endif
@@ -90,8 +91,26 @@ reexec_static_client_with_plugin(int argc, char **argv) {
 
 static void register_function_intercept(const sbr_fn_icept_struct *r_struct,
                                         bool copy_first_stack_arg) {
+  const struct intercept_tls_context *tls = NULL;
+#ifdef __x86_64__
+  struct intercept_tls_context context;
+  if (calling_from_plugin != NULL && enter_intercept_loader_tls(&context))
+    tls = &context;
+#endif
   assert(strlen(r_struct->lib_name) < MAX_ICEPT_STRLEN);
   assert(strlen(r_struct->fn_name) < MAX_ICEPT_STRLEN);
+
+  for (int i = 0; i < registered_icept_cnt; ++i) {
+    if (!strcmp(intercept_records[i].lib_name, r_struct->lib_name) &&
+        !strcmp(intercept_records[i].fn_name, r_struct->fn_name)) {
+      if (intercept_records[i].callback != r_struct->icept_callback ||
+          intercept_records[i].copy_first_stack_arg != copy_first_stack_arg)
+        errx(EXIT_FAILURE, "conflicting function intercept registration");
+      goto done; // Never detour an already registered entry a second time.
+    }
+  }
+  if (registered_icept_cnt == MAX_ICEPT_RECORDS)
+    errx(EXIT_FAILURE, "function intercept table is full");
 
   strcpy(intercept_records[registered_icept_cnt].lib_name, r_struct->lib_name);
   strcpy(intercept_records[registered_icept_cnt].fn_name, r_struct->fn_name);
@@ -99,7 +118,20 @@ static void register_function_intercept(const sbr_fn_icept_struct *r_struct,
   intercept_records[registered_icept_cnt].copy_first_stack_arg =
       copy_first_stack_arg;
 
-  ++registered_icept_cnt;
+  int registered = registered_icept_cnt++;
+  if (tls != NULL) {
+    // Dynamic plugin registration follows dependency mapping. Static clients
+    // retain their original full rewrite after plugin initialization.
+    // Apply only this new function entry; syscall/vDSO rewrites are not
+    // idempotent and must not be repeated on those existing mappings.
+    memorymaps_patch_intercept(registered, tls);
+  }
+done:
+  ;
+#ifdef __x86_64__
+  if (tls != NULL)
+    load_intercept_tls(tls->caller);
+#endif
 }
 
 void register_function_intercepts(const sbr_fn_icept_struct *r_struct) {

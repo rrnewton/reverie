@@ -13,6 +13,7 @@
 #include "loader/rewriter.h"
 #include "loader/backend_stats.h"
 #include "loader/global_vars.h"
+#include "loader/ld_sc_handler.h"
 
 #include "handle_rdtsc.h"
 #include "handle_syscall.h"
@@ -827,7 +828,8 @@ void detour_func(struct library *lib, char *start, char *end, int syscall_no,
 
 void api_detour_func(struct library *lib, char *start, char *end,
                      sbr_icept_callback_fn callback, bool copy_first_stack_arg,
-                     char **extra_space, int *extra_len) {
+                     char **extra_space, int *extra_len,
+                     const struct intercept_tls_context *tls) {
   void *trampoline_addr = NULL;
   struct rb_root *branch_targets;
   struct s_code code[JUMP_SIZE] = {{0}};
@@ -898,7 +900,11 @@ void api_detour_func(struct library *lib, char *start, char *end,
 
   // Patch up the various computed values
   trampoline_addr = dest + DETOUR_ASM_SIZE;
+  if (tls != NULL)
+    load_intercept_tls(tls->caller);
   void *handler = callback(trampoline_addr);
+  if (tls != NULL)
+    load_intercept_tls(tls->loader);
   assert(handler);
 
   int post = DETOUR_ASM_SIZE + postamble;

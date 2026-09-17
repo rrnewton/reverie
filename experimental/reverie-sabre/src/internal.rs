@@ -64,6 +64,10 @@ pub fn sbr_init<T: ToolGlobal>(
     client_path: *const libc::c_char,
 ) {
     unsafe {
+        // Register the tool's declared detours before stats, paths or signal
+        // setup can call an intercepted libc function.
+        register_detours::<T>(fn_icept_reg);
+
         stats::init_guest_stats();
         *vdso_callback = Some(callbacks::handle_vdso::<T>);
         *syscall_handler = Some(callbacks::handle_syscall::<T>);
@@ -80,9 +84,6 @@ pub fn sbr_init<T: ToolGlobal>(
 
         *argc -= 1;
         *argv = (*argv).wrapping_add(1);
-
-        // Setting up function detours
-        register_detours::<T>(fn_icept_reg);
     }
 }
 

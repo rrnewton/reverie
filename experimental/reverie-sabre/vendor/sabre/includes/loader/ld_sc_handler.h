@@ -8,6 +8,20 @@
 #ifndef LD_SC_HANDLER_H
 #define LD_SC_HANDLER_H
 
+#include <stdbool.h>
+
+// Stack-only context for initial dynamic-image function-registration catch-up.
+// No callback or thread-specific TLS address is retained in the registry.
+struct intercept_tls_context {
+  unsigned long caller;
+  unsigned long loader;
+};
+
+#ifdef __x86_64__
+bool enter_intercept_loader_tls(struct intercept_tls_context *context);
+void load_intercept_tls(unsigned long address);
+#endif
+
 void load_client_tls();
 void load_sabre_tls();
 
