@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::sync::Arc;
+
 use thiserror::Error;
 
 /// Errors produced by the KVM backend prototype.
@@ -16,12 +18,17 @@ pub enum Error {
     #[error("KVM execution stopped after a fatal run failure")]
     RunAborted,
 
+    /// A guest worker panicked. Caught paths publish this before physical join;
+    /// the ordinary join fallback also uses this cause for an unreported panic.
+    #[error("guest thread panicked during teardown")]
+    GuestWorkerPanic,
+
     /// A shared typed failure retained until the root has joined all children.
     #[error("{0}")]
     SharedFailure(#[source] std::sync::Arc<Error>),
 
     /// A typed worker failure with its original guest thread identity.
-    #[error("KVM worker cleanup failed: thread {tid}: {error}")]
+    #[error("unexpected vCPU exit: KVM worker cleanup failed: thread {tid}: {error}")]
     WorkerFailure {
         /// Guest thread whose physical join returned this failure.
         tid: i32,
@@ -35,9 +42,9 @@ pub enum Error {
     WithCleanup {
         /// Original typed cause, also exposed through the source chain.
         #[source]
-        primary: Box<Error>,
+        primary: Arc<Error>,
         /// Additional failures, without replacing the original cause.
-        cleanup: Vec<Error>,
+        cleanup: Vec<Arc<Error>>,
     },
 
     /// A typed cleanup cause with the operation that failed.
@@ -47,7 +54,7 @@ pub enum Error {
         phase: &'static str,
         /// Original typed cleanup error.
         #[source]
-        error: Box<Error>,
+        error: Arc<Error>,
     },
 
     /// A guest branch counter is unavailable or its accounting cannot be trusted.
@@ -201,29 +208,44 @@ impl Error {
     /// Original typed cause beneath shared ownership and cleanup aggregation.
     pub fn primary(&self) -> &Self {
         match self {
-            Self::SharedFailure(error) | Self::WorkerFailure { error, .. } => error.primary(),
-            Self::WithCleanup { primary, .. } => primary.primary(),
-            Self::Cleanup { error, .. } => error.primary(),
+            Self::SharedFailure(error)
+            | Self::WorkerFailure { error, .. }
+            | Self::WithCleanup { primary: error, .. }
+            | Self::Cleanup { error, .. } => error.primary(),
+            Self::ExecWorkerTeardown(error) => error.primary(),
             _ => self,
         }
     }
 
     pub(crate) fn retains_primary(&self, primary: &std::sync::Arc<Error>) -> bool {
         match self {
-            Self::SharedFailure(error) | Self::WorkerFailure { error, .. } => {
+            Self::SharedFailure(error)
+            | Self::WorkerFailure { error, .. }
+            | Self::WithCleanup { primary: error, .. }
+            | Self::Cleanup { error, .. } => {
                 std::sync::Arc::ptr_eq(error, primary) || error.retains_primary(primary)
             }
-            Self::WithCleanup { primary: error, .. }
-            | Self::Cleanup { error, .. }
-            | Self::ExecWorkerTeardown(error) => error.retains_primary(primary),
+            Self::ExecWorkerTeardown(error) => error.retains_primary(primary),
             _ => false,
+        }
+    }
+
+    /// Identity of the primary worker cause, never a secondary cleanup error.
+    pub(crate) fn worker_tid(&self) -> Option<i32> {
+        match self {
+            Self::WorkerFailure { tid, .. } => Some(*tid),
+            Self::SharedFailure(error)
+            | Self::WithCleanup { primary: error, .. }
+            | Self::Cleanup { error, .. } => error.worker_tid(),
+            Self::ExecWorkerTeardown(error) => error.worker_tid(),
+            _ => None,
         }
     }
 
     pub(crate) fn cleanup(self, phase: &'static str) -> Self {
         Self::Cleanup {
             phase,
-            error: Box::new(self),
+            error: Arc::new(self),
         }
     }
 
@@ -232,8 +254,8 @@ impl Error {
             self
         } else {
             Self::WithCleanup {
-                primary: Box::new(self),
-                cleanup,
+                primary: Arc::new(self),
+                cleanup: cleanup.into_iter().map(Arc::new).collect(),
             }
         }
     }
@@ -245,5 +267,157 @@ impl Error {
             let primary = errors.remove(0);
             Err(primary.with_cleanup(errors))
         }
+    }
+
+    /// Compose the final result after all publishers and owned joins returned.
+    /// The first published Arc is authoritative. Shared aggregate children stay
+    /// shared, so separating a cancellation marker cannot discard a real hook
+    /// error or clone a non-Clone host error into a different cause.
+    pub(crate) fn complete_after_failure(self, first: Arc<Error>, first_tid: i32) -> Self {
+        assert!(!matches!(first.primary(), Error::RunAborted));
+        #[derive(Clone)]
+        enum Context {
+            Worker(i32),
+            Cleanup(&'static str),
+            Exec,
+        }
+        struct Cause {
+            error: Arc<Error>,
+            context: Vec<Context>,
+        }
+        impl Cause {
+            fn into_error(self) -> Error {
+                self.context.into_iter().rev().fold(
+                    Error::SharedFailure(self.error),
+                    |error, context| match context {
+                        Context::Worker(tid) => Error::WorkerFailure {
+                            tid,
+                            error: Arc::new(error),
+                        },
+                        Context::Cleanup(phase) => error.cleanup(phase),
+                        Context::Exec => Error::ExecWorkerTeardown(Box::new(error)),
+                    },
+                )
+            }
+            fn worker_tid(&self) -> Option<i32> {
+                self.context
+                    .iter()
+                    .find_map(|context| match context {
+                        Context::Worker(tid) => Some(*tid),
+                        _ => None,
+                    })
+                    .or_else(|| self.error.worker_tid())
+            }
+        }
+        fn split(
+            error: Arc<Error>,
+            first: &Arc<Error>,
+            context: &mut Vec<Context>,
+            causes: &mut Vec<Cause>,
+        ) {
+            if Arc::ptr_eq(&error, first) || !split_aggregate(&error, first, context, causes) {
+                causes.push(Cause {
+                    error,
+                    context: context.clone(),
+                });
+            }
+        }
+        // Return false for an opaque cause. Exec's existing boxed API remains
+        // intact: its wrapper is reproduced only when the child is an aggregate
+        // or shared reference; otherwise the original complete Arc is retained.
+        fn split_aggregate(
+            error: &Error,
+            first: &Arc<Error>,
+            context: &mut Vec<Context>,
+            causes: &mut Vec<Cause>,
+        ) -> bool {
+            match error {
+                Error::RunAborted => {}
+                Error::SharedFailure(error) => split(error.clone(), first, context, causes),
+                Error::WithCleanup { primary, cleanup } => {
+                    split(primary.clone(), first, context, causes);
+                    for error in cleanup {
+                        split(error.clone(), first, context, causes);
+                    }
+                }
+                Error::WorkerFailure { tid, error } => {
+                    context.push(Context::Worker(*tid));
+                    split(error.clone(), first, context, causes);
+                    context.pop();
+                }
+                Error::Cleanup { phase, error } => {
+                    context.push(Context::Cleanup(phase));
+                    split(error.clone(), first, context, causes);
+                    context.pop();
+                }
+                Error::ExecWorkerTeardown(error) => {
+                    context.push(Context::Exec);
+                    let split = split_aggregate(error, first, context, causes);
+                    context.pop();
+                    return split;
+                }
+                _ => return false,
+            }
+            true
+        }
+        let mut causes = Vec::new();
+        split(Arc::new(self), &first, &mut Vec::new(), &mut causes);
+        // Prefer the already present worker context for the published identity
+        // over a context-free notification alias. A canceled peer carrying the
+        // same cause cannot supply its own TID as the cause's identity. Other
+        // real errors retain their order, regardless of host completion/TID.
+        let selected = causes
+            .iter()
+            .enumerate()
+            .filter(|(_, cause)| {
+                Arc::ptr_eq(&cause.error, &first)
+                    && cause.worker_tid().is_none_or(|tid| tid == first_tid)
+            })
+            .max_by_key(|(index, cause)| {
+                (
+                    cause.worker_tid() == Some(first_tid),
+                    std::cmp::Reverse(*index),
+                )
+            })
+            .map(|(index, _)| index);
+        let primary = selected
+            .map(|index| causes.remove(index).into_error())
+            .unwrap_or_else(|| Error::SharedFailure(first.clone()));
+        let cleanup = causes
+            .into_iter()
+            .filter(|cause| !Arc::ptr_eq(&cause.error, &first))
+            .map(Cause::into_error)
+            .collect();
+        primary.with_cleanup(cleanup)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn worker_diagnostic_and_primary_survive_exec_and_cleanup_wrappers() {
+        let cause = Arc::new(Error::Reverie(reverie::syscalls::Errno::EIO.into()));
+        let error = Error::ExecWorkerTeardown(Box::new(Error::WorkerFailure {
+            tid: 2,
+            error: cause.clone(),
+        }));
+        assert_eq!(
+            error.to_string(),
+            "unexpected vCPU exit: KVM worker cleanup failed: thread 2: Reverie tool failed: -5 EIO (I/O error)"
+        );
+        assert!(
+            matches!(error.primary(), Error::Reverie(reverie::Error::Errno(errno))
+            if *errno == reverie::syscalls::Errno::EIO)
+        );
+        assert!(error.retains_primary(&cause));
+        assert_eq!(error.worker_tid(), Some(2));
+        let error = error.with_cleanup(vec![Error::GuestClock("secondary".to_owned())]);
+        assert!(error.retains_primary(&cause));
+        assert_eq!(error.worker_tid(), Some(2));
+        assert!(matches!(error.primary(), Error::Reverie(_)));
     }
 }

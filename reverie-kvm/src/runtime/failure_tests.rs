@@ -24,6 +24,9 @@ struct RpcGlobal {
     failure_events: Mutex<Vec<reverie::BackendFailure>>,
     failure_required: AtomicBool,
     late_failure: Mutex<Option<FailureContext>>,
+    terminate_on_failure: AtomicBool,
+    terminal: AtomicBool,
+    terminal_waker: futures::task::AtomicWaker,
 }
 
 #[reverie::global_tool]
@@ -68,6 +71,22 @@ impl GlobalTool for RpcGlobal {
     fn report_backend_failure(&self, event: reverie::BackendFailure) {
         self.failure_events.lock().unwrap().push(event);
         self.failures.fetch_add(1, Ordering::SeqCst);
+        if self.terminate_on_failure.load(Ordering::Acquire) {
+            self.terminal.store(true, Ordering::Release);
+            self.terminal_waker.wake();
+        }
+    }
+
+    async fn wait_for_backend_failure(&self) {
+        poll_fn(|context| {
+            self.terminal_waker.register(context.waker());
+            if self.terminal.load(Ordering::Acquire) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
     }
 }
 
@@ -139,17 +158,200 @@ fn wait_until(condition: impl Fn() -> bool) {
     }
 }
 
+#[test]
+fn peer_failure_cancellation_preserves_thread_status_and_primary_cause() {
+    fn count_host_errno(error: &Error, expected: i32) -> usize {
+        match error {
+            Error::HostIo(error) => usize::from(error.raw_os_error() == Some(expected)),
+            Error::SharedFailure(error)
+            | Error::WorkerFailure { error, .. }
+            | Error::Cleanup { error, .. } => count_host_errno(error, expected),
+            Error::ExecWorkerTeardown(error) => count_host_errno(error, expected),
+            Error::WithCleanup { primary, cleanup } => {
+                count_host_errno(primary, expected)
+                    + cleanup
+                        .iter()
+                        .map(|error| count_host_errno(error, expected))
+                        .sum::<usize>()
+            }
+            _ => 0,
+        }
+    }
+    for case in [
+        "live peer",
+        "pending thread status",
+        "group status",
+        "peer cleanup errors",
+        "unstarted thread",
+        "own execution error",
+        "process owner",
+        "ordinary cancellation",
+    ] {
+        let global = Arc::new(RpcGlobal::default());
+        let pid = Pid::from_raw(1);
+        let tid = Pid::from_raw(if case == "process owner" { 1 } else { 2 });
+        let identity = (pid, tid);
+        let failure = FailureContext::new(RunFailure::new(&global), pid, tid);
+        let expected_peer = matches!(
+            case,
+            "live peer" | "pending thread status" | "group status" | "peer cleanup errors"
+        );
+        let (_response, receiver) = oneshot::channel();
+        *global.response.lock().unwrap() = Some(receiver);
+        let mut pending_rpc = expected_peer.then(|| {
+            Box::pin(drive_handler(
+                async { Ok::<i64, reverie::Error>(global.receive_rpc(tid, (0, 0)).await) },
+                Arc::new(Mutex::new(None)),
+                Arc::new(Mutex::new(Vec::new())),
+                wait_for_failure(global.as_ref(), Some(failure.run.subscribe())),
+            ))
+        });
+        if let Some(pending) = pending_rpc.as_mut() {
+            assert!(pending.as_mut().now_or_never().is_none());
+            assert!(global.pending.load(Ordering::Acquire));
+        }
+        let mut leader = Some(ElfExecutor::new(
+            crate::executor::native_loaded_state(&std::env::current_dir().unwrap()),
+            false,
+        ));
+        let mut failed_worker = leader.as_ref().unwrap().thread_child(3).unwrap();
+        let mut executor = if pid == tid {
+            leader.take().unwrap()
+        } else {
+            leader.as_ref().unwrap().thread_child(tid.as_raw()).unwrap()
+        };
+        // The real failing worker publishes before its task retirement. No
+        // group cancellation flag is needed for a peer to observe that event.
+        let result: Result<()> = crate::vm::finish_host_worker_outcome(
+            Some(&failure),
+            Pid::from_raw(3),
+            Err(Error::InvalidGuestPid(-17)),
+            |failed| {
+                assert!(failed);
+                failed_worker.retire_failed_thread();
+            },
+        );
+        assert!(result.is_err());
+        if let Some(pending) = pending_rpc {
+            assert!(matches!(
+                futures::executor::block_on(pending),
+                HandlerOutcome::RunFailed,
+            ));
+        }
+        let primary = failure.run.primary().unwrap();
+        let event = global.failure_events.lock().unwrap()[0];
+        assert_eq!(event.pid, pid);
+        assert_eq!(event.tid, Pid::from_raw(3));
+
+        if case == "pending thread status" {
+            let memory = GuestMemory::new(0, 4096).unwrap();
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(libc::SYS_exit as u64, [37, 0, 0, 0, 0, 0]),
+                    &memory,
+                ),
+                0,
+            );
+        }
+        let group_status = (case == "group status").then_some(ExitStatus::Exited(61));
+        let cleanup = case == "peer cleanup errors";
+        let start_permitted = case != "unstarted thread";
+        let outcome = match case {
+            "own execution error" => Err(Error::Reverie(Errno::ENOTSUPP.into())),
+            "ordinary cancellation" => Ok(ToolProcessExit {
+                exit: executor.cancel_current_thread(),
+                cancelled: true,
+            }),
+            "peer cleanup errors" => Err(Error::RunAborted.with_cleanup(vec![Error::HostIo(
+                std::io::Error::from_raw_os_error(libc::ENOSPC),
+            )])),
+            _ => Err(Error::RunAborted),
+        };
+        let cancelled_exit = retire_peer_cancelled_tool_worker(
+            &mut executor,
+            identity,
+            start_permitted,
+            group_status,
+            &outcome,
+        );
+        assert_eq!(cancelled_exit.is_some(), expected_peer, "{case}");
+        if cancelled_exit.is_none() {
+            match &outcome {
+                Ok(exit) => {
+                    executor.retire_current_thread(exit.exit.status, exit.exit.group);
+                }
+                Err(_) => executor.retire_failed_thread(),
+            }
+        }
+        let result = futures::executor::block_on(finish_tool_process_after_workers(
+            &mut executor,
+            Arc::new(RpcTool),
+            identity,
+            global.as_ref(),
+            &cleanup,
+            tid.as_raw(),
+            outcome,
+            cancelled_exit,
+            Ok(()),
+            Some(&failure),
+        ));
+        let expected_status = match case {
+            "pending thread status" => 37,
+            "group status" => 61,
+            "live peer" | "peer cleanup errors" | "ordinary cancellation" => 0,
+            _ => 255,
+        };
+        let mut expected_events = vec![(1, tid.as_raw(), expected_status)];
+        if pid == tid {
+            expected_events.push((2, pid.as_raw(), expected_status));
+        }
+        assert_eq!(*global.events.lock().unwrap(), expected_events, "{case}");
+        if case != "ordinary cancellation" {
+            assert!(
+                result.is_err(),
+                "cancellation cannot erase the error tree: {case}"
+            );
+        }
+        assert_eq!(
+            is_peer_cancelled_tool_worker(identity, start_permitted, &result),
+            expected_peer,
+            "the outer worker wrapper must preserve the same classification: {case}",
+        );
+        let error = failure.run.complete(result).unwrap_err();
+        assert!(error.retains_primary(&primary), "{case}: {error:?}");
+        assert!(matches!(error.primary(), Error::InvalidGuestPid(-17)));
+        if cleanup {
+            assert_eq!(count_host_errno(&error, libc::ENOSPC), 1);
+            assert!(has_cleanup_eio(&error));
+            assert_eq!(error.to_string().matches("EIO").count(), 1);
+        }
+        assert_eq!(global.failure_events.lock().unwrap()[0], event);
+        if let Some(mut leader) = leader {
+            leader.retire_current_thread(ExitStatus::SUCCESS, false);
+            assert_eq!(
+                leader.process_exit_status(),
+                None,
+                "healthy peer retirement cannot erase the real worker failure: {case}",
+            );
+        }
+    }
+}
+
 // Install the response rescue and join ownership before the first ordering
 // assertion. A precondition panic must reap the real worker as well as fail the
 // test; it must not detach a live RPC waiter into the remaining test process.
 struct RpcControlCleanup {
     response: Option<oneshot::Sender<i64>>,
+    panic_release: Option<std::sync::mpsc::Sender<()>>,
     group: Arc<GuestThreadGroup>,
     joiner: Option<std::thread::JoinHandle<()>>,
 }
 
 impl RpcControlCleanup {
     fn rescue(&mut self) {
+        if let Some(release) = self.panic_release.take() {
+            let _ = release.send(());
+        }
         if let Some(response) = self.response.take() {
             let _ = response.send(99);
         }
@@ -170,6 +372,10 @@ impl Drop for RpcControlCleanup {
 }
 
 fn joined_rpc_control(fail: bool, cleanup_fails: bool) {
+    joined_rpc_control_with_panic(fail, cleanup_fails, false);
+}
+
+fn joined_rpc_control_with_panic(fail: bool, cleanup_fails: bool, worker_panics: bool) {
     let global = Arc::new(RpcGlobal::default());
     let (response, receiver) = oneshot::channel();
     *global.response.lock().unwrap() = Some(receiver);
@@ -179,6 +385,7 @@ fn joined_rpc_control(fail: bool, cleanup_fails: bool) {
     let group = Arc::new(GuestThreadGroup::default());
     let mut cleanup = RpcControlCleanup {
         response: Some(response),
+        panic_release: None,
         group: group.clone(),
         joiner: None,
     };
@@ -262,6 +469,48 @@ fn joined_rpc_control(fail: bool, cleanup_fails: bool) {
         }
     });
     group.add_worker_handle(2, worker);
+    let panic_retired = Arc::new(AtomicBool::new(false));
+    if worker_panics {
+        let (release, receiver) = std::sync::mpsc::channel();
+        cleanup.panic_release = Some(release);
+        let context = reporter.clone();
+        let panic_group = group.clone();
+        let panic_global = global.clone();
+        let retired = panic_retired.clone();
+        group.add_worker_handle(
+            3,
+            std::thread::spawn(move || {
+                receiver.recv().unwrap();
+                let marker = Arc::new(());
+                let payload: Box<dyn std::any::Any + Send> = Box::new(marker.clone());
+                let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    crate::vm::finish_caught_worker_panic(
+                        Some(&context),
+                        &panic_group,
+                        3,
+                        payload,
+                        || {
+                            assert_eq!(
+                                *panic_global.failure_events.lock().unwrap(),
+                                vec![reverie::BackendFailure {
+                                    pid: Pid::from_raw(1),
+                                    tid: Pid::from_raw(3),
+                                    phase: "worker panic",
+                                }]
+                            );
+                            retired.store(true, Ordering::Release);
+                        },
+                    )
+                }));
+                let payload = caught.unwrap_err();
+                assert!(
+                    Arc::ptr_eq(payload.downcast_ref::<Arc<()>>().unwrap(), &marker),
+                    "caught worker panic replaced its original payload"
+                );
+                std::panic::resume_unwind(payload)
+            }),
+        );
+    }
     wait_until(|| global.pending.load(Ordering::Acquire));
     let join_group = group.clone();
     let (joined, joined_receiver) = std::sync::mpsc::channel();
@@ -276,7 +525,9 @@ fn joined_rpc_control(fail: bool, cleanup_fails: bool) {
         joined_receiver.try_recv(),
         Err(std::sync::mpsc::TryRecvError::Empty)
     ));
-    if fail {
+    if worker_panics {
+        cleanup.panic_release.take().unwrap().send(()).unwrap();
+    } else if fail {
         reporter.publish(
             "controlled worker failure",
             Error::GuestClock("typed primary".to_owned()),
@@ -298,15 +549,36 @@ fn joined_rpc_control(fail: bool, cleanup_fails: bool) {
     let result = group.teardown_result();
     if fail {
         let error = result.unwrap_err();
-        assert!(
-            has_guest_clock_primary(&error),
-            "typed worker cause was lost: {error:?}"
-        );
+        if worker_panics {
+            assert!(matches!(error.primary(), Error::GuestWorkerPanic));
+            assert!(
+                error
+                    .to_string()
+                    .contains("thread 3: guest thread panicked during teardown")
+            );
+            assert!(error.retains_primary(&failure.primary().unwrap()));
+            assert!(panic_retired.load(Ordering::Acquire));
+            assert_eq!(
+                global.failures.load(Ordering::SeqCst),
+                1,
+                "joining the caught panic published it a second time"
+            );
+            assert_eq!(
+                error.to_string().matches("thread 3:").count(),
+                1,
+                "joining the caught panic cached it a second time: {error}"
+            );
+        } else {
+            assert!(
+                has_guest_clock_primary(&error),
+                "typed worker cause was lost: {error:?}"
+            );
+            assert!(matches!(error.primary(), Error::GuestClock(_)));
+        }
         assert!(
             error.to_string().contains("thread 2:"),
             "worker TID diagnostic was lost: {error:?}"
         );
-        assert!(matches!(error.primary(), Error::GuestClock(_)));
         if cleanup_fails {
             assert!(has_cleanup_eio(&error), "cleanup cause was lost: {error:?}");
         }
@@ -356,7 +628,7 @@ fn has_cleanup_eio(error: &Error) -> bool {
         Error::Reverie(reverie::Error::Errno(errno)) => *errno == Errno::EIO,
         Error::SharedFailure(error) | Error::WorkerFailure { error, .. } => has_cleanup_eio(error),
         Error::WithCleanup { primary, cleanup } => {
-            has_cleanup_eio(primary) || cleanup.iter().any(has_cleanup_eio)
+            has_cleanup_eio(primary) || cleanup.iter().any(|error| has_cleanup_eio(error))
         }
         _ => false,
     }
@@ -373,6 +645,11 @@ fn fatal_worker_primary_survives_separate_consuming_hook_error() {
 #[test]
 fn normal_rpc_keeps_status_and_worker_before_leader_hooks() {
     joined_rpc_control(false, false);
+}
+
+#[test]
+fn caught_worker_panic_publishes_before_retirement_and_pending_rpc_join() {
+    joined_rpc_control_with_panic(true, false, true);
 }
 
 #[test]
@@ -431,6 +708,452 @@ impl native_test_support::NativeToolCallback<RpcTool> for NativeStatusCall {
         _: &'a mut G,
     ) -> futures::future::BoxFuture<'a, std::result::Result<i64, reverie::Error>> {
         Box::pin(async { Ok(73) })
+    }
+}
+
+#[test]
+fn independent_process_callbacks_preserve_completion_and_failure_scope() {
+    use native_test_support::NativeCallbackOutcome;
+    use native_test_support::NativeToolCallback;
+    use native_test_support::NativeToolOwner;
+
+    struct ReadyCallback {
+        polled: Arc<AtomicBool>,
+        during: Option<FailureContext>,
+        published: Arc<Mutex<Option<Error>>>,
+    }
+    impl NativeToolCallback<RpcTool> for ReadyCallback {
+        fn run<'a, G: Guest<RpcTool>>(
+            &'a self,
+            _: &'a RpcTool,
+            guest: &'a mut G,
+        ) -> futures::future::BoxFuture<'a, std::result::Result<i64, reverie::Error>> {
+            Box::pin(async move {
+                assert_eq!(guest.pid(), Pid::from_raw(72));
+                assert_eq!(guest.ppid(), Some(Pid::from_raw(71)));
+                self.polled.store(true, Ordering::Release);
+                if let Some(context) = &self.during {
+                    let result: Result<()> = crate::vm::finish_host_worker_outcome(
+                        Some(context),
+                        Pid::from_raw(79),
+                        Err(Error::InvalidGuestPid(-17)),
+                        |_| {},
+                    );
+                    *self.published.lock().unwrap() = Some(result.unwrap_err());
+                }
+                Ok(73)
+            })
+        }
+    }
+
+    for (case, own_process, global_terminal, during, rpc) in [
+        ("independent completion", false, false, false, false),
+        ("own process before callback", true, false, false, false),
+        ("own process during callback", true, false, true, false),
+        ("global terminal before callback", false, true, false, false),
+        ("global terminal during callback", false, true, true, false),
+        ("RPC after independent failure", false, false, false, true),
+    ] {
+        let global = Arc::new(RpcGlobal::default());
+        global
+            .terminate_on_failure
+            .store(global_terminal, Ordering::Release);
+        let (_response, receiver) = oneshot::channel();
+        *global.response.lock().unwrap() = Some(receiver);
+        let mut owner = NativeToolOwner::new(
+            Pid::from_raw(71),
+            Arc::new(RpcTool),
+            71,
+            global.clone(),
+            false,
+        )
+        .unwrap();
+        let mut child = owner
+            .fork_child(Pid::from_raw(72), Arc::new(RpcTool), 72)
+            .unwrap();
+        let context = if own_process {
+            child.failure_context_for_test()
+        } else {
+            owner.failure_context_for_test()
+        };
+        let run = context.run.clone();
+        let published = Arc::new(Mutex::new(None));
+        let polled = Arc::new(AtomicBool::new(false));
+        let callback = ReadyCallback {
+            polled: polled.clone(),
+            during: during.then(|| context.clone()),
+            published: published.clone(),
+        };
+        if !during {
+            let result: Result<()> = crate::vm::finish_host_worker_outcome(
+                Some(&context),
+                Pid::from_raw(79),
+                Err(Error::InvalidGuestPid(-17)),
+                |_| {},
+            );
+            *published.lock().unwrap() = Some(result.unwrap_err());
+        }
+        let outcome = if rpc {
+            futures::executor::block_on(child.run_callback(&NativeRpcCall))
+        } else {
+            futures::executor::block_on(child.run_callback(&callback))
+        };
+        let completed = !own_process && !global_terminal && !rpc;
+        let child_result = if completed {
+            assert!(
+                matches!(outcome, Ok(NativeCallbackOutcome::Returned(Ok(73)))),
+                "{case}"
+            );
+            Ok(ExitStatus::Exited(73))
+        } else {
+            if rpc {
+                assert!(matches!(outcome, Err(Error::RunAborted)), "{case}");
+                assert!(
+                    !global.pending.load(Ordering::Acquire),
+                    "failed RPC was admitted"
+                );
+                assert!(
+                    global.response.lock().unwrap().is_some(),
+                    "failed RPC consumed request state"
+                );
+            } else {
+                assert!(
+                    matches!(outcome, Ok(NativeCallbackOutcome::RunFailed)),
+                    "{case}"
+                );
+            }
+            Err(Error::RunAborted)
+        };
+        assert_eq!(
+            polled.load(Ordering::Acquire),
+            completed || during,
+            "{case}"
+        );
+        let primary = run.primary().unwrap();
+        let published = published.lock().unwrap().take().unwrap();
+        let (child_result, root_result) = if own_process {
+            (
+                Err(Error::RunAborted.with_cleanup(vec![published])),
+                Err(Error::RunAborted),
+            )
+        } else {
+            (child_result, Err(published))
+        };
+        let child_error = futures::executor::block_on(child.finish(child_result)).unwrap_err();
+        assert!(
+            std::ptr::eq(child_error.primary(), primary.primary()),
+            "{case}"
+        );
+        // The actual initial owner remains run-wide even when its numerical
+        // PID is not 1 and the first failure belongs to a forked process.
+        let root_polled = Arc::new(AtomicBool::new(false));
+        let root_callback = ReadyCallback {
+            polled: root_polled.clone(),
+            during: None,
+            published: Arc::new(Mutex::new(None)),
+        };
+        assert!(
+            matches!(
+                futures::executor::block_on(owner.run_callback(&root_callback)),
+                Ok(NativeCallbackOutcome::RunFailed)
+            ),
+            "{case}"
+        );
+        assert!(
+            !root_polled.load(Ordering::Acquire),
+            "initial owner resumed after run failure"
+        );
+        let root_error = futures::executor::block_on(owner.finish(root_result)).unwrap_err();
+        assert!(
+            std::ptr::eq(root_error.primary(), primary.primary()),
+            "{case}"
+        );
+        let child_status = if completed { 73 } else { 255 };
+        assert_eq!(
+            *global.events.lock().unwrap(),
+            vec![
+                (1, 72, child_status),
+                (2, 72, child_status),
+                (1, 71, 255),
+                (2, 71, 255),
+            ],
+            "consuming RPC must remain usable after failure: {case}"
+        );
+        assert_eq!(
+            *global.failure_events.lock().unwrap(),
+            vec![reverie::BackendFailure {
+                pid: Pid::from_raw(if own_process { 72 } else { 71 }),
+                tid: Pid::from_raw(79),
+                phase: "host-owned worker",
+            }],
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn independent_process_select_cannot_discard_rpc_runtime_failure() {
+    use native_test_support::NativeCallbackOutcome;
+    use native_test_support::NativeToolCallback;
+    use native_test_support::NativeToolOwner;
+
+    struct SelectedRpc {
+        alternative_selected: Arc<AtomicBool>,
+    }
+    impl NativeToolCallback<RpcTool> for SelectedRpc {
+        fn run<'a, G: Guest<RpcTool>>(
+            &'a self,
+            _: &'a RpcTool,
+            guest: &'a mut G,
+        ) -> futures::future::BoxFuture<'a, std::result::Result<i64, reverie::Error>> {
+            Box::pin(async move {
+                assert_eq!(guest.pid(), Pid::from_raw(72));
+                let request = pin!(guest.send_rpc((0, 0)));
+                match futures::future::select(request, futures::future::ready(73)).await {
+                    futures::future::Either::Left((response, _)) => Ok(response),
+                    futures::future::Either::Right((alternative, _)) => {
+                        self.alternative_selected.store(true, Ordering::Release);
+                        Ok(alternative)
+                    }
+                }
+            })
+        }
+    }
+
+    for (failed, response_ready) in [(true, false), (false, false), (false, true)] {
+        let global = Arc::new(RpcGlobal::default());
+        let (sender, receiver) = oneshot::channel();
+        let mut sender = Some(sender);
+        *global.response.lock().unwrap() = Some(receiver);
+        if response_ready {
+            sender.take().unwrap().send(37).unwrap();
+        }
+        let owner = NativeToolOwner::new(
+            Pid::from_raw(71),
+            Arc::new(RpcTool),
+            71,
+            global.clone(),
+            false,
+        )
+        .unwrap();
+        let mut child = owner
+            .fork_child(Pid::from_raw(72), Arc::new(RpcTool), 72)
+            .unwrap();
+        let context = owner.failure_context_for_test();
+        let error = failed.then(|| {
+            let result: Result<()> = crate::vm::finish_host_worker_outcome(
+                Some(&context),
+                Pid::from_raw(79),
+                Err(Error::InvalidGuestPid(-17)),
+                |_| {},
+            );
+            result.unwrap_err()
+        });
+        let alternative_selected = Arc::new(AtomicBool::new(false));
+        let outcome = futures::executor::block_on(child.run_callback(&SelectedRpc {
+            alternative_selected: alternative_selected.clone(),
+        }));
+        assert_eq!(
+            alternative_selected.load(Ordering::Acquire),
+            !response_ready,
+            "the control must actually return through the ready alternative"
+        );
+        assert_eq!(
+            global.pending.load(Ordering::Acquire),
+            !failed && !response_ready
+        );
+        let child_status;
+        let root_status;
+        if failed {
+            assert!(
+                matches!(outcome, Err(Error::RunAborted)),
+                "a ready alternative discarded the RPC's runtime failure"
+            );
+            assert!(
+                global.response.lock().unwrap().is_some(),
+                "terminal RPC must not enter request state"
+            );
+            let primary = context.run.primary().unwrap();
+            let child_error =
+                futures::executor::block_on(child.finish(Err(Error::RunAborted))).unwrap_err();
+            let root_error =
+                futures::executor::block_on(owner.finish(Err(error.unwrap()))).unwrap_err();
+            assert!(std::ptr::eq(child_error.primary(), primary.primary()));
+            assert!(std::ptr::eq(root_error.primary(), primary.primary()));
+            assert_eq!(
+                *global.failure_events.lock().unwrap(),
+                vec![reverie::BackendFailure {
+                    pid: Pid::from_raw(71),
+                    tid: Pid::from_raw(79),
+                    phase: "host-owned worker",
+                }]
+            );
+            child_status = 255;
+            root_status = 255;
+        } else {
+            child_status = if response_ready { 37 } else { 73 };
+            root_status = 37;
+            assert!(matches!(
+                outcome,
+                Ok(NativeCallbackOutcome::Returned(Ok(code))) if code == i64::from(child_status)
+            ));
+            assert!(global.response.lock().unwrap().is_none());
+            if let Some(sender) = sender {
+                assert!(sender.is_canceled(), "the losing ordinary RPC was retained");
+            }
+            assert_eq!(
+                futures::executor::block_on(child.finish(Ok(ExitStatus::Exited(child_status))))
+                    .unwrap()
+                    .0,
+                ExitStatus::Exited(child_status)
+            );
+            assert_eq!(
+                futures::executor::block_on(owner.finish(Ok(ExitStatus::Exited(root_status))))
+                    .unwrap()
+                    .0,
+                ExitStatus::Exited(root_status)
+            );
+            assert!(context.run.primary().is_none());
+            assert!(global.failure_events.lock().unwrap().is_empty());
+        }
+        assert_eq!(
+            *global.events.lock().unwrap(),
+            vec![
+                (1, 72, child_status),
+                (2, 72, child_status),
+                (1, 71, root_status),
+                (2, 71, root_status),
+            ]
+        );
+    }
+}
+
+#[test]
+fn independent_process_select_then_await_keeps_failed_rpc_pending() {
+    use native_test_support::NativeCallbackOutcome;
+    use native_test_support::NativeToolCallback;
+    use native_test_support::NativeToolOwner;
+
+    struct SelectThenAwaitRpc {
+        selected: Arc<AtomicBool>,
+        resumed: Arc<AtomicBool>,
+        response: Mutex<Option<oneshot::Sender<i64>>>,
+    }
+    impl NativeToolCallback<RpcTool> for SelectThenAwaitRpc {
+        fn run<'a, G: Guest<RpcTool>>(
+            &'a self,
+            _: &'a RpcTool,
+            guest: &'a mut G,
+        ) -> futures::future::BoxFuture<'a, std::result::Result<i64, reverie::Error>> {
+            Box::pin(async move {
+                assert_eq!(guest.pid(), Pid::from_raw(72));
+                let request = pin!(guest.send_rpc((0, 0)));
+                let request =
+                    match futures::future::select(request, futures::future::ready(73)).await {
+                        futures::future::Either::Right((73, request)) => request,
+                        _ => panic!("the control must first select the ready alternative"),
+                    };
+                self.selected.store(true, Ordering::Release);
+                if let Some(response) = self.response.lock().unwrap().take() {
+                    response.send(37).unwrap();
+                }
+                // Poll the same losing RPC again before returning to the
+                // driver. A failed RPC must stay pending, not resume a completed
+                // failure wait or enter its ordinary receive_rpc state.
+                let response = request.await;
+                self.resumed.store(true, Ordering::Release);
+                Ok(response)
+            })
+        }
+    }
+
+    for failed in [true, false] {
+        let global = Arc::new(RpcGlobal::default());
+        let (sender, receiver) = oneshot::channel();
+        let mut sender = Some(sender);
+        *global.response.lock().unwrap() = Some(receiver);
+        let owner = NativeToolOwner::new(
+            Pid::from_raw(71),
+            Arc::new(RpcTool),
+            71,
+            global.clone(),
+            false,
+        )
+        .unwrap();
+        let mut child = owner
+            .fork_child(Pid::from_raw(72), Arc::new(RpcTool), 72)
+            .unwrap();
+        let context = owner.failure_context_for_test();
+        let error = failed.then(|| {
+            let result: Result<()> = crate::vm::finish_host_worker_outcome(
+                Some(&context),
+                Pid::from_raw(79),
+                Err(Error::InvalidGuestPid(-17)),
+                |_| {},
+            );
+            result.unwrap_err()
+        });
+        let selected = Arc::new(AtomicBool::new(false));
+        let resumed = Arc::new(AtomicBool::new(false));
+        let callback = SelectThenAwaitRpc {
+            selected: selected.clone(),
+            resumed: resumed.clone(),
+            response: Mutex::new(if failed { None } else { sender.take() }),
+        };
+        let outcome = futures::executor::block_on(child.run_callback(&callback));
+        assert!(selected.load(Ordering::Acquire));
+        assert_eq!(resumed.load(Ordering::Acquire), !failed);
+        assert_eq!(global.pending.load(Ordering::Acquire), !failed);
+        assert_eq!(global.response.lock().unwrap().is_some(), failed);
+        let status;
+        if failed {
+            assert!(matches!(outcome, Err(Error::RunAborted)));
+            let primary = context.run.primary().unwrap();
+            let child_error =
+                futures::executor::block_on(child.finish(Err(Error::RunAborted))).unwrap_err();
+            let root_error =
+                futures::executor::block_on(owner.finish(Err(error.unwrap()))).unwrap_err();
+            assert!(std::ptr::eq(child_error.primary(), primary.primary()));
+            assert!(std::ptr::eq(root_error.primary(), primary.primary()));
+            assert_eq!(
+                *global.failure_events.lock().unwrap(),
+                vec![reverie::BackendFailure {
+                    pid: Pid::from_raw(71),
+                    tid: Pid::from_raw(79),
+                    phase: "host-owned worker",
+                }]
+            );
+            status = 255;
+        } else {
+            assert!(matches!(
+                outcome,
+                Ok(NativeCallbackOutcome::Returned(Ok(37)))
+            ));
+            status = 37;
+            assert_eq!(
+                futures::executor::block_on(child.finish(Ok(ExitStatus::Exited(status))))
+                    .unwrap()
+                    .0,
+                ExitStatus::Exited(status)
+            );
+            assert_eq!(
+                futures::executor::block_on(owner.finish(Ok(ExitStatus::Exited(status))))
+                    .unwrap()
+                    .0,
+                ExitStatus::Exited(status)
+            );
+            assert!(context.run.primary().is_none());
+            assert!(global.failure_events.lock().unwrap().is_empty());
+        }
+        assert_eq!(
+            *global.events.lock().unwrap(),
+            vec![
+                (1, 72, status),
+                (2, 72, status),
+                (1, 71, status),
+                (2, 71, status)
+            ]
+        );
     }
 }
 
@@ -623,6 +1346,12 @@ fn post_worker_control(case: PostWorkerCase) {
         "post-worker failure joined a descendant before supplying its terminal wake"
     );
     let result = result.unwrap();
+    if started {
+        assert!(
+            cleanup.response.as_ref().unwrap().is_canceled(),
+            "the ordinary RPC future must drop before the owned child join returns"
+        );
+    }
     match case {
         PostWorkerCase::MissingStatus | PostWorkerCase::MissingStatusPending => {
             assert!(
@@ -649,8 +1378,12 @@ fn post_worker_control(case: PostWorkerCase) {
                 "cached cause was published twice"
             );
             assert_eq!(
-                global.failure_events.lock().unwrap()[0].phase,
-                "worker teardown"
+                global.failure_events.lock().unwrap()[0],
+                reverie::BackendFailure {
+                    pid: Pid::from_raw(1),
+                    tid: Pid::from_raw(2),
+                    phase: "worker teardown",
+                }
             );
         }
         PostWorkerCase::LateFailure => {

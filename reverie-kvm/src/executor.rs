@@ -1086,6 +1086,15 @@ pub(crate) struct ElfExecutor {
 pub(crate) enum ChildStartCommand {
     Start,
     Cancel,
+    /// Consuming cleanup after the run's terminal transition, not an ordinary
+    /// successful cancellation or permission to execute the child.
+    CancelAfterFailure,
+}
+
+impl ChildStartCommand {
+    pub(crate) fn failure(self) -> Option<crate::Error> {
+        matches!(self, Self::CancelAfterFailure).then_some(crate::Error::RunAborted)
+    }
 }
 
 #[derive(Clone)]
@@ -1135,10 +1144,18 @@ impl ChildStartGate {
     /// result while the Cancelled state still lets cleanup remove and join the
     /// exact registered child.
     pub(crate) fn cancel(&self) -> ChildStartCancellation {
+        self.cancel_with_command(ChildStartCommand::Cancel)
+    }
+
+    pub(crate) fn cancel_after_failure(&self) -> ChildStartCancellation {
+        self.cancel_with_command(ChildStartCommand::CancelAfterFailure)
+    }
+
+    fn cancel_with_command(&self, command: ChildStartCommand) -> ChildStartCancellation {
         let mut state = self.state.lock().expect("KVM child-start gate poisoned");
         match &*state {
             ChildStartGateState::Pending(start) => {
-                let delivery_failed = start.send(ChildStartCommand::Cancel).is_err();
+                let delivery_failed = start.send(command).is_err();
                 *state = ChildStartGateState::Cancelled;
                 ChildStartCancellation::NewlyCancelled { delivery_failed }
             }
@@ -2492,7 +2509,7 @@ impl ElfExecutor {
             // earlier child may need a later child's consuming cleanup.
             for (pid, process) in &pending {
                 if matches!(
-                    process.start.cancel(),
+                    process.start.cancel_after_failure(),
                     ChildStartCancellation::NewlyCancelled {
                         delivery_failed: true
                     }
@@ -2824,10 +2841,14 @@ impl ElfExecutor {
     /// scheduler when `Guest::is_root_thread()` is true, so reporting the
     /// synthetic parent here makes the root guest permanently unschedulable.
     pub(crate) fn parent_pid(&self) -> Option<reverie::Pid> {
-        if self.state.is_traced_tree_root {
+        if self.is_traced_tree_root() {
             return None;
         }
         (self.state.ppid != 0).then(|| reverie::Pid::from_raw(self.state.ppid))
+    }
+
+    pub(crate) fn is_traced_tree_root(&self) -> bool {
+        self.state.is_traced_tree_root
     }
 
     // TODO-HUMAN-REVIEW(PR-132): Review cooperative KVM thread context updates.
@@ -34827,7 +34848,10 @@ mod tests {
             let wait = if pid == 2 { wait_later.take() } else { None };
             let done = if pid == 3 { later_done.take() } else { None };
             let handle = std::thread::spawn(move || {
-                assert_eq!(receiver.recv().unwrap(), ChildStartCommand::Cancel);
+                assert_eq!(
+                    receiver.recv().unwrap(),
+                    ChildStartCommand::CancelAfterFailure
+                );
                 if let Some(done) = done {
                     done.send(()).unwrap();
                 }
@@ -34906,6 +34930,39 @@ mod tests {
         assert!(lost_gate.start().is_err());
         assert_eq!(
             lost_gate.cancel(),
+            ChildStartCancellation::NewlyCancelled {
+                delivery_failed: true
+            }
+        );
+        assert_eq!(
+            start_gate.cancel_after_failure(),
+            ChildStartCancellation::AlreadyStarted
+        );
+        assert_eq!(
+            cancel_gate.cancel_after_failure(),
+            ChildStartCancellation::AlreadyCancelled
+        );
+        let (fatal_sender, fatal_receiver) = std::sync::mpsc::channel();
+        let fatal_gate = ChildStartGate::new(fatal_sender);
+        assert_eq!(
+            fatal_gate.cancel_after_failure(),
+            ChildStartCancellation::NewlyCancelled {
+                delivery_failed: false
+            }
+        );
+        let command = fatal_receiver.recv().unwrap();
+        assert_eq!(command, ChildStartCommand::CancelAfterFailure);
+        assert!(matches!(command.failure(), Some(crate::Error::RunAborted)));
+        assert_eq!(
+            fatal_gate.cancel(),
+            ChildStartCancellation::AlreadyCancelled
+        );
+        assert_eq!(fatal_gate.start(), Ok(false));
+        let (lost_sender, lost_receiver) = std::sync::mpsc::channel();
+        let lost_gate = ChildStartGate::new(lost_sender);
+        drop(lost_receiver);
+        assert_eq!(
+            lost_gate.cancel_after_failure(),
             ChildStartCancellation::NewlyCancelled {
                 delivery_failed: true
             }
