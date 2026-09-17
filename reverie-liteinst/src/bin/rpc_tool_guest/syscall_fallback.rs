@@ -60,6 +60,7 @@ impl Tool for FallbackTool {
         let nested = unsafe { fallback_test_call(SITE.load(Ordering::Relaxed), libc::SYS_getpid) };
         assert_eq!(nested, NATIVE_PID.load(Ordering::Relaxed) as i64);
         EXPECTED_RSP.store(expected_rsp, Ordering::Relaxed);
+        super::guest_log_guest::syscall_record();
         let (total, senders) = guest.send_rpc(1).await;
         super::LAST_TOTAL.store(total, Ordering::Relaxed);
         super::LAST_SENDERS.store(senders, Ordering::Relaxed);
@@ -83,6 +84,16 @@ impl Tool for FallbackTool {
             }
             _ => unreachable!(),
         }
+    }
+
+    async fn on_exit_process<G: reverie::GlobalRPC<Self::GlobalState>>(
+        self,
+        _: reverie::Pid,
+        _: &G,
+        _: reverie::ExitStatus,
+    ) -> Result<(), Error> {
+        super::guest_log_guest::cleanup_record();
+        Ok(())
     }
 }
 

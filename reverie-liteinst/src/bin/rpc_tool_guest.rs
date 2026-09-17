@@ -33,6 +33,9 @@ mod syscall_fallback_guest;
 #[path = "rpc_tool_guest/memory_access.rs"]
 mod memory_access_guest;
 
+#[path = "rpc_tool_guest/guest_log.rs"]
+mod guest_log_guest;
+
 const CALLS: u64 = 32;
 const TOOL_CPUID_EAX: u32 = 0x1111_1111;
 const TOOL_CPUID_EBX: u32 = 0x2222_2222;
@@ -1312,6 +1315,10 @@ fn main() {
     let mode = args.next().expect("mode");
     let path = args.next().expect("socket path");
     match mode.to_str() {
+        Some("diagnostic-log-child") => guest_log_guest::child(path.to_str().unwrap()),
+        Some("diagnostic-log-host") => {
+            guest_log_guest::host(Path::new(&path), args.next().unwrap().to_str().unwrap())
+        }
         Some("coordinator") => coordinator(Path::new(&path)),
         Some("guest") => guest(Path::new(&path)),
         Some("syscall-fallback") => syscall_fallback_guest::run(Path::new(&path)),

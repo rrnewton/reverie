@@ -16,6 +16,40 @@ pub(crate) use reverie_preload::sync::SpinMutex;
 use reverie_preload::trap::raw_syscall6;
 use reverie_rpc_transport::BlockingRpcClient;
 
+thread_local! {
+    static TRUSTED_RPC_FD: core::cell::Cell<i32> = const { core::cell::Cell::new(-1) };
+}
+
+pub(crate) struct ChannelIoGuard(i32);
+
+impl ChannelIoGuard {
+    pub(crate) fn enter(fd: i32) -> Self {
+        Self(TRUSTED_RPC_FD.replace(fd))
+    }
+}
+
+impl Drop for ChannelIoGuard {
+    fn drop(&mut self) {
+        TRUSTED_RPC_FD.set(self.0);
+    }
+}
+
+pub(crate) fn allows_channel_io(number: i64, fd: i32) -> bool {
+    fd >= 0
+        && TRUSTED_RPC_FD.get() == fd
+        && matches!(
+            number,
+            libc::SYS_read
+                | libc::SYS_readv
+                | libc::SYS_write
+                | libc::SYS_writev
+                | libc::SYS_sendto
+                | libc::SYS_recvfrom
+                | libc::SYS_sendmsg
+                | libc::SYS_recvmsg
+        )
+}
+
 /// Set in a freshly forked child by [`note_fork_in_child`]. The guest RPC hot
 /// path consults this flag instead of issuing a `getpid` syscall on every hop,
 /// so an ordinary (non-forking) round-trip performs no identity syscalls at all.
@@ -109,7 +143,10 @@ impl<G: GlobalTool> GlobalRPC<G> for CoordinatorRpc<G> {
                 *connection = RpcConnection { pid, client };
             }
         }
-        match connection.client.try_send_rpc(message) {
+        match connection
+            .client
+            .try_send_rpc_with_io_scope(message, ChannelIoGuard::enter)
+        {
             Ok(response) => response,
             Err(_) => rpc_fatal(123),
         }
@@ -135,5 +172,40 @@ fn rpc_fatal(status: i32) -> ! {
     }
     loop {
         core::hint::spin_loop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_scopes_restore_nested_identity_after_unwind() {
+        assert!(!allows_channel_io(libc::SYS_write, 31));
+        let outer = ChannelIoGuard::enter(31);
+        assert!(allows_channel_io(libc::SYS_write, 31));
+        assert!(!allows_channel_io(libc::SYS_close, 31));
+        assert!(!allows_channel_io(libc::SYS_sendmsg, 32));
+        {
+            let _inner = ChannelIoGuard::enter(32);
+            assert!(allows_channel_io(libc::SYS_read, 32));
+            assert!(!allows_channel_io(libc::SYS_read, 31));
+            assert!(
+                std::panic::catch_unwind(|| {
+                    let _failed = ChannelIoGuard::enter(33);
+                    assert!(allows_channel_io(libc::SYS_sendto, 33));
+                    assert!(!allows_channel_io(libc::SYS_sendto, 32));
+                    panic!("deliberate scoped I/O unwind");
+                })
+                .is_err()
+            );
+            assert!(allows_channel_io(libc::SYS_read, 32));
+            assert!(!allows_channel_io(libc::SYS_read, 33));
+        }
+        assert!(allows_channel_io(libc::SYS_write, 31));
+        assert!(!allows_channel_io(libc::SYS_write, 32));
+        drop(outer);
+        assert!(!allows_channel_io(libc::SYS_write, 31));
+        assert!(!allows_channel_io(libc::SYS_write, -1));
     }
 }

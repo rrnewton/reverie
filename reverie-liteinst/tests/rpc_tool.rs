@@ -11,6 +11,238 @@ const INSTRUCTION_CONTROL_UNAVAILABLE_STATUS: i32 = 77;
 const TEST_STRADDLER_STALENESS_TICKS: &str = "20000";
 
 #[test]
+fn logged_output_drains_both_pipes_with_one_blocking_worker() {
+    use std::os::unix::process::CommandExt;
+
+    // Each invocation owns this process group. Keep cleanup active even if a
+    // deadline or assertion fails, including the host's actual guest child.
+    struct Host(Option<std::process::Child>);
+    impl Drop for Host {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+                let _ = child.wait();
+            }
+        }
+    }
+
+    let temporary = tempfile::tempdir().unwrap();
+    let directory = std::env::var_os("LITEINST_LOG_LAUNCH_TEST_EVIDENCE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| temporary.path().to_owned());
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut host = Host(Some(
+        Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest"))
+            .arg("diagnostic-log-host")
+            .arg(&directory)
+            .arg("one-blocking-worker")
+            .process_group(0)
+            .stdout(std::fs::File::create(directory.join("host.stdout")).unwrap())
+            .stderr(std::fs::File::create(directory.join("host.stderr")).unwrap())
+            .spawn()
+            .unwrap(),
+    ));
+    let host_pid = host.0.as_ref().unwrap().id();
+    std::fs::write(directory.join("host.pid"), host_pid.to_string()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        // WNOWAIT keeps the exited host PID reserved until its whole group
+        // is stopped. A panic or failed host must not leave its guest alive,
+        // and cleanup must not target a PID that wait() has already released.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    host_pid,
+                    &raw mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            },
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        if unsafe { info.si_pid() } != 0 {
+            let mut child = host.0.take().unwrap();
+            unsafe { libc::kill(-(host_pid as i32), libc::SIGKILL) };
+            break child.wait().unwrap();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "logged host exceeded 20 seconds; retained evidence: {}",
+            directory.display()
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert!(
+        status.success(),
+        "logged host status {status}; {}",
+        directory.display()
+    );
+    assert_eq!(std::fs::read(directory.join("host.stderr")).unwrap(), b"");
+    let capacities = std::fs::read_to_string(directory.join("pipe-capacities.txt")).unwrap();
+    let capacities: Vec<usize> = capacities
+        .trim_end()
+        .split(' ')
+        .map(|part| part.split_once('=').unwrap().1.parse().unwrap())
+        .collect();
+    assert_eq!(capacities.len(), 3);
+    assert_eq!(capacities[2], 1024 * 1024);
+    assert!(capacities[0] > 0 && capacities[0] < capacities[2]);
+    assert!(capacities[1] > 0 && capacities[1] < capacities[2]);
+    assert_eq!(
+        std::fs::read(directory.join("stdout.bin")).unwrap(),
+        [b"injected stdout\n".as_slice(), &vec![b'O'; capacities[2]]].concat()
+    );
+    assert_eq!(
+        std::fs::read(directory.join("stderr.bin")).unwrap(),
+        [
+            b"tail-injected stderr\n".as_slice(),
+            &vec![b'E'; capacities[2]]
+        ]
+        .concat()
+    );
+    assert_eq!(
+        std::fs::read(directory.join("log.bin")).unwrap(),
+        b"bootstrap ready\nTool syscall\nTool syscall\nTool cleanup\n"
+    );
+    assert_eq!(std::fs::read(directory.join("error.txt")).unwrap(), b"");
+    assert_eq!(
+        std::fs::read(directory.join("host.stdout")).unwrap(),
+        b"diagnostic one-blocking-worker: rpc=2 stdout=1048592 stderr=1048597 log=55 missing-finish=false\n"
+    );
+    println!(
+        "one blocking worker: capacities={capacities:?}; exact stdout/stderr/log and RPC preserved"
+    );
+}
+
+#[test]
+fn protected_diagnostic_log_preserves_native_state_rpc_and_output() {
+    use std::os::unix::process::CommandExt;
+
+    let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+    for (case, on_alt_stack) in [
+        ("descriptors", true),
+        ("missing-finish", true),
+        ("fork", true),
+        ("pkey", true),
+        ("pkey", false),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut command = Command::new(binary);
+        command
+            .arg("diagnostic-log-host")
+            .arg(directory.path())
+            .arg(case);
+        reverie_liteinst::set_guest_alt_stack(&mut command, on_alt_stack);
+        // The fixture host owns a child. Bound both processes if the transport
+        // regresses, including a collector waiting for a missing completion.
+        command
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                assert_eq!(
+                    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) },
+                    0
+                );
+                let output = child.wait_with_output().unwrap();
+                panic!("diagnostic {case} exceeded 20 seconds: {output:?}");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(output.stderr.is_empty(), "{output:?}");
+        if case == "pkey" && output.status.code() == Some(77) {
+            assert_eq!(output.stdout, b"diagnostic pkey: OSPKE unavailable\n");
+            eprintln!("diagnostic pkey control unmeasured: OSPKE unavailable");
+            continue;
+        }
+        assert!(output.status.success(), "{output:?}");
+        let stdout = std::fs::read(directory.path().join("stdout.bin")).unwrap();
+        let stderr = std::fs::read(directory.path().join("stderr.bin")).unwrap();
+        let log = std::fs::read(directory.path().join("log.bin")).unwrap();
+        let error = std::fs::read_to_string(directory.path().join("error.txt")).unwrap();
+        let (calls, cleanups) = match case {
+            "descriptors" | "missing-finish" => {
+                assert_eq!(stdout, b"injected stdout\n");
+                assert_eq!(stderr, b"tail-injected stderr\n");
+                (4, usize::from(case != "missing-finish"))
+            }
+            "fork" => {
+                assert_eq!(stdout, b"fallback fork child: hooks=0 traps=1 fallback=1 syscall=1\nfallback fork parent: hooks=0 traps=1 fallback=1 syscall=1\n");
+                assert!(stderr.is_empty());
+                (1, 2)
+            }
+            "pkey" => {
+                assert!(stderr.is_empty());
+                let text = std::str::from_utf8(&stdout).unwrap();
+                let lines: Vec<_> = text.lines().collect();
+                assert_eq!(lines.len(), 6, "{text}");
+                let key: u32 = lines[1]
+                    .strip_prefix("native pkey=")
+                    .unwrap()
+                    .strip_suffix(" pkru=0: state=preserved")
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                assert!(key > 0);
+                let bytes: usize = lines[5]
+                    .strip_prefix("fallback pkeys: zero=preserved key0-denied=preserved bytes=")
+                    .unwrap()
+                    .strip_suffix(" tool=424242 rpc=2")
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                assert!(bytes >= 576);
+                assert_eq!(
+                    text,
+                    format!(
+                        "pkey fixture: rseq=unregistered before native and Tool controls\nnative pkey={key} pkru=0: state=preserved\nnative pkey={key} pkru=1: state=preserved\nTool pkey={key} pkru=1: state=preserved\nTool pkey={key} pkru=0: state=preserved\nfallback pkeys: zero=preserved key0-denied=preserved bytes={bytes} tool=424242 rpc=2\n"
+                    )
+                );
+                (2, 1)
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            log,
+            [
+                b"bootstrap ready\n".to_vec(),
+                b"Tool syscall\n".repeat(calls),
+                b"Tool cleanup\n".repeat(cleanups)
+            ]
+            .concat()
+        );
+        if case == "missing-finish" {
+            assert_eq!(error, "guest log missing process completion");
+        } else {
+            assert!(error.is_empty(), "{error}");
+        }
+        assert_eq!(
+            output.stdout,
+            format!(
+                "diagnostic {case}: rpc={calls} stdout={} stderr={} log={} missing-finish={}\n",
+                stdout.len(),
+                stderr.len(),
+                log.len(),
+                case == "missing-finish"
+            )
+            .as_bytes()
+        );
+        println!(
+            "alt_stack={on_alt_stack} {}",
+            String::from_utf8(output.stdout).unwrap()
+        );
+        print!("{}", String::from_utf8(stdout).unwrap());
+    }
+}
+
+#[test]
 fn ordinary_tool_memory_and_scratch_work_with_protected_guest_state() {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
     for on_alt_stack in [true, false] {
