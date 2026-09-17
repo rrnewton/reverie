@@ -41,6 +41,7 @@ def wrkslots_action(command: list[str], action: str) -> bool:
     return command[0].endswith("ci-hub/bin/wrkslots") and action in command
 
 
+
 class FakeRun:
     def __init__(self, checkout: Path) -> None:
         self.checkout = checkout
@@ -56,6 +57,8 @@ class FakeRun:
         # `fresh_complete` decides whether the tree carries what validate needs,
         # and `ledger_rows` is what the canonical reader returns.
         self.fresh: Path | None = None
+        # (uncommitted paths, commits on no remote ref) the gate should see.
+        self.fresh_authored_work: tuple[int, int] = (0, 0)
         self.fresh_complete = True
         self.fresh_runner_name = "safe-ci-dag-runner"
         self.fresh_runner_executable = True
@@ -129,6 +132,7 @@ class FakeRun:
         self.systemd_checkout_head: str | None = None
         self.inner_log_lines: list[str] = []
 
+
     def default_ledger_row(self) -> dict[str, object]:
         return {
             "commit": self.target,
@@ -158,6 +162,23 @@ class FakeRun:
 
     def __call__(self, command: list[str], **kwargs: object):
         self.commands.append(command)
+        # THE REMOVAL PATH NOW ASKS THE TREE ABOUT ITSELF, so the fake must be
+        # able to answer. These fixtures deliberately model a checkout as a
+        # directory rather than paying for a real linked worktree, and the two
+        # questions the authorisation gate asks -- uncommitted paths, and
+        # commits reaching no remote ref -- are exactly the kind of thing this
+        # runner already stands in for. Answering them here keeps the fixtures
+        # cheap AND lets the gate be exercised; the alternative, making every
+        # fixture a real `git worktree add`, was tried and is a different and
+        # much larger change. `fresh_authored_work` lets a test say the tree is
+        # dirty or carries an off-remote commit, so the refusal paths are
+        # reachable too.
+        if len(command) >= 4 and command[0] == "git" and command[1] == "-C":
+            dirty, unpushed = self.fresh_authored_work
+            if command[3:] == ["status", "--porcelain"]:
+                return completed(command, stdout="\n".join("?? f" for _ in range(dirty)))
+            if command[3:] == ["rev-list", "HEAD", "--not", "--remotes"]:
+                return completed(command, stdout="\n".join("0" * 40 for _ in range(unpushed)))
         cwd = kwargs.get("cwd")
         child_environment = kwargs.get("env")
         self.last_child_environment = child_environment
@@ -4513,6 +4534,119 @@ class StartUnitTest(unittest.TestCase):
         observed = start_unit.canonical_worktree_tool_head(linked, state_root)
 
         self.assertEqual(expected, observed)
+
+    def test_sweep_retains_a_terminal_checkout_that_holds_uncommitted_work(self) -> None:
+        fresh = self.root / "worktrees" / "validate" / "validate-fresh-sweep"
+        receipt = fresh / "reports" / "result.jsonl"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(f'{{"commit": "{SHA}"}}\n')
+        cargo_home = self.root / "ignored/validate/cargo-homes/validate-cargo-sweep"
+        cargo_home.mkdir(parents=True)
+        self.fake.fresh = fresh
+        record_path = self.root / "ignored/validate/runs/validate-sweep.json"
+        start_unit.run_registry.write_record(
+            record_path,
+            {
+                "schema_version": 1,
+                "unit": "validate-sweep.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "wrkslots_slot": fresh.name,
+                "wrkslots_generation": 7,
+                "cargo_home": str(cargo_home),
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "exit_code": 0,
+                "final_validate_status": "PASSED",
+            },
+        )
+
+        # THE ONLY DIFFERENCE FROM THE REMOVAL CASE ABOVE. Everything else --
+        # terminal unit, completed record, archived receipt, managed identity --
+        # is identical, so this isolates the authorisation gate and nothing else.
+        # Without it the sweep removes this tree and the uncommitted paths, which
+        # exist nowhere else, are gone.
+        self.fake.fresh_authored_work = (2, 0)
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                ["--sweep-completed", "--json"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+            )
+
+        # 75 is the sweep's own signal that it retained something it could not
+        # clean, which is exactly what the gate produces. Pinning it is stronger
+        # than expecting success: a caller reading 0 here would believe the
+        # backlog had drained.
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, err.getvalue())
+        report = json.loads(out.getvalue())
+        self.assertEqual([], report["removed"])
+        self.assertEqual(
+            [{"checkout": str(fresh), "reason": "holds 2 uncommitted path(s)"}],
+            report["retained"],
+        )
+        # THE ASSERTION THE WHOLE GATE EXISTS FOR: the tree is still there, and
+        # so are the two paths that exist nowhere else.
+        self.assertTrue(fresh.exists())
+
+    def test_sweep_retains_a_terminal_checkout_whose_commits_reach_no_remote(self) -> None:
+        fresh = self.root / "worktrees" / "validate" / "validate-fresh-sweep"
+        receipt = fresh / "reports" / "result.jsonl"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(f'{{"commit": "{SHA}"}}\n')
+        cargo_home = self.root / "ignored/validate/cargo-homes/validate-cargo-sweep"
+        cargo_home.mkdir(parents=True)
+        self.fake.fresh = fresh
+        record_path = self.root / "ignored/validate/runs/validate-sweep.json"
+        start_unit.run_registry.write_record(
+            record_path,
+            {
+                "schema_version": 1,
+                "unit": "validate-sweep.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "wrkslots_slot": fresh.name,
+                "wrkslots_generation": 7,
+                "cargo_home": str(cargo_home),
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "exit_code": 0,
+                "final_validate_status": "PASSED",
+            },
+        )
+
+        # A commit off every remote ref is the ORDINARY state of a validate
+        # checkout -- it was created at a pull-request head that the landing
+        # squash-rewrote. It is addressable, so the sweep asks for it to be
+        # preserved rather than refusing forever.
+        self.fake.fresh_authored_work = (0, 1)
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                ["--sweep-completed", "--json"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+            )
+
+        # 75 is the sweep's own signal that it retained something it could not
+        # clean, which is exactly what the gate produces. Pinning it is stronger
+        # than expecting success: a caller reading 0 here would believe the
+        # backlog had drained.
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, err.getvalue())
+        report = json.loads(out.getvalue())
+        self.assertEqual([], report["removed"])
+        self.assertEqual(1, len(report["retained"]))
+        self.assertIn("rescue ref", report["retained"][0]["reason"])
+        self.assertTrue(fresh.exists())
 
     def test_sweep_completed_archives_receipts_and_removes_checkout(self) -> None:
         fresh = self.root / "worktrees" / "validate" / "validate-fresh-sweep"

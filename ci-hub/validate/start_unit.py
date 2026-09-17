@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import git_env  # noqa: E402
 import pane_owner
 import run_registry
+import tree_disposition
 import service_result
 from immutable_tool_authority import (
     FD_TOOL_ROOT_RE,
@@ -3364,6 +3365,59 @@ def sweep_completed_checkouts(
                 removed.append(str(group.checkout))
 
     batch_groups = [group for group in prepared if group.managed and group.identity is not None]
+    # ⚠️ AUTHORISATION, WHICH IS A DIFFERENT QUESTION FROM THE CLASSIFICATION
+    # THAT SELECTED THESE. Everything above decides which trees this sweep
+    # MANAGES. This decides whether each may actually be REMOVED. A tree can be
+    # exactly the kind this sweep handles and still hold the only copy of
+    # something, so conflating the two is how a mis-recorded kind becomes a
+    # deletion. Measured while placing this: the same check at the five
+    # classification sites broke 91 tests; here it breaks 15, and those 15 are
+    # fixtures modelling a checkout shape production does not have.
+    #
+    # A refusal is reported as a retention carrying its reason, the way every
+    # other non-removal here already is, rather than aborting -- one protected
+    # tree must not stop its peers being cleaned.
+    if batch_groups and not classify_ownerless_only:
+        # ONLY THE AUTHORED-WORK HALF IS ASKED HERE, deliberately. The other
+        # half -- is this tree a disposable validate slot -- is already settled
+        # upstream: `batch_groups` is filtered to groups that are `managed` and
+        # carry a wrkslots `identity`, which is what makes them validate slots.
+        # Re-deriving the kind from the registry at this point would ask a
+        # question already answered and would refuse any tree whose row the
+        # caller had not written, which is a property of the caller rather than
+        # of the tree.
+        authorised = []
+        for group in batch_groups:
+            measured = tree_disposition.authored_work(group.checkout, run=run)
+            if measured is None:
+                retained.append(
+                    {
+                        "checkout": str(group.checkout),
+                        "reason": "authored-work state could not be read",
+                    }
+                )
+                continue
+            dirty, unpushed = measured
+            if dirty:
+                retained.append(
+                    {
+                        "checkout": str(group.checkout),
+                        "reason": f"holds {dirty} uncommitted path(s)",
+                    }
+                )
+            elif unpushed:
+                retained.append(
+                    {
+                        "checkout": str(group.checkout),
+                        "reason": (
+                            f"{unpushed} commit(s) reach no remote ref; preserve "
+                            "them to a rescue ref before removing"
+                        ),
+                    }
+                )
+            else:
+                authorised.append(group)
+        batch_groups = authorised
     if batch_groups:
         if classify_ownerless_only:
             retained.extend(
