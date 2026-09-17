@@ -1,0 +1,68 @@
+{
+  "export_manifest_sha256": "470e677711312e2d5b83c5d25d421736984f45db22f4bf0c843eed246b174204",
+  "files": {
+    "full-ordinary-plan.json": {
+      "bytes": 848893,
+      "mode": 420,
+      "sha256": "394070b70850cad2960b9eb96b2816100e75149dd7d5992785f8cba5123e7e87"
+    },
+    "full-ordinary-populations.json": {
+      "bytes": 92066,
+      "mode": 420,
+      "sha256": "a1022650767578d6d07cdeb279dfad6570bda34757a84fc38e9cd626418c9399"
+    },
+    "full-parity-plan.json": {
+      "bytes": 848917,
+      "mode": 420,
+      "sha256": "8b5a0498159e4d855f151b32272dd89ee78ccfc2b042be4668c351be1e1ccc91"
+    },
+    "full-parity-populations.json": {
+      "bytes": 112815,
+      "mode": 420,
+      "sha256": "74816b9c5cc948cf9f2d8d39c3bfdc229cd4c8fa0b43a3d8178ca15324a348e6"
+    },
+    "hosted-portable-ordinary-plan.json": {
+      "bytes": 752132,
+      "mode": 420,
+      "sha256": "df45b422be36bfdd46913885a9b9b70159ed87fa34d47f9c51d5690d1a3bf842"
+    },
+    "hosted-portable-ordinary-populations.json": {
+      "bytes": 91695,
+      "mode": 420,
+      "sha256": "65755b90ad5a18aef615464ca0d17b59c3c469afe39d5b3c28fb1cbcecaf737a"
+    },
+    "hosted-portable-parity-plan.json": {
+      "bytes": 752156,
+      "mode": 420,
+      "sha256": "09f080c874a6780503dedd1aa61af529239b6983fc8edeb1a1b95c6226deeaca"
+    },
+    "hosted-portable-parity-populations.json": {
+      "bytes": 112444,
+      "mode": 420,
+      "sha256": "d1b506b542e995b9e4259796b782ae4a382dac7d7b6b552ce729ec9e5621f260"
+    }
+  },
+  "fixture_scope": "Synthetic run/source identities with actual source-generated selected DAGs; not guest measurements or full receipt qualification.",
+  "native_command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "-p",
+    "hermit-manifest-plan",
+    "--lib",
+    "ledger::schema10::tests",
+    "--",
+    "--test-threads=2"
+  ],
+  "native_failed": 0,
+  "native_filtered": 234,
+  "native_ignored": 0,
+  "native_passed": 4,
+  "native_receipt_sha256": "3bc1c5235d12436b0c1f5c587306d7989e61663283f3cf38d360f1ca5a4a65bf",
+  "schema": 1,
+  "source_base": "2a4142371e74aebea3cbd8b4c8329fc819d324f9",
+  "source_commit": "282ca9c7445d89f9903230f3bd00eddb6fa02a2a",
+  "source_repository": "https://github.com/rrnewton/hermit",
+  "source_tree": "3d9164c4fcb2377ec17c8315533f296bdc009bf8"
+}

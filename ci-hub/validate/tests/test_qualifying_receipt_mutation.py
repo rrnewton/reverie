@@ -1351,7 +1351,8 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             mode="replay",
             virtualize_time=False,
         )
-        replay["schema_version"] = predicate["cell_results"]["supported_schema_max"]
+        # This fixture has the schema7 wire shape, independent of deployed support.
+        replay["schema_version"] = 7
         self.assertEqual(
             qualifying_receipt.row_qualification(replay, SHA, predicate),
             (True, "qualifies"),
@@ -1370,9 +1371,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                     mode=mode,
                     virtualize_time=False,
                 )
-                wrong_time_policy["schema_version"] = predicate["cell_results"][
-                    "supported_schema_max"
-                ]
+                wrong_time_policy["schema_version"] = 7
                 self.assertIs(
                     qualifying_receipt.cell_results_verdict(
                         wrong_time_policy, predicate
@@ -1386,9 +1385,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             mode="unknown",
             virtualize_time=False,
         )
-        unknown_mode["schema_version"] = predicate["cell_results"][
-            "supported_schema_max"
-        ]
+        unknown_mode["schema_version"] = 7
         self.assertIs(
             qualifying_receipt.cell_results_verdict(unknown_mode, predicate),
             qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
@@ -1399,9 +1396,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             "unavailable-with-reason",
             mode="unknown",
         )
-        unknown_reasoned_mode["schema_version"] = predicate["cell_results"][
-            "supported_schema_max"
-        ]
+        unknown_reasoned_mode["schema_version"] = 7
         self.assertIs(
             qualifying_receipt.cell_results_verdict(unknown_reasoned_mode, predicate),
             qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
@@ -1480,14 +1475,14 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
     def test_schema_version_bounds_cell_results_authority(self) -> None:
         predicate = qualifying_receipt.active()
         current = _schema6_cell_row(SHA, "compared-and-matched")
-        current["schema_version"] = predicate["cell_results"]["supported_schema_max"]
+        current["schema_version"] = 7
         self.assertEqual(
             qualifying_receipt.row_qualification(current, SHA, predicate),
             (True, "qualifies"),
         )
 
         newer = copy.deepcopy(current)
-        newer["schema_version"] += 1
+        newer["schema_version"] = predicate["cell_results"]["supported_schema_max"] + 1
         newer["cell_results"]["future_field"] = True
         self.assertEqual(
             qualifying_receipt.row_qualification(newer, SHA, predicate),
@@ -1719,7 +1714,10 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         self.assertNotIn("LEDGER RECORDS UNREADABLE", proc.stderr)
 
         failed = _schema6_cell_row(SHA, "compared-and-matched")
-        failed["schema_version"] = predicate["cell_results"]["supported_schema_max"]
+        failed["schema_version"] = 7
+        failed["cell_results"]["artifact"]["path"] = (
+            "ignored/validate/artifacts/schema6-test/cells.jsonl"
+        )
         failed.update(result="fail", raw_result="fail", exit_code=1, failures=1)
         failed.update(dag_jobs=4, known_flaky_failure=False, solo_rerun_confirmation=False)
         failed["gates"][1].update(
@@ -1739,7 +1737,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         self.assertEqual(supported_report["failed_record_count"], 1)
 
         newer_failed = copy.deepcopy(failed)
-        newer_failed["schema_version"] += 1
+        newer_failed["schema_version"] = predicate["cell_results"]["supported_schema_max"] + 1
         newer_failed["cell_results"]["cells"][0]["cell_verdict"]["comparison"][
             "future_field"
         ] = True
@@ -1755,7 +1753,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         self.assertNotIn("LEDGER RECORDS UNREADABLE", newer_proc.stderr)
 
         malformed_supported = copy.deepcopy(newer)
-        malformed_supported["schema_version"] -= 1
+        malformed_supported["schema_version"] = 7
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _spool_without_cell_results_check(root, malformed_supported)

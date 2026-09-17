@@ -1,0 +1,7 @@
+These eight files retain actual generated full and hosted-portable selections from the Hermit source and native check identified in provenance.json. Each profile has ordinary and parity variants. The only DAG difference between those variants is the exact --parity-reference ptrace argument on the existing backend-parity-c command. Each populations file contains the independently selected expected cell and relation arrays.
+
+Full selects 756 cells and hosted-portable selects 753. Ordinary variants select zero backend-parity relations; parity variants select 97 (75 KVM, 21 LiteInst, one SaBre). The test requires exact arrays and unchanged selected cells across ordinary/parity variants. Selection counts are not completed comparison counts.
+
+The run IDs and all-a source SHA inside each plan are deliberate synthetic parser identities. They do not claim a guest execution, measured parity result or qualifying receipt. Actual exporter source and the terminal passing four-method native receipt are bound separately in provenance.json. All later mutation assertions completed in that receipt; file existence alone is not evidence of their success.
+
+The eight producer exports are retained byte-for-byte. Do not regenerate them from a current checkout when reading an old receipt. Updating these fixtures requires new source-bound exports and review of both the exact populations and command changes.

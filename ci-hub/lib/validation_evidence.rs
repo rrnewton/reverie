@@ -787,6 +787,67 @@ mod tests {
 
     #[test]
     fn schema10_plan_and_artifact_substitutions_never_gain_authority() {
+        use crate::records::{BackendParityRelation, ConstructedValidationPlanV10};
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Populations {
+            cells: Vec<CellIdentity>,
+            backend_parity: Vec<BackendParityRelation>,
+        }
+
+        // These are retained actual generated selections, with synthetic run
+        // identities. They demonstrate plan admission, not guest comparisons.
+        let cases: [(&str, &[u8], &[u8], usize, usize); 4] = [
+            (
+                "full-ordinary",
+                include_bytes!("../validate/tests/fixtures/schema10/generated-plans/full-ordinary-plan.json"),
+                include_bytes!("../validate/tests/fixtures/schema10/generated-plans/full-ordinary-populations.json"),
+                756,
+                0,
+            ),
+            (
+                "full-parity",
+                include_bytes!("../validate/tests/fixtures/schema10/generated-plans/full-parity-plan.json"),
+                include_bytes!("../validate/tests/fixtures/schema10/generated-plans/full-parity-populations.json"),
+                756,
+                97,
+            ),
+            (
+                "hosted-portable-ordinary",
+                include_bytes!("../validate/tests/fixtures/schema10/generated-plans/hosted-portable-ordinary-plan.json"),
+                include_bytes!("../validate/tests/fixtures/schema10/generated-plans/hosted-portable-ordinary-populations.json"),
+                753,
+                0,
+            ),
+            (
+                "hosted-portable-parity",
+                include_bytes!("../validate/tests/fixtures/schema10/generated-plans/hosted-portable-parity-plan.json"),
+                include_bytes!("../validate/tests/fixtures/schema10/generated-plans/hosted-portable-parity-populations.json"),
+                753,
+                97,
+            ),
+        ];
+        let mut ordinary = std::collections::BTreeMap::new();
+        for (name, plan_bytes, expected_bytes, cells, relations) in cases {
+            let plan: ConstructedValidationPlanV10 = serde_json::from_slice(plan_bytes).unwrap();
+            let expected: Populations = serde_json::from_slice(expected_bytes).unwrap();
+            assert_eq!(expected.cells.len(), cells, "{name}");
+            assert_eq!(expected.backend_parity.len(), relations, "{name}");
+            assert_eq!(plan.planned_cells().unwrap(), expected.cells, "{name}");
+            assert_eq!(
+                plan.planned_backend_parity_relations().unwrap(),
+                expected.backend_parity,
+                "{name}"
+            );
+            if let Some(label) = name.strip_suffix("-ordinary") {
+                ordinary.insert(label, expected.cells);
+            } else {
+                let label = name.strip_suffix("-parity").unwrap();
+                assert_eq!(ordinary.get(label).unwrap(), &expected.cells, "{name}");
+            }
+        }
+
         for mutation in [
             "compatibility",
             "manifest",
