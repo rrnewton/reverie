@@ -22,3 +22,7 @@ tokio = { version = "1.52.4", features = ["io-util", "net", "rt", "sync", "macro
 
 [dev-dependencies]
 tokio = { version = "1.52.4", features = ["full", "test-util"] }
+
+[[bin]]
+name = "mapped_rpc_fork_fixture"
+path = "tests/fixtures/mapped_rpc_fork_fixture.rs"

@@ -32,8 +32,11 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 mod asynchronous;
+mod inherited;
 mod workers;
 pub use asynchronous::AsyncMappedStream;
+pub use inherited::InheritedMappingReleaseError;
+pub use inherited::InheritedMappingReleaseFailure;
 pub use workers::MappedCompletion;
 pub use workers::MappedHelperFailure;
 pub use workers::MappedReaperCleanup;
