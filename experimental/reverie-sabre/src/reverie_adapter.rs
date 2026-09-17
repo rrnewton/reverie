@@ -1196,7 +1196,8 @@ where
         regs.rsi = frame.rsi as u64;
         regs.rdi = frame.rdi as u64;
         regs.rip = frame.fake_ret as u64;
-        regs.rsp = unsafe { (frame as *const crate::ffi::syscall_stackframe).add(1) as u64 };
+        regs.rsp = frame.guest_stack_pointer();
+        regs.eflags = frame.rflags;
         regs
     }
 
@@ -2018,6 +2019,9 @@ mod tests {
             assert_eq!(regs.rsi, 20);
             assert_eq!(regs.rdx, 30);
             assert_eq!(regs.rip, 0xf00d);
+            assert_eq!(regs.eflags, 0x647);
+            let frame = crate::callbacks::current_syscall_frame().unwrap();
+            assert_eq!(regs.rsp, frame as u64 + 0x90 + 0x80);
             assert_eq!(guest.backtrace().unwrap().iter().next().unwrap().ip, 0xf00d);
 
             let mut unsupported_rsp = regs;
@@ -2027,6 +2031,10 @@ mod tests {
             let mut unsupported_rip = regs;
             unsupported_rip.rip = 0xbeef;
             assert!(guest.set_regs(unsupported_rip).await.is_err());
+
+            let mut unsupported_flags = regs;
+            unsupported_flags.eflags ^= 1;
+            assert!(guest.set_regs(unsupported_flags).await.is_err());
 
             regs.r15 = 1515;
             regs.rcx = 0xcafe;
@@ -2048,6 +2056,7 @@ mod tests {
         frame.rdx = 30usize as *mut libc::c_void;
         frame.fake_ret = 0xf00dusize as *mut libc::c_void;
         frame.ret = 0xdeadusize as *mut libc::c_void;
+        frame.rflags = 0x647;
 
         assert!(crate::callbacks::current_syscall_frame().is_none());
         {
@@ -2063,6 +2072,7 @@ mod tests {
         assert_eq!(frame.r11 as usize, 0x202);
         assert_eq!(frame.fake_ret as usize, 0xf00d);
         assert_eq!(frame.ret as usize, 0xdead);
+        assert_eq!(frame.rflags, 0x647);
     }
 
     #[derive(Default)]
