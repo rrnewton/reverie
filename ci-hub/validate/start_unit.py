@@ -421,6 +421,7 @@ def detached_tool_prefix(
     environment: Mapping[str, str],
     *,
     authority: ImmutableToolAuthority | None = None,
+    tool_relative: str = "ci-hub/ci-hub",
 ) -> list[str] | None:
     """Return a unit-owned exact-tool launcher for an fd-backed caller.
 
@@ -434,6 +435,14 @@ def detached_tool_prefix(
     Ordinary checkout-backed callers keep the direct path.  An fd-backed caller
     with incomplete handoff metadata is refused rather than launching a service
     whose executable authority can disappear after acceptance.
+
+    `tool_relative` names the entry point inside that private root.  The unit's
+    payload is `ci-hub/ci-hub`; the unit's TEARDOWN asks for a different one, and
+    it needs the same launcher for the same reason -- ExecStopPost runs after the
+    main process, by which point the unit's private root is gone, so it must
+    re-materialize the exact cached parent SHA rather than inherit anything.
+    The operational-tool requires the named path to be a non-symlinked
+    EXECUTABLE regular file, so a new entry point needs its mode bit set in Git.
     """
 
     if FD_TOOL_ROOT_RE.fullmatch(str(tool_root)) is None:
@@ -536,8 +545,99 @@ def detached_tool_prefix(
         "--tool-parent-sha",
         parent_sha,
         "--tool-relative",
-        "ci-hub/ci-hub",
+        tool_relative,
         "--",
+    ]
+
+
+TEARDOWN_ENTRY_POINT = "ci-hub/validate/start_unit.py"
+
+# ⚠️ SET AGAINST A MEASURED RETIREMENT, NOT AGAINST AN EXTRAPOLATION, BECAUSE THE
+# EXTRAPOLATION WAS THIRTY TIMES TOO SMALL. Counting inodes gave "about 2 s for a
+# checkout's 160,283 entries"; the first real retirement of a 44 GB checkout took
+# 84.31 s for the removal alone, measured 2026-09-17, because freeing the extents
+# -- the part nobody had timed -- is essentially all of it. A whole retirement is
+# roughly 105 s warm, and up to ~170 s cold, when the scorecard writeback has to
+# compile its driver first.
+#
+# So systemd's DefaultTimeoutStopUSec of 90 s is ALREADY TOO SMALL, which is why
+# this is stated rather than inherited. 600 s is about three and a half times the
+# worst modelled case and leaves room for a larger checkout on a loaded box.
+#
+# The two failure directions are not symmetric. Too small kills the teardown
+# part-way; too large only makes a waiter block longer, visibly, before the sweep
+# picks the tree up. Prefer the second.
+VALIDATE_TEARDOWN_TIMEOUT_SECONDS = 600
+
+
+def systemd_exec_value(argv: Sequence[str]) -> str:
+    """Render one argv as a systemd `ExecStopPost=` value, losing nothing.
+
+    ⚠️ THE OBVIOUS SPELLING SILENTLY DOES THE WRONG THING. systemd performs its
+    OWN `$VAR` and `${VAR}` expansion on Exec arguments, so the usual wrapper
+    `/bin/sh -c 'exec "$0" "$@"' prog args...` has `$0` and `$@` replaced with
+    empty strings before `sh` ever runs, and the result is a shell executing
+    nothing rather than an error anyone would see.
+
+    Every element is therefore emitted as one double-quoted systemd argument with
+    backslash, quote and newline escaped, and `$` doubled -- which is systemd's
+    literal-dollar escape. Verified against real transient units: an argv
+    carrying `$DOLLAR`, `${BRACE}`, both quote characters, a tab and a multi-line
+    Python program came back byte-for-byte on the far side.
+    """
+
+    rendered = []
+    for argument in argv:
+        escaped = (
+            argument.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", "\\n")
+            .replace("$", "$$")
+        )
+        rendered.append(f'"{escaped}"')
+    return " ".join(rendered)
+
+
+def teardown_properties(
+    *,
+    root: Path,
+    state_root: Path,
+    unit: str,
+    teardown_tool_prefix: Sequence[str] | None,
+) -> list[str]:
+    """Retire this unit's checkout on the unit's own stop, via systemd.
+
+    THE ACTOR HAS TO BE systemd AND NOT A LATER PARTICIPANT. Teardown used to be
+    performed by whichever agent was waiting on the unit, and measured
+    2026-09-17, twenty-nine of two hundred and five completed validate runs --
+    fourteen per cent -- carry no writeback attempt at all, because that waiter
+    never came back. Those are exactly the runs whose checkouts can then never be
+    removed, since removal requires a completed writeback. ExecStopPost fires
+    after the main process even when it was SIGKILLed, so the run's own exit is
+    what triggers the teardown.
+
+    It cannot go one step earlier, inside the unit's payload: validate-lock's
+    post-child phase is a proof that nothing is still running, and a helper that
+    appears during it becomes an exact residual and quarantines the run.
+
+    The sweep stays as the backstop for the case where this is bounded out.
+    """
+
+    if teardown_tool_prefix is None:
+        # A checkout-backed launcher runs the entry point out of its own tooling
+        # checkout, the same source the unit's payload came from.
+        retire = [sys.executable, str(root / TEARDOWN_ENTRY_POINT)]
+    else:
+        # An fd-backed launcher's tool root dies with the launcher, and the
+        # unit's private root is already released by the time ExecStopPost runs,
+        # so this re-materializes the exact cached parent SHA for itself.
+        retire = [*teardown_tool_prefix]
+    retire.extend(["--state-root", str(state_root), "--retire-unit", unit])
+    return [
+        "--property",
+        f"TimeoutStopSec={VALIDATE_TEARDOWN_TIMEOUT_SECONDS}",
+        "--property",
+        f"ExecStopPost={systemd_exec_value(retire)}",
     ]
 
 
@@ -4103,6 +4203,7 @@ def build_systemd_command(
     frozen_result: Path | None = None,
     framework_result: Path | None = None,
     unit_tool_prefix: Sequence[str] | None = None,
+    teardown_tool_prefix: Sequence[str] | None = None,
 ) -> list[str]:
     state_root = root if state_root is None else state_root
     child_deadline = effective_child_deadline(repo, child_deadline)
@@ -4337,6 +4438,12 @@ def build_systemd_command(
         f"StandardOutput=append:{log}",
         "--property",
         f"StandardError=append:{log}",
+        *teardown_properties(
+            root=root,
+            state_root=state_root,
+            unit=unit,
+            teardown_tool_prefix=teardown_tool_prefix,
+        ),
         *tool_command,
         "validate-lock",
         "run",
@@ -5798,8 +5905,29 @@ def retire_unit_after_writeback(
     for.
     """
 
+    # ⚠️ STAND OUTSIDE THE TREE BEFORE READING ANYTHING ABOUT IT. This process
+    # is about to delete a directory, and two callers arrive with their working
+    # directory INSIDE it: a person running --retire-unit from the checkout, and
+    # ExecStopPost, which inherits the unit's WorkingDirectory -- the checkout.
+    # It is not only this process: `ci-hub/bin/wrkslots remove-validate-batch`
+    # re-enters through `systemd-run --working-directory=$PWD`, so a cwd inside
+    # the target makes the REMOVER'S OWN UNIT refuse to start. `root` and the
+    # recorded paths are absolute, so nothing below depends on where we stand.
+    os.chdir("/")
+
     unit = sanitize_unit(raw_unit)
     record_path = run_registry.record_path(root, unit)
+    if not record_path.exists():
+        # A unit refused at admission never writes a handle, and ExecStopPost
+        # runs for it all the same. There is nothing to retire and nothing has
+        # gone wrong; exiting non-zero here would put a failing teardown in the
+        # journal of every refused launch and train readers to ignore it.
+        print(
+            f"validate-run: RETIRE-SKIPPED {unit}: no run handle at {record_path}, "
+            "so this unit recorded no checkout to retire.",
+            file=sys.stderr,
+        )
+        return 0
     record = run_registry.read_record(record_path)
 
     repo = str(record.get("repo") or "rrnewton/hermit")
@@ -6583,6 +6711,7 @@ def main(
     current_main_before_launch: str | None = None
     frozen_result: Path | None = None
     service_tool_prefix: list[str] | None = None
+    service_teardown_prefix: list[str] | None = None
     service_acceptance = ServiceAcceptance.PRE_ACCEPT
     # Set only after this invocation creates its handle. A prospective path
     # must not lend an older or absent record authority over a new checkout.
@@ -6641,6 +6770,16 @@ def main(
             pathname_tool_head = canonical_worktree_tool_head(tool_root, state_root)
         service_tool_prefix = detached_tool_prefix(
             tool_root, state_root, environment, authority=tool_authority
+        )
+        # The teardown re-enters the SAME immutable parent SHA as the payload,
+        # at a different entry point, because its own private root is released
+        # before ExecStopPost runs.
+        service_teardown_prefix = detached_tool_prefix(
+            tool_root,
+            state_root,
+            environment,
+            authority=tool_authority,
+            tool_relative=TEARDOWN_ENTRY_POINT,
         )
         source_checkout = validate_checkout(
             args.checkout,
@@ -6781,6 +6920,7 @@ def main(
             frozen_result=frozen_result,
             framework_result=framework_result,
             unit_tool_prefix=service_tool_prefix,
+            teardown_tool_prefix=service_teardown_prefix,
         )
         if args.dry_run:
             pane = None
