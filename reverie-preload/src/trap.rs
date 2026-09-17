@@ -284,6 +284,14 @@ pub fn set_dispatcher(dispatcher: Box<dyn SyscallDispatcher>) {
     DISPATCHER.store(leaked, Ordering::Release);
 }
 
+/// Whether a process-wide dispatcher has already been published.
+///
+/// Publication precedes seccomp installation and is not rolled back on an
+/// installation error. This reports that state, not successful activation.
+pub fn has_dispatcher() -> bool {
+    !DISPATCHER.load(Ordering::Acquire).is_null()
+}
+
 fn dispatcher() -> Option<&'static (dyn SyscallDispatcher + 'static)> {
     let ptr = DISPATCHER.load(Ordering::Acquire);
     if ptr.is_null() {

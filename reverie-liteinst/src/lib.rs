@@ -213,6 +213,66 @@ pub unsafe extern "C" fn reverie_liteinst_initialize() {
     }
 }
 
+/// Version of the explicit host-runtime configuration layout.
+pub const HOST_RUNTIME_CONFIG_VERSION: u64 = 1;
+
+/// Configuration for controller-owned host-runtime initialization.
+///
+/// This selects the existing ptrace host runtime, not an in-process Tool. The
+/// initializer does not inspect or mutate guest environment selectors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct HostRuntimeConfig {
+    /// Must equal [`HOST_RUNTIME_CONFIG_VERSION`].
+    pub version: u64,
+    /// Calibrated WordPatch++ delay in TSC ticks; zero disables concurrent
+    /// cross-cache-line publication, just as an absent environment setting does.
+    /// Concurrent publication would require a delay above this machine's
+    /// measured staleness bound. The ptrace helper retains caller-verified
+    /// quiescent publication; this configuration does not authorize concurrency.
+    pub straddler_staleness_ticks: u64,
+}
+
+impl Default for HostRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            version: HOST_RUNTIME_CONFIG_VERSION,
+            straddler_staleness_ticks: 0,
+        }
+    }
+}
+
+/// Initializes the host runtime from explicit controller configuration.
+///
+/// Returns zero after the existing Begin/Ready handshake and instrumentation
+/// preparation, or a negative errno on failure. Null or unsupported-version
+/// configuration is rejected before initialization starts. A repeated or
+/// reentrant valid host attempt returns `-EALREADY`, including after a preparation
+/// failure: partially published runtime state cannot be rolled back here.
+/// The existing constructor continues to select behavior from the environment.
+///
+/// # Safety
+///
+/// A non-null `config` must point to a readable, aligned [`HostRuntimeConfig`]
+/// for this call. The runtime must already be loaded and its TLS usable. The
+/// caller must keep other application threads stopped or absent, have no other
+/// runtime mode installed, and service the exact existing host handshake traps.
+/// This neither loads the runtime nor transfers an in-process Tool or scheduler.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn reverie_liteinst_initialize_host(
+    config: *const HostRuntimeConfig,
+) -> libc::c_int {
+    if config.is_null() {
+        return -libc::EINVAL;
+    }
+    // SAFETY: required by the caller contract above; copy before initialization.
+    let config = unsafe { *config };
+    match runtime::initialize_host_runtime_explicit(config) {
+        Ok(()) => 0,
+        Err(error) => -error.raw_os_error().unwrap_or(libc::EIO),
+    }
+}
+
 // TODO-HUMAN-REVIEW(PR-127): Review public per-site instrumentation counters.
 /// Returns the number of SIGSYS deliveries observed at one syscall instruction.
 #[unsafe(no_mangle)]
