@@ -69,6 +69,9 @@ pub mod codec;
 mod client;
 mod envelope;
 mod error;
+/// Ordered capture for trusted cooperating processes using socket lifetime endpoints.
+#[cfg(target_os = "linux")]
+pub mod guest_log;
 mod server;
 
 #[cfg(target_os = "linux")]
@@ -78,7 +81,11 @@ pub use blocking_client::BlockingRpcClient;
 pub use client::RpcClient;
 pub use envelope::RequestEnvelope;
 pub use error::RpcError;
+pub use server::ConnectionFailure;
+pub use server::ConnectionIssue;
 pub use server::ConnectionMonitor;
+pub use server::PanicPayload;
+pub use server::RpcIssueMonitor;
 pub use server::RpcServer;
 pub use server::serve_connection;
 pub use server::serve_stream;

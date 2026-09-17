@@ -26,3 +26,10 @@ tokio = { version = "1.52.4", features = ["full", "test-util"] }
 [[bin]]
 name = "mapped_rpc_fork_fixture"
 path = "tests/fixtures/mapped_rpc_fork_fixture.rs"
+
+[features]
+test-guest-log = []
+
+[[bin]]
+name = "guest_log_lifecycle_fixture"
+path = "tests/fixtures/guest_log_lifecycle_fixture.rs"
