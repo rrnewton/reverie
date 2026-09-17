@@ -1,0 +1,12 @@
+{
+  "Cargo.toml": "199ae06c2ef8632dc11c94b7c9ccbf45e399538b40537c358beda98abb6b079c",
+  "rust-toolchain.toml": "8e95dba878d554bb4ce4267bc4cc5be16c20f327d2bc636fa0e25cd9cc2a0909",
+  "reverie-dbt/build.rs": "190bc0889c1428af086a7922e291365df21b337986e1fb345451238eabc7c1d3",
+  "reverie-dbt/vendor/dynamorio/core/unix/loader.c": "5e444f19b7d4c474120c83cea03d15124d01766e79b8c0b7741131606f283f59",
+  "reverie-dbt/tests/private_loader_search.rs": "19e15971ad7a35918cf7788a75a3d1706941e75c6e1f4f2e938029aefe1a92c2",
+  "reverie-dbt/tests/fixtures/private_loader_search/app.S": "22e0d9760ae02f11f615c8aaef676c3999905bccc498ea3ba56e4b367ee84cc3",
+  "reverie-dbt/tests/fixtures/private_loader_search/client.c": "7728d11e0c81259bdc3eb697a8b425e556a69cb2cd16281cb3aeb9735d302b39",
+  "reverie-dbt/tests/fixtures/private_loader_search/leaf.c": "ccee7d8c426860b9a163d93d95362af90c49e7f13a1fc95e50e1c9cd4bc45101",
+  "reverie-dbt/tests/fixtures/private_loader_search/native.c": "65785ebf5fb8af4c99c5772f31f3597fc25fe2a545c0974a21d0024b9da25891",
+  "reverie-dbt/tests/fixtures/private_loader_search/parent.c": "598c36f2500cf839cc14afb84c9f50bab764f09bc89774dca55f2ff7e263b48e"
+}

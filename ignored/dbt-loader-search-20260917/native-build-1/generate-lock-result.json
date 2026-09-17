@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "cargo",
+    "generate-lockfile",
+    "--offline"
+  ],
+  "actual_exit": 101,
+  "seconds": 0.05925728986039758
+}

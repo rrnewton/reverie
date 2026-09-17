@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "git",
+    "rev-parse",
+    "HEAD"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.016407900024205446,
+  "stdout": "a28de6f8eb585d7095fa80e5f4c0fc41ec3ba9e4\n",
+  "stderr": ""
+}

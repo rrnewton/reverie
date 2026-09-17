@@ -1,0 +1,45 @@
+list ['cargo', 'test', '--offline', '--locked', '-p', 'reverie-dbt', '--test', 'private_loader_search', '--', '--list']
+list actual 0
+tests ['cargo', 'test', '--offline', '--locked', '-p', 'reverie-dbt', '--test', 'private_loader_search', '--', '--test-threads=1', '--nocapture']
+tests actual 101
+warning: reverie-dbt@0.2.0: DynamoRIO build cache HIT key=sha256:0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4 observed_unix_seconds=1789610454 install=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/dynamorio-install-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running tests/private_loader_search.rs (ignored/dbt-loader-search-20260917/native-build-2/target/debug/deps/private_loader_search-6a547da09fd7b499)
+
+thread 'client_directory_keeps_existing_search_precedence' (6526) panicked at reverie-dbt/tests/private_loader_search.rs:75:13:
+inherited loader override would invalidate fixture: LD_LIBRARY_PATH
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'environment_keeps_existing_search_precedence' (6527) panicked at reverie-dbt/tests/private_loader_search.rs:75:13:
+inherited loader override would invalidate fixture: LD_LIBRARY_PATH
+
+thread 'fallback_does_not_promote_unrelated_indirect_path' (6528) panicked at reverie-dbt/tests/private_loader_search.rs:75:13:
+inherited loader override would invalidate fixture: LD_LIBRARY_PATH
+
+thread 'fallback_does_not_search_explicit_relative_dependency' (6529) panicked at reverie-dbt/tests/private_loader_search.rs:75:13:
+inherited loader override would invalidate fixture: LD_LIBRARY_PATH
+
+thread 'fallback_expands_origin_from_client_directory' (6530) panicked at reverie-dbt/tests/private_loader_search.rs:75:13:
+inherited loader override would invalidate fixture: LD_LIBRARY_PATH
+
+thread 'fallback_keeps_ordered_runpath_selection' (6531) panicked at reverie-dbt/tests/private_loader_search.rs:75:13:
+inherited loader override would invalidate fixture: LD_LIBRARY_PATH
+
+thread 'later_direct_dependency_uses_client_runpath' (6532) panicked at reverie-dbt/tests/private_loader_search.rs:75:13:
+inherited loader override would invalidate fixture: LD_LIBRARY_PATH
+
+thread 'legacy_rpath_keeps_existing_search_precedence' (6533) panicked at reverie-dbt/tests/private_loader_search.rs:75:13:
+inherited loader override would invalidate fixture: LD_LIBRARY_PATH
+
+thread 'missing_direct_dependency_still_fails' (6534) panicked at reverie-dbt/tests/private_loader_search.rs:75:13:
+inherited loader override would invalidate fixture: LD_LIBRARY_PATH
+
+thread 'runpath_does_not_supply_indirect_only_dependency' (6535) panicked at reverie-dbt/tests/private_loader_search.rs:75:13:
+inherited loader override would invalidate fixture: LD_LIBRARY_PATH
+error: test failed, to rerun pass `-p reverie-dbt --test private_loader_search`
+
+Traceback (most recent call last):
+  File "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/tests.py", line 38, in <module>
+    assert q.returncode==0,label+' failed'
+           ^^^^^^^^^^^^^^^
+AssertionError: tests failed

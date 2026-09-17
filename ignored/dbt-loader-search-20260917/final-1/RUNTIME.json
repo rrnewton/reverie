@@ -1,0 +1,30 @@
+{
+  "key": "0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4",
+  "files": {
+    "bin64/drrun": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/dynamorio-install-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4/bin64/drrun",
+      "sha256": "4e91181f0596271a5717372390e8c58861052433de86967ef543e80c02348ce9",
+      "mode": "0o755",
+      "bytes": 737720,
+      "device": 48,
+      "inode": 782463438
+    },
+    "lib64/release/libdynamorio.so": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/dynamorio-install-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4/lib64/release/libdynamorio.so",
+      "sha256": "3dcc6fe7a044625720e13010668e36c5b14414a8b460946529362e14e3d84d3d",
+      "mode": "0o555",
+      "bytes": 2106832,
+      "device": 48,
+      "inode": 782463419
+    },
+    "include/dr_api.h": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/dynamorio-install-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4/include/dr_api.h",
+      "sha256": "57d666e2dfd4d5fbe4f107e94d87832d279fc60de17571beb4aa29b2461a8045",
+      "mode": "0o644",
+      "bytes": 6414,
+      "device": 48,
+      "inode": 782463493
+    }
+  },
+  "all125_entries_rechecked": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/RUNTIME-FINAL.json"
+}

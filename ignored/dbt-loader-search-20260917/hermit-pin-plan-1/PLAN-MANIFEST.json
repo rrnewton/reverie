@@ -1,0 +1,26 @@
+{
+  "PLAN.md": {
+    "sha256": "ed4d698ca01b281afc1761c0a4aad35aad0123a5e9bb0d1578704d3b22d666b8",
+    "bytes": 6726
+  },
+  "PLAN-COMMANDS.json": {
+    "sha256": "0a336c1aa3be90af7999bc8d5011f0d31f64d23505b63eb2017ab74a21234d1e",
+    "bytes": 1123
+  },
+  "pin-sites.json": {
+    "sha256": "d740b21e6110ac5142fbf54c7bf33cd8972e69e5eeb5a7e78fe97d8715732413",
+    "bytes": 10426
+  },
+  "selected-closure.json": {
+    "sha256": "2a4377f369faf8a25d1a3704e1538d9b193c9e68a25557fbaad09c227c53fa17",
+    "bytes": 29717
+  },
+  "disk-donor-measurement.json": {
+    "sha256": "1f3f4fb972e1470f1b3da4a0d8c6056c7203597040e65f638db0627c0dc47907",
+    "bytes": 1035
+  },
+  "rpc-attribution/REPORT.md": {
+    "sha256": "9c2479e4ff42ec352aec82a6ee908fd74141ced478a0499df05454c44344aaae",
+    "bytes": 3182
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "argv": [
+    "du",
+    "-sx",
+    "--block-size=1",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-observer-20260916/ignored/hermetic/split/cargo",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-observer-20260916/ignored/hermetic/split/target",
+    "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-observer-1/host-cache-official-1"
+  ],
+  "exit_code": 0,
+  "stdout": "1093222400\t/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-observer-20260916/ignored/hermetic/split/cargo\n74424492032\t/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-observer-20260916/ignored/hermetic/split/target\n730746880\t/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-observer-1/host-cache-official-1\n",
+  "stderr": "",
+  "elapsed_seconds": 0.8275288199074566,
+  "device": 48,
+  "filesystem_total": 3760476651520,
+  "filesystem_used": 2271719583744,
+  "filesystem_available": 1430479310848
+}

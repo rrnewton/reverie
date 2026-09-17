@@ -1,0 +1,25 @@
+{
+  "candidate_patch_sha256": "1925f54b2684de9a343c8bf0494c1caaf137960339c1b7e0a0a509ede025a057",
+  "candidate_order": [
+    "diff --git a/reverie-dbt/vendor/dynamorio/core/unix/loader.c b/reverie-dbt/vendor/dynamorio/core/unix/loader.c",
+    "diff --git a/reverie-dbt/tests/private_loader_search.rs b/reverie-dbt/tests/private_loader_search.rs",
+    "diff --git a/reverie-dbt/tests/fixtures/private_loader_search/app.S b/reverie-dbt/tests/fixtures/private_loader_search/app.S",
+    "diff --git a/reverie-dbt/tests/fixtures/private_loader_search/client.c b/reverie-dbt/tests/fixtures/private_loader_search/client.c",
+    "diff --git a/reverie-dbt/tests/fixtures/private_loader_search/leaf.c b/reverie-dbt/tests/fixtures/private_loader_search/leaf.c",
+    "diff --git a/reverie-dbt/tests/fixtures/private_loader_search/native.c b/reverie-dbt/tests/fixtures/private_loader_search/native.c",
+    "diff --git a/reverie-dbt/tests/fixtures/private_loader_search/parent.c b/reverie-dbt/tests/fixtures/private_loader_search/parent.c"
+  ],
+  "committed_patch_sha256": "cf41401ffe95d4b0378f22ebc87f1f0ecff8280479e2dc8ed7f7df05db38f2ec",
+  "committed_order": [
+    "diff --git a/reverie-dbt/tests/fixtures/private_loader_search/app.S b/reverie-dbt/tests/fixtures/private_loader_search/app.S",
+    "diff --git a/reverie-dbt/tests/fixtures/private_loader_search/client.c b/reverie-dbt/tests/fixtures/private_loader_search/client.c",
+    "diff --git a/reverie-dbt/tests/fixtures/private_loader_search/leaf.c b/reverie-dbt/tests/fixtures/private_loader_search/leaf.c",
+    "diff --git a/reverie-dbt/tests/fixtures/private_loader_search/native.c b/reverie-dbt/tests/fixtures/private_loader_search/native.c",
+    "diff --git a/reverie-dbt/tests/fixtures/private_loader_search/parent.c b/reverie-dbt/tests/fixtures/private_loader_search/parent.c",
+    "diff --git a/reverie-dbt/tests/private_loader_search.rs b/reverie-dbt/tests/private_loader_search.rs",
+    "diff --git a/reverie-dbt/vendor/dynamorio/core/unix/loader.c b/reverie-dbt/vendor/dynamorio/core/unix/loader.c"
+  ],
+  "bytes_each": 24314,
+  "all_seven_diff_blocks_byte_identical": true,
+  "note": "Only complete per-file diff block ordering differs; canonical committed diff uses normal Git path order."
+}

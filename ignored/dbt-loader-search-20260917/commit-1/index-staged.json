@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "diff",
+    "--cached",
+    "--name-only"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.020167616894468665,
+  "stdout": "reverie-dbt/tests/fixtures/private_loader_search/app.S\nreverie-dbt/tests/fixtures/private_loader_search/client.c\nreverie-dbt/tests/fixtures/private_loader_search/leaf.c\nreverie-dbt/tests/fixtures/private_loader_search/native.c\nreverie-dbt/tests/fixtures/private_loader_search/parent.c\nreverie-dbt/tests/private_loader_search.rs\nreverie-dbt/vendor/dynamorio/core/unix/loader.c\n",
+  "stderr": ""
+}

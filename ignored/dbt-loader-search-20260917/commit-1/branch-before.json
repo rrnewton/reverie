@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "git",
+    "branch",
+    "--show-current"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.016730444971472025,
+  "stdout": "dev-hermit/dbt-loader-search-20260917\n",
+  "stderr": ""
+}

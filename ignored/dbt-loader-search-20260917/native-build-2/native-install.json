@@ -1,0 +1,1241 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/dynamorio-install-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4",
+  "entries": {
+    ".": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463416,
+      "size": 250,
+      "mtime_ns": 1789610245687569884,
+      "type": "directory"
+    },
+    ".reverie-dbt-install.provenance": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463582,
+      "size": 207,
+      "mtime_ns": 1789610245687569884,
+      "type": "file",
+      "sha256": "1e3f04228e6dd2532050cc150ab0f2e673cd1d584acd02c7e529ed585d2cac4f"
+    },
+    ".reverie-dbt-install.sha256": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463581,
+      "size": 10595,
+      "mtime_ns": 1789610245687569884,
+      "type": "file",
+      "sha256": "c2c0da157a417ce71d5969f8695b13a5e131a6f55c5f691f3f79ef2f96dfd84e"
+    },
+    "ACKNOWLEDGEMENTS": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463497,
+      "size": 2879,
+      "mtime_ns": 1789609054000000000,
+      "type": "file",
+      "sha256": "ea3ca9af63bd5f3a032e70b917def1a796207956209be9123f3fc4a4032a627c"
+    },
+    "License.txt": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463496,
+      "size": 39407,
+      "mtime_ns": 1789609054000000000,
+      "type": "file",
+      "sha256": "ffab4b87644cba09cfad3e4ad51c29250629f2b97f86f342d622706c4ee56369"
+    },
+    "README": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463495,
+      "size": 5442,
+      "mtime_ns": 1789609054000000000,
+      "type": "file",
+      "sha256": "1bf3534889ae92e8aad4a5f8012a1c25d7643723551b925f76c812a71d788f4e"
+    },
+    "bin64": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463427,
+      "size": 352,
+      "mtime_ns": 1789610243633568974,
+      "type": "directory"
+    },
+    "bin64/drconfig": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463436,
+      "size": 93792,
+      "mtime_ns": 1789610224000000000,
+      "type": "file",
+      "sha256": "cb1f2cdd9e29da3577a9be9469f763a0632354716936eb26133b18a5aa4b29a8"
+    },
+    "bin64/drconfig.debug": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463437,
+      "size": 601552,
+      "mtime_ns": 1789610224000000000,
+      "type": "file",
+      "sha256": "910036f03dd5a66980d3a6b1106cbff4ba03fbeac60243a7418612d48299db13"
+    },
+    "bin64/drdeploy": {
+      "mode": 511,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463430,
+      "size": 5,
+      "mtime_ns": 1789610243629019271,
+      "type": "symlink",
+      "target": "drrun"
+    },
+    "bin64/drinject": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463440,
+      "size": 729536,
+      "mtime_ns": 1789610228000000000,
+      "type": "file",
+      "sha256": "396c827ee0a501f52d93caad4b63cff26ca05788f3103ff2dc3fb51b3acac621"
+    },
+    "bin64/drinject.debug": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463441,
+      "size": 1798016,
+      "mtime_ns": 1789610228000000000,
+      "type": "file",
+      "sha256": "fb950692b22163e869484b475cb2296e236c0d1f333f2288bf1a94b56ee08cd7"
+    },
+    "bin64/drloader": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463431,
+      "size": 17248,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "48a739d7be20cde08d4e4a30ead686799fffaedc4defe80cfff3aaf9a5a0f2c9"
+    },
+    "bin64/drloader.debug": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463432,
+      "size": 89456,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "f2b58d036d5995e805c878058aeb92833900cc6747a464b8105d720ebad2ae61"
+    },
+    "bin64/drnudgeunix": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463433,
+      "size": 17504,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "d7cb2ad72c5339f72d0d323540089647c1be3603196c61b29dbc3ad1923d2f54"
+    },
+    "bin64/drnudgeunix.debug": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463434,
+      "size": 124792,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "5b5c2681c17c7a02b9c2ff02c1bb5e1538d36c12e55dc8e583e377850e5c9c88"
+    },
+    "bin64/drrun": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463438,
+      "size": 737720,
+      "mtime_ns": 1789610227000000000,
+      "type": "file",
+      "sha256": "4e91181f0596271a5717372390e8c58861052433de86967ef543e80c02348ce9"
+    },
+    "bin64/drrun.debug": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463439,
+      "size": 1816616,
+      "mtime_ns": 1789610227000000000,
+      "type": "file",
+      "sha256": "e759df559870efa12f0b2426533d4a0bf395f7da9ab956eedeb65c3eb09c0b17"
+    },
+    "bin64/libdrconfiglib.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463428,
+      "size": 933198,
+      "mtime_ns": 1789610223000000000,
+      "type": "file",
+      "sha256": "b08b9542e2387f2db9bdf2bd0a45a9ac0a26cfcd77e3c1fb0b48111e8f5addbc"
+    },
+    "bin64/libdrfrontendlib.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463429,
+      "size": 556772,
+      "mtime_ns": 1789610222000000000,
+      "type": "file",
+      "sha256": "c2f90c8a2719ae852954f8713e6cec2be8bd9f66e716e7c482fd63fd40e002fa"
+    },
+    "bin64/load_syms64.txt": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463443,
+      "size": 2569,
+      "mtime_ns": 1789609055000000000,
+      "type": "file",
+      "sha256": "f40b939ff8e0ee763ca52aa74193358ea0d770ed49ab42a747c60ed0fb203547"
+    },
+    "bin64/nudgeunix": {
+      "mode": 511,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463435,
+      "size": 11,
+      "mtime_ns": 1789610243630076519,
+      "type": "symlink",
+      "target": "drnudgeunix"
+    },
+    "cmake": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463444,
+      "size": 568,
+      "mtime_ns": 1789610243667618668,
+      "type": "directory"
+    },
+    "cmake/DynamoRIOConfig.cmake": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463445,
+      "size": 64947,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "ab8647928b0d0e47790f6d21efbddef36d9d1034e1f597037febe778b7297ceb"
+    },
+    "cmake/DynamoRIOConfigVersion.cmake": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463446,
+      "size": 4932,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "5f4df40a789584dcdd2c4ef31c11af08e64bdd3ab25e72873dd244506c7ccf39"
+    },
+    "cmake/DynamoRIOTarget64-release.cmake": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463540,
+      "size": 10891,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "873129cd591b38cdc8a3227056466c0aa8ef365bbf888a99e8830c7e0228c7f6"
+    },
+    "cmake/DynamoRIOTarget64.cmake": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463539,
+      "size": 7841,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "a1613e827788560dcbe6a77f65427027aa4ffb3d66ec8e040718e45e3b997060"
+    },
+    "cmake/cpp2asm_add_newlines.cmake": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463451,
+      "size": 2169,
+      "mtime_ns": 1789609055000000000,
+      "type": "file",
+      "sha256": "b7e01514dc6a7f10f198935f1a0477b7b13f76d767fb6e198b93800c49e14fa4"
+    },
+    "cmake/cpp2asm_defines.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463452,
+      "size": 34653,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "6254c59f0377c5a23578382ae3f9e87743101e497190b616c5f2aea6a6a9df72"
+    },
+    "cmake/cpp2asm_support.cmake": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463450,
+      "size": 20688,
+      "mtime_ns": 1789609055000000000,
+      "type": "file",
+      "sha256": "b6d9b85340aca7dea0092de10ad2b45878f7073053c1abf3c9c99bd1c0f557ee"
+    },
+    "cmake/docs_doxyutils.cmake": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463454,
+      "size": 5851,
+      "mtime_ns": 1789609054000000000,
+      "type": "file",
+      "sha256": "ffc8d444e096546a266928c22e4817eafd1daf8c1c43a0c880c73173bf1eed01"
+    },
+    "cmake/docs_rundoxygen.cmake": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463453,
+      "size": 19681,
+      "mtime_ns": 1789609054000000000,
+      "type": "file",
+      "sha256": "8868d417ddf8d27013cef897bb7b3bea71a0d1715b1030e97bd593bb4e947dd5"
+    },
+    "cmake/lookup_visualstudio.cmake": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463449,
+      "size": 4533,
+      "mtime_ns": 1789609055000000000,
+      "type": "file",
+      "sha256": "6ffa619a3722d223be6353baa290c11114817374d63e464557785ee14c9bec63"
+    },
+    "cmake/runsuite_common_post.cmake": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463448,
+      "size": 10286,
+      "mtime_ns": 1789609055000000000,
+      "type": "file",
+      "sha256": "f84bacd0b3cdc0ab37bd8e2990140e1218d1bc456f37c18d2e6b45bb55092f51"
+    },
+    "cmake/runsuite_common_pre.cmake": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463447,
+      "size": 32125,
+      "mtime_ns": 1789609055000000000,
+      "type": "file",
+      "sha256": "80f54641f5e5bc31eadaa015faa726d42e42a83498f0438a8d09d2aeb7b5a358"
+    },
+    "ext": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463502,
+      "size": 34,
+      "mtime_ns": 1789610243666068589,
+      "type": "directory"
+    },
+    "ext/bin64": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463531,
+      "size": 134,
+      "mtime_ns": 1789610243666825326,
+      "type": "directory"
+    },
+    "ext/bin64/libdrmgr.so.debug": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463532,
+      "size": 519128,
+      "mtime_ns": 1789610240000000000,
+      "type": "file",
+      "sha256": "f10ec151f79e8cbcd25e73f9524d7dcd8a8cbeb0a1701fac98bdb8ac1e01fffb"
+    },
+    "ext/bin64/libdrreg.so.debug": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463534,
+      "size": 407840,
+      "mtime_ns": 1789610241000000000,
+      "type": "file",
+      "sha256": "3e563eb18a92fcd426745d38d37b1cfdebce49b83d68a78f310c6c6788619ec7"
+    },
+    "ext/bin64/libdrwrap.so.debug": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463533,
+      "size": 420952,
+      "mtime_ns": 1789610241000000000,
+      "type": "file",
+      "sha256": "bf4c49ff715cc0a16af010350e5cd5a053c9402ddd6a8fcb79076b7e99359219"
+    },
+    "ext/bin64/libdrx.so.debug": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463535,
+      "size": 560984,
+      "mtime_ns": 1789610242000000000,
+      "type": "file",
+      "sha256": "097433144c98fef3adf75315b58389a0eda39ff4d117344f6f0c280561671ea9"
+    },
+    "ext/include": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463507,
+      "size": 128,
+      "mtime_ns": 1789610243667000840,
+      "type": "directory"
+    },
+    "ext/include/drext.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463536,
+      "size": 2631,
+      "mtime_ns": 1789609055000000000,
+      "type": "file",
+      "sha256": "b6d5d1a40a2462e2fe2c73c9e220f4deb655ec7214dd14290a53e80f8a9689cc"
+    },
+    "ext/include/drmgr.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463514,
+      "size": 75707,
+      "mtime_ns": 1789609055000000000,
+      "type": "file",
+      "sha256": "0cc8fd3a2770cc6ba91ddd75d2468c44594b9be704320b44dfca7915e03619b8"
+    },
+    "ext/include/drreg.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463526,
+      "size": 28703,
+      "mtime_ns": 1789609055000000000,
+      "type": "file",
+      "sha256": "566485a33085be7e139cd657070b2e876a14aff69111506cbab02dd760d9fd21"
+    },
+    "ext/include/drtable.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463510,
+      "size": 5541,
+      "mtime_ns": 1789609055000000000,
+      "type": "file",
+      "sha256": "3cc5b4c860ae26ca7933e636508263adf29ba29cee83bb5dd1a4abc62529d239"
+    },
+    "ext/include/drvector.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463509,
+      "size": 6183,
+      "mtime_ns": 1789609055000000000,
+      "type": "file",
+      "sha256": "4ce2ef9e5a3373823c59293ce4694993de8a4897d1f6841e437ea2591e9c9590"
+    },
+    "ext/include/drwrap.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463522,
+      "size": 38173,
+      "mtime_ns": 1789609055000000000,
+      "type": "file",
+      "sha256": "4f96bbdbdf620d9ea9fc0ae439a2cef838b5a15531a2500318f10ae380fa59bc"
+    },
+    "ext/include/drx.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463518,
+      "size": 25237,
+      "mtime_ns": 1789609055000000000,
+      "type": "file",
+      "sha256": "5b480b10bbee34cc645c94cfb44e6c88a97abf739f188f97b602f2804e4dcffd"
+    },
+    "ext/include/hashtable.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463508,
+      "size": 15273,
+      "mtime_ns": 1789609055000000000,
+      "type": "file",
+      "sha256": "6c5f020874fa8b653fc02ecb52518fdb88cf0b2fed7d6725361a079b145012c0"
+    },
+    "ext/lib64": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463503,
+      "size": 14,
+      "mtime_ns": 1789610243651168333,
+      "type": "directory"
+    },
+    "ext/lib64/release": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463504,
+      "size": 590,
+      "mtime_ns": 1789610243664281085,
+      "type": "directory"
+    },
+    "ext/lib64/release/libdrcontainers.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463505,
+      "size": 1308398,
+      "mtime_ns": 1789610239000000000,
+      "type": "file",
+      "sha256": "2a6d88630deffa5937784d6e3e25e17585142cbfa7e995333cc7915e4eae5955"
+    },
+    "ext/lib64/release/libdrcontainers_drstatic.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463506,
+      "size": 1308398,
+      "mtime_ns": 1789610240000000000,
+      "type": "file",
+      "sha256": "c84e3da046b4429473b0c672f29b298a43b3e0abcab0acd73452a2c74be2bba7"
+    },
+    "ext/lib64/release/libdrmgr.so": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463511,
+      "size": 88000,
+      "mtime_ns": 1789610240000000000,
+      "type": "file",
+      "sha256": "d7902dcf02e060bbdbf5e086955817eeccaafd337a639eef8535026b7b44a12a"
+    },
+    "ext/lib64/release/libdrmgr.so.debug": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463527,
+      "size": 519128,
+      "mtime_ns": 1789610240000000000,
+      "type": "file",
+      "sha256": "f10ec151f79e8cbcd25e73f9524d7dcd8a8cbeb0a1701fac98bdb8ac1e01fffb"
+    },
+    "ext/lib64/release/libdrmgr_drstatic.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463513,
+      "size": 891806,
+      "mtime_ns": 1789610242000000000,
+      "type": "file",
+      "sha256": "b439020e82c3b8ea8a2f2a3a9af58419be80698510c5c10371c984065c226f4f"
+    },
+    "ext/lib64/release/libdrmgr_static.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463512,
+      "size": 891806,
+      "mtime_ns": 1789610240000000000,
+      "type": "file",
+      "sha256": "59977a10d573c2d5322f614f8b837c4479cf03254e8a3681f736bef750524f33"
+    },
+    "ext/lib64/release/libdrreg.so": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463523,
+      "size": 58040,
+      "mtime_ns": 1789610241000000000,
+      "type": "file",
+      "sha256": "e92b2d36464671f2f471ca93cd1642038327d5e7875f52272ac9ea283b63211b"
+    },
+    "ext/lib64/release/libdrreg.so.debug": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463529,
+      "size": 407840,
+      "mtime_ns": 1789610241000000000,
+      "type": "file",
+      "sha256": "3e563eb18a92fcd426745d38d37b1cfdebce49b83d68a78f310c6c6788619ec7"
+    },
+    "ext/lib64/release/libdrreg_drstatic.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463525,
+      "size": 681488,
+      "mtime_ns": 1789610243000000000,
+      "type": "file",
+      "sha256": "2769cad3d73573fc888e17b25a07334aa4b9700731f9861f01c2fcf1ae423b57"
+    },
+    "ext/lib64/release/libdrreg_static.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463524,
+      "size": 681488,
+      "mtime_ns": 1789610241000000000,
+      "type": "file",
+      "sha256": "9d09c1f370824df64c20d64df983180f22f9a0337d9125af1ce2c2b47baddd9e"
+    },
+    "ext/lib64/release/libdrwrap.so": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463519,
+      "size": 58656,
+      "mtime_ns": 1789610241000000000,
+      "type": "file",
+      "sha256": "38ee47acac94243022edb503f52bd4c34481ac4e3e87a08082a5e2949f412cc4"
+    },
+    "ext/lib64/release/libdrwrap.so.debug": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463528,
+      "size": 420952,
+      "mtime_ns": 1789610241000000000,
+      "type": "file",
+      "sha256": "bf4c49ff715cc0a16af010350e5cd5a053c9402ddd6a8fcb79076b7e99359219"
+    },
+    "ext/lib64/release/libdrwrap_drstatic.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463521,
+      "size": 618686,
+      "mtime_ns": 1789610242000000000,
+      "type": "file",
+      "sha256": "27ba1a70ff25741722d460c0b3419f97f27d987df882612200ad63c438d1988a"
+    },
+    "ext/lib64/release/libdrwrap_static.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463520,
+      "size": 618686,
+      "mtime_ns": 1789610241000000000,
+      "type": "file",
+      "sha256": "9f42d4687cfa2338d78d1c5495803198fa68e4ea0b005848fd6046132028d740"
+    },
+    "ext/lib64/release/libdrx.so": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463515,
+      "size": 78600,
+      "mtime_ns": 1789610242000000000,
+      "type": "file",
+      "sha256": "953915e2e71cd6692fedbc3fcfb57f650c531c7a027defbf567425506fcd4443"
+    },
+    "ext/lib64/release/libdrx.so.debug": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463530,
+      "size": 560984,
+      "mtime_ns": 1789610242000000000,
+      "type": "file",
+      "sha256": "097433144c98fef3adf75315b58389a0eda39ff4d117344f6f0c280561671ea9"
+    },
+    "ext/lib64/release/libdrx_drstatic.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463517,
+      "size": 2759254,
+      "mtime_ns": 1789610243000000000,
+      "type": "file",
+      "sha256": "c55aa456ac3ea5fcb484335b846d60130e6391c749021d4d3712da34db2a7203"
+    },
+    "ext/lib64/release/libdrx_static.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463516,
+      "size": 2759254,
+      "mtime_ns": 1789610242000000000,
+      "type": "file",
+      "sha256": "9f92960264c6b5b52ef5fac3e039f903db46a8be254c22f340f5b77ae9cf9865"
+    },
+    "include": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463457,
+      "size": 1022,
+      "mtime_ns": 1789610243642284683,
+      "type": "directory"
+    },
+    "include/annotations": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463458,
+      "size": 104,
+      "mtime_ns": 1789610243636799385,
+      "type": "directory"
+    },
+    "include/annotations/dr_annotations.c": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463461,
+      "size": 2145,
+      "mtime_ns": 1789610218000000000,
+      "type": "file",
+      "sha256": "334c78bfae15de051244434229b7298c3283e7031ca40db4e6d963735757571e"
+    },
+    "include/annotations/dr_annotations.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463460,
+      "size": 2615,
+      "mtime_ns": 1789610218000000000,
+      "type": "file",
+      "sha256": "cb80b22b35e75682524f86573dc0f8882b6c886509bb9443af01c665e3cb103e"
+    },
+    "include/annotations/dr_annotations_asm.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463459,
+      "size": 16003,
+      "mtime_ns": 1789610218000000000,
+      "type": "file",
+      "sha256": "91eb68703bdde981d85f95f20ee1e2f5d58e18b7db95fe95548c1d7655db1d09"
+    },
+    "include/dr_annotation.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463485,
+      "size": 11874,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "7500255e7d687cbde3fed76236c66a652096156e5034a8cfc9764a980c7627e9"
+    },
+    "include/dr_api.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463493,
+      "size": 6414,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "57d666e2dfd4d5fbe4f107e94d87832d279fc60de17571beb4aa29b2461a8045"
+    },
+    "include/dr_app.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463494,
+      "size": 6535,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "185a88e8eedf880632670dc83311e10ae0acdac8a34dc9bfd6be329d81178537"
+    },
+    "include/dr_config.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463491,
+      "size": 61817,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "3836b14472898e9f2e7d3b94e5071cce28305f40a913b1c266477b24ed0b782d"
+    },
+    "include/dr_defines.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463462,
+      "size": 40987,
+      "mtime_ns": 1789610218000000000,
+      "type": "file",
+      "sha256": "8406b51fa5a9708555808140a85d234637dd68e0e900275035abd04d30845f81"
+    },
+    "include/dr_events.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463464,
+      "size": 94336,
+      "mtime_ns": 1789610218000000000,
+      "type": "file",
+      "sha256": "b68fe4479f891843c0b7bd8436fdac9436bb03e764e6beae3d5673a44aebccdf"
+    },
+    "include/dr_frontend.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463492,
+      "size": 20756,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "cd64267b84818acc90d727c7fb05268a7e8500487dfe09cfd6d29fab25f7b74a"
+    },
+    "include/dr_inject.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463486,
+      "size": 14060,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "7da8951285c2c5b5956d72e49e654dfbb5f3cad04eda6126d935b2f36810b083"
+    },
+    "include/dr_ir_decode.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463466,
+      "size": 11361,
+      "mtime_ns": 1789610218000000000,
+      "type": "file",
+      "sha256": "3bee8cb4e7a1d05465821aa330ed0c2fc6d96d08206873e129743028910f9063"
+    },
+    "include/dr_ir_disassemble.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463467,
+      "size": 11307,
+      "mtime_ns": 1789610218000000000,
+      "type": "file",
+      "sha256": "a3cf4a961f62ae656c4ba4a4d8395126dbbff871f26b808a06ae5433176d4203"
+    },
+    "include/dr_ir_encode.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463465,
+      "size": 13138,
+      "mtime_ns": 1789610218000000000,
+      "type": "file",
+      "sha256": "66ca159252b0fe98ce9b3544d4f6703c59bac1345397dc4bd0a44313dd37db77"
+    },
+    "include/dr_ir_instr.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463469,
+      "size": 92048,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "fbdd85a1bc66c93dd3f9afa6e666ff41292b9c0c25e5a63534a3bb88c62f4fff"
+    },
+    "include/dr_ir_instr_inline.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463470,
+      "size": 18356,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "200800dc9469d8a48bd2658822ba922970ee27914ebd67359db368b60562f80d"
+    },
+    "include/dr_ir_instrlist.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463471,
+      "size": 7746,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "ead22fdd104c90fcf426a29e5321207a65ce226f9db856327c0d07f7263c2333"
+    },
+    "include/dr_ir_isa_features.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463478,
+      "size": 2032,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "ceb4b212981a91cafa7bb085746f2bda4e7b819ef234f19f42c2990bca3c544d"
+    },
+    "include/dr_ir_isa_features_arm.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463476,
+      "size": 707,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "acdc1e361b259385db7fd864a5810d952c2817471ec66675621cd2f8977c545e"
+    },
+    "include/dr_ir_isa_features_riscv64.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463477,
+      "size": 727,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "a1d4bf082058ab1f503fcc7890b3724b3371460cd6126982030709c1825e9080"
+    },
+    "include/dr_ir_isa_features_x86.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463475,
+      "size": 707,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "f11999bbbd8f532dfcd494178b3cae017198373c033097ce6c6ec16957d3e4dc"
+    },
+    "include/dr_ir_macros.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463479,
+      "size": 6828,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "0e6d300354267d83d1485c616005a5c78f7c8b24185250077be311e16a1e3aad"
+    },
+    "include/dr_ir_macros_aarch64.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463482,
+      "size": 785163,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "69c2537d91e983e285e0c5a481020a76ab34517044d4bb8d5d2e8f4cffa606ef"
+    },
+    "include/dr_ir_macros_arm.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463481,
+      "size": 312685,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "80acef2f4f0db1c83ae8e2ea968136c6eb9c775a20a38417f64f1175362a57ec"
+    },
+    "include/dr_ir_macros_x86.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463480,
+      "size": 319051,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "c925b2b4748aa996ed3b51699d28f1b66b371ce74750c0755284e24a68186273"
+    },
+    "include/dr_ir_opcodes.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463472,
+      "size": 2064,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "3926f4e6dde5d22c62b36d098d110424b847e0973bd03469821665f429baca23"
+    },
+    "include/dr_ir_opcodes_arm.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463474,
+      "size": 61338,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "b1397438a39853b707307d971f1b8f0e0b68496e111c5335f786062ac86b416b"
+    },
+    "include/dr_ir_opcodes_x86.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463473,
+      "size": 113035,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "ea8c6440a63897755a10008ef3175bc21ddecb84123f3122bd2450a985d42557"
+    },
+    "include/dr_ir_opnd.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463468,
+      "size": 162902,
+      "mtime_ns": 1789610218000000000,
+      "type": "file",
+      "sha256": "bf0d056dbe6ce19ec6fdb1727d37bc67d61f7fb9d36bc1a0b724feb66733bc59"
+    },
+    "include/dr_ir_utils.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463483,
+      "size": 52949,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "95a918b7e0ce3f27c576f2b11dd0e1d1c189c7b399c43b2165d30f5578524f48"
+    },
+    "include/dr_mcxtx.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463463,
+      "size": 29648,
+      "mtime_ns": 1789610218000000000,
+      "type": "file",
+      "sha256": "98255ba232536d1abe1d401f88b827f2f01eb50b6064c7d8ec3f7cef9d00103b"
+    },
+    "include/dr_modules.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463487,
+      "size": 22575,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "9298916c7a3d8c1a5ad18cea614fcd9db7c0221216a770b5db523ada353a0044"
+    },
+    "include/dr_os_utils.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463488,
+      "size": 29346,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "e59e44e8f830d2581b128c3a7163967aed6082ff339eca1e43fdab7f3280e5e9"
+    },
+    "include/dr_proc.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463490,
+      "size": 33607,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "3c08313a708a276502796cd299f5811842b7ab8c3787ecbc7c6b3c1431ddd8a8"
+    },
+    "include/dr_tools.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463484,
+      "size": 106293,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "846aa511ed9852bb32ee79797f178b3333d3516c799b278f857f385d9a6812f8"
+    },
+    "include/dr_tracedump.h": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463489,
+      "size": 5468,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "8de4f663099b9bd44e3b05019949871104175e15cf18bf1fcf866bf7c971877f"
+    },
+    "lib64": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463417,
+      "size": 130,
+      "mtime_ns": 1789610243628137988,
+      "type": "directory"
+    },
+    "lib64/libdrconfiglib.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463426,
+      "size": 933198,
+      "mtime_ns": 1789610223000000000,
+      "type": "file",
+      "sha256": "b08b9542e2387f2db9bdf2bd0a45a9ac0a26cfcd77e3c1fb0b48111e8f5addbc"
+    },
+    "lib64/libdrinjectlib.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463421,
+      "size": 2060920,
+      "mtime_ns": 1789610227000000000,
+      "type": "file",
+      "sha256": "310f7b0653e0db31ae58c7d9153bd9f2c476969effe596bf13e859b67b06e613"
+    },
+    "lib64/libdrlibc.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463424,
+      "size": 3598616,
+      "mtime_ns": 1789610220000000000,
+      "type": "file",
+      "sha256": "95af90b24f3fd501f4e1eedd33da34296f8b16aefbed9448d6604350cf7b231c"
+    },
+    "lib64/libdrmemfuncs.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463425,
+      "size": 279876,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "5f718faf4d91d28908246ccedbe4b226070abe855794bf4ba5a83dce6e2fc6d4"
+    },
+    "lib64/release": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463418,
+      "size": 256,
+      "mtime_ns": 1789610243643786848,
+      "type": "directory"
+    },
+    "lib64/release/libdrdecode.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463423,
+      "size": 10993644,
+      "mtime_ns": 1789610225000000000,
+      "type": "file",
+      "sha256": "1aa821734cc5473ceac4db776d858bd62d37c28b887d7b0020edf94fcbe35c55"
+    },
+    "lib64/release/libdrpreload.so": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463422,
+      "size": 43696,
+      "mtime_ns": 1789610221000000000,
+      "type": "file",
+      "sha256": "fe3759590e161e75706028319603309acaeb192419f4fc4ce1b17f8f0f66869f"
+    },
+    "lib64/release/libdrpreload.so.debug": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463498,
+      "size": 409760,
+      "mtime_ns": 1789610221000000000,
+      "type": "file",
+      "sha256": "c89a81e407e2623baffac195d7f0118431c5376b0dbec8f068683d1a73d462e1"
+    },
+    "lib64/release/libdynamorio.so": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463419,
+      "size": 2106832,
+      "mtime_ns": 1789610239000000000,
+      "type": "file",
+      "sha256": "3dcc6fe7a044625720e13010668e36c5b14414a8b460946529362e14e3d84d3d"
+    },
+    "lib64/release/libdynamorio.so-gdb.py": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463442,
+      "size": 6441,
+      "mtime_ns": 1789609055000000000,
+      "type": "file",
+      "sha256": "f80cb67ebc067fec8add7e614396d5595a65ebc3c59c08f02d08626fc6fcfc00"
+    },
+    "lib64/release/libdynamorio.so.debug": {
+      "mode": 365,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463499,
+      "size": 6678264,
+      "mtime_ns": 1789610239000000000,
+      "type": "file",
+      "sha256": "955250d01016113bdef9301b5e431a5341778dcda302871791f082fefa05eb51"
+    },
+    "lib64/release/libdynamorio_static.a": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463420,
+      "size": 38162144,
+      "mtime_ns": 1789610240000000000,
+      "type": "file",
+      "sha256": "6a25336c2ef28b24c1021b9612c9548a6d29bf8b5de8fe18bdd20429c1ef0e99"
+    },
+    "logs": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463500,
+      "size": 12,
+      "mtime_ns": 1789610243651078498,
+      "type": "directory"
+    },
+    "logs/README": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463501,
+      "size": 37,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "14e3abd395c83be6b40bb5718ae606319ac832fcb699d51bb70124574774c37b"
+    },
+    "tools": {
+      "mode": 493,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463455,
+      "size": 12,
+      "mtime_ns": 1789610243636134637,
+      "type": "directory"
+    },
+    "tools/list64": {
+      "mode": 420,
+      "uid": 212630,
+      "device": 48,
+      "inode": 782463456,
+      "size": 0,
+      "mtime_ns": 1789610219000000000,
+      "type": "file",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}

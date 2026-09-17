@@ -1,0 +1,1786 @@
+{
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/BASELINE-NOTE.txt": {
+    "sha256": "c87d1932045366ee3753f12d0ccf1bd6a4c5a5558222026dafbd72464a9261bc",
+    "bytes": 1584
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/MANIFEST.json": {
+    "sha256": "ff3fd01f5d0399afba875196ebf78e663108c90a9b92c592753768edfd11d420",
+    "bytes": 717
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/PLAN.md": {
+    "sha256": "48ae442d9fd082f95e132a381a44669a28e9385a0355c6198da0bc09e524ddb5",
+    "bytes": 6833
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/app.S": {
+    "sha256": "22e0d9760ae02f11f615c8aaef676c3999905bccc498ea3ba56e4b367ee84cc3",
+    "bytes": 125
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/app": {
+    "sha256": "7d8a1d40621bde5058504567c365f3c3914ca1f48c47361cdf67c16eadf8a462",
+    "bytes": 4744
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/artifacts.json": {
+    "sha256": "83ee4acd26fbcf348235c5e36d67e842767907c43acd62429f619dcc3bf8c2fc",
+    "bytes": 62755
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/cases.json": {
+    "sha256": "b1dddd3a6fa943b2227ddf0603883be0fe5ce03ddff679bab2e166dfd32c0233",
+    "bytes": 5215
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/client-dir-precedence/client/client.so": {
+    "sha256": "b3e7eaeedc13fe52f2be10f3ce809a4510cc729ae876efaddaa8b02e2c27cfd2",
+    "bytes": 14520
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/client-dir-precedence/client/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/client-dir-precedence/client.dynamic.txt": {
+    "sha256": "d963c45a7580b36f3d77045f91a7827dcf8525ee778a0a47d33fe37e44d5ac15",
+    "bytes": 986
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/client-dir-precedence/ld/libdrsearch_leaf_20260917.so": {
+    "sha256": "03a4a28166f1db267b6b523ae15f96d07b06e2f89b9254687a3f3f81e0cba6c5",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/client-dir-precedence/ld/libdrsearch_parent_20260917.so": {
+    "sha256": "7b1c0834f4f07eeb8418f64d59837d43f4a34d2200fd0afb1ef3cfd28845fdf5",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/client-dir-precedence/leaf.dynamic.txt": {
+    "sha256": "c765f6b149a42bf110083847801f6ff0a61b99f73c3de13872e89126fba1d765",
+    "bytes": 485
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/client-dir-precedence/link-inputs/libdrsearch_leaf_20260917.so": {
+    "sha256": "41137bcfa39d7ddfbf3d7eceefddf445d9b2377c1a622a5b164be734680bf478",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/client-dir-precedence/link-inputs/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/client-dir-precedence/parent.dynamic.txt": {
+    "sha256": "876ddcf549435353ce91c0747be9925574a8be49bbf87d62718f715d6a443bb1",
+    "bytes": 769
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/client-dir-precedence/runpath/libdrsearch_leaf_20260917.so": {
+    "sha256": "41137bcfa39d7ddfbf3d7eceefddf445d9b2377c1a622a5b164be734680bf478",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/commands.json": {
+    "sha256": "22ee6511edadba3f2d652f5a80f32d63c00eea411ad3019e8e794a4649d98f94",
+    "bytes": 13350
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/compile-commands.json": {
+    "sha256": "443b7281c61964b85ecdc5a54a23aeaf9fb759fc402f658722279e7b404d574b",
+    "bytes": 59123
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/donor-after.json": {
+    "sha256": "33c5787c8714eb105f288370d6952e5b7e8b9a8384f8e90824287596b2410d42",
+    "bytes": 32716
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/donor-before.json": {
+    "sha256": "33c5787c8714eb105f288370d6952e5b7e8b9a8384f8e90824287596b2410d42",
+    "bytes": 32716
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/host-tools.json": {
+    "sha256": "735c6dd99fe63fa8a7a92947a4e67371f72d1484fb1542fc30f5e2147b54683b",
+    "bytes": 1454
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/indirect-only-leaf/client/client.so": {
+    "sha256": "7c002d66248e36f01b05b4347b4f3b2e3ce30ab7fce480a4a97b21f6c0f46db9",
+    "bytes": 14472
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/indirect-only-leaf/client.dynamic.txt": {
+    "sha256": "bdd38f83e2f3ed79a2934f84990d7416a1a42a27179c248e21a0090a1962f30f",
+    "bytes": 895
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/indirect-only-leaf/ld/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/indirect-only-leaf/leaf.dynamic.txt": {
+    "sha256": "c765f6b149a42bf110083847801f6ff0a61b99f73c3de13872e89126fba1d765",
+    "bytes": 485
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/indirect-only-leaf/link-inputs/libdrsearch_leaf_20260917.so": {
+    "sha256": "41137bcfa39d7ddfbf3d7eceefddf445d9b2377c1a622a5b164be734680bf478",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/indirect-only-leaf/link-inputs/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/indirect-only-leaf/parent.dynamic.txt": {
+    "sha256": "876ddcf549435353ce91c0747be9925574a8be49bbf87d62718f715d6a443bb1",
+    "bytes": 769
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/indirect-only-leaf/runpath/libdrsearch_leaf_20260917.so": {
+    "sha256": "41137bcfa39d7ddfbf3d7eceefddf445d9b2377c1a622a5b164be734680bf478",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/late-direct-leaf/client/client.so": {
+    "sha256": "10d85fe1b2f7ced8fb05506b757bd5080dcde2d2fce4a18272e5bfe6001a18c7",
+    "bytes": 14520
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/late-direct-leaf/client.dynamic.txt": {
+    "sha256": "9a0fe7e0c5eb8ddc0dfee32a46a2d28217acd7890683a45be46e815fcf4c9275",
+    "bytes": 981
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/late-direct-leaf/ld/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/late-direct-leaf/leaf.dynamic.txt": {
+    "sha256": "c765f6b149a42bf110083847801f6ff0a61b99f73c3de13872e89126fba1d765",
+    "bytes": 485
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/late-direct-leaf/link-inputs/libdrsearch_leaf_20260917.so": {
+    "sha256": "41137bcfa39d7ddfbf3d7eceefddf445d9b2377c1a622a5b164be734680bf478",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/late-direct-leaf/link-inputs/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/late-direct-leaf/parent.dynamic.txt": {
+    "sha256": "876ddcf549435353ce91c0747be9925574a8be49bbf87d62718f715d6a443bb1",
+    "bytes": 769
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/late-direct-leaf/runpath/libdrsearch_leaf_20260917.so": {
+    "sha256": "41137bcfa39d7ddfbf3d7eceefddf445d9b2377c1a622a5b164be734680bf478",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ld-precedence/client/client.so": {
+    "sha256": "bdeb75b0c62fa63a0a40c35c6c3773092e18ed44ecaf9100287576b8f6054e0a",
+    "bytes": 14520
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ld-precedence/client.dynamic.txt": {
+    "sha256": "b2309a2089c034af016cbef957b8c46021b33be56ae026d35a4387dc1c533507",
+    "bytes": 978
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ld-precedence/ld/libdrsearch_leaf_20260917.so": {
+    "sha256": "03a4a28166f1db267b6b523ae15f96d07b06e2f89b9254687a3f3f81e0cba6c5",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ld-precedence/ld/libdrsearch_parent_20260917.so": {
+    "sha256": "7b1c0834f4f07eeb8418f64d59837d43f4a34d2200fd0afb1ef3cfd28845fdf5",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ld-precedence/leaf.dynamic.txt": {
+    "sha256": "c765f6b149a42bf110083847801f6ff0a61b99f73c3de13872e89126fba1d765",
+    "bytes": 485
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ld-precedence/link-inputs/libdrsearch_leaf_20260917.so": {
+    "sha256": "41137bcfa39d7ddfbf3d7eceefddf445d9b2377c1a622a5b164be734680bf478",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ld-precedence/link-inputs/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ld-precedence/parent.dynamic.txt": {
+    "sha256": "876ddcf549435353ce91c0747be9925574a8be49bbf87d62718f715d6a443bb1",
+    "bytes": 769
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ld-precedence/runpath/libdrsearch_leaf_20260917.so": {
+    "sha256": "41137bcfa39d7ddfbf3d7eceefddf445d9b2377c1a622a5b164be734680bf478",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ld-precedence/runpath/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/missing-direct-leaf/client/client.so": {
+    "sha256": "e21731ff9dab5f9533e75a0257a419367eb4ea17b14bc035030dff2a89095de6",
+    "bytes": 14520
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/missing-direct-leaf/client.dynamic.txt": {
+    "sha256": "37cc52ef31af1d20d4bf3b72a593f90fed005ee609b92d8e7b88320e46e81b32",
+    "bytes": 984
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/missing-direct-leaf/ld/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/missing-direct-leaf/leaf.dynamic.txt": {
+    "sha256": "c765f6b149a42bf110083847801f6ff0a61b99f73c3de13872e89126fba1d765",
+    "bytes": 485
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/missing-direct-leaf/link-inputs/libdrsearch_leaf_20260917.so": {
+    "sha256": "41137bcfa39d7ddfbf3d7eceefddf445d9b2377c1a622a5b164be734680bf478",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/missing-direct-leaf/link-inputs/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/missing-direct-leaf/parent.dynamic.txt": {
+    "sha256": "876ddcf549435353ce91c0747be9925574a8be49bbf87d62718f715d6a443bb1",
+    "bytes": 769
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/native": {
+    "sha256": "cc5fc50abf070a0a4dd3128364b6287db2422da6258a4413b2f2a440b92feb21",
+    "bytes": 17768
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ordered-runpath/client/client.so": {
+    "sha256": "2e2528f1d66dce510d6bad0b912946a23b364f568a2d00d20461f41074aeb56f",
+    "bytes": 14520
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ordered-runpath/client.dynamic.txt": {
+    "sha256": "40dcc979971fc76221068f7286970cc60b89d1c21a3e5338154899d1a2f56bae",
+    "bytes": 1137
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ordered-runpath/ld/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ordered-runpath/leaf.dynamic.txt": {
+    "sha256": "c765f6b149a42bf110083847801f6ff0a61b99f73c3de13872e89126fba1d765",
+    "bytes": 485
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ordered-runpath/link-inputs/libdrsearch_leaf_20260917.so": {
+    "sha256": "41137bcfa39d7ddfbf3d7eceefddf445d9b2377c1a622a5b164be734680bf478",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ordered-runpath/link-inputs/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ordered-runpath/parent.dynamic.txt": {
+    "sha256": "876ddcf549435353ce91c0747be9925574a8be49bbf87d62718f715d6a443bb1",
+    "bytes": 769
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ordered-runpath/runpath/libdrsearch_leaf_20260917.so": {
+    "sha256": "41137bcfa39d7ddfbf3d7eceefddf445d9b2377c1a622a5b164be734680bf478",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/ordered-runpath/runpath-second/libdrsearch_leaf_20260917.so": {
+    "sha256": "0b6521a418eb7644948fe0503806ff016d4b5035ba60cf944cec38a6e0ebb95d",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/private-copy.json": {
+    "sha256": "4d504a97ed414aa8fa273470a352398b7eabf6c1e7a31783f13f4cc92b1f6907",
+    "bytes": 32716
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/rpath-precedence/client/client.so": {
+    "sha256": "5543253a49b25efd3aa02b492fb9d9c6e648dd4ad0513ccd3167d48d062f51ba",
+    "bytes": 14520
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/rpath-precedence/client.dynamic.txt": {
+    "sha256": "cb23519e1b2994bfd186de99da13ae1af77a2680383985d61f6bf6f6108cd0d8",
+    "bytes": 979
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/rpath-precedence/ld/libdrsearch_leaf_20260917.so": {
+    "sha256": "03a4a28166f1db267b6b523ae15f96d07b06e2f89b9254687a3f3f81e0cba6c5",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/rpath-precedence/ld/libdrsearch_parent_20260917.so": {
+    "sha256": "7b1c0834f4f07eeb8418f64d59837d43f4a34d2200fd0afb1ef3cfd28845fdf5",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/rpath-precedence/leaf.dynamic.txt": {
+    "sha256": "c765f6b149a42bf110083847801f6ff0a61b99f73c3de13872e89126fba1d765",
+    "bytes": 485
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/rpath-precedence/link-inputs/libdrsearch_leaf_20260917.so": {
+    "sha256": "41137bcfa39d7ddfbf3d7eceefddf445d9b2377c1a622a5b164be734680bf478",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/rpath-precedence/link-inputs/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/rpath-precedence/parent.dynamic.txt": {
+    "sha256": "876ddcf549435353ce91c0747be9925574a8be49bbf87d62718f715d6a443bb1",
+    "bytes": 769
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/rpath-precedence/runpath/libdrsearch_leaf_20260917.so": {
+    "sha256": "41137bcfa39d7ddfbf3d7eceefddf445d9b2377c1a622a5b164be734680bf478",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/rpath-precedence/runpath/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/baseline-1/source.json": {
+    "sha256": "700eab7a2e149d938d402622e13aafd2c6d73143222f263c450e5b855a0022a9",
+    "bytes": 660
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/client.c": {
+    "sha256": "7728d11e0c81259bdc3eb697a8b425e556a69cb2cd16281cb3aeb9735d302b39",
+    "bytes": 890
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile-extended-scope-1/FULL.log": {
+    "sha256": "d0ca2ad520c6c65bfe328c3941cd43d85d1d25aab9e1122dded7d4d4509f8df6",
+    "bytes": 62
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile-extended-scope-1/SEALED.json": {
+    "sha256": "d9da53b44650fad64b721284c49ec77853c315760f2ab04b9be6074274a17b8d",
+    "bytes": 657
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile-extended-scope-1/TERMINAL.json": {
+    "sha256": "9ace9253b8912c99d872513dbb1019872c0bff05014d97f0b97ce33147ed8345",
+    "bytes": 227
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile-extended-scope-1/before.json": {
+    "sha256": "3cc0f89f61286dd9f0da0eaca8705845cf79fc4654e267d8e2fb408ddb079d24",
+    "bytes": 893
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile-extended-scope-1/command.json": {
+    "sha256": "c47fc72f3a246bb1d52561415fbcad924fcda64ac07de790d01fd272a2069fd5",
+    "bytes": 193
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile-extended-scope-1/result.json": {
+    "sha256": "ebd80176d84079cd085e5d3110ad5a7b27e21b51ec297a8e3fd0738dac51916b",
+    "bytes": 724
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile-extended-scope-1/run.py": {
+    "sha256": "5768c56ad539a91e04b6f72c2c429d7f200dd850d1dc051bef90f9c668457c2c",
+    "bytes": 1511
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile-extended.py": {
+    "sha256": "2f8bae6034c63fd6b3659e61b0c45bcadb6aa6968b6963aad19060eaaa574d1d",
+    "bytes": 3367
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile-scope-1/FULL.log": {
+    "sha256": "5b502f7c6a092b9d875210ea724f3ff7d53d470e75cb240e71d411534ad55126",
+    "bytes": 81
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile-scope-1/SOURCE.json": {
+    "sha256": "bffd9e0e667507acbd391d28244b0b89e83c780645b9208ea684dcab2362c558",
+    "bytes": 965
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile-scope-1/TERMINAL.json": {
+    "sha256": "5566769b53ea7c5de055967a3153133e8a6d903c9e48e2ad77bc1860e32c0b20",
+    "bytes": 285
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile-scope-1/before.json": {
+    "sha256": "a5273d0acdc6d986dea7dcb162ad012521f30b73981c720f923ee88e11881dc0",
+    "bytes": 866
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile-scope-1/command.json": {
+    "sha256": "c9b6c9ae7764d98995958b7d55b6e3a63ea748fdac2cba0ceea318c9b7066c24",
+    "bytes": 184
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile-scope-1/result.json": {
+    "sha256": "fbc5abd67a614a4d3a65d0219209aa10f2e9fd6268de52f66cf4f2a7c339fe7b",
+    "bytes": 707
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile-scope-1/run.py": {
+    "sha256": "afdf3a1f162ded89b9d8ed155aa5ff2b6cf91c8d4a18031075e12814ef921f77",
+    "bytes": 1502
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/compile.py": {
+    "sha256": "6e54c02da5a1c93411c4e5a6ce6c4dea1a86bb3c45553c96fad16f6e7ea55f62",
+    "bytes": 6776
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-2.py": {
+    "sha256": "59945649287fbc8d641e71f569dd2bed6e68d61f5ee983a2737a32163b86b0f4",
+    "bytes": 4561
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/00-late-direct-leaf-native/result.json": {
+    "sha256": "ba7882b324cdd2e3dc19e4fa15acb8f65d7e15cf194b55a7bc74b13d8e3c8222",
+    "bytes": 1633
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/00-late-direct-leaf-native/stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/00-late-direct-leaf-native/stdout": {
+    "sha256": "2b0367886ea4e17a4b8f278b8b5768adf1916a8d504fbbafeedd3fb2b4497ec8",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/01-late-direct-leaf-old-dr/result.json": {
+    "sha256": "5f650b70d84383077a5761aa8084523610d1fc37e670ff2052ca537a5e303bb9",
+    "bytes": 1802
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/01-late-direct-leaf-old-dr/stderr": {
+    "sha256": "311ca1e2bfae3546a9138a8ce746cd450b93dfc009ee4ce2fcb5f133d5bf6e52",
+    "bytes": 522
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/01-late-direct-leaf-old-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/02-ld-precedence-native/result.json": {
+    "sha256": "17dd9a347b7b1f86d1c3d1295ccf91f36b57864871c186968d41c91fa49cc597",
+    "bytes": 1617
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/02-ld-precedence-native/stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/02-ld-precedence-native/stdout": {
+    "sha256": "45a75fbb4d083d679624bcdbe67416c923690c8900646fde6d0ae8d75322fa03",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/03-ld-precedence-old-dr/result.json": {
+    "sha256": "23c59a6cb2bd582de2e13e1fdc03dcd80ca4f7d15ad1264c3fb503a85d63f08a",
+    "bytes": 1803
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/03-ld-precedence-old-dr/stderr": {
+    "sha256": "45a75fbb4d083d679624bcdbe67416c923690c8900646fde6d0ae8d75322fa03",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/03-ld-precedence-old-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/04-client-dir-precedence-old-dr/result.json": {
+    "sha256": "3e63b40ca0aa38121c053d2e8162f8f279bf58beda99a074930e8d79e6dff311",
+    "bytes": 1844
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/04-client-dir-precedence-old-dr/stderr": {
+    "sha256": "f7d699ab1ee648eef2345f602008ea4b0ffc61221f83e6162829a00a4ad4b49e",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/04-client-dir-precedence-old-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/05-missing-direct-leaf-native/result.json": {
+    "sha256": "dea010273603ea376a1d9c0d6fc973bdd886eb314aa2066960d1358ca825798a",
+    "bytes": 1630
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/05-missing-direct-leaf-native/stderr": {
+    "sha256": "2f53a8bf5cdc598a36610ac1ccacabefaa5c7ab8ca0d2188e2b3eeea4278de83",
+    "bytes": 101
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/05-missing-direct-leaf-native/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/06-missing-direct-leaf-old-dr/result.json": {
+    "sha256": "0e660cdb3d27a44082ecd77f11a8a86dabe3ea6a5abfcf02c8349a184a307625",
+    "bytes": 1818
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/06-missing-direct-leaf-old-dr/stderr": {
+    "sha256": "6801a6ae7e06793e304d83b9d3e5233b7dbbfe7d25a314b7e72888c699eb3cc6",
+    "bytes": 522
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/06-missing-direct-leaf-old-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/07-indirect-only-leaf-native/result.json": {
+    "sha256": "44c530945b0a79ee1ec9a6190f8891e871b14144f3cd66a949ca5dc5792a6ef6",
+    "bytes": 1625
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/07-indirect-only-leaf-native/stderr": {
+    "sha256": "2f53a8bf5cdc598a36610ac1ccacabefaa5c7ab8ca0d2188e2b3eeea4278de83",
+    "bytes": 101
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/07-indirect-only-leaf-native/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/08-indirect-only-leaf-old-dr/result.json": {
+    "sha256": "f5304d77dfc4653fc62428521791a7dea6a78efeeaf5f81f5833cd9290eda66f",
+    "bytes": 1813
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/08-indirect-only-leaf-old-dr/stderr": {
+    "sha256": "947e22b91215922fde6ff6abb746fa8db267c4cd4a5c7ccd34271a9a48fabef8",
+    "bytes": 522
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/08-indirect-only-leaf-old-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/09-rpath-precedence-native/result.json": {
+    "sha256": "8cb395cdeaa18b3738a0cea49ce24e80be6f5297b958f524b12559da76d9217c",
+    "bytes": 1632
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/09-rpath-precedence-native/stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/09-rpath-precedence-native/stdout": {
+    "sha256": "2b0367886ea4e17a4b8f278b8b5768adf1916a8d504fbbafeedd3fb2b4497ec8",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/10-rpath-precedence-old-dr/result.json": {
+    "sha256": "422f0f0cdbe8b1e38877df61a45fdfeb82bcc260df17362651520c5f2cdc8f6c",
+    "bytes": 1818
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/10-rpath-precedence-old-dr/stderr": {
+    "sha256": "2b0367886ea4e17a4b8f278b8b5768adf1916a8d504fbbafeedd3fb2b4497ec8",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/10-rpath-precedence-old-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/11-ordered-runpath-native/result.json": {
+    "sha256": "c669851755b167bd368bb9e8fdd0df0c7dd8dad223096c09c09f2bf3d519524c",
+    "bytes": 1627
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/11-ordered-runpath-native/stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/11-ordered-runpath-native/stdout": {
+    "sha256": "2b0367886ea4e17a4b8f278b8b5768adf1916a8d504fbbafeedd3fb2b4497ec8",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/12-ordered-runpath-old-dr/result.json": {
+    "sha256": "25fd05b6bbe2c5353ff59d230b815ae647fef994cd3041f61358cb23ddbf161a",
+    "bytes": 1798
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/12-ordered-runpath-old-dr/stderr": {
+    "sha256": "9b942f3f83bcdffc4192b30db92ced27c713f67c7fc3fcc03f365b79f49ede3c",
+    "bytes": 522
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/12-ordered-runpath-old-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/CAPTURE-NOTE.md": {
+    "sha256": "01f865263007a0e3cf0b19cf8506944bf5901b849979e2f50b1d0881f79ccecb",
+    "bytes": 594
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/FULL.log": {
+    "sha256": "351651bae72cc1e6555ad530669c61045d14684a131be7d600e206f8636916ad",
+    "bytes": 851
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/ROOT-READBACK.json": {
+    "sha256": "f6f6c2fa5c6b210095117f7322c8b51c132f4f091f237b0a28ae027ef8bbdc6c",
+    "bytes": 2879
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/SEALED.json": {
+    "sha256": "10213047efa099171c00f2b6c38f4b65dc7fce9de14221ae73462d185e4fd41a",
+    "bytes": 1281
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/TERMINAL.json": {
+    "sha256": "503dcbaf5f2a42ea9e0bda2b639f22ab9dc03479e294b19a242c5ba1de9b70c0",
+    "bytes": 286
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/before.json": {
+    "sha256": "00bc4831d70df548ed5a1dc4358dad5ca52390c5d7464dea1b5fa2bafb86091f",
+    "bytes": 869
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/command.json": {
+    "sha256": "fda89e44a8e3e9db5ff3f9d1ce5884c42d24172c15ffd8424f3fa82eb62e1519",
+    "bytes": 185
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/commands.json": {
+    "sha256": "83dcbe1390a57dbd16236565e247a74926bdfdd49a63b9d38becb288ea031d11",
+    "bytes": 15970
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/environment-preflight.json": {
+    "sha256": "1e891b6e7bb580d561b95e5c2a877c783e2ff0dcc9c9013c2d2ee08b3aba4224",
+    "bytes": 45
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/input-after.json": {
+    "sha256": "eb730d09680ff23ac486da75f9356aa0a9e1917593b6875bdde1d7ca31d2963c",
+    "bytes": 34
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/input-before.json": {
+    "sha256": "eb730d09680ff23ac486da75f9356aa0a9e1917593b6875bdde1d7ca31d2963c",
+    "bytes": 34
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/result-00.json": {
+    "sha256": "ba7882b324cdd2e3dc19e4fa15acb8f65d7e15cf194b55a7bc74b13d8e3c8222",
+    "bytes": 1633
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/result-01.json": {
+    "sha256": "5f650b70d84383077a5761aa8084523610d1fc37e670ff2052ca537a5e303bb9",
+    "bytes": 1802
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/result-02.json": {
+    "sha256": "17dd9a347b7b1f86d1c3d1295ccf91f36b57864871c186968d41c91fa49cc597",
+    "bytes": 1617
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/result-03.json": {
+    "sha256": "23c59a6cb2bd582de2e13e1fdc03dcd80ca4f7d15ad1264c3fb503a85d63f08a",
+    "bytes": 1803
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/result-04.json": {
+    "sha256": "3e63b40ca0aa38121c053d2e8162f8f279bf58beda99a074930e8d79e6dff311",
+    "bytes": 1844
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/result-05.json": {
+    "sha256": "dea010273603ea376a1d9c0d6fc973bdd886eb314aa2066960d1358ca825798a",
+    "bytes": 1630
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/result-06.json": {
+    "sha256": "0e660cdb3d27a44082ecd77f11a8a86dabe3ea6a5abfcf02c8349a184a307625",
+    "bytes": 1818
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/result-07.json": {
+    "sha256": "44c530945b0a79ee1ec9a6190f8891e871b14144f3cd66a949ca5dc5792a6ef6",
+    "bytes": 1625
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/result-08.json": {
+    "sha256": "f5304d77dfc4653fc62428521791a7dea6a78efeeaf5f81f5833cd9290eda66f",
+    "bytes": 1813
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/result-09.json": {
+    "sha256": "8cb395cdeaa18b3738a0cea49ce24e80be6f5297b958f524b12559da76d9217c",
+    "bytes": 1632
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/result-10.json": {
+    "sha256": "422f0f0cdbe8b1e38877df61a45fdfeb82bcc260df17362651520c5f2cdc8f6c",
+    "bytes": 1818
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/result-11.json": {
+    "sha256": "c669851755b167bd368bb9e8fdd0df0c7dd8dad223096c09c09f2bf3d519524c",
+    "bytes": 1627
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/result-12.json": {
+    "sha256": "25fd05b6bbe2c5353ff59d230b815ae647fef994cd3041f61358cb23ddbf161a",
+    "bytes": 1798
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/result.json": {
+    "sha256": "967b49b71a98a2978e9bd4a96d3202dd8b7364efc3484dcc8a66e700d9b57034",
+    "bytes": 708
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/results.json": {
+    "sha256": "fb098a4ea1f257af2b1fce0a8ad86af6d195f5ba4de0043ebb0ad86d62982649",
+    "bytes": 23418
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-1/run.py": {
+    "sha256": "1fea93626d2e46dcdb628d58bfca79cd2565a0714b8d2086cae8f8826ac59d0b",
+    "bytes": 1503
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/00-late-direct-leaf-native/result.json": {
+    "sha256": "72264624b180e316aac712310a55dc4030a1f297cecb2e3afa14fb4d8116ad12",
+    "bytes": 1631
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/00-late-direct-leaf-native/stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/00-late-direct-leaf-native/stdout": {
+    "sha256": "2b0367886ea4e17a4b8f278b8b5768adf1916a8d504fbbafeedd3fb2b4497ec8",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/01-late-direct-leaf-candidate-dr/result.json": {
+    "sha256": "51d7522c5f6535069ba006de612721993c4ebafaf3183c0b7ddef6f9e522ac7b",
+    "bytes": 1947
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/01-late-direct-leaf-candidate-dr/stderr": {
+    "sha256": "2b0367886ea4e17a4b8f278b8b5768adf1916a8d504fbbafeedd3fb2b4497ec8",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/01-late-direct-leaf-candidate-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/02-ld-precedence-native/result.json": {
+    "sha256": "c6d1c87d40ae07f122ca52aff8a3ea85d62564c428ba85795bee1a547d1aa1ec",
+    "bytes": 1617
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/02-ld-precedence-native/stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/02-ld-precedence-native/stdout": {
+    "sha256": "45a75fbb4d083d679624bcdbe67416c923690c8900646fde6d0ae8d75322fa03",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/03-ld-precedence-candidate-dr/result.json": {
+    "sha256": "20d4fc55df614d4956e5a0db51efa8da8a9700a56b59acda230e2bb58589f09d",
+    "bytes": 1933
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/03-ld-precedence-candidate-dr/stderr": {
+    "sha256": "45a75fbb4d083d679624bcdbe67416c923690c8900646fde6d0ae8d75322fa03",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/03-ld-precedence-candidate-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/04-client-dir-precedence-candidate-dr/result.json": {
+    "sha256": "e38c259ecfd36e9bc5a732e37c17275af10a1304c671083592eebc240cf48509",
+    "bytes": 1973
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/04-client-dir-precedence-candidate-dr/stderr": {
+    "sha256": "f7d699ab1ee648eef2345f602008ea4b0ffc61221f83e6162829a00a4ad4b49e",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/04-client-dir-precedence-candidate-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/05-missing-direct-leaf-native/result.json": {
+    "sha256": "0775627a78b72ffd6a3db855684d145c618827ba284143ddd936abf2f4d67df9",
+    "bytes": 1631
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/05-missing-direct-leaf-native/stderr": {
+    "sha256": "2f53a8bf5cdc598a36610ac1ccacabefaa5c7ab8ca0d2188e2b3eeea4278de83",
+    "bytes": 101
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/05-missing-direct-leaf-native/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/06-missing-direct-leaf-candidate-dr/result.json": {
+    "sha256": "4b4630b55a6097335128d88ffd46a2dc9d85f30655baabea27043a2f561805c1",
+    "bytes": 1948
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/06-missing-direct-leaf-candidate-dr/stderr": {
+    "sha256": "287c50ae6e535af47567a50325f1fa7f9401e1b9eaf4693604fe4f467d4dd2e7",
+    "bytes": 522
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/06-missing-direct-leaf-candidate-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/07-indirect-only-leaf-native/result.json": {
+    "sha256": "27ff3cfe6cb0aa0e05a2d1faa23d77f9fc83d9b28f7121f552b662d688dd1e6c",
+    "bytes": 1625
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/07-indirect-only-leaf-native/stderr": {
+    "sha256": "2f53a8bf5cdc598a36610ac1ccacabefaa5c7ab8ca0d2188e2b3eeea4278de83",
+    "bytes": 101
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/07-indirect-only-leaf-native/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/08-indirect-only-leaf-candidate-dr/result.json": {
+    "sha256": "d0b07c5052ab3082e5012d4fcab623e328a3557472c6704cb4ec60715ea7ca3c",
+    "bytes": 1943
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/08-indirect-only-leaf-candidate-dr/stderr": {
+    "sha256": "92d80df41b7760966efba6c98a3753287f1d96c6980d03ae68229b31374ffca3",
+    "bytes": 522
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/08-indirect-only-leaf-candidate-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/09-rpath-precedence-native/result.json": {
+    "sha256": "9661510f62d27dba33ebae4f7223c2b796108ab4b7b354cefc5969ec9f223c42",
+    "bytes": 1633
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/09-rpath-precedence-native/stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/09-rpath-precedence-native/stdout": {
+    "sha256": "2b0367886ea4e17a4b8f278b8b5768adf1916a8d504fbbafeedd3fb2b4497ec8",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/10-rpath-precedence-candidate-dr/result.json": {
+    "sha256": "0bf11b4cc110e8fffb91f2f8f21abfa768605ac2b11a5da6e14cb7292ce417c6",
+    "bytes": 1948
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/10-rpath-precedence-candidate-dr/stderr": {
+    "sha256": "2b0367886ea4e17a4b8f278b8b5768adf1916a8d504fbbafeedd3fb2b4497ec8",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/10-rpath-precedence-candidate-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/11-ordered-runpath-native/result.json": {
+    "sha256": "3ce3eff2cd719f65bf549ea38f10d00985021a6c6c733277277853d289b71a42",
+    "bytes": 1628
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/11-ordered-runpath-native/stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/11-ordered-runpath-native/stdout": {
+    "sha256": "2b0367886ea4e17a4b8f278b8b5768adf1916a8d504fbbafeedd3fb2b4497ec8",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/12-ordered-runpath-candidate-dr/result.json": {
+    "sha256": "41b6fb5ea31ccb015a117b483dd3c090d67c0f54f03869b6884802f4cdd271f6",
+    "bytes": 1943
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/12-ordered-runpath-candidate-dr/stderr": {
+    "sha256": "2b0367886ea4e17a4b8f278b8b5768adf1916a8d504fbbafeedd3fb2b4497ec8",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/12-ordered-runpath-candidate-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/13-no-promotion-native/result.json": {
+    "sha256": "50ad735de989bf4988ccfc265c50f5f12ca2e533cf874b68fc48387f8c359c1a",
+    "bytes": 1629
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/13-no-promotion-native/stderr": {
+    "sha256": "6271dc331e68626dfdc0ce4c689eab5c7b1e082e5df7db87e71e26affece0d5b",
+    "bytes": 107
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/13-no-promotion-native/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/14-no-promotion-old-dr/result.json": {
+    "sha256": "9921d0029f59e2bf1917c9c7ca3ee7ad1930597987a2fa2a5d67857145cc6b94",
+    "bytes": 1810
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/14-no-promotion-old-dr/stderr": {
+    "sha256": "079e971cdbe12c170db8b9d766046138b740b740478af8238cb8de3062cb2801",
+    "bytes": 522
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/14-no-promotion-old-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/15-no-promotion-candidate-dr/result.json": {
+    "sha256": "cd9faab6dece7bb423a4907e05fae0dbf271620c23346a0e151757465d889018",
+    "bytes": 1946
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/15-no-promotion-candidate-dr/stderr": {
+    "sha256": "cf2b56ac2c6f81dc73eb0dc3780872cce87aa72b781499a1945af8e62af7b762",
+    "bytes": 528
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/15-no-promotion-candidate-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/16-origin-native/result.json": {
+    "sha256": "72d15388ba2d46a2dd683ec027e0088f50eabf11c81664a0612c7dec2c67a191",
+    "bytes": 1610
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/16-origin-native/stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/16-origin-native/stdout": {
+    "sha256": "2b0367886ea4e17a4b8f278b8b5768adf1916a8d504fbbafeedd3fb2b4497ec8",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/17-origin-old-dr/result.json": {
+    "sha256": "aa4259f73464138103ffd05e38cc6d9c402a531bef44ada48136d45be8fbb92e",
+    "bytes": 1781
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/17-origin-old-dr/stderr": {
+    "sha256": "80d370a0338619840a1fd7d0119c3e6e7d1edf420d4d8d3641fc627080da5440",
+    "bytes": 522
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/17-origin-old-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/18-origin-candidate-dr/result.json": {
+    "sha256": "8c1e7f9d1fb0c222f53f45f926bbb69b389c6d2aaddf2bee3b7e7002430d51b3",
+    "bytes": 1925
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/18-origin-candidate-dr/stderr": {
+    "sha256": "2b0367886ea4e17a4b8f278b8b5768adf1916a8d504fbbafeedd3fb2b4497ec8",
+    "bytes": 20
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/18-origin-candidate-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/19-explicit-path-native/result.json": {
+    "sha256": "5faaf4adf944f4569d36f37fe2962723b601efc7f24113b3a65b86df3fd28304",
+    "bytes": 1635
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/19-explicit-path-native/stderr": {
+    "sha256": "1ce42739e4230fcf07c136f8082b03a71c15510544fca6108b6b299f0ca47a62",
+    "bytes": 108
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/19-explicit-path-native/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/20-explicit-path-old-dr/result.json": {
+    "sha256": "80838fc1e50f35018e1c5b70cb8e332a76c8a45a1e20e656f6948ec5270ba2f7",
+    "bytes": 1822
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/20-explicit-path-old-dr/stderr": {
+    "sha256": "0ac8b48d5f1af14255cc737475ce1bbec8fb8e16c9ec7e701d60f9e7b0d5ed08",
+    "bytes": 529
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/20-explicit-path-old-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/21-explicit-path-candidate-dr/result.json": {
+    "sha256": "fb26df6fb945b6341cee49c7402931aa628cc560af9600dd34de6100ff10adba",
+    "bytes": 1952
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/21-explicit-path-candidate-dr/stderr": {
+    "sha256": "6cd7e9de846c5133530f636002a73d310e9aa45adf39e9926af9387a9b51f92e",
+    "bytes": 529
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/21-explicit-path-candidate-dr/stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/FULL.log": {
+    "sha256": "d6eaf09dab5d80cff478ebc08148ff681ff29cc189e4f1de34773d66f0d6d710",
+    "bytes": 1438
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/SEALED.json": {
+    "sha256": "9e59bd36e8dbd2426cfd2de609d51a5642d3f2ff095cc4c87d98e7f02070d1cd",
+    "bytes": 1299
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/TERMINAL.json": {
+    "sha256": "fb8d2e3a89e0f02e757afda4233c40962ea98d021fcb5ad142c48d59b28c96dd",
+    "bytes": 227
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/before.json": {
+    "sha256": "da465dbc3380e84039a8ac7372357f4f1ecf37884ad36da3dcb9252f970b997c",
+    "bytes": 869
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/command.json": {
+    "sha256": "c5616848239b5255512f83ffda2d774e806147bbe12d61967c47d1885e3b4323",
+    "bytes": 187
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/commands.json": {
+    "sha256": "de73840d8207ba8711a0d401783382c70eb7a1fba41239680eb23ad5e7141579",
+    "bytes": 28543
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/environment-preflight.json": {
+    "sha256": "1e891b6e7bb580d561b95e5c2a877c783e2ff0dcc9c9013c2d2ee08b3aba4224",
+    "bytes": 45
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/input-after.json": {
+    "sha256": "eb730d09680ff23ac486da75f9356aa0a9e1917593b6875bdde1d7ca31d2963c",
+    "bytes": 34
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/input-before.json": {
+    "sha256": "eb730d09680ff23ac486da75f9356aa0a9e1917593b6875bdde1d7ca31d2963c",
+    "bytes": 34
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-00.json": {
+    "sha256": "72264624b180e316aac712310a55dc4030a1f297cecb2e3afa14fb4d8116ad12",
+    "bytes": 1631
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-01.json": {
+    "sha256": "51d7522c5f6535069ba006de612721993c4ebafaf3183c0b7ddef6f9e522ac7b",
+    "bytes": 1947
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-02.json": {
+    "sha256": "c6d1c87d40ae07f122ca52aff8a3ea85d62564c428ba85795bee1a547d1aa1ec",
+    "bytes": 1617
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-03.json": {
+    "sha256": "20d4fc55df614d4956e5a0db51efa8da8a9700a56b59acda230e2bb58589f09d",
+    "bytes": 1933
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-04.json": {
+    "sha256": "e38c259ecfd36e9bc5a732e37c17275af10a1304c671083592eebc240cf48509",
+    "bytes": 1973
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-05.json": {
+    "sha256": "0775627a78b72ffd6a3db855684d145c618827ba284143ddd936abf2f4d67df9",
+    "bytes": 1631
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-06.json": {
+    "sha256": "4b4630b55a6097335128d88ffd46a2dc9d85f30655baabea27043a2f561805c1",
+    "bytes": 1948
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-07.json": {
+    "sha256": "27ff3cfe6cb0aa0e05a2d1faa23d77f9fc83d9b28f7121f552b662d688dd1e6c",
+    "bytes": 1625
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-08.json": {
+    "sha256": "d0b07c5052ab3082e5012d4fcab623e328a3557472c6704cb4ec60715ea7ca3c",
+    "bytes": 1943
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-09.json": {
+    "sha256": "9661510f62d27dba33ebae4f7223c2b796108ab4b7b354cefc5969ec9f223c42",
+    "bytes": 1633
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-10.json": {
+    "sha256": "0bf11b4cc110e8fffb91f2f8f21abfa768605ac2b11a5da6e14cb7292ce417c6",
+    "bytes": 1948
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-11.json": {
+    "sha256": "3ce3eff2cd719f65bf549ea38f10d00985021a6c6c733277277853d289b71a42",
+    "bytes": 1628
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-12.json": {
+    "sha256": "41b6fb5ea31ccb015a117b483dd3c090d67c0f54f03869b6884802f4cdd271f6",
+    "bytes": 1943
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-13.json": {
+    "sha256": "50ad735de989bf4988ccfc265c50f5f12ca2e533cf874b68fc48387f8c359c1a",
+    "bytes": 1629
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-14.json": {
+    "sha256": "9921d0029f59e2bf1917c9c7ca3ee7ad1930597987a2fa2a5d67857145cc6b94",
+    "bytes": 1810
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-15.json": {
+    "sha256": "cd9faab6dece7bb423a4907e05fae0dbf271620c23346a0e151757465d889018",
+    "bytes": 1946
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-16.json": {
+    "sha256": "72d15388ba2d46a2dd683ec027e0088f50eabf11c81664a0612c7dec2c67a191",
+    "bytes": 1610
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-17.json": {
+    "sha256": "aa4259f73464138103ffd05e38cc6d9c402a531bef44ada48136d45be8fbb92e",
+    "bytes": 1781
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-18.json": {
+    "sha256": "8c1e7f9d1fb0c222f53f45f926bbb69b389c6d2aaddf2bee3b7e7002430d51b3",
+    "bytes": 1925
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-19.json": {
+    "sha256": "5faaf4adf944f4569d36f37fe2962723b601efc7f24113b3a65b86df3fd28304",
+    "bytes": 1635
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-20.json": {
+    "sha256": "80838fc1e50f35018e1c5b70cb8e332a76c8a45a1e20e656f6948ec5270ba2f7",
+    "bytes": 1822
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result-21.json": {
+    "sha256": "fb26df6fb945b6341cee49c7402931aa628cc560af9600dd34de6100ff10adba",
+    "bytes": 1952
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/result.json": {
+    "sha256": "df68807821545a50eb93a52c64379bb9947ebb9f0c496fa64842ab144a8850e3",
+    "bytes": 710
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/results.json": {
+    "sha256": "a39424a31d767cab1d638612348d84d730ef518f655a03ff537651a7bbff41c4",
+    "bytes": 41135
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls-scope-2/run.py": {
+    "sha256": "90fb7dec6130a2d9f6c2bf11e4516d9b18a6c640bbc8b9d325516230f854cb0b",
+    "bytes": 1503
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/controls.py": {
+    "sha256": "a2e7096a977c1737e03dad4118ac33d902d3c501166e6c9ccf3421942bb4beb3",
+    "bytes": 3466
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/cases.json": {
+    "sha256": "6acbc61ced2c44320335aab49e3e6154305157e03199cd4eaf1d97e5787da78a",
+    "bytes": 2372
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/compile-commands.json": {
+    "sha256": "e133772bdf01eee0bc909b33f7ca30fe8289a553b31f1a3fc5f630a47a329e3e",
+    "bytes": 16874
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/explicit-path/client/client.so": {
+    "sha256": "4971b97c4a16a378916f5b0b1b7cf690e0f390e9853856dd2bcf14e8f39256f6",
+    "bytes": 14520
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/explicit-path/client.dynamic.txt": {
+    "sha256": "bcf606fcfe14234d75928716d0d45bfe27a067cef50853c6fc4d97af1fda7559",
+    "bytes": 994
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/explicit-path/ld/libdrsearch_parent_20260917.so": {
+    "sha256": "5bed2caf475d5dde39991f53c1b188187ce671efb70b33d86744c3d2e391423c",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/explicit-path/parent.dynamic.txt": {
+    "sha256": "142ee4043ccd56662a286b9eb91e05fc866e8725cbeed85b0715222a57e8bfc5",
+    "bytes": 776
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/explicit-path/runpath/needed/libdrsearch_leaf_20260917.so": {
+    "sha256": "07a593576207c6eeef8827cd8bd1fb71295fdf1abd841d765817a40b96066e77",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/files.json": {
+    "sha256": "1d4c3a9c5e2095c1a21fe091c6da511b15a3c693ae9c820b83d6ae7c682c95ef",
+    "bytes": 2087
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/no-promotion/client/client.so": {
+    "sha256": "056c97491cfcc2405232ad1daadb4ec85c34f62585a00d70c355a95ddfe9525a",
+    "bytes": 14520
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/no-promotion/client.dynamic.txt": {
+    "sha256": "c0233aa4d43188d0f7567fd0419f01d291acd5a417f63ea8068dee197d5fd2db",
+    "bytes": 1082
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/no-promotion/ld/libdrsearch_other_parent_20260917.so": {
+    "sha256": "b129732a8914e06034d58687df49e0a8acbd45e9b2578ea0f04fdca89e456727",
+    "bytes": 14112
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/no-promotion/ld/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/no-promotion/parent.dynamic.txt": {
+    "sha256": "876ddcf549435353ce91c0747be9925574a8be49bbf87d62718f715d6a443bb1",
+    "bytes": 769
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/no-promotion/runpath/libdrsearch_leaf_20260917.so": {
+    "sha256": "41137bcfa39d7ddfbf3d7eceefddf445d9b2377c1a622a5b164be734680bf478",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/no-promotion/runpath/libdrsearch_other_leaf_20260917.so": {
+    "sha256": "dd45120aa7f75a06acb4ab5fc683f84bb43906e59b48c8fe6986f36e8dc84603",
+    "bytes": 13704
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/origin/client/client.so": {
+    "sha256": "0744cc7d74b4edeced68067ebf2799349f0ce428dcaa20c31806e6b57befc9b3",
+    "bytes": 14520
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/origin/client.dynamic.txt": {
+    "sha256": "ca5383fa72141780d5f8c7698175562d7fad4fe00f5396faee773f918c765fce",
+    "bytes": 849
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/origin/ld/libdrsearch_parent_20260917.so": {
+    "sha256": "5905da37288082756943abe0ae90caed3eb19272862e6241de5cf55e11f4e94d",
+    "bytes": 14096
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/origin/parent.dynamic.txt": {
+    "sha256": "876ddcf549435353ce91c0747be9925574a8be49bbf87d62718f715d6a443bb1",
+    "bytes": 769
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/extended-fixtures-1/origin/runpath/libdrsearch_leaf_20260917.so": {
+    "sha256": "41137bcfa39d7ddfbf3d7eceefddf445d9b2377c1a622a5b164be734680bf478",
+    "bytes": 13696
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/leaf.c": {
+    "sha256": "ccee7d8c426860b9a163d93d95362af90c49e7f13a1fc95e50e1c9cd4bc45101",
+    "bytes": 91
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/native.c": {
+    "sha256": "65785ebf5fb8af4c99c5772f31f3597fc25fe2a545c0974a21d0024b9da25891",
+    "bytes": 470
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/native-fixture-design/parent.c": {
+    "sha256": "598c36f2500cf839cc14afb84c9f50bab764f09bc89774dca55f2ff7e263b48e",
+    "bytes": 145
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/provision-6/CHECKOUT.json": {
+    "sha256": "10e005e906346afedc1cba933bc25761ee64e0cd93c396b86af7f80ba165908c",
+    "bytes": 2329
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/provision-6/FULL.log": {
+    "sha256": "25f2d398431bb1df347c5d1c52a9791471a3cd09e758e2fa54d82c585c784a1c",
+    "bytes": 60772
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/provision-6/LOCK-OBSERVATION.json": {
+    "sha256": "a98b37e9065cdc99b61a3c77182daff53f3983eb6aef7d537f9063ac7d898033",
+    "bytes": 65
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/provision-6/REGISTRY-ACTUAL.json": {
+    "sha256": "4222605e13eeb511b8c661e81596163d9d4c04c7584e2044f4859964f720e286",
+    "bytes": 1922
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/provision-6/REGISTRY.json": {
+    "sha256": "6e4341b066189177102287da0f1c1045be86bd01b9b34757f8eb8dde9e0461ac",
+    "bytes": 52
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/provision-6/REMOTE.json": {
+    "sha256": "d96166d7173a173f3d258a4668fb33549d1086222935313a6036da08b8a0401a",
+    "bytes": 246
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/provision-6/TERMINAL.json": {
+    "sha256": "5066d20925c8059c66d5fc007eff13e3a7dbbd47fea4df425747e2c290f7da92",
+    "bytes": 239
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/provision-6/before.json": {
+    "sha256": "d75368f47e0500ddf639c8258dcde0711833ff08b4e7408475a2f8d5b5bde6c8",
+    "bytes": 872
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/provision-6/command.json": {
+    "sha256": "96e8361487a6f139783274aefe3a9e746508a00070f670bcf6cdfd736a232d89",
+    "bytes": 739
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/provision-6/live-1.json": {
+    "sha256": "36998ca4f7a87c7ebdf25527b91fdd3fa05f5c702aa72761fc08bdd4100926b5",
+    "bytes": 11501
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/provision-6/result.json": {
+    "sha256": "6253f31ef6b31335a09e2fe3105d1bcd43ab01485c1ba81ca70e64e6085293c8",
+    "bytes": 1319
+  },
+  "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/dbt-loader-search-1/provision-6/run.py": {
+    "sha256": "727af6f0080ebfed661605dc83b73a4a4976371f3741bb82a65e0f5913650a58",
+    "bytes": 1504
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/BUILD-PLAN-1.md": {
+    "sha256": "b1bc5db5c816cf544fdfec0dff34a27cc38a2709f12aed4f28771e55310bcdc5",
+    "bytes": 5057
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/CANDIDATE-1.json": {
+    "sha256": "1150e663adf47fd502aff276996b081e3cc50a758bacae5841fd246506d75663",
+    "bytes": 1016
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/CANDIDATE-WITH-TESTS-2.json": {
+    "sha256": "7aa5b94ea1b125d5d03a48787566d0ddda9fa038a41a3c16b834bdd012c20d3b",
+    "bytes": 1372
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/CANDIDATE-WITH-TESTS-3.json": {
+    "sha256": "d1fc83ab9f9a96623b2f0f24083a8dca4d624fef87576e6995ac76b120bdf3d8",
+    "bytes": 1372
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/CANDIDATE-WITH-TESTS-4.json": {
+    "sha256": "460c04b899a96f7b62ab07da0ed0d08121ea43bb23fd74cfdeda5235ae0eb699",
+    "bytes": 1719
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/RUNTIME-FINAL.json": {
+    "sha256": "2eadb7a1adadfb5cb88d51e3a0a9b9217b5841d26b20dd1d30ac79c0d663801b",
+    "bytes": 754
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/SOURCE-BEFORE.json": {
+    "sha256": "e2d3dfd649a28754bbdd5079cddd9be3ad0738c78e7e1003106754f7239e0cf9",
+    "bytes": 1230
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/candidate-1.patch": {
+    "sha256": "46f9de5f164a83cadf863df88a618e5bd4553401d3ea8f78b64bf49bc864b0ed",
+    "bytes": 4436
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/candidate-with-tests-2.patch": {
+    "sha256": "8f2f5fac900198ffd3ab626fd90e97dd0ea5b5783307caabb350d17d67f63594",
+    "bytes": 21056
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/candidate-with-tests-3.patch": {
+    "sha256": "84a7c73167cc19d93c9ac01404110c8418ecb247395b16ad8aa5dce19a5cdafd",
+    "bytes": 24092
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/candidate-with-tests-4.patch": {
+    "sha256": "1925f54b2684de9a343c8bf0494c1caaf137960339c1b7e0a0a509ede025a057",
+    "bytes": 24314
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/candidate4-test-only.patch": {
+    "sha256": "1903aa0a2d74c3f8cc621116c1b513d7714abfb2c31037491eb83e70c0cdbbbc",
+    "bytes": 1247
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/COMMITTED.json": {
+    "sha256": "22aa08a72f7a8c059278abce1435ed1a33a0c2ee95d697a6f8742890f5e60bfd",
+    "bytes": 2133
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/FULL.log": {
+    "sha256": "f7ae897ff8baee183bf660e728672f460f4b6e1d36d9fbd1c8e7b62337020a00",
+    "bytes": 82
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/SEALED.json": {
+    "sha256": "5c4609723ebab155a73e7f53bf5730a6aea4d80e661fb89129a501a5b410da67",
+    "bytes": 844
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/TERMINAL.json": {
+    "sha256": "2e238432d08bb7b10600e66c38e46b9d7981263af143de2ce4924f1245364644",
+    "bytes": 227
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/add.json": {
+    "sha256": "5b651475e389be94aa8edd05a1f2b3553f432a892f3683605db61cd222bb583e",
+    "bytes": 562
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/before.json": {
+    "sha256": "5d01d1b6bb4df8358809be2d3a7903530b20a609755315bcb79466686d26d97c",
+    "bytes": 841
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/branch-before.json": {
+    "sha256": "cdac70dca7fc18f06aa7a1feaf0f4d2ac38039c2a99470dbe60cbd69eb33af44",
+    "bytes": 192
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/command.json": {
+    "sha256": "e483f174326b02086584f19e3a8d706358554884fc433c100a8507b8c0bc0432",
+    "bytes": 195
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/commit-paths.json": {
+    "sha256": "d7b47ad9ab764bda3ecbe76e48d574526821ca0593243320029baf2c2dd8c951",
+    "bytes": 579
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/commit.json": {
+    "sha256": "41f4b4792dd92ea7f94fef6d37042cfb7005684642b201c9b6e735d2b754207d",
+    "bytes": 898
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/commit.py": {
+    "sha256": "3e1fe088f0a00f03f4f94c8f900c1de07961bda3832937ce4d859089ce5054c0",
+    "bytes": 4348
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/diff-check.json": {
+    "sha256": "371bf89a39a0a8b4f2123cacdcee1da6454de3f5c974fbd992feefd46a46049d",
+    "bytes": 160
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/head-after.json": {
+    "sha256": "6a00f4679458f1a38fa0f4081d2f91c40047adc370fcf41b69b7ffe2385a143b",
+    "bytes": 187
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/head-before.json": {
+    "sha256": "9b746ef419178e56d240d8760f9b34f3ed4252b18beac4e4373a6afa606019f4",
+    "bytes": 188
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/index-after.json": {
+    "sha256": "4d875f74d3ab1f2a442d2852213309cb0f7c1c90da19876be4eba52b1889e274",
+    "bytes": 163
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/index-before.json": {
+    "sha256": "1dda019c24ef937c62ea7aabb3fa9e6ded3de68dc14f7e60512fb3b8814a8685",
+    "bytes": 163
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/index-staged.json": {
+    "sha256": "9af2fa8b6b9b350da6e5765a0dab27dfb660709ffbd60cc2d6c6f87be4644e48",
+    "bytes": 547
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/message.txt": {
+    "sha256": "5100a0a4bb28c673075a464bb1e13fab935e17d9fcb86b687e8e085427b9dea5",
+    "bytes": 1447
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/paths.json": {
+    "sha256": "7e9201bddd1b414aa6f6e06ac135444374698491ffe2ad840a25773f5e1ace68",
+    "bytes": 414
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/remote-main.json": {
+    "sha256": "42b3cd36fb078fcdb4cf79c5e1b920470c6ae9c6b72b60e5434570d360761a5b",
+    "bytes": 280
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/result.json": {
+    "sha256": "23cd25eb0e60a6acade1ea2788932738ae217ecb1893b49b2fd9248adcc9f346",
+    "bytes": 709
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/run.py": {
+    "sha256": "12a082b48a526703acc748ed7543678d978b74ea2254af41e38907f736bdddcf",
+    "bytes": 1494
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/status-after.json": {
+    "sha256": "36edda829f33e361fd5f15698b7b0aefb060b72654e1bf2ee7ed8643f645c833",
+    "bytes": 195
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/status-before.json": {
+    "sha256": "da5e9ab26ec278d89559d2e220f68621ea9f12ee205f241b2f58f9bd8dea69c9",
+    "bytes": 350
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/tracked-after.json": {
+    "sha256": "b0775df4365adca1d7d3924b3196e1bf3bb96985707a7ce5cfb2f9532a85bd51",
+    "bytes": 145
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/tracked-before.json": {
+    "sha256": "b207920ad9b7da5c4a720e699de39bca2a0119b9422cb91e3109364b85e295f1",
+    "bytes": 197
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/tree-after.json": {
+    "sha256": "6a51a99ab51bd0d03c0571b8d23ea1e52ec8bb5c264e80795d36640df427fb2e",
+    "bytes": 195
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/commit-1/who-am-i.json": {
+    "sha256": "4491488506ad6c2204a0140531bb244970352439b948139d669e48f36357e3f0",
+    "bytes": 708
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/CA.json": {
+    "sha256": "121e38b1994b1cc381a4570774a85e3a51c944e00ccf98c0a91909762775e266",
+    "bytes": 227
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/Cargo.lock": {
+    "sha256": "301cccef3def9b09308f66c7349b47f04c794e5151fe07f1820b497d3890d8f1",
+    "bytes": 67056
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/FULL.log": {
+    "sha256": "eab917d68652820260911ae4eab1b879de1fd1bc5397b9f99e60d3559e2bdb15",
+    "bytes": 1972
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/PLAN.json": {
+    "sha256": "5577a384046023ec9757caf273f01f192a599df08280b230052c3dcc87491570",
+    "bytes": 1067
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/SEALED.json": {
+    "sha256": "bec4225dbb4a141bb836c3a89ebd2e2913710dbb4a67e393628988a287731d60",
+    "bytes": 1045
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/TERMINAL.json": {
+    "sha256": "82d7e2205bbcf3fe0bdaee209708f967f9c1ae49d8b6946c1c36b96d936479b9",
+    "bytes": 237
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/before.json": {
+    "sha256": "d028816ab3ff948c6c06966dcdc93f3aa2c59db5178e3494cb16b254da18f777",
+    "bytes": 837
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/command.json": {
+    "sha256": "15eb0ee7cfc711b51d83cad64412a0c5266c78ac4878fbf7b6e1022d9fbf01b9",
+    "bytes": 193
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/fetch-result.json": {
+    "sha256": "eefda02cbd6374eb65a2d09109a034716e3840fc19969b589dc066ea3d406d33",
+    "bytes": 524
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/fetch.py": {
+    "sha256": "f7a9beb998de0ef3bbe7abf95cde17d22ac6624e9d617f221167cece686d5c56",
+    "bytes": 2232
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/generated-lock.json": {
+    "sha256": "0e2769c90e6774e9b5606e4b579250818cc4b8b29106831b2ded26d158fe7df9",
+    "bytes": 101
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/git-after.json": {
+    "sha256": "304de32c0a00f841053c672fdd364eb78da33c4ac330aa0438aacb1732a8b440",
+    "bytes": 6707383
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/git-before.json": {
+    "sha256": "304de32c0a00f841053c672fdd364eb78da33c4ac330aa0438aacb1732a8b440",
+    "bytes": 6707383
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/registry-after.json": {
+    "sha256": "375ee5afc4db3eb68701951e6e5c15ef005c7247bfcd46dbd67b2d1942737b8d",
+    "bytes": 6808396
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/registry-before.json": {
+    "sha256": "aacb778a12b2944d8485c5e3b69a51d1453bb21c0eaede106ed2867f603951e3",
+    "bytes": 6532014
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/result.json": {
+    "sha256": "0dee80ff182b52653e385cd98ce8af41bbf942f961d3abff32783055d52ce841",
+    "bytes": 706
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/run.py": {
+    "sha256": "1758e9aaf3af974ea9c17ad9d9dd17074d230bc2b2d5830470398392fe29585f",
+    "bytes": 1492
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/source-after.json": {
+    "sha256": "8c313e6ec7ecf3a4273f824d14f59cb81e41a261e89d4b23b81f47f98714b1e4",
+    "bytes": 1161
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/fetch-1/source-before.json": {
+    "sha256": "8c313e6ec7ecf3a4273f824d14f59cb81e41a261e89d4b23b81f47f98714b1e4",
+    "bytes": 1161
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/final-1/REPORT.md": {
+    "sha256": "950000ea37f01a7a816fafba3ff09a65b643905a4cbaa7db6289765cf2a5d832",
+    "bytes": 4894
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/final-1/RUNTIME.json": {
+    "sha256": "91bb91239b2eaea89f412a79ab4603728402ba01786635cd9ec3bc3f4f4c6f52",
+    "bytes": 1770
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/final-1/SOURCE.json": {
+    "sha256": "00154f4ddafc260d8db95bf2366d79fd61173e1fd3e423ea561bca062bd5b3de",
+    "bytes": 737033
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/final-1/cargo-native-output/reverie-dbt-8e8ba0fbe00adaaa-output": {
+    "sha256": "1aae123109928508453638a3d274596322cfcb5efdc9745f6966fef7a51eedcb",
+    "bytes": 70230
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/final-1/cargo-native-output/reverie-dbt-8e8ba0fbe00adaaa-stderr": {
+    "sha256": "896d538819ef609e469800558b0ae3a01eb0a9e027fbea1cff780f074f573aa8",
+    "bytes": 1307
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/final-1/cargo-native-output/reverie-dbt-9ce96ee5b1f3e210-output": {
+    "sha256": "a5551b855597c490c888020886aa9572b2e8c03945760ae3d85216d97756261d",
+    "bytes": 1557
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/final-1/cargo-native-output/reverie-dbt-9ce96ee5b1f3e210-stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/final-1/cargo-native-output/reverie-dbt-ed304544ad3b2ba9-output": {
+    "sha256": "07d6b74aaffdb4d8000f6f0ded2a794237b08179d5c3302699ea3a6a5a8d18de",
+    "bytes": 1557
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/final-1/cargo-native-output/reverie-dbt-ed304544ad3b2ba9-stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/FULL.log": {
+    "sha256": "ce83d98f00a39b2d7cedc68280cd897842dd3f046e1012cf955b25d10c79c925",
+    "bytes": 3348
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/SEALED.json": {
+    "sha256": "70d5ae5413b0610db2443e4ac97c0ba95c23cccb3ad6f55a46a123bdcc7bfc5f",
+    "bytes": 653
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/TERMINAL.json": {
+    "sha256": "1ae4ae843429bc0344915c921acb22475a3711c61f47a71803442b5a5a6d6039",
+    "bytes": 227
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/before.json": {
+    "sha256": "09efe1f255bcf41c0f8c58038cd7981f6a5265e60f0843d86fb702789c636658",
+    "bytes": 869
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/collection.json": {
+    "sha256": "b25588140beaf3108f7fc1e8ae854a2b95a795c2e5bd91b7a4dc4d73e1d42eb3",
+    "bytes": 516
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/command.json": {
+    "sha256": "7bbb17f4502e1d9d5d32b8de01229bb8df28363ab505cf82be7da55962fd7fdf",
+    "bytes": 201
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/commands.json": {
+    "sha256": "e11613ab187db1a529c1d6de72816e9678c7571e4b1d579d8dde9b08e505ac4e",
+    "bytes": 732
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/environment.json": {
+    "sha256": "6922ad1ea9c829c2c2fdce6c625f922d38cfb2151f62619bd9553723b425bf8f",
+    "bytes": 535
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/list-result.json": {
+    "sha256": "c281372201827b0af5d3c1d2fdd3da77de0589e4f311927ee5805a7066f19a35",
+    "bytes": 226
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/list.stderr": {
+    "sha256": "8f7e8533a2c0b25c58fae76c39ceee50927f6da2c4cbbbf4568ef8831a7f2bca",
+    "bytes": 1000
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/list.stdout": {
+    "sha256": "531deab78b22859d00658b4362c98edde4289e03526d64eb6fe23c84c00677e4",
+    "bytes": 547
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/result.json": {
+    "sha256": "4b2af790d092db79ae0ca99c0b0a913e4b3cf63cdc7c1433452b13c48123f75d",
+    "bytes": 725
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/run.py": {
+    "sha256": "aa1414e351c232bf0de6ed770fb1f609a2693034a137fa37d4355c5d27954b34",
+    "bytes": 1503
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/source-after.json": {
+    "sha256": "95d4fb7c97de19025ebab138156d1feefe572651db65c1efdd1a102dc435d737",
+    "bytes": 1161
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/source-before.json": {
+    "sha256": "95d4fb7c97de19025ebab138156d1feefe572651db65c1efdd1a102dc435d737",
+    "bytes": 1161
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/tests-result.json": {
+    "sha256": "0531ea6c2e528b7c46b486c0bab5b457b74137f476b91b0a7b24af7f162d9a81",
+    "bytes": 258
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/tests.py": {
+    "sha256": "833a3308309bd5d4f05b4a110b2cc3cd7ac22bfad4e2a6bbde7d3647380992a6",
+    "bytes": 3164
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/tests.stderr": {
+    "sha256": "5da50cb7e8fab927982a7b87b99b5e0c80e5f5f906689524e0857ae0d916be3e",
+    "bytes": 2742
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-1/tests.stdout": {
+    "sha256": "c88dd8a368d2e3721818cfc8d540af8995628fcb03b38e5064f0c3dc12c4e0f4",
+    "bytes": 1267
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/FULL.log": {
+    "sha256": "228489d64a3dd877367c2010c90b527d98df2ae70abb6d7c3e944b6cc3ce0816",
+    "bytes": 486
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/SEALED.json": {
+    "sha256": "b5d0a8b98f1bbc36f9323d22c69e3db0421f7429153094f1718bd04b026a7087",
+    "bytes": 871
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/TERMINAL.json": {
+    "sha256": "e320cb53dcc4dd101fa7904a0729ebef72751060493480808b58b5e5bb5fa990",
+    "bytes": 227
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/before.json": {
+    "sha256": "067cbea39eb05574b7ecb180423f3f2bb22004e1a955bda869c61d6ce39bea2e",
+    "bytes": 868
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/clippy-result.json": {
+    "sha256": "e0029df5f0dbc879826f8e78387bdf0208eff7d927bae8138ed0f6f6df1f8283",
+    "bytes": 204
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/clippy.stderr": {
+    "sha256": "8e19e133e6299be8737e67c595c49130e682766e711300c84cc512dca3e05317",
+    "bytes": 4107
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/clippy.stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/collection.json": {
+    "sha256": "b25588140beaf3108f7fc1e8ae854a2b95a795c2e5bd91b7a4dc4d73e1d42eb3",
+    "bytes": 516
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/command.json": {
+    "sha256": "68024f2c196973804be1fcb85b2e3509fb3b06723fd00e33ddd4640ae27e2de5",
+    "bytes": 201
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/commands.json": {
+    "sha256": "1d22d217dffc9b185be0b07e837136848d35b4bbfa2c155214fe54981b8ddae9",
+    "bytes": 745
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/environment.json": {
+    "sha256": "15316347acd0993ce2c7034658488639d00152a5e01a4c9b2fd4b51c1fdef826",
+    "bytes": 535
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/fmt-result.json": {
+    "sha256": "e752c1ce9ff797e3513140df5c5544573f4669694ee7d4215990a1f5cab91047",
+    "bytes": 134
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/fmt.stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/fmt.stdout": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/list-result.json": {
+    "sha256": "2ec3a35faabb19689d8d65a72d3d5ac5b2809717151cc7ed5b152cfaf7a7c8fa",
+    "bytes": 237
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/list.stderr": {
+    "sha256": "48da50454fefc6fca59d99d1cfa063404ed9e9b1096fcfe6dff2f244a30a90d1",
+    "bytes": 14937
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/list.stdout": {
+    "sha256": "531deab78b22859d00658b4362c98edde4289e03526d64eb6fe23c84c00677e4",
+    "bytes": 547
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/result.json": {
+    "sha256": "47a80ad89b05ad6b6ee16352ad0a6087c002ac8ebef7175f2b685331d9eb7fc2",
+    "bytes": 725
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/run.py": {
+    "sha256": "a29fdf5e1cbadcd5704cd48c6cd773a27ff14b26fd8c1dbe1746e24aac80a327",
+    "bytes": 1503
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/source-after.json": {
+    "sha256": "6565514b44e75a627e39e5e8089165afd5fff55afe5a74829fb66d17ef4484b8",
+    "bytes": 1161
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/source-before.json": {
+    "sha256": "6565514b44e75a627e39e5e8089165afd5fff55afe5a74829fb66d17ef4484b8",
+    "bytes": 1161
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/tests-result.json": {
+    "sha256": "0a9d3be5f66946a4f2eb9053835aeda094634e5f82e9b2b76163501e1706240e",
+    "bytes": 255
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/tests.py": {
+    "sha256": "051e1088dd621741e9ffaa9c6023a50986b52eb052ca39c8495a0a2b0bf06c47",
+    "bytes": 3170
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/tests.stderr": {
+    "sha256": "e8e2c522f086854e05f262cd75887b90fe4ca475dcd4086aca5ffbeb6e68df1c",
+    "bytes": 651
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/focused-tests-2/tests.stdout": {
+    "sha256": "625e19cbf964af76a53461cf3f972ad25238b2b9a0b200791c3d90be0ffbb6c0",
+    "bytes": 698
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/loader-before.c": {
+    "sha256": "303923dc0d533ca56008b57aa1a6b03d3bf8001a9307258225f227469fb7e0ce",
+    "bytes": 95258
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/FULL.log": {
+    "sha256": "28e0d9ad104bf72253fbe6d43c331d68269d132e94cf1e16bb1069ec26fad18c",
+    "bytes": 1134
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/SEALED.json": {
+    "sha256": "be68eed158181a1f656ac09debbeb56bf8fafd3e04ac626b8a143e0abeaf28f8",
+    "bytes": 874
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/TERMINAL.json": {
+    "sha256": "ba4f7dca98048dc5a797864eb78b2a900c3ce006d1a4cf9155df01b5a4f76cef",
+    "bytes": 237
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/before.json": {
+    "sha256": "71e322769daf9e4c06bc0d674616cfb819377fbfd3e9f92500a292a8337d8d72",
+    "bytes": 860
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/build.py": {
+    "sha256": "720ef1854ace7d887092de9073d2b28d666030f7bdf3cb98b3a0405bc33625a0",
+    "bytes": 3783
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/command.json": {
+    "sha256": "34ed41d1af57e91be8d81e0b4ede1b1a1622c4758c6fe476ea698cac5c8412a3",
+    "bytes": 200
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/environment.json": {
+    "sha256": "a4e9920e572ad704eb8486c01c421ac560f59ee6baab7db707e6067b3a4de4be",
+    "bytes": 446
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/generate-lock-result.json": {
+    "sha256": "74de1f085b479070e14807ee741e7838a7a9794142e0c09efec0cc6752e375b4",
+    "bytes": 130
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/git-copy-before.json": {
+    "sha256": "304de32c0a00f841053c672fdd364eb78da33c4ac330aa0438aacb1732a8b440",
+    "bytes": 6707383
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/git-copy.json": {
+    "sha256": "32b465e7aa93aceb8716e9af7efcd5b44fb1ade3ede422ce9905efbce7b12865",
+    "bytes": 389
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/git-donor-after.json": {
+    "sha256": "bb6c2cbe631ad9cfa8e1d4ccd55ffbdfa2b839deea0207eb7fb8f6904c3168f4",
+    "bytes": 6707383
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/git-donor-before.json": {
+    "sha256": "bb6c2cbe631ad9cfa8e1d4ccd55ffbdfa2b839deea0207eb7fb8f6904c3168f4",
+    "bytes": 6707383
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/registry-copy-before.json": {
+    "sha256": "aacb778a12b2944d8485c5e3b69a51d1453bb21c0eaede106ed2867f603951e3",
+    "bytes": 6532014
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/registry-copy.json": {
+    "sha256": "e1a18cd2e2ff4b2ee9e0c1f862001f0fa785b5063f2f0c43b36b6438866af0cc",
+    "bytes": 398
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/registry-donor-after.json": {
+    "sha256": "872ee7cbd1ee34d75ba79ead5679b09cf9c7284b0694d3dee295f646d06077be",
+    "bytes": 6532014
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/registry-donor-before.json": {
+    "sha256": "872ee7cbd1ee34d75ba79ead5679b09cf9c7284b0694d3dee295f646d06077be",
+    "bytes": 6532014
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/result.json": {
+    "sha256": "bca0c7a867d433ea5282fa7104c6ca1cce9c9e6a8e754496dde66aae84a89b6c",
+    "bytes": 722
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/run.py": {
+    "sha256": "9c82f4c218a9a2f644f7c50ef6276142b0d943ed774748a35e7bba10b2f48181",
+    "bytes": 1500
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/rustfmt.json": {
+    "sha256": "1d1bd67ba9565d75c1087deaf059b50dff55b791b98784e3cc22b267d13a0734",
+    "bytes": 248
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/source-after.json": {
+    "sha256": "ced84bea4b92525dbfee9d40bdcc1bc2812e8af4dcddb79105a102c29e55cb94",
+    "bytes": 1161
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/source-before.json": {
+    "sha256": "ced84bea4b92525dbfee9d40bdcc1bc2812e8af4dcddb79105a102c29e55cb94",
+    "bytes": 1161
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/source-paths.json": {
+    "sha256": "c23962a228dcd0171fed9d4dd174aeee4e6bd17f328a0df3e482621fd3f2cfc0",
+    "bytes": 481
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/FULL.log": {
+    "sha256": "ac49438b801c8122deeae4be6110f158cf9dcbb3c08df46a5d1c9ab94d00e658",
+    "bytes": 5393
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/SEALED.json": {
+    "sha256": "eac54cd0e6face2e242d80b478c5225c52d2fc1e0f9f5fadc07ea1482667e86d",
+    "bytes": 869
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/TERMINAL.json": {
+    "sha256": "bb29ef823182ca24e0216df3ffde732b3643a067fefd145b276644e5e5da8ecc",
+    "bytes": 227
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/before.json": {
+    "sha256": "db0f59fb4de2faa3b53ad5bf125d9c0acf7c1023258430cfc7730babe6903c97",
+    "bytes": 860
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/build-result.json": {
+    "sha256": "6b6684aaaf3992d3d2185380153802cc3a367907666a8802fd819e0d8c15e3eb",
+    "bytes": 170
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/build.py": {
+    "sha256": "27aa22eade3fa116221f63d457fc62b8b51c04a0e779085684d1c8ad4c538be2",
+    "bytes": 2848
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/command.json": {
+    "sha256": "13a32a7d3a0f50e43db3f1d99a157f917237e3d46c667b8d083410a94a7caee4",
+    "bytes": 200
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/environment.json": {
+    "sha256": "c4b87c2b1b3974c89f925b0e1d6bf5434b570803fa1f4a6ec7d0e6b161317363",
+    "bytes": 427
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/native-install.json": {
+    "sha256": "f2626b91625e6d4399df38e320e1a5c1a160f908c9720af51c4c93a2996bfb53",
+    "bytes": 35477
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/result.json": {
+    "sha256": "269b86a9cf4ae2ec9b86f337167bd70fe2dc8de4dea9a746f1bf50fffab9bd61",
+    "bytes": 721
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/run.py": {
+    "sha256": "b470dbc8a826d9e38db9408691c5de7fe7bbaf4b25ed9614003062af17c8b714",
+    "bytes": 1500
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/source-after.json": {
+    "sha256": "95d4fb7c97de19025ebab138156d1feefe572651db65c1efdd1a102dc435d737",
+    "bytes": 1161
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/source-before.json": {
+    "sha256": "95d4fb7c97de19025ebab138156d1feefe572651db65c1efdd1a102dc435d737",
+    "bytes": 1161
+  },
+  "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/test-before-cargo-env.rs": {
+    "sha256": "71e4dcd7c1263fd48527d960205ffdd23f7152ea1fc7a0f06d466819da0d5a19",
+    "bytes": 15325
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "status",
+    "--porcelain=v1",
+    "--untracked-files=normal"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.077533686067909,
+  "stdout": "?? ignored/\n",
+  "stderr": ""
+}

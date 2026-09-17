@@ -1,0 +1,29 @@
+
+running 10 tests
+test client_directory_keeps_existing_search_precedence ... FAILED
+test environment_keeps_existing_search_precedence ... FAILED
+test fallback_does_not_promote_unrelated_indirect_path ... FAILED
+test fallback_does_not_search_explicit_relative_dependency ... FAILED
+test fallback_expands_origin_from_client_directory ... FAILED
+test fallback_keeps_ordered_runpath_selection ... FAILED
+test later_direct_dependency_uses_client_runpath ... FAILED
+test legacy_rpath_keeps_existing_search_precedence ... FAILED
+test missing_direct_dependency_still_fails ... FAILED
+test runpath_does_not_supply_indirect_only_dependency ... FAILED
+
+failures:
+
+failures:
+    client_directory_keeps_existing_search_precedence
+    environment_keeps_existing_search_precedence
+    fallback_does_not_promote_unrelated_indirect_path
+    fallback_does_not_search_explicit_relative_dependency
+    fallback_expands_origin_from_client_directory
+    fallback_keeps_ordered_runpath_selection
+    later_direct_dependency_uses_client_runpath
+    legacy_rpath_keeps_existing_search_precedence
+    missing_direct_dependency_still_fails
+    runpath_does_not_supply_indirect_only_dependency
+
+test result: FAILED. 0 passed; 10 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "rustfmt",
+    "--edition",
+    "2024",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/reverie-dbt/tests/private_loader_search.rs"
+  ],
+  "actual_exit": 0,
+  "stdout": "",
+  "stderr": ""
+}

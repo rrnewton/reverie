@@ -1,0 +1,15 @@
+{
+  "head": "a28de6f8eb585d7095fa80e5f4c0fc41ec3ba9e4",
+  "source": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/reverie-dbt/vendor/dynamorio/core/unix/loader.c",
+  "source_sha256": "303923dc0d533ca56008b57aa1a6b03d3bf8001a9307258225f227469fb7e0ce",
+  "git_status": "?? ignored/\n",
+  "active_AGENTS": {
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/AGENTS.md": false,
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/CLAUDE.md": false,
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/reverie-dbt/AGENTS.md": false,
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/reverie-dbt/vendor/AGENTS.md": false,
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/reverie-dbt/vendor/dynamorio/AGENTS.md": false,
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/reverie-dbt/vendor/dynamorio/core/AGENTS.md": false,
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/reverie-dbt/vendor/dynamorio/core/unix/AGENTS.md": false
+  }
+}

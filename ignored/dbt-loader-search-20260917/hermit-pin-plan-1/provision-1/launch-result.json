@@ -1,0 +1,20 @@
+{
+  "argv": [
+    "systemd-run",
+    "--user",
+    "--scope",
+    "--quiet",
+    "--collect",
+    "--unit=dbt-loader-pin-provision1-20260917.scope",
+    "--property=CPUQuota=200%",
+    "--property=MemoryMax=4G",
+    "--property=MemorySwapMax=0",
+    "--property=TasksMax=1024",
+    "--property=RuntimeMaxSec=900",
+    "--",
+    "python3",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/hermit-pin-plan-1/provision-1/run.py"
+  ],
+  "actual_exit": 0,
+  "elapsed_seconds": 62.7339648809284
+}

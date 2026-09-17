@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "status",
+    "--porcelain=v1",
+    "--untracked-files=normal"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.08076558914035559,
+  "stdout": " M reverie-dbt/vendor/dynamorio/core/unix/loader.c\n?? ignored/\n?? reverie-dbt/tests/fixtures/private_loader_search/\n?? reverie-dbt/tests/private_loader_search.rs\n",
+  "stderr": ""
+}

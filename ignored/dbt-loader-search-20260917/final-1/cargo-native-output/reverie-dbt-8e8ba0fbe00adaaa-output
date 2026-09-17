@@ -1,0 +1,570 @@
+cargo:rerun-if-changed=build.rs
+cargo:rerun-if-changed=vendor/dynamorio
+cargo:rerun-if-env-changed=CMAKE
+cargo:rerun-if-env-changed=CMAKE_GENERATOR
+cargo:rerun-if-env-changed=CI
+cargo:rerun-if-env-changed=REVERIE_DBT_MAX_BUILD_SECONDS
+cargo:warning=DynamoRIO build cache MISS key=sha256:0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4 observed_unix_seconds=1789610215
+-- CMake version 3.31.8
+-- The C compiler identification is GNU 11.5.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- The CXX compiler identification is GNU 11.5.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Building for x86
+-- Processor vendor is AuthenticAMD
+-- Version number: 11.91.0
+-- Performing Test proc_found_avx
+-- Performing Test proc_found_avx - Success
+-- Compiler and processor support AVX.
+-- Performing Test proc_found_avx2
+-- Performing Test proc_found_avx2 - Success
+-- Compiler and processor support AVX2.
+-- Performing Test proc_found_avx512
+-- Performing Test proc_found_avx512 - Success
+-- Compiler and processor support AVX-512.
+-- The ASM compiler identification is GNU
+-- Found assembler: /usr/bin/as
+-- Found Perl: /usr/bin/perl (found version "5.32.1")
+-- Performing Test cxx17_available
+-- Performing Test cxx17_available - Success
+-- Performing Test no_pie_avail
+-- Performing Test no_pie_avail - Success
+-- Performing Test no_stack_protector_avail
+-- Performing Test no_stack_protector_avail - Success
+-- Performing Test implicit_fallthrough_avail
+-- Performing Test implicit_fallthrough_avail - Success
+-- Performing Test suggest_override_avail
+-- Performing Test suggest_override_avail - Success
+-- Performing Test nounused_avail
+-- Performing Test nounused_avail - Success
+-- Performing Test stringop_truncation_avail
+-- Performing Test stringop_truncation_avail - Success
+-- Performing Test format_truncation_avail
+-- Performing Test format_truncation_avail - Success
+-- Performing Test stringop_overflow_avail
+-- Performing Test stringop_overflow_avail - Success
+-- Performing Test HAVE_TYPELIMITS_CONTROL
+-- Performing Test HAVE_TYPELIMITS_CONTROL - Success
+-- Performing Test dangling_pointer_avail
+-- Performing Test dangling_pointer_avail - Failed
+-- Performing Test HAVE_FVISIBILITY_INTERNAL
+-- Performing Test HAVE_FVISIBILITY_INTERNAL - Success
+-- Performing Test HAVE_FVISIBILITY_HIDDEN
+-- Performing Test HAVE_FVISIBILITY_HIDDEN - Success
+-- Performing Test HAVE_FNOSANITIZE_NULL
+-- Performing Test HAVE_FNOSANITIZE_NULL - Success
+-- Looking for sys/types.h
+-- Looking for sys/types.h - found
+-- Looking for stdint.h
+-- Looking for stdint.h - found
+-- Looking for stddef.h
+-- Looking for stddef.h - found
+-- Check size of bool
+-- Check size of bool - failed
+-- Check size of _Bool
+-- Check size of _Bool - done
+-- Check size of uint
+-- Check size of uint - done
+-- Check size of ushort
+-- Check size of ushort - done
+-- Check size of byte
+-- Check size of byte - failed
+-- Check size of sbyte
+-- Check size of sbyte - failed
+-- Check size of uint32
+-- Check size of uint32 - failed
+-- Check size of uint64
+-- Check size of uint64 - failed
+-- Check size of int32
+-- Check size of int32 - failed
+-- Check size of int64
+-- Check size of int64 - failed
+-- Looking for linux/rseq.h
+-- Looking for linux/rseq.h - found
+-- Looking for libunwind.h
+-- Looking for libunwind.h - found
+-- Intel PT not found.
+-- libipt submodule is not initialized. libdrpt2ir and drpt2trace will not be built.
+-- For dbghelp, choosing among: 
+-- Found ZLIB: /usr/lib64/libz.so (found version "1.2.11")
+-- WARNING: vera++ not found: disabling code style checks
+-- Configuring done (3.4s)
+-- Generating done (0.1s)
+-- Build files have been written to: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/build
+[  0%] Built target api_headers
+[  0%] Generating ../event_strings.h
+[  1%] Building C object tools/CMakeFiles/run_in_bg.dir/run_in_bg.c.o
+[  1%] Generating dynamorio.ldscript
+[  1%] Built target generate_syslog
+[  1%] Building C object tools/CMakeFiles/runstats.dir/runstats.c.o
+[  1%] Built target dynamorio_ldscript
+[  1%] Building C object tools/CMakeFiles/drnudgeunix.dir/nudgeunix.c.o
+[  1%] Building C object tools/CMakeFiles/drloader.dir/drloader.c.o
+[  1%] Linking C executable ../bin64/run_in_bg
+[  2%] Linking C executable ../bin64/drloader
+[  2%] Built target run_in_bg
+[  2%] Building C object tools/CMakeFiles/drnudgeunix.dir/__/core/unix/nudgesig.c.o
+[  2%] Building ASM object core/CMakeFiles/drmemfuncs.dir/arch/x86/memfuncs.asm.o
+[  3%] Linking C executable ../bin64/runstats
+[  3%] Built target drloader
+[  4%] Linking C executable ../bin64/drnudgeunix
+[  5%] Building C object core/CMakeFiles/drmemfuncs.dir/lib/memmove.c.o
+[  5%] Building ASM object core/CMakeFiles/drlibc.dir/drlibc/drlibc_xarch.asm.o
+[  5%] Built target runstats
+[  5%] Building ASM object core/CMakeFiles/drlibc.dir/drlibc/drlibc_x86.asm.o
+[  5%] Building C object core/CMakeFiles/drlibc.dir/drlibc/drlibc.c.o
+[  5%] Built target drnudgeunix
+[  6%] Building C object core/CMakeFiles/drlibc.dir/drlibc/drlibc_notdr_dcxt.c.o
+[  6%] Building C object core/CMakeFiles/drlibc.dir/drlibc/drlibc_notdr_error.c.o
+[  7%] Linking C static library ../lib64/libdrmemfuncs.a
+[  7%] Building C object core/CMakeFiles/drlibc.dir/drlibc/drlibc_notdr_ignoreassert.c.o
+[  8%] Building C object core/CMakeFiles/drlibc.dir/drlibc/drlibc_notdr_logfile.c.o
+[  8%] Built target drmemfuncs
+[  8%] Building C object core/CMakeFiles/drlibc.dir/drlibc/drlibc_notdr_printlog.c.o
+[  8%] Building C object core/CMakeFiles/drlibc.dir/drlibc/drlibc_notdr_report.c.o
+[  9%] Building C object core/CMakeFiles/drlibc.dir/drlibc/drlibc_notdr_saferead.c.o
+[  9%] Building C object core/CMakeFiles/drlibc.dir/drlibc/drlibc_notdr_stats.c.o
+[  9%] Building C object core/CMakeFiles/drlibc.dir/drlibc/drlibc_unix.c.o
+[ 10%] Building C object core/CMakeFiles/drlibc.dir/drlibc/drlibc_module_elf.c.o
+[ 10%] Linking C static library ../lib64/libdrlibc.a
+[ 10%] Built target drlibc
+[ 10%] Building C object core/CMakeFiles/drpreload.dir/unix/preload.c.o
+[ 11%] Building C object core/CMakeFiles/drdecode.dir/ir/opnd_shared.c.o
+[ 11%] Building C object core/CMakeFiles/dynamorio.dir/options.c.o
+[ 11%] Building C object core/CMakeFiles/dynamorio_static.dir/options.c.o
+[ 11%] Building C object core/CMakeFiles/drpreload.dir/config.c.o
+[ 12%] Building C object core/CMakeFiles/drpreload.dir/string.c.o
+[ 12%] Building C object core/CMakeFiles/drpreload.dir/io.c.o
+[ 12%] Building C object core/CMakeFiles/drdecode.dir/ir/x86/opnd.c.o
+[ 13%] Building C object core/CMakeFiles/dynamorio_static.dir/dynamo.c.o
+[ 14%] Building C object core/CMakeFiles/dynamorio.dir/dynamo.c.o
+[ 14%] Building C object core/CMakeFiles/drdecode.dir/ir/instr_shared.c.o
+[ 14%] Building C object core/CMakeFiles/dynamorio_static.dir/fragment.c.o
+[ 14%] Building C object core/CMakeFiles/dynamorio.dir/fragment.c.o
+[ 14%] Linking C shared library ../lib64/release/libdrpreload.so
+[ 14%] Built target drpreload
+[ 14%] Building C object core/CMakeFiles/dynamorio.dir/fcache.c.o
+[ 15%] Building C object core/CMakeFiles/drdecode.dir/ir/x86/instr.c.o
+[ 15%] Building C object core/CMakeFiles/drdecode.dir/ir/instrlist.c.o
+[ 15%] Building C object libutil/CMakeFiles/drfrontendlib.dir/dr_frontend_unix.c.o
+[ 16%] Building C object libutil/CMakeFiles/drfrontendlib.dir/dr_frontend_common.c.o
+[ 16%] Building C object core/CMakeFiles/drdecode.dir/ir/decode_shared.c.o
+[ 16%] Linking C static library ../lib64/libdrfrontendlib.a
+[ 17%] Building C object core/CMakeFiles/drdecode.dir/ir/x86/decode.c.o
+[ 17%] Built target drfrontendlib
+[ 17%] Building C object core/CMakeFiles/drdecode.dir/ir/encode_shared.c.o
+[ 17%] Building C object libutil/CMakeFiles/drconfiglib.dir/dr_config.c.o
+[ 18%] Building C object libutil/CMakeFiles/drconfiglib.dir/utils.c.o
+[ 18%] Building C object core/CMakeFiles/drdecode.dir/ir/x86/encode.c.o
+[ 18%] Building C object libutil/CMakeFiles/drconfiglib.dir/__/core/io.c.o
+[ 18%] Building C object core/CMakeFiles/dynamorio_static.dir/fcache.c.o
+[ 19%] Building C object core/CMakeFiles/dynamorio.dir/link.c.o
+[ 19%] Building C object libutil/CMakeFiles/drconfiglib.dir/__/core/unix/nudgesig.c.o
+[ 20%] Linking C static library ../lib64/libdrconfiglib.a
+[ 20%] Built target drconfiglib
+[ 21%] Building C object core/CMakeFiles/dynamorio_static.dir/link.c.o
+[ 22%] Building C object core/CMakeFiles/drdecode.dir/ir/isa_regdeps/encoding_common.c.o
+[ 22%] Building C object core/CMakeFiles/drdecode.dir/ir/isa_regdeps/encode.c.o
+[ 22%] Building C object core/CMakeFiles/dynamorio.dir/dispatch.c.o
+[ 22%] Building C object core/CMakeFiles/drdecode.dir/ir/isa_regdeps/decode.c.o
+[ 23%] Building C object core/CMakeFiles/drdecode.dir/ir/isa_regdeps/disassemble.c.o
+[ 23%] Building C object core/CMakeFiles/drdecode.dir/ir/disassemble_shared.c.o
+[ 23%] Building C object core/CMakeFiles/drdecode.dir/ir/x86/disassemble.c.o
+[ 23%] Building C object core/CMakeFiles/dynamorio.dir/emit.c.o
+[ 23%] Building C object tools/CMakeFiles/drconfig.dir/drdeploy.c.o
+[ 24%] Building C object core/CMakeFiles/dynamorio.dir/utils.c.o
+[ 25%] Building C object core/CMakeFiles/drdecode.dir/ir/ir_utils_shared.c.o
+[ 25%] Building C object core/CMakeFiles/drdecode.dir/ir/x86/ir_utils.c.o
+[ 25%] Building C object core/CMakeFiles/dynamorio_static.dir/dispatch.c.o
+[ 25%] Linking C executable ../bin64/drconfig
+[ 25%] Built target drconfig
+[ 25%] Building C object core/CMakeFiles/drdecode.dir/ir/x86/decode_table.c.o
+[ 26%] Building C object core/CMakeFiles/drdecode.dir/ir/x86/decode_fast.c.o
+[ 26%] Building C object core/CMakeFiles/dynamorio_static.dir/emit.c.o
+[ 26%] Building C object core/CMakeFiles/dynamorio.dir/config.c.o
+[ 26%] Building C object core/CMakeFiles/drdecode.dir/ir/decodelib.c.o
+[ 27%] Building C object core/CMakeFiles/dynamorio_static.dir/utils.c.o
+[ 27%] Building C object core/CMakeFiles/dynamorio.dir/stats.c.o
+[ 27%] Building C object core/CMakeFiles/drdecode.dir/string.c.o
+[ 27%] Building C object core/CMakeFiles/dynamorio_static.dir/config.c.o
+[ 28%] Building C object core/CMakeFiles/dynamorio.dir/heap.c.o
+[ 29%] Building C object core/CMakeFiles/drdecode.dir/io.c.o
+[ 29%] Building C object core/CMakeFiles/dynamorio_static.dir/stats.c.o
+[ 29%] Building C object core/CMakeFiles/dynamorio.dir/monitor.c.o
+[ 30%] Building C object core/CMakeFiles/dynamorio_static.dir/heap.c.o
+[ 30%] Building C object core/CMakeFiles/dynamorio_static.dir/monitor.c.o
+[ 30%] Linking C static library ../lib64/libdrdecode.a
+[ 30%] Built target drdecode
+[ 30%] Building C object core/CMakeFiles/dynamorio_static.dir/perfctr.c.o
+[ 30%] Building C object core/CMakeFiles/drinjectlib.dir/unix/injector.c.o
+[ 30%] Building C object core/CMakeFiles/drinjectlib.dir/config.c.o
+[ 30%] Building C object core/CMakeFiles/dynamorio.dir/perfctr.c.o
+[ 31%] Building C object core/CMakeFiles/dynamorio.dir/vmareas.c.o
+[ 32%] Building C object core/CMakeFiles/drinjectlib.dir/string.c.o
+[ 32%] Building C object core/CMakeFiles/drinjectlib.dir/io.c.o
+[ 32%] Building C object core/CMakeFiles/dynamorio.dir/rct.c.o
+[ 33%] Building C object core/CMakeFiles/dynamorio_static.dir/vmareas.c.o
+[ 33%] Building C object core/CMakeFiles/dynamorio.dir/hotpatch.c.o
+[ 33%] Building C object core/CMakeFiles/dynamorio_static.dir/rct.c.o
+[ 34%] Building C object core/CMakeFiles/dynamorio.dir/hashtable.c.o
+[ 34%] Linking C static library ../lib64/libdrinjectlib.a
+[ 34%] Built target drinjectlib
+[ 34%] Building C object core/CMakeFiles/dynamorio_static.dir/hotpatch.c.o
+[ 34%] Building C object core/CMakeFiles/dynamorio.dir/module_list.c.o
+[ 34%] Building C object core/CMakeFiles/dynamorio.dir/moduledb.c.o
+[ 35%] Building C object tools/CMakeFiles/drrun.dir/drdeploy.c.o
+[ 35%] Building C object tools/CMakeFiles/drinject.dir/drdeploy.c.o
+[ 36%] Building C object core/CMakeFiles/dynamorio.dir/perscache.c.o
+[ 36%] Linking C executable ../bin64/drrun
+[ 37%] Linking C executable ../bin64/drinject
+[ 37%] Built target drrun
+[ 37%] Building C object core/CMakeFiles/dynamorio.dir/nudge.c.o
+[ 38%] Building C object core/CMakeFiles/dynamorio_static.dir/hashtable.c.o
+[ 38%] Built target drinject
+[ 38%] Building C object core/CMakeFiles/dynamorio_static.dir/module_list.c.o
+[ 38%] Building C object core/CMakeFiles/dynamorio_static.dir/moduledb.c.o
+[ 38%] Building C object core/CMakeFiles/dynamorio.dir/synch.c.o
+[ 39%] Building C object core/CMakeFiles/dynamorio.dir/buildmark.c.o
+[ 40%] Building C object core/CMakeFiles/dynamorio_static.dir/perscache.c.o
+[ 40%] Building C object core/CMakeFiles/dynamorio_static.dir/nudge.c.o
+[ 40%] Building C object core/CMakeFiles/dynamorio_static.dir/synch.c.o
+[ 40%] Building C object core/CMakeFiles/dynamorio.dir/loader_shared.c.o
+[ 40%] Building C object core/CMakeFiles/dynamorio.dir/io.c.o
+[ 41%] Building C object core/CMakeFiles/dynamorio.dir/native_exec.c.o
+[ 42%] Building C object core/CMakeFiles/dynamorio_static.dir/buildmark.c.o
+[ 42%] Building C object core/CMakeFiles/dynamorio_static.dir/loader_shared.c.o
+[ 42%] Building C object core/CMakeFiles/dynamorio.dir/lib/instrument.c.o
+[ 42%] Building C object core/CMakeFiles/dynamorio.dir/lib/module_api.c.o
+[ 42%] Building C object core/CMakeFiles/dynamorio_static.dir/io.c.o
+[ 43%] Building C object core/CMakeFiles/dynamorio.dir/translate.c.o
+[ 43%] Building C object core/CMakeFiles/dynamorio.dir/annotations.c.o
+[ 43%] Building C object core/CMakeFiles/dynamorio.dir/jit_opt.c.o
+[ 44%] Building C object core/CMakeFiles/dynamorio.dir/string.c.o
+[ 44%] Building C object core/CMakeFiles/dynamorio.dir/arch/arch.c.o
+[ 45%] Building C object core/CMakeFiles/dynamorio_static.dir/native_exec.c.o
+[ 45%] Building C object core/CMakeFiles/dynamorio_static.dir/lib/instrument.c.o
+[ 45%] Building C object core/CMakeFiles/dynamorio.dir/arch/emit_utils_shared.c.o
+[ 45%] Building C object core/CMakeFiles/dynamorio_static.dir/lib/module_api.c.o
+[ 46%] Building C object core/CMakeFiles/dynamorio_static.dir/translate.c.o
+[ 47%] Building C object core/CMakeFiles/dynamorio.dir/arch/x86/emit_utils.c.o
+[ 47%] Building C object core/CMakeFiles/dynamorio_static.dir/annotations.c.o
+[ 47%] Building C object core/CMakeFiles/dynamorio_static.dir/jit_opt.c.o
+[ 48%] Building C object core/CMakeFiles/dynamorio_static.dir/string.c.o
+[ 48%] Building C object core/CMakeFiles/dynamorio_static.dir/arch/arch.c.o
+[ 48%] Building C object core/CMakeFiles/dynamorio_static.dir/arch/emit_utils_shared.c.o
+[ 48%] Building C object core/CMakeFiles/dynamorio.dir/ir/opnd_shared.c.o
+[ 48%] Building C object core/CMakeFiles/dynamorio.dir/ir/x86/opnd.c.o
+[ 49%] Building C object core/CMakeFiles/dynamorio_static.dir/arch/x86/emit_utils.c.o
+[ 49%] Building C object core/CMakeFiles/dynamorio.dir/ir/instr_shared.c.o
+[ 49%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/opnd_shared.c.o
+[ 49%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/x86/opnd.c.o
+[ 50%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/instr_shared.c.o
+[ 50%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/x86/instr.c.o
+[ 51%] Building C object core/CMakeFiles/dynamorio.dir/ir/x86/instr.c.o
+[ 51%] Building C object core/CMakeFiles/dynamorio.dir/ir/instrlist.c.o
+[ 51%] Building C object core/CMakeFiles/dynamorio.dir/ir/decode_shared.c.o
+[ 51%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/instrlist.c.o
+[ 52%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/decode_shared.c.o
+[ 53%] Building C object core/CMakeFiles/dynamorio.dir/ir/x86/decode.c.o
+[ 53%] Building C object core/CMakeFiles/dynamorio.dir/ir/encode_shared.c.o
+[ 53%] Building C object core/CMakeFiles/dynamorio.dir/ir/x86/encode.c.o
+[ 53%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/x86/decode.c.o
+[ 54%] Building C object core/CMakeFiles/dynamorio.dir/ir/isa_regdeps/encoding_common.c.o
+[ 54%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/encode_shared.c.o
+[ 54%] Building C object core/CMakeFiles/dynamorio.dir/ir/isa_regdeps/encode.c.o
+[ 55%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/x86/encode.c.o
+[ 55%] Building C object core/CMakeFiles/dynamorio.dir/ir/isa_regdeps/decode.c.o
+[ 56%] Building C object core/CMakeFiles/dynamorio.dir/ir/isa_regdeps/disassemble.c.o
+[ 56%] Building C object core/CMakeFiles/dynamorio.dir/ir/disassemble_shared.c.o
+[ 56%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/isa_regdeps/encoding_common.c.o
+[ 56%] Building C object core/CMakeFiles/dynamorio.dir/ir/x86/disassemble.c.o
+[ 57%] Building C object core/CMakeFiles/dynamorio.dir/ir/ir_utils_shared.c.o
+[ 57%] Building C object core/CMakeFiles/dynamorio.dir/ir/x86/ir_utils.c.o
+[ 57%] Building C object core/CMakeFiles/dynamorio.dir/ir/x86/decode_table.c.o
+[ 57%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/isa_regdeps/encode.c.o
+[ 58%] Building C object core/CMakeFiles/dynamorio.dir/ir/x86/decode_fast.c.o
+[ 59%] Building C object core/CMakeFiles/dynamorio.dir/arch/interp.c.o
+[ 59%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/isa_regdeps/decode.c.o
+[ 59%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/isa_regdeps/disassemble.c.o
+[ 59%] Building C object core/CMakeFiles/dynamorio.dir/arch/proc_shared.c.o
+[ 59%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/disassemble_shared.c.o
+[ 60%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/x86/disassemble.c.o
+[ 60%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/ir_utils_shared.c.o
+[ 61%] Building C object core/CMakeFiles/dynamorio.dir/arch/x86/proc.c.o
+[ 61%] Building C object core/CMakeFiles/dynamorio.dir/arch/mangle_shared.c.o
+[ 61%] Building C object core/CMakeFiles/dynamorio.dir/arch/x86/mangle.c.o
+[ 61%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/x86/ir_utils.c.o
+[ 62%] Building C object core/CMakeFiles/dynamorio.dir/arch/clean_call_opt_shared.c.o
+[ 63%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/x86/decode_table.c.o
+[ 63%] Building C object core/CMakeFiles/dynamorio.dir/arch/x86/clean_call_opt.c.o
+[ 63%] Building C object core/CMakeFiles/dynamorio.dir/arch/asm_aux.c.o
+[ 63%] Building C object core/CMakeFiles/dynamorio_static.dir/ir/x86/decode_fast.c.o
+[ 63%] Building C object core/CMakeFiles/dynamorio_static.dir/arch/interp.c.o
+[ 64%] Building C object core/CMakeFiles/dynamorio_static.dir/arch/proc_shared.c.o
+[ 65%] Building ASM object core/CMakeFiles/dynamorio.dir/arch/x86/x86.asm.o
+[ 65%] Building C object core/CMakeFiles/dynamorio_static.dir/arch/x86/proc.c.o
+[ 65%] Building C object core/CMakeFiles/dynamorio_static.dir/arch/mangle_shared.c.o
+[ 65%] Building C object core/CMakeFiles/dynamorio.dir/arch/x86/optimize.c.o
+[ 65%] Building C object core/CMakeFiles/dynamorio.dir/arch/sideline.c.o
+[ 66%] Building C object core/CMakeFiles/dynamorio_static.dir/arch/x86/mangle.c.o
+[ 67%] Building C object core/CMakeFiles/dynamorio.dir/arch/retcheck.c.o
+[ 67%] Building C object core/CMakeFiles/dynamorio.dir/arch/x86/x86_to_x64.c.o
+[ 67%] Building C object core/CMakeFiles/dynamorio.dir/unix/os.c.o
+[ 68%] Building C object core/CMakeFiles/dynamorio.dir/unix/signal.c.o
+[ 68%] Building C object core/CMakeFiles/dynamorio.dir/unix/module.c.o
+[ 68%] Building C object core/CMakeFiles/dynamorio.dir/unix/pcprofile.c.o
+[ 68%] Building C object core/CMakeFiles/dynamorio_static.dir/arch/clean_call_opt_shared.c.o
+[ 69%] Building C object core/CMakeFiles/dynamorio.dir/unix/stackdump.c.o
+[ 69%] Building C object core/CMakeFiles/dynamorio_static.dir/arch/x86/clean_call_opt.c.o
+[ 69%] Building C object core/CMakeFiles/dynamorio.dir/unix/diagnost.c.o
+[ 70%] Building C object core/CMakeFiles/dynamorio_static.dir/arch/asm_aux.c.o
+[ 70%] Building C object core/CMakeFiles/dynamorio.dir/unix/loader.c.o
+[ 70%] Building ASM object core/CMakeFiles/dynamorio_static.dir/arch/x86/x86.asm.o
+[ 70%] Building C object core/CMakeFiles/dynamorio_static.dir/arch/x86/optimize.c.o
+[ 71%] Building C object core/CMakeFiles/dynamorio_static.dir/arch/sideline.c.o
+[ 71%] Building C object core/CMakeFiles/dynamorio_static.dir/arch/retcheck.c.o
+[ 71%] Building C object core/CMakeFiles/dynamorio_static.dir/arch/x86/x86_to_x64.c.o
+[ 72%] Building C object core/CMakeFiles/dynamorio.dir/unix/loader_linux.c.o
+[ 73%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/os.c.o
+[ 73%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/signal.c.o
+[ 73%] Building C object core/CMakeFiles/dynamorio.dir/unix/coredump.c.o
+[ 73%] Building C object core/CMakeFiles/dynamorio.dir/unix/ptrace_lib.c.o
+[ 74%] Building C object core/CMakeFiles/dynamorio.dir/unix/ptrace_attach.c.o
+[ 74%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/module.c.o
+[ 74%] Building C object core/CMakeFiles/dynamorio.dir/unix/memquery_linux.c.o
+[ 74%] Building C object core/CMakeFiles/dynamorio.dir/unix/memquery.c.o
+[ 75%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/pcprofile.c.o
+[ 76%] Building C object core/CMakeFiles/dynamorio.dir/unix/memcache.c.o
+[ 76%] Building C object core/CMakeFiles/dynamorio.dir/unix/module_elf.c.o
+[ 76%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/stackdump.c.o
+[ 76%] Building C object core/CMakeFiles/dynamorio.dir/unix/ksynch_linux.c.o
+[ 76%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/diagnost.c.o
+[ 77%] Building C object core/CMakeFiles/dynamorio.dir/unix/tls_linux_x86.c.o
+[ 78%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/loader.c.o
+[ 78%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/loader_linux.c.o
+[ 78%] Building C object core/CMakeFiles/dynamorio.dir/unix/signal_linux.c.o
+[ 78%] Building C object core/CMakeFiles/dynamorio.dir/unix/signal_linux_x86.c.o
+[ 78%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/coredump.c.o
+[ 79%] Building C object core/CMakeFiles/dynamorio.dir/unix/native_elf.c.o
+[ 79%] Building C object core/CMakeFiles/dynamorio.dir/unix/nudgesig.c.o
+[ 79%] Building C object core/CMakeFiles/dynamorio.dir/unix/rseq_linux.c.o
+[ 80%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/ptrace_lib.c.o
+[ 80%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/ptrace_attach.c.o
+[ 80%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/memquery_linux.c.o
+[ 81%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/memquery.c.o
+[ 81%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/memcache.c.o
+[ 81%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/module_elf.c.o
+[ 82%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/ksynch_linux.c.o
+[ 83%] Linking C shared library ../lib64/release/libdynamorio.so
+[ 83%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/tls_linux_x86.c.o
+[ 83%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/signal_linux.c.o
+[ 84%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/signal_linux_x86.c.o
+[ 84%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/native_elf.c.o
+[ 84%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/nudgesig.c.o
+[ 85%] Building C object core/CMakeFiles/dynamorio_static.dir/unix/rseq_linux.c.o
+[ 85%] Built target dynamorio
+[ 85%] Building C object ext/drcontainers/CMakeFiles/drcontainers.dir/hashtable.c.o
+[ 85%] Building C object ext/drcontainers/CMakeFiles/drcontainers.dir/drvector.c.o
+[ 86%] Building C object ext/drcontainers/CMakeFiles/drcontainers.dir/drtable.c.o
+[ 86%] Linking C static library ../lib64/release/libdynamorio_static.a
+[ 86%] Linking C static library ../lib64/release/libdrcontainers.a
+[ 86%] Built target drcontainers
+[ 86%] Building C object ext/drmgr/CMakeFiles/drmgr.dir/drmgr.c.o
+[ 86%] Building C object ext/drmgr/CMakeFiles/drmgr_static.dir/drmgr.c.o
+[ 86%] Built target dynamorio_static
+[ 87%] Building C object ext/drcontainers/CMakeFiles/drcontainers_drstatic.dir/drvector.c.o
+[ 87%] Building C object ext/drcontainers/CMakeFiles/drcontainers_drstatic.dir/hashtable.c.o
+[ 87%] Building C object ext/drcontainers/CMakeFiles/drcontainers_drstatic.dir/drtable.c.o
+[ 88%] Linking C static library ../lib64/release/libdrmgr_static.a
+[ 88%] Linking C shared library ../lib64/release/libdrmgr.so
+[ 88%] Built target drmgr
+[ 88%] Built target drmgr_static
+[ 89%] Linking C static library ../lib64/release/libdrcontainers_drstatic.a
+[ 89%] Building C object ext/drwrap/CMakeFiles/drwrap.dir/drwrap.c.o
+[ 89%] Building C object ext/drreg/CMakeFiles/drreg.dir/drreg.c.o
+[ 89%] Building C object ext/drreg/CMakeFiles/drreg_static.dir/drreg.c.o
+[ 89%] Built target drcontainers_drstatic
+[ 90%] Building ASM object ext/drwrap/CMakeFiles/drwrap.dir/drwrap_asm_x86.asm.o
+[ 90%] Building C object ext/drwrap/CMakeFiles/drwrap_static.dir/drwrap.c.o
+[ 90%] Linking C shared library ../lib64/release/libdrwrap.so
+[ 90%] Built target drwrap
+[ 91%] Building ASM object ext/drwrap/CMakeFiles/drwrap_static.dir/drwrap_asm_x86.asm.o
+[ 92%] Building C object ext/drmgr/CMakeFiles/drmgr_drstatic.dir/drmgr.c.o
+[ 92%] Linking C static library ../lib64/release/libdrwrap_static.a
+[ 92%] Linking C static library ../lib64/release/libdrreg_static.a
+[ 92%] Built target drwrap_static
+[ 92%] Linking C shared library ../lib64/release/libdrreg.so
+[ 92%] Built target drreg
+[ 92%] Built target drreg_static
+[ 92%] Building C object ext/drx/CMakeFiles/drx.dir/drx.c.o
+[ 93%] Building C object ext/drx/CMakeFiles/drx.dir/drx_buf.c.o
+[ 93%] Building C object ext/drx/CMakeFiles/drx_static.dir/drx.c.o
+[ 94%] Building C object ext/drx/CMakeFiles/drx_static.dir/drx_buf.c.o
+[ 94%] Building C object ext/drx/CMakeFiles/drx.dir/scatter_gather_x86.c.o
+[ 94%] Building C object ext/drx/CMakeFiles/drx.dir/scatter_gather_shared.c.o
+[ 94%] Building C object ext/drx/CMakeFiles/drx_static.dir/scatter_gather_x86.c.o
+[ 94%] Building C object ext/drx/CMakeFiles/drx_static.dir/scatter_gather_shared.c.o
+[ 95%] Building C object ext/drx/CMakeFiles/drx_static.dir/drx_time_scale.c.o
+[ 96%] Building C object ext/drx/CMakeFiles/drx.dir/drx_time_scale.c.o
+[ 96%] Linking C static library ../lib64/release/libdrx_static.a
+[ 96%] Built target drx_static
+[ 96%] Linking C static library ../lib64/release/libdrmgr_drstatic.a
+[ 96%] Linking C shared library ../lib64/release/libdrx.so
+[ 96%] Built target drmgr_drstatic
+[ 96%] Building C object ext/drreg/CMakeFiles/drreg_drstatic.dir/drreg.c.o
+[ 96%] Built target drx
+[ 97%] Building C object ext/drwrap/CMakeFiles/drwrap_drstatic.dir/drwrap.c.o
+[ 97%] Building ASM object ext/drwrap/CMakeFiles/drwrap_drstatic.dir/drwrap_asm_x86.asm.o
+[ 97%] Linking C static library ../lib64/release/libdrwrap_drstatic.a
+[ 97%] Built target drwrap_drstatic
+[ 98%] Linking C static library ../lib64/release/libdrreg_drstatic.a
+[ 98%] Built target drreg_drstatic
+[ 98%] Building C object ext/drx/CMakeFiles/drx_drstatic.dir/drx.c.o
+[ 99%] Building C object ext/drx/CMakeFiles/drx_drstatic.dir/drx_buf.c.o
+[ 99%] Building C object ext/drx/CMakeFiles/drx_drstatic.dir/scatter_gather_x86.c.o
+[ 99%] Building C object ext/drx/CMakeFiles/drx_drstatic.dir/scatter_gather_shared.c.o
+[100%] Building C object ext/drx/CMakeFiles/drx_drstatic.dir/drx_time_scale.c.o
+[100%] Linking C static library ../lib64/release/libdrx_drstatic.a
+[100%] Built target drx_drstatic
+Install the project...
+-- Install configuration: "Release"
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/lib64/release/libdynamorio.so
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/lib64/release/libdynamorio_static.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/lib64/libdrinjectlib.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/lib64/release/libdrpreload.so
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/lib64/release/libdrdecode.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/lib64/libdrlibc.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/lib64/libdrmemfuncs.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/lib64/libdrconfiglib.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/libdrconfiglib.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/libdrfrontendlib.a
+-- Up-to-date: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drdeploy
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drloader
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drloader.debug
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drnudgeunix
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drnudgeunix.debug
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/nudgeunix
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drconfig
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drconfig.debug
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drrun
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drrun.debug
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drinject
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drinject.debug
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/lib64/release/libdynamorio.so-gdb.py
+-- Up-to-date: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drnudgeunix
+-- Up-to-date: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drconfig
+-- Up-to-date: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drrun
+-- Up-to-date: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drinject
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/load_syms64.txt
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/cmake/DynamoRIOConfig.cmake
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/cmake/DynamoRIOConfigVersion.cmake
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/cmake/runsuite_common_pre.cmake
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/cmake/runsuite_common_post.cmake
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/cmake/lookup_visualstudio.cmake
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/cmake/cpp2asm_support.cmake
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/cmake/cpp2asm_add_newlines.cmake
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/cmake/cpp2asm_defines.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/cmake/docs_rundoxygen.cmake
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/cmake/docs_doxyutils.cmake
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/tools/list64
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/annotations
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/annotations/dr_annotations_asm.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/annotations/dr_annotations.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/annotations/dr_annotations.c
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_defines.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_mcxtx.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_events.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_encode.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_decode.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_disassemble.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_opnd.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_instr.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_instr_inline.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_instrlist.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_opcodes.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_opcodes_x86.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_opcodes_arm.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_isa_features_x86.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_isa_features_arm.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_isa_features_riscv64.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_isa_features.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_macros.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_macros_x86.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_macros_arm.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_macros_aarch64.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_ir_utils.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_tools.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_annotation.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_inject.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_modules.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_os_utils.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_tracedump.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_proc.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_config.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_frontend.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_api.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./include/dr_app.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./README
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./License.txt
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/./ACKNOWLEDGEMENTS
+-- Up-to-date: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/lib64
+-- Up-to-date: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/lib64/release
+-- Up-to-date: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/lib64/release
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/lib64/release/libdrpreload.so.debug
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/lib64/release/libdynamorio.so.debug
+-- Up-to-date: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64
+-- Up-to-date: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drloader.debug
+-- Up-to-date: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drnudgeunix.debug
+-- Up-to-date: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drconfig.debug
+-- Up-to-date: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drrun.debug
+-- Up-to-date: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/bin64/drinject.debug
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/logs/README
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrcontainers.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrcontainers_drstatic.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/include/hashtable.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/include/drvector.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/include/drtable.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrmgr.so
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrmgr_static.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrmgr_drstatic.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/include/drmgr.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrx.so
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrx_static.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrx_drstatic.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/include/drx.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrwrap.so
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrwrap_static.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrwrap_drstatic.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/include/drwrap.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrreg.so
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrreg_static.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrreg_drstatic.a
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/include/drreg.h
+-- Up-to-date: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrmgr.so.debug
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrwrap.so.debug
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrreg.so.debug
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/lib64/release/libdrx.so.debug
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/bin64
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/bin64/libdrmgr.so.debug
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/bin64/libdrwrap.so.debug
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/bin64/libdrreg.so.debug
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/bin64/libdrx.so.debug
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/ext/include/drext.h
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/cmake/DynamoRIOTarget64.cmake
+-- Installing: /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/.staging-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4-3845367-1789610215963679619-0/install/cmake/DynamoRIOTarget64-release.cmake
+cargo:warning=DynamoRIO source build completed in 27.71s (jobs=4)
+cargo:warning=DynamoRIO build cache PUBLISHED key=sha256:0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4 install=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/dynamorio-install-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4
+cargo:rustc-env=REVERIE_DBT_DYNAMORIO_HOME=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/dynamorio-install-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4
+cargo:rustc-env=REVERIE_DBT_DYNAMORIO_CMAKE=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/dynamorio-install-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4/cmake
+cargo:rustc-env=REVERIE_DBT_DYNAMORIO_DRRUN=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/dynamorio-install-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4/bin64/drrun

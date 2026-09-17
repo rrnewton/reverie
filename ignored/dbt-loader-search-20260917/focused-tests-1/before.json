@@ -1,0 +1,18 @@
+{
+  "pid": 4183740,
+  "start": 176938127,
+  "cgroup": "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/app.slice/dbt-loader-permanent-tests1-20260917.scope",
+  "device": 27,
+  "inode": 38331877,
+  "properties": "Id=dbt-loader-permanent-tests1-20260917.scope\nInvocationID=c04b39bcefae49a18e10b3725b6de150\nRuntimeMaxUSec=15min\nControlGroup=/user.slice/user-212630.slice/user@212630.service/app.slice/dbt-loader-permanent-tests1-20260917.scope\nCPUQuotaPerSecUSec=4s\nMemoryMax=8589934592\nMemorySwapMax=0\nTasksMax=1024\n",
+  "properties_exit": 0,
+  "raw": {
+    "memory.max": "8589934592\n",
+    "memory.swap.max": "0\n",
+    "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+    "memory.peak": "8110080\n",
+    "cpu.max": "400000 100000\n",
+    "pids.max": "1024\n",
+    "pids.events": "max 0\n"
+  }
+}

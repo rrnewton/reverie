@@ -1,0 +1,28 @@
+{
+  "unit_stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\n",
+  "unit_exit": 0,
+  "cgroup_absent": true,
+  "original_maintenance_generations": [
+    {
+      "pid": 1594509,
+      "start": 177064948,
+      "original_generation_absent": true
+    },
+    {
+      "pid": 1594511,
+      "start": 177064948,
+      "original_generation_absent": true
+    },
+    {
+      "pid": 1594523,
+      "start": 177064949,
+      "original_generation_absent": true
+    },
+    {
+      "pid": 1594538,
+      "start": 177064950,
+      "original_generation_absent": true
+    }
+  ],
+  "late_final_resource_counters": "unavailable after cgroup removal; last raw sample is public command return, not the entire detached maintenance interval"
+}

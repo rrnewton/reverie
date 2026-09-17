@@ -1,0 +1,8 @@
+{
+  "forbidden_names_present": [],
+  "selected_toolchain": "nightly-2026-07-29",
+  "CI": null,
+  "CARGO_BUILD_JOBS": "4",
+  "CARGO_HOME": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/cargo",
+  "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/target"
+}

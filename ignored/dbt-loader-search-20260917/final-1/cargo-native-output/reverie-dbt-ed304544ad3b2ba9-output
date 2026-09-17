@@ -1,0 +1,10 @@
+cargo:rerun-if-changed=build.rs
+cargo:rerun-if-changed=vendor/dynamorio
+cargo:rerun-if-env-changed=CMAKE
+cargo:rerun-if-env-changed=CMAKE_GENERATOR
+cargo:rerun-if-env-changed=CI
+cargo:rerun-if-env-changed=REVERIE_DBT_MAX_BUILD_SECONDS
+cargo:warning=DynamoRIO build cache HIT key=sha256:0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4 observed_unix_seconds=1789610613 install=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/dynamorio-install-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4
+cargo:rustc-env=REVERIE_DBT_DYNAMORIO_HOME=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/dynamorio-install-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4
+cargo:rustc-env=REVERIE_DBT_DYNAMORIO_CMAKE=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/dynamorio-install-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4/cmake
+cargo:rustc-env=REVERIE_DBT_DYNAMORIO_DRRUN=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-2/target/debug/reverie-dbt-native-cache/dynamorio-install-0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4/bin64/drrun

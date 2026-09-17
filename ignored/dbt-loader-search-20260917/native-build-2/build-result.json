@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "cargo",
+    "build",
+    "--offline",
+    "--locked",
+    "-p",
+    "reverie-dbt",
+    "-j4"
+  ],
+  "actual_exit": 0,
+  "seconds": 55.55069643096067
+}

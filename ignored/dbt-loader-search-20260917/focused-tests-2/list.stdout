@@ -1,0 +1,12 @@
+client_directory_keeps_existing_search_precedence: test
+environment_keeps_existing_search_precedence: test
+fallback_does_not_promote_unrelated_indirect_path: test
+fallback_does_not_search_explicit_relative_dependency: test
+fallback_expands_origin_from_client_directory: test
+fallback_keeps_ordered_runpath_selection: test
+later_direct_dependency_uses_client_runpath: test
+legacy_rpath_keeps_existing_search_precedence: test
+missing_direct_dependency_still_fails: test
+runpath_does_not_supply_indirect_only_dependency: test
+
+10 tests, 0 benchmarks

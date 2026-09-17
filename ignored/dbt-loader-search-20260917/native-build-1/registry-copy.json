@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "cp",
+    "-a",
+    "--reflink=auto",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-observer-20260916/ignored/hermetic/split/cargo/registry",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/cargo/registry"
+  ],
+  "actual_exit": 0,
+  "seconds": 2.506192624103278
+}

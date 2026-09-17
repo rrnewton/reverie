@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "with-proxy",
+    "git",
+    "ls-remote",
+    "https://github.com/rrnewton/hermit.git",
+    "refs/heads/main"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 0.408959117019549,
+  "stdout": "2a4142371e74aebea3cbd8b4c8329fc819d324f9\trefs/heads/main\n",
+  "stderr": ""
+}

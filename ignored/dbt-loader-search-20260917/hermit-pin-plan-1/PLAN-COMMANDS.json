@@ -1,0 +1,48 @@
+{
+  "phase": "inert-next-official-run-plan",
+  "guest_execution_authorized": false,
+  "source": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-pin-20260917",
+  "expected_main": "2a4142371e74aebea3cbd8b4c8329fc819d324f9",
+  "reverie_landed_pin": "a2cc1868795b19ae77e55242d614c43116e42609",
+  "driver_argv": [
+    "with-proxy",
+    "./scripts/validate.rs",
+    "full",
+    "--allow-local-off-the-record-run",
+    "--selected",
+    "test.hermit_unit",
+    "-j",
+    "1",
+    "--no-label-pr",
+    "--verbose",
+    "--run-timeout",
+    "10800"
+  ],
+  "node_count": 11,
+  "declared_case_count": 630,
+  "node_wall_sum": 8700,
+  "normal_lock_commands": [
+    [
+      "with-proxy",
+      "cargo",
+      "update",
+      "-p",
+      "reverie-core"
+    ],
+    [
+      "with-proxy",
+      "cargo",
+      "update",
+      "--manifest-path",
+      "liteinst-runtime-build/Cargo.toml",
+      "-p",
+      "reverie-liteinst"
+    ]
+  ],
+  "normal_pin_check": [
+    "with-proxy",
+    "./ci/run-reverie-pin-check.sh",
+    "--repo",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-pin-20260917"
+  ]
+}

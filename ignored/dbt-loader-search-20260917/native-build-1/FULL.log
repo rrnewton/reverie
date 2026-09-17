@@ -1,0 +1,11 @@
+generate-lock ['cargo', 'generate-lockfile', '--offline']
+error: no matching package named `quickcheck_macros` found
+location searched: crates.io index
+required by package `safeptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/safeptrace)`
+note: offline mode (via `--offline`) can sometimes cause surprising resolution failures
+help: if this error is too confusing you may wish to retry without `--offline`
+Traceback (most recent call last):
+  File "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-dbt-loader-search-20260917/ignored/dbt-loader-search-20260917/native-build-1/build.py", line 40, in <module>
+    print(label,argv,flush=True);t=time.monotonic();q=subprocess.run(argv,cwd=S,env=env);save(label+'-result.json',{'argv':argv,'actual_exit':q.returncode,'seconds':time.monotonic()-t});assert q.returncode==0,label+' failed'
+                                                                                                                                                                                                 ^^^^^^^^^^^^^^^
+AssertionError: generate-lock failed

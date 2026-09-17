@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "diff",
+    "--cached",
+    "--name-only"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.01913032913580537,
+  "stdout": "",
+  "stderr": ""
+}

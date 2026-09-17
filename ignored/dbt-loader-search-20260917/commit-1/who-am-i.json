@@ -1,0 +1,18 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/ci-hub/bin/who-am-i",
+    "--tag",
+    "--role",
+    "impl",
+    "--task",
+    "vision-ci-signal-is-trustworthy-end-to-end",
+    "--repo-root",
+    "/home/newton/work/dev-hermit",
+    "--db",
+    "/home/newton/.tg/hermit2.db"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.11986332410015166,
+  "stdout": "[hermit2, degraded-dev-hermit, gpt-6-astra, devbig014, role=impl]",
+  "stderr": "who-am-i: fields: team, agent, model, machine, role\nwho-am-i: DEGRADED: identity resolver returned UNRESOLVED\nwho-am-i: NEXT: run with --diagnostics to see the missing or conflicting signals. If --pid was supplied, pass a live agent PID or omit --pid to inspect the caller.\n"
+}

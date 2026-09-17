@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "reverie-dbt",
+    "--test",
+    "private_loader_search",
+    "--",
+    "--list"
+  ],
+  "actual_exit": 0,
+  "seconds": 10.558951840968803
+}
