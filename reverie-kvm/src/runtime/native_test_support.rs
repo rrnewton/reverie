@@ -1,3 +1,11 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 //! Native controls for the real Tool callback driver and post-worker finisher.
 //!
 //! No VM or guest instruction is created. Executor task retirement precedes
@@ -58,10 +66,14 @@ impl NativeChildGate {
 
 struct NoInstructions {
     parent_pid: Option<Pid>,
+    failure: FailureContext,
 }
 impl<T: Tool> GuestSyscallExecutor<T> for NoInstructions {
     fn parent_pid(&self) -> Option<Pid> {
         self.parent_pid
+    }
+    fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
+        Some(self.failure.run.subscribe())
     }
     fn read_clock(&self) -> Result<u64> {
         panic!("native Tool control must disable guest clock operations")
@@ -144,6 +156,7 @@ where
     }
 
     /// Borrow the actual owned thread state when constructing a child's state.
+    #[cfg(feature = "native-test-support")]
     pub fn thread_state(&self) -> &T::ThreadState {
         self.thread
             .as_ref()
@@ -151,15 +164,11 @@ where
     }
 
     /// Update the owned parent state before the Tool constructs a clone child.
+    #[cfg(feature = "native-test-support")]
     pub fn thread_state_mut(&mut self) -> &mut T::ThreadState {
         self.thread
             .as_mut()
             .expect("native thread already consumed")
-    }
-
-    /// Borrow the actual process Tool used by this owner.
-    pub fn tool(&self) -> &Arc<T> {
-        self.tool.as_ref().expect("native Tool already consumed")
     }
 
     /// Create a real fork lifecycle sharing this run's failure subscription.
@@ -214,7 +223,11 @@ where
         let subscriptions = Subscription::none();
         let mut executor = NoInstructions {
             parent_pid: self.executor.as_ref().unwrap().parent_pid(),
+            failure: self.failure.clone(),
         };
+        let failure_subscription = self
+            .failure
+            .driver_subscription(self.executor.as_ref().unwrap().is_traced_tree_root());
         let mut guest = KvmGuest::new(
             self.identity.0,
             self.identity.1,
@@ -238,7 +251,7 @@ where
             callback.run(self.tool.as_ref().unwrap().as_ref(), &mut guest),
             signal,
             self.starts.clone(),
-            wait_for_failure(self.global.as_ref(), Some(self.failure.run.subscribe())),
+            wait_for_failure(self.global.as_ref(), Some(failure_subscription)),
         )
         .await
         {
@@ -270,10 +283,13 @@ where
         let handle =
             crate::failure::spawn_owned(std::thread::Builder::new(), child, move |mut child| {
                 let outcome = match receiver.recv() {
-                    Ok(ChildStartCommand::Cancel) => {
+                    Ok(
+                        command @ (ChildStartCommand::Cancel
+                        | ChildStartCommand::CancelAfterFailure),
+                    ) => {
                         let _ = observed.send(NativeChildCommand::Cancel);
-                        if let Some(primary) = child.failure.run.published_primary() {
-                            child.retire(Err(Error::SharedFailure(primary)))
+                        if let Some(failure) = command.failure() {
+                            child.retire(Err(failure))
                         } else {
                             Ok(ToolProcessExit {
                                 exit: child.executor.as_mut().unwrap().cancel_current_thread(),
@@ -384,7 +400,9 @@ where
         let outcome = self.retire(result);
         self.workers.join_workers();
         let workers = self.workers.teardown_result();
-        self.finish_retired(outcome, workers).await
+        let failure = self.failure.run.clone();
+        let result = self.finish_retired(outcome, workers).await;
+        failure.complete(result)
     }
 
     async fn finish_retired(
@@ -403,6 +421,7 @@ where
             &self.config,
             thread,
             outcome,
+            None,
             workers,
             Some(&self.failure),
         )
@@ -454,7 +473,7 @@ impl<T: Tool> Drop for NativeToolOwner<T> {
         );
         executor.retire_failed_thread();
         for start in self.starts.lock().unwrap().drain(..) {
-            start.cancel();
+            start.cancel_after_failure();
         }
         self.workers.join_workers();
         let workers = self.workers.teardown_result();
@@ -466,6 +485,7 @@ impl<T: Tool> Drop for NativeToolOwner<T> {
             &self.config,
             thread,
             Err(error),
+            None,
             workers,
             Some(&self.failure),
         ));
