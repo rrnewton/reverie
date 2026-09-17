@@ -25,6 +25,7 @@ struct syscall_stackframe {
   void *rcx;
   void *rbx;
   void *rbp_prologue;
+  unsigned long rflags;
   // trampoline
   void *fake_ret;
   void *ret;

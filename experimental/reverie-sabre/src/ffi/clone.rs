@@ -122,8 +122,9 @@ pub unsafe fn clone_syscall(
 ///
 /// This routine instead reproduces SaBRe's normal `handle_syscall` epilogue for
 /// the child: it restores the guest's saved general-purpose registers and its
-/// original `%rsp` (`wrapper_sp + 0x88`) from the syscall frame, then jumps to
-/// the saved return address with `%rax = 0`.
+/// scratch-continuation stack pointer from the syscall frame, then resumes the
+/// saved continuation with `%rax = 0` and the original guest RFLAGS. The
+/// continuation restores the reserved red zone and runs displaced instructions.
 ///
 /// # Safety
 ///
@@ -163,27 +164,10 @@ pub unsafe fn fork_syscall(
         "call qword ptr [rip + reverie_sabre_after_clone_child@GOTPCREL]",
         "4:",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
-        "mov rdi, r12",                     // rdi = wrapper_sp (frame base)
-        // Restore the guest's saved registers from the frame, mirroring the
-        // pops in SaBRe's handle_syscall.S epilogue. rcx/r11 were clobbered by
-        // the guest's own syscall, and r11 is reused below as the jump target.
-        "mov r15, qword ptr [rdi + 0x8]",
-        "mov r14, qword ptr [rdi + 0x10]",
-        "mov r13, qword ptr [rdi + 0x18]",
-        "mov r10, qword ptr [rdi + 0x30]",
-        "mov r9,  qword ptr [rdi + 0x38]",
-        "mov r8,  qword ptr [rdi + 0x40]",
-        "mov rsi, qword ptr [rdi + 0x50]",
-        "mov rdx, qword ptr [rdi + 0x58]",
-        "mov rcx, qword ptr [rdi + 0x60]",
-        "mov rbx, qword ptr [rdi + 0x68]",
-        "mov rbp, qword ptr [rdi + 0x70]",
-        "mov r12, qword ptr [rdi + 0x20]",  // restore guest r12 (held wrapper_sp)
-        "mov r11, qword ptr [rdi + 0x80]",  // guest return RIP -> jump target
-        "lea rsp, [rdi + 0x88]",            // guest's original %rsp
-        "mov rdi, qword ptr [rdi + 0x48]",  // guest rdi (final use of frame base)
-        "xor eax, eax",                     // fork/clone returns 0 in the child
-        "jmp r11",
+        "mov rdi, r12",
+        // This is an ordinary extern-C function: CALL supplies its ABI entry
+        // return word. It never returns and replaces RSP with the saved frame.
+        "call {resume_child}",
 
         // ---- Parent ----
         "2:",
@@ -196,6 +180,7 @@ pub unsafe fn fork_syscall(
         in("r8") tls,
         in("r12") wrapper_sp,
         in("xmm0") vfork_slot,
+        resume_child = sym resume_fork_child,
         clone_vm = const libc::CLONE_VM,
         vfork_flags = const (libc::CLONE_VM | libc::CLONE_VFORK),
         // syscall instructions clobber rcx and r11
@@ -342,24 +327,10 @@ pub unsafe fn clone3_fork_syscall(
         "call qword ptr [rip + reverie_sabre_after_clone_child@GOTPCREL]",
         "4:",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
-        "mov rdi, r12",                     // rdi = wrapper_sp (frame base)
-        "mov r15, qword ptr [rdi + 0x8]",
-        "mov r14, qword ptr [rdi + 0x10]",
-        "mov r13, qword ptr [rdi + 0x18]",
-        "mov r10, qword ptr [rdi + 0x30]",
-        "mov r9,  qword ptr [rdi + 0x38]",
-        "mov r8,  qword ptr [rdi + 0x40]",
-        "mov rsi, qword ptr [rdi + 0x50]",
-        "mov rdx, qword ptr [rdi + 0x58]",
-        "mov rcx, qword ptr [rdi + 0x60]",
-        "mov rbx, qword ptr [rdi + 0x68]",
-        "mov rbp, qword ptr [rdi + 0x70]",
-        "mov r12, qword ptr [rdi + 0x20]",
-        "mov r11, qword ptr [rdi + 0x80]",
-        "lea rsp, [rdi + 0x88]",
-        "mov rdi, qword ptr [rdi + 0x48]",
-        "xor eax, eax",
-        "jmp r11",
+        "mov rdi, r12",
+        // This is an ordinary extern-C function: CALL supplies its ABI entry
+        // return word. It never returns and replaces RSP with the saved frame.
+        "call {resume_child}",
 
         // ---- Parent ----
         "2:",
@@ -373,6 +344,7 @@ pub unsafe fn clone3_fork_syscall(
         in("r12") wrapper_sp,
         in("xmm0") clone_flags,
         in("xmm1") vfork_slot,
+        resume_child = sym resume_fork_child,
         clone_vm = const libc::CLONE_VM,
         vfork_flags = const (libc::CLONE_VM | libc::CLONE_VFORK),
         lateout("rcx") _,
@@ -394,43 +366,41 @@ pub unsafe fn clone3_fork_syscall(
 /// current guest thread.
 pub unsafe extern "C" fn vfork_return_from_child(wrapper_sp: *const syscall_stackframe) -> ! {
     super::exit_plugin();
+    resume_fork_child(wrapper_sp)
+}
 
+/// Complete the actual handle_syscall epilogue on the copied guest frame.
+/// All fork-form child paths abandon their intervening Rust frames here.
+unsafe extern "C" fn resume_fork_child(wrapper_sp: *const syscall_stackframe) -> ! {
     core::arch::asm! {
-        // Load registers from the syscall_stackframe struct. These are all
-        // offsets into the struct.
-        //
-        // FIXME: Don't hard code these struct field offsets.
-        "mov r15, qword ptr [rdi + 0x8]",
-        "mov r14, qword ptr [rdi + 0x10]",
-        "mov r13, qword ptr [rdi + 0x18]",
-        "mov r12, qword ptr [rdi + 0x20]",
-        "mov r11, qword ptr [rdi + 0x28]",
-        "mov r10, qword ptr [rdi + 0x30]",
-        "mov r9, qword ptr [rdi + 0x38]",
-        "mov r8, qword ptr [rdi + 0x40]",
-        // Skip rdi because we are reading it for the pointer offset.
-        "mov rsi, qword ptr [rdi + 0x50]",
-        "mov rdx, qword ptr [rdi + 0x58]",
-        "mov rcx, qword ptr [rdi + 0x60]",
-        "mov rbx, qword ptr [rdi + 0x68]",
-        "mov rbp, qword ptr [rdi + 0x70]",
-
-        // Its safe to clobber r11 to load *ret.
-        "mov r11, qword ptr [rdi + 0x80]",
-
-        // Finally, set rdi.
-        "mov rdi, qword ptr [rdi + 0x48]",
-
-        // The child always returns 0.
-        "mov rax, 0",
-
-        "sub rsp, 0x80",
-
-        // Jump back to the client.
-        "jmp r11",
-
+        "lea rsp, [rdi + {saved_registers}]",
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rbx",
+        "pop rbp",
+        // MOV does not change RFLAGS. Restore flags only after all work that
+        // might change them, then skip the architectural return and RET into
+        // the scratch continuation exactly as the normal wrapper does.
+        "mov eax, 0",
+        "popfq",
+        "lea rsp, [rsp + {skip_fake_return}]",
+        "ret",
+        saved_registers = const std::mem::offset_of!(syscall_stackframe, r15),
+        skip_fake_return = const (
+            std::mem::offset_of!(syscall_stackframe, ret)
+                - std::mem::offset_of!(syscall_stackframe, fake_ret)
+        ),
         in("rdi") wrapper_sp,
-
         options(noreturn),
     }
 }
