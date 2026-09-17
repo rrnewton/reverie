@@ -417,9 +417,26 @@ impl GuestMemory {
         self.write_user(guest_address, &value.to_ne_bytes(), false)
     }
 
+    /// Copies and returns the writable prefix while retaining the permission
+    /// lock through the copy. Callers that consume a stream must advance only
+    /// by this actual count, including a partial fault.
+    pub(crate) fn copy_to_user_prefix(&self, guest_address: u64, source: &[u8]) -> Result<usize> {
+        self.write_user_prefix(guest_address, source, true)
+    }
+
     fn write_user(&self, guest_address: u64, source: &[u8], partial: bool) -> Result<()> {
+        if self.write_user_prefix(guest_address, source, partial)? != source.len() {
+            return Err(Error::GuestMemoryAccessDenied {
+                address: guest_address,
+                length: source.len(),
+            });
+        }
+        Ok(())
+    }
+
+    fn write_user_prefix(&self, guest_address: u64, source: &[u8], partial: bool) -> Result<usize> {
         if source.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
         self.checked_offset(guest_address, 1)?;
         let requested_end = guest_address.checked_add(source.len() as u64).ok_or(
@@ -450,13 +467,7 @@ impl GuestMemory {
         if length == source.len() || (partial && length != 0) {
             self.write_raw(guest_address, &source[..length])?;
         }
-        if length != source.len() {
-            return Err(Error::GuestMemoryAccessDenied {
-                address: guest_address,
-                length: source.len(),
-            });
-        }
-        Ok(())
+        Ok(length)
     }
 
     // TODO-HUMAN-REVIEW(PR-132): Review internal copies that bypass the user map.
@@ -1223,6 +1234,64 @@ mod tests {
         let mut bytes = [0; 6];
         parent.read(PAGE_SIZE as u64, &mut bytes).unwrap();
         assert_eq!(&bytes, b"mapped");
+    }
+
+    #[test]
+    fn counted_copyout_reports_exact_writable_prefix_without_weakening_scalar_copy() {
+        let memory = GuestMemory::new(0, PAGE_SIZE * 2).unwrap();
+        memory.write_raw(0, &[0xa5; PAGE_SIZE * 2]).unwrap();
+        memory
+            .map_user_permissions(0, PAGE_SIZE as u64, true, true)
+            .unwrap();
+        memory
+            .map_user_permissions(PAGE_SIZE as u64, PAGE_SIZE as u64, true, false)
+            .unwrap();
+        memory.enable_user_access();
+        assert_eq!(memory.copy_to_user_prefix(u64::MAX, b"").unwrap(), 0);
+        assert_eq!(
+            memory
+                .copy_to_user_prefix(PAGE_SIZE as u64, b"refused")
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            memory
+                .copy_to_user_prefix(PAGE_SIZE as u64 - 7, b"ABCDEFGHIJKLMN")
+                .unwrap(),
+            7
+        );
+        let mut actual = [0; PAGE_SIZE * 2];
+        memory.read_raw(0, &mut actual).unwrap();
+        let mut expected = [0xa5; PAGE_SIZE * 2];
+        expected[PAGE_SIZE - 7..PAGE_SIZE].copy_from_slice(b"ABCDEFG");
+        assert_eq!(actual, expected);
+        assert!(memory.put_user_i32(PAGE_SIZE as u64 - 2, 0).is_err());
+        memory.read_raw(0, &mut actual).unwrap();
+        assert_eq!(actual, expected, "scalar copy must remain all-or-nothing");
+        assert!(memory.copy_to_user(PAGE_SIZE as u64 - 2, b"1234").is_err());
+        expected[PAGE_SIZE - 2..PAGE_SIZE].copy_from_slice(b"12");
+        memory.read_raw(0, &mut actual).unwrap();
+        assert_eq!(
+            actual, expected,
+            "legacy partial-copy side effect must remain"
+        );
+        memory
+            .map_user_permissions(PAGE_SIZE as u64, PAGE_SIZE as u64, true, true)
+            .unwrap();
+        assert_eq!(
+            memory
+                .copy_to_user_prefix(PAGE_SIZE as u64 - 7, b"ABCDEFGHIJKLMN")
+                .unwrap(),
+            14
+        );
+        memory.read_raw(0, &mut actual).unwrap();
+        expected[PAGE_SIZE - 7..PAGE_SIZE + 7].copy_from_slice(b"ABCDEFGHIJKLMN");
+        assert_eq!(actual, expected);
+        assert!(
+            memory
+                .copy_to_user_prefix(2 * PAGE_SIZE as u64, b"x")
+                .is_err()
+        );
     }
 
     #[test]

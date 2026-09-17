@@ -499,6 +499,10 @@ pub(crate) struct LoadedStaticElf {
     // this side table only marks which fds must report stable, synthesized
     // metadata instead of the memfd's per-run inode.
     pub proc_files: std::collections::BTreeMap<i32, u64>,
+    pub proc_mounts: std::sync::Arc<crate::proc_mounts::ProcMountSnapshot>,
+    pub fdinfo_files:
+        std::collections::BTreeMap<i32, std::sync::Arc<crate::executor::FdinfoDescription>>,
+    pub fdinfo_table: std::sync::Weak<std::sync::Mutex<crate::executor::FileTableState>>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Preserve deterministic file-object identity.
     // TODO-HUMAN-REVIEW(PR-136): Review descriptor identity and fork inheritance.
     // Every live descriptor strongly holds its identity; the process-shared
@@ -595,6 +599,9 @@ impl LoadedStaticElf {
             closed_standard_fds: self.closed_standard_fds.clone(),
             children: std::collections::BTreeMap::new(),
             proc_files: self.proc_files.clone(),
+            proc_mounts: self.proc_mounts.clone(),
+            fdinfo_files: self.fdinfo_files.clone(),
+            fdinfo_table: self.fdinfo_table.clone(),
             fd_object_inodes: self.fd_object_inodes.clone(),
             file_identity_table: self.file_identity_table.clone(),
         })
@@ -628,6 +635,11 @@ impl LoadedStaticElf {
             .collect();
         let proc_files: std::collections::BTreeMap<_, _> = previous
             .proc_files
+            .into_iter()
+            .filter(|(fd, _)| files.contains_key(fd))
+            .collect();
+        let fdinfo_files = previous
+            .fdinfo_files
             .into_iter()
             .filter(|(fd, _)| files.contains_key(fd))
             .collect();
@@ -721,6 +733,9 @@ impl LoadedStaticElf {
         self.closed_standard_fds = closed_standard_fds;
         self.children = previous.children;
         self.proc_files = proc_files;
+        self.proc_mounts = previous.proc_mounts;
+        self.fdinfo_files = fdinfo_files;
+        self.fdinfo_table = previous.fdinfo_table;
         self.fd_object_inodes = fd_object_inodes;
         self.file_identity_table = file_identity_table;
     }
@@ -1015,6 +1030,9 @@ fn load_executable(
         closed_standard_fds: std::collections::BTreeSet::new(),
         children: std::collections::BTreeMap::new(),
         proc_files: std::collections::BTreeMap::new(),
+        proc_mounts: std::sync::Arc::new(crate::proc_mounts::ProcMountSnapshot::capture()?),
+        fdinfo_files: std::collections::BTreeMap::new(),
+        fdinfo_table: std::sync::Weak::new(),
         fd_object_inodes: std::collections::BTreeMap::new(),
         file_identity_table: std::sync::Arc::new(std::sync::Mutex::new(GuestFileIdentityTable {
             next_inode: 0x2100_0000,

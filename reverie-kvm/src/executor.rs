@@ -338,6 +338,9 @@ fn execute_basic_syscall_with_output(
     if number == libc::SYS_exit as u64 || number == libc::SYS_exit_group as u64 {
         return SyscallAction::Exit(ExitStatus::Exited((args[0] as i32) & 0xff));
     }
+    if let Some(error) = fdinfo_private_carrier_error(state, number, args) {
+        return continue_with(error);
+    }
     if let Some(error) = virtual_signalfd_write_error(state, number, args) {
         return continue_with(error);
     }
@@ -499,25 +502,31 @@ fn execute_basic_syscall_with_output(
         // AUTONOMOUS-BOT-IMPLEMENTED
         fcntl(memory, state, args)
     } else if number == libc::SYS_open as u64 {
-        open(memory, state, args)
+        open(memory, state, args, capture_output)
     } else if number == libc::SYS_openat as u64 {
-        openat(memory, state, args)
+        openat(memory, state, args, capture_output)
     } else if number == libc::SYS_creat as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        creat(memory, state, args)
+        creat(memory, state, args, capture_output)
     } else if number == libc::SYS_memfd_create as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         memfd_create(memory, state, args)
     } else if number == libc::SYS_fstat as u64 {
         fstat(memory, state, args, capture_output)
     } else if number == libc::SYS_stat as u64 {
-        path_stat(memory, state, args, 0)
+        path_stat(memory, state, args, 0, capture_output)
     } else if number == libc::SYS_lstat as u64 {
-        path_stat(memory, state, args, libc::AT_SYMLINK_NOFOLLOW)
+        path_stat(
+            memory,
+            state,
+            args,
+            libc::AT_SYMLINK_NOFOLLOW,
+            capture_output,
+        )
     } else if number == libc::SYS_newfstatat as u64 {
-        newfstatat(memory, state, args)
+        newfstatat(memory, state, args, capture_output)
     } else if number == libc::SYS_statx as u64 {
-        statx(memory, state, args)
+        statx(memory, state, args, capture_output)
     } else if number == libc::SYS_statfs as u64 {
         statfs(memory, state, args)
     } else if number == libc::SYS_fstatfs as u64 {
@@ -844,10 +853,10 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_gettimeofday as u64 {
         gettimeofday(memory, args)
     } else if number == libc::SYS_readlink as u64 {
-        readlink(memory, state, args)
+        readlink(memory, state, args, capture_output)
     } else if number == libc::SYS_readlinkat as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        readlinkat(memory, state, args)
+        readlinkat(memory, state, args, capture_output)
     } else if number == libc::SYS_uname as u64 {
         uname(memory, args[0])
     } else if number == libc::SYS_prlimit64 as u64 {
@@ -1193,8 +1202,8 @@ struct AddressSpaceState {
     mmap_limit: u64,
 }
 
-#[derive(Default)]
-struct FileTableState {
+#[derive(Debug, Default)]
+pub(crate) struct FileTableState {
     stdin: Option<std::fs::File>,
     files: std::collections::BTreeMap<i32, std::fs::File>,
     random_device_fds: std::collections::BTreeSet<i32>,
@@ -1203,7 +1212,359 @@ struct FileTableState {
     cloexec_fds: std::collections::BTreeSet<i32>,
     closed_standard_fds: std::collections::BTreeSet<i32>,
     proc_files: std::collections::BTreeMap<i32, u64>,
+    fdinfo_files: std::collections::BTreeMap<i32, Arc<FdinfoDescription>>,
+    signalfd_fds: std::collections::BTreeSet<i32>,
     fd_object_inodes: std::collections::BTreeMap<i32, Arc<GuestFileIdentity>>,
+}
+
+/// A proc fdinfo open description refers to one task incarnation and descriptor
+/// number, not to a supervisor fd. Aliases share seq state; each observation
+/// resolves the current entry in the original task's table.
+#[derive(Debug)]
+pub(crate) struct FdinfoDescription {
+    target_tid: i32,
+    target_generation: u64,
+    target_fd: i32,
+    table: std::sync::Weak<Mutex<FileTableState>>,
+    lifecycle: Arc<Mutex<crate::elf::TaskLifecycleTable>>,
+    capture_output: bool,
+    path: Vec<u8>,
+    nofollow_status: bool,
+    sequence: Mutex<crate::fdinfo::FdinfoSequence>,
+}
+
+impl FdinfoDescription {
+    fn observe(&self) -> Result<Vec<u8>, i64> {
+        let table = self
+            .table
+            .upgrade()
+            .ok_or_else(|| negative_errno(libc::ENOENT))?;
+        let (file, flags) = {
+            // Order: description seq -> ONE file table -> lifecycle. Mutation
+            // paths only propagate/drop description Arcs; they never lock seq.
+            let table = table.lock().expect("KVM file-table lock poisoned");
+            let lifecycle = self.lifecycle.lock().expect("KVM lifecycle lock poisoned");
+            if !lifecycle
+                .get(self.target_tid)
+                .is_some_and(|task| task.generation == self.target_generation)
+            {
+                return Err(negative_errno(libc::ENOENT));
+            }
+            if table.proc_files.contains_key(&self.target_fd)
+                || table.random_device_fds.contains(&self.target_fd)
+                || table.signalfd_fds.contains(&self.target_fd)
+                || (self.capture_output
+                    && (table.stdout_alias_fds.contains(&self.target_fd)
+                        || table.stderr_alias_fds.contains(&self.target_fd)
+                        || ((self.target_fd == 1 || self.target_fd == 2)
+                            && !table.files.contains_key(&self.target_fd)
+                            && !table.closed_standard_fds.contains(&self.target_fd))))
+            {
+                return Err(negative_errno(libc::ENOSYS));
+            }
+            let host = table
+                .files
+                .get(&self.target_fd)
+                .map(AsRawFd::as_raw_fd)
+                .or_else(|| {
+                    if table.closed_standard_fds.contains(&self.target_fd) {
+                        return None;
+                    }
+                    match self.target_fd {
+                        0 => table.stdin.as_ref().map(AsRawFd::as_raw_fd),
+                        1 | 2 => Some(self.target_fd),
+                        _ => None,
+                    }
+                })
+                .ok_or_else(|| negative_errno(libc::ENOENT))?;
+            // F_GETFL and the descriptor's guest CLOEXEC belong to the same
+            // table observation as F_SETFD/F_SETFL. Internal dup CLOEXEC is not
+            // a guest flag. Pin the OFD before releasing its table.
+            let flags = fd_status_flags(host)?
+                | if table.cloexec_fds.contains(&self.target_fd) {
+                    libc::O_CLOEXEC
+                } else {
+                    0
+                };
+            // SAFETY: the table owns host (or it is an open inherited standard
+            // descriptor); fcntl validates the fd and returns a new owned fd.
+            let pinned = unsafe { libc::fcntl(host, libc::F_DUPFD_CLOEXEC, 0) };
+            if pinned < 0 {
+                return Err(io_error(std::io::Error::last_os_error()));
+            }
+            // SAFETY: successful F_DUPFD_CLOEXEC transfers ownership.
+            (unsafe { std::fs::File::from_raw_fd(pinned) }, flags)
+        };
+        // Neither table nor lifecycle is held across procfs I/O. Private
+        // anonymous carriers (epoll/inotify/eventfd/timerfd/pidfd, etc.) have no
+        // ordinary file type and must not expose their supervisor identities.
+        ensure_fdinfo_object(file.as_raw_fd())?;
+        let bytes = read_owned_fdinfo(&file)?;
+        replace_fdinfo_flags(&bytes, flags)
+    }
+
+    fn read(&self, memory: &mut GuestMemory, args: &[u64; 6], positioned: bool) -> i64 {
+        let Ok(count) = usize::try_from(args[2]) else {
+            return negative_errno(libc::EINVAL);
+        };
+        if positioned && (args[3] as i64) < 0 {
+            return negative_errno(libc::EINVAL);
+        }
+        // vfs_read admits the original userspace interval before limiting the
+        // transfer or entering seq_read. This is architecture admission only;
+        // permission faults still occur during the counted copy, after show.
+        if let Err(error) = validate_guest_iovec_address(args[1], count) {
+            return error;
+        }
+        let mut sequence = self
+            .sequence
+            .lock()
+            .expect("KVM fdinfo sequence lock poisoned");
+        sequence.read(
+            positioned.then_some(args[3]),
+            count.min(MAX_HOST_IO),
+            || self.observe(),
+            |bytes| {
+                memory
+                    .copy_to_user_prefix(args[1], bytes)
+                    .map_err(|_| negative_errno(libc::EFAULT))
+            },
+        )
+    }
+
+    fn seek(&self, args: &[u64; 6]) -> i64 {
+        self.sequence
+            .lock()
+            .expect("KVM fdinfo sequence lock poisoned")
+            .seek(args[1] as i64, args[2] as libc::c_int, || self.observe())
+    }
+}
+
+fn fdinfo_private_carrier_error(
+    state: &LoadedStaticElf,
+    number: u64,
+    args: &[u64; 6],
+) -> Option<i64> {
+    let is_fdinfo = |raw: u64| state.fdinfo_files.contains_key(&(raw as libc::c_int));
+    // The backing memfd is never a readable payload for kernel transfer or
+    // mmap operations. Scalar read/pread/lseek use seq; vectors retain the
+    // existing proc-file ENOSYS boundary in vectored_io.
+    if (number == libc::SYS_sendfile as u64 && (is_fdinfo(args[0]) || is_fdinfo(args[1])))
+        || (number == libc::SYS_mmap as u64
+            && args[3] & libc::MAP_ANONYMOUS as u64 == 0
+            && is_fdinfo(args[4]))
+        || (matches!(number, n if n == libc::SYS_ioctl as u64
+            || n == libc::SYS_fstatfs as u64 || n == libc::SYS_fsync as u64
+            || n == libc::SYS_fdatasync as u64 || n == libc::SYS_readahead as u64
+            || n == libc::SYS_sync_file_range as u64 || n == libc::SYS_fchmod as u64
+            || n == libc::SYS_fchown as u64)
+            && is_fdinfo(args[0]))
+    {
+        return Some(negative_errno(libc::ENOSYS));
+    }
+    if number == libc::SYS_fcntl as u64
+        && is_fdinfo(args[0])
+        && !matches!(
+            args[1] as libc::c_int,
+            libc::F_DUPFD
+                | libc::F_DUPFD_CLOEXEC
+                | libc::F_GETFD
+                | libc::F_SETFD
+                | libc::F_GETFL
+                | libc::F_SETFL
+        )
+    {
+        return Some(negative_errno(libc::ENOSYS));
+    }
+    None
+}
+
+fn ensure_fdinfo_object(host_fd: RawFd) -> Result<(), i64> {
+    if !matches!(
+        fd_mode(host_fd)? & libc::S_IFMT,
+        libc::S_IFREG
+            | libc::S_IFDIR
+            | libc::S_IFCHR
+            | libc::S_IFBLK
+            | libc::S_IFIFO
+            | libc::S_IFSOCK
+    ) {
+        return Err(negative_errno(libc::ENOSYS));
+    }
+    Ok(())
+}
+
+fn read_owned_fdinfo(file: &std::fs::File) -> Result<Vec<u8>, i64> {
+    // Explicit capacity for one raw record, not a truncated success. The owned
+    // source remains live for the whole read, so its number cannot be reused.
+    const LIMIT: u64 = 1024 * 1024;
+    let source =
+        std::fs::File::open(format!("/proc/self/fdinfo/{}", file.as_raw_fd())).map_err(io_error)?;
+    read_fdinfo_bytes(source, LIMIT)
+}
+
+fn read_fdinfo_bytes(source: impl std::io::Read, limit: u64) -> Result<Vec<u8>, i64> {
+    let mut bytes = Vec::new();
+    let mut bounded = std::io::Read::take(source, limit + 1);
+    std::io::Read::read_to_end(&mut bounded, &mut bytes).map_err(io_error)?;
+    if bytes.len() as u64 > limit {
+        return Err(negative_errno(libc::EOVERFLOW));
+    }
+    Ok(bytes)
+}
+
+fn replace_fdinfo_flags(bytes: &[u8], flags: libc::c_int) -> Result<Vec<u8>, i64> {
+    let mut result = Vec::with_capacity(bytes.len());
+    let mut found = false;
+    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        if line.starts_with(b"flags:") {
+            if found || !line.ends_with(b"\n") {
+                return Err(negative_errno(libc::EIO));
+            }
+            let value = std::str::from_utf8(&line[b"flags:".len()..])
+                .map_err(|_| negative_errno(libc::EIO))?
+                .trim();
+            u64::from_str_radix(value, 8).map_err(|_| negative_errno(libc::EIO))?;
+            result.extend_from_slice(format!("flags:\t0{flags:o}\n").as_bytes());
+            found = true;
+        } else {
+            result.extend_from_slice(line);
+        }
+    }
+    if !found {
+        return Err(negative_errno(libc::EIO));
+    }
+    Ok(result)
+}
+
+/// Recognize only current-process spellings. The selected task is retained;
+/// /proc/self is the leader even when a live worker opens the file.
+fn fdinfo_path_target(state: &LoadedStaticElf, path: &[u8]) -> Option<Result<(i32, i32), i64>> {
+    let rest = path.strip_prefix(b"/proc/")?;
+    let slash = rest.iter().position(|byte| *byte == b'/')?;
+    let suffix = rest[slash + 1..].strip_prefix(b"fdinfo/")?;
+    let task = &rest[..slash];
+    let target = if task == b"self" {
+        state.pid
+    } else if task == b"thread-self" {
+        state.tid
+    } else {
+        match std::str::from_utf8(task)
+            .ok()
+            .and_then(|s| s.parse::<i32>().ok())
+        {
+            Some(tid)
+                if (tid == state.pid || tid == state.tid) && tid.to_string().as_bytes() == task =>
+            {
+                tid
+            }
+            _ => return Some(Err(negative_errno(libc::ENOENT))),
+        }
+    };
+    let fd = match std::str::from_utf8(suffix)
+        .ok()
+        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|s| s.parse::<i32>().ok())
+    {
+        Some(fd) if fd < GUEST_NOFILE_LIMIT && fd.to_string().as_bytes() == suffix => fd,
+        _ => return Some(Err(negative_errno(libc::ENOENT))),
+    };
+    Some(Ok((target, fd)))
+}
+
+fn fdinfo_target_generation(
+    state: &LoadedStaticElf,
+    tid: i32,
+    fd: i32,
+    capture_output: bool,
+) -> Result<u64, i64> {
+    let generation = state
+        .task_lifecycle
+        .lock()
+        .expect("KVM lifecycle lock poisoned")
+        .get(tid)
+        .map(|task| task.generation)
+        .ok_or_else(|| negative_errno(libc::ENOENT))?;
+    let host = host_fd(state, fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
+    if state.proc_files.contains_key(&fd)
+        || state.random_device_fds.contains(&fd)
+        || signalfd_mask(state, fd).is_some()
+        || (capture_output && output_alias(state, fd).is_some())
+    {
+        return Err(negative_errno(libc::ENOSYS));
+    }
+    ensure_fdinfo_object(host)?;
+    Ok(generation)
+}
+
+fn open_fdinfo(
+    state: &mut LoadedStaticElf,
+    target: (i32, i32),
+    flags: u64,
+    capture_output: bool,
+) -> i64 {
+    let generation = match fdinfo_target_generation(state, target.0, target.1, capture_output) {
+        Ok(generation) => generation,
+        Err(error) => return error,
+    };
+    if flags & libc::O_DIRECTORY as u64 != 0 {
+        return negative_errno(libc::ENOTDIR);
+    }
+    if flags
+        & (libc::O_PATH
+            | libc::O_CREAT
+            | libc::O_TRUNC
+            | libc::O_DIRECT
+            | libc::O_NOATIME
+            | libc::O_ASYNC) as u64
+        != 0
+    {
+        return negative_errno(libc::ENOSYS);
+    }
+    if flags & libc::O_ACCMODE as u64 != libc::O_RDONLY as u64 {
+        return negative_errno(libc::EACCES);
+    }
+    if state.fdinfo_table.upgrade().is_none() {
+        return negative_errno(libc::ENOSYS);
+    }
+    let path = format!("/proc/{}/fdinfo/{}", target.0, target.1).into_bytes();
+    let description = Arc::new(FdinfoDescription {
+        target_tid: target.0,
+        target_generation: generation,
+        target_fd: target.1,
+        table: state.fdinfo_table.clone(),
+        lifecycle: state.task_lifecycle.clone(),
+        capture_output,
+        path: path.clone(),
+        nofollow_status: flags & libc::O_NOFOLLOW as u64 != 0,
+        sequence: Mutex::default(),
+    });
+    // The empty, read-only backing file supplies descriptor ownership and
+    // synthetic proc metadata only. Reads/seeks must use the description.
+    let result = open_synthetic_proc(state, &path, b"", flags & libc::O_CLOEXEC as u64 != 0);
+    if result >= 0 {
+        let fd = result as i32;
+        let host = state.files[&fd].as_raw_fd();
+        // Opening the owned carrier creates the new readonly OFD and keeps
+        // supported Linux open status flags (including O_SYNC/O_DSYNC). The
+        // internal proc magic link must be followed; guest O_NOFOLLOW refers
+        // to the regular fdinfo entry, so retain that one status bit separately.
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags((flags as libc::c_int & !libc::O_NOFOLLOW) | libc::O_CLOEXEC)
+            .open(format!("/proc/self/fd/{host}"))
+        {
+            Ok(file) => file,
+            Err(error) => {
+                close(state, result as u64);
+                return io_error(error);
+            }
+        };
+        state.files.insert(fd, file);
+        state.fdinfo_files.insert(fd, description);
+    }
+    result
 }
 
 impl FileTableState {
@@ -1225,6 +1586,15 @@ impl FileTableState {
             cloexec_fds: state.cloexec_fds.clone(),
             closed_standard_fds: state.closed_standard_fds.clone(),
             proc_files: state.proc_files.clone(),
+            fdinfo_files: state.fdinfo_files.clone(),
+            signalfd_fds: state
+                .process_signals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .signalfd_masks
+                .keys()
+                .copied()
+                .collect(),
             fd_object_inodes: state.fd_object_inodes.clone(),
         })
     }
@@ -1263,6 +1633,7 @@ impl FileTableState {
             .closed_standard_fds
             .clone_from(&self.closed_standard_fds);
         state.proc_files.clone_from(&self.proc_files);
+        state.fdinfo_files.clone_from(&self.fdinfo_files);
         state.fd_object_inodes.clone_from(&self.fd_object_inodes);
         Ok(())
     }
@@ -1354,7 +1725,7 @@ impl ElfExecutor {
         (self.state.heap_base, self.state.program_break)
     }
 
-    pub(crate) fn new(state: LoadedStaticElf, capture_output: bool) -> Self {
+    pub(crate) fn new(mut state: LoadedStaticElf, capture_output: bool) -> Self {
         let task_generation = state
             .task_lifecycle
             .lock()
@@ -1379,6 +1750,7 @@ impl ElfExecutor {
         let file_table = Arc::new(std::sync::Mutex::new(
             FileTableState::try_from_elf(&state).expect("clone initial KVM file table"),
         ));
+        state.fdinfo_table = Arc::downgrade(&file_table);
         let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
         Self {
             state,
@@ -1767,6 +2139,7 @@ impl ElfExecutor {
         }
         let address_space = Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state)));
         let file_table = Arc::new(std::sync::Mutex::new(FileTableState::try_from_elf(&state)?));
+        state.fdinfo_table = Arc::downgrade(&file_table);
         let task_generation = state
             .task_lifecycle
             .lock()
@@ -3071,6 +3444,10 @@ impl SyscallExecutor for ElfExecutor {
         {
             return io_error(error);
         }
+        // install cloned every fdinfo description Arc while holding the
+        // current table. Scalar dispatch below therefore retains its entry
+        // description even if another thread closes/reuses that guest fd after
+        // the release. It may then lock seq and its ONE original target table.
         let mutating_file_table = mutates_file_table(request.number());
         if !mutating_file_table {
             shared_files.take();
@@ -3600,6 +3977,9 @@ fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
     };
+    if let Some(description) = state.fdinfo_files.get(&fd).cloned() {
+        return description.read(memory, args, false);
+    }
     let Ok(requested_length) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
@@ -3645,6 +4025,9 @@ fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
     };
+    if let Some(description) = state.fdinfo_files.get(&fd).cloned() {
+        return description.read(memory, args, true);
+    }
     let Ok(requested_length) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
@@ -4657,6 +5040,9 @@ fn lseek(state: &LoadedStaticElf, args: &[u64; 6], capture_output: bool) -> i64 
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
     };
+    if let Some(description) = state.fdinfo_files.get(&fd) {
+        return description.seek(args);
+    }
     if capture_output && output_alias(state, fd).is_some() {
         // Captured stdout/stderr are modeled as pipes: writes go to the
         // in-memory capture sink, and fstat exposes S_IFIFO. Do not leak the
@@ -4855,11 +5241,29 @@ fn sync_file_range(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     }
 }
 
-fn open(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    open_file(memory, state, libc::AT_FDCWD, args[0], args[1], args[2])
+fn open(
+    memory: &GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> i64 {
+    open_file(
+        memory,
+        state,
+        libc::AT_FDCWD,
+        args[0],
+        args[1],
+        args[2],
+        capture_output,
+    )
 }
 
-fn openat(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn openat(
+    memory: &GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> i64 {
     open_file(
         memory,
         state,
@@ -4867,6 +5271,7 @@ fn openat(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) ->
         args[1],
         args[2],
         args[3],
+        capture_output,
     )
 }
 
@@ -4878,9 +5283,22 @@ fn openat(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) ->
 // previously fell through to `ENOSYS`. Delegating to `open_file` reuses the
 // existing create/procfs/umask handling so the behavior matches the equivalent
 // `open`/`openat` call exactly.
-fn creat(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn creat(
+    memory: &GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> i64 {
     let flags = (libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC) as u64;
-    open_file(memory, state, libc::AT_FDCWD, args[0], flags, args[1])
+    open_file(
+        memory,
+        state,
+        libc::AT_FDCWD,
+        args[0],
+        flags,
+        args[1],
+        capture_output,
+    )
 }
 
 fn open_file(
@@ -4890,6 +5308,7 @@ fn open_file(
     path_address: u64,
     raw_flags: u64,
     raw_mode: u64,
+    capture_output: bool,
 ) -> i64 {
     let path = match read_c_string(memory, path_address, 4096) {
         Ok(path) => path,
@@ -4902,6 +5321,12 @@ fn open_file(
     let path = relative_proc_path.as_deref().unwrap_or(&path);
     let flags = u64::from(raw_flags as libc::c_int as u32) & LEGACY_OPEN_FLAGS;
     let close_on_exec = flags & libc::O_CLOEXEC as u64 != 0;
+    if let Some(target) = fdinfo_path_target(state, path) {
+        return match target {
+            Ok(target) => open_fdinfo(state, target, flags, capture_output),
+            Err(error) => error,
+        };
+    }
     if is_synthetic_proc_directory(state, path) {
         return open_synthetic_proc_directory(state, flags, close_on_exec);
     }
@@ -5146,10 +5571,24 @@ fn guest_fd_metadata(
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review guest descriptor link-target sanitization.
-fn guest_fd_link_target(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Result<Vec<u8>, i64> {
+fn guest_fd_link_target(
+    state: &LoadedStaticElf,
+    guest_fd: libc::c_int,
+    capture_output: bool,
+) -> Result<Vec<u8>, i64> {
+    if capture_output && output_alias(state, guest_fd).is_some() {
+        return Ok(format!(
+            "pipe:[{}]",
+            synthetic_captured_output_stat(state, guest_fd).st_ino
+        )
+        .into_bytes());
+    }
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return Err(negative_errno(libc::ENOENT));
     };
+    if let Some(description) = state.fdinfo_files.get(&guest_fd) {
+        return Ok(description.path.clone());
+    }
     if signalfd_mask(state, guest_fd).is_some() {
         return Ok(b"anon_inode:[signalfd]".to_vec());
     }
@@ -5166,14 +5605,14 @@ fn guest_fd_link_target(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Resul
     let target = canonical_fd_path(host_fd)?;
     let target = target.as_os_str().as_bytes();
 
-    // Host pipe and socket link targets embed kernel-assigned inode numbers.
-    // Replace only that unstable identity while retaining Linux's link shape.
+    // A followed proc-fd path names the same object as fstat. Keep anonymous
+    // link targets consistent with that object's identity as well.
     for kind in ["pipe", "socket"] {
         let prefix = format!("{kind}:[");
         if target.starts_with(prefix.as_bytes()) && target.ends_with(b"]") {
             return Ok(format!(
                 "{kind}:[{}]",
-                synthetic_guest_fd_object_inode(state, guest_fd)
+                guest_object_stat(state, guest_fd, capture_output)?.st_ino
             )
             .into_bytes());
         }
@@ -5191,6 +5630,9 @@ fn open_guest_fd_path(
     flags: u64,
     close_on_exec: bool,
 ) -> i64 {
+    if state.fdinfo_files.contains_key(&guest_fd) {
+        return negative_errno(libc::ENOSYS);
+    }
     let Some(source_host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::ENOENT);
     };
@@ -5555,6 +5997,7 @@ fn insert_file_with_flags(
 struct DuplicateFdSource {
     output_alias: Option<OutputAlias>,
     proc_inode: Option<u64>,
+    fdinfo: Option<Arc<FdinfoDescription>>,
     object_inode: Arc<GuestFileIdentity>,
     is_random: bool,
     signalfd_mask: Option<Arc<KernelSigset>>,
@@ -5662,6 +6105,9 @@ fn duplicate_fd_at_or_above(
     if let Some(inode) = source.proc_inode {
         state.proc_files.insert(fd, inode);
     }
+    if let Some(description) = source.fdinfo {
+        state.fdinfo_files.insert(fd, description);
+    }
     i64::from(fd)
 }
 
@@ -5683,6 +6129,7 @@ fn duplicate_fd(
     let old_fd = raw_old_fd as libc::c_int;
     let source_alias = output_alias(state, old_fd);
     let source_proc_inode = state.proc_files.get(&old_fd).copied();
+    let source_fdinfo = state.fdinfo_files.get(&old_fd).cloned();
     let source_is_random = state.random_device_fds.contains(&old_fd);
     let source_signalfd_mask = signalfd_mask(state, old_fd);
     let Some(old_host_fd) = host_fd(state, old_fd) else {
@@ -5737,6 +6184,11 @@ fn duplicate_fd(
         } else {
             state.closed_standard_fds.remove(&new_fd);
         }
+        if let Some(description) = source_fdinfo {
+            state.fdinfo_files.insert(new_fd, description);
+        } else {
+            state.fdinfo_files.remove(&new_fd);
+        }
         set_output_alias(state, new_fd, source_alias);
         if let Some(inode) = source_proc_inode {
             state.proc_files.insert(new_fd, inode);
@@ -5754,6 +6206,9 @@ fn duplicate_fd(
                 state.random_device_fds.insert(new_fd as libc::c_int);
             }
             replace_signalfd_mask(state, new_fd as libc::c_int, source_signalfd_mask);
+            if let Some(description) = source_fdinfo {
+                state.fdinfo_files.insert(new_fd as i32, description);
+            }
         }
         if new_fd >= 0
             && let Some(inode) = source_proc_inode
@@ -7668,8 +8123,10 @@ fn translate_outgoing_control(control: &mut [u8], state: &LoadedStaticElf) -> Re
         {
             let guest_fd = read_control_fd(control, offset)?;
             let host_fd = host_fd(state, guest_fd).ok_or_else(|| negative_errno(libc::EBADF))?;
-            if signalfd_mask(state, guest_fd).is_some() {
-                // Receiving this eventfd without its virtual signalfd metadata
+            if state.fdinfo_files.contains_key(&guest_fd)
+                || signalfd_mask(state, guest_fd).is_some()
+            {
+                // Receiving this private carrier without its virtual signalfd metadata
                 // would create an alias that can escape the nonblocking guard.
                 return Err(negative_errno(libc::ENOSYS));
             }
@@ -8786,26 +9243,32 @@ fn fstat(
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
     };
+    match guest_object_stat(state, fd, capture_output) {
+        Ok(stat) => write_struct(memory, args[1], &stat),
+        Err(error) => error,
+    }
+}
+
+fn guest_object_stat(
+    state: &LoadedStaticElf,
+    fd: libc::c_int,
+    capture_output: bool,
+) -> Result<libc::stat, i64> {
     if capture_output && output_alias(state, fd).is_some() {
-        let stat = synthetic_captured_output_stat(state, fd);
-        return write_struct(memory, args[1], &stat);
+        return Ok(synthetic_captured_output_stat(state, fd));
     }
     let Some(host_fd) = host_fd(state, fd) else {
-        return negative_errno(libc::EBADF);
+        return Err(negative_errno(libc::EBADF));
     };
     let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
     // SAFETY: stat is writable and host_fd is a standard or owned descriptor.
     if unsafe { libc::fstat(host_fd, stat.as_mut_ptr()) } != 0 {
-        return io_error(std::io::Error::last_os_error());
+        return Err(io_error(std::io::Error::last_os_error()));
     }
     // SAFETY: fstat initialized stat on success.
     let mut stat = unsafe { stat.assume_init() };
-    if let Some(&inode) = state.proc_files.get(&fd) {
-        sanitize_proc_stat(&mut stat, inode);
-    } else {
-        sanitize_stat_timestamps(&mut stat);
-    }
-    write_struct(memory, args[1], &stat)
+    sanitize_guest_fd_stat(state, fd, &mut stat);
+    Ok(stat)
 }
 
 // TODO-HUMAN-REVIEW(PR-205): Review synthetic metadata for in-memory captured output.
@@ -8826,16 +9289,49 @@ fn synthetic_captured_output_stat(state: &LoadedStaticElf, fd: libc::c_int) -> l
     stat
 }
 
+fn synthetic_captured_output_statx(state: &LoadedStaticElf, fd: libc::c_int) -> libc::statx {
+    let stat = synthetic_captured_output_stat(state, fd);
+    // SAFETY: libc::statx is plain-old-data; a zeroed value is valid.
+    let mut extended = unsafe { std::mem::zeroed::<libc::statx>() };
+    extended.stx_mask = libc::STATX_BASIC_STATS;
+    extended.stx_blksize = stat.st_blksize as u32;
+    extended.stx_nlink = stat.st_nlink as u32;
+    extended.stx_uid = stat.st_uid;
+    extended.stx_gid = stat.st_gid;
+    extended.stx_mode = stat.st_mode as u16;
+    extended.stx_ino = stat.st_ino;
+    extended.stx_dev_major = libc::major(stat.st_dev);
+    extended.stx_dev_minor = libc::minor(stat.st_dev);
+    extended.stx_atime.tv_sec = stat.st_atime;
+    extended.stx_mtime.tv_sec = stat.st_mtime;
+    extended.stx_ctime.tv_sec = stat.st_ctime;
+    extended
+}
+
 fn path_stat(
     memory: &mut GuestMemory,
     state: &LoadedStaticElf,
     args: &[u64; 6],
     flags: libc::c_int,
+    capture_output: bool,
 ) -> i64 {
-    fstatat_impl(memory, state, libc::AT_FDCWD, args[0], args[1], flags)
+    fstatat_impl(
+        memory,
+        state,
+        libc::AT_FDCWD,
+        args[0],
+        args[1],
+        flags,
+        capture_output,
+    )
 }
 
-fn newfstatat(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn newfstatat(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> i64 {
     fstatat_impl(
         memory,
         state,
@@ -8843,6 +9339,7 @@ fn newfstatat(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
         args[1],
         args[2],
         args[3] as libc::c_int,
+        capture_output,
     )
 }
 
@@ -8853,6 +9350,7 @@ fn fstatat_impl(
     path_address: u64,
     output_address: u64,
     flags: libc::c_int,
+    capture_output: bool,
 ) -> i64 {
     let path = match read_c_string(memory, path_address, 4096) {
         Ok(path) => path,
@@ -8864,6 +9362,21 @@ fn fstatat_impl(
     }
     if path.is_empty() && flags & libc::AT_EMPTY_PATH == 0 {
         return negative_errno(libc::ENOENT);
+    }
+    if let Some(target) = fdinfo_path_target(state, &path) {
+        let (tid, fd) = match target {
+            Ok(target) => target,
+            Err(error) => return error,
+        };
+        if let Err(error) = fdinfo_target_generation(state, tid, fd, capture_output) {
+            return error;
+        }
+        let path = format!("/proc/{tid}/fdinfo/{fd}");
+        return write_struct(
+            memory,
+            output_address,
+            &synthetic_proc_stat(synthetic_proc_inode(path.as_bytes()), 0),
+        );
     }
     // Path-addressed synthetic /proc file: synthesize deterministic metadata.
     // synthetic_proc_content returns None for an empty path, so no explicit
@@ -8884,6 +9397,19 @@ fn fstatat_impl(
     {
         let stat = synthetic_guest_fd_symlink_stat(metadata.guest_fd);
         return write_struct(memory, output_address, &stat);
+    }
+    let descriptor = guest_path
+        .map(|metadata| metadata.guest_fd)
+        .or_else(|| (path.is_empty() && guest_dirfd != libc::AT_FDCWD).then_some(guest_dirfd));
+    if let Some(fd) = descriptor
+        && capture_output
+        && output_alias(state, fd).is_some()
+    {
+        return write_struct(
+            memory,
+            output_address,
+            &synthetic_captured_output_stat(state, fd),
+        );
     }
     let executable = if flags & libc::AT_SYMLINK_NOFOLLOW == 0 {
         match guest_proc_exe_path(state, &path) {
@@ -8962,7 +9488,12 @@ fn fstatat_impl(
     }
 }
 
-fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn statx(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> i64 {
     let path = match read_c_string(memory, args[1], 4096) {
         Ok(path) => path,
         Err(error) => return read_c_string_errno(error),
@@ -8977,6 +9508,26 @@ fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
     }
     if path.is_empty() && flags & libc::AT_EMPTY_PATH == 0 {
         return negative_errno(libc::ENOENT);
+    }
+    if let Some(target) = fdinfo_path_target(state, &path) {
+        if args[3] as libc::c_uint & 0x8000_0000 != 0
+            || flags & libc::AT_STATX_SYNC_TYPE == libc::AT_STATX_SYNC_TYPE
+        {
+            return negative_errno(libc::EINVAL);
+        }
+        let (tid, fd) = match target {
+            Ok(target) => target,
+            Err(error) => return error,
+        };
+        if let Err(error) = fdinfo_target_generation(state, tid, fd, capture_output) {
+            return error;
+        }
+        let path = format!("/proc/{tid}/fdinfo/{fd}");
+        return write_struct(
+            memory,
+            args[4],
+            &synthetic_proc_statx(synthetic_proc_inode(path.as_bytes()), 0),
+        );
     }
     // Path-addressed synthetic /proc file: synthesize deterministic metadata.
     if !path.is_empty() {
@@ -9014,6 +9565,24 @@ fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
     {
         let stat = synthetic_guest_fd_symlink_statx(metadata.guest_fd);
         return write_struct(memory, args[4], &stat);
+    }
+    let descriptor = guest_path.map(|metadata| metadata.guest_fd).or_else(|| {
+        (path.is_empty() && args[0] as libc::c_int != libc::AT_FDCWD)
+            .then_some(args[0] as libc::c_int)
+    });
+    if let Some(fd) = descriptor
+        && capture_output
+        && output_alias(state, fd).is_some()
+    {
+        // Ordinary objects continue through the native statx call below. The
+        // capture sink has no corresponding host object; validate the kernel's
+        // reserved mask bit and mutually exclusive synchronization flags here.
+        if args[3] as libc::c_uint & 0x8000_0000 != 0
+            || flags & libc::AT_STATX_SYNC_TYPE == libc::AT_STATX_SYNC_TYPE
+        {
+            return negative_errno(libc::EINVAL);
+        }
+        return write_struct(memory, args[4], &synthetic_captured_output_statx(state, fd));
     }
     let opened_file;
     let host_fd = if let Some(metadata) = guest_path {
@@ -9915,8 +10484,9 @@ fn canonical_fd_path(fd: RawFd) -> Result<std::path::PathBuf, i64> {
 // Real procfs is refused (see `ensure_not_procfs`) because its contents are
 // host-specific and would break `--verify`. To still support programs that read
 // a few well-known /proc files (uptime, diagnostics, self-inspection), a small
-// allowlist is synthesized with DETERMINISTIC content and served from a memfd,
-// so the ordinary read/lseek/close/dup/fork paths apply unchanged. `fstat`,
+// allowlist uses backend-owned storage. Most contents are fixed; mount files
+// retain the actual namespace snapshot for Tool normalization, and fdinfo uses
+// its own observation/seq state. Fixed files retain ordinary memfd I/O. `fstat`,
 // `newfstatat`, and `statx` on such a descriptor report synthesized, run-stable
 // metadata, because the backing memfd's own inode varies per run and would
 // otherwise perturb determinism. Directory enumeration of /proc itself is not
@@ -10079,14 +10649,11 @@ fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8
         b"/proc/loadavg" => b"0.00 0.00 0.00 1/1 1\n".to_vec(),
         b"/proc/version" => b"Linux version 6.0.0 (reverie-kvm) #1 SMP x86_64\n".to_vec(),
         b"/proc/filesystems" => b"nodev\tproc\nnodev\ttmpfs\n\text4\n".to_vec(),
-        b"/proc/mounts" | b"/proc/self/mounts" => b"rootfs / rootfs rw 0 0\n".to_vec(),
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-225): /proc/self/mountinfo is the primary
-        // mount table modern gnulib/coreutils read (df reads it before falling
-        // back to /etc/mtab). Serve a single deterministic rootfs entry
-        // consistent with the /proc/mounts surface above. Fields:
-        // mount_id parent_id major:minor root mount_point options - fstype src super_opts
-        b"/proc/self/mountinfo" => b"1 0 0:1 / / rw - rootfs rootfs rw\n".to_vec(),
+        b"/proc/mounts" | b"/proc/self/mounts" => state.proc_mounts.mounts.clone(),
+        // Absolute guest paths and owned descriptors use this same ambient
+        // namespace. The Tool normalizes its real mount identities together
+        // with the raw identities returned by ordinary fdinfo observations.
+        b"/proc/self/mountinfo" => state.proc_mounts.mountinfo.clone(),
         b"/proc/stat" => concat!(
             "cpu  0 0 0 0 0 0 0 0 0 0\n",
             "cpu0 0 0 0 0 0 0 0 0 0 0\n",
@@ -10525,8 +11092,6 @@ fn sanitize_guest_fd_stat(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: 
         sanitize_proc_stat(stat, inode);
         return;
     }
-    stat.st_dev = synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR);
-    stat.st_ino = synthetic_guest_fd_object_inode(state, guest_fd);
     sanitize_stat_timestamps(stat);
 }
 
@@ -10535,9 +11100,6 @@ fn sanitize_guest_fd_statx(state: &LoadedStaticElf, guest_fd: libc::c_int, stat:
         *stat = synthetic_proc_statx(inode, stat.stx_size);
         return;
     }
-    stat.stx_ino = synthetic_guest_fd_object_inode(state, guest_fd);
-    stat.stx_dev_major = SYNTHETIC_DEV_MAJOR;
-    stat.stx_dev_minor = SYNTHETIC_GUEST_FD_DEV_MINOR;
     sanitize_statx_timestamps(stat);
 }
 
@@ -10656,6 +11218,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
     let guest_fd = args[0] as libc::c_int;
     let source_alias = output_alias(state, guest_fd);
     let source_proc_inode = state.proc_files.get(&guest_fd).copied();
+    let source_fdinfo = state.fdinfo_files.get(&guest_fd).cloned();
     let source_is_random = state.random_device_fds.contains(&guest_fd);
     let source_signalfd_mask = signalfd_mask(state, guest_fd);
     let Some(host_fd) = host_fd(state, guest_fd) else {
@@ -10671,6 +11234,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
             DuplicateFdSource {
                 output_alias: source_alias,
                 proc_inode: source_proc_inode,
+                fdinfo: source_fdinfo,
                 object_inode: source_object_inode,
                 is_random: source_is_random,
                 signalfd_mask: source_signalfd_mask,
@@ -10684,13 +11248,24 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
             DuplicateFdSource {
                 output_alias: source_alias,
                 proc_inode: source_proc_inode,
+                fdinfo: source_fdinfo,
                 object_inode: source_object_inode,
                 is_random: source_is_random,
                 signalfd_mask: source_signalfd_mask,
             },
         ),
         libc::F_GETFL => match fd_status_flags(host_fd) {
-            Ok(flags) => flags as i64,
+            Ok(flags) => i64::from(
+                flags
+                    | if source_fdinfo
+                        .as_ref()
+                        .is_some_and(|info| info.nofollow_status)
+                    {
+                        libc::O_NOFOLLOW
+                    } else {
+                        0
+                    },
+            ),
             Err(error) => error,
         },
         libc::F_GETFD => {
@@ -10722,6 +11297,12 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 | libc::O_NOATIME
                 | libc::O_NONBLOCK;
             let flags = args[2] as libc::c_int & settable;
+            if source_fdinfo.is_some() && flags & libc::O_DIRECT != 0 {
+                // proc fdinfo lacks FMODE_CAN_ODIRECT, unlike its private
+                // memfd carrier. Reject before applying any requested status
+                // changes, including changes shared by descriptor aliases.
+                return negative_errno(libc::EINVAL);
+            }
             if source_signalfd_mask.is_some() && flags & libc::O_NONBLOCK == 0 {
                 // Blocking virtual signalfd waits require scheduler ownership;
                 // reject before changing the shared open-file description.
@@ -10819,6 +11400,7 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
         state.random_device_fds.remove(&fd);
         replace_signalfd_mask(state, fd, None);
         state.proc_files.remove(&fd);
+        state.fdinfo_files.remove(&fd);
         state.fd_object_inodes.remove(&fd);
         cleanup_fd_object_inodes(state);
         set_output_alias(state, fd, None);
@@ -12207,12 +12789,30 @@ fn gettimeofday(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review shared readlink guest path handling.
-fn readlink(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    readlink_at_impl(memory, state, libc::AT_FDCWD, args[0], args[1], args[2])
+fn readlink(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> i64 {
+    readlink_at_impl(
+        memory,
+        state,
+        libc::AT_FDCWD,
+        args[0],
+        args[1],
+        args[2],
+        capture_output,
+    )
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review readlinkat guest-dirfd and procfd semantics.
-fn readlinkat(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn readlinkat(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> i64 {
     readlink_at_impl(
         memory,
         state,
@@ -12220,6 +12820,7 @@ fn readlinkat(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
         args[1],
         args[2],
         args[3],
+        capture_output,
     )
 }
 
@@ -12231,6 +12832,7 @@ fn readlink_at_impl(
     path_address: u64,
     output_address: u64,
     raw_capacity: u64,
+    capture_output: bool,
 ) -> i64 {
     let path = match read_c_string(memory, path_address, 4096) {
         Ok(path) => path,
@@ -12245,7 +12847,7 @@ fn readlink_at_impl(
     let capacity = requested_capacity.min(MAX_HOST_IO);
 
     if let Some(guest_fd) = guest_fd_path(state, &path) {
-        let target = match guest_fd_link_target(state, guest_fd) {
+        let target = match guest_fd_link_target(state, guest_fd, capture_output) {
             Ok(target) => target,
             Err(error) => return error,
         };
@@ -13881,6 +14483,9 @@ mod tests {
             closed_standard_fds: BTreeSet::new(),
             children: BTreeMap::new(),
             proc_files: BTreeMap::new(),
+            fdinfo_files: BTreeMap::new(),
+            fdinfo_table: std::sync::Weak::new(),
+            proc_mounts: Arc::new(crate::proc_mounts::ProcMountSnapshot::capture().unwrap()),
             fd_object_inodes: BTreeMap::new(),
             file_identity_table: Arc::new(std::sync::Mutex::new(
                 crate::elf::GuestFileIdentityTable {
@@ -14612,18 +15217,19 @@ mod tests {
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
 
-        const EXPECTED: &[u8] = b"1 0 0:1 / / rw - rootfs rootfs rw\n";
+        let expected = std::fs::read("/proc/self/mountinfo").unwrap();
+        assert_eq!(state.proc_mounts.mountinfo, expected);
 
-        // The direct content accessor returns the deterministic entry.
+        // The raw surface represents the actual backend filesystem namespace.
         assert_eq!(
             synthetic_proc_content(&state, b"/proc/self/mountinfo").as_deref(),
-            Some(EXPECTED)
+            Some(expected.as_slice())
         );
 
         // A guest read through openat yields the same bytes.
         let fd = open_readonly(&mut memory, &mut state, "/proc/self/mountinfo");
         assert!(fd >= 0, "open /proc/self/mountinfo failed: {fd}");
-        assert_eq!(read_fd_to_end(&mut memory, &mut state, fd), EXPECTED);
+        assert_eq!(read_fd_to_end(&mut memory, &mut state, fd), expected);
 
         // fstat/newfstatat resolve to the same stable synthetic inode so that
         // gnulib's fstat-then-read of the mount table stays deterministic.
@@ -14643,7 +15249,13 @@ mod tests {
             synthetic_proc_path_for_inode(stat.st_ino),
             Some(b"/proc/self/mountinfo".as_slice())
         );
-        assert_eq!(stat.st_size, EXPECTED.len() as libc::off_t);
+        assert_eq!(stat.st_size, expected.len() as libc::off_t);
+        let child = state.try_clone_for_fork(2).unwrap();
+        assert!(Arc::ptr_eq(&state.proc_mounts, &child.proc_mounts));
+        let snapshot = state.proc_mounts.clone();
+        let mut replacement = test_state(&root.0);
+        replacement.inherit_process_state(state);
+        assert!(Arc::ptr_eq(&snapshot, &replacement.proc_mounts));
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
@@ -22829,7 +23441,41 @@ mod tests {
             negative_errno(libc::ENOENT)
         );
 
-        // Kernel pipe inode numbers are host-specific; expose a guest-stable link.
+        // Ordinary pipe links report the owned kernel object, matching direct
+        // fstat. Keep private object bookkeeping separate from visible inodes.
+        fn assert_pipe_stat_identity(
+            memory: &mut GuestMemory,
+            state: &mut LoadedStaticElf,
+            fd: libc::c_int,
+            followed: &libc::stat,
+        ) {
+            let mut native: libc::stat = unsafe { std::mem::zeroed() };
+            assert_eq!(
+                unsafe { libc::fstat(state.files[&fd].as_raw_fd(), &mut native) },
+                0
+            );
+            assert_eq!(
+                syscall_result(
+                    memory,
+                    state,
+                    libc::SYS_fstat,
+                    [fd as u64, STAT, 0, 0, 0, 0],
+                ),
+                0
+            );
+            let direct: libc::stat = read_struct(memory, STAT);
+            assert_eq!(native.st_mode & libc::S_IFMT, libc::S_IFIFO);
+            for observed in [followed, &direct] {
+                assert_eq!(
+                    (
+                        observed.st_dev,
+                        observed.st_ino,
+                        observed.st_mode & libc::S_IFMT
+                    ),
+                    (native.st_dev, native.st_ino, native.st_mode & libc::S_IFMT)
+                );
+            }
+        }
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -22848,6 +23494,16 @@ mod tests {
             [pipe_fds[0] as u64, 0, 0, 0, 0, 0],
         );
         assert_eq!(duplicate, 5);
+        let private_inode = state.fd_object_inodes[&pipe_fds[0]].inode;
+        for fd in [pipe_fds[0], pipe_fds[1], duplicate as libc::c_int] {
+            assert_eq!(
+                state
+                    .fd_object_inodes
+                    .get(&fd)
+                    .map(|identity| identity.inode),
+                Some(private_inode)
+            );
+        }
 
         let mut targets = Vec::new();
         let mut inodes = Vec::new();
@@ -22873,6 +23529,7 @@ mod tests {
                 0
             );
             let stat: libc::stat = read_struct(&memory, STAT);
+            assert_pipe_stat_identity(&mut memory, &mut state, fd, &stat);
             inodes.push(stat.st_ino);
         }
 
@@ -22908,6 +23565,7 @@ mod tests {
                 0
             );
             let stat: libc::stat = read_struct(&memory, STAT);
+            assert_pipe_stat_identity(&mut memory, &mut state, fd, &stat);
             assert_eq!(
                 stat.st_ino, stable_inode,
                 "closing the first pipe fd must not change surviving identity"
@@ -22927,7 +23585,7 @@ mod tests {
         );
         let second_pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
         assert_eq!(second_pipe_fds, [3, 6]);
-        let new_inode = state
+        let new_private_inode = state
             .fd_object_inodes
             .get(&second_pipe_fds[0])
             .map(|identity| identity.inode)
@@ -22937,33 +23595,76 @@ mod tests {
                 .fd_object_inodes
                 .get(&second_pipe_fds[1])
                 .map(|identity| identity.inode),
-            Some(new_inode)
+            Some(new_private_inode)
         );
         assert_ne!(
-            new_inode, stable_inode,
+            new_private_inode, private_inode,
             "descriptor reuse must allocate a distinct live pipe identity"
         );
-        assert_eq!(
-            state
-                .fd_object_inodes
-                .get(&pipe_fds[1])
-                .map(|identity| identity.inode),
-            Some(stable_inode)
-        );
-        write_c_string(
-            &mut memory,
-            PATH,
-            &format!("/proc/self/fd/{}", second_pipe_fds[0]),
-        );
-        let count = syscall_result(
-            &mut memory,
-            &mut state,
-            libc::SYS_readlink,
-            [PATH, OUTPUT, 4096, 0, 0, 0],
-        );
-        let mut target = vec![0; count as usize];
-        memory.read(OUTPUT, &mut target).unwrap();
-        assert_eq!(target, format!("pipe:[{new_inode}]").as_bytes());
+        for fd in [pipe_fds[1], duplicate as libc::c_int] {
+            assert_eq!(
+                state
+                    .fd_object_inodes
+                    .get(&fd)
+                    .map(|identity| identity.inode),
+                Some(private_inode)
+            );
+            write_c_string(&mut memory, PATH, &format!("/proc/self/fd/{fd}"));
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_newfstatat,
+                    [libc::AT_FDCWD as u64, PATH, STAT, 0, 0, 0],
+                ),
+                0
+            );
+            let stat: libc::stat = read_struct(&memory, STAT);
+            assert_pipe_stat_identity(&mut memory, &mut state, fd, &stat);
+            assert_eq!(stat.st_ino, stable_inode);
+            let count = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readlink,
+                [PATH, OUTPUT, 4096, 0, 0, 0],
+            );
+            assert_eq!(count, stable_pipe.len() as i64);
+            let mut target = vec![0; count as usize];
+            memory.read(OUTPUT, &mut target).unwrap();
+            assert_eq!(target, stable_pipe.as_bytes());
+        }
+        let mut new_inodes = Vec::new();
+        for fd in second_pipe_fds {
+            write_c_string(&mut memory, PATH, &format!("/proc/self/fd/{fd}"));
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_newfstatat,
+                    [libc::AT_FDCWD as u64, PATH, STAT, 0, 0, 0],
+                ),
+                0
+            );
+            let stat: libc::stat = read_struct(&memory, STAT);
+            assert_pipe_stat_identity(&mut memory, &mut state, fd, &stat);
+            assert_ne!(
+                stat.st_ino, stable_inode,
+                "descriptor reuse must expose a distinct live pipe object"
+            );
+            new_inodes.push(stat.st_ino);
+            let count = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readlink,
+                [PATH, OUTPUT, 4096, 0, 0, 0],
+            );
+            let expected = format!("pipe:[{}]", stat.st_ino);
+            assert_eq!(count, expected.len() as i64);
+            let mut target = vec![0; count as usize];
+            memory.read(OUTPUT, &mut target).unwrap();
+            assert_eq!(target, expected.as_bytes());
+        }
+        assert_eq!(new_inodes[0], new_inodes[1]);
     }
 
     #[test]
@@ -23199,6 +23900,1222 @@ mod tests {
         );
     }
 
+    fn metadata_call(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        capture: bool,
+        number: libc::c_long,
+        args: [u64; 6],
+    ) -> i64 {
+        if capture {
+            syscall_result_with_output(memory, state, &mut CapturedOutput::default(), number, args)
+        } else {
+            syscall_result(memory, state, number, args)
+        }
+    }
+
+    fn assert_descriptor_stat_routes(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        fd: libc::c_int,
+        capture: bool,
+    ) -> libc::stat {
+        const PATH: u64 = 0x100;
+        const STAT: u64 = 0x800;
+        const STATX: u64 = 0x1000;
+        assert_eq!(
+            metadata_call(
+                memory,
+                state,
+                capture,
+                libc::SYS_fstat,
+                [fd as u64, STAT, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let direct: libc::stat = read_struct(memory, STAT);
+        for path in [
+            format!("/dev/fd/{fd}"),
+            format!("/proc/self/fd/{fd}"),
+            format!("/proc/thread-self/fd/{fd}"),
+            format!("/proc/{}/fd/{fd}", state.pid),
+            String::new(),
+        ] {
+            write_c_string(memory, PATH, &path);
+            let (dirfd, flags) = if path.is_empty() {
+                (fd, libc::AT_EMPTY_PATH)
+            } else {
+                (libc::AT_FDCWD, 0)
+            };
+            assert_eq!(
+                metadata_call(
+                    memory,
+                    state,
+                    capture,
+                    libc::SYS_newfstatat,
+                    [dirfd as u64, PATH, STAT, flags as u64, 0, 0]
+                ),
+                0,
+                "{path}"
+            );
+            let via_path: libc::stat = read_struct(memory, STAT);
+            assert_eq!(
+                (
+                    via_path.st_dev,
+                    via_path.st_ino,
+                    via_path.st_mode,
+                    via_path.st_size
+                ),
+                (direct.st_dev, direct.st_ino, direct.st_mode, direct.st_size),
+                "{path}"
+            );
+            assert_eq!(
+                metadata_call(
+                    memory,
+                    state,
+                    capture,
+                    libc::SYS_statx,
+                    [
+                        dirfd as u64,
+                        PATH,
+                        flags as u64,
+                        libc::STATX_BASIC_STATS as u64,
+                        STATX,
+                        0
+                    ]
+                ),
+                0
+            );
+            let extended: libc::statx = read_struct(memory, STATX);
+            assert_eq!(
+                extended.stx_mask & (libc::STATX_TYPE | libc::STATX_INO | libc::STATX_SIZE),
+                libc::STATX_TYPE | libc::STATX_INO | libc::STATX_SIZE
+            );
+            assert_eq!(
+                (
+                    extended.stx_dev_major,
+                    extended.stx_dev_minor,
+                    extended.stx_ino,
+                    extended.stx_mode,
+                    extended.stx_size
+                ),
+                (
+                    libc::major(direct.st_dev),
+                    libc::minor(direct.st_dev),
+                    direct.st_ino,
+                    direct.st_mode as u16,
+                    direct.st_size as u64
+                ),
+                "{path}"
+            );
+            if !path.is_empty() {
+                assert_eq!(
+                    metadata_call(
+                        memory,
+                        state,
+                        capture,
+                        libc::SYS_stat,
+                        [PATH, STAT, 0, 0, 0, 0]
+                    ),
+                    0
+                );
+                let legacy: libc::stat = read_struct(memory, STAT);
+                assert_eq!(
+                    (legacy.st_dev, legacy.st_ino),
+                    (direct.st_dev, direct.st_ino)
+                );
+            }
+        }
+        direct
+    }
+
+    #[test]
+    fn fdinfo_record_capacity_and_flags_validation_preserve_other_raw_fields() {
+        let raw = b"pos:\t23\nflags:\t02100002\nmnt_id:\t865\nino:\t91\nlock:\t1: FLOCK ADVISORY READ 123 00:00:91 0 EOF\n";
+        assert_eq!(
+            read_fdinfo_bytes(raw.as_slice(), raw.len() as u64).unwrap(),
+            raw
+        );
+        assert_eq!(
+            read_fdinfo_bytes(raw.as_slice(), raw.len() as u64 - 1),
+            Err(negative_errno(libc::EOVERFLOW))
+        );
+        let actual = replace_fdinfo_flags(raw, libc::O_RDWR).unwrap();
+        let expected = b"pos:\t23\nflags:\t02\nmnt_id:\t865\nino:\t91\nlock:\t1: FLOCK ADVISORY READ 123 00:00:91 0 EOF\n";
+        assert_eq!(
+            actual, expected,
+            "only guest status/CLOEXEC flags are replaced"
+        );
+        for malformed in [
+            b"pos:\t1\n".as_slice(),
+            b"flags:\txyz\n",
+            b"flags:\t0\nflags:\t0\n",
+            b"flags:\t0",
+        ] {
+            assert_eq!(
+                replace_fdinfo_flags(malformed, 0),
+                Err(negative_errno(libc::EIO))
+            );
+        }
+    }
+
+    struct FdinfoFixture {
+        executor: ElfExecutor,
+        memory: GuestMemory,
+        root: TestDir,
+    }
+
+    impl FdinfoFixture {
+        fn new(capture: bool) -> Self {
+            let root = TestDir::new();
+            for name in ["a", "b", "c"] {
+                std::fs::write(root.0.join(name), [b'x'; 128]).unwrap();
+            }
+            Self {
+                executor: ElfExecutor::new(test_state(&root.0), capture),
+                memory: GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap(),
+                root,
+            }
+        }
+        fn call(&mut self, number: libc::c_long, args: [u64; 6]) -> i64 {
+            self.executor
+                .execute(&SyscallRequest::new(number as u64, args), &self.memory)
+        }
+        fn open(&mut self, path: &str, flags: i32) -> i64 {
+            self.memory
+                .write(0x100, &CString::new(path).unwrap().into_bytes_with_nul())
+                .unwrap();
+            self.call(
+                libc::SYS_openat,
+                [libc::AT_FDCWD as u64, 0x100, flags as u64, 0, 0, 0],
+            )
+        }
+        fn info(&mut self, fd: i64) -> i64 {
+            let result = self.open(&format!("/proc/self/fdinfo/{fd}"), libc::O_RDONLY);
+            assert!(result >= 0, "fdinfo open: {result}");
+            result
+        }
+        fn seek(&mut self, fd: i64, offset: i64, whence: i32) -> i64 {
+            self.call(
+                libc::SYS_lseek,
+                [fd as u64, offset as u64, whence as u64, 0, 0, 0],
+            )
+        }
+        fn read(&mut self, fd: i64, count: usize) -> Vec<u8> {
+            let result = self.call(
+                libc::SYS_read,
+                [fd as u64, PAGE_SIZE, count as u64, 0, 0, 0],
+            );
+            assert!(result >= 0, "fdinfo read: {result}");
+            let mut bytes = vec![0; result as usize];
+            self.memory.read(PAGE_SIZE, &mut bytes).unwrap();
+            bytes
+        }
+        fn field(bytes: &[u8], name: &str, radix: u32) -> u64 {
+            let text = std::str::from_utf8(bytes).unwrap();
+            let fields: Vec<_> = text
+                .lines()
+                .filter_map(|line| line.strip_prefix(name))
+                .collect();
+            assert_eq!(fields.len(), 1, "{name}: {text}");
+            u64::from_str_radix(fields[0].trim(), radix).unwrap()
+        }
+        fn check_object(&self, bytes: &[u8], fd: i64, position: u64) {
+            let file = &self.executor.state.files[&(fd as i32)];
+            let raw = std::fs::read(format!("/proc/self/fdinfo/{}", file.as_raw_fd())).unwrap();
+            assert_eq!(Self::field(bytes, "pos:", 10), position);
+            for field in ["ino:", "mnt_id:"] {
+                assert_eq!(Self::field(bytes, field, 10), Self::field(&raw, field, 10));
+            }
+        }
+    }
+
+    #[test]
+    fn fdinfo_dispatch_observes_current_owned_offset_flags_and_descriptor_cloexec() {
+        let mut f = FdinfoFixture::new(false);
+        let target = f.open("a", libc::O_RDWR);
+        assert!(target >= 0);
+        let info = f.info(target);
+        assert_eq!(f.seek(target, 17, libc::SEEK_SET), 17);
+        assert_eq!(
+            f.call(
+                libc::SYS_fcntl,
+                [
+                    target as u64,
+                    libc::F_SETFL as u64,
+                    (libc::O_APPEND | libc::O_NONBLOCK) as u64,
+                    0,
+                    0,
+                    0
+                ]
+            ),
+            0
+        );
+        assert_eq!(
+            f.call(
+                libc::SYS_fcntl,
+                [
+                    target as u64,
+                    libc::F_SETFD as u64,
+                    libc::FD_CLOEXEC as u64,
+                    0,
+                    0,
+                    0
+                ]
+            ),
+            0
+        );
+        let bytes = f.read(info, 4096);
+        f.check_object(&bytes, target, 17);
+        let flags = FdinfoFixture::field(&bytes, "flags:", 8);
+        let expected = f.call(
+            libc::SYS_fcntl,
+            [target as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+        ) as u64
+            | libc::O_CLOEXEC as u64;
+        assert_eq!(flags, expected);
+        let alias = f.call(libc::SYS_dup, [target as u64, 0, 0, 0, 0, 0]);
+        assert!(alias >= 0);
+        let alias_info = f.info(alias);
+        let alias_bytes = f.read(alias_info, 4096);
+        f.check_object(&alias_bytes, alias, 17);
+        assert_eq!(
+            FdinfoFixture::field(&alias_bytes, "flags:", 8),
+            flags & !(libc::O_CLOEXEC as u64)
+        );
+        // Opening fdinfo is not a snapshot. Closing and then reusing the target
+        // entry changes the very first observation of a separately opened info.
+        let replacement_info = f.info(target);
+        assert_eq!(f.call(libc::SYS_close, [target as u64, 0, 0, 0, 0, 0]), 0);
+        assert_eq!(
+            f.call(
+                libc::SYS_read,
+                [replacement_info as u64, PAGE_SIZE, 4096, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOENT)
+        );
+        assert_eq!(f.open("b", libc::O_RDWR), target);
+        assert_eq!(f.seek(target, 23, libc::SEEK_SET), 23);
+        let replaced = f.read(replacement_info, 4096);
+        f.check_object(&replaced, target, 23);
+        assert_ne!(
+            FdinfoFixture::field(&bytes, "ino:", 10),
+            FdinfoFixture::field(&replaced, "ino:", 10)
+        );
+    }
+
+    #[test]
+    fn fdinfo_dispatch_retains_partial_records_and_shared_dup_seek_state() {
+        let mut f = FdinfoFixture::new(false);
+        let target = f.open("a", libc::O_RDWR);
+        assert_eq!(f.seek(target, 23, libc::SEEK_SET), 23);
+        let info = f.info(target);
+        let original = f.read(info, 4096);
+        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
+        let prefix = f.read(info, 7);
+        assert_eq!(prefix, original[..7]);
+        let alias = f.call(
+            libc::SYS_fcntl,
+            [info as u64, libc::F_DUPFD_CLOEXEC as u64, 20, 0, 0, 0],
+        );
+        assert_eq!(alias, 20);
+        assert_eq!(f.seek(target, 29, libc::SEEK_SET), 29);
+        assert_eq!(f.read(alias, 4096), original[7..]);
+        assert_eq!(f.seek(info, 0, libc::SEEK_CUR), original.len() as i64);
+        assert_eq!(f.seek(alias, 0, libc::SEEK_SET), 0);
+        let fresh = f.read(info, 4096);
+        f.check_object(&fresh, target, 29);
+        assert_eq!(f.seek(target, 31, libc::SEEK_SET), 31);
+        assert_eq!(f.seek(info, 3, libc::SEEK_SET), 3);
+        assert_eq!(f.seek(target, 37, libc::SEEK_SET), 37);
+        let suffix = f.read(alias, 4096);
+        assert!(std::str::from_utf8(&suffix).unwrap().starts_with(":\t31\n"));
+        assert_eq!(
+            f.seek(info, 0, libc::SEEK_END),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(f.call(libc::SYS_close, [target as u64, 0, 0, 0, 0, 0]), 0);
+        assert_eq!(
+            f.seek(info, 3, libc::SEEK_SET),
+            negative_errno(libc::ENOENT)
+        );
+        assert_eq!(f.seek(alias, 0, libc::SEEK_CUR), 0);
+        assert_eq!(f.open("b", libc::O_RDWR), target);
+        assert_eq!(f.seek(target, 53, libc::SEEK_SET), 53);
+        let replaced = f.read(alias, 4096);
+        f.check_object(&replaced, target, 53);
+    }
+
+    #[test]
+    fn fdinfo_dispatch_pread_and_guest_faults_preserve_linux_sequence_positions() {
+        let mut f = FdinfoFixture::new(false);
+        let target = f.open("a", libc::O_RDWR);
+        let info = f.info(target);
+        assert_eq!(f.seek(target, 11, libc::SEEK_SET), 11);
+        assert_eq!(
+            f.call(libc::SYS_pread64, [info as u64, PAGE_SIZE, 7, 0, 0, 0]),
+            7
+        );
+        assert_eq!(f.seek(target, 23, libc::SEEK_SET), 23);
+        // No intervening info seek: pread changed seq read_pos but not f_pos.
+        let fresh = f.read(info, 4096);
+        f.check_object(&fresh, target, 23);
+        assert_eq!(f.seek(info, 0, libc::SEEK_CUR), fresh.len() as i64);
+        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
+        f.memory
+            .map_user_permissions(0, 4 * PAGE_SIZE, true, true)
+            .unwrap();
+        f.memory
+            .map_user_permissions(2 * PAGE_SIZE, PAGE_SIZE, true, false)
+            .unwrap();
+        f.memory.enable_user_access();
+        assert_eq!(
+            f.call(libc::SYS_read, [info as u64, 2 * PAGE_SIZE, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(f.seek(info, 0, libc::SEEK_CUR), 0);
+        assert_eq!(f.seek(target, 13, libc::SEEK_SET), 13);
+        let after_zero = f.read(info, 4096);
+        f.check_object(&after_zero, target, 13);
+        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
+        assert_eq!(
+            f.call(libc::SYS_read, [info as u64, 2 * PAGE_SIZE, 64, 0, 0, 0]),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(f.seek(info, 0, libc::SEEK_CUR), 0);
+        assert_eq!(f.seek(target, 31, libc::SEEK_SET), 31);
+        let original = f.read(info, 4096);
+        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
+        assert_eq!(
+            f.call(
+                libc::SYS_read,
+                [info as u64, 2 * PAGE_SIZE - 7, 64, 0, 0, 0]
+            ),
+            7
+        );
+        let mut prefix = [0; 7];
+        f.memory.read(2 * PAGE_SIZE - 7, &mut prefix).unwrap();
+        assert_eq!(prefix.as_slice(), &original[..7]);
+        assert_eq!(f.seek(info, 0, libc::SEEK_CUR), 7);
+        assert_eq!(f.seek(target, 37, libc::SEEK_SET), 37);
+        assert_eq!(f.read(info, 4096), original[7..]);
+        assert_eq!(f.seek(info, 0, libc::SEEK_CUR), original.len() as i64);
+        assert_eq!(
+            f.call(
+                libc::SYS_pread64,
+                [info as u64, PAGE_SIZE, 64, u64::MAX, 0, 0]
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
+        assert_eq!(f.seek(target, 41, libc::SEEK_SET), 41);
+        let retained = f.read(info, 4096);
+        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
+        assert_eq!(f.read(info, 7), retained[..7]);
+        let alias = f.call(libc::SYS_dup, [info as u64, 0, 0, 0, 0, 0]);
+        assert!(alias >= 0);
+        assert_eq!(f.seek(target, 47, libc::SEEK_SET), 47);
+        let native = std::fs::File::open(format!(
+            "/proc/self/fdinfo/{}",
+            f.executor.state.files[&(target as i32)].as_raw_fd()
+        ))
+        .unwrap();
+        let mut native_buffer = [0_u8; 256];
+        // Real vfs_read rejects the original overflowing interval before seq.
+        assert_eq!(
+            unsafe {
+                libc::syscall(
+                    libc::SYS_read,
+                    native.as_raw_fd(),
+                    native_buffer.as_mut_ptr(),
+                    usize::MAX,
+                )
+            },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EFAULT)
+        );
+        assert_eq!(
+            f.call(libc::SYS_read, [alias as u64, PAGE_SIZE, u64::MAX, 0, 0, 0]),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            f.call(
+                libc::SYS_pread64,
+                [alias as u64, PAGE_SIZE, u64::MAX, 0, 0, 0]
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        // Even a zero-length request needs an architectural userspace pointer;
+        // an unmapped but architecture-valid zero-length pointer is accepted.
+        assert_eq!(
+            unsafe {
+                libc::syscall(
+                    libc::SYS_read,
+                    native.as_raw_fd(),
+                    u64::MAX as *mut libc::c_void,
+                    0_usize,
+                )
+            },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EFAULT)
+        );
+        assert_eq!(
+            f.call(libc::SYS_read, [alias as u64, u64::MAX, 0, 0, 0, 0]),
+            negative_errno(libc::EFAULT)
+        );
+        let unmapped = X86_64_GUEST_USER_LIMIT - PAGE_SIZE;
+        assert_eq!(
+            unsafe {
+                libc::syscall(
+                    libc::SYS_read,
+                    native.as_raw_fd(),
+                    unmapped as *mut libc::c_void,
+                    0_usize,
+                )
+            },
+            0
+        );
+        assert_eq!(
+            f.call(libc::SYS_read, [alias as u64, unmapped, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pread64,
+                    native.as_raw_fd(),
+                    u64::MAX as *mut libc::c_void,
+                    0_usize,
+                    -1_i64,
+                )
+            },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EINVAL)
+        );
+        assert_eq!(
+            f.call(
+                libc::SYS_pread64,
+                [alias as u64, u64::MAX, 0, u64::MAX, 0, 0]
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        for fd in [info, alias] {
+            assert_eq!(f.seek(fd, 0, libc::SEEK_CUR), 7);
+        }
+        assert_eq!(f.read(alias, 4096), retained[7..]);
+        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
+        let fresh = f.read(info, 4096);
+        f.check_object(&fresh, target, 47);
+    }
+
+    #[test]
+    fn fdinfo_dispatch_preserves_original_fork_target_and_exec_lifetime() {
+        let mut f = FdinfoFixture::new(false);
+        let target = f.open("a", libc::O_RDWR);
+        let info = f.info(target);
+        let cloexec = f.call(
+            libc::SYS_fcntl,
+            [info as u64, libc::F_DUPFD_CLOEXEC as u64, 30, 0, 0, 0],
+        );
+        assert_eq!(cloexec, 30);
+        let mut child = f.executor.fork_child(2, false, false).unwrap();
+        let child_table = child.file_table.clone();
+        assert!(!Arc::ptr_eq(&child_table, &f.executor.file_table));
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(libc::SYS_close as u64, [target as u64, 0, 0, 0, 0, 0]),
+                &f.memory
+            ),
+            0
+        );
+        f.memory.write(0x100, b"c\0").unwrap();
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_openat as u64,
+                    [libc::AT_FDCWD as u64, 0x100, libc::O_RDWR as u64, 0, 0, 0]
+                ),
+                &f.memory
+            ),
+            target
+        );
+        assert_eq!(f.seek(target, 47, libc::SEEK_SET), 47);
+        let length = child.execute(
+            &SyscallRequest::new(
+                libc::SYS_read as u64,
+                [info as u64, PAGE_SIZE, 4096, 0, 0, 0],
+            ),
+            &f.memory,
+        );
+        assert!(length > 0);
+        let mut bytes = vec![0; length as usize];
+        f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
+        f.check_object(&bytes, target, 47);
+        let table = f.executor.file_table.clone();
+        let generation = f.executor.task_generation;
+        let mounts = f.executor.state.proc_mounts.clone();
+        f.executor.replace_after_exec(test_state(&f.root.0));
+        assert!(Arc::ptr_eq(&table, &f.executor.file_table));
+        assert!(Arc::ptr_eq(&mounts, &f.executor.state.proc_mounts));
+        assert_eq!(f.executor.task_generation, generation);
+        assert!(f.executor.state.fdinfo_files.contains_key(&(info as i32)));
+        assert!(
+            !f.executor
+                .state
+                .fdinfo_files
+                .contains_key(&(cloexec as i32))
+        );
+        assert_eq!(
+            f.call(libc::SYS_read, [cloexec as u64, PAGE_SIZE, 1, 0, 0, 0]),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
+        assert_eq!(f.seek(target, 53, libc::SEEK_SET), 53);
+        let after_exec = f.read(info, 4096);
+        f.check_object(&after_exec, target, 53);
+        assert_eq!(f.call(libc::SYS_close, [target as u64, 0, 0, 0, 0, 0]), 0);
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_lseek as u64,
+                    [info as u64, 0, libc::SEEK_SET as u64, 0, 0, 0]
+                ),
+                &f.memory
+            ),
+            0
+        );
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_read as u64,
+                    [info as u64, PAGE_SIZE, 4096, 0, 0, 0]
+                ),
+                &f.memory
+            ),
+            negative_errno(libc::ENOENT)
+        );
+    }
+
+    #[test]
+    fn fdinfo_dispatch_binds_path_selected_task_generation_after_leader_exit() {
+        let mut f = FdinfoFixture::new(false);
+        let target = f.open("a", libc::O_RDWR);
+        let leader_info = f.info(target);
+        let mut worker = f.executor.thread_child(2).unwrap();
+        f.memory
+            .write(
+                0x100,
+                format!("/proc/thread-self/fdinfo/{target}\0").as_bytes(),
+            )
+            .unwrap();
+        let worker_info = worker.execute(
+            &SyscallRequest::new(
+                libc::SYS_openat as u64,
+                [libc::AT_FDCWD as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
+            ),
+            &f.memory,
+        );
+        assert!(worker_info >= 0);
+        let life = f.executor.state.task_lifecycle.clone();
+        life.lock()
+            .unwrap()
+            .remove(f.executor.state.tid, f.executor.task_generation);
+        f.executor.release_files_on_exit();
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_read as u64,
+                    [leader_info as u64, PAGE_SIZE, 4096, 0, 0, 0]
+                ),
+                &f.memory
+            ),
+            negative_errno(libc::ENOENT)
+        );
+        assert!(
+            worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_read as u64,
+                    [worker_info as u64, PAGE_SIZE, 4096, 0, 0, 0]
+                ),
+                &f.memory
+            ) > 0
+        );
+        // A reused numeric leader ID must not resurrect the old open description.
+        life.lock().unwrap().register(1, 1, 1, true);
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_read as u64,
+                    [leader_info as u64, PAGE_SIZE, 4096, 0, 0, 0]
+                ),
+                &f.memory
+            ),
+            negative_errno(libc::ENOENT)
+        );
+    }
+
+    #[test]
+    fn fdinfo_dispatch_tracks_ordinary_replacements_at_all_standard_slots_and_pipe_mounts() {
+        let mut f = FdinfoFixture::new(true);
+        let source = f.open("a", libc::O_RDWR);
+        assert!(source >= 0);
+        for target in 0..=2 {
+            assert_eq!(
+                f.call(libc::SYS_dup2, [source as u64, target, 0, 0, 0, 0]),
+                target as i64
+            );
+            let info = f.info(target as i64);
+            let bytes = f.read(info, 4096);
+            f.check_object(&bytes, target as i64, 0);
+            assert_eq!(f.call(libc::SYS_close, [info as u64, 0, 0, 0, 0, 0]), 0);
+        }
+        assert_eq!(
+            f.call(libc::SYS_pipe2, [0x200, libc::O_CLOEXEC as u64, 0, 0, 0, 0]),
+            0
+        );
+        let pipe: [i32; 2] = read_struct(&f.memory, 0x200);
+        for target in 0..=2 {
+            assert_eq!(
+                f.call(libc::SYS_dup2, [pipe[0] as u64, target, 0, 0, 0, 0]),
+                target as i64
+            );
+            let info = f.info(target as i64);
+            let bytes = f.read(info, 4096);
+            f.check_object(&bytes, target as i64, 0);
+            // Pipefs may be absent from mountinfo. Preserve its real nonzero ID;
+            // the Tool's existing unlisted-order algorithm owns normalization.
+            assert_ne!(FdinfoFixture::field(&bytes, "mnt_id:", 10), 0);
+            assert_eq!(f.call(libc::SYS_close, [info as u64, 0, 0, 0, 0, 0]), 0);
+        }
+    }
+
+    #[test]
+    fn fdinfo_dispatch_preserves_supported_open_status_flags() {
+        let mut f = FdinfoFixture::new(false);
+        let target = f.open("a", libc::O_RDWR);
+        for flags in [
+            libc::O_RDONLY,
+            libc::O_NOFOLLOW,
+            libc::O_SYNC,
+            libc::O_DSYNC,
+            libc::O_NOFOLLOW | libc::O_SYNC | libc::O_APPEND | libc::O_NONBLOCK,
+        ] {
+            let info = f.open(
+                &format!("/proc/self/fdinfo/{target}"),
+                flags | libc::O_CLOEXEC,
+            );
+            assert!(info >= 0);
+            let status = f.call(
+                libc::SYS_fcntl,
+                [info as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+            );
+            let raw = CString::new(format!(
+                "/proc/self/fdinfo/{}",
+                f.executor.state.files[&(target as i32)].as_raw_fd()
+            ))
+            .unwrap();
+            let native = unsafe { libc::open(raw.as_ptr(), flags | libc::O_CLOEXEC) };
+            assert!(native >= 0);
+            let native = unsafe { std::fs::File::from_raw_fd(native) };
+            assert_eq!(
+                status,
+                unsafe { libc::fcntl(native.as_raw_fd(), libc::F_GETFL) } as i64
+            );
+            assert_eq!(
+                f.call(
+                    libc::SYS_fcntl,
+                    [info as u64, libc::F_SETFD as u64, 0, 0, 0, 0]
+                ),
+                0
+            );
+            assert_eq!(
+                f.call(
+                    libc::SYS_fcntl,
+                    [info as u64, libc::F_GETFL as u64, 0, 0, 0, 0]
+                ),
+                status
+            );
+            let alias = f.call(libc::SYS_dup, [info as u64, 0, 0, 0, 0, 0]);
+            assert!(alias >= 0);
+            assert_eq!(f.seek(target, 13, libc::SEEK_SET), 13);
+            let original = f.read(info, 4096);
+            assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
+            assert_eq!(f.read(info, 7), original[..7]);
+            assert_eq!(f.seek(target, 37, libc::SEEK_SET), 37);
+            let requested = (status as libc::c_int ^ libc::O_NONBLOCK) | libc::O_DIRECT;
+            // Native proc fdinfo has no direct-I/O capability. The same
+            // mixed flag request must fail atomically, leaving NONBLOCK too.
+            assert_eq!(
+                unsafe { libc::fcntl(native.as_raw_fd(), libc::F_SETFL, requested) },
+                -1
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EINVAL)
+            );
+            assert_eq!(
+                unsafe { libc::fcntl(native.as_raw_fd(), libc::F_GETFL) } as i64,
+                status
+            );
+            assert_eq!(
+                f.call(
+                    libc::SYS_fcntl,
+                    [
+                        alias as u64,
+                        libc::F_SETFL as u64,
+                        requested as u64,
+                        0,
+                        0,
+                        0
+                    ]
+                ),
+                negative_errno(libc::EINVAL)
+            );
+            for fd in [info, alias] {
+                assert_eq!(
+                    f.call(
+                        libc::SYS_fcntl,
+                        [fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0]
+                    ),
+                    status
+                );
+                assert_eq!(f.seek(fd, 0, libc::SEEK_CUR), 7);
+            }
+            assert_eq!(f.read(alias, 4096), original[7..]);
+            assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
+            let after_refusal = f.read(info, 4096);
+            f.check_object(&after_refusal, target, 37);
+            assert_eq!(f.call(libc::SYS_close, [alias as u64, 0, 0, 0, 0, 0]), 0);
+            assert_eq!(f.call(libc::SYS_close, [info as u64, 0, 0, 0, 0, 0]), 0);
+        }
+        for flag in [libc::O_PATH, libc::O_DIRECT, libc::O_NOATIME, libc::O_ASYNC] {
+            assert_eq!(
+                f.open(&format!("/proc/self/fdinfo/{target}"), flag),
+                negative_errno(libc::ENOSYS)
+            );
+        }
+    }
+
+    #[test]
+    fn fdinfo_dispatch_keeps_private_carriers_and_supervisor_procfs_unavailable() {
+        let mut f = FdinfoFixture::new(true);
+        assert_eq!(
+            f.open("/proc/self/fdinfo/1", libc::O_RDONLY),
+            negative_errno(libc::ENOSYS)
+        );
+        let target = f.open("a", libc::O_RDWR);
+        let info = f.info(target);
+        for path in ["/proc/self/mountinfo", "/dev/urandom"] {
+            let private = f.open(path, libc::O_RDONLY);
+            assert!(private >= 0);
+            assert_eq!(
+                f.open(&format!("/proc/self/fdinfo/{private}"), libc::O_RDONLY),
+                negative_errno(libc::ENOSYS)
+            );
+        }
+        f.memory.write(0x300, &0_u64.to_ne_bytes()).unwrap();
+        let signal = f.call(
+            libc::SYS_signalfd4,
+            [u64::MAX, 0x300, 8, libc::SFD_NONBLOCK as u64, 0, 0],
+        );
+        assert!(signal >= 0);
+        assert_eq!(
+            f.open(&format!("/proc/self/fdinfo/{signal}"), libc::O_RDONLY),
+            negative_errno(libc::ENOSYS)
+        );
+        for (number, args) in [
+            (libc::SYS_eventfd2, [0; 6]),
+            (libc::SYS_epoll_create1, [0; 6]),
+        ] {
+            let private = f.call(number, args);
+            assert!(private >= 0);
+            assert_eq!(
+                f.open(&format!("/proc/self/fdinfo/{private}"), libc::O_RDONLY),
+                negative_errno(libc::ENOSYS)
+            );
+            assert_eq!(
+                f.call(libc::SYS_dup2, [private as u64, target as u64, 0, 0, 0, 0]),
+                target
+            );
+            assert_eq!(
+                f.call(libc::SYS_read, [info as u64, PAGE_SIZE, 4096, 0, 0, 0]),
+                negative_errno(libc::ENOSYS)
+            );
+        }
+        assert_eq!(
+            f.open("/proc/999999/fdinfo/1", libc::O_RDONLY),
+            negative_errno(libc::ENOENT)
+        );
+        assert_eq!(
+            f.open("/proc/self/fdinfo/999999", libc::O_RDONLY),
+            negative_errno(libc::ENOENT)
+        );
+        let private = std::fs::File::open(f.root.0.join("b")).unwrap();
+        // A supervisor fd is not made reachable merely because its raw number
+        // exists. Choose a duplicate beyond the guest table's current keys.
+        let raw = unsafe { libc::fcntl(private.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 1000) };
+        assert!(raw >= 1000);
+        let private = unsafe { std::fs::File::from_raw_fd(raw) };
+        assert_eq!(
+            f.open(
+                &format!("/proc/self/fdinfo/{}", private.as_raw_fd()),
+                libc::O_RDONLY
+            ),
+            negative_errno(libc::ENOENT)
+        );
+        assert!(f.open("/proc/self/environ", libc::O_RDONLY) < 0);
+    }
+
+    #[test]
+    fn fdinfo_dispatch_keeps_guest_path_identity_and_refuses_backing_file_transfers() {
+        let mut f = FdinfoFixture::new(false);
+        let target = f.open("a", libc::O_RDWR);
+        let info = f.info(target);
+        let alias = f.call(libc::SYS_dup, [info as u64, 0, 0, 0, 0, 0]);
+        assert!(alias >= 0);
+        for fd in [info, alias] {
+            f.memory
+                .write(0x100, format!("/proc/self/fd/{fd}\0").as_bytes())
+                .unwrap();
+            let count = f.call(libc::SYS_readlink, [0x100, PAGE_SIZE, 256, 0, 0, 0]);
+            assert!(count > 0);
+            let mut bytes = vec![0; count as usize];
+            f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
+            assert_eq!(bytes, format!("/proc/1/fdinfo/{target}").as_bytes());
+            assert_eq!(f.call(libc::SYS_lstat, [0x100, PAGE_SIZE, 0, 0, 0, 0]), 0);
+            let link = read_guest_struct::<libc::stat>(&f.memory, PAGE_SIZE).unwrap();
+            assert_eq!(link.st_mode & libc::S_IFMT, libc::S_IFLNK);
+            assert_eq!(
+                f.call(libc::SYS_fstat, [fd as u64, PAGE_SIZE, 0, 0, 0, 0]),
+                0
+            );
+            let stat = read_guest_struct::<libc::stat>(&f.memory, PAGE_SIZE).unwrap();
+            assert_eq!(stat.st_size, 0);
+            assert_eq!(stat.st_mode & libc::S_IFMT, libc::S_IFREG);
+            assert_eq!(
+                stat.st_ino,
+                synthetic_proc_inode(format!("/proc/1/fdinfo/{target}").as_bytes())
+            );
+            assert_eq!(
+                f.call(libc::SYS_write, [fd as u64, PAGE_SIZE, 1, 0, 0, 0]),
+                negative_errno(libc::EBADF)
+            );
+            assert_eq!(
+                f.call(libc::SYS_sendfile, [target as u64, fd as u64, 0, 1, 0, 0]),
+                negative_errno(libc::ENOSYS)
+            );
+            assert_eq!(
+                f.call(
+                    libc::SYS_mmap,
+                    [
+                        0,
+                        PAGE_SIZE,
+                        libc::PROT_READ as u64,
+                        libc::MAP_PRIVATE as u64,
+                        fd as u64,
+                        0
+                    ]
+                ),
+                negative_errno(libc::ENOSYS)
+            );
+            assert_eq!(
+                f.open(&format!("/proc/self/fd/{fd}"), libc::O_RDONLY),
+                negative_errno(libc::ENOSYS)
+            );
+            let mut control = rights_control(&[fd as i32]);
+            assert_eq!(
+                translate_outgoing_control(&mut control, &f.executor.state),
+                Err(negative_errno(libc::ENOSYS))
+            );
+        }
+        let vector = libc::iovec {
+            iov_base: PAGE_SIZE as *mut libc::c_void,
+            iov_len: 64,
+        };
+        assert_eq!(write_struct(&mut f.memory, 0x200, &vector), 0);
+        assert_eq!(
+            f.call(libc::SYS_readv, [info as u64, 0x200, 1, 0, 0, 0]),
+            negative_errno(libc::ENOSYS)
+        );
+        let path = format!("/proc/self/fdinfo/{target}");
+        f.memory
+            .write(0x100, CString::new(path).unwrap().as_bytes_with_nul())
+            .unwrap();
+        assert_eq!(f.call(libc::SYS_stat, [0x100, PAGE_SIZE, 0, 0, 0, 0]), 0);
+        let stat = read_guest_struct::<libc::stat>(&f.memory, PAGE_SIZE).unwrap();
+        assert_eq!(stat.st_size, 0);
+        assert_eq!(
+            stat.st_ino,
+            synthetic_proc_inode(format!("/proc/1/fdinfo/{target}").as_bytes())
+        );
+    }
+
+    #[test]
+    fn ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let first = root.0.join("first");
+        let other = root.0.join("other");
+        std::fs::write(&first, b"first object").unwrap();
+        std::fs::write(&other, b"different object").unwrap();
+        let fd = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(&first).unwrap(),
+            false,
+            None,
+        ) as i32;
+        let reopened = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(&first).unwrap(),
+            false,
+            None,
+        ) as i32;
+        let distinct = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(&other).unwrap(),
+            false,
+            None,
+        ) as i32;
+        let duplicate = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [fd as u64, 0, 0, 0, 0, 0],
+        ) as i32;
+        assert!(fd >= 0 && reopened >= 0 && distinct >= 0 && duplicate >= 0);
+        let native = file_identity_stat(state.files.get(&fd).unwrap()).unwrap();
+        for alias in [fd, reopened, duplicate] {
+            let stat = assert_descriptor_stat_routes(&mut memory, &mut state, alias, false);
+            assert_eq!((stat.st_dev, stat.st_ino), (native.st_dev, native.st_ino));
+        }
+        let other_stat = assert_descriptor_stat_routes(&mut memory, &mut state, distinct, false);
+        assert_ne!(
+            (other_stat.st_dev, other_stat.st_ino),
+            (native.st_dev, native.st_ino)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_dup2,
+                [distinct as u64, fd as u64, 0, 0, 0, 0]
+            ),
+            i64::from(fd)
+        );
+        let replaced = assert_descriptor_stat_routes(&mut memory, &mut state, fd, false);
+        assert_eq!(
+            (replaced.st_dev, replaced.st_ino),
+            (other_stat.st_dev, other_stat.st_ino)
+        );
+        let retained = assert_descriptor_stat_routes(&mut memory, &mut state, duplicate, false);
+        assert_eq!(
+            (retained.st_dev, retained.st_ino),
+            (native.st_dev, native.st_ino)
+        );
+        assert_eq!(close(&mut state, fd as u64), 0);
+        let reused = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(&first).unwrap(),
+            false,
+            None,
+        ) as i32;
+        assert_eq!(reused, fd);
+        let after_close = assert_descriptor_stat_routes(&mut memory, &mut state, reused, false);
+        assert_eq!(
+            (after_close.st_dev, after_close.st_ino),
+            (native.st_dev, native.st_ino)
+        );
+    }
+
+    #[test]
+    fn anonymous_proc_fd_links_match_direct_owned_object_stat() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        for (number, args, kind) in [
+            (libc::SYS_pipe2, [0x1800, 0, 0, 0, 0, 0], "pipe"),
+            (
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_STREAM as u64,
+                    0,
+                    0x1800,
+                    0,
+                    0,
+                ],
+                "socket",
+            ),
+        ] {
+            assert_eq!(syscall_result(&mut memory, &mut state, number, args), 0);
+            let fds: [i32; 2] = read_struct(&memory, 0x1800);
+            for fd in fds {
+                let stat = assert_descriptor_stat_routes(&mut memory, &mut state, fd, false);
+                let native = file_identity_stat(state.files.get(&fd).unwrap()).unwrap();
+                assert_eq!((stat.st_dev, stat.st_ino), (native.st_dev, native.st_ino));
+                let expected = format!("{kind}:[{}]", native.st_ino).into_bytes();
+                write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{fd}"));
+                for capacity in [3, 256] {
+                    let count = syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_readlink,
+                        [0x100, 0x2000, capacity, 0, 0, 0],
+                    );
+                    assert_eq!(count as usize, expected.len().min(capacity as usize));
+                    let mut bytes = vec![0; count as usize];
+                    memory.read(0x2000, &mut bytes).unwrap();
+                    assert_eq!(bytes, expected[..count as usize]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn captured_output_stat_and_link_routes_preserve_the_capture_sink() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let path = root.0.join("host-output");
+        std::fs::write(&path, b"this host file is not the captured pipe").unwrap();
+        let alias = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(&path).unwrap(),
+            false,
+            Some(OutputAlias::Stdout),
+        ) as i32;
+        assert!(alias >= 0);
+        let ordinary = assert_descriptor_stat_routes(&mut memory, &mut state, alias, false);
+        assert_eq!(ordinary.st_mode & libc::S_IFMT, libc::S_IFREG);
+        for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO, alias] {
+            let captured = assert_descriptor_stat_routes(&mut memory, &mut state, fd, true);
+            assert_eq!(captured.st_mode & libc::S_IFMT, libc::S_IFIFO);
+            assert_eq!(captured.st_size, 0);
+            assert_eq!(captured.st_dev, synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR));
+            assert_eq!(captured.st_ino, synthetic_guest_fd_object_inode(&state, fd));
+            write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{fd}"));
+            let expected = format!("pipe:[{}]", captured.st_ino).into_bytes();
+            let count = metadata_call(
+                &mut memory,
+                &mut state,
+                true,
+                libc::SYS_readlinkat,
+                [libc::AT_FDCWD as u64, 0x100, 0x2000, 256, 0, 0],
+            );
+            assert_eq!(count as usize, expected.len());
+            let mut target = vec![0; count as usize];
+            memory.read(0x2000, &mut target).unwrap();
+            assert_eq!(target, expected);
+            assert_eq!(
+                metadata_call(
+                    &mut memory,
+                    &mut state,
+                    true,
+                    libc::SYS_lstat,
+                    [0x100, 0x800, 0, 0, 0, 0]
+                ),
+                0
+            );
+            let link: libc::stat = read_struct(&memory, 0x800);
+            assert_eq!(link.st_mode & libc::S_IFMT, libc::S_IFLNK);
+        }
+    }
+
+    #[test]
+    fn proc_fd_statx_preserves_native_masks_and_error_results() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let path = root.0.join("statx-object");
+        std::fs::write(&path, b"object").unwrap();
+        let fd = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(path).unwrap(),
+            false,
+            Some(OutputAlias::Stdout),
+        ) as i32;
+        let host_fd = host_fd(&state, fd).unwrap();
+        write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{fd}"));
+        for (flags, mask) in [
+            (0, 0),
+            (0, libc::STATX_INO),
+            (libc::AT_STATX_FORCE_SYNC, libc::STATX_BASIC_STATS),
+            (libc::AT_STATX_SYNC_TYPE, libc::STATX_BASIC_STATS),
+            (0, 0x8000_0000),
+        ] {
+            let mut native = std::mem::MaybeUninit::<libc::statx>::zeroed();
+            // SAFETY: the owned fd is live, the empty path is terminated, and
+            // native is writable; Linux validates the actual flags and mask.
+            let result = unsafe {
+                libc::statx(
+                    host_fd,
+                    c"".as_ptr(),
+                    libc::AT_EMPTY_PATH | flags,
+                    mask,
+                    native.as_mut_ptr(),
+                )
+            };
+            let expected = if result == 0 {
+                0
+            } else {
+                io_error(std::io::Error::last_os_error())
+            };
+            let actual = metadata_call(
+                &mut memory,
+                &mut state,
+                false,
+                libc::SYS_statx,
+                [
+                    libc::AT_FDCWD as u64,
+                    0x100,
+                    flags as u64,
+                    mask as u64,
+                    0x1000,
+                    0,
+                ],
+            );
+            assert_eq!(actual, expected, "flags={flags:#x} mask={mask:#x}");
+            if result == 0 {
+                // SAFETY: the native statx call succeeded and initialized it.
+                let native = unsafe { native.assume_init() };
+                let guest: libc::statx = read_struct(&memory, 0x1000);
+                assert_eq!(guest.stx_mask, native.stx_mask);
+                assert_eq!(
+                    (guest.stx_ino, guest.stx_dev_major, guest.stx_dev_minor),
+                    (native.stx_ino, native.stx_dev_major, native.stx_dev_minor)
+                );
+            } else {
+                assert_eq!(
+                    metadata_call(
+                        &mut memory,
+                        &mut state,
+                        true,
+                        libc::SYS_statx,
+                        [
+                            libc::AT_FDCWD as u64,
+                            0x100,
+                            flags as u64,
+                            mask as u64,
+                            0x1000,
+                            0
+                        ]
+                    ),
+                    expected
+                );
+            }
+        }
+    }
+
     #[test]
     fn guest_fd_metadata_is_stable_and_isolated_from_supervisor() {
         const PATH: u64 = 0x100;
@@ -23251,8 +25168,25 @@ mod tests {
             assert_eq!(followed.st_ino, followed_x.stx_ino);
             assert_eq!(libc::major(followed.st_dev), followed_x.stx_dev_major);
             assert_eq!(libc::minor(followed.st_dev), followed_x.stx_dev_minor);
-            assert_eq!(followed_x.stx_dev_major, SYNTHETIC_DEV_MAJOR);
-            assert_eq!(followed_x.stx_dev_minor, SYNTHETIC_GUEST_FD_DEV_MINOR);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_fstat,
+                    [3, STAT, 0, 0, 0, 0]
+                ),
+                0
+            );
+            let direct: libc::stat = read_struct(&memory, STAT);
+            let native = file_identity_stat(state.files.get(&3).unwrap()).unwrap();
+            assert_eq!(
+                (followed.st_dev, followed.st_ino),
+                (direct.st_dev, direct.st_ino)
+            );
+            assert_eq!(
+                (direct.st_dev, direct.st_ino),
+                (native.st_dev, native.st_ino)
+            );
             assert_eq!(followed.st_mode & libc::S_IFMT, libc::S_IFIFO);
 
             assert_eq!(
@@ -35170,7 +37104,15 @@ mod tests {
             let mut memory = GuestMemory::new(0, 8192).unwrap();
             memory.write(0x100, b"/proc/self/exe\0").unwrap();
             memory.write(0x1000, &[0xa5; 4096]).unwrap();
-            let count = readlink_at_impl(&mut memory, state, libc::AT_FDCWD, 0x100, 0x1000, 4096);
+            let count = readlink_at_impl(
+                &mut memory,
+                state,
+                libc::AT_FDCWD,
+                0x100,
+                0x1000,
+                4096,
+                false,
+            );
             assert!((0..4096).contains(&count));
             let mut output = [0; 4096];
             memory.read(0x1000, &mut output).unwrap();
