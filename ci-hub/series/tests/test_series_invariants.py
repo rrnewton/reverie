@@ -2550,6 +2550,7 @@ class CellResultProjection(unittest.TestCase):
             ("wrong schema", lambda c: c["backend_parity"].update(schema=2)),
             ("boolean schema", lambda c: c["backend_parity"].update(schema=True)),
             ("wrong verdict", lambda c: c["backend_parity"].update(verdict="matched")),
+            ("false green over divergence", lambda c: c.update(outcome="PASS", result="pass", failure_class=None)),
             ("wrong mode", lambda c: c.update(mode="replay")),
             ("wrong candidate", lambda c: c["backend_parity"]["candidate"].update(backend="sabre")),
             ("wrong reference", lambda c: c["backend_parity"]["reference"].update(backend="kvm")),
