@@ -270,7 +270,7 @@ impl ProcessActionOutcome {
 
 #[derive(Default)]
 // TODO-HUMAN-REVIEW(PR-172): Review process-wide KVM worker cancellation state.
-struct GuestThreadGroup {
+pub(crate) struct GuestThreadGroup {
     cancelled: AtomicBool,
     // AUTONOMOUS-BOT-IMPLEMENTED: Propagate worker exit_group to the root vCPU.
     // TODO-HUMAN-REVIEW(PR-177): Review KVM thread-group exit ordering.
@@ -285,7 +285,7 @@ struct GuestThreadGroup {
     worker_start_gates: Mutex<std::collections::BTreeMap<i32, ChildStartGate>>,
     // Intermediate joins must not consume a failed exit hook. Keep every
     // failure until the process owner reports teardown, ordered by guest TID.
-    worker_errors: Mutex<std::collections::BTreeMap<i32, Vec<String>>>,
+    worker_errors: Mutex<std::collections::BTreeMap<i32, Vec<Arc<Error>>>>,
     failure_state: Mutex<WorkerFailureState>,
     transport_slots: Mutex<Vec<bool>>,
 }
@@ -297,8 +297,29 @@ struct WorkerFailureState {
     reportable_errors: std::collections::BTreeSet<i32>,
 }
 
+/// Publish a host-owned worker's returned error before retirement can wake a
+/// Tool-owned peer. Ordinary non-Tool workers retain their existing result.
+pub(crate) fn finish_host_worker_outcome<R>(
+    failure: Option<&crate::failure::FailureContext>,
+    tid: Pid,
+    result: Result<R>,
+    retire: impl FnOnce(bool),
+) -> Result<R> {
+    let result = result.map_err(|error| match failure {
+        Some(failure) => failure.for_thread(tid).publish("host-owned worker", error),
+        None => error,
+    });
+    retire(result.is_err());
+    result
+}
+
 impl GuestThreadGroup {
-    fn record_worker_failure(&self, tid: i32) {
+    #[cfg(test)]
+    pub(crate) fn has_worker_handles(&self) -> bool {
+        !self.worker_handles.lock().unwrap().is_empty()
+    }
+
+    pub(crate) fn record_worker_failure(&self, tid: i32) {
         let joining = {
             let mut state = self
                 .failure_state
@@ -369,7 +390,11 @@ impl GuestThreadGroup {
         }
     }
 
-    fn add_worker_handle(&self, tid: i32, handle: std::thread::JoinHandle<GuestWorkerResult>) {
+    pub(crate) fn add_worker_handle(
+        &self,
+        tid: i32,
+        handle: std::thread::JoinHandle<GuestWorkerResult>,
+    ) {
         self.add_worker_handle_with_gate(tid, None, handle);
     }
 
@@ -459,7 +484,7 @@ impl GuestThreadGroup {
         }
     }
 
-    fn join_workers(&self) {
+    pub(crate) fn join_workers(&self) {
         // A worker may register a nested clone while an earlier batch is joining.
         loop {
             let handles = std::mem::take(
@@ -477,8 +502,10 @@ impl GuestThreadGroup {
             for worker in handles {
                 let error = match worker.handle.join() {
                     Ok(Ok(_)) => None,
-                    Ok(Err(error)) => Some(error.to_string()),
-                    Err(_) => Some("guest thread panicked during teardown".to_owned()),
+                    Ok(Err(error)) => Some(Arc::new(error)),
+                    Err(_) => Some(Arc::new(Error::UnexpectedVcpuExit(
+                        "guest thread panicked during teardown".to_owned(),
+                    ))),
                 };
                 self.worker_start_gates
                     .lock()
@@ -496,7 +523,7 @@ impl GuestThreadGroup {
         }
     }
 
-    fn teardown_result(&self) -> Result<()> {
+    pub(crate) fn teardown_result(&self) -> Result<()> {
         let errors = self
             .worker_errors
             .lock()
@@ -504,18 +531,17 @@ impl GuestThreadGroup {
         if errors.is_empty() {
             return Ok(());
         }
-        let diagnostics = errors
-            .iter()
-            .flat_map(|(tid, errors)| {
-                errors
-                    .iter()
-                    .map(move |error| format!("thread {tid}: {error}"))
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        Err(Error::UnexpectedVcpuExit(format!(
-            "KVM worker cleanup failed: {diagnostics}"
-        )))
+        Error::combine(
+            errors
+                .iter()
+                .flat_map(|(&tid, errors)| {
+                    errors
+                        .iter()
+                        .cloned()
+                        .map(move |error| Error::WorkerFailure { tid, error })
+                })
+                .collect(),
+        )
     }
 
     fn cancel_workers(&self) {
@@ -836,6 +862,7 @@ pub struct KvmBackend {
     syscall_trampoline_address: u64,
     pub(crate) syscall_frame_address: u64,
     thread_group: Arc<GuestThreadGroup>,
+    pub(crate) tool_failure: Option<crate::failure::FailureContext>,
     thread_slot: Option<usize>,
     is_guest_thread: bool,
     // Who owns this backend's guest threads. The single value drives BOTH the
@@ -894,6 +921,19 @@ struct InitializedKvmResources {
 }
 
 impl KvmBackend {
+    pub(crate) fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
+        self.tool_failure
+            .as_ref()
+            .map(|failure| failure.run.subscribe())
+    }
+
+    pub(crate) fn report_tool_failure(&self, phase: &'static str, error: Error) -> Error {
+        match &self.tool_failure {
+            Some(failure) => failure.publish(phase, error),
+            None => error,
+        }
+    }
+
     pub(crate) fn guest_thread_is_cancelled(&self) -> bool {
         self.is_guest_thread && self.thread_group.cancelled.load(Ordering::Acquire)
     }
@@ -1002,6 +1042,7 @@ impl KvmBackend {
             syscall_trampoline_address: SYSCALL_TRAMPOLINE_ADDRESS,
             syscall_frame_address: SYSCALL_FRAME_ADDRESS,
             thread_group: Arc::new(GuestThreadGroup::default()),
+            tool_failure: None,
             thread_slot: None,
             is_guest_thread: false,
             // Effective ownership before any tool run resolves it. The direct
@@ -1479,6 +1520,10 @@ impl KvmBackend {
         // Forked children inherit the parent's thread ownership so execution and
         // `is_backend_owned_syscall`'s futex classification stay consistent.
         child.thread_ownership = self.thread_ownership;
+        child.tool_failure = self
+            .tool_failure
+            .as_ref()
+            .map(|failure| failure.for_process(Pid::from_raw(child_pid)));
         child.exit_collector = self.exit_collector.clone();
         write_tid_best_effort(&mut child.memory, child_tid, child_pid);
         let (fs_base, gs_base) = child_executor.segment_bases();
@@ -1635,6 +1680,7 @@ impl KvmBackend {
                 // execution and futex classification stay consistent.
                 self.debug_assert_thread_ownership_consistent();
                 child.thread_ownership = self.thread_ownership;
+                child.tool_failure = self.tool_failure.clone();
                 child.exit_collector = self.exit_collector.clone();
                 child
                     .memory
@@ -1668,15 +1714,23 @@ impl KvmBackend {
                         let execution =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 let result = child.run_static_elf_process(&mut child_executor);
-                                child.release_thread_slot();
-                                clear_tid_and_wake(
-                                    &mut child.memory,
-                                    child_executor.take_clear_child_tid(),
+                                let failure = child.tool_failure.clone();
+                                let result = finish_host_worker_outcome(
+                                    failure.as_ref(),
+                                    Pid::from_raw(child_tid),
+                                    result,
+                                    |failed| {
+                                        child.release_thread_slot();
+                                        clear_tid_and_wake(
+                                            &mut child.memory,
+                                            child_executor.take_clear_child_tid(),
+                                        );
+                                        if failed {
+                                            child_executor.retire_failed_thread();
+                                            child.thread_group.record_worker_failure(child_tid);
+                                        }
+                                    },
                                 );
-                                if result.is_err() {
-                                    child_executor.retire_failed_thread();
-                                    child.thread_group.record_worker_failure(child_tid);
-                                }
                                 if let Err(error) = &result
                                     && child.thread_group.take_worker_error_report(child_tid)
                                 {
@@ -1893,11 +1947,12 @@ impl KvmBackend {
             Error::ExecWorkerTeardown(primary) => (true, *primary),
             primary => (false, primary),
         };
+        let primary = self.report_tool_failure("Tool callback", primary);
         let result = match self.discard_unstarted_tool_children(executor, starts) {
             Ok(()) => primary,
-            Err(cleanup) => Error::UnexpectedVcpuExit(format!(
-                "KVM Tool callback failed: {primary}; unstarted-child cleanup also failed: {cleanup}"
-            )),
+            Err(cleanup) => {
+                primary.with_cleanup(vec![cleanup.cleanup("unstarted-child cleanup also failed")])
+            }
         };
         if exec_teardown {
             Error::ExecWorkerTeardown(Box::new(result))
@@ -1944,7 +1999,7 @@ impl KvmBackend {
                 clear_sighand,
                 share_address_space,
             } => {
-                let mut child = self.prepare_forked_process(
+                let child = self.prepare_forked_process(
                     executor,
                     child_pid,
                     child_stack,
@@ -1958,14 +2013,14 @@ impl KvmBackend {
                 )?;
 
                 let child_pid = Pid::from_raw(child.pid);
-                let child_tool = Arc::new(T::new(child_pid, &context.config));
-                let child_thread_state = child_tool
-                    .init_thread_state(child_pid, Some((context.tid, context.thread_state)));
                 let global_state = context.global_state.ok_or_else(|| {
                     Error::UnexpectedVcpuExit(
                         "forked KVM Tool process requires shared global state".to_owned(),
                     )
                 })?;
+                let child_tool = Arc::new(T::new(child_pid, &context.config));
+                let child_thread_state = child_tool
+                    .init_thread_state(child_pid, Some((context.tid, context.thread_state)));
                 let config = context.config;
                 let subscriptions = context.subscriptions;
                 let pending_child_starts = context.pending_child_starts;
@@ -1978,32 +2033,67 @@ impl KvmBackend {
                 let child_completion = completion.clone();
                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
                 let start_gate = ChildStartGate::new(start_sender);
-                let handle = std::thread::Builder::new()
-                    .name(format!("reverie-kvm-process-{raw_child_pid}"))
-                    .spawn(move || {
-                        match start_receiver.recv() {
-                            Ok(ChildStartCommand::Start) => {}
-                            Ok(ChildStartCommand::Cancel) => return Ok(()),
-                            Err(_) => {
-                                return Err(Error::UnexpectedVcpuExit(format!(
-                                    "KVM child process {raw_child_pid} lost its parent start gate"
-                                )));
-                            }
-                        }
-                        let result = futures::executor::block_on(
-                            child.backend.run_static_elf_process_with_tool(
+                let handle = crate::failure::spawn_owned(
+                    std::thread::Builder::new()
+                        .name(format!("reverie-kvm-process-{raw_child_pid}")),
+                    (
+                        child,
+                        child_tool,
+                        child_thread_state,
+                        global_state,
+                        config,
+                        subscriptions,
+                    ),
+                    move |(
+                        mut child,
+                        child_tool,
+                        child_thread_state,
+                        global_state,
+                        config,
+                        subscriptions,
+                    )| {
+                        let start = start_receiver.recv();
+                        let cancel = !matches!(start, Ok(ChildStartCommand::Start));
+                        let failure = match start {
+                            Ok(_) => None,
+                            Err(_) => Some(Error::UnexpectedVcpuExit(format!(
+                                "KVM child process {raw_child_pid} lost its parent start gate"
+                            ))),
+                        };
+                        let result = if cancel {
+                            let failure = failure.or_else(|| {
+                                child
+                                    .backend
+                                    .tool_failure
+                                    .as_ref()
+                                    .and_then(|failure| failure.run.published_primary())
+                                    .map(Error::SharedFailure)
+                            });
+                            futures::executor::block_on(child.backend.finish_unstarted_tool(
                                 &mut child.executor,
-                                child_pid,
-                                // A forked process child is its own leader (tid == pid).
-                                child_pid,
                                 child_tool,
-                                child_thread_state,
-                                global_state,
+                                (child_pid, child_pid),
+                                global_state.as_ref(),
                                 &config,
-                                &subscriptions,
-                                false,
-                            ),
-                        );
+                                child_thread_state,
+                                failure,
+                            ))
+                        } else {
+                            futures::executor::block_on(
+                                child.backend.run_static_elf_process_with_tool(
+                                    &mut child.executor,
+                                    child_pid,
+                                    // A forked process child is its own leader (tid == pid).
+                                    child_pid,
+                                    child_tool,
+                                    child_thread_state,
+                                    global_state,
+                                    &config,
+                                    &subscriptions,
+                                    false,
+                                ),
+                            )
+                        };
                         match result {
                             Ok((status, _, _)) => {
                                 write_tid_best_effort(
@@ -2031,7 +2121,12 @@ impl KvmBackend {
                                         },
                                     ),
                                 )
-                                .map_err(Error::Reverie)?;
+                                .map_err(|error| {
+                                    child.backend.report_tool_failure(
+                                        "child wait hook",
+                                        Error::Reverie(error),
+                                    )
+                                })?;
                                 Ok(())
                             }
                             Err(error) => {
@@ -2043,7 +2138,29 @@ impl KvmBackend {
                                 Err(error)
                             }
                         }
-                    })?;
+                    },
+                );
+                let handle = match handle {
+                    Ok(handle) => handle,
+                    Err((
+                        error,
+                        (mut child, child_tool, child_thread_state, global_state, config, _),
+                    )) => {
+                        return child
+                            .backend
+                            .finish_unstarted_tool(
+                                &mut child.executor,
+                                child_tool,
+                                (child_pid, child_pid),
+                                global_state.as_ref(),
+                                &config,
+                                child_thread_state,
+                                Some(Error::HostIo(error)),
+                            )
+                            .await
+                            .map(|_| unreachable!("failed spawn completed successfully"));
+                    }
+                };
                 pending_child_starts
                     .lock()
                     .expect("KVM child-start lock poisoned")
@@ -2150,6 +2267,7 @@ impl KvmBackend {
                 // execution and futex classification stay consistent.
                 self.debug_assert_thread_ownership_consistent();
                 child.thread_ownership = self.thread_ownership;
+                child.tool_failure = self.tool_failure.clone();
                 child.exit_collector = self.exit_collector.clone();
                 child
                     .memory
@@ -2176,9 +2294,6 @@ impl KvmBackend {
                 // linked to the parent thread.
                 let tgid = context.pid;
                 let child_tid_pid = Pid::from_raw(child_tid);
-                let child_tool = context.process_state.clone();
-                let child_thread_state = child_tool
-                    .init_thread_state(child_tid_pid, Some((context.tid, context.thread_state)));
                 let global_state = context.global_state.ok_or_else(|| {
                     Error::UnexpectedVcpuExit(
                         "KVM CLONE_THREAD worker requires shared global state".to_owned(),
@@ -2196,57 +2311,138 @@ impl KvmBackend {
                     None,
                 )?;
 
+                let child_tool = context.process_state.clone();
+                let child_thread_state = child_tool
+                    .init_thread_state(child_tid_pid, Some((context.tid, context.thread_state)));
+                if let Some(failure) = &child.tool_failure {
+                    child.tool_failure = Some(crate::failure::FailureContext::new(
+                        failure.run.clone(),
+                        tgid,
+                        child_tid_pid,
+                    ));
+                }
                 let pending_child_starts = context.pending_child_starts;
                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
                 let start_gate = ChildStartGate::new(start_sender);
-                let handle = std::thread::Builder::new()
-                    .name(format!("reverie-kvm-guest-{child_tid}"))
-                    .spawn(move || {
-                        let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            match start_receiver.recv() {
-                                Ok(ChildStartCommand::Start) => {}
-                                Ok(ChildStartCommand::Cancel) => {
-                                    return Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()));
-                                }
-                                Err(_) => {
-                                    panic!("KVM guest thread {child_tid} lost its parent start gate")
-                                }
-                            }
-                            let result =
-                                futures::executor::block_on(child.run_static_elf_process_with_tool(
-                                    &mut child_executor,
-                                    tgid,
-                                    child_tid_pid,
-                                    child_tool,
-                                    child_thread_state,
-                                    global_state,
-                                    &config,
-                                    &subscriptions,
-                                    false,
-                                ));
-                            child.release_thread_slot();
-                            clear_tid_and_wake(
-                                &mut child.memory,
-                                child_executor.take_clear_child_tid(),
-                            );
-                            if result.is_err() {
-                                child_executor.retire_failed_thread();
-                                child.thread_group.record_worker_failure(child_tid);
-                            }
-                            if let Err(error) = &result
-                                && child.thread_group.take_worker_error_report(child_tid)
-                            {
-                                eprintln!(
-                                    "reverie-kvm guest thread {child_tid} tool loop failed: {error}"
+                let handle = crate::failure::spawn_owned(
+                    std::thread::Builder::new().name(format!("reverie-kvm-guest-{child_tid}")),
+                    (
+                        child,
+                        child_executor,
+                        child_tool,
+                        child_thread_state,
+                        global_state,
+                        config,
+                        subscriptions,
+                    ),
+                    move |(
+                        mut child,
+                        mut child_executor,
+                        child_tool,
+                        child_thread_state,
+                        global_state,
+                        config,
+                        subscriptions,
+                    )| {
+                        let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                            || {
+                                let start = start_receiver.recv();
+                                let cancel = !matches!(start, Ok(ChildStartCommand::Start));
+                                let failure = match start {
+                                    Ok(_) => None,
+                                    Err(_) => Some(Error::UnexpectedVcpuExit(format!(
+                                        "KVM guest thread {child_tid} lost its parent start gate"
+                                    ))),
+                                };
+                                let result = if cancel {
+                                    let failure = failure.or_else(|| {
+                                        child
+                                            .tool_failure
+                                            .as_ref()
+                                            .and_then(|failure| failure.run.published_primary())
+                                            .map(Error::SharedFailure)
+                                    });
+                                    futures::executor::block_on(child.finish_unstarted_tool(
+                                        &mut child_executor,
+                                        child_tool,
+                                        (tgid, child_tid_pid),
+                                        global_state.as_ref(),
+                                        &config,
+                                        child_thread_state,
+                                        failure,
+                                    ))
+                                } else {
+                                    futures::executor::block_on(
+                                        child.run_static_elf_process_with_tool(
+                                            &mut child_executor,
+                                            tgid,
+                                            child_tid_pid,
+                                            child_tool,
+                                            child_thread_state,
+                                            global_state,
+                                            &config,
+                                            &subscriptions,
+                                            false,
+                                        ),
+                                    )
+                                };
+                                child.release_thread_slot();
+                                clear_tid_and_wake(
+                                    &mut child.memory,
+                                    child_executor.take_clear_child_tid(),
                                 );
-                            }
-                            result
-                        }));
+                                if result.is_err() {
+                                    child_executor.retire_failed_thread();
+                                    child.thread_group.record_worker_failure(child_tid);
+                                }
+                                if let Err(error) = &result
+                                    && child.thread_group.take_worker_error_report(child_tid)
+                                {
+                                    eprintln!(
+                                        "reverie-kvm guest thread {child_tid} tool loop failed: {error}"
+                                    );
+                                }
+                                result
+                            },
+                        ));
                         match execution {
                             Ok(result) => result,
-                            Err(payload) => child.finish_panicked_guest_worker(&mut child_executor, child_tid, payload),
+                            Err(payload) => child.finish_panicked_guest_worker(
+                                &mut child_executor,
+                                child_tid,
+                                payload,
+                            ),
                         }
-                    })?;
+                    },
+                );
+                let handle = match handle {
+                    Ok(handle) => handle,
+                    Err((
+                        error,
+                        (
+                            mut child,
+                            mut child_executor,
+                            child_tool,
+                            child_thread_state,
+                            global_state,
+                            config,
+                            _,
+                        ),
+                    )) => {
+                        return child
+                            .finish_unstarted_tool(
+                                &mut child_executor,
+                                child_tool,
+                                (tgid, child_tid_pid),
+                                global_state.as_ref(),
+                                &config,
+                                child_thread_state,
+                                Some(Error::HostIo(error)),
+                            )
+                            .await
+                            .map(|_| unreachable!("failed spawn completed successfully"));
+                    }
+                };
                 self.thread_group
                     .add_unstarted_worker(child_tid, start_gate.clone(), handle);
                 pending_child_starts
@@ -4668,6 +4864,113 @@ mod tests {
             ),
             false,
         )
+    }
+
+    #[derive(Default)]
+    struct ForkFailureIdentityLog {
+        events: Mutex<Vec<reverie::BackendFailure>>,
+    }
+
+    #[reverie::global_tool]
+    impl GlobalTool for ForkFailureIdentityLog {
+        type Request = ();
+        type Response = ();
+        type Config = ();
+
+        async fn receive_rpc(&self, _from: Pid, (): ()) {}
+
+        fn report_backend_failure(&self, event: reverie::BackendFailure) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    // This control requires KVM construction and snapshot/register ioctls. It
+    // calls the actual shared fork boundary with parking disabled and never
+    // executes a guest instruction. Keep it separate from no-VM selectors.
+    #[test]
+    fn nested_host_fork_failure_uses_descendant_process_and_worker_identity() {
+        let mut parent =
+            KvmBackend::new(16 * 1024 * 1024).expect("nested fork identity control requires KVM");
+        parent
+            .install_static_elf(&minimal_test_elf(&[0xf4]), "/bin/fork-failure-identity")
+            .unwrap();
+        let executor = ElfExecutor::new(parent.static_elf.take().unwrap(), false);
+        let registers = parent.vcpu.get_regs().unwrap();
+        stage_process_syscall_return(
+            &mut parent.memory,
+            &parent.vcpu,
+            parent.syscall_frame_address,
+            registers,
+        )
+        .unwrap();
+        assert_eq!(parent.thread_ownership, ThreadOwnership::Host);
+
+        let ordinary = parent
+            .prepare_forked_process(
+                &executor, 9, None, None, None, None, false, false, false, None,
+            )
+            .unwrap();
+        assert!(ordinary.backend.tool_failure.is_none());
+        drop(ordinary);
+
+        let global = Arc::new(ForkFailureIdentityLog::default());
+        let failure = crate::failure::RunFailure::new(&global);
+        parent.tool_failure = Some(crate::failure::FailureContext::new(
+            failure.clone(),
+            Pid::from_raw(1),
+            Pid::from_raw(1),
+        ));
+        let mut child = parent
+            .prepare_forked_process(
+                &executor, 2, None, None, None, None, false, false, false, None,
+            )
+            .unwrap();
+        let descendant = child
+            .backend
+            .prepare_forked_process(
+                &child.executor,
+                3,
+                None,
+                None,
+                None,
+                None,
+                false,
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(child.backend.thread_ownership, ThreadOwnership::Host);
+        assert_eq!(descendant.backend.thread_ownership, ThreadOwnership::Host);
+        let context = descendant.backend.tool_failure.as_ref().unwrap().clone();
+        assert!(Arc::ptr_eq(&context.run, &failure));
+        let expected = reverie::BackendFailure {
+            pid: Pid::from_raw(3),
+            tid: Pid::from_raw(4),
+            phase: "host-owned worker",
+        };
+        let retirement_log = global.clone();
+        let returned = std::thread::spawn(move || {
+            let result: Result<()> = finish_host_worker_outcome(
+                Some(&context),
+                Pid::from_raw(4),
+                Err(Error::GuestClock("nested host worker".to_owned())),
+                |failed| {
+                    assert!(failed);
+                    assert_eq!(*retirement_log.events.lock().unwrap(), vec![expected]);
+                },
+            );
+            result
+        })
+        .join()
+        .unwrap()
+        .unwrap_err();
+        let primary = failure.published_primary().expect("worker did not publish");
+        assert!(
+            matches!(primary.as_ref(), Error::GuestClock(message) if message == "nested host worker")
+        );
+        assert!(returned.retains_primary(&primary));
+        assert_eq!(*global.events.lock().unwrap(), vec![expected]);
     }
 
     #[derive(Default)]
