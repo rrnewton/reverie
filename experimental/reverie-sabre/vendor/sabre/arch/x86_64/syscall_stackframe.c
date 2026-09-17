@@ -8,6 +8,7 @@
 #include "syscall_stackframe.h"
 
 #include <stddef.h>
+#include <stdint.h>
 
 struct syscall_stackframe {
   void *rbp_stackalign;
@@ -30,6 +31,24 @@ struct syscall_stackframe {
   void *fake_ret;
   void *ret;
 } __packed;
+
+/* Optional initial-image supervisor ABI. Read-only integer data avoids
+ * linking the plugin runtime/allocator into the coordinator. Keep this in the
+ * translation unit that defines the actual frame: no duplicated offsets.
+ * This describes a full assembly frame, never the SIGILL return-only shim.
+ */
+__attribute__((used, visibility("default")))
+const uint64_t sbr_bootstrap_frame_layout_v1[9] = {
+    1,
+    sizeof(struct syscall_stackframe),
+    offsetof(struct syscall_stackframe, rdi),
+    offsetof(struct syscall_stackframe, rsi),
+    offsetof(struct syscall_stackframe, rdx),
+    offsetof(struct syscall_stackframe, fake_ret),
+    offsetof(struct syscall_stackframe, ret),
+    sizeof(uintptr_t),
+    9,
+};
 
 void *get_syscall_return_address(struct syscall_stackframe *stack_frame) {
   return stack_frame->ret;
