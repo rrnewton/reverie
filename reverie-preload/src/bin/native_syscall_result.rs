@@ -1,3 +1,11 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 //! Bounded native controls for one physical syscall and returned PKRU.
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
@@ -18,7 +26,7 @@ fn pkru() -> u32 {
 }
 fn set_pkru(value: u32) {
     unsafe {
-        core::arch::asm!("wrpkru", "lfence", in("eax") value, in("ecx") 0_u32, in("edx") 0_u32, options(nostack, nomem, preserves_flags));
+        core::arch::asm!("wrpkru", "lfence", in("eax") value, in("ecx") 0_u32, in("edx") 0_u32, options(nostack, preserves_flags));
     }
 }
 fn native(number: i64, args: [u64; 6]) -> NativeSyscallResult {
