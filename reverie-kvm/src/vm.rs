@@ -1875,7 +1875,7 @@ impl KvmBackend {
         starts: &SharedChildStarts,
     ) -> Result<()> {
         let children = self.cancel_unstarted_tool_children(starts, false);
-        self.discard_cancelled_tool_children(executor, children)
+        self.discard_cancelled_tool_children(executor, children, false)
     }
 
     fn cancel_unstarted_tool_children(
@@ -1914,6 +1914,7 @@ impl KvmBackend {
         &mut self,
         executor: &mut ElfExecutor,
         children: Vec<(PendingChildCancellation, bool)>,
+        cancelled_after_failure: bool,
     ) -> Result<()> {
         let mut first_error = None;
         for (child, registered_thread) in children {
@@ -1953,6 +1954,14 @@ impl KvmBackend {
                     }),
             };
             if let Err(error) = result {
+                // The parent already retains the fatal action error. A child
+                // whose exact pending gate we just cancelled can complete its
+                // consuming cleanup with only this derived marker. It is not
+                // a second cleanup failure. Keep every aggregate, real hook
+                // error and ordinary-cancellation error unchanged.
+                if cancelled_after_failure && matches!(error, Error::RunAborted) {
+                    continue;
+                }
                 first_error.get_or_insert(error);
             }
         }
@@ -2004,7 +2013,7 @@ impl KvmBackend {
         };
         let primary = self.report_tool_failure("Tool callback", primary);
         let children = self.cancel_unstarted_tool_children(starts, true);
-        let result = match self.discard_cancelled_tool_children(executor, children) {
+        let result = match self.discard_cancelled_tool_children(executor, children, true) {
             Ok(()) => primary,
             Err(cleanup) => {
                 primary.with_cleanup(vec![cleanup.cleanup("unstarted-child cleanup also failed")])
@@ -6458,7 +6467,11 @@ mod tests {
             ProcessActionContinuation::Restore(Box::new(boundary)),
         ))
         .unwrap_err();
-        assert!(matches!(error, Error::InvalidGuestAddress { .. }));
+        assert!(matches!(
+            error,
+            Error::InvalidGuestAddress { address, length, .. }
+                if address == backend.memory.guest_end() && length == FRAME_SIZE
+        ));
 
         let starts_were_empty = starts.lock().unwrap().is_empty();
         let child_was_absent = match child {
@@ -6644,7 +6657,10 @@ mod tests {
         let (later_sender, later_receiver) = std::sync::mpsc::channel();
         let later_gate = ChildStartGate::new(later_sender);
         let later_handle = std::thread::spawn(move || {
-            assert_eq!(later_receiver.recv().unwrap(), ChildStartCommand::Cancel);
+            assert_eq!(
+                later_receiver.recv().unwrap(),
+                ChildStartCommand::CancelAfterFailure
+            );
             later_cancelled_in_child.store(true, Ordering::Release);
             Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
         });
@@ -6671,6 +6687,106 @@ mod tests {
         assert!(!executor.has_pending_child_process(52));
         first_release_sender.send(()).unwrap();
         backend.thread_group.join_workers();
+    }
+
+    #[test]
+    fn cancelled_child_cleanup_retains_real_errors_and_ordinary_cancellation() {
+        for fork in [false, true] {
+            for failed in [false, true] {
+                for real_cleanup in [false, true] {
+                    let Some((mut backend, mut executor, _)) = backend_at_completed_tool_boundary()
+                    else {
+                        return;
+                    };
+                    let starts = Arc::new(Mutex::new(Vec::new()));
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    let gate = ChildStartGate::new(sender);
+                    let expected = if failed {
+                        ChildStartCommand::CancelAfterFailure
+                    } else {
+                        ChildStartCommand::Cancel
+                    };
+                    let hook_error =
+                        Arc::new(Error::HostIo(std::io::Error::from_raw_os_error(libc::EIO)));
+                    let child_error = if real_cleanup {
+                        Error::WithCleanup {
+                            primary: Arc::new(Error::RunAborted),
+                            cleanup: vec![hook_error.clone()],
+                        }
+                    } else {
+                        Error::RunAborted
+                    };
+                    let consumed = Arc::new(AtomicBool::new(false));
+                    let child_consumed = consumed.clone();
+                    let child = move || {
+                        assert_eq!(
+                            receiver
+                                .recv_timeout(std::time::Duration::from_secs(5))
+                                .unwrap(),
+                            expected
+                        );
+                        child_consumed.store(true, Ordering::Release);
+                        child_error
+                    };
+                    if fork {
+                        executor.register_child_process_with_gate(
+                            41,
+                            gate.clone(),
+                            Arc::new(Mutex::new(None)),
+                            std::thread::spawn(move || Err(child())),
+                        );
+                        starts
+                            .lock()
+                            .unwrap()
+                            .push(PendingChildStart::fork_process(41, gate));
+                    } else {
+                        backend.thread_group.add_unstarted_worker(
+                            42,
+                            gate.clone(),
+                            std::thread::spawn(move || Err(child())),
+                        );
+                        starts
+                            .lock()
+                            .unwrap()
+                            .push(PendingChildStart::tool_thread(42, gate));
+                    }
+                    let children = backend.cancel_unstarted_tool_children(&starts, failed);
+                    let result =
+                        backend.discard_cancelled_tool_children(&mut executor, children, failed);
+                    assert!(consumed.load(Ordering::Acquire));
+                    assert!(starts.lock().unwrap().is_empty());
+                    assert!(!executor.has_pending_child_process(41));
+                    assert!(
+                        backend
+                            .thread_group
+                            .worker_handles
+                            .lock()
+                            .unwrap()
+                            .is_empty()
+                    );
+                    assert!(
+                        backend
+                            .thread_group
+                            .worker_start_gates
+                            .lock()
+                            .unwrap()
+                            .is_empty()
+                    );
+                    if real_cleanup {
+                        let Error::WithCleanup { primary, cleanup } = result.unwrap_err() else {
+                            panic!("cancelled child's real cleanup cause was changed or lost");
+                        };
+                        assert!(matches!(*primary, Error::RunAborted));
+                        assert_eq!(cleanup.len(), 1);
+                        assert!(Arc::ptr_eq(&cleanup[0], &hook_error));
+                    } else if failed {
+                        result.unwrap();
+                    } else {
+                        assert!(matches!(result, Err(Error::RunAborted)));
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -7448,7 +7564,7 @@ mod tests {
                 joining.join().unwrap();
                 assert!(group.worker_start_gates.lock().unwrap().is_empty());
                 backend
-                    .discard_cancelled_tool_children(&mut executor, children)
+                    .discard_cancelled_tool_children(&mut executor, children, false)
                     .unwrap();
             }
             let error = group.teardown_result().unwrap_err().to_string();
