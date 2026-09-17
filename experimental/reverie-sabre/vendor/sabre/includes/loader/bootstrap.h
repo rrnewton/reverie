@@ -18,7 +18,8 @@
  * Enabled execution must make no rewritten non-plugin getrandom call before
  * IMAGE. That includes loader-internal code between the initial rewrite and
  * the IMAGE stop; a future such call is a fatal unsupported phase, never a
- * fallback to host entropy. The existing native phase control checks this.
+ * fallback to host entropy. The native phase control checks that such a call
+ * is fatal; it does not establish that no loader-internal caller exists.
  *
  * The supervisor must write no more than TAKE's capacity, retire the state
  * only after a successful bounded write, and reject subsequent takes (for
