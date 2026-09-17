@@ -395,6 +395,10 @@ SUPPORTED_REPOS = {
 }
 SCORECARD_PATHS = run_registry.SCORECARD_WRITEBACK_PATHS
 SCORECARD_HANDOFF_SCHEMA_VERSION = 1
+# Cap on the scorecard tool's stderr carried into a recorded writeback failure.
+# Ample for any single refusal sentence; short enough that the 45-line usage
+# block a few argument errors append does not become the durable record.
+SCORECARD_REASON_LIMIT = 2000
 SCORECARD_INVOCATION_LOCK_RELATIVE = Path("target/validation/validate-invocation.lock")
 
 
@@ -4830,10 +4834,33 @@ def write_scorecard_from_results(
             # durable writeback failures all reading "refused with exit status:
             # 2", and diagnosing the actual cause required reading the run log
             # -- which is not a step the cleanup that consumes this record can
-            # take. The last line is the tool's own message.
-            detail = (result.stderr or "").strip().splitlines()
-            reason = f": {detail[-1]}" if detail else ""
-            return failed(f"observe-results exited {result.returncode}{reason}")
+            # take.
+            #
+            # ⚠️ RECORD THE TOOL'S OWN STDERR, WHOLE, RATHER THAN A LINE
+            # SELECTED OUT OF IT. An earlier version of this kept only the LAST
+            # line, which is wrong for the 12 of scorecard.rs's 201 error
+            # strings shaped "unknown <x> option `{arg}`\n\n{USAGE}": the
+            # sentence is FIRST and a 45-line usage block follows, so the last
+            # line records usage text as the reason -- plausible-looking and
+            # wrong, which is worse than the bare number it replaced. No
+            # selection is needed anyway: the tool has exactly ONE eprintln!,
+            # at scorecard.rs main(), and every progress line goes to stdout,
+            # so its stderr IS the refusal and nothing else. Recording it whole
+            # also keeps this the SAME sentence the program emits rather than a
+            # second description that can drift from it.
+            #
+            # Bounded because those usage blocks are long, and truncation is
+            # stated rather than silent so a reader knows to go to the log.
+            reason = (result.stderr or "").strip()
+            if len(reason) > SCORECARD_REASON_LIMIT:
+                reason = (
+                    reason[:SCORECARD_REASON_LIMIT]
+                    + f" [truncated at {SCORECARD_REASON_LIMIT} characters; full text on stderr]"
+                )
+            return failed(
+                f"observe-results exited {result.returncode}"
+                + (f": {reason}" if reason else "")
+            )
         identities, _files = _scorecard_source_files(source_checkout)
         print(f"validate-run: review with: {review_command}", file=output)
         return identities
