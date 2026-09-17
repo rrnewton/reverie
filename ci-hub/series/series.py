@@ -2572,6 +2572,236 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
     raise MalformedRow(f"cell attempt {index} has unknown verdict {verdict!r}")
 
 
+def _parity_object(value: Any, name: str, required: set[str],
+                   optional: set[str] = frozenset(), *, extra: bool = False) -> dict:
+    if (not isinstance(value, dict) or not required <= value.keys()
+            or (not extra and value.keys() - required - optional)):
+        raise MalformedRow(f"backend parity {name} has missing or unknown fields")
+    return value
+
+
+def _parity_uint(value: Any, name: str, minimum: int = 0) -> int:
+    if type(value) is not int or not minimum <= value <= 2**64 - 1:
+        raise MalformedRow(f"backend parity {name} is not a valid unsigned count")
+    return value
+
+
+def _parity_digest(value: Any, name: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise MalformedRow(f"backend parity {name} is not a SHA-256 digest")
+    return value
+
+
+def _parity_unique_fields(pairs):
+    fields = {}
+    for key, value in pairs:
+        if key in fields:
+            raise MalformedRow(f"backend parity evidence has duplicate field {key!r}")
+        fields[key] = value
+    return fields
+
+
+def _parity_nonfinite_constant(value):
+    raise MalformedRow(f"backend parity evidence contains non-JSON numeric constant {value}")
+
+
+def _parity_output(value: Any) -> dict:
+    output = dict(_parity_object(value, "output", {
+        "stdout_sha256", "stdout_bytes",
+        "stderr_sha256", "stderr_bytes",
+    }, {"exit_code", "signal"}))
+    output.setdefault("exit_code", None)
+    output.setdefault("signal", None)
+    for key in ("exit_code", "signal"):
+        number = output[key]
+        if number is not None and (type(number) is not int or not -2**31 <= number < 2**31):
+            raise MalformedRow(f"backend parity output has invalid {key}")
+    if (output["exit_code"] is None) == (output["signal"] is None):
+        raise MalformedRow("backend parity output must have exactly one guest disposition")
+    for stream in ("stdout", "stderr"):
+        _parity_digest(output[f"{stream}_sha256"], f"{stream} digest")
+        _parity_uint(output[f"{stream}_bytes"], f"{stream} bytes")
+    return output
+
+
+def _parity_verification(value: Any, *, current: bool) -> dict:
+    """Canonical typed serialization of a matched VerificationReport.
+
+    Keep the Rust optional-field serialization rules for evidence identity;
+    invocation reports themselves retain their original bytes and digest.
+    """
+    nullable = {
+        "no_result_reason", "infrastructure_error", "guest_exit_code", "guest_signal",
+        *COORDINATE_KEYS, "first_divergent_left_message", "first_divergent_right_message",
+    }
+    required = {"verified", "bitwise_parity", "verdict", "comparison",
+                "compared_log_messages", "compared_outputs"}
+    value = _parity_object(value, "verification", required | (nullable if current else set()),
+                           extra=True)
+    report = {key: value.get(key) for key in required | nullable}
+    if (report["verified"] is not True or report["bitwise_parity"] is not True
+            or report["verdict"] != "matched"
+            or report["no_result_reason"] is not None
+            or report["infrastructure_error"] is not None
+            or any(report[key] is not None for key in
+                   (*COORDINATE_KEYS, "first_divergent_left_message", "first_divergent_right_message"))):
+        raise MalformedRow("backend parity operand is not a consistent match")
+    comparison = _parity_object(report["comparison"], "operand comparison", {
+        "strictness", "display_name", "compare_logs", "compare_io_buffers", "log_scope",
+        "record_envelope", "virtualize_time", "strip_lines", "canonicalize_addresses",
+        "full_trace", "exact_remainder", "stripped_prefixes", "canonicalizations",
+        "ignore_lines", "skip_commit", "skip_detlog",
+    }, extra=True)
+    # These known fields are exactly the ones serialized by ComparisonReport.
+    report["comparison"] = {key: comparison[key] for key in (
+        "strictness", "display_name", "compare_logs", "compare_io_buffers", "log_scope",
+        "record_envelope", "virtualize_time", "strip_lines", "canonicalize_addresses",
+        "full_trace", "exact_remainder", "stripped_prefixes", "canonicalizations",
+        "ignore_lines", "skip_commit", "skip_detlog",
+    )}
+    for key in ("compare_logs", "compare_io_buffers", "virtualize_time", "strip_lines",
+                "canonicalize_addresses", "full_trace", "exact_remainder", "ignore_lines",
+                "skip_commit", "skip_detlog"):
+        if type(comparison[key]) is not bool:
+            raise MalformedRow(f"backend parity operand comparison has invalid {key}")
+    counts = _parity_object(report["compared_log_messages"], "operand counts", {"left", "right"}, extra=True)
+    report["compared_log_messages"] = {
+        key: _parity_uint(counts[key], f"operand {key} INFO count", 1) for key in ("left", "right")
+    }
+    outputs = _parity_object(report["compared_outputs"], "compared outputs", {"left", "right"})
+    left, right = (_parity_output(outputs[key]) for key in ("left", "right"))
+    if (left != right or report["guest_exit_code"] != left["exit_code"]
+            or report["guest_signal"] != left["signal"]
+            or any(type(report[key]) is not type(left[key.removeprefix("guest_")])
+                   for key in ("guest_exit_code", "guest_signal"))):
+        raise MalformedRow("backend parity operand outputs or guest disposition disagree")
+    report["compared_outputs"] = {"left": left, "right": right}
+    branches = value.get("dbt_counted_branches")
+    if branches is not None:
+        branches = _parity_object(branches, "DBT counts", {"left", "right"}, extra=True)
+        report["dbt_counted_branches"] = {
+            key: _parity_uint(branches[key], f"DBT {key} count") for key in ("left", "right")
+        }
+    runtime = value.get("runtime")
+    if runtime is not None:
+        runtime = _parity_object(runtime, "runtime", set(), {"run1", "run2"}, extra=True)
+        report["runtime"] = {}
+        for key in ("run1", "run2"):
+            if runtime.get(key) is not None:
+                stats = _parity_object(runtime[key], key, {"scheduler_turns", "virtual_nanoseconds"},
+                                       {"syscalls"}, extra=True)
+                report["runtime"][key] = {
+                    name: _parity_uint(stats[name], f"{key} {name}")
+                    for name in ("scheduler_turns", "virtual_nanoseconds")
+                }
+                if stats.get("syscalls") is not None:
+                    report["runtime"][key]["syscalls"] = _parity_uint(stats["syscalls"], f"{key} syscalls")
+    return report
+
+
+def _typed_backend_parity(row: dict, dispositions: list[str]) -> dict:
+    """Authenticate BackendParityReport, separately from operand repeatability.
+
+    Mirrors backend_parity.rs::validate, LogDiffReport's cross-backend policy,
+    and scorecard.rs's attempt/outer-result binding. Returns typed serialization.
+    """
+    if row.get("mode") != "verify" or dispositions != ["matched", "matched"]:
+        raise MalformedRow("backend parity requires exactly two strict matching verify attempts")
+    report = copy.deepcopy(_parity_object(row.get("backend_parity"), "report", {
+        "schema", "verdict", "reference", "candidate", "comparison",
+    }))
+    if _parity_uint(report["schema"], "schema") != 1:
+        raise MalformedRow("backend parity report schema must be 1")
+    backend = row.get("backend")
+    if not isinstance(backend, str) or not backend or backend == "ptrace":
+        raise MalformedRow("backend parity candidate must be the non-ptrace cell backend")
+    for index, label, expected in ((0, "candidate", backend), (1, "reference", "ptrace")):
+        operand = _parity_object(report[label], label, {
+            "backend", "verification", "output", "retained_log", "retained_log_sha256",
+        })
+        attempt = row["attempts"][index]
+        raw = json.loads(attempt["verification_report"], object_pairs_hook=_parity_unique_fields,
+                         parse_constant=_parity_nonfinite_constant)
+        actual = _parity_verification(raw, current=True)
+        embedded = _parity_verification(operand["verification"], current=False)
+        argv = attempt.get("argv")
+        if not isinstance(argv, list) or not all(isinstance(arg, str) for arg in argv):
+            raise MalformedRow("backend parity attempt has no argv")
+        named = next((argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--backend"), None)
+        if operand["backend"] != expected or named != expected or embedded != actual:
+            raise MalformedRow("backend parity operand does not match its attempt report or backend")
+        output = _parity_output(operand["output"])
+        if output != actual["compared_outputs"]["left"]:
+            raise MalformedRow("backend parity selected output differs from its verified output")
+        if not isinstance(operand["retained_log"], str) or not operand["retained_log"].strip():
+            raise MalformedRow("backend parity retained log path is empty")
+        _parity_digest(operand["retained_log_sha256"], "retained log digest")
+        operand["verification"] = embedded
+        operand["output"] = output
+    coordinates = {*COORDINATE_KEYS, "first_divergent_left_message", "first_divergent_right_message"}
+    comparison = _parity_object(report["comparison"], "log comparison", {
+        "schema", "verdict", "selected_messages", "records", "inputs", "comparison",
+    }, coordinates | {"refusal", "follow_stopped_because"})
+    if (_parity_uint(comparison["schema"], "log comparison schema") != 1
+            or comparison["verdict"] not in ("matched", "diverged")
+            or comparison.get("refusal") is not None
+            or comparison.get("follow_stopped_because") is not None):
+        raise MalformedRow("backend parity log comparison has no complete verdict")
+    policy = {
+        "stream": "info", "record_envelope": "cross_backend_detcore_v1",
+        "unsafe_strip_lines": False, "canonicalize_host_addresses": True,
+        "require_structured_events": True, "ignored_line_substrings": [],
+        "skip_commit": False, "skip_detlog": False,
+        "included_detlog_kinds": ["syscall", "syscall_result", "other"], "git_diff": False,
+    }
+    actual_policy = _parity_object(comparison["comparison"], "log policy", set(policy))
+    if any(type(actual_policy[key]) is not type(value) or actual_policy[key] != value
+           for key, value in policy.items()):
+        raise MalformedRow("backend parity log comparison did not use canonical INFO policy")
+    inputs = _parity_object(comparison["inputs"], "captured inputs", {"left", "right"})
+    selected = _parity_object(comparison["selected_messages"], "selected messages", {"left", "right"})
+    records = _parity_object(comparison["records"], "records", {
+        "compared", "available_left", "available_right", "withheld_incomplete_tail",
+    })
+    for side, label in (("left", "reference"), ("right", "candidate")):
+        captured = _parity_object(inputs[side], f"{side} input", {"sha256", "bytes"})
+        _parity_uint(captured["bytes"], f"{side} input bytes", 1)
+        if _parity_digest(captured["sha256"], f"{side} input hash") != report[label]["retained_log_sha256"]:
+            raise MalformedRow("backend parity retained log differs from captured input hash")
+        count = _parity_uint(selected[side], f"{side} selected messages", 1)
+        if count > _parity_uint(records[f"available_{side}"], f"{side} available records", 1):
+            raise MalformedRow("backend parity selected messages exceed available records")
+    if (records["withheld_incomplete_tail"] is not False
+            or _parity_uint(records["compared"], "compared records", 1)
+            != min(records["available_left"], records["available_right"])
+            or (comparison["verdict"] == "matched" and selected["left"] != selected["right"])):
+        raise MalformedRow("backend parity log comparison is incomplete or has inconsistent counts")
+    for key in COORDINATE_KEYS:
+        if comparison.get(key) is not None:
+            _parity_uint(comparison[key], key)
+        if row.get(key) is not None:
+            _parity_uint(row[key], f"outer {key}")
+    for key in ("first_divergent_left_message", "first_divergent_right_message"):
+        if comparison.get(key) is not None and not isinstance(comparison[key], str):
+            raise MalformedRow("backend parity divergent message must be a string")
+    matched = (report["reference"]["output"] == report["candidate"]["output"]
+               and comparison["verdict"] == "matched")
+    expected = ("matched", "PASS", "pass", None) if matched else (
+        "diverged", "FAIL", "parity-failure", "product_failure")
+    if ((report["verdict"], row.get("outcome"), row.get("result"), row.get("failure_class")) != expected
+            or any(row.get(key) != (None if matched else comparison.get(key)) for key in coordinates)):
+        raise MalformedRow("backend parity witness contradicts the outer result or divergence details")
+    # Match serde's optional-field serialization, without rewriting retained
+    # paths or any comparator evidence using the invocation's workspace root.
+    for key in coordinates | {"refusal", "follow_stopped_because"}:
+        if key in {"refusal", "follow_stopped_because", "first_divergent_record"}:
+            if comparison.get(key) is None:
+                comparison.pop(key, None)
+        else:
+            comparison.setdefault(key, None)
+    return report
+
+
 def _cell_outcome(row: dict) -> str:
     """Project the framework's exact result without reconstructing it."""
     mode = _cell_mode(row)
@@ -2604,6 +2834,9 @@ def _cell_outcome(row: dict) -> str:
             "cell result outcome disagrees with its recorded classification: "
             f"outcome={outcome!r} result={result!r} failure_class={failure_class!r}"
         )
+    has_parity = row.get("backend_parity") is not None
+    if (has_parity or result == "parity-failure") and mode != "verify":
+        raise MalformedRow("backend parity requires verify mode")
     if mode not in _COMPARISON_MODES:
         return projected
 
@@ -2618,6 +2851,11 @@ def _cell_outcome(row: dict) -> str:
         _typed_comparison_attempt(attempt, mode=mode, index=index)
         for index, attempt in enumerate(attempts, 1)
     ]
+    if has_parity:
+        _typed_backend_parity(row, dispositions)
+        return projected
+    if result == "parity-failure":
+        raise MalformedRow("parity-failure has no backend parity witness")
     # Two framework classifications intentionally project to ``errored`` but
     # arise at different layers.  A crash-error is a product failure before a
     # comparison verdict exists, so its canonical attempt is ``no_result``;
@@ -2645,7 +2883,13 @@ def _cell_outcome(row: dict) -> str:
 
 
 def _cell_result_evidence_sha256(row: dict) -> str:
-    """Use the scorecard writer's stable identity for one retained CellResult."""
+    """Keep ordinary stored identities; bind parity with the scorecard's typed witness."""
+    parity = None
+    if row.get("backend_parity") is not None:
+        parity = _typed_backend_parity(row, [
+            _typed_comparison_attempt(attempt, mode=_cell_mode(row), index=index)
+            for index, attempt in enumerate(row.get("attempts", []), 1)
+        ])
     row = _normalise_cell_result_for_evidence(row)
     evidence = {
         key: row.get(key)
@@ -2676,6 +2920,10 @@ def _cell_result_evidence_sha256(row: dict) -> str:
     # ResultRow's Rust type defaults an omitted timeout to zero before hashing,
     # and serde_json writes Unicode as UTF-8 rather than ASCII escapes.
     evidence["timeout_seconds"] = row.get("timeout_seconds", 0)
+    # Preserve historical ordinary-row identities. Rust also hashes an absent
+    # witness as null; that preexisting no-parity mismatch remains explicit.
+    if parity is not None:
+        evidence["backend_parity"] = parity
     encoded = json.dumps(
         evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     )
@@ -3517,8 +3765,12 @@ def _stdin_rows() -> tuple[list[dict] | None, int]:
         if not line.strip():
             continue
         try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError as error:
+            row = json.loads(line)
+            if isinstance(row, dict) and "backend_parity" in row:
+                row = json.loads(line, object_pairs_hook=_parity_unique_fields,
+                                 parse_constant=_parity_nonfinite_constant)
+            rows.append(row)
+        except (json.JSONDecodeError, MalformedRow) as error:
             print(f"series: stdin line {number} is not JSON: {error}", file=sys.stderr)
             return None, 2
     return rows, 0

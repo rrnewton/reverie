@@ -2210,6 +2210,11 @@ class CellResultProjection(unittest.TestCase):
 
         self.temporary = tempfile.TemporaryDirectory()
         self.parent = Path(self.temporary.name)
+        # TMPDIR may itself be inside a dev-hermit checkout. Stop Git discovery
+        # here so shared_parent_root cannot route fixture rows to its real spool.
+        # The linked-worktree case below still exercises real common-dir lookup.
+        subprocess.run(["git", "init", "-q", str(self.parent)], check=True)
+        self.assertEqual(series.spool_dir(self.parent), self.parent / "ignored/ci-hub/series-spool")
         self.repo = self.parent / "hermit"
         self.repo.mkdir()
         subprocess.run(["git", "-C", str(self.repo), "init", "-q"], check=True)
@@ -2481,6 +2486,235 @@ class CellResultProjection(unittest.TestCase):
         raw = json.dumps(report, sort_keys=True, separators=(",", ":"))
         attempt["verification_report"] = raw
         attempt["verification_report_sha256"] = hashlib.sha256(raw.encode()).hexdigest()
+
+    def _parity_cell(self):
+        # Original run 1838, aio-refusal/KVM attempt 1: two matched repeatability
+        # reports and a separate divergent cross-backend comparison. Provenance
+        # and original raw-row hashes are retained beside the unchanged row.
+        fixture = Path(__file__).with_name("fixtures") / "run1838-backend-parity.json"
+        cell = json.loads(fixture.read_text())["row"]
+        cell["hermit_sha"] = self.tree
+        cell["detcore_tree"] = self.detcore_tree
+        return cell
+
+    @staticmethod
+    def _make_parity_match(cell):
+        cell.update(outcome="PASS", result="pass", failure_class=None)
+        parity = cell["backend_parity"]
+        parity["verdict"] = "matched"
+        comparison = parity["comparison"]
+        comparison["verdict"] = "matched"
+        comparison["selected_messages"]["left"] = comparison["selected_messages"]["right"]
+        for key in (*series.COORDINATE_KEYS, "first_divergent_left_message", "first_divergent_right_message"):
+            cell[key] = None
+            comparison[key] = None
+
+    def test_backend_parity_validate_projection_preserves_real_red_witness(self):
+        cell = self._parity_cell()
+        self.assertEqual([
+            json.loads(attempt["verification_report"])["verdict"]
+            for attempt in cell["attempts"]
+        ], ["matched", "matched"])
+        projected = self._project([cell], producer="validate")[0]["series"]
+        self.assertEqual(projected["outcome"], "diverged")
+        self.assertEqual(projected["result"], "parity-failure")
+        self.assertEqual(projected["failure_class"], "product_failure")
+        self.assertEqual(projected["coordinates"]["first_divergent_record"], 10)
+        # No unsupported witness/digest field is invented in the validate schema.
+        self.assertNotIn("pressure_evidence", projected)
+        self.assertNotIn("no_verdict_evidence", projected)
+
+    def test_backend_parity_match_and_output_only_divergence_are_distinct(self):
+        cell = self._parity_cell()
+        self._make_parity_match(cell)
+        self.assertEqual(self._project([cell], producer="validate")[0]["series"]["outcome"], "passed")
+        # Different raw record populations are legal; complete selected streams
+        # and exact outputs decide a cross-backend match.
+        self.assertNotEqual(cell["backend_parity"]["comparison"]["records"]["available_left"],
+                            cell["backend_parity"]["comparison"]["records"]["available_right"])
+        operand = cell["backend_parity"]["candidate"]
+        operand["output"]["stdout_sha256"] = "a" * 64
+        for side in ("left", "right"):
+            operand["verification"]["compared_outputs"][side]["stdout_sha256"] = "a" * 64
+        self._replace_comparison_report(cell["attempts"][0], operand["verification"])
+        cell.update(outcome="FAIL", result="parity-failure", failure_class="product_failure")
+        cell["backend_parity"]["verdict"] = "diverged"
+        projected = self._project([cell], producer="validate")[0]["series"]
+        self.assertEqual(projected["outcome"], "diverged")
+        self.assertNotIn("coordinates", projected)
+
+    def test_backend_parity_refuses_missing_and_mismatched_witnesses(self):
+        mutations = [
+            ("missing witness", lambda c: c.pop("backend_parity")),
+            ("null witness", lambda c: c.update(backend_parity=None)),
+            ("wrong schema", lambda c: c["backend_parity"].update(schema=2)),
+            ("boolean schema", lambda c: c["backend_parity"].update(schema=True)),
+            ("wrong verdict", lambda c: c["backend_parity"].update(verdict="matched")),
+            ("wrong mode", lambda c: c.update(mode="replay")),
+            ("wrong candidate", lambda c: c["backend_parity"]["candidate"].update(backend="sabre")),
+            ("wrong reference", lambda c: c["backend_parity"]["reference"].update(backend="kvm")),
+            ("one operand", lambda c: c["attempts"].pop()),
+            ("extra operand", lambda c: c["attempts"].append(c["attempts"][0])),
+            ("attempt hash", lambda c: c["attempts"][0].update(verification_report_sha256="f" * 64)),
+            ("attempt backend", lambda c: c["attempts"][0]["argv"].__setitem__(
+                c["attempts"][0]["argv"].index("--backend") + 1, "sabre")),
+            ("embedded operand", lambda c: c["backend_parity"]["candidate"]["verification"][
+                "compared_log_messages"].update(left=98)),
+            ("operand boolean", lambda c: c["backend_parity"]["candidate"]["verification"][
+                "comparison"].update(skip_detlog=0)),
+            ("output hash", lambda c: c["backend_parity"]["candidate"]["output"].update(stdout_sha256="bad")),
+            ("output identity", lambda c: c["backend_parity"]["candidate"]["output"].update(stdout_sha256="f" * 64)),
+            ("output boolean", lambda c: c["backend_parity"]["candidate"]["output"].update(exit_code=False)),
+            ("empty retained path", lambda c: c["backend_parity"]["candidate"].update(retained_log="")),
+            ("retained hash", lambda c: c["backend_parity"]["candidate"].update(retained_log_sha256="f" * 64)),
+            ("input hash", lambda c: c["backend_parity"]["comparison"]["inputs"]["left"].update(sha256="f" * 64)),
+            ("input bytes", lambda c: c["backend_parity"]["comparison"]["inputs"]["left"].update(bytes=0)),
+            ("outer position", lambda c: c.update(first_divergent_record=11)),
+            ("outer message", lambda c: c.update(first_divergent_left_message="different evidence")),
+            ("unknown witness field", lambda c: c["backend_parity"].update(unchecked=True)),
+        ]
+        for label, mutate in mutations:
+            with self.subTest(mutation=label):
+                cell = self._parity_cell()
+                mutate(cell)
+                with self.assertRaises(series.MalformedRow):
+                    self._project([cell], producer="validate")
+
+    def test_backend_parity_refuses_relaxed_incomplete_or_vacuous_comparison(self):
+        mutations = [
+            ("comparison schema", lambda c: c.update(schema=2)),
+            ("no result", lambda c: c.update(verdict="no_result")),
+            ("refusal", lambda c: c.update(refusal="refused")),
+            ("follow", lambda c: c.update(follow_stopped_because="deadline")),
+            ("no inputs", lambda c: c.pop("inputs")),
+            ("tail", lambda c: c["records"].update(withheld_incomplete_tail=True)),
+            ("partial records", lambda c: c["records"].update(compared=1)),
+            ("zero selection", lambda c: c["selected_messages"].update(left=0)),
+            ("excess selection", lambda c: c["selected_messages"].update(left=999)),
+            ("boolean counts", lambda c: c["records"].update(compared=True)),
+            ("wrong envelope", lambda c: c["comparison"].update(record_envelope="all_records_v1")),
+            ("stripping", lambda c: c["comparison"].update(unsafe_strip_lines=True)),
+            ("ignored lines", lambda c: c["comparison"].update(ignored_line_substrings=["syscall"])),
+            ("skip commit", lambda c: c["comparison"].update(skip_commit=True)),
+            ("skip detlog", lambda c: c["comparison"].update(skip_detlog=True)),
+            ("no structure", lambda c: c["comparison"].update(require_structured_events=False)),
+            ("wrong kinds", lambda c: c["comparison"].update(included_detlog_kinds=["other"])),
+            ("wrong stream", lambda c: c["comparison"].update(stream="stdout")),
+            ("git diff", lambda c: c["comparison"].update(git_diff=True)),
+            ("boolean policy", lambda c: c["comparison"].update(skip_detlog=0)),
+        ]
+        for label, mutate in mutations:
+            with self.subTest(mutation=label):
+                cell = self._parity_cell()
+                mutate(cell["backend_parity"]["comparison"])
+                with self.assertRaises(series.MalformedRow):
+                    self._project([cell], producer="validate")
+
+    def test_backend_parity_requires_current_complete_matching_operands(self):
+        for change in ("missing outputs", "missing producer field", "different outputs", "relaxed policy",
+                       "duplicate report key", "runtime null count"):
+            with self.subTest(change=change):
+                cell = self._parity_cell()
+                attempt = cell["attempts"][0]
+                report = json.loads(attempt["verification_report"])
+                if change == "missing outputs":
+                    report.pop("compared_outputs")
+                elif change == "missing producer field":
+                    report.pop("no_result_reason")
+                elif change == "different outputs":
+                    report["compared_outputs"]["right"]["stdout_sha256"] = "f" * 64
+                elif change == "relaxed policy":
+                    report["comparison"]["skip_detlog"] = True
+                elif change == "runtime null count":
+                    report["runtime"]["run1"]["scheduler_turns"] = None
+                cell["backend_parity"]["candidate"]["verification"] = report
+                self._replace_comparison_report(attempt, report)
+                if change == "duplicate report key":
+                    raw = attempt["verification_report"].replace('"verified":true', '"verified":false,"verified":true')
+                    self.assertNotEqual(raw, attempt["verification_report"])
+                    attempt["verification_report"] = raw
+                    attempt["verification_report_sha256"] = hashlib.sha256(raw.encode()).hexdigest()
+                with self.assertRaises(series.MalformedRow):
+                    self._project([cell], producer="validate")
+
+    def test_backend_parity_identity_uses_typed_serialization(self):
+        retained = json.loads((Path(__file__).with_name("fixtures") /
+                               "run1838-backend-parity.json").read_text())["row"]
+        self.assertEqual(series._cell_result_evidence_sha256(retained),
+                         "3770426247f7b20e2f8eebcefb90647b35ae7537bd5aecdd6b7a6173c5e442e2")
+        cell = self._parity_cell()
+        original = series._cell_result_evidence_sha256(cell)
+        parity = cell["backend_parity"]
+        # Rust omits these null optional fields and fills omitted nullable fields.
+        parity["comparison"].update(refusal=None, follow_stopped_because=None)
+        parity["candidate"]["verification"]["dbt_counted_branches"] = None
+        parity["candidate"]["verification"].pop("guest_signal")
+        parity["candidate"]["output"].pop("signal")
+        self.assertEqual(series._cell_result_evidence_sha256(cell), original)
+        # The report's retained paths are not rewritten using the invocation cwd.
+        parity["candidate"]["retained_log"] = cell["cwd"] + "/retained.log"
+        normalized = series._typed_backend_parity(cell, ["matched", "matched"])
+        self.assertEqual(normalized["candidate"]["retained_log"], cell["cwd"] + "/retained.log")
+        self.assertNotEqual(series._cell_result_evidence_sha256(cell), original)
+
+    def test_existing_no_parity_evidence_replay_keeps_original_digest(self):
+        fixture = json.loads((Path(__file__).with_name("fixtures") /
+                              "run1838-backend-parity.json").read_text())
+        for case in fixture["legacy_no_parity_replay"]["cases"]:
+            with self.subTest(case=case["name"]):
+                stored = case["stored_row"]
+                cell = case["input"]
+                incoming = json.loads(json.dumps(stored))
+                field = ("pressure_evidence" if case["name"] == "pressure"
+                         else "no_verdict_evidence")
+                for explicit_null in (False, True):
+                    current = json.loads(json.dumps(cell))
+                    if explicit_null:
+                        current["backend_parity"] = None
+                    evidence = (series._pressure_evidence(current)
+                                if field == "pressure_evidence" else
+                                series._no_verdict_evidence(current, stored["series"]["outcome"]))
+                    self.assertEqual(evidence, stored["series"][field])
+                    incoming["series"][field] = evidence
+                self.assertEqual(incoming["event_id"], stored["event_id"])
+                target = series.spool_dir(self.parent) / (case["name"] + ".jsonl")
+                self.assertEqual(series.append_cell_rows(self.parent, target, [stored]), 1)
+                before = target.read_bytes()
+                self.assertEqual(series.append_cell_rows(self.parent, target, [incoming]), 0)
+                self.assertEqual(target.read_bytes(), before)
+
+    def test_backend_parity_changed_witness_refuses_same_pressure_identity(self):
+        # Validate PASS/divergence has no durable witness-digest field in the
+        # current shared schema. This same-ID guarantee is pressure-specific.
+        cell = self._parity_cell()
+        cell["run_index"] = 0
+        first = self._project([cell])
+        target = series.spool_dir(self.parent) / "parity.jsonl"
+        self.assertEqual(series.append_cell_rows(self.parent, target, first), 1)
+        before = target.read_bytes()
+        digest = first[0]["series"]["pressure_evidence"]["evidence_sha256"]
+        cell["backend_parity"]["candidate"]["retained_log_sha256"] = "f" * 64
+        cell["backend_parity"]["comparison"]["inputs"]["right"]["sha256"] = "f" * 64
+        second = self._project([cell])
+        self.assertEqual(first[0]["event_id"], second[0]["event_id"])
+        self.assertNotEqual(second[0]["series"]["pressure_evidence"]["evidence_sha256"], digest)
+        with self.assertRaisesRegex(series.SeriesError, "already records a different row"):
+            series.append_cell_rows(self.parent, target, second)
+        self.assertEqual(target.read_bytes(), before)
+
+    def test_backend_parity_malformed_json_refuses_before_projection(self):
+        cell = self._parity_cell()
+        raw = json.dumps(cell)
+        for malformed in (
+            raw.replace('"backend_parity": {', '"backend_parity": null, "backend_parity": {', 1),
+            raw.replace('"backend_parity": {', '"backend_parity": {"invalid": NaN,', 1),
+        ):
+            with self.subTest(raw=malformed[:40]):
+                self.assertNotEqual(malformed, raw)
+                with mock.patch.object(sys, "stdin", io.StringIO(malformed)), contextlib.redirect_stderr(io.StringIO()):
+                    rows, status = series._stdin_rows()
+                self.assertIsNone(rows)
+                self.assertEqual(status, 2)
 
     def test_unspecified_and_refused_comparisons_preserve_evidence(self):
         detail = "  second log exceeded its bound: left\\right\nπ  "
@@ -2954,6 +3188,8 @@ class CellResultProjection(unittest.TestCase):
             )
         utf8_contract = json.loads(json.dumps(timeout))
         utf8_contract["hermit_sha"] = "a" * 40
+        # Preserve the existing ordinary-row digest. Rust also hashes a null
+        # backend_parity here; that older cross-language mismatch is unchanged.
         self.assertEqual(
             series._cell_result_evidence_sha256(utf8_contract),
             "6de0ee5d7b0c18ed4cf1bbd2c41f1df75e7d688ec59995c86cf6250e7c0b3096",
