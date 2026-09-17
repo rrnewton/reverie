@@ -11,6 +11,7 @@
 #include <assert.h>
 #include <elf.h>
 #include <err.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +40,22 @@ typedef void *(*_dl_map_object_fn)(struct link_map *, const char *, int, int,
 static _dl_map_object_fn real_dl_map_object;
 typedef int (*clock_gettime_fn)(clockid_t, struct timespec *);
 static clock_gettime_fn real_clock_gettime;
+
+/* A matching name may be an undefined reference or a data object. Neither
+ * implements this optional ABI, and neither may become a callable address.
+ */
+static sbr_bootstrap_install_fn find_continuation_installer(const char *path,
+                                                            uintptr_t base) {
+  bool valid = false;
+  GElf_Sym symbol = find_elf_symbol(
+      path, "reverie_sabre_install_loader_continuation_v1", &valid);
+  if (!valid || symbol.st_shndx == SHN_UNDEF ||
+      symbol.st_shndx >= SHN_LORESERVE ||
+      GELF_ST_TYPE(symbol.st_info) != STT_FUNC || symbol.st_value == 0 ||
+      symbol.st_value > UINTPTR_MAX - base)
+    return NULL;
+  return (void *)(base + symbol.st_value);
+}
 
 // This is currently a huge and unstable hack. We intercept the loader in order
 // to edit the internal representation of its link-map. More specifically we edit
@@ -74,13 +91,8 @@ static void init_sbr_plugin(bool switch_client_tls) {
     /* A distinct optional symbol preserves existing plugins, including tools
      * that support initial bootstrap but never requested continuation.
      */
-    valid = false;
-    sym_addr = addr_of_elf_symbol(
-        abs_plugin_path, "reverie_sabre_install_loader_continuation_v1", &valid);
-    if (valid) {
-      install_bootstrap = (void *)lib_base + sym_addr;
-      continuation = true;
-    }
+    install_bootstrap = find_continuation_installer(abs_plugin_path, lib_base);
+    continuation = install_bootstrap != NULL;
   }
 
   sym_addr = addr_of_elf_symbol(abs_plugin_path, "calling_from_plugin", &valid);

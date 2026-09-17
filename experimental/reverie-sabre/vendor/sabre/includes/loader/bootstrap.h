@@ -24,6 +24,8 @@
  * The supervisor must write no more than TAKE's capacity, retire the state
  * only after a successful bounded write, and reject subsequent takes (for
  * example with ESTALE). A failed/short-capacity transfer must not consume it.
+ * The loader forwards negative errors verbatim; that does not authorize a
+ * consumer to retry stale proof. Only its supervisor can establish freshness.
  * A zero/oversized success violates the protocol: the consumer must fail,
  * never retry by constructing fresh state or replaying random requests.
  */
@@ -39,6 +41,11 @@ enum sbr_bootstrap_operation {
 };
 
 typedef long (*sbr_bootstrap_take_fn)(void *, size_t);
+/* Installers run during single-threaded plugin preinitialization. Return 0
+ * to accept; the continuation installer may return -ENOTSUP to decline.
+ * Every other nonzero continuation return is fatal. The initial bootstrap
+ * installer requires 0 and treats every nonzero return as fatal.
+ */
 typedef int (*sbr_bootstrap_install_fn)(sbr_bootstrap_take_fn);
 
 void sbr_bootstrap_configure(void);
@@ -52,6 +59,11 @@ long sbr_bootstrap_getrandom(long buffer, long length, long flags,
  * image transition (or its explicitly supported initial legacy image), return
  * a distinct typed continuation, and refuse missing/stale/duplicate proof.
  * It implies no IMAGE, GETRANDOM, auxv initialization or RNG state transfer.
+ * Missing/NULL or -ENOTSUP leaves continuation disabled; 0 enables it only
+ * after the installer returns; any other result is propagated as fatal.
+ * Configure/IMAGE/install finish before plugin consumers start. TAKE itself
+ * atomically claims the transfer: concurrent or retired takes return EPROTO,
+ * and a failed transfer releases its claim without retiring the state.
  */
 int sbr_bootstrap_install_continuation(sbr_bootstrap_install_fn install);
 long sbr_bootstrap_take_state(void *buffer, size_t capacity);

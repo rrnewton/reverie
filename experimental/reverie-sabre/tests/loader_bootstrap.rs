@@ -18,7 +18,14 @@ fn actual_loader_bootstrap_protocol_is_supervised_and_once_only() {
         .to_command()
         // Appended after cc's inherited CFLAGS: native assertions are the
         // control's oracle and must remain enabled even with -DNDEBUG.
-        .args(["-std=gnu99", "-Wall", "-Wextra", "-Werror", "-UNDEBUG"])
+        .args([
+            "-std=gnu99",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-UNDEBUG",
+            "-pthread",
+        ])
         .arg("-I")
         .arg(source.join("vendor/sabre/includes/loader"))
         .arg(source.join("vendor/sabre/loader/bootstrap.c"))

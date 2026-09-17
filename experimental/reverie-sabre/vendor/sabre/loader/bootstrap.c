@@ -92,7 +92,7 @@ sbr_bootstrap_request_v1(unsigned long operation, unsigned long arg1,
 void sbr_bootstrap_image(void *stack, void *entry) {
   if (!requested)
     return;
-  if (image_bound || state_taken)
+  if (image_bound || __atomic_load_n(&state_taken, __ATOMIC_ACQUIRE))
     errx(EXIT_FAILURE, "duplicate loader bootstrap image");
 
   /* unsetenv before load's find_auxv would shorten the environment without
@@ -137,14 +137,15 @@ long sbr_bootstrap_getrandom(long buffer, long length, long flags,
                              void *wrapper_sp) {
   if (!requested)
     return -EPROTO;
-  if (!image_bound || state_taken)
+  if (!image_bound || __atomic_load_n(&state_taken, __ATOMIC_ACQUIRE))
     invalid_random_phase();
   return sbr_bootstrap_request_v1(SBR_BOOTSTRAP_GETRANDOM, buffer, length,
                                   flags, (unsigned long)wrapper_sp);
 }
 
 int sbr_bootstrap_install_continuation(sbr_bootstrap_install_fn install) {
-  if (requested || image_bound || state_taken || continuation_enabled)
+  if (requested || image_bound ||
+      __atomic_load_n(&state_taken, __ATOMIC_ACQUIRE) || continuation_enabled)
     return -EPROTO;
   if (install == NULL)
     return 0;
@@ -158,19 +159,24 @@ int sbr_bootstrap_install_continuation(sbr_bootstrap_install_fn install) {
 }
 
 long sbr_bootstrap_take_state(void *buffer, size_t capacity) {
-  if (state_taken || (requested ? !image_bound : !continuation_enabled))
+  if (__atomic_load_n(&state_taken, __ATOMIC_ACQUIRE) ||
+      (requested ? !image_bound : !continuation_enabled))
     return -EPROTO;
   if (buffer == NULL || capacity == 0 || capacity > SBR_BOOTSTRAP_MAX_STATE)
     return -EINVAL;
+  bool expected = false;
+  if (!__atomic_compare_exchange_n(&state_taken, &expected, true, false,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    return -EPROTO;
   long result =
       sbr_bootstrap_request_v1(SBR_BOOTSTRAP_TAKE_STATE, (unsigned long)buffer,
                                capacity, SBR_BOOTSTRAP_VERSION, 0);
   if (result > 0 && (unsigned long)result <= capacity) {
-    state_taken = true;
     return result;
   }
   /* A rejected or short-capacity request must not retire the supervisor's
    * state. An invalid successful response is never treated as an empty state.
    */
+  __atomic_store_n(&state_taken, false, __ATOMIC_RELEASE);
   return result < 0 ? result : -EPROTO;
 }
