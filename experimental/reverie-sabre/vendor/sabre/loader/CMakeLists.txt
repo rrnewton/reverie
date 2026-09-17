@@ -19,6 +19,10 @@ sabre_add_component(
   rewriter.c
   debuginfo.c)
 
-target_link_libraries(loader ${CMAKE_DL_LIBS} backend elf plugin_api)
+# The bundled static libelf uses zlib. Declare that dependency here so the
+# executable also records its runtime search path when zlib is outside the
+# platform's default library directories.
+find_package(ZLIB REQUIRED)
+target_link_libraries(loader ${CMAKE_DL_LIBS} backend elf ZLIB::ZLIB plugin_api)
 
 add_subdirectory(tools)
