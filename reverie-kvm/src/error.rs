@@ -11,6 +11,45 @@ use thiserror::Error;
 /// Errors produced by the KVM backend prototype.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// A peer or the Tool scheduler has made this run terminal. This internal
+    /// outcome is never a successful guest status or a syscall errno.
+    #[error("KVM execution stopped after a fatal run failure")]
+    RunAborted,
+
+    /// A shared typed failure retained until the root has joined all children.
+    #[error("{0}")]
+    SharedFailure(#[source] std::sync::Arc<Error>),
+
+    /// A typed worker failure with its original guest thread identity.
+    #[error("KVM worker cleanup failed: thread {tid}: {error}")]
+    WorkerFailure {
+        /// Guest thread whose physical join returned this failure.
+        tid: i32,
+        /// Original typed cause retained by the worker-error cache.
+        #[source]
+        error: std::sync::Arc<Error>,
+    },
+
+    /// Cleanup failed in addition to the original execution failure.
+    #[error("{primary}; {}", cleanup.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))]
+    WithCleanup {
+        /// Original typed cause, also exposed through the source chain.
+        #[source]
+        primary: Box<Error>,
+        /// Additional failures, without replacing the original cause.
+        cleanup: Vec<Error>,
+    },
+
+    /// A typed cleanup cause with the operation that failed.
+    #[error("{phase}: {error}")]
+    Cleanup {
+        /// Cleanup operation.
+        phase: &'static str,
+        /// Original typed cleanup error.
+        #[source]
+        error: Box<Error>,
+    },
+
     /// A guest branch counter is unavailable or its accounting cannot be trusted.
     #[error("guest clock failed: {0}")]
     GuestClock(String),
@@ -156,4 +195,55 @@ pub enum Error {
     /// The vCPU stopped for an event this prototype does not handle.
     #[error("unexpected vCPU exit: {0}")]
     UnexpectedVcpuExit(String),
+}
+
+impl Error {
+    /// Original typed cause beneath shared ownership and cleanup aggregation.
+    pub fn primary(&self) -> &Self {
+        match self {
+            Self::SharedFailure(error) | Self::WorkerFailure { error, .. } => error.primary(),
+            Self::WithCleanup { primary, .. } => primary.primary(),
+            Self::Cleanup { error, .. } => error.primary(),
+            _ => self,
+        }
+    }
+
+    pub(crate) fn retains_primary(&self, primary: &std::sync::Arc<Error>) -> bool {
+        match self {
+            Self::SharedFailure(error) | Self::WorkerFailure { error, .. } => {
+                std::sync::Arc::ptr_eq(error, primary) || error.retains_primary(primary)
+            }
+            Self::WithCleanup { primary: error, .. }
+            | Self::Cleanup { error, .. }
+            | Self::ExecWorkerTeardown(error) => error.retains_primary(primary),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn cleanup(self, phase: &'static str) -> Self {
+        Self::Cleanup {
+            phase,
+            error: Box::new(self),
+        }
+    }
+
+    pub(crate) fn with_cleanup(self, cleanup: Vec<Error>) -> Self {
+        if cleanup.is_empty() {
+            self
+        } else {
+            Self::WithCleanup {
+                primary: Box::new(self),
+                cleanup,
+            }
+        }
+    }
+
+    pub(crate) fn combine(mut errors: Vec<Error>) -> crate::Result<()> {
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            let primary = errors.remove(0);
+            Err(primary.with_cleanup(errors))
+        }
+    }
 }

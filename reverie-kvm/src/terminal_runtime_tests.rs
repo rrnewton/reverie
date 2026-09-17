@@ -91,6 +91,7 @@ fn terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_childr
                 },
                 signal,
                 starts.clone(),
+                std::future::pending(),
             ));
             assert!(
                 matches!(outcome, HandlerOutcome::ThreadCancelled),

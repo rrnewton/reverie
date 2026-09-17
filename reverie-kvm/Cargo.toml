@@ -7,6 +7,10 @@ edition = "2024"
 repository = "https://github.com/facebookexperimental/reverie"
 license = "BSD-2-Clause"
 
+[features]
+default = []
+native-test-support = []
+
 [dependencies]
 futures = { version = "0.3.31", features = ["async-await"] }
 goblin = { version = "0.10.7", features = ["elf32", "elf64", "endian_fd"] }
