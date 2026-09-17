@@ -32,6 +32,7 @@ import git_env  # noqa: E402
 import pane_owner
 import run_registry
 import tree_disposition
+import tree_disposition
 import service_result
 from immutable_tool_authority import (
     FD_TOOL_ROOT_RE,
@@ -5757,6 +5758,129 @@ def cleanup_after_attach(
             )
 
 
+def retire_unit_after_writeback(
+    raw_unit: str,
+    *,
+    root: Path,
+    tool_root: Path = ROOT,
+    run: Runner,
+    json_output: bool,
+) -> int:
+    """Write back, publish the handoff, then retire the checkout -- WITHOUT WAITING.
+
+    ⚠️ THE "WITHOUT WAITING" IS THE ENTIRE REASON THIS EXISTS AND CANNOT BE
+    DROPPED. The same three steps already happen in attach(), but attach begins
+    with wait_for_unit(), which loops until the unit reaches a state in
+    TERMINAL_STATES -- ("failed", "inactive"). This entry point is built to be
+    called from the unit's OWN ExecStopPost, where the unit is `deactivating`
+    and therefore cannot be terminal until the caller returns. attach() invoked
+    there would spin until TimeoutStopSec killed it, and a teardown killed
+    part-way leaves a half-deleted checkout, which is worse than an intact one.
+
+    Its input is ready by then: measured 2026-09-17, twenty-nine completed
+    `validate` run records carry no scorecard_writeback field at all, so the unit
+    writes the record to its terminal shape and the waiter adds the writeback
+    afterwards. Those twenty-nine -- fourteen per cent of completed validate runs
+    -- are runs where the waiter never returned, and they are exactly the ones
+    whose checkouts can then never be removed, because removal requires a
+    completed writeback.
+
+    Handles only the case ExecStopPost will actually meet: a materialized Hermit
+    validate checkout. Historical results, frozen validates and other
+    repositories keep going through attach() unchanged, and this returns success
+    without acting on them rather than half-handling a shape it was not built
+    for.
+    """
+
+    unit = sanitize_unit(raw_unit)
+    record_path = run_registry.record_path(root, unit)
+    record = run_registry.read_record(record_path)
+
+    repo = str(record.get("repo") or "rrnewton/hermit")
+    raw_checkout = record.get("checkout")
+    results = record.get("e2e_result_root")
+    target = record.get("target")
+    if repo != "rrnewton/hermit" or not isinstance(raw_checkout, str) or not results:
+        # Not a shape this path owns. Saying so and stopping is the whole
+        # contract: a retirement that "handled" an unknown record would be
+        # deciding something it cannot see.
+        print(
+            f"validate-run: RETIRE-SKIPPED {unit}: not a materialized Hermit "
+            "validate record; the established waiter path owns this shape.",
+            file=sys.stderr,
+        )
+        return 0
+
+    checkout = Path(raw_checkout)
+    scorecard_files = write_scorecard_from_results(
+        checkout,
+        str(target),
+        Path(str(results)),
+        run=run,
+        json_output=json_output,
+    )
+    if scorecard_files is None:
+        print(
+            f"validate-run: RETIRE-REFUSED {unit}: the scorecard writeback did not "
+            "complete, so the checkout still holds the only copy of its results.",
+            file=sys.stderr,
+        )
+        return EXIT_COULD_NOT_DETERMINE
+
+    handoff = handoff_scorecard_after_writeback(
+        root,
+        record_path,
+        checkout,
+        str(target),
+        unit,
+        writeback_completed=True,
+        expected_files=scorecard_files,
+        wrkslots=recorded_wrkslots_identity(record, checkout),
+        run=run,
+        tool_root=tool_root,
+    )
+    if handoff is None:
+        print(
+            f"validate-run: RETIRE-REFUSED {unit}: the writeback completed but its "
+            "handoff was not published, so the output is still only inside the "
+            "checkout.",
+            file=sys.stderr,
+        )
+        return EXIT_COULD_NOT_DETERMINE
+
+    # THE SAME AUTHORISATION THE SWEEP APPLIES, because this path removes too and
+    # must not become the way around it. A checkout holding uncommitted paths is
+    # retained whatever its record says.
+    measured = tree_disposition.authored_work(checkout, run=run)
+    if measured is None or measured[0]:
+        print(
+            f"validate-run: RETIRE-REFUSED {unit}: the checkout holds authored work "
+            "or its state could not be read; the handoff is published and the "
+            "checkout is retained.",
+            file=sys.stderr,
+        )
+        return EXIT_COULD_NOT_DETERMINE
+
+    identity = recorded_wrkslots_identity(record, checkout)
+    if identity is None:
+        print(
+            f"validate-run: RETIRE-REFUSED {unit}: no exact wrkslots identity, so "
+            "the checkout cannot be retired by identity.",
+            file=sys.stderr,
+        )
+        return EXIT_COULD_NOT_DETERMINE
+
+    outcomes = remove_fresh_checkouts_batch(
+        root, [(checkout, identity)], run=run, tool_root=tool_root
+    )
+    reason = outcomes.get(str(checkout))
+    if reason is not None:
+        print(f"validate-run: RETIRE-RETAINED {unit}: {reason}", file=sys.stderr)
+        return EXIT_COULD_NOT_DETERMINE
+    print(f"validate-run: RETIRED {unit}: handoff {handoff}", file=sys.stderr)
+    return 0
+
+
 def attach(
     raw_unit: str,
     *,
@@ -6124,6 +6248,16 @@ def parser() -> argparse.ArgumentParser:
             "worktrees/validate/ checkouts left by interrupted waiters"
         ),
     )
+    result.add_argument(
+        "--retire-unit",
+        metavar="UNIT",
+        help=(
+            "write back one unit's scorecard, publish its handoff, then retire its "
+            "checkout -- WITHOUT waiting for the unit to become inactive, so it can "
+            "be called from that unit's own ExecStopPost. Refuses to retire unless "
+            "the handoff published and the checkout holds no uncommitted work"
+        ),
+    )
     result.add_argument("--unit", help="validate-* unit name; .service suffix is optional")
     result.add_argument("--log", type=Path, help="durable log (default: ignored/validate/<unit>.log)")
     result.add_argument("--wait", type=int, default=7200, help="validate-lock queue wait bound")
@@ -6248,6 +6382,19 @@ def main(
         return refuse(
             "caller poll seconds must be positive",
             "pass --caller-poll-seconds with a value greater than 0, or omit it for the default",
+        )
+    if args.retire_unit:
+        if args.sweep_completed:
+            return refuse(
+                "--retire-unit cannot be combined with --sweep-completed",
+                "run one or the other",
+            )
+        return retire_unit_after_writeback(
+            args.retire_unit,
+            root=state_root,
+            tool_root=tool_root,
+            run=run,
+            json_output=args.json,
         )
     if args.sweep_completed:
         if any(

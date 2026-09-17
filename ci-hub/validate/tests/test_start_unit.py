@@ -4648,6 +4648,100 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("rescue ref", report["retained"][0]["reason"])
         self.assertTrue(fresh.exists())
 
+    def retire_record(self, suffix: str) -> tuple[Path, Path]:
+        """A materialized Hermit validate record of the shape ExecStopPost meets."""
+
+        fresh, record_path = self.managed_cleanup_record(suffix)
+        record = json.loads(record_path.read_text())
+        record["target"] = SHA
+        record["e2e_result_root"] = str(self.root / "ignored/validate/artifacts" / suffix)
+        Path(record["e2e_result_root"]).mkdir(parents=True, exist_ok=True)
+        record_path.write_text(json.dumps(record, sort_keys=True) + "\n")
+        return fresh, record_path
+
+    def test_retire_unit_never_waits_for_the_unit_to_become_inactive(self) -> None:
+        """THE PROPERTY THE ENTRY POINT EXISTS FOR, asserted directly.
+
+        This is called from the unit's OWN ExecStopPost, where the unit is
+        `deactivating` and can never reach a state in TERMINAL_STATES until the
+        caller returns. Anything that polls `systemctl show` here spins until the
+        stop timeout and leaves a half-deleted checkout. So the assertion is not
+        "it finished quickly" -- it is that it never asked systemd at all.
+        """
+
+        self.retire_record("noyield")
+        start_unit.main(
+            ["--retire-unit", "validate-noyield", "--json"],
+            run=self.fake,
+            environment=self.environment,
+            root=self.root,
+        )
+        systemctl = [c for c in self.fake.commands if c and c[0] == "systemctl"]
+        self.assertEqual([], systemctl)
+
+    def retire(self, suffix: str) -> tuple[int, str]:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = start_unit.main(
+                ["--retire-unit", f"validate-{suffix}", "--json"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+            )
+        return rc, err.getvalue()
+
+    def test_retire_unit_attempts_no_removal_unless_the_handoff_published(
+        self,
+    ) -> None:
+        """The ordering the directive requires: evidence out first, tree second.
+
+        ⚠️ ASSERTS THAT NO REMOVAL WAS ATTEMPTED, not merely that the tree
+        survived. An earlier version checked the exit code and `fresh.exists()`;
+        both were true with the writeback SUCCEEDING too, because this path also
+        refuses at the later handoff step, so it passed whatever happened
+        upstream and proved nothing. The absence of the removal command is the
+        observable that only this guard produces.
+
+        These fixtures cannot reach the SUCCESS path -- the writeback needs a
+        real checkout at the producing commit -- so this covers the refusal
+        direction only, and says so rather than implying coverage it lacks.
+        """
+
+        fresh, _record_path = self.retire_record("noremove")
+        rc, err = self.retire("noremove")
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("RETIRE-REFUSED", err)
+        removals = [
+            c for c in self.fake.commands if c and "remove-validate-batch" in c
+        ]
+        self.assertEqual([], removals)
+        self.assertTrue(fresh.exists())
+
+    def test_retire_unit_skips_a_record_it_does_not_own(self) -> None:
+        """Returning 0 without acting beats half-handling an unfamiliar shape."""
+
+        _fresh, record_path = self.retire_record("foreign")
+        record = json.loads(record_path.read_text())
+        record["repo"] = "rrnewton/reverie"
+        record_path.write_text(json.dumps(record, sort_keys=True) + "\n")
+        rc = start_unit.main(
+            ["--retire-unit", "validate-foreign", "--json"],
+            run=self.fake,
+            environment=self.environment,
+            root=self.root,
+        )
+        self.assertEqual(0, rc)
+
+    def test_retire_unit_cannot_be_combined_with_the_sweep(self) -> None:
+        rc = start_unit.main(
+            ["--retire-unit", "validate-x", "--sweep-completed"],
+            run=self.fake,
+            environment=self.environment,
+            root=self.root,
+        )
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+
+
     def test_sweep_completed_archives_receipts_and_removes_checkout(self) -> None:
         fresh = self.root / "worktrees" / "validate" / "validate-fresh-sweep"
         receipt = fresh / "reports" / "result.jsonl"
