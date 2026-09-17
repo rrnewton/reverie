@@ -185,7 +185,7 @@ impl CaptureReport {
 pub struct CaptureStartError {
     pub cause: io::Error,
     pub handle: Option<LogHandle>,
-    destination: Option<Box<dyn CaptureDestination>>,
+    destination: Mutex<Option<Box<dyn CaptureDestination>>>,
     ownership: DestinationOwnership,
 }
 
@@ -197,7 +197,12 @@ impl CaptureStartError {
     /// Take the original destination if transfer never happened. Its later Drop
     /// is the caller's operation and may block, just like its Write callbacks.
     pub fn take_destination(&mut self) -> Option<Box<dyn CaptureDestination>> {
-        let destination = self.destination.take();
+        // Exclusive access recovers D without locking or invoking user code.
+        let destination = self
+            .destination
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
         if destination.is_some() {
             self.ownership = DestinationOwnership::Recovered;
         }
@@ -205,7 +210,10 @@ impl CaptureStartError {
     }
 
     fn recover(mut self, destination: Box<dyn CaptureDestination>) -> Self {
-        self.destination = Some(destination);
+        *self
+            .destination
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(destination);
         self.ownership = DestinationOwnership::Recoverable;
         self
     }
@@ -236,7 +244,7 @@ impl From<io::Error> for CaptureStartError {
         Self {
             cause,
             handle: None,
-            destination: None,
+            destination: Mutex::new(None),
             ownership: DestinationOwnership::NotSupplied,
         }
     }
@@ -256,6 +264,20 @@ struct State {
     omitted_diagnostic_bytes: u64,
 }
 
+// The reserved collector stays reachable from the original LogHandle even
+// when a spawn closure is discarded or a prestart emitter outlives the owner.
+// Cancellation retains diagnostics; it never returns the one collector token.
+enum CollectorStart {
+    Available {
+        socket: UnixStream,
+        collector: ordered::Collector,
+    },
+    Taken,
+    Cancelled {
+        collector: ordered::Collector,
+    },
+}
+
 pub(super) struct Shared {
     retention: Weak<Retention>,
     options: CaptureOptions,
@@ -268,6 +290,7 @@ pub(super) struct Shared {
     late_host_writes: AtomicU64,
     pub(super) omitted_issues: AtomicU64,
     collector: Mutex<Option<JoinHandle<()>>>,
+    collector_start: Mutex<CollectorStart>,
 }
 
 impl Shared {
@@ -338,6 +361,56 @@ impl Shared {
         self.notify();
     }
 
+    fn take_collector(&self) -> Option<(UnixStream, ordered::Collector)> {
+        let mut start = self.collector_start.lock().unwrap();
+        if self.lifecycle() != CaptureLifecycle::Starting {
+            return None;
+        }
+        match std::mem::replace(&mut *start, CollectorStart::Taken) {
+            CollectorStart::Available { socket, collector } => Some((socket, collector)),
+            other => {
+                *start = other;
+                None
+            }
+        }
+    }
+
+    fn cancel_unstarted_collector(&self) -> bool {
+        let mut start = self.collector_start.lock().unwrap();
+        let socket = match std::mem::replace(&mut *start, CollectorStart::Taken) {
+            CollectorStart::Available { socket, collector } => {
+                *start = CollectorStart::Cancelled { collector };
+                Some(socket)
+            }
+            other => {
+                *start = other;
+                None
+            }
+        };
+        let cancelled = matches!(*start, CollectorStart::Cancelled { .. });
+        drop(start);
+        // This is our descriptor only; caller endpoints and aliases survive.
+        drop(socket);
+        cancelled
+    }
+
+    fn refresh_unstarted_diagnostics(&self) {
+        let start = self.collector_start.lock().unwrap();
+        if let CollectorStart::Cancelled { collector } = &*start {
+            let diagnostics = collector.diagnostics(self.options.limits.diagnostic_bytes);
+            // One lock order (collector-start then state) prevents an older
+            // concurrent sample overwriting a newer one. No user code, wait or
+            // LogHandle operation is called while these locks are held.
+            let mut state = self.state.lock().unwrap();
+            (state.streams, state.omitted_diagnostic_bytes) = diagnostics;
+        }
+    }
+
+    fn active_prestart_host(&self) -> bool {
+        self.active_host_calls.load(Ordering::Acquire) != 0
+            || self.buffer.admission(ordered::Role::Host).entrants != 0
+    }
+
     fn join_finished(&self) -> bool {
         let mut thread = self.collector.lock().unwrap();
         if thread.as_ref().is_some_and(|thread| thread.is_finished()) {
@@ -358,7 +431,6 @@ pub struct CaptureOwner {
     handle: LogHandle,
     shared: Arc<Shared>,
     finalized: bool,
-    unstarted: Option<(UnixStream, ordered::Collector)>,
 }
 
 #[derive(Clone)]
@@ -373,6 +445,15 @@ impl HostProducer {
             .fail("host formatter failed before complete-record commit");
     }
     pub fn write_record(&self, bytes: &[u8]) -> Result<RecordCommit, PublishError> {
+        self.write_record_with(bytes, || {}, || {})
+    }
+
+    fn write_record_with(
+        &self,
+        bytes: &[u8],
+        before_emit: impl FnOnce(),
+        after_emit: impl FnOnce(),
+    ) -> Result<RecordCommit, PublishError> {
         let closed = || self.shared.buffer.admission(ordered::Role::Host).closed;
         if closed() {
             let _ = self.shared.late_host_writes.try_update(
@@ -387,7 +468,9 @@ impl HostProducer {
             return Err(PublishError::Stopped);
         }
         self.shared.active_host_calls.fetch_add(1, Ordering::AcqRel);
+        before_emit();
         let result = self.write_inner(bytes);
+        after_emit();
         self.shared
             .active_host_calls
             .fetch_sub(1, Ordering::Release);
@@ -434,7 +517,9 @@ impl CaptureOwner {
 
     /// Start both workers once, after actual root task-ID allocation if needed.
     /// On failure, inspect/take the destination from the returned error. This
-    /// call never invokes destination code or its destructor on the caller.
+    /// call returns explicit startup errors without invoking destination code
+    /// or its destructor on the caller. General caller-unwind recovery and
+    /// reuse of state poisoned by an earlier caught panic are not guaranteed.
     /// The owner is neither cloneable nor startable through shared access:
     ///
     /// ```compile_fail,E0599
@@ -481,19 +566,24 @@ impl CaptureOwner {
                 .spawn_with_ready_hook(hooks.output_spawn, hooks.before_take)?;
             #[cfg(not(test))]
             self.shared.publication.spawn_with(hooks.output_spawn)?;
-            let (socket, collector) = self.unstarted.take().expect("unique collector reservation");
             let shared = self.shared.clone();
             let thread =
                 (hooks.collector_spawn)(Box::new(move || {
+                    // Creation failure drops only this Shared reference. The
+                    // original reservation remains available for diagnostics.
+                    let collection = shared.take_collector();
+                    let ran = collection.is_some();
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        collect(&shared, socket, collector)
+                        if let Some((socket, collector)) = collection {
+                            collect(&shared, socket, collector);
+                        }
                     }));
                     if result.is_err() {
                         shared.fail("capture collector panicked");
                     }
                     {
                         let mut state = shared.state.lock().unwrap();
-                        state.collector_finished = true;
+                        state.collector_finished = ran;
                         state.collector_worker = WorkerState::Ended;
                         if !matches!(state.guest_phase, Phase::Complete | Phase::Incomplete) {
                             state.guest_phase = Phase::Incomplete;
@@ -588,7 +678,7 @@ impl CaptureOwner {
             return Err(CaptureStartError {
                 cause,
                 handle: Some(self.handle()),
-                destination,
+                destination: Mutex::new(destination),
                 ownership,
             });
         }
@@ -610,12 +700,16 @@ impl CaptureOwner {
             .unwrap()
             .deadline
             .expect("installed deadline");
-        if let Some((_socket, collector)) = self.unstarted.take() {
-            // Retain unread/partial source facts without pretending a collector
-            // ran, consuming the caller's endpoint, or manufacturing FINISH/EOF.
-            let mut state = self.shared.state.lock().unwrap();
-            (state.streams, state.omitted_diagnostic_bytes) =
-                collector.diagnostics(self.shared.options.limits.diagnostic_bytes);
+        if self.shared.cancel_unstarted_collector() {
+            while self.shared.active_prestart_host() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            if self.shared.active_prestart_host() {
+                self.shared
+                    .fail("prestart host emitter unsettled at diagnostic cutoff");
+            }
+            self.shared.refresh_unstarted_diagnostics();
+            self.shared.state.lock().unwrap().guest_phase = Phase::Incomplete;
         }
         if self.shared.state.lock().unwrap().collector_worker == WorkerState::NeverCreated {
             self.shared.fail("capture collector never started");
@@ -647,8 +741,11 @@ impl Drop for CaptureOwner {
             );
             self.shared.stop_guest();
             self.shared.close(Instant::now());
-            if self.shared.state.lock().unwrap().collector_worker == WorkerState::NeverCreated {
-                // There is no destination and no collector thread to await.
+            if self.shared.cancel_unstarted_collector()
+                || self.shared.state.lock().unwrap().collector_worker == WorkerState::NeverCreated
+            {
+                // Never-started diagnostics remain owned by the original handle;
+                // a delayed thread cannot take this cancelled collector.
                 self.finish_until(Instant::now());
             } else {
                 self.shared.publication.revoke("capture owner dropped");
@@ -665,6 +762,9 @@ impl LogHandle {
 
     pub fn capture_snapshot(&self) -> Option<CaptureReport> {
         let shared = self.0.capture.get()?;
+        // A deadline does not freeze future source activity into nonexistence.
+        // Refresh retained never-started cursor facts, without upgrading failure.
+        shared.refresh_unstarted_diagnostics();
         let legacy = self.snapshot();
         let state = shared.state.lock().unwrap();
         Some(CaptureReport {
@@ -833,6 +933,10 @@ pub unsafe fn prepare_capture_unstarted(
         late_host_writes: AtomicU64::new(0),
         omitted_issues: AtomicU64::new(0),
         collector: Mutex::new(None),
+        collector_start: Mutex::new(CollectorStart::Available {
+            socket: host,
+            collector,
+        }),
     });
     assert!(handle.0.capture.set(shared.clone()).is_ok());
     sink.prepared = Some(guest);
@@ -840,7 +944,6 @@ pub unsafe fn prepare_capture_unstarted(
         handle: handle.clone(),
         shared: shared.clone(),
         finalized: false,
-        unstarted: Some((host, collector)),
     };
     let producer = HostProducer { handle, shared };
     Ok((owner, sink, producer))

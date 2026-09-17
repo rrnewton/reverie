@@ -376,6 +376,18 @@ fn each_creation_readiness_and_handoff_failure_preserves_one_destination_owner()
         }
         let report = owner.handle().capture_snapshot().unwrap();
         assert!(!report.qualifies());
+        if boundary.ends_with("spawn") {
+            assert_eq!(report.streams.len(), 2);
+            assert_eq!(report.streams[1].pid, 0);
+            assert_eq!(report.streams[1].unread_frames, 0);
+            assert_eq!(report.streams[0].pid, u64::from(std::process::id()));
+            assert_eq!(report.streams[0].unread_frames, 3);
+            assert_eq!(report.streams[0].complete_records, 0);
+            assert!(!report.streams[0].finished);
+            assert_eq!(report.collector_worker, WorkerState::NeverCreated);
+            assert!(!report.collector_finished && !report.commits_observed);
+            assert_eq!(report.publication.progress.acknowledged_data_bytes, 0);
+        }
         if boundary == "taken" {
             assert_eq!(error.destination_ownership(), DestinationOwnership::Worker);
             assert!(error.take_destination().is_none());
@@ -412,6 +424,12 @@ fn each_creation_readiness_and_handoff_failure_preserves_one_destination_owner()
         assert!(!after.qualifies());
         assert_eq!(after.publication.stability, report.publication.stability);
         assert_eq!(after.publication.progress, report.publication.progress);
+        if boundary.ends_with("spawn") {
+            assert_eq!(after.streams, report.streams);
+            let handle = error.handle.clone().unwrap();
+            drop(owner);
+            assert_eq!(handle.capture_snapshot().unwrap().streams, report.streams);
+        }
         if boundary == "taken" {
             assert!(
                 calls
@@ -616,4 +634,223 @@ fn every_destination_panic_is_incomplete_even_after_successful_flush() {
                 .all(|(_, thread)| *thread != std::thread::current().id())
         );
     }
+}
+
+#[test]
+fn collector_spawn_error_retains_a_prefix_committed_during_the_attempt() {
+    let (mut owner, _sink, host) = unsafe { prepare_capture_unstarted(options()) }.unwrap();
+    assert_eq!(host.write_record(b"before spawn").unwrap().order, 1);
+    let enter = Arc::new(Gate::default());
+    let worker_enter = enter.clone();
+    let (sent, received) = std::sync::mpsc::sync_channel(1);
+    let producer = std::thread::spawn(move || {
+        worker_enter.block();
+        let commit = host.write_record(b"during spawn").unwrap();
+        sent.send(commit).unwrap();
+    });
+    let hooks = StartHooks {
+        collector_spawn: Box::new(move |_| {
+            enter.release();
+            assert_eq!(
+                received.recv_timeout(Duration::from_secs(1)).unwrap().order,
+                2
+            );
+            Err(io::Error::from_raw_os_error(libc::EAGAIN))
+        }),
+        ..StartHooks::default()
+    };
+    let error = owner
+        .start_with(Box::new(Destination::new(Block::None)), hooks)
+        .unwrap_err();
+    producer.join().unwrap();
+    assert_eq!(error.cause.raw_os_error(), Some(libc::EAGAIN));
+    let handle = error.handle.clone().unwrap();
+    let report = handle.capture_snapshot().unwrap();
+    assert_eq!(report.streams[0].unread_frames, 6);
+    assert_eq!(report.active_host_calls, 0);
+    assert_eq!(report.host.entrants, 0);
+    assert!(!report.collector_finished && !report.commits_observed && !report.qualifies());
+    assert_eq!(report.publication.progress.acknowledged_data_bytes, 0);
+    assert!(
+        owner.shared.buffer.collector().is_err(),
+        "the one collector reservation must not reopen"
+    );
+    println!("collector creation failure retained concurrent prefix: {report:?}");
+    assert_eq!(terminal(&mut owner).streams, report.streams);
+    drop(owner);
+    assert_eq!(handle.capture_snapshot().unwrap().streams, report.streams);
+}
+
+#[test]
+fn prestart_emitter_at_cutoff_keeps_truthful_diagnostics_after_owner_drop() {
+    for committed_before_cutoff in [false, true] {
+        let (mut owner, _sink, host) = unsafe { prepare_capture_unstarted(options()) }.unwrap();
+        assert_eq!(host.write_record(b"initial").unwrap().order, 1);
+        let held = Arc::new(Gate::default());
+        let producer_held = held.clone();
+        let (entered, started) = std::sync::mpsc::sync_channel(1);
+        let producer = std::thread::spawn(move || {
+            let before = || {
+                if !committed_before_cutoff {
+                    entered.send(()).unwrap();
+                    producer_held.block();
+                }
+            };
+            let after = || {
+                if committed_before_cutoff {
+                    entered.send(()).unwrap();
+                    producer_held.block();
+                }
+            };
+            host.write_record_with(b"admitted", before, after)
+        });
+        started.recv_timeout(Duration::from_secs(1)).unwrap();
+        let hooks = StartHooks {
+            collector_spawn: Box::new(|_| Err(io::Error::from_raw_os_error(libc::EAGAIN))),
+            ..StartHooks::default()
+        };
+        let now = Instant::now();
+        let error = owner
+            .start_with(Box::new(Destination::new(Block::None)), hooks)
+            .unwrap_err();
+        assert!(now.elapsed() < Duration::from_secs(1));
+        let handle = error.handle.clone().unwrap();
+        let cutoff = handle.capture_snapshot().unwrap();
+        assert_eq!(cutoff.active_host_calls, 1);
+        assert!(
+            cutoff
+                .guest
+                .issues
+                .iter()
+                .any(|issue| issue.message.contains("prestart host emitter unsettled"))
+        );
+        assert_eq!(
+            cutoff.streams[0].unread_frames,
+            if committed_before_cutoff { 6 } else { 3 }
+        );
+        assert!(!cutoff.collector_finished && !cutoff.qualifies());
+        assert!(!cutoff.guest.peer_closed && !cutoff.guest.root_reaped);
+        println!(
+            "prestart active emitter cutoff (committed={committed_before_cutoff}): {cutoff:?}"
+        );
+        drop(owner);
+        assert_eq!(handle.capture_snapshot().unwrap().streams, cutoff.streams);
+        held.release();
+        let result = producer.join().unwrap();
+        if committed_before_cutoff {
+            assert_eq!(result.unwrap().order, 2);
+        } else {
+            assert_eq!(result, Err(PublishError::Stopped));
+        }
+        let after = handle.capture_snapshot().unwrap();
+        assert_eq!(after.active_host_calls, 0);
+        assert_eq!(after.streams, cutoff.streams);
+        assert_eq!(after.error, cutoff.error);
+        assert_eq!(after.publication.error, cutoff.publication.error);
+        assert_eq!(after.publication.stability, cutoff.publication.stability);
+        assert!(!after.qualifies());
+    }
+}
+
+#[test]
+fn cancelled_delayed_collector_cannot_take_the_retained_cursor() {
+    let (mut owner, _sink, host) = unsafe { prepare_capture_unstarted(options()) }.unwrap();
+    host.write_record(b"prefix").unwrap();
+    let gate = Arc::new(Gate::default());
+    let delayed = gate.clone();
+    let hooks = StartHooks {
+        collector_spawn: Box::new(move |worker| {
+            Ok(std::thread::spawn(move || {
+                delayed.block();
+                worker();
+            }))
+        }),
+        ..StartHooks::default()
+    };
+    let error = owner
+        .start_with(Box::new(Destination::new(Block::None)), hooks)
+        .unwrap_err();
+    let handle = error.handle.clone().unwrap();
+    let before = handle.capture_snapshot().unwrap();
+    assert_eq!(before.streams[0].unread_frames, 3);
+    assert_eq!(before.collector_worker, WorkerState::Created);
+    assert!(!before.collector_finished && !owner.shared.state.lock().unwrap().ready);
+    println!("delayed collector cancellation retains source: {before:?}");
+    gate.release();
+    until(|| owner.shared.join_finished());
+    let after = handle.capture_snapshot().unwrap();
+    assert_eq!(after.collector_worker, WorkerState::Joined);
+    assert!(!after.collector_finished && !owner.shared.state.lock().unwrap().ready);
+    assert_eq!(after.streams, before.streams);
+    assert!(!after.qualifies());
+    assert!(owner.shared.buffer.collector().is_err());
+    drop(owner);
+    assert_eq!(handle.capture_snapshot().unwrap().streams, before.streams);
+}
+
+#[test]
+fn startup_error_keeps_sync_and_recovers_a_send_only_destination() {
+    fn require_error_bounds<E: std::error::Error + Send + Sync + 'static>() {}
+    require_error_bounds::<CaptureStartError>();
+    struct SendOnly {
+        calls: std::cell::Cell<usize>,
+        output: Destination,
+    }
+    impl Write for SendOnly {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls.set(self.calls.get() + 1);
+            self.output.write(bytes)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.output.flush()
+        }
+    }
+    impl CaptureDestination for SendOnly {
+        fn progress(&self) -> DestinationProgress {
+            self.output.progress()
+        }
+    }
+    fn propagate<D: CaptureDestination>(
+        options: CaptureOptions,
+        destination: D,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let _capture = unsafe { prepared_capture(options, destination) }?;
+        Ok(())
+    }
+    let output = Destination::new(Block::Drop);
+    let bytes = output.bytes.clone();
+    let gate = output.gate.clone();
+    let calls = output.calls.clone();
+    let destroyed = output.destroyed.clone();
+    let mut invalid = options();
+    invalid.timeouts.startup = Duration::ZERO;
+    let error = propagate(
+        invalid,
+        SendOnly {
+            calls: std::cell::Cell::new(0),
+            output,
+        },
+    )
+    .unwrap_err();
+    let mut error = error.downcast::<CaptureStartError>().unwrap();
+    assert_eq!(
+        error.destination_ownership(),
+        DestinationOwnership::Recoverable
+    );
+    assert!(calls.lock().unwrap().is_empty() && !destroyed.load(Ordering::SeqCst));
+    let mut recovered = error.take_destination().unwrap();
+    assert!(error.take_destination().is_none());
+    recovered.write_all(b"same Send-only object").unwrap();
+    assert_eq!(&*bytes.lock().unwrap(), b"same Send-only object");
+    gate.release();
+    drop(recovered);
+    assert!(destroyed.load(Ordering::SeqCst));
+    let wrapped = io::Error::other(*error);
+    assert!(
+        wrapped
+            .into_inner()
+            .unwrap()
+            .downcast::<CaptureStartError>()
+            .is_ok()
+    );
 }
