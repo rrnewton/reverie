@@ -259,8 +259,10 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
         # The former 1800s override derived a 1619s run bound and could not
         # admit the committed 2400s lint node. The launcher owns this budget.
         self.assertFalse(any(arg.startswith("--child-deadline") for arg in argv))
-        self.assertIn("--in-place", argv)
-        self.assertIn("--make-validate", argv)
+        self.assertIn("--materialize-target", argv)
+        self.assertNotIn("--in-place", argv)
+        self.assertNotIn("--make-validate", argv)
+        self.assertEqual(argv[-2:], ["--", "full"])
         self.assertEqual("1", argv[argv.index("--wait") + 1])
 
     def test_unchanged_already_green_sha_reports_green_citing_the_prior_receipt(self) -> None:
@@ -578,7 +580,7 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertEqual(watch.NO_RESULT, rc)
             self.assertEqual(["entered", "exited"], events)
 
-    def test_dirty_checkout_is_a_durable_cannot_start_without_mutation(self) -> None:
+    def test_dirty_checkout_warns_and_launches_materialized_target_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = clean_repository(root)
@@ -587,33 +589,50 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             marker.write_text("must survive\n", encoding="utf-8")
             before = watch.tree_state(repo)
 
-            rc = watch.main(
-                [
-                    "--checkout", str(repo),
-                    "--state-dir", str(state),
-                    "--no-fetch",
-                    "--no-notify",
-                ]
-            )
+            with mock.patch.object(
+                watch,
+                "run_validate_observing_admission",
+                return_value=subprocess.CompletedProcess([], 2, "", ""),
+            ) as launched, mock.patch.object(
+                watch, "canonical_ledger_rows", return_value=[]
+            ), mock.patch.object(
+                watch,
+                "canonical_validate_status",
+                side_effect=lambda _tool, _state, sha: unvalidated_status(sha),
+            ):
+                rc = watch.main(
+                    [
+                        "--checkout", str(repo),
+                        "--state-dir", str(state),
+                        "--no-fetch",
+                        "--no-notify",
+                    ]
+                )
 
-            self.assertEqual(rc, watch.CANNOT_START)
+            self.assertEqual(rc, watch.NO_RESULT)
+            launched.assert_called_once()
+            argv = [str(item) for item in launched.call_args.args[0]]
+            self.assertIn("--materialize-target", argv)
+            self.assertNotIn("--in-place", argv)
             self.assertEqual(marker.read_text(encoding="utf-8"), "must survive\n")
             self.assertEqual(watch.tree_state(repo), before)
             results = list((state / "results").glob("*.json"))
             self.assertEqual(len(results), 1)
             result = json.loads(results[0].read_text(encoding="utf-8"))
-            self.assertEqual(result["state"], "CANNOT_START")
-            self.assertIn("dirty before launch", result["reason"])
+            self.assertEqual(result["state"], "NO_RESULT")
+            self.assertIn("local changes", result["source_checkout_warnings"][0])
+            self.assertIn("owner-untracked.txt", result["source_checkout_warnings"][0])
             self.assertIsNone(result["executed_tests"])
             self.assertEqual(
-                result["checkout_freshness"], watch.CHECKOUT_FRESHNESS_UNKNOWN
+                result["checkout_freshness"], "CURRENT"
             )
             self.assertEqual(
                 result["commit_validation_state"],
-                watch.COMMIT_VALIDATION_UNKNOWN,
+                watch.COMMIT_VALIDATION_NOT_HARD_GREEN,
             )
             message = next((state / "results").glob("*.md")).read_text()
-            self.assertIn("checkout_freshness: UNKNOWN", message)
+            self.assertIn("checkout_freshness: CURRENT", message)
+            self.assertIn("source_checkout_warnings:", message)
             self.assertNotIn("checkout_freshness: BEHIND", message)
             self.assertNotIn("landing_authority", message)
             events = [
@@ -621,6 +640,49 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                 for line in (state / "invocations.jsonl").read_text().splitlines()
             ]
             self.assertEqual(events, ["attempt-start", "attempt-finish"])
+
+    def test_concurrent_owner_edit_is_warned_and_never_restored(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            state = root / "state"
+
+            def launch(*_args, **_kwargs):
+                (repo / "tracked.txt").write_text(
+                    "owner changed this while validation ran\n", encoding="utf-8"
+                )
+                return subprocess.CompletedProcess([], 2, "", "")
+
+            with mock.patch.object(
+                watch, "run_validate_observing_admission", side_effect=launch
+            ), mock.patch.object(
+                watch, "canonical_ledger_rows", return_value=[]
+            ), mock.patch.object(
+                watch,
+                "canonical_validate_status",
+                side_effect=lambda _tool, _state, sha: unvalidated_status(sha),
+            ):
+                rc = watch.main(
+                    [
+                        "--checkout",
+                        str(repo),
+                        "--state-dir",
+                        str(state),
+                        "--no-fetch",
+                        "--no-notify",
+                    ]
+                )
+
+            self.assertEqual(rc, watch.NO_RESULT)
+            self.assertEqual(
+                (repo / "tracked.txt").read_text(encoding="utf-8"),
+                "owner changed this while validation ran\n",
+            )
+            result = json.loads(
+                next((state / "results").glob("*.json")).read_text()
+            )
+            self.assertNotEqual(result["pre_tree_hash"], result["post_tree_hash"])
+            self.assertIn("left it untouched", result["source_checkout_warnings"][-1])
 
     def test_clean_dry_run_is_no_result_never_pass(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -630,6 +692,7 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             before = watch.tree_state(repo)
 
             authority = {
+                "DEV_HERMIT_TOOL_CONTENT_SHA256": "0" * 64,
                 "DEV_HERMIT_TOOL_PARENT_SHA": "1" * 40,
                 "DEV_HERMIT_TOOL_HERMIT_SHA": "2" * 40,
                 "DEV_HERMIT_TOOL_AGENT_UTILS_SHA": "3" * 40,
@@ -665,10 +728,15 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertIn("current main", result["verdict_qualifier"])
             self.assertEqual(result["state_root"], str(repo.parent.resolve()))
             self.assertEqual(result["tool_root"], str(watch.TOOL_ROOT.resolve()))
+            self.assertEqual(result["tool_content_sha256"], "0" * 64)
             self.assertEqual(result["tool_parent_sha"], "1" * 40)
             self.assertEqual(result["tool_hermit_sha"], "2" * 40)
             self.assertEqual(result["tool_agent_utils_sha"], "3" * 40)
             self.assertEqual(result["tool_bootstrap_sha256"], "4" * 64)
+            self.assertEqual(
+                result["source_tree"],
+                command(repo, "git", "rev-parse", "HEAD^{tree}").strip(),
+            )
 
     def test_validated_stale_checkout_reports_hard_green_and_behind(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -782,6 +850,10 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                 f"DEV_HERMIT_TOOL_ROOT={watch.TOOL_ROOT.resolve()}", command_argv
             )
             self.assertIn(watch.TOOL_ROOT.resolve() / "ci-hub/ci-hub", command_argv)
+            self.assertIn("--materialize-target", command_argv)
+            self.assertNotIn("--in-place", command_argv)
+            self.assertNotIn("--make-validate", command_argv)
+            self.assertEqual(command_argv[-2:], ["--", "full"])
             self.assertEqual(
                 launched.call_args.kwargs["cwd"], watch.TOOL_ROOT.resolve()
             )
@@ -821,14 +893,18 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                 next((state / "results").glob("*.json")).read_text()
             )
             exception = result["known_dirty_exception"]
-            self.assertTrue(exception["applied"])
-            self.assertEqual(exception["paths"], ["validate"])
+            self.assertFalse(exception["applied"])
+            self.assertEqual(exception["paths"], [])
             self.assertEqual(exception["observed_symlink_target"], "scripts/validate.rs")
             self.assertFalse(exception["could_affect_make_validate"])
             self.assertEqual(result["dirty_paths_after"], ["?? validate"])
             self.assertEqual(result["pre_tree_hash"], result["post_tree_hash"])
+            self.assertIn(
+                "historical untracked validate symlink",
+                result["source_checkout_warnings"][0],
+            )
 
-    def test_modified_tracked_file_refuses_even_with_known_symlink(self) -> None:
+    def test_modified_tracked_file_warns_even_with_known_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = clean_repository(root)
@@ -842,17 +918,19 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                     "--state-dir", str(state),
                     "--no-fetch",
                     "--no-notify",
+                    "--dry-run",
                 ]
             )
 
-            self.assertEqual(rc, watch.CANNOT_START)
+            self.assertEqual(rc, watch.NO_RESULT)
             result = json.loads(
                 next((state / "results").glob("*.json")).read_text()
             )
             self.assertFalse(result["known_dirty_exception"]["applied"])
             self.assertIn(" M tracked.txt", result["dirty_paths_before"])
+            self.assertIn("local changes", result["source_checkout_warnings"][0])
 
-    def test_wrong_branch_refuses_even_when_tree_is_pristine(self) -> None:
+    def test_wrong_branch_warns_while_exact_commit_remains_the_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = clean_repository(root)
@@ -865,14 +943,16 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                     "--state-dir", str(state),
                     "--no-fetch",
                     "--no-notify",
+                    "--dry-run",
                 ]
             )
 
-            self.assertEqual(rc, watch.CANNOT_START)
+            self.assertEqual(rc, watch.NO_RESULT)
             result = json.loads(
                 next((state / "results").glob("*.json")).read_text()
             )
-            self.assertIn("expected 'main'", result["reason"])
+            self.assertIn("expected 'main'", result["source_checkout_warnings"][0])
+            self.assertIn(result["sha"], result["source_checkout_warnings"][0])
 
     def test_notification_failure_is_a_distinct_loud_exit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -887,6 +967,7 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                         "--checkout", str(repo),
                         "--state-dir", str(state),
                         "--no-fetch",
+                        "--dry-run",
                     ]
                 )
 
@@ -897,13 +978,13 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             result = json.loads(
                 next((state / "results").glob("*.json")).read_text()
             )
-            self.assertEqual(result["state"], "CANNOT_START")
+            self.assertEqual(result["state"], "NO_RESULT")
             self.assertEqual(result["notification_rc"], 1)
             self.assertEqual(result["notification_detail"], "wake refused")
 
-            self.assertEqual(rc, watch.CANNOT_START + watch.UNDELIVERED_OFFSET)
+            self.assertEqual(rc, watch.NO_RESULT + watch.UNDELIVERED_OFFSET)
             self.assertFalse(watch.report_reached_its_reader(rc))
-            self.assertEqual(watch.verdict_from_exit_code(rc), watch.CANNOT_START)
+            self.assertEqual(watch.verdict_from_exit_code(rc), watch.NO_RESULT)
             service = (
                 ROOT / "scripts/systemd/hermit-owner-checkout-validate.service"
             ).read_text()
@@ -1705,7 +1786,7 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertNotEqual(after, before)
             self.assertEqual((repo / "SCORECARD.md").read_text(), "unconfirmed\n")
 
-    def test_dirty_scorecard_refuses_before_launch(self) -> None:
+    def test_dirty_scorecard_warns_without_entering_the_measured_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = clean_repository(root)
@@ -1723,11 +1804,16 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                         "--checkout", str(repo),
                         "--state-dir", str(root / "state"),
                         "--no-fetch", "--no-notify",
+                        "--dry-run",
                     ]
                 )
 
-            self.assertEqual(rc, watch.CANNOT_START)
+            self.assertEqual(rc, watch.NO_RESULT)
             self.assertFalse(launched.called)
+            result = json.loads(
+                next((root / "state/results").glob("*.json")).read_text()
+            )
+            self.assertIn("SCORECARD.md", result["source_checkout_warnings"][0])
 
     def test_ledger_selection_requires_exact_checkout_sha_and_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1770,6 +1856,34 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
 
             self.assertIsNotNone(selected)
             self.assertIsNone(selected["executed_tests"])
+
+    def test_materialized_ledger_selection_uses_exact_run_id_not_source_path(self) -> None:
+        launched = watch.parse_time("2026-08-09T03:00:00Z")
+        assert launched is not None
+        rows = [
+            {
+                "commit": "a" * 40,
+                "cwd": "/fresh/checkout-a",
+                "run_id": "other-run",
+                "started_at": "2026-08-09T03:00:01Z",
+            },
+            {
+                "commit": "a" * 40,
+                "cwd": "/fresh/checkout-b",
+                "run_id": "owner-run",
+                "started_at": "2026-08-09T03:00:01Z",
+            },
+        ]
+
+        selected = watch.latest_attempt_row(
+            rows,
+            checkout=Path("/mutable/source"),
+            sha="a" * 40,
+            launched_at=launched,
+            run_id="owner-run",
+        )
+
+        self.assertEqual(selected, rows[1])
 
     def test_canonical_rows_come_from_the_single_adapter(self) -> None:
         parent = Path("/fixture/dev-hermit")

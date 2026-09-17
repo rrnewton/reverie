@@ -1,5 +1,5 @@
 [Unit]
-Description=Check the owner's canonical Hermit checkout every hour
+Description=Check the owner's canonical Hermit commit every hour
 Documentation=https://github.com/rrnewton/dev-hermit/blob/main/scripts/owner-checkout-validate-watch.py
 
 [Timer]

@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodic make validate in the owner's canonical Hermit checkout
+Description=Periodically validate the owner's canonical Hermit commit in an isolated checkout
 Documentation=https://github.com/rrnewton/dev-hermit/blob/main/scripts/owner-checkout-validate-watch.py
 
 [Service]

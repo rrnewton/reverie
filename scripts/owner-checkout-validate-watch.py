@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Periodically validate the owner's canonical Hermit checkout, fail closed.
+"""Periodically validate the owner's canonical Hermit commit, fail closed.
 
-This is deliberately not a worktree/clone monitor.  It exercises the same
-``~/work/dev-hermit/hermit`` checkout the owner spot-checks, through the
-canonical detached ``validate-run`` producer and its literal ``make validate``
-entrypoint.  Every invocation writes a durable result before notification.
+The owner's checkout supplies an exact commit and Git objects, but is not the
+tree validation executes.  ``validate-run --materialize-target`` creates and
+checks a fresh registered checkout of that commit.  Mutable owner-checkout
+state is recorded and warned about without preventing that isolated run; the
+fresh checkout's own cleanliness remains a blocking admission condition.
+Every invocation writes a durable result before notification.
 """
 
 from __future__ import annotations
@@ -243,7 +245,7 @@ def checkout_revision_context(
 ) -> dict[str, Any]:
     """Describe the measured revision without requiring it to equal the tip."""
     completed = run(
-        ["git", "rev-list", "--left-right", "--count", "HEAD...origin/main"],
+        ["git", "rev-list", "--left-right", "--count", f"{head}...origin/main"],
         cwd=checkout,
     )
     if completed.returncode != 0:
@@ -566,14 +568,19 @@ def latest_attempt_row(
     checkout: Path,
     sha: str,
     launched_at: dt.datetime,
+    run_id: str | None = None,
 ) -> dict[str, Any] | None:
     rows: list[dict[str, Any]] = []
     for row in candidates:
         if row.get("commit") != sha:
             continue
-        cwd = row.get("cwd")
-        if not isinstance(cwd, str) or Path(cwd).resolve() != checkout.resolve():
-            continue
+        if run_id is not None:
+            if row.get("run_id") != run_id:
+                continue
+        else:
+            cwd = row.get("cwd")
+            if not isinstance(cwd, str) or Path(cwd).resolve() != checkout.resolve():
+                continue
         started = parse_time(row.get("started_at"))
         if started is None or started < launched_at - dt.timedelta(seconds=2):
             continue
@@ -1529,12 +1536,14 @@ def render_message(result: dict[str, Any]) -> str:
         f"checkout: {result['checkout']}",
         f"state_root: {result.get('state_root') or 'unresolved'}",
         f"tool_root: {result.get('tool_root') or 'unresolved'}",
+        f"tool_content_sha256: {result.get('tool_content_sha256') or 'unresolved'}",
         f"tool_parent_sha: {result.get('tool_parent_sha') or 'unresolved'}",
         f"tool_hermit_sha: {result.get('tool_hermit_sha') or 'unresolved'}",
         f"tool_agent_utils_sha: {result.get('tool_agent_utils_sha') or 'unresolved'}",
         "tool_bootstrap_sha256: "
         + str(result.get("tool_bootstrap_sha256") or "unresolved"),
         f"sha: {result.get('sha') or 'unresolved'}",
+        f"source_tree: {result.get('source_tree') or 'unresolved'}",
         f"origin_main_sha: {result.get('origin_main_sha') or 'unresolved'}",
         "checkout_freshness: "
         + str(result.get("checkout_freshness") or CHECKOUT_FRESHNESS_UNKNOWN),
@@ -1566,6 +1575,7 @@ def render_message(result: dict[str, Any]) -> str:
         f"pre_tree_hash: {result.get('pre_tree_hash') or 'unavailable'}",
         f"post_tree_hash: {result.get('post_tree_hash') or 'unavailable'}",
         f"dirty_paths_after: {result.get('dirty_paths_after')!r}",
+        f"source_checkout_warnings: {result.get('source_checkout_warnings')!r}",
         f"validate_log: {result.get('validate_log') or 'none'}",
         f"launcher_log: {result.get('launcher_log') or 'none'}",
         f"result_json: {result['result_json']}",
@@ -1650,6 +1660,7 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
         "checkout": str(checkout),
         "state_root": str(state_root),
         "tool_root": str(tool_root),
+        "tool_content_sha256": os.environ.get("DEV_HERMIT_TOOL_CONTENT_SHA256"),
         "tool_parent_sha": os.environ.get("DEV_HERMIT_TOOL_PARENT_SHA"),
         "tool_hermit_sha": os.environ.get("DEV_HERMIT_TOOL_HERMIT_SHA"),
         "tool_agent_utils_sha": os.environ.get("DEV_HERMIT_TOOL_AGENT_UTILS_SHA"),
@@ -1659,6 +1670,7 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
         "reason": "initializing",
         "executed_tests": None,
         "dirty_paths_after": None,
+        "source_checkout_warnings": [],
         # UNKNOWN is deliberate: initialization has established neither a
         # failing commit nor a stale checkout. Each fact becomes known only
         # after its own authority is queried.
@@ -1709,6 +1721,7 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
         pre = tree_state(checkout)
         result.update(
             sha=pre["head"],
+            source_tree=pre["tree"],
             commit_validation_sha=pre["head"],
             pre_tree_hash=pre["whole_tree_hash"],
             dirty_paths_before=pre["dirty_paths"],
@@ -1716,18 +1729,24 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
         exception = known_exception_assessment(checkout, pre["dirty_paths"])
         result["known_dirty_exception"] = exception
         if pre["branch"] != "main":
-            result["reason"] = f"owner checkout branch is {pre['branch']!r}, expected 'main'"
-            result["post_tree_hash"] = pre["whole_tree_hash"]
-            result["dirty_paths_after"] = pre["dirty_paths"]
-            return conclude()
+            result["source_checkout_warnings"].append(
+                f"ACTION: owner checkout branch is {pre['branch']!r}, expected 'main'; "
+                f"validation will measure exact commit {pre['head']} in a fresh checkout"
+            )
         if pre["dirty_paths"] and not exception["matched"]:
-            result["reason"] = "owner checkout is dirty before launch"
-            result["dirty_paths_after"] = pre["dirty_paths"]
-            result["post_tree_hash"] = pre["whole_tree_hash"]
-            return conclude()
+            result["source_checkout_warnings"].append(
+                "ACTION: owner checkout has local changes; preserve or finish them when "
+                "convenient. They are not validation inputs because the exact committed "
+                f"target {pre['head']} will be materialized separately. Paths: "
+                + ", ".join(pre["dirty_paths"])
+            )
         if exception["matched"]:
-            exception["applied"] = True
-            exception["paths"] = [KNOWN_EXCEPTION_PATH]
+            result["source_checkout_warnings"].append(
+                "ACTION: owner checkout has the historical untracked validate symlink; "
+                "it is not an input to the fresh materialized checkout"
+            )
+        for warning in result["source_checkout_warnings"]:
+            print(f"owner-checkout-validate-watch: WARNING: {warning}", file=sys.stderr)
 
         if not args.no_fetch:
             fetched = run(["with-proxy", "git", "fetch", "origin", "main"], cwd=checkout)
@@ -1774,9 +1793,7 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
             "validate-run",
             "--checkout",
             checkout,
-            "--in-place",
-            "--make-validate",
-            *(["--allow-owner-validate-symlink"] if exception["applied"] else []),
+            "--materialize-target",
             "--agent",
             "owner-checkout-watch",
             "--target",
@@ -1789,6 +1806,8 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
             "1",
             "--caller-poll-seconds",
             "5",
+            "--",
+            "full",
         ]
         launched = True
         result["lock_admission"] = {
@@ -1830,6 +1849,7 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
             checkout=checkout,
             sha=pre["head"],
             launched_at=launched_at,
+            run_id=unit,
         )
         result["ledger_row_found"] = row is not None
         if row is not None:
@@ -2024,34 +2044,23 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
     except Exception as error:  # fail closed; the result below is the alarm
         result.update(state="CANNOT_START", reason=f"watch internal error: {error}")
     finally:
-        # Once the producer has been attempted, cleanup is unconditional: an
-        # exception while reading its ledger is not permission to leave the
-        # owner's checkout dirty.
+        # Validation executes in a fresh checkout, so this process has no
+        # authority to restore the owner's mutable checkout. Record any change
+        # observed across the run as a warning; it may be concurrent owner work.
         if launched and pre is not None:
-            recovery = state_dir / "recovery" / attempt_id
             try:
-                restored, post, scorecard_refused = preserve_and_restore(
-                    checkout, pre, recovery
-                )
+                post = tree_state(checkout)
                 result["post_tree_hash"] = post["whole_tree_hash"]
                 result["dirty_paths_after"] = post["dirty_paths"]
-                if recovery.exists():
-                    result["recovery"] = str(recovery)
-                if not restored:
-                    result.update(
-                        state="RESTORE_FAILED",
-                        reason="post-run tree differs; recovery retained",
+                if post["whole_tree_hash"] != pre["whole_tree_hash"]:
+                    result["source_checkout_warnings"].append(
+                        "ACTION: owner checkout changed while isolated validation ran; "
+                        "the watcher left it untouched"
                     )
-                elif scorecard_refused:
-                    detail = "generated scorecard changes failed `scorecard.rs check` and were left untouched for inspection"
-                    if result.get("state") == "FAIL":
-                        result["reason"] = f"{result['reason']}; {detail}"
-                    else:
-                        result.update(state="FAIL", reason=detail)
-            except Exception as restore_error:
-                result.update(
-                    state="RESTORE_FAILED",
-                    reason=f"post-run restoration raised: {restore_error}",
+            except Exception as observation_error:
+                result["source_checkout_warnings"].append(
+                    "ACTION: could not re-observe owner checkout after validation: "
+                    f"{observation_error}"
                 )
         elif pre is not None and "post_tree_hash" not in result:
             # Preflight refusals never mutate the checkout; still carry both
