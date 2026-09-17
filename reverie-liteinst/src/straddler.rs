@@ -55,9 +55,17 @@ pub(crate) fn initialize_from_environment() -> io::Result<()> {
     let staleness = straddler_staleness_from_env_value(
         std::env::var_os(STRADDLER_STALENESS_TICKS_ENV).as_deref(),
     )?;
+    initialize(staleness)
+}
+
+pub(crate) fn initialize(staleness: Option<StalenessBudget>) -> io::Result<()> {
     CALIBRATED_STALENESS
         .set(staleness)
         .map_err(|_| io::Error::other("LiteInst straddler policy initialized twice"))
+}
+
+pub(crate) fn is_initialized() -> bool {
+    CALIBRATED_STALENESS.get().is_some()
 }
 
 pub(crate) fn budget_for_patch(

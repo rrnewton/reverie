@@ -303,6 +303,10 @@ fn tool_callback_active() -> bool {
     TOOL_CALLBACK_ACTIVE.with(|active| active.load(Ordering::Relaxed))
 }
 
+// Host initialization cannot be retried after Begin: preparation can publish
+// process-global OnceLocks before returning an error. This does not claim the
+// other runtime installers or their reversible preflight work.
+static HOST_INITIALIZATION_STARTED: AtomicBool = AtomicBool::new(false);
 static ARENAS: OnceLock<Vec<RuntimeArena>> = OnceLock::new();
 static SITES: OnceLock<Box<[SiteSlot]>> = OnceLock::new();
 static PAGE_SIZE: AtomicU64 = AtomicU64::new(0);
@@ -933,11 +937,36 @@ fn host_handshake_frame() -> HostHandshakeFrame {
 }
 
 fn initialize_host_runtime() -> io::Result<()> {
+    initialize_host_runtime_with(prepare_instrumentation)
+}
+
+pub(crate) fn initialize_host_runtime_explicit(config: crate::HostRuntimeConfig) -> io::Result<()> {
+    if config.version != crate::HOST_RUNTIME_CONFIG_VERSION {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    let staleness = liteinst2::patcher::StalenessBudget::new(config.straddler_staleness_ticks);
+    initialize_host_runtime_with(|| {
+        crate::straddler::initialize(staleness)?;
+        prepare_instrumentation_state()
+    })
+}
+
+fn initialize_host_runtime_with(prepare: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+    if reverie_preload::trap::has_dispatcher()
+        || crate::straddler::is_initialized()
+        || SITES.get().is_some()
+        || ARENAS.get().is_some()
+    {
+        return Err(io::Error::from_raw_os_error(libc::EALREADY));
+    }
+    HOST_INITIALIZATION_STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| io::Error::from_raw_os_error(libc::EALREADY))?;
     let frame = host_handshake_frame();
     // SAFETY: the launcher validates this exact DSO/RIP/frame before suppressing
     // the trap. The function returns normally after ptrace resumes the tracee.
     unsafe { reverie_liteinst_host_begin(&frame) };
-    prepare_instrumentation()?;
+    prepare()?;
     // SAFETY: identical handshake contract; all helper state is now published.
     unsafe { reverie_liteinst_host_ready(&frame) };
     Ok(())
@@ -1167,6 +1196,10 @@ fn discover_arena_aliases(
 
 fn prepare_instrumentation() -> io::Result<()> {
     crate::straddler::initialize_from_environment()?;
+    prepare_instrumentation_state()
+}
+
+fn prepare_instrumentation_state() -> io::Result<()> {
     prepare_live_patching().map_err(|error| io::Error::other(error.to_string()))?;
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     let page_size = u64::try_from(page_size)
