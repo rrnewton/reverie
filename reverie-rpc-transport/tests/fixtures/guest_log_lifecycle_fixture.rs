@@ -6,6 +6,7 @@ use std::os::unix::process::CommandExt;
 use std::time::Duration;
 
 mod owned_lifecycle;
+mod deferred_capture;
 
 use reverie_rpc_transport::guest_log::Options;
 use reverie_rpc_transport::guest_log::Phase;
@@ -88,6 +89,7 @@ fn producer(mode: &str, fd: i32) {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().collect();
+    if deferred_capture::dispatch(&arguments) { return; }
     if arguments.get(1).map(String::as_str) == Some("--ownership-control") {
         ownership_control(&arguments[2]);
         return;

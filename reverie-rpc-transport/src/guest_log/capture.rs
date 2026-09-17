@@ -4,6 +4,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -108,8 +109,39 @@ impl GuestReport {
     }
 }
 
+/// Worker observations are independent of whether a join handle is stored.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerState {
+    NeverCreated,
+    Created,
+    Ready,
+    Ended,
+    Joined,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum CaptureLifecycle {
+    Prepared,
+    Starting,
+    Running,
+    Finalizing,
+    Terminal,
+}
+
+/// Who owns the exact destination after a failed explicit operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DestinationOwnership {
+    NotSupplied,
+    Recoverable,
+    Worker,
+    Recovered,
+}
+
 #[derive(Clone, Debug)]
 pub struct CaptureReport {
+    pub lifecycle: CaptureLifecycle,
+    pub collector_worker: WorkerState,
     pub guest: GuestReport,
     pub host: ordered::Admission,
     pub guest_admission: ordered::Admission,
@@ -153,6 +185,30 @@ impl CaptureReport {
 pub struct CaptureStartError {
     pub cause: io::Error,
     pub handle: Option<LogHandle>,
+    destination: Option<Box<dyn CaptureDestination>>,
+    ownership: DestinationOwnership,
+}
+
+impl CaptureStartError {
+    pub fn destination_ownership(&self) -> DestinationOwnership {
+        self.ownership
+    }
+
+    /// Take the original destination if transfer never happened. Its later Drop
+    /// is the caller's operation and may block, just like its Write callbacks.
+    pub fn take_destination(&mut self) -> Option<Box<dyn CaptureDestination>> {
+        let destination = self.destination.take();
+        if destination.is_some() {
+            self.ownership = DestinationOwnership::Recovered;
+        }
+        destination
+    }
+
+    fn recover(mut self, destination: Box<dyn CaptureDestination>) -> Self {
+        self.destination = Some(destination);
+        self.ownership = DestinationOwnership::Recoverable;
+        self
+    }
 }
 
 impl std::fmt::Debug for CaptureStartError {
@@ -161,6 +217,7 @@ impl std::fmt::Debug for CaptureStartError {
             .debug_struct("CaptureStartError")
             .field("cause", &self.cause)
             .field("has_evidence", &self.handle.is_some())
+            .field("destination_ownership", &self.ownership)
             .finish()
     }
 }
@@ -179,12 +236,15 @@ impl From<io::Error> for CaptureStartError {
         Self {
             cause,
             handle: None,
+            destination: None,
+            ownership: DestinationOwnership::NotSupplied,
         }
     }
 }
 
 struct State {
     ready: bool,
+    collector_worker: WorkerState,
     guest_phase: Phase,
     peer_closed: bool,
     guest_stop: Option<Instant>,
@@ -202,6 +262,7 @@ pub(super) struct Shared {
     buffer: Arc<ordered::Buffer>,
     publication: publication::Publication,
     state: Mutex<State>,
+    lifecycle: AtomicU8,
     host: Mutex<ordered::Writer>,
     active_host_calls: AtomicUsize,
     late_host_writes: AtomicU64,
@@ -210,6 +271,15 @@ pub(super) struct Shared {
 }
 
 impl Shared {
+    fn lifecycle(&self) -> CaptureLifecycle {
+        match self.lifecycle.load(Ordering::Acquire) {
+            0 => CaptureLifecycle::Prepared,
+            1 => CaptureLifecycle::Starting,
+            2 => CaptureLifecycle::Running,
+            3 => CaptureLifecycle::Finalizing,
+            _ => CaptureLifecycle::Terminal,
+        }
+    }
     pub(super) fn guest_stopped(&self) -> bool {
         self.buffer.guest_stopped()
     }
@@ -228,6 +298,15 @@ impl Shared {
         state.guest_stop.get_or_insert_with(Instant::now);
         if !matches!(state.guest_phase, Phase::Complete | Phase::Incomplete) {
             state.guest_phase = Phase::Draining;
+        }
+        if matches!(
+            self.lifecycle(),
+            CaptureLifecycle::Prepared | CaptureLifecycle::Starting
+        ) {
+            self.lifecycle
+                .store(CaptureLifecycle::Finalizing as u8, Ordering::Release);
+            self.buffer.close(ordered::Role::Host);
+            state.guest_phase = Phase::Incomplete;
         }
         drop(state);
         self.notify();
@@ -250,6 +329,10 @@ impl Shared {
         self.buffer.close(ordered::Role::Host);
         self.buffer.close(ordered::Role::Guest);
         let mut state = self.state.lock().unwrap();
+        if self.lifecycle() != CaptureLifecycle::Terminal {
+            self.lifecycle
+                .store(CaptureLifecycle::Finalizing as u8, Ordering::Release);
+        }
         state.deadline = Some(state.deadline.map_or(deadline, |old| old.min(deadline)));
         drop(state);
         self.notify();
@@ -260,7 +343,14 @@ impl Shared {
         if thread.as_ref().is_some_and(|thread| thread.is_finished()) {
             let _ = thread.take().unwrap().join();
         }
-        thread.is_none()
+        if thread.is_none() {
+            let mut state = self.state.lock().unwrap();
+            if state.collector_worker != WorkerState::NeverCreated {
+                state.collector_worker = WorkerState::Joined;
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -268,6 +358,7 @@ pub struct CaptureOwner {
     handle: LogHandle,
     shared: Arc<Shared>,
     finalized: bool,
+    unstarted: Option<(UnixStream, ordered::Collector)>,
 }
 
 #[derive(Clone)]
@@ -308,6 +399,9 @@ impl HostProducer {
 
     fn write_inner(&self, bytes: &[u8]) -> Result<RecordCommit, PublishError> {
         let deadline = Instant::now() + self.shared.options.timeouts.blocked_publication;
+        // Snapshot before admission: a call begun before Running never waits
+        // for workers whose launch intentionally follows this source prefix.
+        let nonwaiting = self.shared.lifecycle() != CaptureLifecycle::Running;
         let mut writer = loop {
             if self.shared.buffer.admission(ordered::Role::Host).closed {
                 return Err(PublishError::Stopped);
@@ -316,7 +410,7 @@ impl HostProducer {
                 Ok(writer) => break writer,
                 Err(std::sync::TryLockError::Poisoned(_)) => return Err(PublishError::Invalid),
                 Err(std::sync::TryLockError::WouldBlock) => {
-                    if Instant::now() >= deadline {
+                    if nonwaiting || Instant::now() >= deadline {
                         return Err(PublishError::Full);
                     }
                     std::thread::sleep(Duration::from_millis(1));
@@ -324,7 +418,7 @@ impl HostProducer {
             }
         };
         writer.write_record(bytes, |_, _| {
-            if Instant::now() >= deadline {
+            if nonwaiting || Instant::now() >= deadline {
                 return Err(PublishError::Full);
             }
             std::thread::sleep(Duration::from_millis(1));
@@ -338,6 +432,175 @@ impl CaptureOwner {
         self.handle.clone()
     }
 
+    /// Start both workers once, after actual root task-ID allocation if needed.
+    /// On failure, inspect/take the destination from the returned error. This
+    /// call never invokes destination code or its destructor on the caller.
+    /// The owner is neither cloneable nor startable through shared access:
+    ///
+    /// ```compile_fail,E0599
+    /// use reverie_rpc_transport::guest_log::CaptureOwner;
+    /// fn duplicate(owner: CaptureOwner) { let _ = owner.clone(); }
+    /// ```
+    /// ```compile_fail,E0596
+    /// use reverie_rpc_transport::guest_log::{CaptureOwner, CaptureDestination};
+    /// fn shared_start<D: CaptureDestination>(owner: &CaptureOwner, destination: D) {
+    ///     let _ = owner.start_workers(destination);
+    /// }
+    /// ```
+    pub fn start_workers<D: CaptureDestination>(
+        &mut self,
+        destination: D,
+    ) -> Result<(), CaptureStartError> {
+        self.start_with(Box::new(destination), StartHooks::default())
+    }
+
+    fn start_with(
+        &mut self,
+        destination: Box<dyn CaptureDestination>,
+        hooks: StartHooks,
+    ) -> Result<(), CaptureStartError> {
+        let deadline = Instant::now() + self.shared.options.timeouts.startup;
+        {
+            let state = self.shared.state.lock().unwrap();
+            if self.shared.lifecycle() != CaptureLifecycle::Prepared || state.error.is_some() {
+                let mut error: CaptureStartError =
+                    io::Error::other("capture start capability already consumed or closed").into();
+                error.handle = Some(self.handle());
+                return Err(error.recover(destination));
+            }
+            self.shared
+                .lifecycle
+                .store(CaptureLifecycle::Starting as u8, Ordering::Release);
+        }
+        // Until offer(), D stays here. No worker spawn closure owns it.
+        let mut destination = Some(destination);
+        let result = (|| -> io::Result<()> {
+            #[cfg(test)]
+            self.shared
+                .publication
+                .spawn_with_ready_hook(hooks.output_spawn, hooks.before_take)?;
+            #[cfg(not(test))]
+            self.shared.publication.spawn_with(hooks.output_spawn)?;
+            let (socket, collector) = self.unstarted.take().expect("unique collector reservation");
+            let shared = self.shared.clone();
+            let thread =
+                (hooks.collector_spawn)(Box::new(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        collect(&shared, socket, collector)
+                    }));
+                    if result.is_err() {
+                        shared.fail("capture collector panicked");
+                    }
+                    {
+                        let mut state = shared.state.lock().unwrap();
+                        state.collector_finished = true;
+                        state.collector_worker = WorkerState::Ended;
+                        if !matches!(state.guest_phase, Phase::Complete | Phase::Incomplete) {
+                            state.guest_phase = Phase::Incomplete;
+                        }
+                    }
+                    let deadline =
+                        shared.state.lock().unwrap().deadline.unwrap_or_else(|| {
+                            Instant::now() + shared.options.timeouts.final_drain
+                        });
+                    shared.publication.finish_until(deadline);
+                    shared.notify();
+                }))?;
+            *self.shared.collector.lock().unwrap() = Some(thread);
+            {
+                let mut state = self.shared.state.lock().unwrap();
+                if state.collector_worker == WorkerState::NeverCreated {
+                    state.collector_worker = WorkerState::Created;
+                }
+            }
+            if !self.shared.publication.wait_ready(deadline) {
+                return Err(io::Error::other(
+                    "capture destination startup failed/deadline",
+                ));
+            }
+            loop {
+                {
+                    let state = self.shared.state.lock().unwrap();
+                    if state.error.is_some()
+                        || self.shared.lifecycle() != CaptureLifecycle::Starting
+                    {
+                        return Err(io::Error::other("capture closed during startup"));
+                    }
+                    if state.ready {
+                        break;
+                    }
+                }
+                if Instant::now() >= deadline || self.shared.join_finished() {
+                    return Err(io::Error::other(
+                        "capture collector startup failed/deadline",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.shared.publication.offer_with_hook(
+                destination.take().expect("caller owns destination"),
+                || {
+                    #[cfg(test)]
+                    (hooks.after_offer)(&self.shared);
+                },
+            );
+            if !self.shared.publication.wait_taken(deadline) {
+                return Err(io::Error::other(
+                    "capture destination handoff failed/deadline",
+                ));
+            }
+            #[cfg(test)]
+            (hooks.after_taken)(&self.shared);
+            let state = self.shared.state.lock().unwrap();
+            if self.shared.lifecycle() != CaptureLifecycle::Starting
+                || state.error.is_some()
+                || self.shared.publication.failed()
+                || self.shared.buffer.guest_stopped()
+                || self.shared.buffer.admission(ordered::Role::Host).closed
+                || Instant::now() >= deadline
+            {
+                return Err(io::Error::other("capture closed before Running"));
+            }
+            self.shared
+                .lifecycle
+                .store(CaptureLifecycle::Running as u8, Ordering::Release);
+            Ok(())
+        })();
+        if let Err(cause) = result {
+            // Recovery and Take are serialized by the same private lock. Never
+            // let an offered destination be destroyed by an internal Arc drop.
+            let recovered = self.shared.publication.cancel_handoff();
+            let destination = destination.or(recovered);
+            let ownership = if destination.is_some() {
+                DestinationOwnership::Recoverable
+            } else if self.shared.publication.taken() {
+                DestinationOwnership::Worker
+            } else {
+                DestinationOwnership::NotSupplied
+            };
+            self.handle.stop(IssueKind::Startup, &cause);
+            self.shared
+                .fail("capture worker startup did not reach Running");
+            self.shared
+                .publication
+                .revoke("capture worker startup failed");
+            self.finish_until(deadline);
+            return Err(CaptureStartError {
+                cause,
+                handle: Some(self.handle()),
+                destination,
+                ownership,
+            });
+        }
+        {
+            let mut state = self.handle.0.state.lock().unwrap();
+            state.report.reader = ReaderState::Ready;
+            state.report.phase = Phase::Collecting;
+        }
+        self.shared.notify();
+        Ok(())
+    }
+
     pub fn finish_until(&mut self, deadline: Instant) -> CaptureReport {
         self.shared.close(deadline);
         let deadline = self
@@ -347,13 +610,28 @@ impl CaptureOwner {
             .unwrap()
             .deadline
             .expect("installed deadline");
-        while !self.shared.join_finished() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(1));
+        if let Some((_socket, collector)) = self.unstarted.take() {
+            // Retain unread/partial source facts without pretending a collector
+            // ran, consuming the caller's endpoint, or manufacturing FINISH/EOF.
+            let mut state = self.shared.state.lock().unwrap();
+            (state.streams, state.omitted_diagnostic_bytes) =
+                collector.diagnostics(self.shared.options.limits.diagnostic_bytes);
         }
-        if !self.shared.join_finished() {
-            self.shared.fail("collector unsettled at final deadline");
+        if self.shared.state.lock().unwrap().collector_worker == WorkerState::NeverCreated {
+            self.shared.fail("capture collector never started");
+            self.shared.state.lock().unwrap().guest_phase = Phase::Incomplete;
+        } else {
+            while !self.shared.join_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            if !self.shared.join_finished() {
+                self.shared.fail("collector unsettled at final deadline");
+            }
         }
         self.shared.publication.finish_until(deadline);
+        self.shared
+            .lifecycle
+            .store(CaptureLifecycle::Terminal as u8, Ordering::Release);
         self.shared.notify();
         self.finalized = true;
         self.handle.capture_snapshot().expect("prepared capture")
@@ -368,8 +646,14 @@ impl Drop for CaptureOwner {
                 "capture owner dropped without explicit finalization",
             );
             self.shared.stop_guest();
-            self.shared
-                .close(Instant::now() + self.shared.options.timeouts.final_drain);
+            self.shared.close(Instant::now());
+            if self.shared.state.lock().unwrap().collector_worker == WorkerState::NeverCreated {
+                // There is no destination and no collector thread to await.
+                self.finish_until(Instant::now());
+            } else {
+                self.shared.publication.revoke("capture owner dropped");
+                self.shared.publication.close();
+            }
         }
     }
 }
@@ -384,6 +668,8 @@ impl LogHandle {
         let legacy = self.snapshot();
         let state = shared.state.lock().unwrap();
         Some(CaptureReport {
+            lifecycle: shared.lifecycle(),
+            collector_worker: state.collector_worker,
             guest: GuestReport {
                 phase: state.guest_phase,
                 run: legacy.run,
@@ -462,19 +748,34 @@ pub unsafe fn prepared_capture<D: CaptureDestination>(
     options: CaptureOptions,
     destination: D,
 ) -> Result<(CaptureOwner, LogSink, HostProducer), CaptureStartError> {
-    unsafe {
-        prepared_capture_with(options, destination, |worker| {
-            std::thread::Builder::new()
-                .name("capture-collector".into())
-                .spawn(worker)
-        })
-    }
+    let destination: Box<dyn CaptureDestination> = Box::new(destination);
+    let (mut owner, sink, host) = match unsafe { prepare_capture_unstarted(options) } {
+        Ok(capture) => capture,
+        Err(error) => return Err(error.recover(destination)),
+    };
+    owner.start_with(destination, StartHooks::default())?;
+    Ok((owner, sink, host))
 }
 
-unsafe fn prepared_capture_with<D: CaptureDestination>(
+/// Prepare the ordered capture channel without creating any OS worker tasks.
+/// No destination is accepted and no arbitrary destination callback can run.
+/// Source commits before start require enough ring and whole-record credit;
+/// failure is immediate, sticky and never constitutes a commit.
+///
+/// # Safety
+/// The trusted-peer, mapping, descriptor, unique-writer, fork-incarnation and
+/// process-lifetime contracts of [`prepared_capture`] apply unchanged. Do not
+/// fork and use this process's HostProducer or CaptureOwner in the child. The
+/// guest endpoint alone may be transferred under the initialized wire contract.
+///
+/// ```compile_fail,E0133
+/// use reverie_rpc_transport::guest_log as g;
+/// fn requires_contract(options: g::CaptureOptions) {
+///     let _ = g::prepare_capture_unstarted(options);
+/// }
+/// ```
+pub unsafe fn prepare_capture_unstarted(
     options: CaptureOptions,
-    destination: D,
-    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
 ) -> Result<(CaptureOwner, LogSink, HostProducer), CaptureStartError> {
     if options.limits.diagnostic_bytes == 0
         || options.limits.diagnostic_bytes > 32 * 1024 * 1024
@@ -488,7 +789,6 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
     {
         return Err(io::Error::other("invalid capture bounds/deadlines").into());
     }
-    let deadline = Instant::now() + options.timeouts.startup;
     let (host, guest) = unsafe { ordered::channel_pair(options.limits.ordered()) }?;
     let buffer = unsafe { ordered::Buffer::receive(host.as_raw_fd()) }?;
     let writer = unsafe { buffer.activate(0, i64::from(std::process::id())) }
@@ -504,16 +804,11 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
         },
         options.timeouts.final_drain,
     );
-    let publication = publication::Publication::start(
-        destination,
+    let publication = publication::Publication::prepare(
         options.limits.pending_records,
         options.limits.diagnostic_bytes,
         options.timeouts.blocked_publication,
-    )
-    .map_err(|cause| CaptureStartError {
-        cause,
-        handle: Some(handle.clone()),
-    })?;
+    )?;
     let shared = Arc::new(Shared {
         retention: Arc::downgrade(&handle.0),
         options,
@@ -521,6 +816,7 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
         publication,
         state: Mutex::new(State {
             ready: false,
+            collector_worker: WorkerState::NeverCreated,
             guest_phase: Phase::NotStarted,
             peer_closed: false,
             guest_stop: None,
@@ -531,6 +827,7 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
             streams: Vec::new(),
             omitted_diagnostic_bytes: 0,
         }),
+        lifecycle: AtomicU8::new(CaptureLifecycle::Prepared as u8),
         host: Mutex::new(writer),
         active_host_calls: AtomicUsize::new(0),
         late_host_writes: AtomicU64::new(0),
@@ -543,70 +840,73 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
         handle: handle.clone(),
         shared: shared.clone(),
         finalized: false,
+        unstarted: Some((host, collector)),
     };
-    let worker = shared.clone();
-    let thread = spawn(Box::new(move || {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            collect(&worker, host, collector)
-        }));
-        if result.is_err() {
-            worker.fail("capture collector panicked");
-        }
-        let mut state = worker.state.lock().unwrap();
-        state.collector_finished = true;
-        if !matches!(state.guest_phase, Phase::Complete | Phase::Incomplete) {
-            state.guest_phase = Phase::Incomplete;
-        }
-        drop(state);
-        let deadline = worker
-            .state
-            .lock()
-            .unwrap()
-            .deadline
-            .unwrap_or_else(|| Instant::now() + worker.options.timeouts.final_drain);
-        worker.publication.finish_until(deadline);
-        worker.notify();
-    }));
-    let thread = match thread {
-        Ok(thread) => thread,
-        Err(cause) => {
-            handle.stop(IssueKind::Startup, &cause);
-            shared.close(deadline);
-            shared.publication.finish_until(deadline);
-            shared.state.lock().unwrap().guest_phase = Phase::Incomplete;
-            return Err(CaptureStartError {
-                cause,
-                handle: Some(handle),
-            });
-        }
-    };
-    *shared.collector.lock().unwrap() = Some(thread);
-    if !shared.publication.wait_ready(deadline) {
-        return Err(CaptureStartError {
-            cause: io::Error::other("capture destination startup failed/deadline"),
-            handle: Some(handle),
-        });
-    }
-    while !shared.state.lock().unwrap().ready {
-        if Instant::now() >= deadline || shared.join_finished() {
-            return Err(CaptureStartError {
-                cause: io::Error::other("capture collector startup failed/deadline"),
-                handle: Some(handle),
-            });
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    {
-        let mut state = handle.0.state.lock().unwrap();
-        state.report.reader = ReaderState::Ready;
-        state.report.phase = Phase::Collecting;
-    }
     let producer = HostProducer { handle, shared };
     Ok((owner, sink, producer))
 }
 
+type SpawnWorker = Box<dyn FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>>;
+struct StartHooks {
+    output_spawn: SpawnWorker,
+    collector_spawn: SpawnWorker,
+    #[cfg(test)]
+    after_offer: Box<dyn FnOnce(&Shared)>,
+    #[cfg(test)]
+    before_take: Box<dyn FnOnce() + Send>,
+    #[cfg(test)]
+    after_taken: Box<dyn FnOnce(&Shared)>,
+}
+impl Default for StartHooks {
+    fn default() -> Self {
+        Self {
+            output_spawn: Box::new(|worker| {
+                std::thread::Builder::new()
+                    .name("capture-output".into())
+                    .spawn(worker)
+            }),
+            collector_spawn: Box::new(|worker| {
+                std::thread::Builder::new()
+                    .name("capture-collector".into())
+                    .spawn(worker)
+            }),
+            #[cfg(test)]
+            after_offer: Box::new(|_| {}),
+            #[cfg(test)]
+            before_take: Box::new(|| {}),
+            #[cfg(test)]
+            after_taken: Box::new(|_| {}),
+        }
+    }
+}
+
+#[cfg(test)]
+unsafe fn prepared_capture_with<D: CaptureDestination>(
+    options: CaptureOptions,
+    destination: D,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>> + 'static,
+) -> Result<(CaptureOwner, LogSink, HostProducer), CaptureStartError> {
+    let destination: Box<dyn CaptureDestination> = Box::new(destination);
+    let (mut owner, sink, host) = match unsafe { prepare_capture_unstarted(options) } {
+        Ok(capture) => capture,
+        Err(error) => return Err(error.recover(destination)),
+    };
+    owner.start_with(
+        destination,
+        StartHooks {
+            collector_spawn: Box::new(spawn),
+            ..StartHooks::default()
+        },
+    )?;
+    Ok((owner, sink, host))
+}
+
 fn collect(shared: &Shared, socket: UnixStream, mut collector: ordered::Collector) {
-    shared.state.lock().unwrap().ready = true;
+    {
+        let mut state = shared.state.lock().unwrap();
+        state.ready = true;
+        state.collector_worker = WorkerState::Ready;
+    }
     shared.notify();
     let mut pending = None;
     loop {
@@ -707,3 +1007,6 @@ fn collect(shared: &Shared, socket: UnixStream, mut collector: ordered::Collecto
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod deferred_tests;
