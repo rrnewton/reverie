@@ -15,7 +15,13 @@ handle_syscall_loader:
   .cfi_startproc
   .cfi_def_cfa rsp, 0x88
   .cfi_offset rip, -0x88
+
+  # The rewriter captured the guest flags in r11. Use the same frame as
+  # handle_syscall: ld_sc_handler may forward it to the plugin router.
+  pushq %r11
+  .cfi_adjust_cfa_offset 8
   .cfi_remember_state
+  cld
 
   # Prologue
   push %rbp
@@ -31,6 +37,7 @@ handle_syscall_loader:
   pushq %rsi
   pushq %rdi
   pushq %r8
+  pushq %r9
   pushq %r10
   pushq %r11
   pushq %r12
@@ -41,13 +48,12 @@ handle_syscall_loader:
   # Align the stack on a 16-byte boundary before the call
   push %rbp
   mov %rsp, %rbp
-  .cfi_adjust_cfa_offset 0x68
+  .cfi_adjust_cfa_offset 0x70
   and $0xfffffffffffffff0, %rsp
 
   # Adjust the arguments
-  pushq %rsp         # reserve space for wrapper_sp
+  pushq %rbp         # wrapper_sp
   pushq %r9          # arg6
-  movq %rsp, 8(%rsp) # wrapper_sp
   movq %r8, %r9      # arg5
   movq %r10, %r8     # arg4
   movq %rdx, %rcx    # arg3
@@ -74,6 +80,7 @@ handle_syscall_loader:
   popq %r12
   popq %r11
   popq %r10
+  popq %r9
   popq %r8
   popq %rdi
   popq %rsi
@@ -84,7 +91,9 @@ handle_syscall_loader:
   # Epilogue
   pop %rbp
   .cfi_restore_state
-  addq $8, %rsp	# drop fake return address
+  popfq
+  .cfi_adjust_cfa_offset -8
+  leaq 8(%rsp), %rsp # drop fake return without changing RFLAGS
   .cfi_undefined rip
   ret
   .cfi_endproc
