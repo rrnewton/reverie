@@ -211,12 +211,24 @@ def _classify_gate(g: dict) -> str:
 
 
 def gate_kind(g: dict) -> str:
-    """Class of a gate, tolerant of ledger rows that only carry `result`."""
+    """Class of a gate, tolerant of ledger rows that only carry `result`.
+
+    `no_result` is mapped explicitly and must stay that way. The fallback below
+    infers a pass from a zero exit status, which is right for a row carrying no
+    `result` at all and WRONG for a node that reported it could not determine
+    one. Until hermit's classifier gained the never-written-report case, every
+    `no_result` row also carried a nonzero or null exit status, so the fallback
+    happened to land on `incomplete` and the gap was invisible. That refusal
+    fires precisely when the command exited 0, so the same gap now lands on
+    `pass` and counts an undetermined node toward the GATES numerator.
+    See hermit https://github.com/rrnewton/hermit/pull/3066.
+    """
     k = g.get("kind")
     if k in GATE_KINDS:
         return k
     return {"pass": "pass", "fail": "fail", "skip": "skipped",
-            "banner": "banner", "unknown": "incomplete"}.get(
+            "banner": "banner", "unknown": "incomplete",
+            "no_result": "incomplete"}.get(
                 g.get("result"),
                 "pass" if g.get("exit_code") == 0 else "incomplete")
 

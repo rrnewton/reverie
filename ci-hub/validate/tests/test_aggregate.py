@@ -218,6 +218,32 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(agg.gate_kind({"result": "fail"}), "fail")
         self.assertEqual(agg.gate_kind({"exit_code": 0}), "pass")
 
+    def test_a_node_that_could_not_determine_is_never_counted_as_a_pass(self):
+        # The shape hermit's never-written-report reclassification produces:
+        # the command exited 0 and the node still reported no result. Reading
+        # the zero exit as a pass would count an undetermined node in the GATES
+        # numerator, which is the opposite of what `no_result` means.
+        self.assertEqual(
+            agg.gate_kind({"result": "no_result", "exit_code": 0}), "incomplete")
+        # The pre-existing `no_result` shapes, which reached `incomplete` only
+        # via the exit-status fallback and must keep reaching it directly.
+        self.assertEqual(
+            agg.gate_kind({"result": "no_result", "exit_code": 101}), "incomplete")
+        self.assertEqual(
+            agg.gate_kind({"result": "no_result", "exit_code": 75}), "incomplete")
+        self.assertEqual(
+            agg.gate_kind({"result": "no_result", "exit_code": None}), "incomplete")
+        # Unaffected controls: a real pass still passes, a real failure still
+        # fails, and a row with no `result` still infers from its exit status.
+        self.assertEqual(agg.gate_kind({"result": "pass", "exit_code": 0}), "pass")
+        self.assertEqual(agg.gate_kind({"result": "fail", "exit_code": 0}), "fail")
+        self.assertEqual(agg.gate_kind({"exit_code": 0}), "pass")
+        # `incomplete` is a verdict-bearing kind, so the node stays in the
+        # denominator and is simply not counted as a pass.
+        self.assertIn("incomplete", agg.VERDICT_KINDS)
+        self.assertNotIn(
+            agg.gate_kind({"result": "no_result", "exit_code": 0}), ("pass",))
+
 
 class SummaryCompletenessTest(unittest.TestCase):
     def test_truncated_is_not_counted_as_result_or_product_failure(self):
