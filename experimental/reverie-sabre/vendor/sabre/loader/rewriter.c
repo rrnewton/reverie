@@ -12,6 +12,7 @@
 
 #include "rewriter.h"
 
+#include "bootstrap.h"
 #include "debuginfo.h"
 #include "elf_loading.h"
 #include "global_vars.h"
@@ -23,7 +24,6 @@
 
 #include <asm/unistd.h>
 #include <assert.h>
-#include "bootstrap.h"
 #include <errno.h>
 #include <string.h>
 #include <sys/mman.h>

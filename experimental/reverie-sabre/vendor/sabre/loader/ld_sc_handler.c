@@ -21,8 +21,8 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 
-#include "compiler.h"
 #include "bootstrap.h"
+#include "compiler.h"
 #include "global_vars.h"
 #include "ld_sc_handler.h"
 #include "macros.h"

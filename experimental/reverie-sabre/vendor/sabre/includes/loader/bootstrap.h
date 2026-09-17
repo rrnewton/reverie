@@ -11,6 +11,20 @@
  * The supervisor must authenticate this instruction in the exact launched
  * loader, the stopped thread/image generation, and every pointed-to extent.
  * Neither the option number nor a request's argument shape is authority.
+ * IMAGE is an acknowledgement only after the supervisor validates the real
+ * final stack/auxv, finds exactly one writable 16-byte AT_RANDOM target, and
+ * completes its initialization there. The loader does not validate auxv.
+ *
+ * Enabled execution must make no rewritten non-plugin getrandom call before
+ * IMAGE. That includes loader-internal code between the initial rewrite and
+ * the IMAGE stop; a future such call is a fatal unsupported phase, never a
+ * fallback to host entropy. The existing native phase control checks this.
+ *
+ * The supervisor must write no more than TAKE's capacity, retire the state
+ * only after a successful bounded write, and reject subsequent takes (for
+ * example with ESTALE). A failed/short-capacity transfer must not consume it.
+ * A zero/oversized success violates the protocol: the consumer must fail,
+ * never retry by constructing fresh state or replaying random requests.
  */
 #define SBR_BOOTSTRAP_OPTION 0x53425242UL
 #define SBR_BOOTSTRAP_VERSION 1UL

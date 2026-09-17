@@ -1,3 +1,5 @@
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+
 use std::process::Command;
 
 #[test]
@@ -14,7 +16,9 @@ fn actual_loader_bootstrap_protocol_is_supervised_and_once_only() {
         .get_compiler();
     let output = compiler
         .to_command()
-        .args(["-std=gnu99", "-Wall", "-Wextra", "-Werror"])
+        // Appended after cc's inherited CFLAGS: native assertions are the
+        // control's oracle and must remain enabled even with -DNDEBUG.
+        .args(["-std=gnu99", "-Wall", "-Wextra", "-Werror", "-UNDEBUG"])
         .arg("-I")
         .arg(source.join("vendor/sabre/includes/loader"))
         .arg(source.join("vendor/sabre/loader/bootstrap.c"))
