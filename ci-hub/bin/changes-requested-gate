@@ -662,11 +662,24 @@ def evaluate(
     require_answered: bool = False,
     native_refusal_ids: set[str] | None = None,
     records: list[dict] | None = None,
+    source: str | None = None,
 ) -> tuple[int, str]:
     # `ids` are the comment ids the bodies came from, so a withdrawal can name the
     # refusal it retires. Optional and positional-compatible: every existing caller
     # and test passes bodies alone and gets the previous behaviour.
     grammar = _load_grammar()
+    # A retirement declaring RETIRES-SCOPE may bind a later head when the paths
+    # it named are byte-identical at both. Comparing them needs a checkout, so
+    # it is honoured only when one was supplied. `_load_grammar` returns a FRESH
+    # module each call, so the resolver must be installed on THIS object rather
+    # than once at import.
+    #
+    # Leaving it uninstalled can only keep a retirement DEAD, never make one
+    # survive, so forgetting --source costs a needless re-post and never a
+    # silent survival. That is the safe direction for this failure.
+    grammar.set_scope_equivalence(
+        grammar.git_scope_equivalence(source) if source else None
+    )
     if records is not None:
         try:
             ordered_records = grammar.canonical_review_records(records)
@@ -2006,6 +2019,7 @@ def main(argv: list[str] | None = None) -> int:
         require_answered=args.require_answered,
         native_refusal_ids=native_ids,
         records=event_records,
+        source=args.source,
     )
 
     # A main-equal head cannot CLEAR a pull request that carries refusal markers.

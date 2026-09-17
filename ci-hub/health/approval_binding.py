@@ -94,6 +94,22 @@ SHA40 = re.compile(r"\b[0-9a-f]{40}\b")
 # quote. Keep this as one complete prose line outside fenced/indented code.
 RETIRES = re.compile(r"^\s*RETIRES\s+#?(\d{6,})\s*$", re.IGNORECASE)
 _RETIRES_ASSERTION = re.compile(r"^RETIRES(?:\s|$)", re.IGNORECASE)
+# The paths a retirement says its objection concerns. OPT-IN: with no such line
+# a retirement behaves exactly as before, dying on any head move. Declaring one
+# lets the retirement survive a head move that leaves those paths byte-identical
+# -- a rebase, typically -- and it still dies the moment they change.
+#
+# ⚠️ WHY PATHS AND NOT PATCH IDENTITY. `git patch-id` proves the branch's own
+# patches are unchanged; it does NOT prove the composed result is, because the
+# base moved underneath. Same patches on a new base can behave differently, so a
+# retirement bound to patch-id survives a rebase whose RESULT differs. Comparing
+# the content at the two heads compares what was actually composed.
+#
+# ⚠️ WHY NOT THE REVIEW COMMENT'S OWN `path`. That would be better, because
+# GitHub assigns it and the author cannot choose it. Measured 2026-09-17: the
+# real refusals are ISSUE comments and carry no `path` (hermit#2904 comment
+# 5519564951), so the corpus does not supply it.
+RETIRES_SCOPE = re.compile(r"^\s*RETIRES-SCOPE:\s*(\S.*?)\s*$", re.IGNORECASE)
 _COMMENT_URL_ID = re.compile(r"#(?:issuecomment|pullrequestreview)-(\d+)\b")
 LANES = ("claude", "codex")
 CRITICAL_CLASSES = frozenset(
@@ -1076,6 +1092,77 @@ def retirement_targets(body: str) -> list[str]:
     return targets
 
 
+def retirement_scope(body: str) -> tuple[str, ...]:
+    """Paths a retirement declares its objection concerns, in document order.
+
+    Empty when no ``RETIRES-SCOPE`` line is present, which is the default and
+    means "no equivalence is claimed": the retirement then binds only its exact
+    head, exactly as before this existed.
+
+    Multiple lines are ambiguous the same way multiple ``RETIRES`` targets are,
+    so they yield nothing rather than a guess at which was meant.
+    """
+    found: list[str] = []
+    for line in marker_lines(body or ""):
+        match = RETIRES_SCOPE.match(line)
+        if match is not None:
+            found.append(match.group(1))
+    if len(found) != 1:
+        return ()
+    # Split on whitespace; a path containing a space cannot be expressed and is
+    # better refused than silently half-matched.
+    return tuple(part for part in found[0].split() if part)
+
+
+# Resolver for "are these paths identical at these two commits". Left as None so
+# that a caller which has not wired a checkout gets EXACTLY the previous
+# behaviour rather than a silently weaker one; see `retirement_allowed`.
+_SCOPE_EQUIVALENCE: "Callable[[str, str, tuple[str, ...]], bool] | None" = None
+
+
+def git_scope_equivalence(checkout: str) -> "Callable[[str, str, tuple[str, ...]], bool]":
+    """A resolver comparing declared paths between two commits in `checkout`.
+
+    Returns False on anything it cannot establish -- an unreadable commit, a
+    timeout, a non-zero git status other than the documented "differs" -- so an
+    unanswerable question keeps the retirement dead rather than alive.
+    """
+
+    def equivalent(old: str, new: str, scope: tuple[str, ...]) -> bool:
+        if not scope or not old or not new:
+            return False
+        for sha in (old, new):
+            # A sha we cannot resolve is not evidence of anything. In particular
+            # a rebase can leave the claim's head unreachable if it was never
+            # fetched, and "absent" must not read as "unchanged".
+            probe = bounded_capture.git(
+                ["cat-file", "-e", f"{sha}^{{commit}}"], cwd=checkout
+            )
+            if probe.returncode != 0:
+                return False
+        # `git diff --quiet` is 0 for identical and 1 for differing; any other
+        # status is an error and must not be read as either answer.
+        out = bounded_capture.git(
+            ["diff", "--quiet", old, new, "--", *scope], cwd=checkout
+        )
+        return out.returncode == 0
+
+    return equivalent
+
+
+def set_scope_equivalence(
+    resolver: "Callable[[str, str, tuple[str, ...]], bool] | None",
+) -> None:
+    """Install the content comparison used to honour ``RETIRES-SCOPE``.
+
+    Absent a resolver no scope is ever honoured, so forgetting to wire this
+    cannot make a retirement survive something it should not -- it can only make
+    one die that could have lived, which is the safe direction for this failure.
+    """
+    global _SCOPE_EQUIVALENCE
+    _SCOPE_EQUIVALENCE = resolver
+
+
 def contains_retires_assertion(body: str) -> bool:
     """Whether prose contains a standalone ``RETIRES`` assertion of any shape.
 
@@ -1639,8 +1726,8 @@ def canonical_review_records(
 
 def retirement_claim(
     body: str,
-) -> "tuple[str, str, str, str | None] | None":
-    """One exact objection retirement as ``(comment, lane, sha, metadata)``.
+) -> "tuple[str, str, str, str | None, tuple[str, ...]] | None":
+    """One exact objection retirement as ``(comment, lane, sha, metadata, scope)``.
 
     The comment carrying the claim supplies repository and pull-request context.
     Authority additionally requires exactly one canonical withdrawal, exactly
@@ -1649,6 +1736,8 @@ def retirement_claim(
     or marker ``BY`` value is retained only as optional audit metadata; missing
     or conflicting fleet-agent names cannot grant or deny the retirement.
     Multiple targets or withdrawal markers are ambiguous and carry no authority.
+
+    ``scope`` is the optional ``RETIRES-SCOPE`` declaration, empty by default.
     """
     targets = retirement_targets(body)
     withdrawals: list[tuple[str, str, str | None]] = []
@@ -1660,13 +1749,19 @@ def retirement_claim(
     if len(targets) != 1 or len(withdrawals) != 1:
         return None
     lane, sha, marker_author = withdrawals[0]
-    return targets[0], lane, sha, marker_author or comment_author(body)
+    return (
+        targets[0],
+        lane,
+        sha,
+        marker_author or comment_author(body),
+        retirement_scope(body),
+    )
 
 
 def retirement_allowed(
     refusal_lane: "str | None",
     current_head: "str | None",
-    claims: "Sequence[tuple[str, str, str, str | None]]",
+    claims: "Sequence[tuple[str, str, str, str | None, tuple[str, ...]]]",
 ) -> bool:
     """Whether an exact authorized claim resolves this refusal at current head.
 
@@ -1677,18 +1772,44 @@ def retirement_allowed(
     head must match the current repaired head; requiring the old refused head
     here would make every fix commit impossible to retire. A stale-head record
     carries no authority for the current head.
+
+    ⚠️ ONE NARROW EXCEPTION, AND IT IS OPT-IN. A claim that declares a
+    ``RETIRES-SCOPE`` also binds a LATER head when the declared paths are
+    byte-identical at the claim's head and the current head. That is what stops
+    a rebase destroying review state it did not invalidate: measured twice on
+    hermit#2904, one push turned a CLEAR gate back into five outrun refusals,
+    each costing a re-posted comment, and the pull-request queue is fifteen
+    rebases deep.
+
+    The exception cannot fire without BOTH a declared scope and an installed
+    resolver, and with neither the behaviour is exactly as before. A retirement
+    still dies the moment the paths it named change, which is the property that
+    matters: retiring too easily is worse than retiring too often, because a
+    silent survival cannot be noticed while a needless death is loud.
     """
     if current_head is None:
         return False
-    for _target, claim_lane, claim_sha, _author in claims:
+    for claim in claims:
+        _target, claim_lane, claim_sha, _author = claim[:4]
+        scope: tuple[str, ...] = claim[4] if len(claim) > 4 else ()
         # A readable refusal lane must agree. A genuinely unbindable refusal has
         # no lane to compare; its exact comment id remains its only supported
         # exit, as it was before this issuer-policy change.
         if refusal_lane is not None and claim_lane != refusal_lane:
             continue
-        if not sha_names_same_head(claim_sha, current_head):
-            continue
-        return True
+        if sha_names_same_head(claim_sha, current_head):
+            return True
+        if scope and _SCOPE_EQUIVALENCE is not None:
+            # Deliberately compares the CONTENT AT THE TWO HEADS rather than the
+            # branch's patch identities. `git patch-id` survives a rebase but
+            # proves only that the patches are unchanged, not that the composed
+            # result is, because the base moved underneath it. Comparing the two
+            # composed trees over the declared paths is what makes the claim
+            # honest, and it needs no ancestry -- a rebase rewrites history, so
+            # the old head is NOT an ancestor of the new one and an ancestry
+            # test would fail on exactly the case this exists for.
+            if _SCOPE_EQUIVALENCE(claim_sha, current_head, scope):
+                return True
     return False
 
 

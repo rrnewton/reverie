@@ -1337,3 +1337,111 @@ def test_old_head_unsigned_unquoted_withdrawal_clears_nothing() -> None:
     assert rc == gate.BLOCKED, reason
     assert f"claude@{HEAD[:12]}" in reason, reason
     assert "hermit-030" not in reason, reason
+
+
+# ---------------------------------------------------------------------------
+# RETIRES-SCOPE: a retirement may survive a head move that leaves the paths it
+# named byte-identical, and must NOT survive one that changes them.
+# ---------------------------------------------------------------------------
+
+
+def _claim(sha: str, scope: str | None) -> tuple:
+    body = f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {sha}\nRETIRES {REFUSAL_ID}\n"
+    if scope is not None:
+        body += f"RETIRES-SCOPE: {scope}\n"
+    claim = ab.retirement_claim(body)
+    assert claim is not None, body
+    return claim
+
+
+def test_scope_is_parsed_and_absent_by_default() -> None:
+    assert _claim(HEAD, None)[4] == ()
+    assert _claim(HEAD, "demos/ ci/dag")[4] == ("demos/", "ci/dag")
+    # Two declarations are ambiguous the same way two RETIRES targets are.
+    ambiguous = (
+        f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {HEAD}\n"
+        f"RETIRES {REFUSAL_ID}\n"
+        "RETIRES-SCOPE: demos/\n"
+        "RETIRES-SCOPE: ci/\n"
+    )
+    assert ab.retirement_claim(ambiguous)[4] == ()
+
+
+def test_a_scoped_retirement_survives_only_a_head_move_that_preserves_its_paths() -> None:
+    """The whole point, in both directions, with the resolver driven explicitly.
+
+    Reverting `retirement_allowed`'s scope branch makes the SURVIVES assertion
+    fail; leaving the branch but ignoring the resolver's answer makes the DIES
+    assertion fail. Neither direction passes on its own.
+    """
+    scoped = [_claim(HEAD, "demos/")]
+    unscoped = [_claim(HEAD, None)]
+
+    # No resolver installed: opt-in cannot fire, so behaviour is exactly as before.
+    ab.set_scope_equivalence(None)
+    assert ab.retirement_allowed("claude", HEAD, scoped) is True
+    assert ab.retirement_allowed("claude", MOVED_HEAD, scoped) is False
+
+    calls: list[tuple[str, str, tuple[str, ...]]] = []
+
+    def unchanged(old: str, new: str, scope: tuple[str, ...]) -> bool:
+        calls.append((old, new, scope))
+        return True
+
+    def changed(old: str, new: str, scope: tuple[str, ...]) -> bool:
+        calls.append((old, new, scope))
+        return False
+
+    try:
+        ab.set_scope_equivalence(unchanged)
+        # SURVIVES: head moved, declared paths identical.
+        assert ab.retirement_allowed("claude", MOVED_HEAD, scoped) is True
+        assert calls[-1] == (HEAD, MOVED_HEAD, ("demos/",))
+        # An UNSCOPED retirement never consults the resolver at all.
+        before = len(calls)
+        assert ab.retirement_allowed("claude", MOVED_HEAD, unscoped) is False
+        assert len(calls) == before
+
+        ab.set_scope_equivalence(changed)
+        # DIES: head moved and the declared paths changed. This is the assertion
+        # that keeps "retires too easily" from being the new failure.
+        assert ab.retirement_allowed("claude", MOVED_HEAD, scoped) is False
+        # A wrong lane is still refused before the scope is ever considered.
+        before = len(calls)
+        assert ab.retirement_allowed("codex", MOVED_HEAD, scoped) is False
+        assert len(calls) == before
+    finally:
+        ab.set_scope_equivalence(None)
+
+
+def test_the_git_resolver_refuses_what_it_cannot_establish(tmp_path) -> None:
+    """An unresolvable commit must read as "not equivalent", never as equal."""
+    import subprocess
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    run = lambda *a: subprocess.run(["git", "-C", str(repo), *a], check=True,
+                                    capture_output=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@example.invalid")
+    run("config", "user.name", "t")
+    (repo / "kept.txt").write_text("same\n")
+    (repo / "other.txt").write_text("one\n")
+    run("add", "-A")
+    run("commit", "-qm", "first")
+    first = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                           capture_output=True, text=True).stdout.strip()
+    (repo / "other.txt").write_text("two\n")
+    run("add", "-A")
+    run("commit", "-qm", "second")
+    second = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                            capture_output=True, text=True).stdout.strip()
+
+    eq = ab.git_scope_equivalence(str(repo))
+    assert eq(first, second, ("kept.txt",)) is True
+    assert eq(first, second, ("other.txt",)) is False
+    assert eq(first, second, ("kept.txt", "other.txt")) is False
+    # Absent commit, empty scope, empty sha: all refuse rather than answer.
+    assert eq(first, "0" * 40, ("kept.txt",)) is False
+    assert eq(first, second, ()) is False
+    assert eq("", second, ("kept.txt",)) is False
