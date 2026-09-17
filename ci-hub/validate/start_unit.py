@@ -5324,12 +5324,37 @@ def publish_recorded_scorecard_handoff(
             # OUTSIDE the checkout under ignored/validate/artifacts/, so any
             # later participant can re-drive it once the underlying refusal is
             # fixed.
+            # ⚠️ TWO THINGS THE PREVIOUS TWO VERSIONS OF THIS TEXT EACH GOT
+            # WRONG, BOTH BY NAMING A REMEDY THE READER CANNOT CARRY OUT.
+            #
+            # The original said to reattach so the waiter could consume a
+            # current service result. That names an actor from a run that has
+            # already finished.
+            #
+            # Its replacement, mine, said to re-drive from the retained results
+            # and stopped there. Measured: observe-results binds the results to
+            # the commit that produced them, so re-driving from a current
+            # checkout refuses with "is not a clean result for HEAD <head>
+            # (sha=<producing sha>)". A reader following that instruction
+            # against any current tree gets a second refusal and no progress.
+            #
+            # And NOT EVERY PATH THIS REFUSES ON IS A CHECKOUT AWAITING
+            # DISPOSAL. Measured 2026-09-17: of the paths carrying a failed
+            # writeback, two were the parent's own `hermit` product checkout and
+            # an OCCUPIED AGENT SLOT, each holding a historical failure that
+            # nothing will ever complete. Refusing on those is correct. Treating
+            # this count as a number to drive to zero points whoever is driving
+            # it at a live slot.
             "materialized scorecard cleanup requires a completed scorecard_writeback; "
             f"got state={state!r}, scorecard_writeback={writeback!r}. The writeback "
-            "refused and its reason is in that record; re-drive it from the retained "
-            "results under ignored/validate/artifacts/ once that reason is resolved. "
-            "No reattachment to the original run is needed or possible. "
-            "Historical results require an already-published verified handoff"
+            "refused and its reason is in that record. Re-driving it needs BOTH the "
+            "retained results under ignored/validate/artifacts/ AND a checkout at the "
+            "commit that produced them, because observe-results refuses results whose "
+            "sha does not match its HEAD; a current checkout is not sufficient. No "
+            "reattachment to the original run is needed or possible. If this path is a "
+            "primary checkout or an occupied agent slot rather than a disposable "
+            "validate checkout, this refusal is correct and permanent -- do not remove "
+            "it. Historical results require an already-published verified handoff"
         )
     wrkslots = recorded_wrkslots_identity(record, checkout)
     if wrkslots is None:
