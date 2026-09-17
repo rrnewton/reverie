@@ -1,16 +1,16 @@
-/* A forked child that execs. Exec after start cannot preserve the preload
-   runtime, so the child fails closed -- in a task that has no outer cleanup
-   guard of its own. The root goes on to exit zero, so the session must refuse
-   to report that success: this fixture exists to make a silent green
-   impossible, not to be supported. */
+/* A forked child execs with the inherited preload by default. The explicit
+   drop-preload mode preserves the session-failure and pending-exit cleanup
+   controls using an image that really cannot activate the required runtime. */
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/prctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 int main(int argc, char **argv) {
-  if (argc != 3 || prctl(PR_SET_NAME, argv[1], 0, 0, 0) != 0) {
+  if ((argc != 3 && argc != 4) || prctl(PR_SET_NAME, argv[1], 0, 0, 0) != 0) {
     return 9;
   }
   FILE *pid_file = fopen(argv[2], "w");
@@ -26,6 +26,10 @@ int main(int argc, char **argv) {
     return 10;
   }
   if (child == 0) {
+    if (argc == 4 && strcmp(argv[3], "drop-preload") == 0 &&
+        unsetenv("LD_PRELOAD") != 0) {
+      _exit(126);
+    }
     execl("/bin/true", "true", (char *)NULL);
     _exit(127);
   }
