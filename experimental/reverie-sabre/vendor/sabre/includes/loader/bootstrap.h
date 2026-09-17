@@ -46,6 +46,14 @@ bool sbr_bootstrap_enabled(void);
 void sbr_bootstrap_image(void *stack, void *entry);
 long sbr_bootstrap_getrandom(long buffer, long length, long flags,
                              void *wrapper_sp);
+/* Called by premain with the optional continuation installer.
+ * The installer symbol is reverie_sabre_install_loader_continuation_v1.
+ * This authorizes transport only: the supervisor must authenticate a real
+ * image transition (or its explicitly supported initial legacy image), return
+ * a distinct typed continuation, and refuse missing/stale/duplicate proof.
+ * It implies no IMAGE, GETRANDOM, auxv initialization or RNG state transfer.
+ */
+int sbr_bootstrap_install_continuation(sbr_bootstrap_install_fn install);
 long sbr_bootstrap_take_state(void *buffer, size_t capacity);
 
 /* A single exported, non-inlined syscall site for all three operations. IMAGE
