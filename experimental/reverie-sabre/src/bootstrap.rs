@@ -19,7 +19,10 @@ use syscalls::Errno;
 /// Maximum opaque handoff; this is also fixed in the loader protocol.
 pub const MAX_STATE_BYTES: usize = 4096;
 
-/// Private loader opt-in. It is removed from the final guest environment.
+/// Launch-side private loader opt-in. Its original string bytes are scrubbed
+/// and its pointer removed before plugin initialization. Consumers therefore
+/// cannot negotiate with `getenv`; [`take_state`] reports the installed
+/// callback's presence (`None` means no negotiation) or an explicit error.
 pub const ENVIRONMENT: &str = "REVERIE_SABRE_BOOTSTRAP_V1";
 /// Invalid ordinary `prctl` option used by the authenticated loader site.
 pub const PRCTL_OPTION: u64 = 0x5342_5242;
@@ -103,6 +106,25 @@ mod tests {
         assert_eq!(take_with(refused, &mut bytes), Err(Errno::ESTALE));
         assert_eq!(take_with(too_long, &mut bytes), Err(Errno::EPROTO));
         assert_eq!(take_with(empty, &mut bytes), Err(Errno::EPROTO));
+        assert_eq!(bytes, [0xa5; 32]);
+        assert_eq!(take_with(refused, &mut []), Err(Errno::EINVAL));
+        assert_eq!(
+            take_with(refused, &mut [0xa5; MAX_STATE_BYTES + 1]),
+            Err(Errno::EINVAL)
+        );
+    }
+
+    #[test]
+    fn optional_callback_is_absent_until_installed_and_cannot_be_replaced() {
+        let mut bytes = [0xa5; 32];
+        assert_eq!(take_state(&mut bytes), Ok(None));
+        // SAFETY: both test callbacks are lifetime-stable and obey the
+        // callback's bounded-write contract (neither writes any bytes).
+        unsafe {
+            assert_eq!(install(refused), Ok(()));
+            assert_eq!(install(empty), Err(Errno::EPROTO));
+        }
+        assert_eq!(take_state(&mut bytes), Err(Errno::ESTALE));
         assert_eq!(bytes, [0xa5; 32]);
     }
 }

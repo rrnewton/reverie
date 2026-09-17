@@ -17,8 +17,8 @@
 #include <sys/mman.h>
 #include <syscall.h>
 
-#include "elf_loading.h"
 #include "bootstrap.h"
+#include "elf_loading.h"
 #include "global_vars.h"
 #include "ld_sc_handler.h"
 #include "loader/rewriter.h"

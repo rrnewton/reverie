@@ -22,11 +22,36 @@
 extern const unsigned char sbr_bootstrap_syscall_v1[];
 static unsigned char aux_random[16];
 static uintptr_t stack_words[13];
+static char private_option[] = SBR_BOOTSTRAP_ENV "=1";
+static char *option_string;
+static bool raw_environment;
+
+static void check_raw_environment(bool present) {
+  unsigned char bytes[1024];
+  FILE *file = fopen("/proc/self/environ", "rb");
+  assert(file != NULL);
+  size_t length = fread(bytes, 1, sizeof(bytes), file);
+  assert(length < sizeof(bytes) && feof(file) && !ferror(file));
+  assert(fclose(file) == 0);
+  assert((memmem(bytes, length, SBR_BOOTSTRAP_ENV "=1",
+                 sizeof(SBR_BOOTSTRAP_ENV "=1") - 1) != NULL) == present);
+  assert(memmem(bytes, length, "BEFORE=unchanged", 16) != NULL);
+  assert(memmem(bytes, length, "AFTER=unchanged", 15) != NULL);
+}
 
 static void prepare_stack(void) {
+  memcpy(private_option, SBR_BOOTSTRAP_ENV "=1", sizeof(private_option));
+  option_string = private_option;
+  if (raw_environment) {
+    char *value = getenv(SBR_BOOTSTRAP_ENV);
+    assert(value != NULL && strcmp(value, "1") == 0);
+    option_string = value - sizeof(SBR_BOOTSTRAP_ENV);
+    assert(strcmp(option_string, SBR_BOOTSTRAP_ENV "=1") == 0);
+    check_raw_environment(true);
+  }
   uintptr_t initial[] = {
       1, (uintptr_t)"native-client", 0, (uintptr_t)"BEFORE=unchanged",
-      (uintptr_t)SBR_BOOTSTRAP_ENV "=1", (uintptr_t)"AFTER=unchanged", 0,
+      (uintptr_t)option_string, (uintptr_t)"AFTER=unchanged", 0,
       AT_RANDOM, (uintptr_t)aux_random, AT_ENTRY, (uintptr_t)prepare_stack,
       AT_NULL, 0};
   memcpy(stack_words, initial, sizeof(initial));
@@ -35,7 +60,8 @@ static void prepare_stack(void) {
 
 static void child_body(bool fail_after_take) {
   alarm(8);
-  assert(setenv(SBR_BOOTSTRAP_ENV, "1", 1) == 0);
+  if (!raw_environment)
+    assert(setenv(SBR_BOOTSTRAP_ENV, "1", 1) == 0);
   sbr_bootstrap_configure();
   assert(sbr_bootstrap_enabled());
   prepare_stack();
@@ -48,6 +74,10 @@ static void child_body(bool fail_after_take) {
   assert(stack_words[5] == 0 && stack_words[6] == AT_RANDOM);
   assert(stack_words[7] == (uintptr_t)aux_random);
   assert(stack_words[8] == AT_ENTRY && stack_words[10] == AT_NULL);
+  if (raw_environment)
+    check_raw_environment(false);
+  for (size_t i = 0; i < sizeof(private_option); ++i)
+    assert(option_string[i] == 0);
   for (size_t i = 0; i < sizeof(aux_random); ++i)
     assert(aux_random[i] == 0xa0 + i);
 
@@ -198,8 +228,32 @@ static void uninitialized_phase_control(void) {
   assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_FAILURE);
 }
 
-int main(void) {
+static void raw_environment_control(void) {
+  pid_t child = fork();
+  assert(child >= 0);
+  if (child == 0) {
+    char *args[] = {"loader-bootstrap-control", "raw-environment", NULL};
+    char *env[] = {"BEFORE=unchanged", SBR_BOOTSTRAP_ENV "=1",
+                   "AFTER=unchanged", NULL};
+    /* exec makes these the kernel's actual raw environment bytes. The
+     * ordinary supervised control then checks them before and after IMAGE.
+     */
+    execve("/proc/self/exe", args, env);
+    _exit(99);
+  }
+  int status;
+  assert(waitpid(child, &status, 0) == child);
+  assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
+int main(int argc, char **argv) {
   alarm(10);
+  if (argc == 2 && strcmp(argv[1], "raw-environment") == 0) {
+    raw_environment = true;
+    supervised_control(false);
+    return 0;
+  }
+  assert(argc == 1);
   assert(unsetenv(SBR_BOOTSTRAP_ENV) == 0);
   sbr_bootstrap_configure();
   assert(!sbr_bootstrap_enabled());
@@ -209,10 +263,11 @@ int main(void) {
   supervised_control(true);
   uninitialized_phase_control();
   absent_supervisor_control();
+  raw_environment_control();
   printf("protocol=%lu version=%lu ops=%u,%u,%u max=%lu\n",
          SBR_BOOTSTRAP_OPTION, SBR_BOOTSTRAP_VERSION, SBR_BOOTSTRAP_IMAGE,
          SBR_BOOTSTRAP_GETRANDOM, SBR_BOOTSTRAP_TAKE_STATE,
          SBR_BOOTSTRAP_MAX_STATE);
-  puts("PASS: real IMAGE/auxv, original requests, refusal, once-only handoff; disabled compatibility");
+  puts("PASS: real IMAGE/auxv, original requests, refusal, once-only handoff; disabled compatibility; raw environment scrubbed");
   return 0;
 }

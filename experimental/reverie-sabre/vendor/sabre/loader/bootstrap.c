@@ -53,7 +53,15 @@ void sbr_bootstrap_configure(void) {
 
 bool sbr_bootstrap_enabled(void) { return requested; }
 
-__attribute__((noinline, visibility("default"))) long
+/* This exported instruction must have one address even under IPA/LTO. GCC's
+ * noclone and Clang's optnone prevent specialized copies of the inline asm.
+ */
+#ifdef __clang__
+__attribute__((optnone))
+#else
+__attribute__((noclone))
+#endif
+__attribute__((noinline, used, visibility("default"))) long
 sbr_bootstrap_request_v1(unsigned long operation, unsigned long arg1,
                          unsigned long arg2, unsigned long arg3,
                          unsigned long arg4) {
@@ -90,7 +98,9 @@ void sbr_bootstrap_image(void *stack, void *entry) {
    * moving auxv and make the original stack unparsable. Consume the private
    * option only once the final guest stack exists, moving the complete auxv
    * together with the remaining environment. The guest stack pointer and its
-   * alignment, argv, and all other environment strings are unchanged.
+   * alignment, argv, and all other environment strings are unchanged. Erase
+   * the original string too: the kernel's raw /proc/self/environ range still
+   * contains it after the pointer array has been compacted.
    */
   uintptr_t *words = stack;
   uintptr_t *env = words + 1 + words[0] + 1;
@@ -111,6 +121,7 @@ void sbr_bootstrap_image(void *stack, void *entry) {
   while (end[0] != AT_NULL)
     end += 2;
   end += 2;
+  memset((char *)*option, 0, strlen((char *)*option));
   memmove(option, option + 1, (char *)end - (char *)(option + 1));
 
   long result =
