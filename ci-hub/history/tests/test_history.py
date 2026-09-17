@@ -807,6 +807,50 @@ class TempParentTest(unittest.TestCase):
         res = query.green_time(str(self.parent), "r/x", None, ["W"])
         self.assertEqual(res["green_ledger_hours"], 0.0)
 
+    def test_green_time_reports_unreadable_receipts_as_unknown(self):
+        shas = ["a" * 40, "b" * 40, "c" * 40]
+        intervals = [{"state": "green", "sha": sha, "start": index * 3600,
+                      "end": (index + 1) * 3600} for index, sha in enumerate(shas)]
+        timeline = {"workflows": ["W"], "intervals": intervals, "samples": 3,
+                    "window_start": "synthetic", "window_end_utc": "synthetic",
+                    "runs_by_conclusion": {"success": 3}, "current_sha": shas[-1]}
+        ledger = {shas[0]: [{"commit": shas[0]}], shas[1]: [{"commit": shas[1]}],
+                  "d" * 40: [{"commit": "d" * 40}]}
+
+        def qualify(row):
+            if row["commit"] == shas[0]:
+                raise query.qualifying_receipt.ValidationEvidenceReaderFault("synthetic missing artifact")
+            return True
+
+        with mock.patch.object(query, "state_timeline", return_value=timeline), \
+             mock.patch.object(query, "load_ledger_index", return_value=ledger), \
+             mock.patch.object(query, "_row_full_pass", side_effect=qualify), \
+             mock.patch.object(query.qualifying_receipt, "validation_evidence_batch") as batch:
+            result = query.green_time(str(self.parent), "r/x", None, ["W"])
+        self.assertEqual(result["ledger_corroboration_state"], "UNKNOWN")
+        self.assertEqual(result["green_ledger_hours"], 1.0)
+        self.assertEqual(result["green_conclusion_only_hours"], 1.0)
+        self.assertEqual(result["green_ledger_unknown_hours"], 1.0)
+        self.assertEqual(result["green_hours"], 3.0)
+        self.assertEqual(result["green_ledger_unknown_pct"], 33.33)
+        self.assertEqual(result["ledger_reader_faults"], [{"sha": shas[0], "reason": "synthetic missing artifact"}])
+        self.assertEqual(batch.call_args.kwargs, {})
+        self.assertEqual({row["commit"] for row in batch.call_args.args[0]}, set(shas[:2]))
+        log_path = self.parent / "unknown-green-time.jsonl"
+        query.append_green_time_log(str(self.parent), result, str(log_path))
+        saved = json.loads(log_path.read_text())
+        self.assertEqual(saved["ledger_corroboration_state"], "UNKNOWN")
+        self.assertEqual(saved["green_ledger_unknown_hours"], 1.0)
+        self.assertEqual(saved["ledger_reader_faults"], result["ledger_reader_faults"])
+
+    def test_readable_qualifying_receipt_can_corroborate_after_reader_fault(self):
+        rows = [{"commit": "a" * 40, "run": "unreadable"},
+                {"commit": "a" * 40, "run": "verified"}]
+        with mock.patch.object(query, "_row_full_pass", side_effect=[
+            query.qualifying_receipt.ValidationEvidenceReaderFault("synthetic missing artifact"), True
+        ]):
+            self.assertTrue(query._ledger_corroborates({"a" * 40: rows}, "a" * 40))
+
     def test_green_time_red_reign_is_fixed_hour(self):
         # Commit A: run created+terminal-failure at 00:00; commit B: created
         # 01:00 (bounds A's reign to exactly 1h), success. A completes instantly

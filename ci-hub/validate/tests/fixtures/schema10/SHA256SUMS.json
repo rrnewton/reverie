@@ -1,50 +1,72 @@
 {
-  "cross-diverged-then-matched-cells.jsonl": {
-    "bytes": 19569,
-    "sha256": "7453bc550aa15d516b88fe438a191c13b7035b1ca02cb4a0f9fc5e067d585e22"
-  },
-  "cross-diverged-then-matched-plan.json": {
-    "bytes": 2379,
-    "sha256": "5d58608415594b226023ada6ec57222672a89197bf93c38c615e83b0e9f2b9f4"
-  },
-  "cross-diverged-then-matched-row.json": {
-    "bytes": 6235,
-    "sha256": "bd638bbe9bd3e73632557946002cfbe448109d9b84893ce16ce5e12b092fe2a8"
-  },
-  "cross-diverged-then-matched-tests.jsonl": {
-    "bytes": 243,
-    "sha256": "6c65aad8be1f3c8a74cc4955e1c3e2a69b27497f42a8066659b714861ce77a7d"
-  },
-  "matched-cells.jsonl": {
-    "bytes": 10242,
-    "sha256": "4b11f03c7ae58edfa81d22ffa9147d13389f7158e478f2a6c0e093b9460c7bf4"
-  },
-  "matched-plan.json": {
-    "bytes": 2379,
-    "sha256": "5d58608415594b226023ada6ec57222672a89197bf93c38c615e83b0e9f2b9f4"
-  },
-  "matched-row.json": {
-    "bytes": 4752,
-    "sha256": "68ff81655d842c9e7bf0e75009dd26e0fa78b2a9d3ee8c8ce8f5a91d90c508bc"
-  },
-  "matched-tests.jsonl": {
-    "bytes": 243,
-    "sha256": "6c65aad8be1f3c8a74cc4955e1c3e2a69b27497f42a8066659b714861ce77a7d"
-  },
-  "reference-diverged-cells.jsonl": {
-    "bytes": 5865,
-    "sha256": "484f7577f5d2e8e45ef137a1ac01292911b8deefd9fc9739800d2227f2909b1b"
-  },
-  "reference-diverged-plan.json": {
-    "bytes": 2379,
-    "sha256": "5d58608415594b226023ada6ec57222672a89197bf93c38c615e83b0e9f2b9f4"
-  },
-  "reference-diverged-row.json": {
-    "bytes": 4865,
-    "sha256": "e8d83946924f627cce42ac787a1a949abf30ed9a9831c9646ed7ae93b130a30a"
-  },
-  "reference-diverged-tests.jsonl": {
-    "bytes": 243,
-    "sha256": "6c65aad8be1f3c8a74cc4955e1c3e2a69b27497f42a8066659b714861ce77a7d"
+  "source_head": "73146a90f8f1dd468471ffab448b6b7d71f33bf6",
+  "source_tree": "0dff6f5354eabd11f8b539161f0d5b40c9ce0467",
+  "synthetic": true,
+  "native_record_sha256": "873a5441fa49e9cb0d10b8ead7b215b5cf3ed7246f8a6b9a2cd8c5bda2ab362d",
+  "files": {
+    "cross-diverged-then-matched-cells.jsonl": {
+      "bytes": 19613,
+      "sha256": "bb101e700ba12f797d9b6835c138f1149b41a8530fb1ba90d9d9e1688626406c"
+    },
+    "cross-diverged-then-matched-plan.json": {
+      "bytes": 2379,
+      "sha256": "5d58608415594b226023ada6ec57222672a89197bf93c38c615e83b0e9f2b9f4"
+    },
+    "cross-diverged-then-matched-row.json": {
+      "bytes": 6235,
+      "sha256": "84590d827cded57240f812ddfbaa71f4af0557e2d94e477e29fe1e83d4d75d10"
+    },
+    "cross-diverged-then-matched-tests.jsonl": {
+      "bytes": 243,
+      "sha256": "6c65aad8be1f3c8a74cc4955e1c3e2a69b27497f42a8066659b714861ce77a7d"
+    },
+    "matched-cells.jsonl": {
+      "bytes": 10264,
+      "sha256": "415157b820c59f2f308fa84c59653fcacc7c82989d6b5e647c00ec47a3d55512"
+    },
+    "matched-plan.json": {
+      "bytes": 2379,
+      "sha256": "5d58608415594b226023ada6ec57222672a89197bf93c38c615e83b0e9f2b9f4"
+    },
+    "matched-row.json": {
+      "bytes": 4752,
+      "sha256": "75d98b84c450fe88c6eab2e270c49b3f67c580681d1509eaef6209cf93c58507"
+    },
+    "matched-tests.jsonl": {
+      "bytes": 243,
+      "sha256": "6c65aad8be1f3c8a74cc4955e1c3e2a69b27497f42a8066659b714861ce77a7d"
+    },
+    "ordinary-only-cells.jsonl": {
+      "bytes": 860,
+      "sha256": "5947d3a8601fbba9aef9358023f97fe7ef08e1090502c9ed8beed537729a1f4b"
+    },
+    "ordinary-only-plan.json": {
+      "bytes": 2353,
+      "sha256": "0d06b7720589e999cbeb49f42ade9a52a106737fe44b706453b0d479d970e6d7"
+    },
+    "ordinary-only-row.json": {
+      "bytes": 2983,
+      "sha256": "3edb4e199ea7b8d4e5668874cf2932739621312d96257e4fce7a955496041cc0"
+    },
+    "ordinary-only-tests.jsonl": {
+      "bytes": 243,
+      "sha256": "6c65aad8be1f3c8a74cc4955e1c3e2a69b27497f42a8066659b714861ce77a7d"
+    },
+    "reference-diverged-cells.jsonl": {
+      "bytes": 5887,
+      "sha256": "2e44e899a1c585fafa0eb8ccf39b551390523b3852ff6ab64a734213f0e75423"
+    },
+    "reference-diverged-plan.json": {
+      "bytes": 2379,
+      "sha256": "5d58608415594b226023ada6ec57222672a89197bf93c38c615e83b0e9f2b9f4"
+    },
+    "reference-diverged-row.json": {
+      "bytes": 4865,
+      "sha256": "f55562b08ec04604bb50f8fdc917462459aea97997c12e66edcdc0d3d565a6ec"
+    },
+    "reference-diverged-tests.jsonl": {
+      "bytes": 243,
+      "sha256": "6c65aad8be1f3c8a74cc4955e1c3e2a69b27497f42a8066659b714861ce77a7d"
+    }
   }
 }

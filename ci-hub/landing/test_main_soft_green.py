@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from unittest import mock
 
 import pytest
 
@@ -127,3 +128,25 @@ def test_ci_hub_contact_warning_is_wired() -> None:
     warning = rust.index("warn_if_main_is_soft_green(&root);", main_start)
     cost = rust.index('env::var_os("CI_HUB_TOOL_COST_ACTIVE")', main_start)
     assert cost < warning < execute
+
+
+@pytest.mark.parametrize("explicit_parent", [False, True])
+def test_canonical_state_uses_native_default_artifact_store(tmp_path, monkeypatch, explicit_parent):
+    tool = tmp_path / "worktrees/slots/tool"
+    tool.mkdir(parents=True)
+    state = tmp_path / "operational-state"
+    state.mkdir()
+    monkeypatch.delenv("CI_HUB_SOFT_MAIN_VALIDATE_STATUS", raising=False)
+    if explicit_parent:
+        monkeypatch.setenv("DEV_HERMIT_PARENT", str(state))
+    else:
+        monkeypatch.delenv("DEV_HERMIT_PARENT", raising=False)
+    sha = "a" * 40
+    row = {"commit": sha, "repo": "hermit"}
+    output = subprocess.CompletedProcess([], 0, json.dumps(row) + "\n", "")
+    with mock.patch.object(M, "_run", return_value=output), \
+         mock.patch.object(M.qualifying_receipt, "validation_evidence_batch") as batch, \
+         mock.patch.object(M.qualifying_receipt, "row_qualification", return_value=(True, "qualifies")):
+        assert M.canonical_state(tool, sha)[0] == "HARD_GREEN"
+    assert batch.call_args.args == ([row],)
+    assert "artifact_root" not in batch.call_args.kwargs

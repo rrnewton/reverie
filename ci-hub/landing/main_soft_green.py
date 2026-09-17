@@ -154,7 +154,9 @@ def canonical_state(root: Path, sha: str) -> tuple[str, str]:
             continue
         candidates.append(row)
     try:
-        with qualifying_receipt.validation_evidence_batch(candidates, artifact_root=root, predicate=predicate):
+        # The native checker owns operational-state resolution, including main
+        # worktrees and DEV_HERMIT_PARENT. This is the tool checkout, not a store.
+        with qualifying_receipt.validation_evidence_batch(candidates, predicate=predicate):
             for row in candidates:
                 accepted, _reason = qualifying_receipt.row_qualification(row, sha, predicate)
                 if accepted:

@@ -88,6 +88,7 @@ struct CommitObservation {
     toolchain: String,
     observation: Observation,
     complete: bool,
+    unavailable_comparisons: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,9 +127,24 @@ pub struct UnresolvedFailureObligation {
     pub required_clean_legs: u64,
     pub observed_clean_legs_at_target: u64,
     pub target_failures: u64,
+    pub target_comparisons_complete: bool,
+    pub target_unavailable_comparisons: u64,
 }
 
 impl UnresolvedFailureObligation {
+    pub fn target_comparison_status(&self) -> String {
+        if self.target_comparisons_complete {
+            "comparisons complete".into()
+        } else if self.target_unavailable_comparisons > 0 {
+            format!(
+                "comparisons incomplete: {} unavailable comparison(s)",
+                self.target_unavailable_comparisons
+            )
+        } else {
+            "no complete comparison evidence at target".into()
+        }
+    }
+
     pub fn comparison_description(&self) -> Option<String> {
         match &self.relation {
             ComparisonRelationV10::Ordinary => None,
@@ -674,6 +690,7 @@ where
                     toolchain: toolchain.to_owned(),
                     observation: Observation::default(),
                     complete: true,
+                    unavailable_comparisons: 0,
                 });
             if at < aggregate.first_seen.as_str() {
                 aggregate.first_seen = at.to_owned();
@@ -683,7 +700,10 @@ where
                     aggregate.observation.legs += observation.legs;
                     aggregate.observation.failures += observation.failures;
                 }
-                None => aggregate.complete = false,
+                None => {
+                    aggregate.complete = false;
+                    aggregate.unavailable_comparisons += 1;
+                }
             }
         }
     }
@@ -762,6 +782,8 @@ where
                     .saturating_sub(value.observation.failures)
             }),
             target_failures: target.map_or(0, |value| value.observation.failures),
+            target_comparisons_complete: target.is_some_and(|value| value.complete),
+            target_unavailable_comparisons: target.map_or(0, |value| value.unavailable_comparisons),
         });
     }
     Ok(unresolved)
@@ -1708,6 +1730,15 @@ mod tests {
             .unwrap();
         assert_eq!(cross.observed_clean_legs_at_target, 22);
         assert_eq!(cross.target_failures, 0);
+        assert!(!cross.target_comparisons_complete);
+        assert_eq!(cross.target_unavailable_comparisons, 1);
+        assert_eq!(
+            cross.target_comparison_status(),
+            "comparisons incomplete: 1 unavailable comparison(s)"
+        );
+        let serialized = serde_json::to_value(cross).unwrap();
+        assert_eq!(serialized["target_comparisons_complete"], false);
+        assert_eq!(serialized["target_unavailable_comparisons"], 1);
     }
 
     #[test]

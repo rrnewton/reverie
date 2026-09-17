@@ -23,7 +23,7 @@ import validate_rows
 from test_qualifying_receipt_mutation import _green_row
 
 FIXTURES = Path(__file__).parent / "fixtures" / "schema10"
-MANIFEST_SHA256 = "87199552c47d880656625e19b8bee54fc3f5b6e89c88462365955c74ced07b5a"
+MANIFEST_SHA256 = "4821718ba4d479b09ea99cee7e5a20ec8750f289b2b047dcc11a43000118a7f7"
 
 
 def retained_case(root, source, run, mutation=None):
@@ -69,17 +69,20 @@ def retained_case(root, source, run, mutation=None):
     return green
 
 
-def test_schema10_real_batch_qualification_projection_and_artifact_refusals(tmp_path):
+def test_schema10_real_batch_qualification_projection_and_artifact_refusals(tmp_path, monkeypatch):
     manifest_bytes = (FIXTURES / "SHA256SUMS.json").read_bytes()
     assert hashlib.sha256(manifest_bytes).hexdigest() == MANIFEST_SHA256
     manifest = json.loads(manifest_bytes)
-    assert len(manifest) == 12
-    for name, expected in manifest.items():
+    assert manifest["source_head"] == "73146a90f8f1dd468471ffab448b6b7d71f33bf6"
+    assert manifest["synthetic"] is True
+    assert len(manifest["files"]) == 16
+    for name, expected in manifest["files"].items():
         raw = (FIXTURES / name).read_bytes()
         assert len(raw) == expected["bytes"]
         assert hashlib.sha256(raw).hexdigest() == expected["sha256"]
 
     matched = retained_case(tmp_path, "matched", "matched")
+    ordinary = retained_case(tmp_path, "ordinary-only", "ordinary-only")
     reference = retained_case(tmp_path, "reference-diverged", "reference")
     retried = retained_case(tmp_path, "cross-diverged-then-matched", "retried")
     missing = retained_case(tmp_path, "matched", "missing-plan")
@@ -87,6 +90,19 @@ def test_schema10_real_batch_qualification_projection_and_artifact_refusals(tmp_
     corrupt = retained_case(tmp_path, "matched", "corrupt-plan")
     with (tmp_path / corrupt["constructed_plan"]["path"]).open("ab") as output:
         output.write(b" ")
+    same_length_corrupt = retained_case(tmp_path, "matched", "same-length-corrupt-plan")
+    same_length_path = tmp_path / same_length_corrupt["constructed_plan"]["path"]
+    original = same_length_path.read_bytes()
+    assert original.startswith(b"{")
+    assert hashlib.sha256(original).hexdigest() == same_length_corrupt["constructed_plan"]["sha256"]
+    replacement = b"[" + original[1:]
+    assert len(replacement) == same_length_corrupt["constructed_plan"]["bytes"]
+    assert hashlib.sha256(replacement).hexdigest() != same_length_corrupt["constructed_plan"]["sha256"]
+    same_length_path.write_bytes(replacement)
+    empty_suffix = retained_case(tmp_path, "matched", "empty-test-suffix")
+    empty_suffix["test_results"]["artifact"]["path"] = "ignored/validate/artifacts"
+    nul_suffix = retained_case(tmp_path, "matched", "nul-test-suffix")
+    nul_suffix["test_results"]["artifact"]["path"] = "ignored/validate/artifacts/nul-test-suffix/bad\0test-results.jsonl"
     wrong_compatibility = retained_case(
         tmp_path, "matched", "wrong-compatibility",
         lambda row, plan, cells, tests: plan.update(compatibility_selected=True),
@@ -100,8 +116,19 @@ def test_schema10_real_batch_qualification_projection_and_artifact_refusals(tmp_
         # plan still selects its producer and must prevent the invented green.
         tests.clear()
         summary = row["test_results"]
-        summary.update(selected={"nodes": [], "compatibility": False}, selected_count=0, recorded_count=0, nodes=[])
+        selected = {"nodes": [], "compatibility": False}
+        summary.update(selected=selected, selected_count=0, recorded_count=0, nodes=[],
+                       totals={"executed_tests": 0, "passed_tests": 0, "failed_tests": 0, "filtered_tests": 0},
+                       population_sha256=hashlib.sha256(json.dumps(selected, separators=(",", ":")).encode()).hexdigest())
+        row.update(executed_tests=0, passed_tests=0, filtered_tests=0)
     missing_producer = retained_case(tmp_path, "matched", "missing-producer", omit_planned_population)
+    def substitute_producer(row, plan, cells, tests):
+        selected = {"nodes": ["synthetic.other-producer"], "compatibility": False}
+        row["test_results"]["selected"] = selected
+        row["test_results"]["nodes"][0]["node"] = selected["nodes"][0]
+        tests[0]["producer"]["node"] = selected["nodes"][0]
+        row["test_results"]["population_sha256"] = hashlib.sha256(json.dumps(selected, separators=(",", ":")).encode()).hexdigest()
+    substituted_producer = retained_case(tmp_path, "matched", "substituted-producer", substitute_producer)
 
     # Exercise unchanged event transport before checking the exact reconstructed
     # compact summaries. Raw artifact report strings never enter the event.
@@ -110,15 +137,30 @@ def test_schema10_real_batch_qualification_projection_and_artifact_refusals(tmp_
     assert restored["cell_results"] == matched["cell_results"]
     assert "/home/fixture" not in json.dumps(event)
     assert b"/home/fixture" in (tmp_path / matched["cell_results"]["artifact"]["path"]).read_bytes()
-    rows = [matched, reference, retried, missing, corrupt, wrong_compatibility, partial, missing_producer, restored]
+    rows = [matched, ordinary, reference, retried, missing, corrupt, same_length_corrupt, empty_suffix, nul_suffix, wrong_compatibility, partial, missing_producer, substituted_producer, restored]
     predicate = copy.deepcopy(receipt.active())
     predicate["cell_results"]["supported_schema_max"] = 10
     real_popen = receipt.subprocess.Popen
+    # Exercise the default native resolver from this actual agent worktree.
+    # An explicit fixture store remains supported for custom callers, but
+    # production Python callers must honor DEV_HERMIT_PARENT just like Rust.
+    monkeypatch.setenv("DEV_HERMIT_PARENT", str(tmp_path))
     with mock.patch.object(receipt.subprocess, "Popen", wraps=real_popen) as launch, mock.patch.object(receipt, "active", return_value=predicate):
-        with receipt.validation_evidence_batch(rows, predicate=predicate, artifact_root=tmp_path):
-            for row in (matched, restored):
+        with receipt.validation_evidence_batch(rows, predicate=predicate):
+            for row in (matched, ordinary, restored):
                 assert receipt.row_qualification(row, row["commit"], predicate) == (True, "qualifies")
                 validate_rows._require_cell_results(row, tmp_path)
+            checked_ordinary = receipt.validation_evidence(ordinary)
+            assert checked_ordinary.status == "verified"
+            assert checked_ordinary.evidence["full_backend_parity"] is False
+            assert checked_ordinary.backend_parity_matches == ()
+            projection = receipt.cell_scorecard_projection(ordinary, predicate)
+            assert len(projection["selected"]) == 1
+            assert projection["ordinary_green_count"] == 1
+            assert projection["selected_backend_parity"] == []
+            assert projection["backend_parity_selected_count"] == 0
+            assert projection["backend_parity_recorded_count"] == 0
+            assert projection["backend_parity_green_count"] == 0
             for row in (reference, retried):
                 assert receipt.row_qualification(row, row["commit"], predicate) == (False, "cell_results comparison-diverged")
                 # A valid recorded failure remains publishable evidence.
@@ -143,9 +185,22 @@ def test_schema10_real_batch_qualification_projection_and_artifact_refusals(tmp_
             assert receipt.validation_evidence(missing).status == "reader-fault"
             with pytest.raises(receipt.ValidationEvidenceReaderFault):
                 receipt.row_qualification(missing, missing["commit"], predicate)
-            for row in (corrupt, wrong_compatibility, missing_producer):
-                assert receipt.validation_evidence(row).status == "refused"
-                assert receipt.row_qualification(row, row["commit"], predicate)[0] is False
+            for row, reason, qualification in (
+                (corrupt, "artifact ignored/validate/artifacts/corrupt-plan/constructed-plan.json length differs from declared constructed_plan bytes", None),
+                (same_length_corrupt, "schema 10 constructed plan bytes differ from their recorded identity", None),
+                (empty_suffix, "retained artifact path is invalid: empty artifact path", None),
+                (nul_suffix, "retained artifact path is invalid: artifact path contains NUL", None),
+                (wrong_compatibility, "schema 9 test_results selected population differs from constructed plan", None),
+                (missing_producer, "schema 9 test_results selected population differs from constructed plan", "executed_tests==0"),
+                (substituted_producer, "schema 9 test_results selected population differs from constructed plan", None),
+            ):
+                checked = receipt.validation_evidence(row)
+                assert checked.status == "refused"
+                assert checked.reason == reason
+                assert receipt.row_qualification(row, row["commit"], predicate) == (False, qualification or f"cell_results {reason}")
+                with pytest.raises(ValueError) as refusal:
+                    validate_rows._require_cell_results(row, tmp_path)
+                assert str(refusal.value) == f"cell_results {reason}"
             assert receipt.row_qualification(partial, partial["commit"], predicate) == (False, "cell_results incomplete for full validation")
             projection = receipt.cell_scorecard_projection(partial, predicate)
             assert len(projection["selected"]) == 1
@@ -153,4 +208,73 @@ def test_schema10_real_batch_qualification_projection_and_artifact_refusals(tmp_
             assert projection["backend_parity_recorded_count"] == 0
             assert projection["backend_parity_green_count"] == 0
         assert launch.call_count == 1
-        assert launch.call_args.args[0][:2] == [str(CI_HUB / "ci-hub"), "validate-evidence"]
+        assert launch.call_args.args[0] == [str(CI_HUB / "ci-hub"), "validate-evidence"]
+
+
+def test_schema10_explicit_artifact_store_overrides_operational_parent(tmp_path, monkeypatch):
+    custom = tmp_path / "custom"
+    operational = tmp_path / "operational"
+    operational.mkdir()
+    row = retained_case(custom, "matched", "custom-store")
+    monkeypatch.setenv("DEV_HERMIT_PARENT", str(operational))
+    predicate = copy.deepcopy(receipt.active())
+    predicate["cell_results"]["supported_schema_max"] = 10
+    real_popen = receipt.subprocess.Popen
+    with mock.patch.object(receipt.subprocess, "Popen", wraps=real_popen) as launch:
+        with receipt.validation_evidence_batch([row], predicate=predicate, artifact_root=custom):
+            assert receipt.row_qualification(row, row["commit"], predicate) == (True, "qualifies")
+        assert launch.call_count == 1
+        assert launch.call_args.args[0] == [str(CI_HUB / "ci-hub"), "validate-evidence", "--artifact-root", str(custom)]
+
+
+@pytest.mark.parametrize("case,accepted", [
+    ("matched", True), ("ordinary-only", True),
+    ("reference-diverged", False), ("cross-diverged-then-matched", False),
+    ("missing-plan", False), ("base-before-missing-plan", False),
+])
+def test_schema10_normal_rust_qualification_uses_the_retained_artifact_store(tmp_path, case, accepted):
+    import tempfile
+    source = "matched" if case in {"missing-plan", "base-before-missing-plan"} else case
+    row = retained_case(tmp_path, source, "rust-" + case)
+    if case in {"missing-plan", "base-before-missing-plan"}:
+        (tmp_path / row["constructed_plan"]["path"]).unlink()
+    if case == "base-before-missing-plan":
+        row["base_sha"] = None
+    predicate = copy.deepcopy(receipt.active())
+    predicate["cell_results"]["supported_schema_max"] = 10
+    policy_path = tmp_path / "qualifying-receipt.json"
+    policy_path.write_text(json.dumps(predicate))
+    # env modifies only the child. Parallel tests and the Python receipt module
+    # retain their original environment and active policy. The actual normal
+    # launcher reaches Rust row_qualifies, its three-clause Python bridge, then
+    # the in-process producer-owned artifact verifier.
+    command = [
+        "env", f"DEV_HERMIT_PARENT={tmp_path}",
+        f"DEV_HERMIT_TOOL_ROOT={CI_HUB.parent}",
+        f"QUALIFYING_RECEIPT_PREDICATE={policy_path}",
+        str(CI_HUB / "ci-hub"), "receipt-digest", "--sha", row["commit"],
+        "--require-qualifying", "--json",
+    ]
+    with tempfile.TemporaryFile() as input_file:
+        input_file.write(json.dumps(row).encode())
+        input_file.seek(0)
+        code, output, errors = receipt._capture_validation_evidence(
+            command, input_file, line_bytes=receipt._EVIDENCE_LINE_BYTES,
+            response_bytes=receipt._EVIDENCE_BATCH_BYTES,
+            diagnostic_bytes=receipt._EVIDENCE_DIAGNOSTIC_BYTES, wall_seconds=60,
+        )
+    assert code == (0 if accepted else 2), (code, output, errors)
+    if accepted:
+        report = json.loads(output)
+        assert report["sha"] == row["commit"]
+        assert report["digest_algorithm"] == "sha256"
+        assert len(report["digest"]) == 64 and set(report["digest"]) <= set("0123456789abcdef")
+        assert report["executed_tests"] == 1
+        assert b"validation evidence:" not in errors
+    else:
+        assert output == b""
+        assert b"HistoryRow does not satisfy the shared qualifying predicate" in errors
+        # This CLI intentionally has a boolean refusal API. The native helper
+        # tests assert typed causes separately. Here a missing artifact reaches
+        # the real store; an earlier base refusal must avoid that lookup.
+        assert (b"validation evidence: cannot open retained artifact" in errors) == (case == "missing-plan")

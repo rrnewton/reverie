@@ -1469,6 +1469,23 @@ mod tests {
     }
 
     #[test]
+    fn schema8_quick_path_preserves_unsupported_schema_refusal() {
+        let sha = "b".repeat(40);
+        let mut pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
+        pred.cell_results.supported_schema_max = 7;
+        let row = schema8_empty_cell_results_row(&sha, "quick");
+        assert_eq!(
+            refusal_reason(row_qualification(&row, &sha, &pred)),
+            "cell_results schema-unavailable"
+        );
+        pred.cell_results.supported_schema_max = 8;
+        assert_eq!(
+            refusal_reason(row_qualification(&row, &sha, &pred)),
+            "cell_results path-mismatch"
+        );
+    }
+
+    #[test]
     fn count_capable_receipt_requires_complete_outer_gate_accounting() {
         let sha = "b".repeat(40);
         let pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();

@@ -953,12 +953,13 @@ def _sum_by_state(intervals: list[dict], lo: float | None = None,
 # LEDGER-CORROBORATED GREEN. A GitHub `success` conclusion and a local
 # full-pass validate receipt are TWO DIFFERENT claims; conflating them is what
 # produced a misleading green figure. So the green wall-clock is split into two
-# sub-buckets, reported SEPARATELY and never silently summed:
+# sub-buckets, with unreadable receipts reported separately:
 #   green_ledger           green-by-conclusion AND a canonical ledger receipt
 #                          at that exact commit SHA satisfies the full-pass
 #                          predicate below (the canonical shared predicate also
 #                          used by ci-hub/lib/validate_status.rs).
 #   green_conclusion_only  green-by-conclusion but NO corroborating receipt.
+#   green_ledger_unknown   green-by-conclusion whose receipt cannot be checked.
 # A row missing both count fields does NOT corroborate, and schema-5+ rows must
 # prove complete per-node coverage. `filtered_tests` is diagnostic: full runs
 # legitimately filter tests outside their planned DAG nodes.
@@ -993,40 +994,58 @@ def _row_full_pass(row: dict) -> bool:
     )
 
 
-def _ledger_corroborates(idx: dict[str, list[dict]], sha: str) -> bool:
-    """True iff ANY ledger row for `sha` satisfies the full-pass predicate.
-
-    Prefers an exact 40-hex commit match; defensively also accepts a ledger row
-    whose (shorter) stored commit is a prefix of `sha`.
-    """
+def _ledger_candidates(idx: dict[str, list[dict]], sha: str) -> list[dict]:
+    """Preserve exact-SHA preference and the existing short-SHA fallback."""
     if not sha:
-        return False
+        return []
     candidates = list(idx.get(sha, []))
     if not candidates:  # defensive short-SHA prefix match only when no exact row
         for c, rows in idx.items():
             if c and len(c) < len(sha) and sha.startswith(c):
                 candidates.extend(rows)
-    return any(_row_full_pass(r) for r in candidates)
+    return candidates
+
+
+def _ledger_corroborates(idx: dict[str, list[dict]], sha: str) -> bool:
+    """Any qualifying row corroborates; unreadable evidence is not absence."""
+    fault = None
+    for row in _ledger_candidates(idx, sha):
+        try:
+            if _row_full_pass(row):
+                return True
+        except qualifying_receipt.ValidationEvidenceReaderFault as error:
+            if fault is None:
+                fault = error
+    if fault is not None:
+        raise fault
+    return False
 
 
 def _split_green_by_ledger(intervals: list[dict],
                            ledger_idx: dict[str, list[dict]]
-                           ) -> tuple[float, float]:
-    """Seconds of GREEN wall-clock split into (ledger-corroborated, conclusion-
-    only). Reuses the existing timeline intervals — does not recompute states."""
+                           ) -> tuple[float, float, float, list[dict]]:
+    """Split green time into corroborated, conclusion-only and reader-unknown."""
     led = 0.0
     concl = 0.0
+    unknown = 0.0
+    faults = []
     for iv in intervals:
         if iv["state"] != "green":
             continue
         span = iv["end"] - iv["start"]
         if span <= 0:
             continue
-        if _ledger_corroborates(ledger_idx, iv.get("sha") or ""):
-            led += span
-        else:
-            concl += span
-    return led, concl
+        try:
+            if _ledger_corroborates(ledger_idx, iv.get("sha") or ""):
+                led += span
+            else:
+                concl += span
+        except qualifying_receipt.ValidationEvidenceReaderFault as error:
+            unknown += span
+            detail = {"sha": iv.get("sha"), "reason": str(error)}
+            if detail not in faults:
+                faults.append(detail)
+    return led, concl, unknown, faults
 
 
 def _last_observed(intervals: list[dict]) -> dict:
@@ -1063,13 +1082,15 @@ def green_time(parent: str, repo: str, since: str | None,
                  if authoritative > 0 else None)
     red_pct = (round(100.0 * sec["red"] / authoritative, 2)
                if authoritative > 0 else None)
-    # Split the GREEN bucket into ledger-corroborated vs conclusion-only. These
-    # are reported SEPARATELY; green_pct stays the combined figure for back-compat.
+    # Keep unreadable ledger evidence distinct from absence. The existing
+    # green_pct still describes workflow conclusions, not receipt corroboration.
     ledger_idx = load_ledger_index(parent)
+    candidates = [row for sha in sorted({iv.get("sha") or "" for iv in intervals if iv["state"] == "green"})
+                  for row in _ledger_candidates(ledger_idx, sha)]
     with qualifying_receipt.validation_evidence_batch(
-        [row for rows in ledger_idx.values() for row in rows], artifact_root=Path(parent)
+        candidates
     ):
-        g_led_sec, g_concl_sec = _split_green_by_ledger(intervals, ledger_idx)
+        g_led_sec, g_concl_sec, g_unknown_sec, ledger_faults = _split_green_by_ledger(intervals, ledger_idx)
     green_ledger_hours = round(g_led_sec / 3600.0, 2)
     green_conclusion_only_hours = round(g_concl_sec / 3600.0, 2)
     green_ledger_pct = (round(100.0 * g_led_sec / authoritative, 2)
@@ -1094,6 +1115,9 @@ def green_time(parent: str, repo: str, since: str | None,
         "green_pct": green_pct,
         "green_ledger_pct": green_ledger_pct,
         "green_conclusion_only_pct": green_conclusion_only_pct,
+        "green_ledger_unknown_pct": round(100.0 * g_unknown_sec / authoritative, 2) if authoritative > 0 else None,
+        "ledger_corroboration_state": "UNKNOWN" if ledger_faults else "COMPLETE",
+        "ledger_reader_faults": ledger_faults,
         "red_pct": red_pct,
         # Explicitly window-denominated diagnostics. Keep the legacy
         # no_result_pct/gap_pct aliases for readers that predate the named
@@ -1107,6 +1131,7 @@ def green_time(parent: str, repo: str, since: str | None,
         "green_hours": hrs["green"],
         "green_ledger_hours": green_ledger_hours,
         "green_conclusion_only_hours": green_conclusion_only_hours,
+        "green_ledger_unknown_hours": round(g_unknown_sec / 3600.0, 2),
         "red_hours": hrs["red"],
         "no_result_hours": hrs["no_result"],
         "gap_hours": hrs["gap"],
@@ -1206,6 +1231,10 @@ def append_green_time_log(parent: str, snapshot: dict, path: str | None) -> str:
         "gap_hours": snapshot.get("gap_hours"),
         "green_ledger_pct": snapshot.get("green_ledger_pct"),
         "green_conclusion_only_pct": snapshot.get("green_conclusion_only_pct"),
+        "green_ledger_unknown_pct": snapshot.get("green_ledger_unknown_pct"),
+        "green_ledger_unknown_hours": snapshot.get("green_ledger_unknown_hours"),
+        "ledger_corroboration_state": snapshot.get("ledger_corroboration_state"),
+        "ledger_reader_faults": snapshot.get("ledger_reader_faults"),
         "red_pct": snapshot.get("red_pct"),
         "no_result_window_pct": snapshot.get("no_result_window_pct"),
         "gap_window_pct": snapshot.get("gap_window_pct"),
@@ -1658,6 +1687,11 @@ def main() -> int:
                 print(f"    conclusion-only    : "
                       f"{res['green_conclusion_only_pct']}% "
                       f"({res['green_conclusion_only_hours']}h)")
+                if res["ledger_reader_faults"]:
+                    print(f"    ledger verification UNKNOWN: {res['green_ledger_unknown_pct']}% "
+                          f"({res['green_ledger_unknown_hours']}h)")
+                    for fault in res["ledger_reader_faults"]:
+                        print(f"      {fault['sha']}: {fault['reason']}")
                 print(f"  authoritative red={res['red_pct']}%; window shares: "
                       f"green={res['green_window_pct']}% "
                       f"red={res['red_window_pct']}% "

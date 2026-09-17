@@ -9773,7 +9773,7 @@ fn run_validate_status(
                             .map(|description| format!(" ({description})"))
                             .unwrap_or_default();
                         println!(
-                            "#   {}/{} {} {}{}: target has {} clean leg(s), {} failure(s); needs {} clean leg(s) after {}/{} baseline failures at {}",
+                            "#   {}/{} {} {}{}: target has {} clean leg(s), {} failure(s); {}; needs {} clean leg(s) after {}/{} baseline failures at {}",
                             obligation.category,
                             obligation.test,
                             obligation.mode,
@@ -9781,6 +9781,7 @@ fn run_validate_status(
                             relation,
                             obligation.observed_clean_legs_at_target,
                             obligation.target_failures,
+                            obligation.target_comparison_status(),
                             obligation.required_clean_legs,
                             obligation.baseline_failures,
                             obligation.baseline_legs,

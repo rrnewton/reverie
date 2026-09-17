@@ -10,8 +10,6 @@ import hashlib
 import io
 import json
 from pathlib import Path
-import signal
-import subprocess
 import sys
 from unittest import mock
 
@@ -59,10 +57,20 @@ class RefusingChecker:
         return 0
 
 
+def captured_checker(factory):
+    """Mock the peer protocol only; live capture controls are in bounds tests."""
+    def capture(command, source, **limits):
+        output, errors = io.BytesIO(), io.BytesIO()
+        child = factory(command, stdin=source, stdout=output, stderr=errors,
+                        start_new_session=True)
+        return child.wait(), output.getvalue(), errors.getvalue()
+    return capture
+
+
 def test_native_reader_batches_rows_and_never_trusts_row_supplied_authority():
     first, second = row10("first"), row10("second")
     first["validation_evidence"] = {"status": "verified", "accepted": True}
-    with mock.patch.object(receipt.subprocess, "Popen", side_effect=RefusingChecker) as launch:
+    with mock.patch.object(receipt, "_capture_validation_evidence", side_effect=captured_checker(RefusingChecker)) as launch:
         with receipt.validation_evidence_batch([first, second], predicate=policy10()):
             assert receipt.cell_results_verdict(first, policy10()) is receipt.CellResultsVerdict.ARTIFACT_REFUSED
             assert receipt.cell_results_verdict(second, policy10()) is receipt.CellResultsVerdict.ARTIFACT_REFUSED
@@ -72,7 +80,7 @@ def test_native_reader_batches_rows_and_never_trusts_row_supplied_authority():
 
 def test_native_reader_rejects_changed_row_in_an_existing_batch():
     row = row10()
-    with mock.patch.object(receipt.subprocess, "Popen", side_effect=RefusingChecker) as launch:
+    with mock.patch.object(receipt, "_capture_validation_evidence", side_effect=captured_checker(RefusingChecker)) as launch:
         with receipt.validation_evidence_batch([row], predicate=policy10()):
             row["run_id"] = "changed"
             with pytest.raises(receipt.ValidationEvidenceReaderFault, match="changed"):
@@ -92,7 +100,7 @@ def test_native_reader_wrong_response_digest_is_a_reader_fault():
             }).encode() + b"\n")
 
     row = row10()
-    with mock.patch.object(receipt.subprocess, "Popen", side_effect=WrongDigest):
+    with mock.patch.object(receipt, "_capture_validation_evidence", side_effect=captured_checker(WrongDigest)):
         with receipt.validation_evidence_batch([row], predicate=policy10()):
             checked = receipt.validation_evidence(row)
             assert checked.status == "reader-fault"
@@ -101,20 +109,66 @@ def test_native_reader_wrong_response_digest_is_a_reader_fault():
                 receipt.row_qualification(row, row["commit"], policy10())
 
 
-def test_native_reader_timeout_kills_its_process_group_and_is_not_a_refusal():
-    class TimedOut(RefusingChecker):
-        def wait(self, timeout=None):
-            if timeout is not None:
-                raise subprocess.TimeoutExpired("fixture checker", timeout)
-            return -signal.SIGKILL
+@pytest.mark.parametrize("mutation,expected", [
+    ("empty", "omitted a requested row"),
+    ("omitted", "omitted a requested row"),
+    ("repeated", "unexpected or repeated row digest"),
+    ("non-object", "non-object response"),
+    ("nonzero", "exited 7: synthetic diagnostic"),
+    ("unknown-status", "unknown status"),
+    ("malformed-failure", "malformed failure response"),
+])
+def test_native_transport_faults_apply_to_every_requested_row(mutation, expected):
+    rows = [row10("first"), row10("second")]
 
+    def capture(command, source, **limits):
+        reports = [{"row_sha256": hashlib.sha256(json.loads(line)["row_json"].encode()).hexdigest(),
+                    "status": "refused", "reason": "synthetic refusal"} for line in source]
+        if mutation == "empty":
+            reports = []
+        elif mutation == "omitted":
+            reports.pop()
+        elif mutation == "repeated":
+            reports.append(reports[0])
+        elif mutation == "non-object":
+            reports[0] = []
+        elif mutation == "unknown-status":
+            reports[0]["status"] = "future-status"
+        elif mutation == "malformed-failure":
+            reports[0]["reason"] = " "
+        return (7 if mutation == "nonzero" else 0,
+                b"".join(json.dumps(report).encode() + b"\n" for report in reports),
+                b"synthetic diagnostic")
+
+    with mock.patch.object(receipt, "_capture_validation_evidence", side_effect=capture):
+        with receipt.validation_evidence_batch(rows, predicate=policy10()):
+            for row in rows:
+                checked = receipt.validation_evidence(row)
+                assert checked.status == "reader-fault"
+                assert expected in checked.reason
+                with pytest.raises(receipt.ValidationEvidenceReaderFault):
+                    receipt.row_qualification(row, row["commit"], policy10())
+
+
+def test_record_preserves_the_native_artifact_refusal_reason(tmp_path):
     row = row10()
-    with mock.patch.object(receipt.subprocess, "Popen", side_effect=TimedOut), mock.patch.object(receipt.os, "killpg") as kill:
+    with mock.patch.object(receipt, "_capture_validation_evidence", side_effect=captured_checker(RefusingChecker)), mock.patch.object(receipt, "active", return_value=policy10()):
+        with receipt.validation_evidence_batch([row], predicate=policy10()):
+            with pytest.raises(ValueError) as failure:
+                validate_rows._require_cell_results(row, tmp_path)
+            assert str(failure.value) == "cell_results fixture artifact refusal"
+
+
+def test_native_reader_timeout_is_a_reader_fault_not_a_refusal():
+    # Actual group kill/reap is exercised with real children in bounds tests.
+    row = row10()
+    with mock.patch.object(receipt, "_capture_validation_evidence", side_effect=receipt.ValidationEvidenceReaderFault("validation artifact checker timed out after 300 seconds")):
         with receipt.validation_evidence_batch([row], predicate=policy10()):
             checked = receipt.validation_evidence(row)
             assert checked.status == "reader-fault"
             assert "timed out" in checked.reason
-        kill.assert_called_once_with(12345, signal.SIGKILL)
+            with pytest.raises(receipt.ValidationEvidenceReaderFault, match="timed out"):
+                receipt.row_qualification(row, row["commit"], policy10())
 
 
 def test_schema9_does_not_gain_authority_from_policy_maximum10():
@@ -217,7 +271,7 @@ def test_malformed_verified_response_is_a_reader_fault(mutation):
                 stdout.write(json.dumps(report).encode() + b"\n")
 
     row["cell_results"] = {}
-    with mock.patch.object(receipt.subprocess, "Popen", side_effect=MalformedVerified):
+    with mock.patch.object(receipt, "_capture_validation_evidence", side_effect=captured_checker(MalformedVerified)):
         with receipt.validation_evidence_batch([row], predicate=policy10()):
             checked = receipt.validation_evidence(row)
             assert checked.status == "reader-fault"

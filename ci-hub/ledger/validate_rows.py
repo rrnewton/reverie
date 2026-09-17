@@ -549,6 +549,8 @@ def _require_cell_results(row: dict, root: Path) -> None:
         raise qualifying_receipt.ValidationEvidenceReaderFault(
             qualifying_receipt.validation_evidence(row).reason
         )
+    if verdict is qualifying_receipt.CellResultsVerdict.ARTIFACT_REFUSED:
+        raise ValueError(f"cell_results {qualifying_receipt.validation_evidence(row).reason}")
     if verdict is not qualifying_receipt.CellResultsVerdict.SATISFIED:
         raise ValueError(f"cell_results {verdict.value}")
     if row.get("schema_version") == 10:

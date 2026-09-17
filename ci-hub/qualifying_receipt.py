@@ -37,9 +37,11 @@ import hashlib
 import json
 import os
 import re
+import selectors
 import signal
 import subprocess
 import tempfile
+import time
 import sys
 from enum import Enum
 from pathlib import Path
@@ -79,7 +81,7 @@ class ValidationEvidenceReaderFault(RuntimeError):
 
 @dataclass(frozen=True)
 class _ValidationEvidence:
-    row_sha256: str
+    row_sha256: str | None
     status: str
     reason: str | None = None
     evidence: dict[str, Any] | None = None
@@ -87,11 +89,250 @@ class _ValidationEvidence:
     backend_parity_matches: tuple[dict[str, Any], ...] = ()
 
 
-_VALIDATION_EVIDENCE_BATCHES: list[dict[str, _ValidationEvidence]] = []
+@dataclass(frozen=True)
+class _ValidationEvidenceBatch:
+    reports: dict[str, _ValidationEvidence]
+    # An input that cannot be encoded has no canonical digest. Object identity
+    # may retain a fault for that requested row, but can never grant authority.
+    fault_rows: tuple[dict[str, Any], ...] = ()
+    fault_reason: str | None = None
+
+    def fault_for(self, row):
+        if self.fault_reason is not None and any(value is row for value in self.fault_rows):
+            return _ValidationEvidence(None, "reader-fault", self.fault_reason)
+        return None
+
+
+_VALIDATION_EVIDENCE_BATCHES: list[_ValidationEvidenceBatch] = []
+
+# Reader capacity limits, not maximum valid producer artifact sizes. Exceeding
+# one leaves the batch unreadable; it never changes a comparison's verdict.
+_EVIDENCE_LINE_BYTES = 16 * 1024 * 1024
+_EVIDENCE_BATCH_BYTES = 128 * 1024 * 1024
+_EVIDENCE_DIAGNOSTIC_BYTES = 16 * 1024 * 1024
 
 
 def _evidence_row_json(row: dict[str, Any]) -> str:
+    _preflight_evidence_json(row, _EVIDENCE_LINE_BYTES)
     return json.dumps(row, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _preflight_evidence_json(value, limit):
+    """Bound canonical JSON before the standard encoder allocates a scalar.
+
+    This counts ensure_ascii JSON bytes without building escaped strings. The
+    standard encoder still owns sorting, scalar spelling and the actual bytes.
+    Its existing recursion/invalid-value failures are deferred reader faults.
+    """
+    size = 0
+    ancestors = set()
+
+    def add(count):
+        nonlocal size
+        size += count
+        if size > limit:
+            raise ValidationEvidenceReaderFault(
+                f"validation artifact checker request line exceeds {limit} bytes"
+            )
+
+    def string(text):
+        # Even unescaped characters need one byte each; reject that lower bound
+        # before scanning. No encoded or sliced copy of text is constructed.
+        if len(text) + 2 > limit - size:
+            add(len(text) + 2)
+        add(2)
+        for char in text:
+            code = ord(char)
+            if char in ('"', '\\', '\b', '\f', '\n', '\r', '\t'):
+                add(2)
+            elif 0x20 <= code < 0x7f:
+                add(1)
+            else:
+                add(6 if code <= 0xffff else 12)
+
+    def scalar(part):
+        if isinstance(part, int) and not isinstance(part, bool):
+            remaining = limit - size - (part < 0)
+            bits = int.bit_length(part)
+            # Prove that decimal conversion fits before calling the encoder.
+            # 0.3 < log10(2) < 0.30103 bounds the boundary calculation; only
+            # the narrow uncertain case needs a bounded power of ten.
+            lower = (max(1, bits) - 1) * 3 // 10 + 1
+            upper = bits * 30103 // 100000 + 1
+            if remaining < lower or (upper > remaining and abs(part) >= 10 ** remaining):
+                add(limit + 1)
+        return json.dumps(part, allow_nan=False, separators=(",", ":"))
+
+    def visit(part):
+        if isinstance(part, str):
+            string(part)
+        elif part is None or isinstance(part, (bool, int, float)):
+            add(len(scalar(part)))
+        elif isinstance(part, (dict, list, tuple)):
+            identity = id(part)
+            if identity in ancestors:
+                raise ValueError("Circular reference detected")
+            ancestors.add(identity)
+            add(2)
+            for index, item in enumerate(part):
+                if index:
+                    add(1)
+                if isinstance(part, dict):
+                    if isinstance(item, str):
+                        string(item)
+                    elif item is None or isinstance(item, (bool, int, float)):
+                        string(scalar(item))
+                    else:
+                        raise TypeError("JSON object key is not a supported scalar")
+                    add(1)
+                    visit(part[item])
+                else:
+                    visit(item)
+            ancestors.remove(identity)
+        else:
+            raise TypeError(f"Object of type {type(part).__name__} is not JSON serializable")
+
+    visit(value)
+    return size
+
+
+def _evidence_json_chunks(value, *, limit=None):
+    _preflight_evidence_json(value, _EVIDENCE_LINE_BYTES if limit is None else limit)
+    encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"), allow_nan=False)
+    for chunk in encoder.iterencode(value):
+        # ensure_ascii is true, so each character is exactly one encoded byte.
+        for start in range(0, len(chunk), 65536):
+            yield chunk[start:start + 65536].encode("ascii")
+
+
+def _evidence_row_digest(row):
+    digest = hashlib.sha256()
+    for chunk in _evidence_json_chunks(row):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_evidence_requests(rows, source, *, line_bytes, batch_bytes):
+    """Keep bounded exact row bytes; never launch a partially written batch."""
+    requests = {}
+    failure = None
+    total = 0
+    for row in rows:
+        digest = hashlib.sha256()
+        raw = bytearray()
+        row_bytes = 0
+        for chunk in _evidence_json_chunks(row, limit=line_bytes):
+            digest.update(chunk)
+            row_bytes += len(chunk)
+            if row_bytes <= line_bytes and failure is None:
+                raw.extend(chunk)
+        key = digest.hexdigest()
+        if key in requests:
+            continue
+        requests[key] = None
+        if failure is not None:
+            continue
+        if row_bytes > line_bytes:
+            failure = f"validation artifact checker request line exceeds {line_bytes} bytes"
+            continue
+        text = raw.decode("ascii")
+        request = bytearray()
+        try:
+            # Include the newline in preflight without changing the announced
+            # line limit or allocating an over-limit escaped row_json string.
+            encoded_size = _preflight_evidence_json({"row_json": text}, line_bytes)
+            if encoded_size + 1 > line_bytes:
+                raise ValidationEvidenceReaderFault(
+                    f"validation artifact checker request line exceeds {line_bytes} bytes"
+                )
+            for chunk in _evidence_json_chunks({"row_json": text}, limit=line_bytes):
+                request.extend(chunk)
+        except ValidationEvidenceReaderFault as error:
+            failure = str(error)
+        if failure is not None:
+            continue
+        request.append(10)
+        if total + len(request) > batch_bytes:
+            failure = f"validation artifact checker request batch exceeds {batch_bytes} bytes"
+            continue
+        source.write(request)
+        total += len(request)
+        requests[key] = text
+    source.seek(0)
+    return requests, failure
+
+
+def _capture_validation_evidence(command, source, *, line_bytes, response_bytes,
+                                 diagnostic_bytes, wall_seconds=300):
+    """Bound bytes while reading, and wait for the direct child, never pipe EOF.
+
+    Private arguments let tests use small limits; receipts and environment
+    variables cannot choose capacity or substitute a checker executable.
+    """
+    process = subprocess.Popen(command, stdin=source, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, start_new_session=True)
+    output, errors = bytearray(), bytearray()
+    line_size = 0
+    deadline = time.monotonic() + wall_seconds
+
+    def stop():
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired as error:
+            raise ValidationEvidenceReaderFault(
+                "validation artifact checker did not reap within 5 seconds after SIGKILL"
+            ) from error
+
+    try:
+        with selectors.DefaultSelector() as selector:
+            for stream, name in ((process.stdout, "response"), (process.stderr, "diagnostic")):
+                os.set_blocking(stream.fileno(), False)
+                selector.register(stream, selectors.EVENT_READ, name)
+            while True:
+                if time.monotonic() >= deadline:
+                    raise ValidationEvidenceReaderFault(
+                        f"validation artifact checker timed out after {wall_seconds} seconds"
+                    )
+                returncode = process.poll()
+                # After direct-child exit, consume immediately readable bytes
+                # only. A descendant holding a descriptor cannot extend this wait.
+                ready = selector.select(0 if returncode is not None else min(.05, max(0, deadline - time.monotonic())))
+                if not ready and returncode is not None:
+                    return returncode, bytes(output), bytes(errors)
+                for key, _ in ready:
+                    target = output if key.data == "response" else errors
+                    limit = response_bytes if key.data == "response" else diagnostic_bytes
+                    try:
+                        chunk = os.read(key.fd, min(65536, limit - len(target) + 1))
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    if len(target) + len(chunk) > limit:
+                        raise ValidationEvidenceReaderFault(
+                            f"validation artifact checker {key.data} output exceeds {limit} bytes"
+                        )
+                    if key.data == "response":
+                        for part in chunk.splitlines(keepends=True):
+                            line_size += len(part)
+                            if line_size > line_bytes:
+                                raise ValidationEvidenceReaderFault(
+                                    f"validation artifact checker response line exceeds {line_bytes} bytes"
+                                )
+                            if part.endswith(b"\n"):
+                                line_size = 0
+                    target.extend(chunk)
+    except BaseException:
+        stop()
+        raise
+    finally:
+        process.stdout.close()
+        process.stderr.close()
 
 
 def _native_identity_shape_valid(value: Any) -> bool:
@@ -141,7 +382,10 @@ def _native_evidence_shape_valid(evidence: Any, row: dict[str, Any]) -> bool:
         else:
             return False
         verdict = observation["verdict"]
-        if verdict.get("state") in {"matched", "diverged"}:
+        state = verdict.get("state")
+        if not isinstance(state, str):
+            return False
+        if state in {"matched", "diverged"}:
             if set(verdict) != {"state"}:
                 return False
         elif verdict.get("state") == "unavailable-with-reason":
@@ -154,63 +398,51 @@ def _native_evidence_shape_valid(evidence: Any, row: dict[str, Any]) -> bool:
 
 def _check_validation_evidence(
     rows: list[dict[str, Any]], artifact_root: Path | None
-) -> dict[str, _ValidationEvidence]:
+) -> _ValidationEvidenceBatch:
     """One native launch for the supplied rows; no receipt can supply its result.
 
-    The transport waits for the direct child with regular files for all three
-    streams. Its five-minute wall bound matches the existing shared event
-    checker. A timeout or bad response is a reader fault, never a receipt
-    refusal. Killing the process group also ends a compiler started by the
-    ordinary rust-script launcher.
+    The transport bounds input and captured output bytes and waits for the
+    direct child. Timeout, capacity exhaustion and bad responses are reader
+    faults, never receipt refusals or partially accepted batches.
     """
-    requests = {}
-    for row in rows:
-        raw = _evidence_row_json(row)
-        requests[hashlib.sha256(raw.encode()).hexdigest()] = raw
-    if not requests:
-        return {}
+    if not rows:
+        return _ValidationEvidenceBatch({})
     command = [str(_CI_HUB_DIR / "ci-hub"), "validate-evidence"]
     if artifact_root is not None:
         command += ["--artifact-root", str(artifact_root)]
 
-    def fault(reason: str) -> dict[str, _ValidationEvidence]:
-        return {
-            digest: _ValidationEvidence(digest, "reader-fault", reason)
-            for digest in requests
-        }
+    def fault(reason: str) -> _ValidationEvidenceBatch:
+        # Encoding/storage may fail before any digest exists. Keep the actual
+        # requested objects alive and associate only a fault with identity.
+        return _ValidationEvidenceBatch({}, tuple(rows), reason)
 
     try:
-        with tempfile.TemporaryFile() as source, tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
-            for raw in requests.values():
-                source.write(json.dumps({"row_json": raw}, separators=(",", ":")).encode() + b"\n")
-            source.seek(0)
-            process = subprocess.Popen(
-                command, stdin=source, stdout=output, stderr=errors,
-                start_new_session=True,
+        with tempfile.TemporaryFile() as source:
+            requests, failure = _write_evidence_requests(
+                rows, source, line_bytes=_EVIDENCE_LINE_BYTES,
+                batch_bytes=_EVIDENCE_BATCH_BYTES,
             )
-            try:
-                returncode = process.wait(timeout=300)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.wait()
-                return fault("validation artifact checker timed out")
+            if failure is not None:
+                return fault(failure)
+            returncode, output, errors = _capture_validation_evidence(
+                command, source, line_bytes=_EVIDENCE_LINE_BYTES,
+                response_bytes=_EVIDENCE_BATCH_BYTES,
+                diagnostic_bytes=_EVIDENCE_DIAGNOSTIC_BYTES,
+            )
             if returncode != 0:
-                errors.seek(0)
-                detail = errors.read(8192).decode(errors="replace").strip()
+                detail = errors[:8192].decode(errors="replace").strip()
                 return fault(f"validation artifact checker exited {returncode}: {detail}")
-            output.seek(0)
             reports = {}
-            for line in output:
+            for line in output.splitlines():
                 report = json.loads(line)
                 if not isinstance(report, dict):
                     return fault("validation artifact checker returned a non-object response")
                 digest = report.get("row_sha256")
                 status = report.get("status")
-                if digest not in requests or digest in reports:
+                if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) or digest not in requests or digest in reports:
                     return fault("validation artifact checker returned an unexpected or repeated row digest")
+                if not isinstance(status, str):
+                    return fault("validation artifact checker returned a malformed status")
                 if status == "verified":
                     if (
                         set(report) != {"row_sha256", "status", "evidence", "full_validation_refusal", "backend_parity_matches"}
@@ -233,8 +465,10 @@ def _check_validation_evidence(
                     return fault("validation artifact checker returned an unknown status")
             if set(reports) != set(requests):
                 return fault("validation artifact checker omitted a requested row")
-            return reports
-    except (OSError, ValueError, json.JSONDecodeError) as error:
+            return _ValidationEvidenceBatch(reports)
+    except ValidationEvidenceReaderFault as error:
+        return fault(str(error))
+    except (OSError, ValueError, TypeError, RecursionError) as error:
         return fault(f"validation artifact checker could not complete: {error}")
 
 
@@ -267,16 +501,30 @@ def validation_evidence_batch(
 
 def validation_evidence(row: dict[str, Any]) -> _ValidationEvidence:
     """Read checker-owned evidence; fields inside ``row`` never satisfy this."""
-    digest = hashlib.sha256(_evidence_row_json(row).encode()).hexdigest()
-    for batch in reversed(_VALIDATION_EVIDENCE_BATCHES):
-        if digest in batch:
-            result = batch[digest]
-            break
+    if not _VALIDATION_EVIDENCE_BATCHES:
+        batches = [_check_validation_evidence([row], None)]
     else:
-        if _VALIDATION_EVIDENCE_BATCHES:
-            raise ValidationEvidenceReaderFault("row changed or was not included in the validation artifact batch")
-        result = _check_validation_evidence([row], None)[digest]
-    return result
+        batches = reversed(_VALIDATION_EVIDENCE_BATCHES)
+    digest = None
+    encoding_fault = None
+    for batch in batches:
+        fault = batch.fault_for(row)
+        if fault is not None:
+            return fault
+        if digest is None and encoding_fault is None:
+            try:
+                digest = _evidence_row_digest(row)
+            except ValidationEvidenceReaderFault as error:
+                encoding_fault = error
+            except (ValueError, TypeError, RecursionError) as error:
+                encoding_fault = ValidationEvidenceReaderFault(
+                    f"validation artifact checker could not encode requested row: {error}"
+                )
+        if digest in batch.reports:
+            return batch.reports[digest]
+    if encoding_fault is not None:
+        raise encoding_fault
+    raise ValidationEvidenceReaderFault("row changed or was not included in the validation artifact batch")
 
 
 class ProducerDefinitionError(RuntimeError):
