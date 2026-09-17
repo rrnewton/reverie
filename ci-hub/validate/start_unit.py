@@ -4824,7 +4824,16 @@ def write_scorecard_from_results(
                 file=sys.stderr,
             )
         if result.returncode != 0:
-            return failed(f"observe-results exited {result.returncode}")
+            # CARRY THE REASON, NOT ONLY THE NUMBER. scorecard.rs maps EVERY
+            # Err to exit 2, so the status names no condition; the condition is
+            # only ever on stderr. Recording the code alone produced nine
+            # durable writeback failures all reading "refused with exit status:
+            # 2", and diagnosing the actual cause required reading the run log
+            # -- which is not a step the cleanup that consumes this record can
+            # take. The last line is the tool's own message.
+            detail = (result.stderr or "").strip().splitlines()
+            reason = f": {detail[-1]}" if detail else ""
+            return failed(f"observe-results exited {result.returncode}{reason}")
         identities, _files = _scorecard_source_files(source_checkout)
         print(f"validate-run: review with: {review_command}", file=output)
         return identities
@@ -5277,10 +5286,23 @@ def publish_recorded_scorecard_handoff(
         return handoff
     if writeback != {"status": "completed"}:
         raise RuntimeError(
+            # THE REMEDY MUST NAME SOMETHING A LATER READER CAN DO. The
+            # previous text said to reattach so the waiter could consume a
+            # current service result. That names an actor from a run that has
+            # already finished: when the agent that started the run is gone --
+            # which is the usual case by the time cleanup runs -- there is
+            # nothing to reattach to, and the reader is sent after a process
+            # that no longer exists. The writeback does not need the original
+            # waiter. Its input is the retained results artifact, which lives
+            # OUTSIDE the checkout under ignored/validate/artifacts/, so any
+            # later participant can re-drive it once the underlying refusal is
+            # fixed.
             "materialized scorecard cleanup requires a completed scorecard_writeback; "
-            f"got state={state!r}, scorecard_writeback={writeback!r}. Reattach so "
-            "the waiter can consume a current service result before cleanup; "
-            "historical results require an already-published verified handoff"
+            f"got state={state!r}, scorecard_writeback={writeback!r}. The writeback "
+            "refused and its reason is in that record; re-drive it from the retained "
+            "results under ignored/validate/artifacts/ once that reason is resolved. "
+            "No reattachment to the original run is needed or possible. "
+            "Historical results require an already-published verified handoff"
         )
     wrkslots = recorded_wrkslots_identity(record, checkout)
     if wrkslots is None:
