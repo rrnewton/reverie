@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <elf.h>
 #include <errno.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -27,6 +28,22 @@ static char *option_string;
 static bool raw_environment;
 static sbr_bootstrap_take_fn continuation_take;
 static unsigned installer_calls;
+static bool concurrent_take_probe;
+static int start_take[2];
+static int completed_take[2];
+
+static void *competing_take(void *unused) {
+  (void)unused;
+  unsigned char output[32];
+  memset(output, 0x5a, sizeof(output));
+  char ready;
+  assert(read(start_take[0], &ready, 1) == 1);
+  long result = continuation_take(output, sizeof(output));
+  for (size_t i = 0; i < sizeof(output); ++i)
+    assert(output[i] == 0x5a);
+  assert(write(completed_take[1], &result, sizeof(result)) == (ssize_t)sizeof(result));
+  return NULL;
+}
 
 static int decline_continuation(sbr_bootstrap_take_fn take) {
   assert(take == sbr_bootstrap_take_state);
@@ -164,9 +181,14 @@ static void continuation_child_body(void) {
   sbr_bootstrap_image(NULL, NULL);
   assert(sbr_bootstrap_getrandom((long)output, 8, 1, NULL) == -EPROTO);
   assert(continuation_take(NULL, 0) == -EINVAL);
+  pthread_t competitor;
+  if (concurrent_take_probe)
+    assert(pthread_create(&competitor, NULL, competing_take, NULL) == 0);
   assert(ptrace(PTRACE_TRACEME, 0, NULL, NULL) == 0);
   assert(raise(SIGSTOP) == 0);
   assert(continuation_take(output, sizeof(output)) == -ESTALE);
+  if (concurrent_take_probe)
+    assert(pthread_join(competitor, NULL) == 0);
   assert(continuation_take(output, 4) == -EMSGSIZE);
   for (size_t i = 0; i < sizeof(output); ++i)
     assert(output[i] == 0x5a);
@@ -178,6 +200,10 @@ static void continuation_child_body(void) {
 }
 
 static void supervised_control(bool fail_after_take, bool continuation) {
+  if (concurrent_take_probe) {
+    assert(pipe(start_take) == 0);
+    assert(pipe(completed_take) == 0);
+  }
   pid_t child = fork();
   assert(child >= 0);
   if (child == 0) {
@@ -200,6 +226,12 @@ static void supervised_control(bool fail_after_take, bool continuation) {
     if (WIFEXITED(status)) {
       assert(WEXITSTATUS(status) == (fail_after_take ? EXIT_FAILURE : 0));
       assert(requests == (continuation ? 3 : 6) && !handled);
+      if (concurrent_take_probe) {
+        close(start_take[0]);
+        close(start_take[1]);
+        close(completed_take[0]);
+        close(completed_take[1]);
+      }
       return;
     }
     assert(WIFSTOPPED(status) && WSTOPSIG(status) == (SIGTRAP | 0x80));
@@ -218,6 +250,16 @@ static void supervised_control(bool fail_after_take, bool continuation) {
         assert(regs.r8 == SBR_BOOTSTRAP_VERSION && regs.r9 == 0);
         if (requests == 1) {
           assert(regs.r10 == 32);
+          if (concurrent_take_probe) {
+            /* Hold the real first TAKE at syscall entry. An untraced sibling
+             * must be refused locally while that transfer is in flight.
+             */
+            assert(write(start_take[1], "!", 1) == 1);
+            long result;
+            assert(read(completed_take[0], &result, sizeof(result)) ==
+                   (ssize_t)sizeof(result));
+            assert(result == -EPROTO);
+          }
           pending = -ESTALE;
         } else if (requests == 2) {
           assert(regs.r10 == 4);
@@ -296,6 +338,31 @@ static void absent_supervisor_control(void) {
   assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_FAILURE);
 }
 
+static void absent_continuation_supervisor_control(void) {
+  pid_t child = fork();
+  assert(child >= 0);
+  if (child == 0) {
+    assert(unsetenv(SBR_BOOTSTRAP_ENV) == 0);
+    sbr_bootstrap_configure();
+    assert(sbr_bootstrap_install_continuation(accept_continuation) == 0);
+    unsigned char output[32];
+    memset(output, 0x5a, sizeof(output));
+    long first = continuation_take(output, sizeof(output));
+    /* The real kernel rejects this unknown prctl option. A second identical
+     * errno (not local EPROTO) proves the failed take did not retire it.
+     */
+    assert(first < 0 && first != -EPROTO);
+    assert(continuation_take(output, sizeof(output)) == first);
+    for (size_t i = 0; i < sizeof(output); ++i)
+      assert(output[i] == 0x5a);
+    assert(sbr_bootstrap_getrandom((long)output, 8, 1, NULL) == -EPROTO);
+    _exit(0);
+  }
+  int status;
+  assert(waitpid(child, &status, 0) == child);
+  assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
 static void uninitialized_phase_control(void) {
   pid_t child = fork();
   assert(child >= 0);
@@ -344,13 +411,17 @@ int main(int argc, char **argv) {
   supervised_control(false, false);
   supervised_control(true, false);
   supervised_control(false, true);
+  concurrent_take_probe = true;
+  supervised_control(false, true);
+  concurrent_take_probe = false;
   uninitialized_phase_control();
   absent_supervisor_control();
+  absent_continuation_supervisor_control();
   raw_environment_control();
   printf("protocol=%lu version=%lu ops=%u,%u,%u max=%lu\n",
          SBR_BOOTSTRAP_OPTION, SBR_BOOTSTRAP_VERSION, SBR_BOOTSTRAP_IMAGE,
          SBR_BOOTSTRAP_GETRANDOM, SBR_BOOTSTRAP_TAKE_STATE,
          SBR_BOOTSTRAP_MAX_STATE);
-  puts("PASS: real IMAGE/auxv, original requests, refusal, once-only handoff; disabled compatibility; raw environment scrubbed");
+  puts("PASS: real IMAGE/auxv, original requests, refusal, once-only handoff; disabled compatibility; raw environment scrubbed; continuation concurrency and absent supervisor");
   return 0;
 }
