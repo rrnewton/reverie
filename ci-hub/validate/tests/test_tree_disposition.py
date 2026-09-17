@@ -129,18 +129,42 @@ def test_unregistered_tree_is_unknown_and_therefore_protected(tmp_path):
     assert "unregistered" in reason or "no registry record" in reason
 
 
-def test_recorded_validate_holding_an_unpushed_commit_is_protected(tmp_path):
-    """The measured case: four real trees were recorded validate and held work."""
+def test_a_commit_off_every_remote_ref_asks_for_rescue_not_refusal(tmp_path):
+    """The NORMAL state of a validate checkout, so it must not read as a refusal.
+
+    A tree made to validate a pull-request head sits at a commit that is not on
+    main; after the squash landing it is on no remote ref forever. Measured
+    across the real population, three trees were in exactly this state with zero
+    `commit:` reflog entries -- nobody had authored anything in them. Refusing
+    here would stall on the ordinary case. The commit is addressable, so the
+    answer is "preserve it first", not "never".
+    """
 
     tree = tmp_path / "trees" / "anything"
     make_repo(tree)
     (tree / "authored").write_text("work\n")
     git(tree, "add", "authored")
-    git(tree, "commit", "-qm", "authored work that is on no remote")
+    git(tree, "commit", "-qm", "a head that is on no remote ref")
     register(tmp_path, "s", td.KIND_VALIDATE, tree)
     verdict, reason = td.disposition(tmp_path, tree, run=real_run)
-    assert verdict == td.PROTECTED
-    assert "on no remote ref" in reason
+    assert verdict == td.DISPOSABLE_AFTER_RESCUE, reason
+    assert "rescue ref" in reason
+
+
+def test_uncommitted_work_refuses_even_though_a_commit_would_not(tmp_path):
+    """The asymmetry is the point: only an uncommitted path is unrecoverable."""
+
+    committed = tmp_path / "trees" / "committed"
+    uncommitted = tmp_path / "trees" / "uncommitted"
+    for tree in (committed, uncommitted):
+        make_repo(tree)
+    git(committed, "commit", "-qm", "off-remote head", "--allow-empty")
+    (uncommitted / "scratch").write_text("exists nowhere else\n")
+    register(tmp_path, "a", td.KIND_VALIDATE, committed)
+    register(tmp_path, "b", td.KIND_VALIDATE, uncommitted)
+
+    assert td.disposition(tmp_path, committed, run=real_run)[0] == td.DISPOSABLE_AFTER_RESCUE
+    assert td.disposition(tmp_path, uncommitted, run=real_run)[0] == td.PROTECTED
 
 
 def test_recorded_validate_with_a_dirty_tree_is_protected(tmp_path):

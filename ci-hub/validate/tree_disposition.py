@@ -29,6 +29,25 @@ registry's ``containing_remote_refs``: measured on the same day, that field was
 heads are genuinely on a remote, so it records creation-time state and never
 catches up. Two git commands per tree cost about a second across twenty-five
 trees, which is affordable for a question whose wrong answer destroys work.
+
+⚠️ "COMMITS ON NO REMOTE REF" IS NOT A RISK SIGNAL FOR A VALIDATE CHECKOUT, AND
+AN EARLIER VERSION OF THIS MODULE TREATED IT AS ONE. A checkout made to validate
+a pull-request head is BY CONSTRUCTION created at a commit that is not on main:
+that is what exact-head validation means. When the pull request lands it is
+squash-rewritten -- merge commits are disabled here -- so the original head is on
+no remote ref forever. Measured 2026-09-17 across all twenty-four trees under
+``worktrees/validate``: three trees sat at such a commit with ZERO ``commit:``
+entries in their HEAD reflog, meaning nobody ever committed there; exactly one
+tree had work authored in it, and that work was on a remote. So the predicate
+refused ordinary trees and would have refused nearly every validate checkout
+that ever measured a pull request.
+
+What actually matches the risk is an UNCOMMITTED path. No landing rewrites it,
+nothing else preserves it, and it exists in exactly one place. A commit is a
+weaker case: it is addressable, so it can be preserved to an append-only rescue
+ref and the question made moot rather than answered. This module therefore
+separates "nothing to save" from "something to save first" instead of collapsing
+both into a refusal.
 """
 
 from __future__ import annotations
@@ -37,8 +56,14 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-# A tree may be removed. Both questions answered, both favourably.
+# A tree may be removed now. Registered disposable, clean, nothing to preserve.
 DISPOSABLE = "disposable"
+# A tree may be removed ONCE its off-remote commits are preserved. Registered
+# disposable and clean, but it carries commits reachable from no remote ref --
+# ordinarily the pre-landing head it was created to validate. Kept separate from
+# PROTECTED so a remover can preserve and proceed rather than stall forever on
+# the normal state of a validate checkout.
+DISPOSABLE_AFTER_RESCUE = "disposable-after-rescue"
 # A tree must not be removed. `reason` always says which question refused.
 PROTECTED = "protected"
 
@@ -150,11 +175,13 @@ def disposition(root: Path, tree: Path, *, run: Callable[..., Any]) -> tuple[str
     if measured is None:
         return PROTECTED, "authored-work state could not be read"
     dirty, unpushed = measured
-    if unpushed:
-        return (
-            PROTECTED,
-            f"recorded {KIND_VALIDATE} but holds {unpushed} commit(s) on no remote ref",
-        )
+    # UNCOMMITTED FIRST, because it is the only state nothing else can hold.
     if dirty:
         return PROTECTED, f"recorded {KIND_VALIDATE} but has {dirty} uncommitted path(s)"
+    if unpushed:
+        return (
+            DISPOSABLE_AFTER_RESCUE,
+            f"recorded {KIND_VALIDATE} and clean, but {unpushed} commit(s) reach no "
+            "remote ref; preserve them to a rescue ref before removing",
+        )
     return DISPOSABLE, f"recorded {KIND_VALIDATE} with no authored work"
