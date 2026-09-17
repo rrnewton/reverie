@@ -95,6 +95,13 @@ impl Control {
     /// fixture peers. Keep initialized non-atomic layout/version fields unchanged
     /// and update observations only through their atomic interfaces. Size seals
     /// prevent resizing, not writes through the exported backing descriptor.
+    ///
+    /// ```compile_fail,E0133
+    /// use reverie_rpc_transport::guest_log as g;
+    /// fn requires_ownership_contract() {
+    ///     let _ = g::fixture::Control::new();
+    /// }
+    /// ```
     pub unsafe fn new() -> io::Result<Self> {
         let fd = unsafe {
             libc::memfd_create(

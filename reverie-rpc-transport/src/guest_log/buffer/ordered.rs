@@ -186,6 +186,13 @@ pub(super) fn validate(mapping: &SharedBuffer, base: usize) -> io::Result<()> {
 /// V3/V4 layout fields for every mapping's lifetime and use only the matching
 /// exclusive-producer, single-collector credit/publication protocol. The guest
 /// endpoint remains live until all admitted guest writers are quiescent.
+///
+/// ```compile_fail,E0133
+/// use reverie_rpc_transport::guest_log as g;
+/// fn requires_ownership_contract(limits: g::ordered::Limits) {
+///     let _ = g::ordered::channel_pair(limits);
+/// }
+/// ```
 pub unsafe fn channel_pair(limits: Limits) -> io::Result<(UnixStream, UnixStream)> {
     super::channel_pair_version(limits.options()?, Some(limits))
 }
@@ -233,6 +240,13 @@ impl Buffer {
     /// must remain immutable, and frame/credit access must follow the protocol.
     /// The caller retains the borrowed endpoint according to the socket lifetime
     /// contract. Header validation and size seals do not exclude hostile writes.
+    ///
+    /// ```compile_fail,E0133
+    /// use reverie_rpc_transport::guest_log as g;
+    /// fn requires_ownership_contract(fd: i32) {
+    ///     let _ = g::ordered::Buffer::receive(fd);
+    /// }
+    /// ```
     pub unsafe fn receive(fd: i32) -> io::Result<Arc<Self>> {
         Ok(Arc::new(Self {
             mapping: unsafe { SharedBuffer::receive_version(fd, true)? },
@@ -400,6 +414,13 @@ impl Buffer {
     /// activation, and do not write after FINISH or an unsupported image change.
     /// Independently scheduled producers wait for collector readiness; exclusive
     /// startup prepopulation must retain the collector until it takes ownership.
+    ///
+    /// ```compile_fail,E0133
+    /// use reverie_rpc_transport::guest_log as g;
+    /// fn requires_ownership_contract(buffer: &std::sync::Arc<g::ordered::Buffer>) {
+    ///     let _ = buffer.activate(0, 1);
+    /// }
+    /// ```
     pub unsafe fn activate(
         self: &Arc<Self>,
         index: usize,

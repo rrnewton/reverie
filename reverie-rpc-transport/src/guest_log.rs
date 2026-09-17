@@ -528,6 +528,13 @@ impl LogSink {
     /// immutable layout and protocol ownership for the collector's full lifetime.
     /// No other collector may consume this channel. The caller must retain guest
     /// lifetime endpoints and coordinate startup/cancellation with all writers.
+    ///
+    /// ```compile_fail,E0133
+    /// use reverie_rpc_transport::guest_log as g;
+    /// fn requires_ownership_contract(sink: g::LogSink, socket: std::os::unix::net::UnixStream) {
+    ///     let _ = sink.reader(socket);
+    /// }
+    /// ```
     pub unsafe fn reader(mut self, socket: UnixStream) -> io::Result<Collector> {
         if self.handle.0.capture.get().is_some() {
             return Err(io::Error::other(
