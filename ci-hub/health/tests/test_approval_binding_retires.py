@@ -1445,3 +1445,51 @@ def test_the_git_resolver_refuses_what_it_cannot_establish(tmp_path) -> None:
     assert eq(first, "0" * 40, ("kept.txt",)) is False
     assert eq(first, second, ()) is False
     assert eq("", second, ("kept.txt",)) is False
+
+
+def test_out_of_scope_change_is_reported_not_judged(tmp_path) -> None:
+    """The exposure a scoped retirement cannot check must at least be visible.
+
+    A retirement scoped to `demos/` survives a head move that leaves `demos/`
+    identical -- correctly, by its own rule -- even when `ci/` changed and the
+    objection may have depended on it. Nothing can decide that here. What must
+    hold is that the change outside the scope is REPORTED rather than silent.
+    """
+    import subprocess
+
+    repo = tmp_path / "s"
+    repo.mkdir()
+    run = lambda *a: subprocess.run(["git", "-C", str(repo), *a], check=True,
+                                    capture_output=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@example.invalid")
+    run("config", "user.name", "t")
+    (repo / "demos").mkdir()
+    (repo / "ci").mkdir()
+    (repo / "demos" / "x.sh").write_text("calls helper\n")
+    (repo / "ci" / "helper.sh").write_text("v1\n")
+    run("add", "-A")
+    run("commit", "-qm", "first")
+    old = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                         capture_output=True, text=True).stdout.strip()
+    # The helper the objection depended on changes; the scoped path does not.
+    (repo / "ci" / "helper.sh").write_text("v2\n")
+    run("add", "-A")
+    run("commit", "-qm", "second")
+    new = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                         capture_output=True, text=True).stdout.strip()
+
+    eq = ab.git_scope_equivalence(str(repo))
+    # The retirement SURVIVES -- this is the documented, intended behaviour and
+    # also precisely the exposure. Both facts are asserted together on purpose.
+    assert eq(old, new, ("demos/",)) is True
+    # ...and the thing it could not judge is nonetheless named.
+    outside = ab.paths_changed_outside_scope(str(repo), old, new, ("demos/",))
+    assert outside == ["ci/helper.sh"], outside
+    # A scope covering everything that moved reports nothing outside it.
+    assert ab.paths_changed_outside_scope(
+        str(repo), old, new, ("demos/", "ci/")
+    ) == []
+    # Unanswerable inputs report nothing rather than guessing.
+    assert ab.paths_changed_outside_scope(str(repo), old, new, ()) == []
+    assert ab.paths_changed_outside_scope(str(repo), old, "0" * 40, ("demos/",)) == []

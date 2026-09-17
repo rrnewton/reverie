@@ -1150,6 +1150,46 @@ def git_scope_equivalence(checkout: str) -> "Callable[[str, str, tuple[str, ...]
     return equivalent
 
 
+def paths_changed_outside_scope(
+    checkout: str, old: str, new: str, scope: "tuple[str, ...]"
+) -> "list[str]":
+    """Paths that moved between two heads and are NOT covered by `scope`.
+
+    ⚠️ THIS IS OBSERVABILITY, NOT A CHECK, AND THE DIFFERENCE IS THE WHOLE POINT.
+    A scoped retirement's real failure is an objection that is ABOUT the declared
+    paths but DEPENDS on something outside them: an objection that
+    `demos/x.sh` misuses a helper, scoped to `demos/`, revived when the helper
+    changes under `ci/`. The declared paths are genuinely unchanged, so the
+    retirement survives correctly by its own rule while the objection is live
+    again.
+
+    Nothing here can decide that, because deciding it needs to know what the
+    objection depended on and the objection is prose. What this does is stop the
+    situation being INVISIBLE: when a retirement is honoured across a head move,
+    the verdict can name what else moved, so a reader sees the exposure instead
+    of having to suspect it. An unjudged risk that is reported beats an unjudged
+    risk that is silent.
+
+    Returns an empty list when it cannot tell, so absence of a report never
+    implies absence of change.
+    """
+    if not scope or not old or not new:
+        return []
+    out = bounded_capture.git(
+        ["diff", "--name-only", old, new], cwd=checkout
+    )
+    if out.returncode != 0:
+        return []
+    changed = [line.strip() for line in out.stdout.splitlines() if line.strip()]
+    covered = bounded_capture.git(
+        ["diff", "--name-only", old, new, "--", *scope], cwd=checkout
+    )
+    if covered.returncode != 0:
+        return []
+    inside = {line.strip() for line in covered.stdout.splitlines() if line.strip()}
+    return [path for path in changed if path not in inside]
+
+
 def set_scope_equivalence(
     resolver: "Callable[[str, str, tuple[str, ...]], bool] | None",
 ) -> None:
