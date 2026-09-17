@@ -63,12 +63,24 @@ static void init_sbr_plugin(bool switch_client_tls) {
   sbr_init_fn plugin_init = (void *)lib_base + sym_addr;
 
   sbr_bootstrap_install_fn install_bootstrap = NULL;
+  bool continuation = false;
   if (sbr_bootstrap_enabled()) {
     sym_addr = addr_of_elf_symbol(
         abs_plugin_path, "reverie_sabre_install_loader_bootstrap_v1", &valid);
     if (!valid)
       errx(EXIT_FAILURE, "plugin does not support loader bootstrap");
     install_bootstrap = (void *)lib_base + sym_addr;
+  } else {
+    /* A distinct optional symbol preserves existing plugins, including tools
+     * that support initial bootstrap but never requested continuation.
+     */
+    valid = false;
+    sym_addr = addr_of_elf_symbol(
+        abs_plugin_path, "reverie_sabre_install_loader_continuation_v1", &valid);
+    if (valid) {
+      install_bootstrap = (void *)lib_base + sym_addr;
+      continuation = true;
+    }
   }
 
   sym_addr = addr_of_elf_symbol(abs_plugin_path, "calling_from_plugin", &valid);
@@ -101,9 +113,13 @@ static void init_sbr_plugin(bool switch_client_tls) {
    * old loaders/plugins continue to work without the explicit opt-in.
    * This setter only installs a callback; it cannot construct the Rust tool.
    */
-  if (install_bootstrap != NULL &&
-      install_bootstrap(sbr_bootstrap_take_state) != 0)
+  if (continuation) {
+    if (sbr_bootstrap_install_continuation(install_bootstrap) != 0)
+      errx(EXIT_FAILURE, "plugin refused loader continuation callback");
+  } else if (install_bootstrap != NULL &&
+             install_bootstrap(sbr_bootstrap_take_state) != 0) {
     errx(EXIT_FAILURE, "plugin refused loader bootstrap callback");
+  }
 
   // char **orig_plugin_argv = plugin_argv; // Read below.
   sbr_post_load_fn post_load = NULL;

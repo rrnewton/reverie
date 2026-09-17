@@ -14,6 +14,7 @@
 static bool requested;
 static bool image_bound;
 static bool state_taken;
+static bool continuation_enabled;
 
 /* A protocol violation is not a getrandom errno that guest libc may ignore
  * or handle by trying another entropy path. This can run before client TLS
@@ -142,8 +143,22 @@ long sbr_bootstrap_getrandom(long buffer, long length, long flags,
                                   flags, (unsigned long)wrapper_sp);
 }
 
+int sbr_bootstrap_install_continuation(sbr_bootstrap_install_fn install) {
+  if (requested || image_bound || state_taken || continuation_enabled)
+    return -EPROTO;
+  if (install == NULL)
+    return 0;
+  int result = install(sbr_bootstrap_take_state);
+  if (result == -ENOTSUP)
+    return 0;
+  if (result != 0)
+    return result;
+  continuation_enabled = true;
+  return 0;
+}
+
 long sbr_bootstrap_take_state(void *buffer, size_t capacity) {
-  if (!requested || !image_bound || state_taken)
+  if (state_taken || (requested ? !image_bound : !continuation_enabled))
     return -EPROTO;
   if (buffer == NULL || capacity == 0 || capacity > SBR_BOOTSTRAP_MAX_STATE)
     return -EINVAL;

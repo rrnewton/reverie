@@ -25,6 +25,30 @@ static uintptr_t stack_words[13];
 static char private_option[] = SBR_BOOTSTRAP_ENV "=1";
 static char *option_string;
 static bool raw_environment;
+static sbr_bootstrap_take_fn continuation_take;
+static unsigned installer_calls;
+
+static int decline_continuation(sbr_bootstrap_take_fn take) {
+  assert(take == sbr_bootstrap_take_state);
+  ++installer_calls;
+  return -ENOTSUP;
+}
+
+static int reject_continuation(sbr_bootstrap_take_fn take) {
+  assert(take == sbr_bootstrap_take_state);
+  ++installer_calls;
+  return -EIO;
+}
+
+static int accept_continuation(sbr_bootstrap_take_fn take) {
+  unsigned char bytes[32];
+  assert(take == sbr_bootstrap_take_state);
+  /* A setter cannot consume the transport before its successful return. */
+  assert(take(bytes, sizeof(bytes)) == -EPROTO);
+  ++installer_calls;
+  continuation_take = take;
+  return 0;
+}
 
 static void check_raw_environment(bool present) {
   unsigned char bytes[1024];
@@ -64,6 +88,8 @@ static void child_body(bool fail_after_take) {
     assert(setenv(SBR_BOOTSTRAP_ENV, "1", 1) == 0);
   sbr_bootstrap_configure();
   assert(sbr_bootstrap_enabled());
+  assert(sbr_bootstrap_install_continuation(accept_continuation) == -EPROTO);
+  assert(installer_calls == 0);
   prepare_stack();
   assert(ptrace(PTRACE_TRACEME, 0, NULL, NULL) == 0);
   assert(raise(SIGSTOP) == 0);
@@ -114,11 +140,51 @@ static void write_memory(pid_t child, uintptr_t remote, const void *local,
   assert(process_vm_writev(child, &here, 1, &there, 1, 0) == (ssize_t)len);
 }
 
-static void supervised_control(bool fail_after_take) {
+static void continuation_child_body(void) {
+  alarm(8);
+  assert(unsetenv(SBR_BOOTSTRAP_ENV) == 0);
+  sbr_bootstrap_configure();
+  assert(!sbr_bootstrap_enabled());
+  unsigned char output[32];
+  memset(output, 0x5a, sizeof(output));
+  assert(sbr_bootstrap_install_continuation(NULL) == 0);
+  assert(installer_calls == 0);
+  assert(sbr_bootstrap_take_state(output, sizeof(output)) == -EPROTO);
+  assert(sbr_bootstrap_install_continuation(decline_continuation) == 0);
+  assert(installer_calls == 1);
+  assert(sbr_bootstrap_take_state(output, sizeof(output)) == -EPROTO);
+  assert(sbr_bootstrap_install_continuation(reject_continuation) == -EIO);
+  assert(installer_calls == 2);
+  assert(sbr_bootstrap_take_state(output, sizeof(output)) == -EPROTO);
+  assert(sbr_bootstrap_install_continuation(accept_continuation) == 0);
+  assert(installer_calls == 3);
+  assert(sbr_bootstrap_install_continuation(accept_continuation) == -EPROTO);
+  assert(installer_calls == 3);
+  assert(!sbr_bootstrap_enabled());
+  sbr_bootstrap_image(NULL, NULL);
+  assert(sbr_bootstrap_getrandom((long)output, 8, 1, NULL) == -EPROTO);
+  assert(continuation_take(NULL, 0) == -EINVAL);
+  assert(ptrace(PTRACE_TRACEME, 0, NULL, NULL) == 0);
+  assert(raise(SIGSTOP) == 0);
+  assert(continuation_take(output, sizeof(output)) == -ESTALE);
+  assert(continuation_take(output, 4) == -EMSGSIZE);
+  for (size_t i = 0; i < sizeof(output); ++i)
+    assert(output[i] == 0x5a);
+  assert(continuation_take(output, sizeof(output)) == 16);
+  assert(memcmp(output, "continue-payload", 16) == 0 && output[16] == 0x5a);
+  assert(continuation_take(output, sizeof(output)) == -EPROTO);
+  assert(sbr_bootstrap_getrandom((long)output, 8, 1, NULL) == -EPROTO);
+  _exit(0);
+}
+
+static void supervised_control(bool fail_after_take, bool continuation) {
   pid_t child = fork();
   assert(child >= 0);
-  if (child == 0)
+  if (child == 0) {
+    if (continuation)
+      continuation_child_body();
     child_body(fail_after_take);
+  }
   int status;
   assert(waitpid(child, &status, 0) == child);
   assert(WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP);
@@ -133,7 +199,7 @@ static void supervised_control(bool fail_after_take) {
     assert(waitpid(child, &status, 0) == child);
     if (WIFEXITED(status)) {
       assert(WEXITSTATUS(status) == (fail_after_take ? EXIT_FAILURE : 0));
-      assert(requests == 6 && !handled);
+      assert(requests == (continuation ? 3 : 6) && !handled);
       return;
     }
     assert(WIFSTOPPED(status) && WSTOPSIG(status) == (SIGTRAP | 0x80));
@@ -145,7 +211,23 @@ static void supervised_control(bool fail_after_take) {
       assert(sbr_bootstrap_syscall_v1[0] == 0x0f &&
              sbr_bootstrap_syscall_v1[1] == 0x05);
       ++requests;
-      if (requests == 1) {
+      if (continuation) {
+        /* This checks actual loader transport, not the consumer's proof of
+         * an exec/static image. No IMAGE or GETRANDOM request is permitted. */
+        assert(regs.rsi == SBR_BOOTSTRAP_TAKE_STATE);
+        assert(regs.r8 == SBR_BOOTSTRAP_VERSION && regs.r9 == 0);
+        if (requests == 1) {
+          assert(regs.r10 == 32);
+          pending = -ESTALE;
+        } else if (requests == 2) {
+          assert(regs.r10 == 4);
+          pending = -EMSGSIZE;
+        } else {
+          assert(requests == 3 && regs.r10 == 32);
+          write_memory(child, regs.rdx, "continue-payload", 16);
+          pending = 16;
+        }
+      } else if (requests == 1) {
         assert(regs.rsi == SBR_BOOTSTRAP_IMAGE);
         assert(regs.rdx == (uintptr_t)stack_words);
         assert(regs.r10 == (uintptr_t)prepare_stack);
@@ -250,7 +332,7 @@ int main(int argc, char **argv) {
   alarm(10);
   if (argc == 2 && strcmp(argv[1], "raw-environment") == 0) {
     raw_environment = true;
-    supervised_control(false);
+    supervised_control(false, false);
     return 0;
   }
   assert(argc == 1);
@@ -259,8 +341,9 @@ int main(int argc, char **argv) {
   assert(!sbr_bootstrap_enabled());
   sbr_bootstrap_image(NULL, NULL);
   assert(sbr_bootstrap_take_state(NULL, 0) == -EPROTO);
-  supervised_control(false);
-  supervised_control(true);
+  supervised_control(false, false);
+  supervised_control(true, false);
+  supervised_control(false, true);
   uninitialized_phase_control();
   absent_supervisor_control();
   raw_environment_control();
