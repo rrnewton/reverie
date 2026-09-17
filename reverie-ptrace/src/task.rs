@@ -2104,8 +2104,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .handle_signal(stopped, sig)
                 .await
                 .tracee_context(tid, "handle signal-delivery stop"),
-            Event::Exec(_new_pid) => self
-                .handle_exec_event(stopped)
+            Event::Exec(former_tid) => self
+                .handle_exec_event(stopped, former_tid)
                 .await
                 .tracee_context(tid, "handle exec stop"),
             Event::Seccomp => self.handle_seccomp(stopped).await,
@@ -2801,9 +2801,33 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
-    // handle ptrace exec event
-    async fn handle_exec_event(&mut self, task: Stopped) -> Result<Wait, TraceError> {
+    fn reject_liteinst_nonleader_exec(&mut self, former_tid: Pid) -> TraceError {
+        self.record_liteinst_failure(
+            LiteinstActivationFailureReason::PostStartExec,
+            Error::runtime(
+                self.tid(),
+                "reject LiteInst post-start exec",
+                format!(
+                    "exec requires the original thread-group leader (former tid {former_tid}, event tid {}, pid {})",
+                    self.tid(), self.pid()
+                ),
+            ),
+        );
+        Errno::ENOTSUPP.into()
+    }
+
+    // PTRACE_GETEVENTMSG reports the caller's former TID. A nonleader exec
+    // already has the leader's TID at this stop, so is_main_thread alone cannot
+    // establish which thread replaced the image.
+    async fn handle_exec_event(
+        &mut self,
+        task: Stopped,
+        former_tid: Pid,
+    ) -> Result<Wait, TraceError> {
         if self.global_state.liteinst_runtime.is_some() {
+            if former_tid != self.tid() {
+                return Err(self.reject_liteinst_nonleader_exec(former_tid));
+            }
             let state = self.liteinst_runtime.lock().unwrap();
             if state.phase != LiteinstRuntimePhase::PreExec
                 && !(state.phase == LiteinstRuntimePhase::Ready && self.is_main_thread())
@@ -4634,18 +4658,27 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.resume_stopped(stopped, None)?.next_state().await
     }
 
+    async fn wait_after_exit_event(
+        task: Stopped,
+        held_root_stop: Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+    ) -> Result<Wait, TraceError> {
+        // de_thread can replace the leader after its PTRACE_EVENT_EXIT, so
+        // this wait may report Exec with the caller's former TID, not death.
+        if let Some(slot) = held_root_stop.as_ref() {
+            HeldRootStop::supersede_with_exit(slot, &task)?;
+        }
+        RootStopLease::new(task, held_root_stop)
+            .resume(None)?
+            .next_state()
+            .await
+    }
+
+    #[cfg(test)]
     pub(crate) async fn handle_exit_event(
         task: Stopped,
         held_root_stop: Option<Arc<StdMutex<Option<HeldRootStop>>>>,
     ) -> Result<ExitStatus, TraceError> {
-        // Nothing to do but resume and wait for the final exit status.
-        if let Some(slot) = held_root_stop.as_ref() {
-            HeldRootStop::supersede_with_exit(slot, &task)?;
-        }
-        let wait = RootStopLease::new(task, held_root_stop)
-            .resume(None)?
-            .next_state()
-            .await?;
+        let wait = Self::wait_after_exit_event(task, held_root_stop).await?;
         let (_pid, exit_status) = wait.assume_exited();
         Ok(exit_status)
     }
@@ -4914,7 +4947,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Arc::clone(&runtime.session_failure_changed),
             )
         });
-        let outcome = {
+        let completion = {
             let exit_event = child.exit_event().fuse();
             let run_loop = self.run_loop(child).fuse();
             let session_failure = async move {
@@ -4934,19 +4967,40 @@ impl<L: Tool + 'static> TracedTask<L> {
 
             futures::select_biased! {
                 task = exit_event => match task {
-                    Ok(task) => {
-                        match Self::handle_exit_event(task, exit_held_root_stop).await {
-                        Ok(exit_status) => Ok(exit_status),
-                        Err(err) => handle_internal_error(err.into()).await,
-                        }
-                    }
-                    Err(err) => handle_internal_error(err.into()).await,
+                    Ok(task) => Either::Left(Self::wait_after_exit_event(task, exit_held_root_stop).await),
+                    Err(err) => Either::Left(Err(err)),
                 },
-                message = session_failure => Err(anyhow::anyhow!(
+                message = session_failure => Either::Right(Err(anyhow::anyhow!(
                     "LiteInst session failed closed in a non-root task: {message}"
-                ).into()),
-                exit_status = run_loop => exit_status,
+                ).into())),
+                exit_status = run_loop => Either::Right(exit_status),
             }
+        };
+        // Drop the old run-loop future before mutating its owner. The stopped
+        // event carries the existing notifier generation; re-arm that exact
+        // stop before publishing failure so session cleanup can consume it.
+        let outcome = match completion {
+            Either::Left(Ok(wait @ Wait::Stopped(_, Event::Exec(former_tid))))
+                if self.global_state.liteinst_runtime.is_some() && former_tid != self.tid() =>
+            {
+                self.arm_liteinst_wait(&wait);
+                let (stopped, _) = wait.assume_stopped();
+                // SAFETY: this branch owns the continuation of the single
+                // ExitFuture-minted Stopped. wait_after_exit_event consumed
+                // that capability through resume, and the old run-loop future
+                // was dropped above. Retire its claimed exit permission before
+                // handing the actual Exec stop to cancellation cleanup.
+                match unsafe { stopped.terminal_cleanup().revoke_owned_exit_stop() } {
+                    Ok(()) => {
+                        let error = self.reject_liteinst_nonleader_exec(former_tid);
+                        handle_internal_error(error.into()).await
+                    }
+                    Err(error) => Err(error.into()),
+                }
+            }
+            Either::Left(Ok(wait)) => Ok(wait.assume_exited().1),
+            Either::Left(Err(error)) => handle_internal_error(error.into()).await,
+            Either::Right(outcome) => outcome,
         };
         if outcome.is_ok() && self.global_state.liteinst_runtime.is_some() {
             let phase = self.liteinst_runtime.lock().unwrap().phase;
@@ -5343,9 +5397,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                         .await?;
                     Ok(Ok(ret))
                 }
-                Event::Exec(_new_pid) => {
+                Event::Exec(former_tid) => {
                     // This should never return.
-                    let next_state = self.handle_exec_event(stopped).await?;
+                    let next_state = self.handle_exec_event(stopped, former_tid).await?;
                     self.execve(next_state).await
                 }
                 Event::Syscall => {
