@@ -335,6 +335,203 @@ async fn host_hybrid_failed_exec_preserves_installed_site() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_worker_exec_is_refused_and_reaped() {
+    for mode in ["worker", "worker-execveat"] {
+        let (_directory, guest) = compile_fixture("hybrid_thread_exec.c");
+        let files = tempfile::tempdir().unwrap();
+        let ids = files.path().join("ids");
+        let marker = files.path().join("entered");
+        let mut command = Command::new(guest);
+        command.arg(mode).arg(&ids).arg(&marker);
+        let unrelated = UnrelatedStoppedProcess::spawn();
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            LiteinstBackend::run_host_with_output_and_preload::<ExecTool>(
+                command,
+                (),
+                preload_path(),
+            ),
+        )
+        .await
+        .expect("nonleader exec did not reach session cleanup");
+        let error = result.expect_err("nonleader exec unexpectedly reported success");
+        let ids = fs::read_to_string(ids).unwrap();
+        let ids = ids
+            .split_whitespace()
+            .map(|id| id.parse::<u32>().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 2, "{ids:?}");
+        let (pid, former_tid) = (ids[0], ids[1]);
+        assert_ne!(pid, former_tid, "the exec caller was not a worker");
+        let text = error.to_string();
+        assert_eq!(
+            text,
+            format!(
+                "reject LiteInst post-start exec failed for tracee {pid}: exec requires the original thread-group leader (former tid {former_tid}, event tid {pid}, pid {pid})"
+            ),
+            "mode={mode}: nonleader exec did not retain its precise refusal"
+        );
+        assert!(!marker.exists(), "nonleader exec reached application entry");
+        eprintln!("mode={mode}: {text}; identities={ids:?}");
+        assert_pid_reaped(pid);
+        assert_pid_reaped(former_tid);
+        unrelated.assert_live_and_unreaped();
+        unrelated.kill_and_reap();
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_worker_failed_exec_preserves_the_running_image() {
+    let (_directory, guest) = compile_fixture("hybrid_thread_exec.c");
+    let files = tempfile::tempdir().unwrap();
+    let ids = files.path().join("ids");
+    let marker = files.path().join("entered");
+    let mut command = Command::new(guest);
+    command.arg("failed").arg(&ids).arg(&marker);
+    let (output, global) = tokio::time::timeout(
+        Duration::from_secs(3),
+        LiteinstBackend::run_host_with_output_and_preload::<ExecTool>(command, (), preload_path()),
+    )
+    .await
+    .expect("worker failed exec did not continue")
+    .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"worker-failed-exec-preserved\n");
+    assert!(!marker.exists(), "failed exec replaced the application");
+    let events = global.events.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.0 == 0)
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![(0, 4, 0)],
+        "{events:?}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.0 == 1)
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![(1, 4, 0), (1, 4, 1)],
+        "{events:?}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.0 == 2)
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![
+            (2, Sysno::execve as u64, 0),
+            (2, Sysno::execve as u64, 0),
+            (2, Sysno::execveat as u64, 0)
+        ],
+        "{events:?}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.0 == 3)
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![
+            (3, Sysno::execve as u64, libc::ENOENT as u64),
+            (3, Sysno::execveat as u64, libc::ENOENT as u64)
+        ],
+        "{events:?}"
+    );
+    let ids = fs::read_to_string(ids).unwrap();
+    let ids = ids
+        .split_whitespace()
+        .map(|id| id.parse::<u32>().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert_ne!(ids[0], ids[1]);
+    assert_pid_reaped(ids[0]);
+    assert_pid_reaped(ids[1]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_exec_during_preinit_is_refused_and_reaped() {
+    let (_directory, guest) = compile_fixture("hybrid_exec_during_preinit.c");
+    let files = tempfile::tempdir().unwrap();
+    let ids = files.path().join("pid");
+    let marker = files.path().join("entered");
+    let mut command = Command::new(guest);
+    command.arg("start").arg(&ids).arg(&marker);
+    let error = run_fail_closed_and_assert_reaped(command, &ids).await;
+    let pid = fs::read_to_string(ids).unwrap();
+    let pid = pid.trim().parse::<u32>().unwrap();
+    assert!(
+        error.to_string().contains(&format!(
+            "reject LiteInst post-start exec failed for tracee {pid}: exec requires an activated thread-group leader (phase Waiting, tid {pid}, pid {pid})"
+        )),
+        "exec during real ELF preinit did not retain its phase refusal: {error}"
+    );
+    assert!(!marker.exists(), "preinit exec reached application entry");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_leader_exec_with_a_live_sibling_reactivates() {
+    let (_directory, guest) = compile_fixture("hybrid_thread_exec.c");
+    let files = tempfile::tempdir().unwrap();
+    let ids = files.path().join("ids");
+    let marker = files.path().join("entered");
+    let mut command = Command::new(guest);
+    command.arg("leader").arg(&ids).arg(&marker);
+    let (output, global) = tokio::time::timeout(
+        Duration::from_secs(3),
+        LiteinstBackend::run_host_with_output_and_preload::<ExecTool>(command, (), preload_path()),
+    )
+    .await
+    .expect("leader exec with a live sibling did not complete")
+    .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"threaded-leader-exec-followed\n");
+    assert_eq!(fs::read(marker).unwrap(), b"entered\n");
+    let events = global.events.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.0 == 0)
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![(0, 4, 0); 2],
+        "{events:?}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.0 == 1)
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![(1, 4, 0)],
+        "{events:?}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.0 == 2)
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![(2, Sysno::execve as u64, 0); 2],
+        "{events:?}"
+    );
+    assert!(!events.iter().any(|e| e.0 == 3), "{events:?}");
+    let ids = fs::read_to_string(ids).unwrap();
+    let ids = ids
+        .split_whitespace()
+        .map(|id| id.parse::<u32>().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert_ne!(ids[0], ids[1]);
+    assert_pid_reaped(ids[0]);
+    assert_pid_reaped(ids[1]);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn host_hybrid_exec_requires_preload_and_selector_before_entry() {
     let (_directory, guest) = compile_fixture("hybrid_exec_generation.c");
     let markers = tempfile::tempdir().unwrap();
@@ -915,7 +1112,7 @@ impl Drop for UnrelatedStoppedProcess {
 
 fn is_original_liteinst_session_refusal(text: &str, operation: &str) -> bool {
     text.contains("LiteInst session failed closed in a non-root task")
-        && text.contains(operation)
+        && text.contains(&format!("{operation} failed for tracee "))
         && !text.contains("LiteInst tracee cleanup failed")
         && !text.contains("notifier did not acknowledge terminal cleanup")
 }
@@ -930,12 +1127,28 @@ fn assert_original_liteinst_session_refusal(error: &Error, operation: &str) {
 
 #[test]
 fn session_refusal_assertion_rejects_terminal_cleanup_wrapper() {
-    let original = "LiteInst session failed closed in a non-root task: refused vfork";
+    let original = "LiteInst session failed closed in a non-root task: refuse vfork under the LiteInst hybrid failed for tracee 42: vfork child refused";
     let wrapped = format!(
         "LiteInst tracee cleanup failed after {original}: notifier did not acknowledge terminal cleanup"
     );
-    assert!(is_original_liteinst_session_refusal(original, "vfork"));
-    assert!(!is_original_liteinst_session_refusal(&wrapped, "vfork"));
+    assert!(is_original_liteinst_session_refusal(
+        original,
+        "refuse vfork under the LiteInst hybrid"
+    ));
+    assert!(!is_original_liteinst_session_refusal(
+        &wrapped,
+        "refuse vfork under the LiteInst hybrid"
+    ));
+    let entry = "LiteInst session failed closed in a non-root task: verify LiteInst runtime before executable entry failed for tracee 42: before the required preload handshake completed";
+    assert!(is_original_liteinst_session_refusal(
+        entry,
+        "verify LiteInst runtime before executable entry"
+    ));
+    assert!(!is_original_liteinst_session_refusal(entry, "exec"));
+    assert!(!is_original_liteinst_session_refusal(
+        entry,
+        "reject LiteInst post-start exec"
+    ));
 }
 
 async fn wait_for_pid_file(pid_file: &std::path::Path) -> u32 {
@@ -1100,7 +1313,7 @@ async fn loader_cpu_events_are_determinized_before_ready_and_entry_is_restored()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn post_start_exec_that_drops_the_preload_fails_closed() {
+async fn exec_without_preload_reaches_application_entry_guard() {
     let (_directory, guest) = compile_fixture("hybrid_exec_drop_preload.c");
     let pid_directory = tempfile::tempdir().unwrap();
     let pid_file = pid_directory.path().join("guest.pid");
@@ -1496,7 +1709,7 @@ async fn hybrid_follows_a_grandchild() {
 /// The original session failure and pending-exit cleanup controls remain
 /// necessary now that exec with an inherited preload is supported.
 #[tokio::test(flavor = "current_thread")]
-async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
+async fn a_child_missing_preload_fails_the_session_instead_of_reporting_success() {
     let (_directory, guest) = compile_fixture("hybrid_fork_exec.c");
     let name = unique_process_name();
     let pid_directory = tempfile::tempdir().unwrap();
@@ -1521,7 +1734,15 @@ async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
         ),
         Err(error) => error,
     };
-    assert_original_liteinst_session_refusal(&error, "exec");
+    assert_original_liteinst_session_refusal(
+        &error,
+        "verify LiteInst runtime before executable entry",
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("before the required preload handshake completed")
+    );
     let root_pid: u32 = fs::read_to_string(&pid_file)
         .unwrap()
         .trim()
@@ -1545,7 +1766,7 @@ async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn post_start_exec_refusal_reaches_cleanup_while_process_exit_is_pending() {
+async fn missing_preload_entry_guard_reaches_cleanup_while_process_exit_is_pending() {
     let (_directory, guest) = compile_fixture("hybrid_fork_exec.c");
     let name = unique_process_name();
     let pid_directory = tempfile::tempdir().unwrap();
@@ -1560,9 +1781,17 @@ async fn post_start_exec_refusal_reaches_cleanup_while_process_exit_is_pending()
         >(command, (), preload_path()),
     )
     .await
-    .expect("post-start exec refusal never reached session cleanup");
-    let error = result.expect_err("post-start exec refusal reported success");
-    assert_original_liteinst_session_refusal(&error, "exec");
+    .expect("missing-preload entry guard never reached session cleanup");
+    let error = result.expect_err("missing-preload entry guard reported success");
+    assert_original_liteinst_session_refusal(
+        &error,
+        "verify LiteInst runtime before executable entry",
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("before the required preload handshake completed")
+    );
 
     let root_pid: u32 = fs::read_to_string(&pid_file)
         .unwrap()
@@ -1570,13 +1799,16 @@ async fn post_start_exec_refusal_reaches_cleanup_while_process_exit_is_pending()
         .parse()
         .unwrap();
     assert_pid_reaped(root_pid);
-    assert_processes_named_eventually_reaped(&name, "refused exec left a LiteInst process behind");
+    assert_processes_named_eventually_reaped(
+        &name,
+        "missing-preload entry failure left a LiteInst process behind",
+    );
 }
 
 /// A root that has already exited must stop joining its child when that child
-/// refuses post-start exec, even if the child's Tool exit callback is pending.
+/// reaches the missing-preload entry guard, even if its Tool exit callback is pending.
 #[tokio::test(flavor = "current_thread")]
-async fn post_start_exec_refusal_cancels_root_join_while_process_exit_is_pending() {
+async fn missing_preload_entry_guard_cancels_root_join_while_process_exit_is_pending() {
     let (_directory, guest) = compile_fixture("hybrid_fork_exec_after_root_exit.c");
     let name = unique_process_name();
     let pid_directory = tempfile::tempdir().unwrap();
@@ -1592,9 +1824,17 @@ async fn post_start_exec_refusal_cancels_root_join_while_process_exit_is_pending
         >(command, (), preload_path()),
     )
     .await
-    .expect("post-start exec refusal did not cancel the root's child join");
-    let error = result.expect_err("post-start exec refusal reported success");
-    assert_original_liteinst_session_refusal(&error, "exec");
+    .expect("missing-preload entry guard did not cancel the root's child join");
+    let error = result.expect_err("missing-preload entry guard reported success");
+    assert_original_liteinst_session_refusal(
+        &error,
+        "verify LiteInst runtime before executable entry",
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("before the required preload handshake completed")
+    );
 
     let root_pid: u32 = fs::read_to_string(&pid_file)
         .unwrap()
@@ -1602,7 +1842,10 @@ async fn post_start_exec_refusal_cancels_root_join_while_process_exit_is_pending
         .parse()
         .unwrap();
     assert_pid_reaped(root_pid);
-    assert_processes_named_eventually_reaped(&name, "refused exec left a LiteInst process behind");
+    assert_processes_named_eventually_reaped(
+        &name,
+        "missing-preload entry failure left a LiteInst process behind",
+    );
     unrelated.assert_live_and_unreaped();
     unrelated.kill_and_reap();
 }
@@ -1634,7 +1877,7 @@ async fn vfork_in_a_forked_child_fails_the_session_after_root_exit() {
         ),
         Err(error) => error,
     };
-    assert_original_liteinst_session_refusal(&error, "vfork");
+    assert_original_liteinst_session_refusal(&error, "refuse vfork under the LiteInst hybrid");
     let root_pid: u32 = fs::read_to_string(&pid_file)
         .unwrap()
         .trim()
