@@ -9,6 +9,7 @@
 //! This library provides an ergonomic interface writing SaBRe plugins with
 //! Rust.
 
+pub mod bootstrap;
 mod callbacks;
 pub mod ffi;
 #[doc(hidden)]

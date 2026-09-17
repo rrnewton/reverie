@@ -18,6 +18,7 @@
 #include <syscall.h>
 
 #include "elf_loading.h"
+#include "bootstrap.h"
 #include "global_vars.h"
 #include "ld_sc_handler.h"
 #include "loader/rewriter.h"
@@ -61,6 +62,15 @@ static void init_sbr_plugin(bool switch_client_tls) {
   assert(valid == true && "No symbol 'sbr_init'");
   sbr_init_fn plugin_init = (void *)lib_base + sym_addr;
 
+  sbr_bootstrap_install_fn install_bootstrap = NULL;
+  if (sbr_bootstrap_enabled()) {
+    sym_addr = addr_of_elf_symbol(
+        abs_plugin_path, "reverie_sabre_install_loader_bootstrap_v1", &valid);
+    if (!valid)
+      errx(EXIT_FAILURE, "plugin does not support loader bootstrap");
+    install_bootstrap = (void *)lib_base + sym_addr;
+  }
+
   sym_addr = addr_of_elf_symbol(abs_plugin_path, "calling_from_plugin", &valid);
   assert(valid == true && "No symbol 'calling_from_plugin'");
   calling_from_plugin = (void *)lib_base + sym_addr;
@@ -86,6 +96,14 @@ static void init_sbr_plugin(bool switch_client_tls) {
 
   // TODO(andronat): Support client argv editing.
   enter_plugin();
+
+  /* Optional, separate symbol: the existing sbr_init ABI is unchanged, and
+   * old loaders/plugins continue to work without the explicit opt-in.
+   * This setter only installs a callback; it cannot construct the Rust tool.
+   */
+  if (install_bootstrap != NULL &&
+      install_bootstrap(sbr_bootstrap_take_state) != 0)
+    errx(EXIT_FAILURE, "plugin refused loader bootstrap callback");
 
   // char **orig_plugin_argv = plugin_argv; // Read below.
   sbr_post_load_fn post_load = NULL;

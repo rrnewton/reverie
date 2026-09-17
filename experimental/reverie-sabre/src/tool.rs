@@ -56,6 +56,16 @@ pub trait Tool {
     {
         None
     }
+
+    /// Opts into the supervised initial-image bootstrap protocol. The tool
+    /// must consume and validate its opaque state before guest callbacks use
+    /// newly initialized thread state. Existing tools are unchanged by default.
+    fn supports_loader_bootstrap() -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
     /// This is called in place of a system call. For example, if the program
     /// called the `open` syscall, this callback would be called instead. By
     /// default, the real syscall is simply called.

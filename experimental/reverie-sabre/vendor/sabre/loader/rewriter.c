@@ -23,6 +23,7 @@
 
 #include <asm/unistd.h>
 #include <assert.h>
+#include "bootstrap.h"
 #include <errno.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -442,6 +443,20 @@ static void patch_vdso(struct library *lib) {
     detour_func(lib, lib->asr_offset + sym->sym.st_value,
                 lib->asr_offset + sym->sym.st_value + sym->sym.st_size,
                 SYS_clock_gettime, &extra_space, &extra_len);
+  }
+
+  if (sbr_bootstrap_enabled()) {
+    /* Keep the vDSO's five-argument getrandom ABI and ChaCha/state algorithm.
+     * Only its actual kernel syscall instructions enter the ordinary router.
+     * Do this once in the initial rewrite, never by rewriting an already
+     * detoured library again after plugin registration.
+     */
+    sym = symbol_find(lib->symbol_hash, "__vdso_getrandom");
+    if (sym != NULL && sym->sym.st_value != 0 && sym->sym.st_size != 0) {
+      char *start = lib->asr_offset + sym->sym.st_value;
+      patch_syscalls_in_range(lib, start, start + sym->sym.st_size,
+                              &extra_space, &extra_len, false);
+    }
   }
 
   if (extra_space != NULL) {
