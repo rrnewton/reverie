@@ -12,6 +12,12 @@ endif()
 
 add_library(reverie_dbt_client SHARED client.c)
 configure_DynamoRIO_client(reverie_dbt_client)
+
+# DynamoRIO's private x86 loader does not implement R_X86_64_TLSDESC.
+# Match Hermit's installed-client producer when GNU defaults to GNU2 TLS.
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(reverie_dbt_client PRIVATE -mtls-dialect=gnu)
+endif()
 use_DynamoRIO_extension(reverie_dbt_client drmgr)
 use_DynamoRIO_extension(reverie_dbt_client drreg)
 use_DynamoRIO_extension(reverie_dbt_client drx)
