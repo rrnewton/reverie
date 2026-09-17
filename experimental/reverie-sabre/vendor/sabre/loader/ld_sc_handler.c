@@ -198,6 +198,41 @@ static int intercept_sbr(struct mem_chunk mmaps[]) {
 static unsigned long loader_tls_addr;
 static unsigned long client_tls_addr;
 
+static __attribute__((noreturn)) void
+intercept_tls_fatal(const char *message, size_t length) {
+  // Failure may leave either TLS domain active. Do not use loader libc here.
+  real_syscall(SYS_write, STDERR_FILENO, (long)message, length, 0, 0, 0);
+  real_syscall(SYS_exit_group, 127, 0, 0, 0, 0, 0);
+  __builtin_unreachable();
+}
+
+void load_intercept_tls(unsigned long address) {
+  // Use the raw syscall: crossing TLS domains must not consult libc errno.
+  if (real_syscall(SYS_arch_prctl, ARCH_SET_FS, address, 0, 0, 0, 0) != 0)
+    intercept_tls_fatal("Failed to switch function-intercept TLS\n",
+                        sizeof("Failed to switch function-intercept TLS\n") - 1);
+}
+
+bool enter_intercept_loader_tls(struct intercept_tls_context *context) {
+  if (loader_tls_addr == 0)
+    return false; // Static initialization retains the original later full pass.
+  if (client_tls_addr == 0)
+    intercept_tls_fatal("Missing client TLS for function intercept\n",
+                        sizeof("Missing client TLS for function intercept\n") - 1);
+  if (real_syscall(SYS_arch_prctl, ARCH_GET_FS, (long)&context->caller,
+                   0, 0, 0, 0) != 0)
+    intercept_tls_fatal("Failed to read function-intercept TLS\n",
+                        sizeof("Failed to read function-intercept TLS\n") - 1);
+  // The existing loader/client pair belongs to initial serial setup; do not
+  // apply it to an unrelated thread's registration callback.
+  if (context->caller != client_tls_addr)
+    intercept_tls_fatal("Function-intercept registration outside initial client TLS\n",
+                        sizeof("Function-intercept registration outside initial client TLS\n") - 1);
+  context->loader = loader_tls_addr;
+  load_intercept_tls(context->loader);
+  return true;
+}
+
 void load_sabre_tls() {
   assert(client_tls_addr != 0 && loader_tls_addr != 0);
   if (syscall(SYS_arch_prctl, ARCH_SET_FS, loader_tls_addr) == -1)

@@ -56,5 +56,9 @@ int which_lib_name_interesting(const char *interesting_libs[],
                                const char *pathname);
 void memorymaps_rewrite_all(const char *libs[], const char *bin, bool loader);
 void memorymaps_rewrite_lib(const char *libname);
+struct intercept_tls_context;
+/* Caller owns loader TLS; callback TLS is restored only during its callback. */
+void memorymaps_patch_intercept(int index,
+                                const struct intercept_tls_context *tls);
 
 #endif /* LIBRARY_H_ */
