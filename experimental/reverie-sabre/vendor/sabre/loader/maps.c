@@ -306,10 +306,9 @@ struct maps *maps_read(const char *libname) {
         if (flags[2] == 'x')
           perms |= PROT_EXEC;
 
-        if (flags[3] == 'p')
-          perms |= MAP_PRIVATE;
-        else if (flags[3] == 's')
-          perms |= MAP_SHARED;
+        // mprotect accepts PROT_* only. MAP_PRIVATE aliases PROT_WRITE,
+        // so mixing mapping flags here makes read-only regions writable
+        // when library_make_writable restores their original protections.
         reg->perms = perms;
 
         // Set region offset
