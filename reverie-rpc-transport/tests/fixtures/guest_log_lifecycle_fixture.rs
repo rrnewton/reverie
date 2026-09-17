@@ -5,6 +5,8 @@ use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::time::Duration;
 
+mod owned_lifecycle;
+
 use reverie_rpc_transport::guest_log::Options;
 use reverie_rpc_transport::guest_log::Phase;
 use reverie_rpc_transport::guest_log::PublishError;
@@ -86,6 +88,25 @@ fn producer(mode: &str, fd: i32) {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().collect();
+    if arguments.get(1).map(String::as_str) == Some("--ownership-control") {
+        ownership_control(&arguments[2]);
+        return;
+    }
+    if arguments.get(1).map(String::as_str) == Some("--ownership-leader") {
+        ownership_leader();
+    }
+    if arguments.get(1).map(String::as_str) == Some("--ownership-holder") {
+        use std::io::Write;
+        println!("holder keeps stdout open");
+        eprintln!("holder keeps stderr open");
+        std::io::stdout().flush().unwrap();
+        let fd: i32 = arguments[2].parse().unwrap();
+        assert_eq!(unsafe { libc::write(fd, b"R".as_ptr().cast(), 1) }, 1);
+        assert_eq!(unsafe { libc::close(fd) }, 0);
+        loop {
+            unsafe { libc::pause() };
+        }
+    }
     if arguments.get(1).map(String::as_str) == Some("--producer") {
         producer(&arguments[2], arguments[3].parse().unwrap());
         return;
@@ -175,4 +196,91 @@ fn main() {
         );
     }
     println!("ordinary lifecycle case completed and descendants reaped: {mode}");
+}
+
+fn ownership_leader() -> ! {
+    use std::io::Read;
+    use std::io::Write;
+    let (mut ready, child_ready) = std::os::unix::net::UnixStream::pair().unwrap();
+    let fd = child_ready.as_raw_fd();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command.args(["--ownership-holder", &fd.to_string()]);
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = command.spawn().unwrap();
+    drop(child_ready);
+    let mut byte = [0];
+    ready.read_exact(&mut byte).unwrap();
+    assert_eq!(byte, *b"R");
+    println!("leader={} holder={}", std::process::id(), child.id());
+    std::io::stdout().flush().unwrap();
+    std::process::exit(17);
+}
+
+fn ownership_control(mode: &str) {
+    assert_eq!(
+        unsafe { libc::getpid() },
+        unsafe { libc::syscall(libc::SYS_gettid) } as i32
+    );
+    assert_eq!(std::fs::read_dir("/proc/self/task").unwrap().count(), 1);
+    assert_eq!(
+        unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) },
+        0
+    );
+    assert!(["early-exit", "single-signal"].contains(&mode));
+    let start = std::time::Instant::now();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command.arg("--ownership-leader");
+    let (output, signals) = owned_lifecycle::run(command, Duration::from_secs(2)).unwrap();
+    assert!(start.elapsed() < Duration::from_secs(2));
+    assert_eq!(output.status.code(), Some(17));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stdout.contains("holder keeps stdout open\n"), "{stdout}");
+    assert_eq!(stderr, "holder keeps stderr open\n");
+    let identity = stdout
+        .lines()
+        .find(|line| line.starts_with("leader="))
+        .unwrap();
+    let (leader, holder) = identity.split_once(' ').unwrap();
+    let leader: i32 = leader.strip_prefix("leader=").unwrap().parse().unwrap();
+    let holder: i32 = holder.strip_prefix("holder=").unwrap().parse().unwrap();
+    // run() has already dropped its guard. Count actual syscalls, including
+    // any unsuccessful attempt made by Drop after the leader was reaped.
+    assert_eq!(signals, vec![(-leader, 0, None)]);
+    let mut status = 0;
+    assert_eq!(
+        unsafe { libc::waitpid(leader, &mut status, libc::WNOHANG) },
+        -1
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ECHILD)
+    );
+    // This fresh control process is the orphan's actual subreaper. No global
+    // libtest reaper or unowned sleep process is left behind by this regression.
+    loop {
+        let reaped = unsafe { libc::waitpid(holder, &mut status, libc::WNOHANG) };
+        if reaped == holder {
+            break;
+        }
+        assert_eq!(reaped, 0);
+        assert!(start.elapsed() < Duration::from_secs(2));
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(libc::WIFSIGNALED(status));
+    assert_eq!(libc::WTERMSIG(status), libc::SIGKILL);
+    assert_eq!(unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ECHILD)
+    );
+    println!("actual cleanup signals: {signals:?}; leader and holder reaped");
+    println!("ownership control completed: {mode}");
 }

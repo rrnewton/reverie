@@ -180,6 +180,13 @@ fn send_descriptor(socket: &UnixStream, fd: &OwnedFd, mut tag: [u8; 4]) -> io::R
 /// one serialized producer, and exactly one collector consumes it. These
 /// obligations cover aliases and descendants until every mapping is released.
 /// Retain guest lifetime endpoints through all admitted writer activity.
+///
+/// ```compile_fail,E0133
+/// use reverie_rpc_transport::guest_log as g;
+/// fn requires_ownership_contract(options: g::Options) {
+///     let _ = g::channel_pair(options);
+/// }
+/// ```
 pub unsafe fn channel_pair(options: Options) -> io::Result<(UnixStream, UnixStream)> {
     channel_pair_version(options, None)
 }
@@ -307,6 +314,13 @@ impl SharedBuffer {
     /// exclusive producer/consumer frame ownership. Size seals do not prevent
     /// writes. The borrowed endpoint is not consumed; retain it as required by
     /// the lifetime protocol. Validation cannot make an untrusted writer safe.
+    ///
+    /// ```compile_fail,E0133
+    /// use reverie_rpc_transport::guest_log as g;
+    /// fn requires_ownership_contract(fd: i32) {
+    ///     let _ = g::SharedBuffer::receive(fd);
+    /// }
+    /// ```
     pub unsafe fn receive(fd: i32) -> io::Result<Self> {
         unsafe { Self::receive_version(fd, false) }
     }
@@ -534,6 +548,13 @@ impl SharedBuffer {
     /// Independently scheduled producers start only after `LogHandle::ready`.
     /// Synchronous prepopulation instead requires exclusive startup ownership:
     /// the queued collector cannot be cancelled or dropped before `run` takes it.
+    ///
+    /// ```compile_fail,E0133
+    /// use reverie_rpc_transport::guest_log as g;
+    /// fn requires_ownership_contract(buffer: &g::SharedBuffer) {
+    ///     let _ = buffer.activate(0, 1);
+    /// }
+    /// ```
     pub unsafe fn activate(&self, index: usize, pid: i64) -> Result<Producer, PublishError> {
         if index >= self.allocated() || pid <= 0 {
             return Err(PublishError::Invalid);

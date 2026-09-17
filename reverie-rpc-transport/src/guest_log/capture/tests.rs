@@ -187,6 +187,97 @@ fn owner_close_after_burst_delivers_pending_records_before_completing() {
     assert_eq!(owner.shared.buffer.used_bytes(ordered::Role::Host), 0);
 }
 
+#[tokio::test]
+async fn retained_rpc_failure_disqualifies_an_otherwise_complete_capture() {
+    use tokio::io::AsyncWriteExt;
+
+    let output = Output::default();
+    let bytes = output.bytes.clone();
+    let (mut owner, mut sink, host) = unsafe { prepared_capture(options(), output) }.unwrap();
+    let handle = owner.handle();
+    let path = format!("/tmp/rli-{}-capture-qualification", std::process::id());
+    let mut server = crate::RpcServer::bind(&path, Arc::new(()), ()).unwrap();
+    let monitor = server.retain_connection_issues();
+    handle.retain_rpc(monitor.clone()).unwrap();
+    let duplicate = handle.retain_rpc(monitor.clone()).unwrap_err();
+    assert_eq!(duplicate.kind(), io::ErrorKind::Other);
+    assert_eq!(duplicate.to_string(), "log RPC monitor already installed");
+    let task = tokio::spawn(server.serve());
+
+    let (socket, mut writer) = guest(&mut sink);
+    writer.write_record(b"guest record\n", wait).unwrap();
+    writer.finish(wait).unwrap();
+    drop(writer);
+    drop(socket);
+    host.write_record(b"host record\n").unwrap();
+    handle.root_reaped();
+    handle.run_state(RunState::Succeeded);
+    let before = finish(&mut owner);
+    assert!(before.qualifies(), "{before:?}");
+    assert!(before.guest.rpc_issues.is_empty());
+    assert_eq!(&*bytes.lock().unwrap(), b"guest record\nhost record\n");
+
+    // Prepared captures intentionally cannot qualify through the legacy view.
+    // Exercise Report::qualifies on an actual separate V3 collection instead.
+    assert!(!handle.snapshot().qualifies());
+    let legacy_options = super::super::Options {
+        byte_limit: 4096,
+        producers: 1,
+        slots: 8,
+    };
+    let (sink, legacy) = super::super::retained_log(legacy_options);
+    legacy.retain_rpc(monitor.clone()).unwrap();
+    let (host_socket, guest_socket) =
+        unsafe { super::super::channel_pair(legacy_options) }.unwrap();
+    let mapping = unsafe { super::super::SharedBuffer::receive(guest_socket.as_raw_fd()) }.unwrap();
+    let mut producer = unsafe { mapping.activate(0, i64::from(std::process::id())) }.unwrap();
+    let collector = unsafe { sink.reader(host_socket) }.unwrap();
+    let collected = std::thread::spawn(move || collector.run());
+    producer
+        .write_record(&mapping, b"legacy record\n", wait)
+        .unwrap();
+    producer.finish(&mapping, wait).unwrap();
+    drop(guest_socket);
+    assert_eq!(collected.join().unwrap().phase, Phase::Complete);
+    legacy.run_state(RunState::Succeeded);
+    let legacy_before = legacy.snapshot();
+    assert!(legacy_before.qualifies(), "{legacy_before:?}");
+    assert!(legacy_before.rpc_issues.is_empty());
+    assert_eq!(legacy_before.streams[0].bytes, b"legacy record\n");
+
+    let mut stream = tokio::net::UnixStream::connect(&path).await.unwrap();
+    crate::codec::read_message(&mut stream, 1024).await.unwrap();
+    stream.write_all(&[5, 0]).await.unwrap();
+    drop(stream);
+    tokio::time::timeout(Duration::from_secs(2), monitor.failed())
+        .await
+        .unwrap();
+    monitor.planned_shutdown();
+    task.abort();
+    let _ = task.await;
+
+    let retained = legacy.snapshot();
+    let after = handle.capture_snapshot().unwrap();
+    for issues in [&retained.rpc_issues, &after.guest.rpc_issues] {
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].connection, 1);
+        let crate::ConnectionFailure::Transport(error) = &issues[0].failure else {
+            panic!("{issues:?}");
+        };
+        assert!(
+            matches!(&**error, crate::RpcError::Io(error) if error.kind() == io::ErrorKind::UnexpectedEof)
+        );
+    }
+    assert!(!retained.qualifies());
+    assert!(!after.qualifies());
+    // Removing only the independently observed RPC issue restores the prior
+    // qualifying state; no unrelated incomplete predicate makes this vacuous.
+    let mut without_rpc_issue = after.clone();
+    without_rpc_issue.guest.rpc_issues.clear();
+    assert!(without_rpc_issue.qualifies(), "{after:?}");
+    assert_eq!(&*bytes.lock().unwrap(), b"guest record\nhost record\n");
+}
+
 struct FailAfterAcknowledgment {
     blocking: Blocking,
     acknowledged: usize,

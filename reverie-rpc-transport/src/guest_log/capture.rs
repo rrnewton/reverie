@@ -451,6 +451,13 @@ impl LogHandle {
 /// distinct fork incarnations. Do not fork and then use inherited host worker,
 /// lock or producer state in the child. The owner must coordinate emitters,
 /// actual process reap and finalization; setup closure alone is not completion.
+///
+/// ```compile_fail,E0133
+/// use reverie_rpc_transport::guest_log as g;
+/// fn requires_ownership_contract<D: g::CaptureDestination>(options: g::CaptureOptions, destination: D) {
+///     let _ = g::prepared_capture(options, destination);
+/// }
+/// ```
 pub unsafe fn prepared_capture<D: CaptureDestination>(
     options: CaptureOptions,
     destination: D,
