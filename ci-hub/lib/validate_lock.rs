@@ -1947,6 +1947,80 @@ fn record_pre_admission_refusal(
     }
 }
 
+/// Guarantee that a verified run record carries an admission result once this
+/// process is done with it, on EVERY exit path rather than on the enumerated ones.
+///
+/// `run_with_roots` already states the intent -- "every attributable pre-admission
+/// exit can publish a typed refusal instead of leaving an ambiguous historical
+/// handle" -- but enforced it site by site, and the sites are not exhaustive:
+/// `execute`, `acquire_ordered` and `wait_for_owner_watch_yield` each return the
+/// refusal exit code from a depth where no attribution is in scope, so a caller
+/// that forwards the code without routing it through `refusal_before_admission`
+/// leaves the field unset.
+///
+/// A record with NO admission result is not merely incomplete, it is UNDECIDABLE:
+/// `cleanup_record_allows_removal_attempt` permits removal when admission was
+/// refused, or when the unit is absent and admission was admitted, so a missing
+/// value satisfies neither branch and the checkout is retained forever. Measured
+/// on 2026-09-16: 13 such records written by the current producer, and one of them
+/// held validation admission closed for hours.
+///
+/// Publishing refused here is a statement of fact rather than an inference: if
+/// this process is unwinding without any admission result having been published,
+/// then admission was never granted and no validation payload ran under it. The
+/// guard reads the record first and publishes only into the empty case, so an
+/// admitted or already-refused record is never overwritten.
+struct AdmissionOutcomeGuard<'a> {
+    tool_root: &'a Path,
+    attribution: &'a VerifiedRunAttribution,
+}
+
+impl<'a> AdmissionOutcomeGuard<'a> {
+    fn new(tool_root: &'a Path, attribution: &'a VerifiedRunAttribution) -> Self {
+        Self {
+            tool_root,
+            attribution,
+        }
+    }
+
+    /// True only when the record exists, is a current handle, and carries no
+    /// admission result. Any read or parse failure answers false: a guard firing
+    /// on an unreadable record could overwrite a state it never observed.
+    fn admission_result_is_absent(&self) -> bool {
+        let Ok(content) = fs::read_to_string(&self.attribution.record) else {
+            return false;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+            return false;
+        };
+        if !validate_run_handle::is_current(&value) {
+            return false;
+        }
+        matches!(
+            value.get("admission_result"),
+            None | Some(serde_json::Value::Null)
+        )
+    }
+}
+
+impl Drop for AdmissionOutcomeGuard<'_> {
+    fn drop(&mut self) {
+        if !self.admission_result_is_absent() {
+            return;
+        }
+        // A destructor cannot propagate. The publication is best effort by
+        // construction; the alternative is the undecidable record this exists
+        // to prevent.
+        let _ = publish_run_admission_result(
+            self.tool_root,
+            self.attribution,
+            validate_run_handle::AdmissionState::Refused,
+            Some(validate_run_handle::AdmissionRefusalReason::ValidationLockRefusal),
+            Some(REFUSED_EXIT_CODE),
+        );
+    }
+}
+
 fn prepare_run_before_admission_with(
     tool_root: &Path,
     args: &RunArgs,
@@ -5540,6 +5614,11 @@ impl ValidateLock {
         // validating setup, so every attributable pre-admission exit can publish
         // a typed refusal instead of leaving an ambiguous historical handle.
         let attribution = require_run_attribution(tool_root, state_root, &args)?;
+        // Declared immediately after the attribution so it covers every exit
+        // below, including the ones that forward a refusal exit code from a
+        // depth where no attribution is in scope. It drops before `attribution`
+        // because locals drop in reverse declaration order.
+        let _admission_outcome = AdmissionOutcomeGuard::new(tool_root, &attribution);
         let owner = prepare_run_before_admission(tool_root, &args, &attribution)?;
 
         // Refuse immutable-floor and current-main violations BEFORE this run
@@ -11530,5 +11609,205 @@ exit 0
         );
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
         let _ = fs::remove_file(&stub);
+    }
+
+    /// Build a tool root carrying the Python run-handle authority the guard calls.
+    fn admission_guard_root() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-admission-guard-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // The same embed the neighbouring fixtures use. Copying from a path
+        // relative to CARGO_MANIFEST_DIR or to the cwd does NOT work under
+        // `rust-script --test`: the manifest directory is the generated package
+        // under XDG_CACHE_HOME, and the test process cwd is that package too, so
+        // neither resolves to this repository. `include_str!` is resolved at
+        // compile time against THIS source file and is correct from anywhere.
+        write_run_handle_authority(&root);
+        root
+    }
+
+    fn admission_guard_record(root: &Path, name: &str) -> VerifiedRunAttribution {
+        let runs = root.join("ignored/validate/runs");
+        fs::create_dir_all(&runs).unwrap();
+        let record = runs.join(format!("{name}.json"));
+        let value = serde_json::json!({
+            "schema_version": 1,
+            "kind": "validate",
+            "state": "preparing",
+            "unit": format!("{name}.service"),
+            "target": "a".repeat(40),
+            "repo": "rrnewton/hermit",
+            "checkout": "/tmp/checkout",
+            "source_checkout": "/tmp/source",
+            "temporary_checkout": true,
+            "cargo_home": "/tmp/cargo",
+            "log": "/tmp/validate.log",
+            "agent": "type-audit",
+            "pr": null,
+            "started_at": "2026-08-28T07:00:00Z",
+            "parent_checkout_head": "a".repeat(40),
+            "producer": "ci-hub/validate/run_registry.py",
+            "admission": "ci-hub validate-lock",
+            "pane_role": "observer-only",
+            "validate_lock_child_deadline_seconds": 3600,
+            "e2e_result_root": "/tmp/e2e",
+            "safe_ci_dag_runner_log_dir": "/tmp/dag",
+            "hermit_run_timeout_seconds": 3300
+        });
+        fs::write(&record, serde_json::to_vec(&value).unwrap()).unwrap();
+        VerifiedRunAttribution {
+            unit: format!("{name}.service"),
+            record,
+        }
+    }
+
+    fn admission_result_of(record: &Path) -> serde_json::Value {
+        let text = fs::read_to_string(record).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        value
+            .get("admission_result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    #[test]
+    fn a_run_leaving_before_admission_still_records_an_admission_result() {
+        // THE DEFECT, reproduced: a verified record exists, this process exits
+        // before publishing anything, and the record used to be left undecidable.
+        let root = admission_guard_root();
+        let attribution = admission_guard_record(&root, "validate-guard-absent");
+        assert!(
+            admission_result_of(&attribution.record).is_null(),
+            "the fixture must start in the undecidable shape"
+        );
+
+        {
+            let _guard = AdmissionOutcomeGuard::new(&root, &attribution);
+            // Scope ends with no publication, exactly as an early `?` return does.
+        }
+
+        let published = admission_result_of(&attribution.record);
+        assert_eq!(
+            published.get("state").and_then(|value| value.as_str()),
+            Some("refused"),
+            "an exit before admission must leave a refusal, not an absent field"
+        );
+        assert_eq!(
+            published.get("reason").and_then(|value| value.as_str()),
+            Some("validation-lock-refusal")
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_guard_never_replaces_an_admission_that_was_published() {
+        let root = admission_guard_root();
+        let attribution = admission_guard_record(&root, "validate-guard-admitted");
+        publish_run_admission_result(
+            &root,
+            &attribution,
+            validate_run_handle::AdmissionState::Admitted,
+            None,
+            None,
+        )
+        .expect("the admitted publication must succeed against the fixture authority");
+        let before = admission_result_of(&attribution.record);
+        assert_eq!(
+            before.get("state").and_then(|value| value.as_str()),
+            Some("admitted")
+        );
+
+        {
+            let _guard = AdmissionOutcomeGuard::new(&root, &attribution);
+        }
+
+        assert_eq!(
+            admission_result_of(&attribution.record),
+            before,
+            "a published admission must survive the guard untouched"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The guard's own decision, tested directly because the end-to-end test
+    /// above CANNOT discriminate it.
+    ///
+    /// ⚠️ MEASURED, NOT ASSUMED. Removing the `if !self.admission_result_is_absent()`
+    /// early return and letting the guard publish unconditionally leaves
+    /// `the_guard_never_replaces_an_admission_that_was_published` GREEN, because
+    /// `run_registry.publish_admission_result` refuses to replace an existing
+    /// result and `Drop` discards the error. So that test pins the property --
+    /// an admitted record survives -- and names the wrong layer as its cause;
+    /// the refusal lives in the Python publisher, and the early return is an
+    /// optimisation with no separately observable effect.
+    ///
+    /// What IS observable is this predicate, and its fail-closed direction is a
+    /// real claim: a read or parse failure must answer "not absent", because a
+    /// guard that fired on a record it could not read would overwrite a state it
+    /// never observed. Invert any branch below and this fails.
+    #[test]
+    fn the_guards_absence_predicate_is_exact_and_fails_closed() {
+        let root = admission_guard_root();
+
+        let empty = admission_guard_record(&root, "validate-guard-predicate-empty");
+        assert!(
+            AdmissionOutcomeGuard::new(&root, &empty).admission_result_is_absent(),
+            "a current handle with no admission_result is absent"
+        );
+
+        let null = admission_guard_record(&root, "validate-guard-predicate-null");
+        let mut value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&null.record).unwrap()).unwrap();
+        value["admission_result"] = serde_json::Value::Null;
+        fs::write(&null.record, serde_json::to_string(&value).unwrap()).unwrap();
+        assert!(
+            AdmissionOutcomeGuard::new(&root, &null).admission_result_is_absent(),
+            "an explicit null admission_result is absent too"
+        );
+
+        let published = admission_guard_record(&root, "validate-guard-predicate-published");
+        publish_run_admission_result(
+            &root,
+            &published,
+            validate_run_handle::AdmissionState::Admitted,
+            None,
+            None,
+        )
+        .expect("the admitted publication must succeed against the fixture authority");
+        assert!(
+            !AdmissionOutcomeGuard::new(&root, &published).admission_result_is_absent(),
+            "a published admission is NOT absent"
+        );
+
+        let missing = admission_guard_record(&root, "validate-guard-predicate-missing");
+        fs::remove_file(&missing.record).unwrap();
+        assert!(
+            !AdmissionOutcomeGuard::new(&root, &missing).admission_result_is_absent(),
+            "an unreadable record must answer NOT absent, never absent"
+        );
+
+        let unparsable = admission_guard_record(&root, "validate-guard-predicate-unparsable");
+        fs::write(&unparsable.record, "{ not json").unwrap();
+        assert!(
+            !AdmissionOutcomeGuard::new(&root, &unparsable).admission_result_is_absent(),
+            "an unparsable record must answer NOT absent"
+        );
+
+        let foreign = admission_guard_record(&root, "validate-guard-predicate-foreign");
+        let mut other: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&foreign.record).unwrap()).unwrap();
+        other["producer"] = serde_json::Value::String("somewhere/else.py".into());
+        fs::write(&foreign.record, serde_json::to_string(&other).unwrap()).unwrap();
+        assert!(
+            !AdmissionOutcomeGuard::new(&root, &foreign).admission_result_is_absent(),
+            "a record this writer does not own must answer NOT absent"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

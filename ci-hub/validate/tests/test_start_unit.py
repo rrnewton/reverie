@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 import start_unit  # noqa: E402
+import run_registry  # noqa: E402
 from test_immutable_tool_authority import AuthorityFixture, make_tree_read_only
 import qualifying_receipt  # noqa: E402
 from scripts import test_parent_main_write as parent_main_tests  # noqa: E402
@@ -9971,6 +9972,115 @@ class RunCommandCheckKwarg(unittest.TestCase):
             ["printf", "hello"], run=start_unit.run_command, purpose="probe"
         )
         self.assertEqual("hello", text)
+
+
+class CleanupRecordAdmissionTests(unittest.TestCase):
+    """The cleanup rule must keep refusing a record it cannot decide.
+
+    The companion fix publishes a refusal from validate-lock so this case stops
+    being PRODUCED. The rule itself must not learn to infer the missing value:
+    a record carrying no admission result does not say whether the validation
+    payload ever started, and only a person can rule that both possible values
+    would independently permit removal.
+    """
+
+    SHA = "a" * 40
+
+    def handle(self, **updates):
+        value = {
+            "schema_version": run_registry.SCHEMA_VERSION,
+            "kind": "validate",
+            "state": "preparing",
+            "unit": "validate-test.service",
+            "target": self.SHA,
+            "repo": "rrnewton/hermit",
+            "checkout": "/tmp/checkout",
+            "source_checkout": "/tmp/source",
+            "temporary_checkout": True,
+            "cargo_home": "/tmp/cargo",
+            "log": "/tmp/validate.log",
+            "agent": "type-audit",
+            "pr": None,
+            "started_at": "2026-08-28T07:00:00+00:00",
+            "parent_checkout_head": self.SHA,
+            "producer": run_registry.PRODUCER,
+            "admission": "ci-hub validate-lock",
+            "pane_role": "observer-only",
+            "validate_lock_child_deadline_seconds": 3600,
+            "e2e_result_root": "/tmp/e2e",
+            "safe_ci_dag_runner_log_dir": "/tmp/dag",
+            "hermit_run_timeout_seconds": 3300,
+        }
+        value.update(updates)
+        return value
+
+    def terminal(self, **updates):
+        return self.handle(
+            state="unknown",
+            result="unknown",
+            detail="final validate status is absent",
+            **updates,
+        )
+
+    def test_missing_admission_result_is_refused_in_both_unit_states(self):
+        """THE REGRESSION GUARD. Absent is undecidable, not permissive."""
+        record = self.terminal()
+        self.assertIsNone(record.get("admission_result"))
+        for unit_absent in (True, False):
+            with self.subTest(unit_absent=unit_absent):
+                self.assertFalse(
+                    start_unit.cleanup_record_allows_removal_attempt(
+                        record, unit_absent=unit_absent
+                    )
+                )
+
+    def test_explicit_null_admission_result_is_also_refused(self):
+        """A field that is present and null reads as present to a bare lookup."""
+        record = self.terminal(admission_result=None)
+        self.assertIn("admission_result", record)
+        self.assertFalse(
+            start_unit.cleanup_record_allows_removal_attempt(record, unit_absent=True)
+        )
+
+    def test_refused_admission_permits_the_attempt(self):
+        record = self.terminal(
+            admission_result={
+                "state": "refused",
+                "recorded_at": "2026-08-28T07:00:01+00:00",
+                "reason": "validation-lock-refusal",
+                "exit_code": 3,
+            }
+        )
+        self.assertTrue(
+            start_unit.cleanup_record_allows_removal_attempt(record, unit_absent=False)
+        )
+
+    def test_admitted_admission_needs_the_unit_to_be_absent(self):
+        record = self.terminal(
+            admission_result={
+                "state": "admitted",
+                "recorded_at": "2026-08-28T07:00:01+00:00",
+                "run_number": 1799,
+            }
+        )
+        self.assertTrue(
+            start_unit.cleanup_record_allows_removal_attempt(record, unit_absent=True)
+        )
+        self.assertFalse(
+            start_unit.cleanup_record_allows_removal_attempt(record, unit_absent=False)
+        )
+
+    def test_a_record_that_is_not_terminal_is_refused(self):
+        record = self.handle(
+            admission_result={
+                "state": "admitted",
+                "recorded_at": "2026-08-28T07:00:01+00:00",
+                "run_number": 1799,
+            }
+        )
+        self.assertFalse(
+            start_unit.cleanup_record_allows_removal_attempt(record, unit_absent=True)
+        )
 
 
 if __name__ == "__main__":
