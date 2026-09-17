@@ -222,13 +222,29 @@ def gate_kind(g: dict) -> str:
     fires precisely when the command exited 0, so the same gap now lands on
     `pass` and counts an undetermined node toward the GATES numerator.
     See hermit https://github.com/rrnewton/hermit/pull/3066.
+
+    `timeout` is mapped for the same reason and is NOT a bug fix: measured
+    2026-09-17 over the whole tracked ledger, 80,652 gate records carry only
+    `pass` (76,807), `fail` (3,712), no `result` key at all (120) and
+    `no_result` (13), so no gate reaches this map as a timeout today. It is
+    mapped because `livelock_class.py:220` already treats a gate's
+    `result == "timeout"` as authoritative, and leaving the one reader that
+    classifies gates unable to name a kind the other reader acts on is how the
+    `no_result` gap got here. Inferred from a nonzero exit it would read as
+    `incomplete`, which is at least not a pass; inferred from a zero exit it
+    would read as `pass`.
+
+    The fallback's own behaviour is deliberately unchanged. It is right for a
+    row carrying no `result` key -- 120 such gates exist and 2 of them take the
+    zero-exit `pass` branch correctly. Only a row that DID state a verdict is
+    read by name.
     """
     k = g.get("kind")
     if k in GATE_KINDS:
         return k
     return {"pass": "pass", "fail": "fail", "skip": "skipped",
             "banner": "banner", "unknown": "incomplete",
-            "no_result": "incomplete"}.get(
+            "no_result": "incomplete", "timeout": "timeout"}.get(
                 g.get("result"),
                 "pass" if g.get("exit_code") == 0 else "incomplete")
 

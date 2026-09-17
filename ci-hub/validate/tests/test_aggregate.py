@@ -244,6 +244,26 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn(
             agg.gate_kind({"result": "no_result", "exit_code": 0}), ("pass",))
 
+    def test_a_stated_verdict_is_read_by_name_not_inferred_from_the_exit(self):
+        # `livelock_class.py:220` already treats a gate's `result == "timeout"`
+        # as authoritative, so this reader has to be able to name that kind too.
+        # No gate carries it today -- measured 2026-09-17 over the whole tracked
+        # ledger, 80,652 gate records, `result` is only `pass` (76,807), `fail`
+        # (3,712), absent (120) or `no_result` (13) -- so this pins the mapping
+        # before a producer needs it rather than repairing a live miscount.
+        for exit_code in (124, -9, 0, None):
+            self.assertEqual(
+                agg.gate_kind({"result": "timeout", "exit_code": exit_code}),
+                "timeout",
+                f"a stated timeout was inferred from exit_code={exit_code}")
+        self.assertIn("timeout", agg.VERDICT_KINDS)
+        # The fallback is retained exactly where it is still correct: a row that
+        # states NO verdict is still inferred from its exit status. 120 such
+        # gates exist in the ledger and 2 take the zero-exit pass branch.
+        self.assertEqual(agg.gate_kind({"exit_code": 0}), "pass")
+        self.assertEqual(agg.gate_kind({"exit_code": 1}), "incomplete")
+        self.assertEqual(agg.gate_kind({}), "incomplete")
+
 
 class SummaryCompletenessTest(unittest.TestCase):
     def test_truncated_is_not_counted_as_result_or_product_failure(self):
