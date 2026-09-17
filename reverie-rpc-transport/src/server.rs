@@ -24,6 +24,8 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use reverie::GlobalTool;
+use tokio::io::AsyncRead;
+use tokio::io::AsyncWrite;
 use tokio::net::UnixListener;
 use tokio::net::UnixStream;
 use tokio::sync::Notify;
@@ -268,15 +270,34 @@ where
     serve_connection_inner(global, config, stream, None, None).await
 }
 
-async fn serve_connection_inner<G>(
+/// Serve an independently owned asynchronous byte stream using the same
+/// handshake, framing and GlobalTool dispatch as a Unix connection.
+///
+/// This reports logical connection completion, not process exit. The caller
+/// owns task lifetime/cancellation and must keep separate streams independently
+/// polled; a pending response must not block other connections.
+pub async fn serve_stream<G, S>(
     global: Arc<G>,
     config: G::Config,
-    mut stream: UnixStream,
+    stream: S,
+) -> Result<(), RpcError>
+where
+    G: GlobalTool,
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    serve_connection_inner(global, config, stream, None, None).await
+}
+
+async fn serve_connection_inner<G, S>(
+    global: Arc<G>,
+    config: G::Config,
+    mut stream: S,
     readiness: Option<Arc<AtomicBool>>,
     connection_readiness: Option<Arc<AtomicBool>>,
 ) -> Result<(), RpcError>
 where
     G: GlobalTool,
+    S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     // space (it is a separate process), so the coordinator sends it first.
     //

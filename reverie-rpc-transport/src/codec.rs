@@ -93,13 +93,19 @@ where
     R: AsyncRead + Unpin,
 {
     let mut header = [0u8; 4];
-    match reader.read_exact(&mut header).await {
-        Ok(_) => {}
-        // A clean EOF *before any byte of the header* is a graceful close.
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-            return Err(RpcError::Closed);
+    let mut filled = 0;
+    while filled < header.len() {
+        match reader.read(&mut header[filled..]).await {
+            Ok(0) if filled == 0 => return Err(RpcError::Closed),
+            Ok(0) => {
+                return Err(RpcError::Io(std::io::Error::from(
+                    std::io::ErrorKind::UnexpectedEof,
+                )));
+            }
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(RpcError::Io(e)),
         }
-        Err(e) => return Err(RpcError::Io(e)),
     }
 
     let len = u32::from_be_bytes(header) as usize;

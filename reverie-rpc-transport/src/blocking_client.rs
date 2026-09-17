@@ -43,16 +43,16 @@ use crate::error::RpcError;
 /// across threads could otherwise deadlock behind the single in-flight request.
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-128): Review the blocking transport used by synchronous in-guest backends.
-pub struct BlockingRpcClient<G: GlobalTool> {
+pub struct BlockingRpcClient<G: GlobalTool, S = UnixStream> {
     tid: Tid,
     config: G::Config,
-    stream: Mutex<UnixStream>,
+    stream: Mutex<S>,
     _phantom: PhantomData<fn() -> G>,
 }
 
 // TODO-HUMAN-REVIEW(PR-212): Review raw descriptor exposure for in-guest
 // runtimes that must hide coordinator transport descriptors from the guest.
-impl<G: GlobalTool> AsRawFd for BlockingRpcClient<G> {
+impl<G: GlobalTool, S: AsRawFd> AsRawFd for BlockingRpcClient<G, S> {
     fn as_raw_fd(&self) -> RawFd {
         self.stream
             .lock()
@@ -67,7 +67,20 @@ where
 {
     /// Connect and synchronously receive the coordinator's config handshake.
     pub fn connect(path: impl AsRef<Path>, tid: Tid) -> Result<Self, RpcError> {
-        let mut stream = UnixStream::connect(path)?;
+        Self::from_connected_stream(UnixStream::connect(path)?, tid)
+    }
+}
+
+impl<G, S> BlockingRpcClient<G, S>
+where
+    G: GlobalTool,
+    S: Read + Write + Send,
+{
+    /// Receive the config handshake from an already connected byte stream.
+    ///
+    /// Deserialization happens synchronously on the caller. Keep a separate
+    /// stream/client for every thread that can have an independent pending RPC.
+    pub fn from_connected_stream(mut stream: S, tid: Tid) -> Result<Self, RpcError> {
         let config_bytes = read_message(&mut stream, DEFAULT_MAX_FRAME_LEN)?;
         let config = decode(&config_bytes)?;
         Ok(Self {
@@ -94,16 +107,50 @@ where
                 "reverie-rpc-transport: blocking client mutex poisoned",
             ))
         })?;
-        write_message(&mut stream, &request_bytes)?;
-        let response_bytes = read_message(&mut stream, DEFAULT_MAX_FRAME_LEN)?;
+        write_message(&mut *stream, &request_bytes)?;
+        let response_bytes = read_message(&mut *stream, DEFAULT_MAX_FRAME_LEN)?;
+        decode(&response_bytes)
+    }
+}
+
+impl<G: GlobalTool> BlockingRpcClient<G> {
+    /// Send a request, entering a caller-owned scope only around stream I/O.
+    ///
+    /// In-process backends use this to permit access to a private coordinator
+    /// descriptor. Request serialization and response deserialization run
+    /// outside the scope. Each read or write drops its scope before returning,
+    /// including on an I/O error; framing and error handling are unchanged.
+    pub fn try_send_rpc_with_io_scope<Scope>(
+        &self,
+        message: G::Request,
+        mut enter: impl FnMut(RawFd) -> Scope,
+    ) -> Result<G::Response, RpcError> {
+        let request_bytes = encode(&RequestEnvelope {
+            from: self.tid,
+            request: message,
+        })?;
+        let mut stream = self.stream.lock().map_err(|_| {
+            RpcError::Io(io::Error::other(
+                "reverie-rpc-transport: blocking client mutex poisoned",
+            ))
+        })?;
+        let response_bytes = {
+            let mut io = ScopedIo {
+                stream: &mut stream,
+                enter: &mut enter,
+            };
+            write_message(&mut io, &request_bytes)?;
+            read_message(&mut io, DEFAULT_MAX_FRAME_LEN)?
+        };
         decode(&response_bytes)
     }
 }
 
 #[async_trait]
-impl<G> GlobalRPC<G> for BlockingRpcClient<G>
+impl<G, S> GlobalRPC<G> for BlockingRpcClient<G, S>
 where
     G: GlobalTool,
+    S: Read + Write + Send,
 {
     async fn send_rpc(&self, message: G::Request) -> G::Response {
         self.try_send_rpc(message)
@@ -115,7 +162,31 @@ where
     }
 }
 
-fn write_message(stream: &mut UnixStream, payload: &[u8]) -> Result<(), RpcError> {
+struct ScopedIo<'a, Enter> {
+    stream: &'a mut UnixStream,
+    enter: &'a mut Enter,
+}
+
+impl<Scope, Enter: FnMut(RawFd) -> Scope> Read for ScopedIo<'_, Enter> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let _scope = (self.enter)(self.stream.as_raw_fd());
+        self.stream.read(buffer)
+    }
+}
+
+impl<Scope, Enter: FnMut(RawFd) -> Scope> Write for ScopedIo<'_, Enter> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let _scope = (self.enter)(self.stream.as_raw_fd());
+        self.stream.write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        // UnixStream::flush performs no I/O and needs no descriptor exception.
+        self.stream.flush()
+    }
+}
+
+fn write_message(stream: &mut impl Write, payload: &[u8]) -> Result<(), RpcError> {
     let len = u32::try_from(payload.len()).map_err(|_| RpcError::FrameTooLarge {
         len: payload.len(),
         max: u32::MAX as usize,
@@ -126,7 +197,7 @@ fn write_message(stream: &mut UnixStream, payload: &[u8]) -> Result<(), RpcError
     Ok(())
 }
 
-fn read_message(stream: &mut UnixStream, max_len: usize) -> Result<Vec<u8>, RpcError> {
+fn read_message(stream: &mut impl Read, max_len: usize) -> Result<Vec<u8>, RpcError> {
     // Read the 4-byte length prefix in one `read` on the common path. The loop
     // only re-enters the kernel on a short read or `EINTR`, collapsing the
     // former 1-byte probe + 3-byte remainder into a single syscall per hop.
@@ -154,3 +225,6 @@ fn read_message(stream: &mut UnixStream, max_len: usize) -> Result<Vec<u8>, RpcE
     stream.read_exact(&mut payload)?;
     Ok(payload)
 }
+
+#[cfg(test)]
+mod io_scope_tests;
