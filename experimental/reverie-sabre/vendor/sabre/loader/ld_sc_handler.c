@@ -22,6 +22,7 @@
 #include <sys/syscall.h>
 
 #include "compiler.h"
+#include "bootstrap.h"
 #include "global_vars.h"
 #include "ld_sc_handler.h"
 #include "macros.h"
@@ -536,6 +537,14 @@ long runtime_syscall_router(long sc_no, long arg1, long arg2, long arg3,
   // .preinit_array might actually run second as pthreads need to initialize
   // locks etc. While pthreads is initializing, calling_from_plugin is NULL.
   // Look: https://code.woboq.org/userspace/glibc/elf/dl-init.c.html#84
+  if (calling_from_plugin == NULL && sbr_bootstrap_enabled() &&
+      sc_no == SYS_getrandom) {
+    /* This is a real rewritten client request before plugin initialization,
+     * not a loader/plugin-native request inferred from its length or flags.
+     * Keep its original frame so the supervisor can authenticate provenance.
+     */
+    return sbr_bootstrap_getrandom(arg1, arg2, arg3, wrapper_sp);
+  }
   if (calling_from_plugin == NULL || calling_from_plugin()) {
     if (sc_no == SYS_clone && arg2 != 0) { // clone
       void *ret_addr = get_syscall_return_address(wrapper_sp);

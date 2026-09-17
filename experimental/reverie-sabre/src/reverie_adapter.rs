@@ -413,14 +413,46 @@ where
     /// Connects the root guest thread and constructs the process-local tool
     /// from the coordinator's config handshake.
     pub fn connect(socket_path: impl AsRef<Path>) -> Result<Self, RpcError> {
+        Self::connect_with_root_initializer(socket_path, |_, _, _| Ok(()))
+    }
+
+    /// Applies an explicit state handoff to a normally initialized root before
+    /// any thread callback. An inherited fork state keeps its existing path
+    /// and does not run this initializer. A loader bootstrap consumer takes
+    /// its opaque payload inside this initializer, after that fork decision.
+    /// The normal config handshake happens first; no typed tool RPC or thread
+    /// callback has run. The initializer receives no RPC client and must not
+    /// publish readiness. In particular, bootstrap is not evidence for the
+    /// first-request readiness reported by `RpcServer::bind_with_readiness`.
+    ///
+    /// Consumers own the payload type/config/image checks and must only change
+    /// their declared fields (for example PRNG state and an auxv completion
+    /// fact), retaining clocks, metadata and other unrelated initialized state.
+    pub fn connect_with_root_initializer<F>(
+        socket_path: impl AsRef<Path>,
+        initialize: F,
+    ) -> Result<Self, RpcError>
+    where
+        F: FnOnce(
+            &<T::GlobalState as GlobalTool>::Config,
+            Pid,
+            &mut T::ThreadState,
+        ) -> Result<(), RpcError>,
+    {
         let _ = root_process_pid();
         let socket_path = socket_path.as_ref().to_path_buf();
         let tid = current_tid();
         let rpc = protect_with(|| BlockingRpcClient::<T::GlobalState>::connect(&socket_path, tid))?;
         let config = rpc.as_ref().config().clone();
         let tool = T::new(current_pid(), &config);
-        let thread_state = take_process_fork_handoff(&tool, tid)?
-            .unwrap_or_else(|| tool.init_thread_state(tid, None));
+        let thread_state = match take_process_fork_handoff(&tool, tid)? {
+            Some(inherited) => inherited,
+            None => {
+                let mut state = tool.init_thread_state(tid, None);
+                initialize(&config, tid, &mut state)?;
+                state
+            }
+        };
         let syscall_subscriptions = T::subscriptions(&config).iter_syscalls().collect();
         let mut thread_states = HashMap::new();
         thread_states.insert(
@@ -2114,6 +2146,104 @@ mod tests {
         ) -> Result<reverie::RdtscResult, Errno> {
             let tsc = guest.send_rpc(10).await as u64;
             Ok(reverie::RdtscResult { tsc, aux: None })
+        }
+    }
+
+    #[derive(Default)]
+    struct InitializedRootTool;
+
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    struct InitializedRoot {
+        random: u64,
+        unrelated: (u64, i32),
+    }
+
+    impl Default for InitializedRoot {
+        fn default() -> Self {
+            Self {
+                random: 7,
+                unrelated: (93, current_pid().as_raw()),
+            }
+        }
+    }
+
+    #[reverie::tool]
+    impl ReverieTool for InitializedRootTool {
+        type GlobalState = RemoteCounter;
+        type ThreadState = InitializedRoot;
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            _syscall: Syscall,
+        ) -> Result<i64, Error> {
+            assert_eq!(guest.thread_state().unrelated, (93, current_pid().as_raw()));
+            Ok(guest.thread_state().random as i64)
+        }
+    }
+
+    #[test]
+    fn root_initializer_preserves_normal_state_and_refuses_failed_transfer() {
+        for transfer in [false, true] {
+            let global = Arc::new(RemoteCounter::default());
+            let server_global = global.clone();
+            let rpc_ready = Arc::new(AtomicBool::new(false));
+            let server_ready = rpc_ready.clone();
+            let path = std::path::Path::new("/tmp").join(format!(
+                "reverie-sabre-root-{}-{}.sock",
+                std::process::id(),
+                RPC_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            let server_path = path.clone();
+            let (ready_tx, ready_rx) = mpsc::sync_channel(0);
+            let server_thread = thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let server = reverie_rpc_transport::RpcServer::bind_with_readiness(
+                            &server_path,
+                            server_global,
+                            "image-config".to_string(),
+                            server_ready,
+                        )
+                        .unwrap();
+                        ready_tx.send(()).unwrap();
+                        server.serve_one().await
+                    })
+            });
+            ready_rx.recv().unwrap();
+            let calls = AtomicUsize::new(0);
+            let result = RemoteReverieAdapter::<InitializedRootTool>::connect_with_root_initializer(
+                &path,
+                |config, tid, state| {
+                    assert_eq!(config, "image-config");
+                    assert_eq!(tid, current_tid());
+                    assert_eq!(state.random, 7);
+                    assert_eq!(state.unrelated, (93, current_pid().as_raw()));
+                    assert!(!rpc_ready.load(Ordering::Acquire));
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    if !transfer {
+                        return Err(io::Error::from_raw_os_error(libc::ESTALE).into());
+                    }
+                    state.random = 41;
+                    Ok(())
+                },
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            if transfer {
+                let adapter = result.unwrap();
+                let syscall = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+                assert_eq!(adapter.handle_syscall(syscall), Ok(41));
+                drop(adapter);
+            } else {
+                assert!(matches!(result, Err(RpcError::Io(error))
+                    if error.raw_os_error() == Some(libc::ESTALE)));
+            }
+            assert!(server_thread.join().unwrap().is_ok());
+            assert_eq!(global.total.load(Ordering::SeqCst), 0);
+            assert!(!rpc_ready.load(Ordering::Acquire));
         }
     }
 

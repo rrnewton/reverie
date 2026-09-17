@@ -1,0 +1,45 @@
+/* Copyright (c) Meta Platforms, Inc. and affiliates.
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+#ifndef SBR_BOOTSTRAP_H
+#define SBR_BOOTSTRAP_H
+
+#include <stdbool.h>
+#include <stddef.h>
+
+/* Optional supervisor protocol. An ordinary kernel rejects this prctl option.
+ * The supervisor must authenticate this instruction in the exact launched
+ * loader, the stopped thread/image generation, and every pointed-to extent.
+ * Neither the option number nor a request's argument shape is authority.
+ */
+#define SBR_BOOTSTRAP_OPTION 0x53425242UL
+#define SBR_BOOTSTRAP_VERSION 1UL
+#define SBR_BOOTSTRAP_MAX_STATE 4096UL
+#define SBR_BOOTSTRAP_ENV "REVERIE_SABRE_BOOTSTRAP_V1"
+
+enum sbr_bootstrap_operation {
+  SBR_BOOTSTRAP_IMAGE = 1,
+  SBR_BOOTSTRAP_GETRANDOM = 2,
+  SBR_BOOTSTRAP_TAKE_STATE = 3,
+};
+
+typedef long (*sbr_bootstrap_take_fn)(void *, size_t);
+typedef int (*sbr_bootstrap_install_fn)(sbr_bootstrap_take_fn);
+
+void sbr_bootstrap_configure(void);
+bool sbr_bootstrap_enabled(void);
+void sbr_bootstrap_image(void *stack, void *entry);
+long sbr_bootstrap_getrandom(long buffer, long length, long flags,
+                             void *wrapper_sp);
+long sbr_bootstrap_take_state(void *buffer, size_t capacity);
+
+/* A single exported, non-inlined syscall site for all three operations. IMAGE
+ * carries final stack/entry/version/zero; GETRANDOM carries the original
+ * buffer/length/flags/wrapper; TAKE carries output/capacity/version/zero.
+ * There is no new IPC service, libc call, allocation, or TLS access here.
+ */
+long sbr_bootstrap_request_v1(unsigned long operation, unsigned long arg1,
+                              unsigned long arg2, unsigned long arg3,
+                              unsigned long arg4);
+
+#endif

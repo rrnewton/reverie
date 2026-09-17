@@ -29,6 +29,7 @@
 
 #include "arch/handle_syscall.h"
 #include "arch/rewriter_tools.h"
+#include "bootstrap.h"
 #include "compiler.h"
 #include "elf_loading.h"
 #include "global_vars.h"
@@ -275,6 +276,7 @@ static int parse_shebang(const char *client_path,
 // Returns the address of entry point and also populates a pointer
 // for the top of the new stack
 void load(int argc, char *argv[], void **new_entry, void **new_stack_top) {
+  sbr_bootstrap_configure();
   int process_argc = argc;
   char **process_argv = argv;
   if (argc < 4) {
@@ -419,6 +421,8 @@ void load(int argc, char *argv[], void **new_entry, void **new_stack_top) {
     const char *libs[] = {"ld", NULL};
     memorymaps_rewrite_all(libs, client_path, true);
   } else {
+    if (sbr_bootstrap_enabled())
+      errx(EXIT_FAILURE, "loader bootstrap does not support static images");
 #ifdef __x86_64__
     if (first_region(abs_plugin_path) == 0)
       reexec_static_client_with_plugin(process_argc, process_argv);
@@ -471,4 +475,9 @@ void load(int argc, char *argv[], void **new_entry, void **new_stack_top) {
   _nx_debug_printf("done rewriting stack\n");
 
   *new_entry = (void *)entry;
+  /* The manually loaded guest's final stack and auxv now exist. The initial
+   * kernel exec stop belonged to SaBRe, not this image. Do not enter the guest
+   * dynamic linker until the supervisor has initialized the real AT_RANDOM.
+   */
+  sbr_bootstrap_image(*new_stack_top, *new_entry);
 }
