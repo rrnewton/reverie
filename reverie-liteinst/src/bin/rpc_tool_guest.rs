@@ -33,6 +33,9 @@ mod syscall_fallback_guest;
 #[path = "rpc_tool_guest/memory_access.rs"]
 mod memory_access_guest;
 
+#[path = "rpc_tool_guest/owned_frame.rs"]
+mod owned_frame_guest;
+
 const CALLS: u64 = 32;
 const TOOL_CPUID_EAX: u32 = 0x1111_1111;
 const TOOL_CPUID_EBX: u32 = 0x2222_2222;
@@ -1321,6 +1324,7 @@ fn main() {
         Some("syscall-installed-fork") => syscall_fallback_guest::run_fork(Path::new(&path), true),
         Some("syscall-fallback-pkey") => syscall_fallback_guest::run_pkey(Path::new(&path)),
         Some("memory-access") => memory_access_guest::run(Path::new(&path)),
+        Some("owned-frame") => owned_frame_guest::run(Path::new(&path)),
         Some("preinstalled-handler") => preinstalled_handler_guest(Path::new(&path)),
         Some("pending-sigsys") => pending_sigsys_guest(Path::new(&path)),
         Some("preblocked-sigsys") => preblocked_sigsys_guest(Path::new(&path)),

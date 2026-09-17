@@ -574,15 +574,14 @@ pub(crate) struct SyscallEvent {
 impl SyscallEvent {
     /// Forward only this guest operation. Runtime-private syscall buffers must
     /// retain caller access and continue to use the ordinary raw gate.
-    unsafe fn forward(&self) -> i64 {
-        unsafe {
-            match self.guest_pkru {
-                Some(pkru) => {
-                    reverie_preload::trap::raw_syscall6_with_pkru(self.number, self.args, pkru)
-                }
-                None => raw_syscall6(self.number, self.args),
-            }
-        }
+    pub(crate) unsafe fn forward(&mut self) -> i64 {
+        let result = unsafe {
+            reverie_preload::trap::raw_syscall6_with_result(self.number, self.args, self.guest_pkru)
+        };
+        // Permission effects survive negative errno and later Tool result
+        // transformation. Private injection never calls this operation.
+        self.guest_pkru = result.pkru;
+        result.result
     }
 }
 
@@ -2621,17 +2620,18 @@ unsafe fn installed_syscall_hook_for(context: *mut HookContext, number: Option<i
     {
         site.hook_count.fetch_add(1, Ordering::Relaxed);
     }
-    unsafe { dispatch_syscall_context(context, number, SyscallDispatch::InstalledHook) };
+    unsafe { dispatch_syscall_context(context, number, SyscallDispatch::InstalledHook, None) };
 }
 
-pub(crate) unsafe fn dispatch_fallback_context(context: *mut HookContext) {
-    unsafe { dispatch_syscall_context(context, None, SyscallDispatch::Fallback) };
+pub(crate) unsafe fn dispatch_fallback_context(context: *mut HookContext, pkru: &mut Option<u32>) {
+    unsafe { dispatch_syscall_context(context, None, SyscallDispatch::Fallback, Some(pkru)) };
 }
 
 unsafe fn dispatch_syscall_context(
     context: *mut HookContext,
     number: Option<i64>,
     dispatch: SyscallDispatch,
+    guest_pkru: Option<&mut Option<u32>>,
 ) {
     if context.is_null() {
         unsafe {
@@ -2658,9 +2658,9 @@ unsafe fn dispatch_syscall_context(
         result: UNSET_RESULT,
         context: context_pointer,
         dispatch,
-        // Installed hooks and deferred Tool injection need their own entry
-        // provenance. Do not borrow permissions from a prior signal event.
-        guest_pkru: None,
+        // Fallback supplies its owned genuine entry. Installed hooks still
+        // need independent provenance; never borrow a stale signal's rights.
+        guest_pkru: guest_pkru.as_ref().and_then(|value| **value),
     };
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-133): Review guarded installed-hook bypass for Tool-internal syscalls.
@@ -2669,6 +2669,9 @@ unsafe fn dispatch_syscall_context(
         context.rax = event.result as u64;
         context.rcx = context.instruction_pointer.saturating_add(2);
         context.r11 = context.rflags;
+        if let Some(output) = guest_pkru {
+            *output = event.guest_pkru;
+        }
         if leave_rcb_handler().is_err() {
             unsafe { exit_now(122) };
         }
@@ -2685,6 +2688,9 @@ unsafe fn dispatch_syscall_context(
     context.rax = event.result as u64;
     context.rcx = context.instruction_pointer.saturating_add(2);
     context.r11 = context.rflags;
+    if let Some(output) = guest_pkru {
+        *output = event.guest_pkru;
+    }
     if leave_rcb_handler().is_err() {
         unsafe { exit_now(122) };
     }
@@ -2780,6 +2786,41 @@ fn record_enabled_fallback_stats(stats: crate::stats::GuestStatsHooks, address: 
 
 impl SyscallDispatcher for LiteinstDispatcher {
     fn dispatch(&self, event: &mut PreloadSyscallEvent) {
+        self.dispatch_with_frame(event, None);
+    }
+
+    fn dispatch_private_signal(
+        &self,
+        frame: &mut reverie_preload::trap::frame::SignalFrame<'_>,
+    ) -> bool {
+        self.stats
+            .record_path(crate::LiteinstDispatchPath::InGuestPhysicalSigsys);
+        match crate::syscall_fallback::complete(frame) {
+            Ok(true) => {
+                self.stats
+                    .record_path(crate::LiteinstDispatchPath::FallbackCompletionSigsys);
+                true
+            }
+            Ok(false) => false,
+            Err(_) => unsafe { exit_now(126) },
+        }
+    }
+
+    fn dispatch_signal(
+        &self,
+        event: &mut PreloadSyscallEvent,
+        frame: &mut reverie_preload::trap::frame::SignalFrame<'_>,
+    ) {
+        self.dispatch_with_frame(event, Some(frame));
+    }
+}
+
+impl LiteinstDispatcher {
+    fn dispatch_with_frame(
+        &self,
+        event: &mut PreloadSyscallEvent,
+        frame: Option<&mut reverie_preload::trap::frame::SignalFrame<'_>>,
+    ) {
         if tool_callback_active() {
             crate::syscall_fallback::enable_nested_runtime_access();
             self.stats
@@ -2794,7 +2835,10 @@ impl SyscallDispatcher for LiteinstDispatcher {
                 guest_pkru: event.guest_pkru(),
             };
             forward_nested_tool_syscall(&mut nested);
-            event.set_result(nested.result);
+            event.set_native_result(reverie_preload::trap::NativeSyscallResult {
+                result: nested.result,
+                pkru: nested.guest_pkru,
+            });
             return;
         }
         self.stats
@@ -2820,7 +2864,10 @@ impl SyscallDispatcher for LiteinstDispatcher {
             unsafe {
                 process_syscall(&mut trapped);
             }
-            event.set_result(trapped.result);
+            event.set_native_result(reverie_preload::trap::NativeSyscallResult {
+                result: trapped.result,
+                pkru: trapped.guest_pkru,
+            });
             return;
         }
 
@@ -2869,11 +2916,17 @@ impl SyscallDispatcher for LiteinstDispatcher {
         // AUTONOMOUS-BOT-IMPLEMENTED
         record_fallback_dispatch(event.number());
         if mode == TOOL_REVERIE
-            && let Some(entry) = crate::syscall_fallback::prepare(instruction_pointer)
+            && let Some(frame) = frame
         {
-            (self.record_fallback_stats)(self.stats, instruction_pointer);
-            event.defer_to(entry);
-            return;
+            match crate::syscall_fallback::prepare_signal(instruction_pointer, frame) {
+                Ok(Some(entry)) => {
+                    (self.record_fallback_stats)(self.stats, instruction_pointer);
+                    event.defer_to(entry);
+                    return;
+                }
+                Ok(None) => {}
+                Err(_) => unsafe { exit_now(126) },
+            }
         }
         self.refuse_fallback(event);
     }

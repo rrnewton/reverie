@@ -7,6 +7,9 @@ use std::io;
 use std::sync::OnceLock;
 
 use liteinst2::trampoline::HookContext;
+use reverie_preload::trap::frame::FrameError;
+use reverie_preload::trap::frame::SavedState;
+use reverie_preload::trap::frame::SignalFrame;
 use reverie_preload::trap::raw_syscall6;
 
 static SAVE_BYTES: AtomicU32 = AtomicU32::new(512);
@@ -23,6 +26,7 @@ const _: () = {
 
 thread_local! {
     static READY: Cell<bool> = const { Cell::new(false) };
+    static OWNER: Cell<*mut Continuation> = const { Cell::new(core::ptr::null_mut()) };
     static PENDING: Cell<Option<Pending>> = const { Cell::new(None) };
 }
 
@@ -73,6 +77,98 @@ fn pkru_offset(offset: u32, size: u32, bytes: u32) -> Result<u32, &'static str> 
     Ok(offset)
 }
 
+const CALLBACK_STACK_BYTES: usize = 8 * 1024 * 1024;
+const COMPLETION_COOKIE: u64 = 0x4c49_4641_4c4c_424b;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Phase {
+    Idle,
+    Captured,
+    Running,
+    ReadyToReturn,
+}
+
+struct CallbackStack {
+    mapping: *mut libc::c_void,
+    bytes: usize,
+    top: usize,
+}
+
+impl CallbackStack {
+    fn new() -> io::Result<Self> {
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if page <= 0 {
+            return Err(io::Error::other("invalid page size"));
+        }
+        let page = page as usize;
+        let bytes = CALLBACK_STACK_BYTES
+            .checked_add(
+                page.checked_mul(2)
+                    .ok_or_else(|| io::Error::other("stack size overflow"))?,
+            )
+            .ok_or_else(|| io::Error::other("stack size overflow"))?;
+        let mapping = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                bytes,
+                libc::PROT_NONE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_STACK,
+                -1,
+                0,
+            )
+        };
+        if mapping == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        // mmap supplied a range of `bytes`; compute the usable end without
+        // unchecked pointer-sized arithmetic before publishing any owner.
+        let top = (mapping as usize).checked_add(bytes - page);
+        let stack = Self {
+            mapping,
+            bytes,
+            top: top.unwrap_or(0),
+        };
+        if top.is_none() {
+            return Err(io::Error::other("stack address overflow"));
+        }
+        if unsafe {
+            libc::mprotect(
+                mapping.cast::<u8>().add(page).cast(),
+                CALLBACK_STACK_BYTES,
+                libc::PROT_READ | libc::PROT_WRITE,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(stack)
+    }
+}
+
+impl Drop for CallbackStack {
+    fn drop(&mut self) {
+        // Only unpublished preparation owns a destructor. Published owners
+        // are retained through process teardown, never freed on this stack.
+        unsafe { libc::munmap(self.mapping, self.bytes) };
+    }
+}
+
+struct Continuation {
+    stack: CallbackStack,
+    saved: SavedState,
+    context: HookContext,
+    owner_tid: i64,
+    generation: u64,
+    phase: Phase,
+    entries: u64,
+    callbacks: u64,
+    completions: u64,
+}
+
+fn current_tid() -> i64 {
+    unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) }
+}
+
 pub(crate) fn initialize() -> io::Result<()> {
     SAVE_CONFIG
         .get_or_init(configure_save)
@@ -81,203 +177,301 @@ pub(crate) fn initialize() -> io::Result<()> {
     if PENDING.get().is_some() {
         return Err(io::Error::other("a syscall continuation is still active"));
     }
+    if OWNER.get().is_null() {
+        let saved = SavedState::new()?;
+        let stack = CallbackStack::new()?;
+        let owner = Box::new(Continuation {
+            stack,
+            saved,
+            // HookContext is exclusively integer fields; zero is a valid
+            // preparation value, overwritten by the actual first signal.
+            context: unsafe { core::mem::zeroed() },
+            owner_tid: current_tid(),
+            generation: 0,
+            phase: Phase::Idle,
+            entries: 0,
+            callbacks: 0,
+            completions: 0,
+        });
+        OWNER.set(Box::into_raw(owner));
+    }
     READY.set(true);
     Ok(())
 }
 
-/// Retain only the original instruction address until ordinary dispatch ends.
-/// Reentry before then refuses without overwriting the active continuation.
-/// Afterwards the saved RCX owns the resume address; return reads no TLS state.
+/// Reserve the existing single activation without overwriting a pending one.
+/// Kept separate from frame capture so its reentry contract remains testable.
 pub(crate) fn prepare(instruction: u64) -> Option<u64> {
     PENDING.with(|pending| {
         if !READY.get() || pending.get().is_some() {
             return None;
         }
         pending.set(Some(Pending { instruction }));
-        Some(if PKRU_OFFSET.load(Ordering::Relaxed) != 0 {
-            fallback_entry_pkru as *const () as u64
-        } else {
-            fallback_entry as *const () as u64
-        })
+        Some(fallback_entry as *const () as u64)
     })
 }
 
-/// Linux gives a signal handler default PKRU, which can deny the nondefault
-/// key holding the fallback's callback stack. A nested Tool syscall must regain
-/// runtime access before the trusted gate reads its arguments. The kernel's
-/// saved interrupted PKRU is untouched and sigreturn restores it afterwards.
-pub(crate) fn enable_nested_runtime_access() {
-    if PKRU_OFFSET.load(Ordering::Relaxed) != 0 && PENDING.get().is_some() {
+pub(crate) fn prepare_signal(
+    instruction: u64,
+    frame: &mut SignalFrame<'_>,
+) -> Result<Option<u64>, FrameError> {
+    let Some(entry) = prepare(instruction) else {
+        return Ok(None);
+    };
+    let pointer = OWNER.get();
+    if pointer.is_null() {
+        return Err(FrameError);
+    }
+    let owner = unsafe { &mut *pointer };
+    if owner.phase != Phase::Idle || owner.owner_tid != current_tid() {
+        return Err(FrameError);
+    }
+    owner.generation = owner.generation.checked_add(1).ok_or(FrameError)?;
+    frame.capture(&mut owner.saved)?;
+    let resume = instruction.checked_add(2).ok_or(FrameError)?;
+    if frame.register(libc::REG_RIP as usize) as u64 != resume {
+        return Err(FrameError);
+    }
+    owner.context = context_from_image(&owner.saved, instruction);
+    owner.phase = Phase::Captured;
+    frame.set_register(libc::REG_RSP as usize, (owner.stack.top & !15) as i64);
+    frame.set_register(libc::REG_RDI as usize, pointer as i64);
+    frame.set_register(
+        libc::REG_EFL as usize,
+        frame.register(libc::REG_EFL as usize) & !(1 << 10),
+    );
+    frame.set_pkru(owner.saved.pkru().map(|_| 0))?;
+    owner.entries += 1;
+    Ok(Some(entry))
+}
+
+fn context_from_image(saved: &SavedState, instruction: u64) -> HookContext {
+    let r = &saved.registers;
+    HookContext {
+        instruction_pointer: instruction,
+        stack_pointer: r[libc::REG_RSP as usize] as u64,
+        rax: r[libc::REG_RAX as usize] as u64,
+        rbx: r[libc::REG_RBX as usize] as u64,
+        rcx: r[libc::REG_RCX as usize] as u64,
+        rdx: r[libc::REG_RDX as usize] as u64,
+        rsi: r[libc::REG_RSI as usize] as u64,
+        rdi: r[libc::REG_RDI as usize] as u64,
+        rbp: r[libc::REG_RBP as usize] as u64,
+        r8: r[libc::REG_R8 as usize] as u64,
+        r9: r[libc::REG_R9 as usize] as u64,
+        r10: r[libc::REG_R10 as usize] as u64,
+        r11: r[libc::REG_R11 as usize] as u64,
+        r12: r[libc::REG_R12 as usize] as u64,
+        r13: r[libc::REG_R13 as usize] as u64,
+        r14: r[libc::REG_R14 as usize] as u64,
+        r15: r[libc::REG_R15 as usize] as u64,
+        rflags: r[libc::REG_EFL as usize] as u64,
+    }
+}
+
+fn commit_context(owner: &mut Continuation) -> Result<(), FrameError> {
+    let c = &owner.context;
+    let r = &mut owner.saved.registers;
+    for (index, value) in [
+        (libc::REG_R8, c.r8),
+        (libc::REG_R9, c.r9),
+        (libc::REG_R10, c.r10),
+        (libc::REG_R11, c.r11),
+        (libc::REG_R12, c.r12),
+        (libc::REG_R13, c.r13),
+        (libc::REG_R14, c.r14),
+        (libc::REG_R15, c.r15),
+        (libc::REG_RDI, c.rdi),
+        (libc::REG_RSI, c.rsi),
+        (libc::REG_RBP, c.rbp),
+        (libc::REG_RBX, c.rbx),
+        (libc::REG_RDX, c.rdx),
+        (libc::REG_RAX, c.rax),
+        (libc::REG_RCX, c.rcx),
+        (libc::REG_RSP, c.stack_pointer),
+        (libc::REG_EFL, c.rflags),
+    ] {
+        r[index as usize] = value as i64;
+    }
+    r[libc::REG_RIP as usize] = c.instruction_pointer.checked_add(2).ok_or(FrameError)? as i64;
+    Ok(())
+}
+
+/// The current handler prefix has already opened runtime permissions before
+/// any memory access. Nested operations retain their own interrupted image.
+pub(crate) fn enable_nested_runtime_access() {}
+
+/// A raw fork copies the active image and ordinary stack. Rebind only after
+/// the real child result, in ordinary context, before child callbacks/return.
+pub(crate) fn rebind_fork_child() {
+    let pointer = OWNER.get();
+    if !pointer.is_null() {
         unsafe {
-            core::arch::asm!(
-                "wrpkru",
-                "lfence",
-                in("eax") 0u32,
-                in("ecx") 0u32,
-                in("edx") 0u32,
-                options(nostack, preserves_flags),
-            );
+            (*pointer).owner_tid = current_tid();
+            // The entry/callback happened in the parent. The child inherits
+            // its active image but physically receives only its completion.
+            (*pointer).entries = 0;
+            (*pointer).callbacks = 0;
+            (*pointer).completions = 0;
         }
     }
 }
 
-unsafe extern "C" fn dispatch(context: *mut HookContext) {
-    PENDING.with(|pending| {
-        let Some(continuation) = pending.get() else {
-            unsafe { raw_syscall6(libc::SYS_exit_group, [123, 0, 0, 0, 0, 0]) };
-            std::process::abort();
-        };
-        if context.is_null() {
-            unsafe { raw_syscall6(libc::SYS_exit_group, [123, 0, 0, 0, 0, 0]) };
-            std::process::abort();
+fn fatal() -> ! {
+    unsafe { raw_syscall6(libc::SYS_exit_group, [123, 0, 0, 0, 0, 0]) };
+    loop {
+        core::hint::spin_loop()
+    }
+}
+
+unsafe extern "C" fn dispatch(pointer: *mut Continuation) {
+    if pointer.is_null() || pointer != OWNER.get() || PENDING.get().is_none() {
+        fatal()
+    }
+    // No reference to the full owner is held across Tool dispatch: child fork
+    // completion and nested signals may access separate owner fields.
+    if unsafe { (*pointer).phase != Phase::Captured || (*pointer).owner_tid != current_tid() } {
+        fatal()
+    }
+    unsafe {
+        (*pointer).phase = Phase::Running;
+        (*pointer).callbacks += 1;
+    }
+    let errno = unsafe { libc::__errno_location() };
+    let saved_errno = unsafe { *errno };
+    let mut pkru = unsafe { (*pointer).saved.pkru() };
+    unsafe {
+        crate::runtime::dispatch_fallback_context(
+            core::ptr::addr_of_mut!((*pointer).context),
+            &mut pkru,
+        );
+        *errno = saved_errno;
+    }
+    let owner = unsafe { &mut *pointer };
+    if owner.owner_tid != current_tid()
+        || owner.saved.set_pkru(pkru).is_err()
+        || commit_context(owner).is_err()
+    {
+        fatal()
+    }
+    owner.phase = Phase::ReadyToReturn;
+}
+
+/// Completion is intercepted before ordinary syscall/site classification.
+/// A genuine frame may reuse the same alt-stack address as the consumed first
+/// frame; address inequality is not evidence of freshness.
+pub(crate) fn complete(frame: &mut SignalFrame<'_>) -> Result<bool, FrameError> {
+    let resume = core::ptr::addr_of!(fallback_completion_return) as usize as u64;
+    if frame.register(libc::REG_RIP as usize) as u64 != resume {
+        return Ok(false);
+    }
+    let pointer = OWNER.get();
+    if pointer.is_null() {
+        return Err(FrameError);
+    }
+    let owner = unsafe { &mut *pointer };
+    let instruction = core::ptr::addr_of!(fallback_completion_syscall) as usize;
+    if instruction.checked_add(2) != Some(resume as usize)
+        || unsafe { core::slice::from_raw_parts(instruction as *const u8, 2) } != [0x0f, 0x05]
+        || owner.phase != Phase::ReadyToReturn
+        || owner.owner_tid != current_tid()
+        || PENDING.get().is_none()
+        || frame.register(libc::REG_RAX as usize) != libc::SYS_getpid
+        || frame.register(libc::REG_RDI as usize) as u64 != COMPLETION_COOKIE
+        || frame.register(libc::REG_RSI as usize) as u64 != owner.generation
+        || frame.register(libc::REG_RDX as usize) as usize != pointer as usize
+    {
+        return Err(FrameError);
+    }
+    frame.restore(&owner.saved)?;
+    owner.completions += 1;
+    owner.phase = Phase::Idle;
+    PENDING.set(None);
+    Ok(true)
+}
+
+/// Diagnostic observations for the current thread's owned continuation.
+/// Selectors 0/1/2 are actual fallback entry, reached ordinary callback, and
+/// prepared genuine completion frame. They are not a kernel-stop census.
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_liteinst_owned_fallback_observation(selector: u32) -> u64 {
+    let pointer = OWNER.get();
+    if pointer.is_null() {
+        return 0;
+    }
+    unsafe {
+        match selector {
+            0 => (*pointer).entries,
+            1 => (*pointer).callbacks,
+            2 => (*pointer).completions,
+            _ => 0,
         }
-        let errno = unsafe { libc::__errno_location() };
-        let saved_errno = unsafe { *errno };
-        unsafe {
-            (*context).instruction_pointer = continuation.instruction;
-            crate::runtime::dispatch_fallback_context(context);
-            *errno = saved_errno;
-        }
-        // The saved RCX now owns the return address. No TLS is read on return,
-        // so a subsequent continuation cannot redirect this activation.
-        pending.set(None);
-    })
+    }
+}
+
+/// Check a fixture's actual callback local address against owned stack bounds.
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_liteinst_on_owned_fallback_stack(address: usize) -> bool {
+    let pointer = OWNER.get();
+    if pointer.is_null() {
+        return false;
+    }
+    unsafe {
+        let top = (*pointer).stack.top;
+        address >= top - CALLBACK_STACK_BYTES && address < top
+    }
+}
+
+unsafe extern "C" fn completion_generation() -> u64 {
+    let pointer = OWNER.get();
+    if pointer.is_null() || unsafe { (*pointer).phase != Phase::ReadyToReturn } {
+        fatal()
+    }
+    unsafe { (*pointer).generation }
 }
 
 unsafe extern "C" {
     fn fallback_entry();
-    fn fallback_entry_pkru();
+    static fallback_completion_syscall: u8;
+    static fallback_completion_return: u8;
 }
 
 global_asm!(
     r#"
     .text
-    .macro save_registers
-    lea rsp, [rsp - 128]
-    pushfq
-    push rax
-    push rcx
-    push rdx
-    push rbx
-    push rbp
-    push rsi
-    push rdi
-    push r8
-    push r9
-    push r10
-    push r11
-    push r12
-    push r13
-    push r14
-    push r15
-    lea rax, [rsp + 256]
-    push rax
-    push 0
-    mov r12, rsp
-    .endm
-
+    .p2align 4
     .global fallback_entry
     .hidden fallback_entry
     .type fallback_entry,@function
 fallback_entry:
-    save_registers
-    xor r14d, r14d
-    jmp 1f
-    .size fallback_entry, .-fallback_entry
-
-    .global fallback_entry_pkru
-    .hidden fallback_entry_pkru
-    .type fallback_entry_pkru,@function
-fallback_entry_pkru:
-    save_registers
-    // All guest registers are saved on its accessible stack. Neither the
-    // feature decision nor a memory read may precede this permissions change.
-    xor ecx, ecx
-    rdpkru
-    mov r13d, eax
-    xor eax, eax
-    xor edx, edx
-    wrpkru
-    lfence
-    mov r14d, 1
-1:
-    and rsp, -64
-    mov r10d, dword ptr [rip + {save_bytes}]
-    sub rsp, r10
-    mov rax, qword ptr [rip + {save_mask}]
-    test rax, rax
-    jz 2f
-    .irp offset,512,520,528,536,544,552,560,568
-    mov qword ptr [rsp + \offset], 0
-    .endr
-    mov rdx, rax
-    shr rdx, 32
-    xsave64 [rsp]
-    test r14d, r14d
-    jz 3f
-    // XSAVE observed the temporary runtime PKRU. Put the guest value and its
-    // initial-state bit back without changing any other component or header.
-    mov r10d, dword ptr [rip + {pkru_offset}]
-    mov qword ptr [rsp + r10], r13
-    and qword ptr [rsp + 512], -513
-    test r13d, r13d
-    jz 3f
-    or qword ptr [rsp + 512], 512
-    jmp 3f
-2:
-    fxsave64 [rsp]
-3:
+    // First genuine sigreturn supplied an owned, aligned stack and open PKRU.
+    // The saved guest image retains DF and every FP component independently.
     cld
-    // Rust callbacks require the ordinary empty x87 stack and masked FP
-    // exceptions even when the guest supplied a different FP environment.
     fninit
     ldmxcsr [rip + {callback_mxcsr}]
-    mov rdi, r12
+    mov r12, rdi
     call {dispatch}
-    mov rax, qword ptr [rip + {save_mask}]
-    test rax, rax
-    jz 4f
-    mov rdx, rax
-    shr rdx, 32
-    // Finish all runtime/global/TLS access before restoring guest PKRU.
-    // Future runtime boundaries must also precede this restore. The suffix
-    // uses only registers and the guest-accessible frame, even with key0 denied.
-    xrstor64 [rsp]
-    jmp 5f
-4:
-    fxrstor64 [rsp]
-5:
-    mov rsp, r12
-    add rsp, 16
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    add rsp, 8
-    pop r10
-    pop r9
-    pop r8
-    pop rdi
-    pop rsi
-    pop rbp
-    pop rbx
-    pop rdx
-    pop rcx
-    pop rax
-    mov r11, [rsp - 88]
-    popfq
-    lea rsp, [rsp + 128]
-    notrack jmp rcx
-    .global fallback_entry_end
-    .hidden fallback_entry_end
-fallback_entry_end:
-    .size fallback_entry_pkru, .-fallback_entry_pkru
-    "#,
-    save_bytes = sym SAVE_BYTES,
-    save_mask = sym SAVE_MASK,
-    pkru_offset = sym PKRU_OFFSET,
+    call {generation}
+    mov rsi, rax
+    mov rdx, r12
+    mov rdi, {cookie}
+    mov eax, {getpid}
+    .global fallback_completion_syscall
+    .hidden fallback_completion_syscall
+fallback_completion_syscall:
+    syscall
+    .global fallback_completion_return
+    .hidden fallback_completion_return
+fallback_completion_return:
+    // A correct completion resumes the saved guest, never this continuation.
+    ud2
+    .size fallback_entry, .-fallback_entry
+"#,
     dispatch = sym dispatch,
+    generation = sym completion_generation,
     callback_mxcsr = sym CALLBACK_MXCSR,
+    cookie = const COMPLETION_COOKIE,
+    getpid = const libc::SYS_getpid,
 );
 
 #[cfg(test)]

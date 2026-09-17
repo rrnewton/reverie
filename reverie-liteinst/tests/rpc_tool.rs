@@ -11,6 +11,106 @@ const INSTRUCTION_CONTROL_UNAVAILABLE_STATUS: i32 = 77;
 const TEST_STRADDLER_STALENESS_TICKS: &str = "20000";
 
 #[test]
+fn fallback_uses_owned_frames_after_guest_stack_revocation() {
+    let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+    for on_alt_stack in [true, false] {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("coordinator.sock");
+        let mut coordinator = Command::new(binary)
+            .arg("coordinator")
+            .arg(&socket)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !socket.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let ready = socket.exists();
+        let mut command = Command::new(binary);
+        command
+            .arg("owned-frame")
+            .arg(&socket)
+            .env_remove(STRADDLER_STALENESS_TICKS_ENV);
+        reverie_liteinst::set_guest_alt_stack(&mut command, on_alt_stack);
+        let output = ready.then(|| owned_frame_output(command));
+        let _ = coordinator.kill();
+        let _ = coordinator.wait();
+        let output = output.expect("coordinator socket was not created");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        if output.status.code() == Some(77) {
+            assert_eq!(output.stdout, b"owned frame: OSPKE unavailable\n");
+            eprintln!("owned frame PKRU controls unmeasured: OSPKE unavailable");
+            continue;
+        }
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(
+            stdout
+                .lines()
+                .filter(|line| line.starts_with("owned frame observation: "))
+                .count(),
+            8
+        );
+        let bytes = stdout.lines().last().unwrap()
+            .strip_prefix("owned frame: rseq=unregistered native=4 Tool=4 registers=equal xstate-bytes=")
+            .and_then(|line| line.strip_suffix(" callback-stack=owned guest-stack-revoked=preserved negative-pkru=preserved hooks=0 traps=4"))
+            .expect("complete owned-frame observations").parse::<usize>().unwrap();
+        assert!(bytes >= 576);
+        println!("alt_stack={on_alt_stack}\n{stdout}");
+    }
+}
+
+fn owned_frame_output(mut command: Command) -> Output {
+    use std::io::Read;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    const LIMIT: u64 = 1024 * 1024;
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let exceeded = Arc::new(AtomicBool::new(false));
+    let read = |pipe: Box<dyn Read + Send>, exceeded: Arc<AtomicBool>| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.take(LIMIT + 1).read_to_end(&mut bytes).unwrap();
+            if bytes.len() as u64 > LIMIT {
+                exceeded.store(true, Ordering::Relaxed);
+            }
+            bytes
+        })
+    };
+    // Drain full raw XSTATE observations while the child runs. Waiting for
+    // exit before reading would deadlock on a full pipe, not test the runtime.
+    let stdout = read(Box::new(child.stdout.take().unwrap()), exceeded.clone());
+    let stderr = read(Box::new(child.stderr.take().unwrap()), exceeded.clone());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut bounded = false;
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline || exceeded.load(Ordering::Relaxed) {
+            bounded = true;
+            child.kill().unwrap();
+            break child.wait().unwrap();
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let output = Output {
+        status,
+        stdout: stdout.join().unwrap(),
+        stderr: stderr.join().unwrap(),
+    };
+    assert!(
+        !bounded && !exceeded.load(Ordering::Relaxed),
+        "owned-frame child exceeded five seconds/one MiB: {output:?}"
+    );
+    output
+}
+
+#[test]
 fn ordinary_tool_memory_and_scratch_work_with_protected_guest_state() {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
     for on_alt_stack in [true, false] {

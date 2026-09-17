@@ -29,6 +29,7 @@ use crate::dispatch::SyscallDispatcher;
 use crate::dispatch::SyscallEvent;
 use crate::seccomp::TrustedGate;
 use crate::signal;
+pub mod frame;
 mod pkru;
 const SYS_SECCOMP_CODE: libc::c_int = 1;
 
@@ -359,35 +360,48 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
     }
     IN_HANDLER.set(true);
 
-    let context = unsafe { &mut *context.cast::<libc::ucontext_t>() };
-    let guest_pkru = match unsafe { pkru::from_signal_frame(context.uc_mcontext.fpregs) } {
-        Ok(value) => value,
-        Err(()) => unsafe { exit_now(126) },
+    let mut frame = match unsafe { frame::SignalFrame::from_raw(context, info) } {
+        Ok(frame) => frame,
+        Err(_) => unsafe { exit_now(126) },
     };
-    let registers = &mut context.uc_mcontext.gregs;
+    if dispatcher().is_some_and(|dispatcher| dispatcher.dispatch_private_signal(&mut frame)) {
+        IN_HANDLER.set(false);
+        return;
+    }
+    let guest_pkru = match frame.pkru() {
+        Ok(value) => value,
+        Err(_) => unsafe { exit_now(126) },
+    };
     let mut event = SyscallEvent::new(
-        registers[libc::REG_RAX as usize],
+        frame.register(libc::REG_RAX as usize),
         [
-            registers[libc::REG_RDI as usize] as u64,
-            registers[libc::REG_RSI as usize] as u64,
-            registers[libc::REG_RDX as usize] as u64,
-            registers[libc::REG_R10 as usize] as u64,
-            registers[libc::REG_R8 as usize] as u64,
-            registers[libc::REG_R9 as usize] as u64,
+            frame.register(libc::REG_RDI as usize) as u64,
+            frame.register(libc::REG_RSI as usize) as u64,
+            frame.register(libc::REG_RDX as usize) as u64,
+            frame.register(libc::REG_R10 as usize) as u64,
+            frame.register(libc::REG_R8 as usize) as u64,
+            frame.register(libc::REG_R9 as usize) as u64,
         ],
-        registers[libc::REG_RIP as usize] as u64,
+        frame.register(libc::REG_RIP as usize) as u64,
     );
     event.set_guest_pkru(guest_pkru);
 
-    dispatch_event(&mut event);
+    if let Some(dispatcher) = dispatcher() {
+        dispatcher.dispatch_signal(&mut event, &mut frame);
+    } else {
+        event.fail(libc::ENOSYS);
+    }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
     if let Some(resume_address) = event.resume_address() {
         // Preserve the syscall-number register so the replacement callback
         // observes the original entry state after sigreturn.
-        registers[libc::REG_RIP as usize] = resume_address as i64;
+        frame.set_register(libc::REG_RIP as usize, resume_address as i64);
     } else {
-        registers[libc::REG_RAX as usize] = event.resolved_result();
+        frame.set_register(libc::REG_RAX as usize, event.resolved_result());
+        if frame.set_pkru(event.guest_pkru()).is_err() {
+            unsafe { exit_now(126) };
+        }
     }
     IN_HANDLER.set(false);
 }
@@ -443,6 +457,7 @@ unsafe extern "C" {
 /// Installs process-global signal disposition; call once during init while
 /// CPUID is available, before enabling instruction faulting.
 pub unsafe fn install_handler(use_alt_stack: bool) -> io::Result<()> {
+    frame::initialize()?;
     let ospke = pkru::initialize()?;
     let handler = if ospke {
         reverie_preload_sigsys_pkru

@@ -311,6 +311,22 @@ pub(super) fn run_fork(path: &Path, installed: bool) {
     assert_eq!(traps, u64::from(!installed || child != 0));
     assert_eq!(fallback, u64::from(!installed));
     assert_eq!(syscall, u64::from(!installed));
+    // The child's original entry and callback physically happened before
+    // fork in the parent. It receives only its own completion signal.
+    if !installed {
+        unsafe extern "C" {
+            fn reverie_liteinst_owned_fallback_observation(selector: u32) -> u64;
+        }
+        assert_eq!(
+            unsafe { reverie_liteinst_owned_fallback_observation(0) },
+            u64::from(child != 0)
+        );
+        assert_eq!(
+            unsafe { reverie_liteinst_owned_fallback_observation(1) },
+            u64::from(child != 0)
+        );
+        assert_eq!(unsafe { reverie_liteinst_owned_fallback_observation(2) }, 1);
+    }
     let label = if installed { "installed" } else { "fallback" };
     if !installed {
         assert_eq!(

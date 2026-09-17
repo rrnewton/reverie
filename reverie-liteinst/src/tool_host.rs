@@ -282,7 +282,7 @@ where
             let args = guest.event.args;
             if is_plain_fork(number, args) {
                 guest.prepare_fork_parent_state();
-                let result = forward_plain_fork(number, args);
+                let result = forward_plain_fork(number, args, Some(&mut guest.event.guest_pkru));
                 if result == 0 {
                     let parent_state = guest.take_fork_parent_state();
                     drop(guest);
@@ -321,7 +321,9 @@ where
                 event.result = -i64::from(error.into_raw());
                 return;
             }
-            event.result = unsafe { raw_syscall6(number, args) };
+            // This is the original unsubscribed guest operation. Private
+            // inject/tail_inject below deliberately keep caller rights.
+            event.result = unsafe { event.forward() };
             return;
         }
         let args = guest.event.args.map(|arg| arg as usize);
@@ -469,6 +471,7 @@ fn finish_fork_child<T: Tool>(
         child_tid,
         child_pid,
     } = context;
+    crate::syscall_fallback::rebind_fork_child();
     runtime::emit_in_guest_stage(b"fork-child-thread-start-begin");
     // This child inherited the parent's coordinator connection. Flag it before
     // any child-side callback can issue an RPC (`handle_thread_start` below is
@@ -704,16 +707,23 @@ fn clone3_is_plain_fork(address: u64, size: u64) -> bool {
         && fields[8..].iter().all(|field| *field == 0)
 }
 
-fn forward_plain_fork(number: i64, args: [u64; 6]) -> i64 {
-    let result = if number == libc::SYS_vfork {
+fn forward_plain_fork(number: i64, args: [u64; 6], guest_pkru: Option<&mut Option<u32>>) -> i64 {
+    let permissions = guest_pkru.as_ref().and_then(|value| **value);
+    let physical = if number == libc::SYS_vfork {
         // A real vfork child would run the instrumentation callback on the
         // parent's shared stack. Use a COW fork and preserve vfork's parent
         // suspension until the child exits. Exec remains fail-closed, so exit
         // is the only supported vfork completion boundary for now.
-        unsafe { raw_syscall6(libc::SYS_fork, [0; 6]) }
+        unsafe {
+            reverie_preload::trap::raw_syscall6_with_result(libc::SYS_fork, [0; 6], permissions)
+        }
     } else {
-        unsafe { raw_syscall6(number, args) }
+        unsafe { reverie_preload::trap::raw_syscall6_with_result(number, args, permissions) }
     };
+    if let Some(output) = guest_pkru {
+        *output = physical.pkru;
+    }
+    let result = physical.result;
     if number == libc::SYS_vfork && result > 0 {
         let mut info = core::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
         loop {
@@ -882,7 +892,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
             let parent_tid = self.tid;
             let parent_pid = self.pid;
             self.prepare_fork_parent_state();
-            let result = forward_plain_fork(number, raw_args);
+            let result = forward_plain_fork(number, raw_args, None);
             if result == 0 {
                 let child_tid = raw_pid(libc::SYS_gettid);
                 let child_pid = raw_pid(libc::SYS_getpid);
@@ -950,7 +960,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
             let parent_tid = self.tid;
             let parent_pid = self.pid;
             self.prepare_fork_parent_state();
-            let result = forward_plain_fork(number, args);
+            let result = forward_plain_fork(number, args, None);
             if result == 0 {
                 self.tail.set_fork_child(
                     parent_tid,
