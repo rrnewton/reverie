@@ -84,6 +84,7 @@ class FakeRun:
         self.service_result_schema = start_unit.service_result.SCHEMA_VERSION
         self.include_passed_tests = True
         self.write_service_result = True
+        self.write_frozen_result = True
         self.collected_unit = False
         self.current_main = "b" * 40
         self.target_contains_current_main = False
@@ -961,7 +962,7 @@ class FakeRun:
                 if self.service_result_schema == 5:
                     result["detail"] = self.detail
                 Path(path).write_text(json.dumps(result) + "\n")
-            if frozen := environment.get("HERMIT_VALIDATE_LEDGER"):
+            if self.write_frozen_result and (frozen := environment.get("HERMIT_VALIDATE_LEDGER")):
                 row = self.default_ledger_row()
                 row["result"] = "pass" if self.actual_exit == 0 else "fail"
                 row["raw_result"] = row["result"]
@@ -3009,6 +3010,96 @@ class StartUnitTest(unittest.TestCase):
         self.assertFalse(
             any(wrkslots_action(command, "create") for command in self.fake.commands)
         )
+
+    def test_entry_cleanup_preserves_current_incomplete_frozen_result(self) -> None:
+        frozen_parent = start_unit.frozen_checkout_parent(self.root)
+        self.addCleanup(shutil.rmtree, frozen_parent, True)
+        frozen = frozen_parent / "validate-fresh-entry-current-incomplete"
+        (frozen / ".git").mkdir(parents=True)
+        record = self.root / "ignored/validate/runs/validate-entry-incomplete.json"
+        start_unit.run_registry.write_record(
+            record,
+            {
+                "schema_version": 1,
+                "unit": "validate-entry-incomplete.service",
+                "checkout": str(frozen),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "admission": start_unit.FROZEN_RESULT_ADMISSION,
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "result": "no-result",
+                "result_source": "validation-service-result",
+                "service_result_schema": 5,
+                "final_validate_status": "COULD_NOT_RUN",
+                "exit_code": 75,
+                "executed_nodes": 0,
+                "executed_tests": None,
+                "passed_tests": None,
+                "selection_mode": None,
+                "scorecard_writeback": None,
+                "qualifying_receipt": False,
+            },
+        )
+        before = record.read_bytes()
+        reason = (
+            "current incomplete frozen validation is exact and inactive; "
+            "the checkout and no-result remain retained"
+        )
+        self.fake.ownerless_batch_output = json.dumps(
+            {
+                "schema": 1,
+                "requested": 1,
+                "process_censuses": 1,
+                "create_journals": [],
+                "classifications": [
+                    {
+                        "blocks_entry": False,
+                        "checkout": str(frozen),
+                        "reason": reason,
+                        "state": "current-incomplete-retained",
+                    }
+                ],
+            }
+        )
+
+        start_unit.require_validate_entry_cleanup(
+            self.root,
+            prospective_slot="validate-fresh-next",
+            prospective_checkout=frozen_parent / "validate-fresh-next",
+            run=self.fake,
+            tool_root=self.root,
+        )
+
+        self.assertEqual(before, record.read_bytes())
+        self.assertTrue(frozen.is_dir())
+        self.assertEqual([], self.fake.removed)
+        commands = self.fake.commands
+        self.assertTrue(
+            any(wrkslots_action(command, "classify-ownerless-validate-batch") for command in commands)
+        )
+        self.assertFalse(
+            any(
+                wrkslots_action(command, action)
+                for command in commands
+                for action in ("recover", "recover-ownerless-validate-batch", "remove")
+            )
+        )
+        payload = json.loads(self.fake.ownerless_batch_output)
+        for field, replacement in (("blocks_entry", True), ("blocks_entry", 0), ("process_censuses", 0)):
+            with self.subTest(field=field, replacement=replacement):
+                altered = json.loads(json.dumps(payload))
+                target = altered if field == "process_censuses" else altered["classifications"][0]
+                target[field] = replacement
+                self.fake.ownerless_batch_output = json.dumps(altered)
+                outcomes = start_unit.remove_ownerless_checkouts_batch(
+                    self.root, [(frozen, record, self.checkout)],
+                    run=self.fake, tool_root=self.root, frozen=True, classify_only=True,
+                )
+                self.assertTrue(outcomes[str(frozen)].blocks_entry)
+                self.assertIn("invalid ownerless batch report", outcomes[str(frozen)].reason)
+                self.assertEqual(before, record.read_bytes())
+                self.assertTrue(frozen.is_dir())
 
     def test_entry_cleanup_uses_typed_unit_state_when_reason_text_changes(self) -> None:
         running, _record = self.managed_cleanup_record(
@@ -5919,6 +6010,9 @@ class StartUnitTest(unittest.TestCase):
             ("terminal-retained", True, 1),
             ("unknown", False, 1),
             ("terminal-retained", False, 0),
+            ("current-incomplete-retained", True, 1),
+            ("current-incomplete-retained", False, 0),
+            ("current-incomplete-retained", False, 1),  # Not a frozen request.
         )
         for state, blocks_entry, process_censuses in mutations:
             with self.subTest(
@@ -9118,6 +9212,7 @@ class StartUnitTest(unittest.TestCase):
         fresh = start_unit.prepare_fresh_checkout(
             self.checkout,
             SHA,
+            state_root=self.root,
             run=self.fake,
             parent=self.root / "worktrees" / "validate",
             repo="rrnewton/hermit",
@@ -9132,6 +9227,7 @@ class StartUnitTest(unittest.TestCase):
         start_unit.prepare_fresh_checkout(
             self.checkout,
             SHA,
+            state_root=self.root,
             run=self.fake,
             parent=self.root / "worktrees" / "validate",
             repo="rrnewton/hermit",
@@ -9157,6 +9253,7 @@ class StartUnitTest(unittest.TestCase):
             start_unit.prepare_fresh_checkout(
                 self.checkout,
                 SHA,
+                state_root=self.root,
                 run=self.fake,
                 parent=self.root / "worktrees" / "validate",
                 repo="rrnewton/hermit",
@@ -9320,6 +9417,7 @@ class StartUnitTest(unittest.TestCase):
         removed = start_unit.remove_fresh_checkout(
             self.checkout,
             fresh,
+            state_root=self.root,
             run=self.fake,
             tool_root=tool_root,
             wrkslots=start_unit.WrkslotsIdentity(
@@ -9340,6 +9438,9 @@ class StartUnitTest(unittest.TestCase):
         )
 
     def test_immediate_frozen_cleanup_uses_typed_wrkslots_recovery(self) -> None:
+        source = self.root / "worktrees/slots/source-hermit"
+        source.mkdir(parents=True)
+        tool_root = self.root / "worktrees/slots/linked-tooling"
         fresh = (
             start_unit.frozen_checkout_parent(self.root)
             / "validate-fresh-immediate-frozen"
@@ -9356,10 +9457,11 @@ class StartUnitTest(unittest.TestCase):
             return completed(command, stdout="recovered frozen validation checkout\n")
 
         removed = start_unit.remove_fresh_checkout(
-            self.checkout,
+            source,
             fresh,
+            state_root=self.root,
             run=run,
-            tool_root=self.root,
+            tool_root=tool_root,
             completed_record=record,
         )
 
@@ -9367,12 +9469,233 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(1, len(commands))
         command = commands[0]
         self.assertTrue(wrkslots_action(command, "recover"))
+        self.assertEqual(str(tool_root / "ci-hub/bin/wrkslots"), command[0])
+        self.assertEqual(str(self.root), command[command.index("--project-root") + 1])
+        self.assertEqual(
+            source.relative_to(self.root).as_posix(),
+            command[command.index("--repository") + 1],
+        )
+        self.assertEqual(
+            record.relative_to(self.root).as_posix(),
+            command[command.index("--completed-record") + 1],
+        )
         self.assertIn("--coordinator-authorized", command)
         self.assertEqual(
             str(fresh),
             command[command.index("--frozen-validate-checkout") + 1],
         )
         self.assertFalse(fresh.exists())
+
+    def test_frozen_receipt_cleanup_routes_preserve_provider_refusal(self) -> None:
+        source = self.root / "worktrees/slots/source-hermit"
+        source.mkdir(parents=True)
+        tool_root = self.root / "worktrees/slots/tooling"
+        frozen_parent = start_unit.frozen_checkout_parent(self.root)
+        self.addCleanup(shutil.rmtree, frozen_parent, True)
+        for route in ("recorded", "immediate"):
+            with self.subTest(route=route):
+                fresh = frozen_parent / f"validate-fresh-{route}"
+                (fresh / ".git").mkdir(parents=True)
+                record = self.root / f"ignored/validate/runs/validate-{route}.json"
+                fields = {
+                    "schema_version": 1,
+                    "state": "completed",
+                    "result": "no-result",
+                    "checkout": str(fresh),
+                    "source_checkout": str(source),
+                    "temporary_checkout": True,
+                    "admission": start_unit.FROZEN_RESULT_ADMISSION,
+                }
+                start_unit.run_registry.write_record(record, fields)
+                before = record.read_bytes()
+                commands = []
+
+                def run(command: list[str], **kwargs: object):
+                    if wrkslots_action(command, "recover"):
+                        commands.append(command)
+                        return completed(command, rc=3, stderr="typed removal proof required")
+                    return self.fake(command, **kwargs)
+
+                error = io.StringIO()
+                with contextlib.redirect_stderr(error):
+                    if route == "recorded":
+                        removed, archived, reason = start_unit.cleanup_recorded_checkout(
+                            self.root, fields, record_path=record,
+                            unit=f"validate-{route}", run=run, tool_root=tool_root,
+                        )
+                        self.assertIsNotNone(reason)
+                    else:
+                        result = start_unit.cleanup_fresh_checkout_preserving_receipts(
+                            self.root, source, fresh, unit=f"validate-{route}",
+                            run=run, tool_root=tool_root, wrkslots=None,
+                            completed_record=record,
+                        )
+                        removed, archived = result.removed, result.archived
+                self.assertFalse(removed)
+                self.assertFalse(archived)
+                self.assertIn("typed removal proof required", error.getvalue())
+                self.assertEqual(before, record.read_bytes())
+                self.assertTrue(fresh.is_dir())
+                self.assertEqual(1, len(commands))
+                command = commands[0]
+                self.assertEqual(str(tool_root / "ci-hub/bin/wrkslots"), command[0])
+                for flag, expected in (
+                    ("--project-root", str(self.root)),
+                    ("--repository", source.relative_to(self.root).as_posix()),
+                    ("--completed-record", record.relative_to(self.root).as_posix()),
+                    ("--frozen-validate-checkout", str(fresh)),
+                ):
+                    self.assertEqual(expected, command[command.index(flag) + 1])
+
+    def test_frozen_cleanup_refuses_missing_record_and_wrong_roots(self) -> None:
+        frozen_parent = start_unit.frozen_checkout_parent(self.root)
+        self.addCleanup(shutil.rmtree, frozen_parent, True)
+        fresh = frozen_parent / "validate-fresh-root-mismatch"
+        (fresh / ".git").mkdir(parents=True)
+        record = self.root / "ignored/validate/runs/validate-root-mismatch.json"
+        start_unit.run_registry.write_record(
+            record, {"schema_version": 1, "checkout": str(fresh)}
+        )
+        before = record.read_bytes()
+        cases = (
+            (self.root, self.checkout, None, "requires its completed validation record"),
+            (self.root / "other", self.checkout, record, "outside the managed or frozen"),
+            (self.root, self.root.parent / "outside-source", record, "outside the project root"),
+            (self.root, self.checkout, self.root.parent / "outside-record", "outside the project root"),
+        )
+        for root, source, completed_record, reason in cases:
+            with self.subTest(reason=reason, root=root, source=source):
+                error = io.StringIO()
+                with contextlib.redirect_stderr(error):
+                    removed = start_unit.remove_fresh_checkout(
+                        source, fresh, state_root=root, run=self.fake,
+                        tool_root=self.root, completed_record=completed_record,
+                    )
+                self.assertFalse(removed)
+                self.assertIn(reason, error.getvalue())
+                self.assertTrue(fresh.is_dir())
+                self.assertEqual(before, record.read_bytes())
+        self.assertEqual([], self.fake.commands)
+
+    def test_frozen_cleanup_rejects_provider_success_with_retained_path(self) -> None:
+        frozen_parent = start_unit.frozen_checkout_parent(self.root)
+        self.addCleanup(shutil.rmtree, frozen_parent, True)
+        fresh = frozen_parent / "validate-fresh-provider-kept-path"
+        (fresh / ".git").mkdir(parents=True)
+        record = self.root / "ignored/validate/runs/validate-kept-path.json"
+        start_unit.run_registry.write_record(
+            record, {"schema_version": 1, "checkout": str(fresh)}
+        )
+        error = io.StringIO()
+
+        with contextlib.redirect_stderr(error):
+            removed = start_unit.remove_fresh_checkout(
+                self.checkout, fresh, state_root=self.root,
+                run=lambda command, **kwargs: completed(command),
+                completed_record=record,
+            )
+
+        self.assertFalse(removed)
+        self.assertTrue(fresh.is_dir())
+        self.assertIn("reported success but checkout still exists", error.getvalue())
+
+    def test_frozen_pre_record_refusal_does_not_invent_cleanup_record(self) -> None:
+        self.addCleanup(shutil.rmtree, start_unit.frozen_checkout_parent(self.root), True)
+
+        def run(command: list[str], **kwargs: object):
+            result = self.fake(command, **kwargs)
+            if command[:2] == ["git", "clone"]:
+                # A frozen clone owns a Git directory, unlike a linked worktree.
+                metadata = self.fake.fresh / ".git"
+                metadata.unlink()
+                metadata.mkdir()
+            return result
+
+        with mock.patch.object(
+            start_unit, "prepare_runtime_root", side_effect=RuntimeError("runtime preparation refused")
+        ):
+            rc, _output, error = self.invoke(["--frozen-validate", "--", "full"], run=run)
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("runtime preparation refused", error)
+        self.assertIn("requires its completed validation record", error)
+        self.assertTrue(self.fake.fresh.is_dir())
+        self.assertFalse((self.root / "ignored/validate/runs/validate-test.json").exists())
+        self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+        self.assertFalse(any(wrkslots_action(command, "recover") for command in self.fake.commands))
+
+    @mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None)
+    def test_frozen_inner_refusal_threads_actual_record_from_worker_slot(self, _pane: mock.Mock) -> None:
+        self.write_validation_service_schema(5)
+        source = self.root / "worktrees/slots/worker-hermit"
+        shutil.copytree(self.checkout, source)
+        self.fake.checkout = source
+        tool_root = self.root / "worktrees/slots/tooling"
+        (tool_root / "ci-hub/validate").mkdir(parents=True)
+        tool_schema = tool_root / "hermit" / start_unit.service_result.SCHEMA_RELATIVE_PATH
+        tool_schema.parent.mkdir(parents=True)
+        shutil.copyfile(source / start_unit.service_result.SCHEMA_RELATIVE_PATH, tool_schema)
+        self.addCleanup(shutil.rmtree, start_unit.frozen_checkout_parent(self.root), True)
+        self.fake.actual_exit = 75
+        self.fake.final_validate_status = "COULD_NOT_RUN"
+        self.fake.executed_nodes = 0
+        self.fake.executed_tests = self.fake.passed_tests = None
+        self.fake.detail = ["fixture tool-root refusal"]
+        self.fake.inner_log_lines = ["validate-run: REFUSED: fixture tool-root refusal"]
+        self.fake.write_frozen_result = False
+        commands = []
+
+        def run(command: list[str], **kwargs: object):
+            if wrkslots_action(command, "recover") and "--frozen-validate-checkout" in command:
+                commands.append(command)
+                return completed(command, rc=3, stderr="typed removal proof required")
+            result = self.fake(command, **kwargs)
+            if command[:2] == ["git", "clone"]:
+                metadata = self.fake.fresh / ".git"
+                metadata.unlink()
+                metadata.mkdir()
+            if command[0] == "systemd-run":
+                environment = dict(
+                    value.split("=", 1)
+                    for flag, value in zip(command, command[1:])
+                    if flag == "--setenv" and "=" in value
+                )
+                sidecar = Path(environment["VALIDATE_SERVICE_RESULT_PATH"])
+                fields = json.loads(sidecar.read_text())
+                fields["selection_mode"] = fields["scorecard_writeback"] = None
+                sidecar.write_text(json.dumps(fields) + "\n")
+            return result
+
+        out, error = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(error):
+            rc = start_unit.main(
+                ["--checkout", str(source), "--state-root", str(self.root),
+                 "--agent", "hermit-test", "--target", SHA, "--unit", "validate-incomplete",
+                 "--frozen-validate", "--", "full"],
+                run=run, environment=self.environment, root=tool_root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(75, rc, error.getvalue())
+        self.assertIn("fixture tool-root refusal", error.getvalue())
+        self.assertIn("typed removal proof required", error.getvalue())
+        self.assertNotIn("RESULT-RECORDED", out.getvalue())
+        self.assertTrue(self.fake.fresh.is_dir())
+        self.assertEqual(1, len(commands))
+        command = commands[0]
+        record_path = self.root / "ignored/validate/runs/validate-incomplete.json"
+        for flag, expected in (
+            ("--project-root", str(self.root)),
+            ("--repository", source.relative_to(self.root).as_posix()),
+            ("--completed-record", record_path.relative_to(self.root).as_posix()),
+        ):
+            self.assertEqual(expected, command[command.index(flag) + 1])
+        self.assertEqual(str(tool_root / "ci-hub/bin/wrkslots"), command[0])
+        record = start_unit.run_registry.read_record(record_path)
+        self.assertEqual("completed", record["state"])
+        self.assertEqual("no-result", record["result"])
+        self.assertFalse(record["qualifying_receipt"])
+        self.assertNotIn("checkout_removed_at", record)
 
     def test_immediate_cleanup_does_not_rmtree_managed_git_directory(self) -> None:
         fresh = self.root / "worktrees/validate/validate-fresh-corrupt-git"
@@ -9385,6 +9708,7 @@ class StartUnitTest(unittest.TestCase):
         removed = start_unit.remove_fresh_checkout(
             self.checkout,
             fresh,
+            state_root=self.root,
             run=run,
             tool_root=self.root,
             wrkslots=start_unit.WrkslotsIdentity(fresh.name, 7),

@@ -1245,6 +1245,7 @@ def prepare_fresh_checkout(
     target: str,
     *,
     run: Runner,
+    state_root: Path,
     parent: Path,
     repo: str,
     tool_root: Path = ROOT,
@@ -1278,7 +1279,7 @@ def prepare_fresh_checkout(
     the launch, never quietly become a fast green.
     """
     parent = require_guest_visible_root(parent, role="fresh-checkout parent")
-    state_root = parent.parent.parent
+    state_root = state_root.resolve()
     slot = slot or fresh_validation_slot(target)
     fresh = require_guest_visible_root(parent / slot, role="fresh checkout")
     # Ordinary validation uses a worktree: it shares the source object store,
@@ -1465,6 +1466,7 @@ def prepare_fresh_checkout(
         removed = remove_fresh_checkout(
             source,
             fresh,
+            state_root=state_root,
             run=run,
             tool_root=tool_root,
             wrkslots=identity,
@@ -1529,6 +1531,7 @@ def remove_fresh_checkout(
     source: Path,
     fresh: Path,
     *,
+    state_root: Path,
     run: Runner,
     tool_root: Path = ROOT,
     completed_record: Path | None = None,
@@ -1536,10 +1539,9 @@ def remove_fresh_checkout(
 ) -> bool:
     """Remove the temp worktree AND deregister it; return observed absence."""
     try:
+        state_root = state_root.resolve()
         validate_parent = fresh.parent
-        worktrees = validate_parent.parent
-        if validate_parent.name == "validate" and worktrees.name == "worktrees":
-            state_root = worktrees.parent
+        if validate_parent == state_root / "worktrees" / "validate":
             if wrkslots is None or wrkslots.slot != fresh.name:
                 raise RuntimeError("managed validation checkout has no matching identity")
             command = [
@@ -1555,8 +1557,7 @@ def remove_fresh_checkout(
                 "--expected-generation",
                 str(wrkslots.generation),
             ]
-        elif validate_parent.name == "ignored":
-            state_root = validate_parent.parent
+        elif validate_parent == state_root / "ignored":
             if completed_record is None:
                 raise RuntimeError(
                     "historical checkout cleanup requires its completed validation record"
@@ -1593,9 +1594,8 @@ def remove_fresh_checkout(
             ]
         elif (
             (fresh / ".git").is_dir()
-            and validate_parent == frozen_checkout_parent(source.parent)
+            and validate_parent == frozen_checkout_parent(state_root)
         ):
-            state_root = source.parent.resolve()
             if completed_record is None:
                 raise RuntimeError(
                     "frozen checkout cleanup requires its completed validation record"
@@ -2006,6 +2006,8 @@ def remove_ownerless_checkouts_batch(
                 "historical-retained": False,
                 "terminal-retained": False,
             }
+            if frozen:
+                state_blocks_entry["current-incomplete-retained"] = False
             for row in rows:
                 if not isinstance(row, dict) or set(row) != {
                     "blocks_entry", "checkout", "reason", "state",
@@ -2643,6 +2645,7 @@ def cleanup_recorded_checkout(
     removed = remove_fresh_checkout(
         source,
         checkout,
+        state_root=root,
         run=run,
         tool_root=tool_root,
         completed_record=record_path,
@@ -3926,6 +3929,7 @@ def cleanup_fresh_checkout_preserving_receipts(
     run: Runner,
     tool_root: Path,
     wrkslots: WrkslotsIdentity | None,
+    completed_record: Path | None = None,
 ) -> FreshCheckoutCleanup:
     """Archive run-produced receipts before reclaiming a managed checkout."""
 
@@ -3942,9 +3946,11 @@ def cleanup_fresh_checkout_preserving_receipts(
     removed = remove_fresh_checkout(
         source,
         fresh,
+        state_root=root,
         run=run,
         tool_root=tool_root,
         wrkslots=wrkslots,
+        completed_record=completed_record,
     )
     return FreshCheckoutCleanup(
         tuple(locations), tuple(archived), removed, None
@@ -6578,6 +6584,9 @@ def main(
     frozen_result: Path | None = None
     service_tool_prefix: list[str] | None = None
     service_acceptance = ServiceAcceptance.PRE_ACCEPT
+    # Set only after this invocation creates its handle. A prospective path
+    # must not lend an older or absent record authority over a new checkout.
+    cleanup_record_path: Path | None = None
 
     def remove_current_fresh_checkout() -> bool:
         if fresh_checkout is None or source_checkout is None:
@@ -6585,9 +6594,11 @@ def main(
         return remove_fresh_checkout(
             source_checkout,
             fresh_checkout,
+            state_root=state_root,
             run=run,
             tool_root=tool_root,
             wrkslots=fresh_wrkslots,
+            completed_record=cleanup_record_path,
         )
 
     def cleanup_current_fresh_preserving_receipts() -> FreshCheckoutCleanup:
@@ -6601,6 +6612,7 @@ def main(
             run=run,
             tool_root=tool_root,
             wrkslots=fresh_wrkslots,
+            completed_record=cleanup_record_path,
         )
 
     def report_inner_refusal_cleanup(cleanup: FreshCheckoutCleanup) -> None:
@@ -6679,6 +6691,7 @@ def main(
                 source_checkout,
                 args.target,
                 run=run,
+                state_root=state_root,
                 parent=checkout_parent,
                 repo=repo,
                 tool_root=tool_root,
@@ -6843,6 +6856,7 @@ def main(
                     ),
                 },
             )
+            cleanup_record_path = record_path
             try:
                 # Reserve the service's output before creating any observer.
                 # A pane for a unit that has not launched can otherwise outlive
@@ -6934,8 +6948,8 @@ def main(
                 f"do not relaunch; re-attach with `ci-hub validate-run --attach {unit}` "
                 f"and reconcile the durable handle at {record_path}",
             )
-        # Nothing was admitted, so the temp checkout holds no evidence and is
-        # removed. Failures AFTER launch are handled below and RETAIN it.
+        # Before service acceptance, ask the provider to remove only storage
+        # it can prove disposable. Missing proof still retains the checkout.
         remove_current_fresh_checkout()
         remove_private_cargo_home(private_cargo_home, run=run)
         remove_runtime_root(runtime_root, run=run)
