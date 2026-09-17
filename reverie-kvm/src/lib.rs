@@ -21,6 +21,7 @@ mod cpuid;
 mod elf;
 mod error;
 mod executor;
+mod failure;
 mod fdinfo;
 mod memory;
 mod proc_mounts;
@@ -40,6 +41,9 @@ pub use reverie::syscalls::Sysno;
 pub use runtime::KvmStack;
 pub use runtime::KvmStackGuard;
 pub use runtime::SyscallExecutor;
+pub use runtime::ToolRunCompletion;
+#[cfg(feature = "native-test-support")]
+pub use runtime::native_test_support;
 pub use stats::KvmBackendStats;
 pub use stats::KvmExitReason;
 pub use syscall::SyscallRequest;

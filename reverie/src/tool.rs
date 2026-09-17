@@ -141,6 +141,19 @@ pub trait GlobalTool: Send + Sync + Default {
     /// manage its own synchronization.
     async fn receive_rpc(&self, _from: Tid, _message: Self::Request) -> Self::Response;
 
+    /// Reports a fatal backend failure before cleanup can wait on another Tool
+    /// callback. This is a failed run, not a guest exit, signal, or RPC reply.
+    /// Implementations must finish their terminal transition synchronously,
+    /// including making concurrent consuming cleanup safe, before returning.
+    fn report_backend_failure(&self, _event: BackendFailure) {}
+
+    /// Waits until this run cannot continue faithfully. Each call must subscribe
+    /// independently: multiple Tool callbacks and the scheduler may be waiting.
+    /// The default preserves Tools that do not own a scheduler.
+    async fn wait_for_backend_failure(&self) {
+        std::future::pending::<()>().await
+    }
+
     /// Reports that a backend observed a child transition and committed its
     /// waitability for the parent process.
     ///
@@ -154,6 +167,18 @@ pub trait GlobalTool: Send + Sync + Default {
     ) -> Result<(), Error> {
         Ok(())
     }
+}
+
+/// The location of a fatal backend failure. The backend retains its typed cause;
+/// this notification only ends dependent waits and must not invent guest status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackendFailure {
+    /// Guest process owning the failed operation.
+    pub pid: Pid,
+    /// Guest thread owning the failed operation.
+    pub tid: Tid,
+    /// Backend operation that failed.
+    pub phase: &'static str,
 }
 
 /// A child state and waitability decision observed by an execution backend.

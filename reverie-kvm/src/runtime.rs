@@ -16,6 +16,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
 
+use futures::FutureExt;
 use kvm_bindings::kvm_regs;
 use kvm_ioctls::VcpuExit;
 use reverie::Auxv;
@@ -58,12 +59,18 @@ use crate::executor::PendingSignal;
 use crate::executor::ProcessAction;
 use crate::executor::ProcessExit;
 use crate::executor::conventional_exit_code;
+use crate::failure::FailureContext;
+use crate::failure::RunFailure;
+use crate::failure::wait_for_failure;
 use crate::vm::CompletedSyscallBoundary;
 use crate::vm::PageZeroFault;
 use crate::vm::ProcessActionContinuation;
 use crate::vm::ProcessActionOutcome;
 
 const STACK_CAPACITY: usize = TOOL_STACK_SIZE as usize;
+
+#[cfg(any(test, feature = "native-test-support"))]
+pub mod native_test_support;
 
 enum HandlerSignal {
     ThreadCancelled,
@@ -1061,6 +1068,7 @@ impl MemoryAccess for KvmStack {
 
 enum HandlerOutcome<T> {
     Returned(T),
+    RunFailed,
     ThreadCancelled,
     TailInjected {
         result: std::result::Result<i64, Errno>,
@@ -1080,45 +1088,56 @@ async fn drive_handler<T>(
     future: impl Future<Output = T>,
     handler_signal: SharedHandlerSignal,
     pending_child_starts: SharedChildStarts,
+    failure: impl Future<Output = ()>,
 ) -> HandlerOutcome<T> {
     let mut future = pin!(future);
-    poll_fn(|context| match future.as_mut().poll(context) {
-        Poll::Ready(result) => Poll::Ready(HandlerOutcome::Returned(result)),
-        Poll::Pending => {
-            let handler_signal = handler_signal
-                .lock()
-                .expect("KVM handler signal lock poisoned")
-                .take();
-            match handler_signal {
-                Some(HandlerSignal::ThreadCancelled) => {
-                    return Poll::Ready(HandlerOutcome::ThreadCancelled);
-                }
-                Some(HandlerSignal::TailInjected {
-                    result,
-                    image_replaced,
-                    process_exited,
-                }) => {
-                    return Poll::Ready(HandlerOutcome::TailInjected {
+    let mut failure = pin!(failure);
+    poll_fn(|context| {
+        if failure.as_mut().poll(context).is_ready() {
+            return Poll::Ready(HandlerOutcome::RunFailed);
+        }
+        let result = future.as_mut().poll(context);
+        if failure.as_mut().poll(context).is_ready() {
+            return Poll::Ready(HandlerOutcome::RunFailed);
+        }
+        match result {
+            Poll::Ready(result) => Poll::Ready(HandlerOutcome::Returned(result)),
+            Poll::Pending => {
+                let handler_signal = handler_signal
+                    .lock()
+                    .expect("KVM handler signal lock poisoned")
+                    .take();
+                match handler_signal {
+                    Some(HandlerSignal::ThreadCancelled) => {
+                        return Poll::Ready(HandlerOutcome::ThreadCancelled);
+                    }
+                    Some(HandlerSignal::TailInjected {
                         result,
                         image_replaced,
                         process_exited,
-                    });
+                    }) => {
+                        return Poll::Ready(HandlerOutcome::TailInjected {
+                            result,
+                            image_replaced,
+                            process_exited,
+                        });
+                    }
+                    Some(HandlerSignal::RuntimeError(error)) => {
+                        return Poll::Ready(HandlerOutcome::RuntimeError(error));
+                    }
+                    None => {}
                 }
-                Some(HandlerSignal::RuntimeError(error)) => {
-                    return Poll::Ready(HandlerOutcome::RuntimeError(error));
+                let mut starts = pending_child_starts
+                    .lock()
+                    .expect("KVM child-start lock poisoned");
+                if starts.iter().any(|start| start.start().is_err()) {
+                    return Poll::Ready(HandlerOutcome::RuntimeError(Error::UnexpectedVcpuExit(
+                        "KVM child exited before its parent suspended registration".to_owned(),
+                    )));
                 }
-                None => {}
+                starts.clear();
+                Poll::Pending
             }
-            let mut starts = pending_child_starts
-                .lock()
-                .expect("KVM child-start lock poisoned");
-            if starts.iter().any(|start| start.start().is_err()) {
-                return Poll::Ready(HandlerOutcome::RuntimeError(Error::UnexpectedVcpuExit(
-                    "KVM child exited before its parent suspended registration".to_owned(),
-                )));
-            }
-            starts.clear();
-            Poll::Pending
         }
     })
     .await
@@ -1175,6 +1194,7 @@ where
     <T::GlobalState as GlobalTool>::Config: 'static,
 {
     let tool_stack_top = backend.tool_stack_top();
+    let failure_subscription = backend.failure_subscription();
     loop {
         if executor.has_eligible_pending_signal() {
             return Err(Error::UnexpectedVcpuExit(
@@ -1222,6 +1242,7 @@ where
                 tool.handle_post_exec(&mut guest),
                 handler_signal,
                 pending_child_starts.clone(),
+                wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
             )
             .await
         };
@@ -1232,6 +1253,13 @@ where
             HandlerOutcome::ThreadCancelled => {
                 backend.start_pending_tool_children(executor, &pending_child_starts)?;
                 return Ok(CallbackOutcome::ThreadCancelled);
+            }
+            HandlerOutcome::RunFailed => {
+                return Err(backend.cleanup_unstarted_tool_children_after_error(
+                    executor,
+                    &pending_child_starts,
+                    Error::RunAborted,
+                ));
             }
             HandlerOutcome::RuntimeError(error) => return Err(error),
             HandlerOutcome::TailInjected {
@@ -1299,6 +1327,7 @@ where
     <T::GlobalState as GlobalTool>::Config: 'static,
 {
     let tool_stack_top = backend.tool_stack_top();
+    let failure_subscription = backend.failure_subscription();
     let request = initial_exec_request(memory, executor.initial_stack_pointer())?;
     let syscall = request.into_syscall()?;
     let mut registers = kvm_registers(backend.vcpu.get_regs()?, request.number());
@@ -1342,6 +1371,7 @@ where
             tool.handle_syscall_event(&mut guest, syscall),
             handler_signal,
             pending_child_starts.clone(),
+            wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
         )
         .await
     };
@@ -1371,6 +1401,11 @@ where
             backend.start_pending_tool_children(executor, &pending_child_starts)?;
             Ok(CallbackOutcome::ThreadCancelled)
         }
+        HandlerOutcome::RunFailed => Err(backend.cleanup_unstarted_tool_children_after_error(
+            executor,
+            &pending_child_starts,
+            Error::RunAborted,
+        )),
         HandlerOutcome::RuntimeError(error) => Err(error),
     }
 }
@@ -1395,6 +1430,7 @@ struct ToolExit {
     status: ExitStatus,
     process_exited: bool,
 }
+#[allow(clippy::too_many_arguments)]
 async fn notify_tool_exit<T: Tool>(
     tool: Arc<T>,
     pid: Pid,
@@ -1403,6 +1439,7 @@ async fn notify_tool_exit<T: Tool>(
     config: &<T::GlobalState as GlobalTool>::Config,
     thread_state: T::ThreadState,
     exit: ToolExit,
+    failure: Option<&FailureContext>,
 ) -> Result<()> {
     // on_exit_thread deregisters this thread from the scheduler, so its RPCs
     // must be attributed to the exiting thread's tid.
@@ -1414,7 +1451,17 @@ async fn notify_tool_exit<T: Tool>(
     let thread_result = tool
         .on_exit_thread(tid, &thread_global, thread_state, exit.status)
         .await
-        .map_err(Error::Reverie);
+        .map_err(|error| match failure {
+            Some(failure) => failure.publish("thread exit hook", Error::Reverie(error)),
+            None => {
+                global_state.report_backend_failure(reverie::BackendFailure {
+                    pid,
+                    tid,
+                    phase: "thread exit hook",
+                });
+                Error::Reverie(error)
+            }
+        });
     if !exit.process_exited {
         return thread_result;
     }
@@ -1435,13 +1482,128 @@ async fn notify_tool_exit<T: Tool>(
             "KVM worker retained process Tool state after exit".to_owned(),
         )),
     };
+    let process_result = process_result.map_err(|error| match failure {
+        Some(failure) => failure.publish("process exit hook", error),
+        None => {
+            global_state.report_backend_failure(reverie::BackendFailure {
+                pid,
+                tid,
+                phase: "process exit hook",
+            });
+            error
+        }
+    });
     match (thread_result, process_result) {
         (Ok(()), process) => process,
         (Err(error), Ok(())) => Err(error),
-        (Err(thread), Err(process)) => Err(Error::UnexpectedVcpuExit(format!(
-            "KVM owner thread exit failed: {thread}; owner process exit failed: {process}"
-        ))),
+        (Err(thread), Err(process)) => Err(thread.with_cleanup(vec![process])),
     }
+}
+
+/// Result of a Tool run after owned workers and children have completed.
+pub struct ToolRunCompletion<G> {
+    /// Global Tool state, retained on runtime failure for consuming cleanup.
+    pub global_state: G,
+    /// Guest output/status, or a typed fatal runtime/Tool cause.
+    pub result: Result<(i32, Vec<u8>, Vec<u8>)>,
+}
+
+/// Complete the owner after physical worker joins, publishing every newly
+/// discovered failure before consuming hooks or joining independent children.
+#[allow(clippy::too_many_arguments)]
+async fn finish_tool_process_after_workers<T: Tool>(
+    executor: &mut ElfExecutor,
+    tool: Arc<T>,
+    identity: (Pid, Pid),
+    global_state: &T::GlobalState,
+    config: &<T::GlobalState as GlobalTool>::Config,
+    thread_state: T::ThreadState,
+    outcome: Result<ToolProcessExit>,
+    workers: Result<()>,
+    failure: Option<&FailureContext>,
+) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+    let (pid, tid) = identity;
+    let report = |phase, error| match failure {
+        Some(failure) => failure.publish(phase, error),
+        None => {
+            global_state.report_backend_failure(reverie::BackendFailure { pid, tid, phase });
+            error
+        }
+    };
+    let workers = workers.map_err(|error| report("worker teardown", error));
+    let natural_exit = outcome
+        .as_ref()
+        .is_ok_and(|exit| !exit.cancelled && !exit.exit.group);
+    let mut status = outcome
+        .as_ref()
+        .map_or(ExitStatus::Exited(255), |exit| exit.exit.status);
+    let mut process_status = Ok(());
+    if pid == tid && natural_exit {
+        match executor.process_exit_status() {
+            Some(final_status) => status = final_status,
+            None if workers.is_err() => status = ExitStatus::Exited(255),
+            None => {
+                status = ExitStatus::Exited(255);
+                process_status = Err(report(
+                    "process exit status",
+                    Error::UnexpectedVcpuExit(
+                        "KVM process has no final task exit status after joining workers"
+                            .to_owned(),
+                    ),
+                ));
+            }
+        }
+    }
+    // Worker hooks precede the leader. Owner hooks precede independent forks
+    // that may need the parent's deregistration/accounting to finish.
+    let owner = notify_tool_exit(
+        tool,
+        pid,
+        tid,
+        global_state,
+        config,
+        thread_state,
+        ToolExit {
+            status,
+            process_exited: pid == tid,
+        },
+        failure,
+    )
+    .await
+    .map_err(|error| report("owner exit", error));
+    // A peer can publish after this process's successful local outcome. Its
+    // terminal state must still select Cancel for every pending child gate.
+    let terminal = wait_for_failure(global_state, failure.map(|failure| failure.run.subscribe()))
+        .now_or_never()
+        .is_some();
+    let children = if pid == tid {
+        if terminal
+            || outcome.is_err()
+            || owner.is_err()
+            || workers.is_err()
+            || process_status.is_err()
+        {
+            executor.join_child_processes_after_failure()
+        } else {
+            executor.join_all_child_processes()
+        }
+    } else {
+        executor.transfer_child_processes_to_owner();
+        Ok(())
+    };
+    let errors = [
+        outcome.map(|_| ()),
+        workers,
+        process_status,
+        owner,
+        children,
+    ]
+    .into_iter()
+    .filter_map(Result::err)
+    .collect();
+    Error::combine(errors)?;
+    let (stdout, stderr) = executor.take_output();
+    Ok((status, stdout, stderr))
 }
 
 impl KvmBackend {
@@ -1478,12 +1640,10 @@ impl KvmBackend {
             Err(Error::ExecWorkerTeardown(primary)) => (Err(*primary), true),
             outcome => (outcome, false),
         };
+        let outcome = outcome.map_err(|error| self.report_tool_failure("execution", error));
         let natural_exit = outcome
             .as_ref()
             .is_ok_and(|exit| !exit.cancelled && !exit.exit.group);
-        let mut status = outcome
-            .as_ref()
-            .map_or(ExitStatus::Exited(255), |exit| exit.exit.status);
         // Retire the exact task generation before consuming hooks can wake a
         // peer. No guest callback can still borrow Tool or descriptor state.
         match &outcome {
@@ -1517,71 +1677,47 @@ impl KvmBackend {
         } else {
             self.guest_worker_teardown_result()
         };
-        let mut process_status = Ok(());
-        if pid == tid && natural_exit {
-            match executor.process_exit_status() {
-                Some(final_status) => status = final_status,
-                None if workers.is_err() => status = ExitStatus::Exited(255),
-                None => {
-                    status = ExitStatus::Exited(255);
-                    process_status = Err(Error::UnexpectedVcpuExit(
-                        "KVM process has no final task exit status after joining workers"
-                            .to_owned(),
-                    ));
-                }
-            }
-        }
-        // Per-process worker hooks precede the leader hook, as in ptrace.
-        // Both owner hooks precede independent fork descendants: a descendant
-        // may need the parent's scheduler deregistration or process accounting
-        // before it can finish. Final output/global ownership still waits below.
-        let owner = notify_tool_exit(
+        finish_tool_process_after_workers(
+            executor,
             tool,
-            pid,
-            tid,
+            identity,
             global_state,
             config,
             thread_state,
-            ToolExit {
-                status,
-                process_exited: pid == tid,
-            },
+            outcome,
+            workers,
+            self.tool_failure.as_ref(),
         )
-        .await;
-        let children = if pid == tid {
-            executor.join_all_child_processes()
-        } else {
-            executor.transfer_child_processes_to_owner();
-            Ok(())
+        .await
+    }
+
+    /// Consume a constructed child whose start gate was cancelled or whose
+    /// host spawn failed. Do not manufacture handle_thread_start or admission.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn finish_unstarted_tool<T: Tool>(
+        &mut self,
+        executor: &mut ElfExecutor,
+        tool: Arc<T>,
+        identity: (Pid, Pid),
+        global_state: &T::GlobalState,
+        config: &<T::GlobalState as GlobalTool>::Config,
+        thread_state: T::ThreadState,
+        failure: Option<Error>,
+    ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+        let outcome = match failure {
+            Some(error) => Err(error),
+            None => Ok(self.cancelled_tool_thread_status(executor)),
         };
-        let mut errors = Vec::new();
-        if let Err(error) = outcome {
-            errors.push(("execution", error));
-        }
-        for (phase, result) in [
-            ("worker cleanup", workers),
-            ("process exit status", process_status),
-            ("owner exit", owner),
-            ("child process cleanup", children),
-        ] {
-            if let Err(error) = result {
-                errors.push((phase, error));
-            }
-        }
-        match errors.len() {
-            0 => {
-                let (stdout, stderr) = executor.take_output();
-                Ok((status, stdout, stderr))
-            }
-            1 => Err(errors.pop().unwrap().1),
-            _ => Err(Error::UnexpectedVcpuExit(
-                errors
-                    .into_iter()
-                    .map(|(phase, error)| format!("KVM {phase} failed: {error}"))
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            )),
-        }
+        self.finish_tool_process(
+            executor,
+            tool,
+            identity,
+            global_state,
+            config,
+            thread_state,
+            outcome,
+        )
+        .await
     }
 
     /// Releases a worker's reusable slot before its exit becomes visible to
@@ -1617,6 +1753,7 @@ impl KvmBackend {
                 status,
                 process_exited: pid == tid,
             },
+            self.tool_failure.as_ref(),
         )
         .await;
         // Run the owner's consuming hooks even when an earlier worker failed.
@@ -1625,9 +1762,7 @@ impl KvmBackend {
         match (result, self.guest_worker_teardown_result()) {
             (Ok(()), workers) => workers,
             (Err(error), Ok(())) => Err(error),
-            (Err(error), Err(workers)) => Err(Error::UnexpectedVcpuExit(format!(
-                "KVM owner exit failed: {error}; {workers}"
-            ))),
+            (Err(error), Err(workers)) => Err(error.with_cleanup(vec![workers])),
         }
     }
 
@@ -1657,167 +1792,171 @@ impl KvmBackend {
         let auxv = Vec::new();
         let stack_checked_out = Arc::new(AtomicBool::new(false));
 
-        let registers = kvm_registers(self.vcpu.get_regs()?, 0);
-        let handler_signal = Arc::new(Mutex::new(None));
-        let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
-        expose_tool_scratch(&memory, tool_stack_top)?;
-        let start_outcome = {
-            let mut guest_executor = DirectSyscallExecutor {
-                executor: &mut executor,
-                vcpu: &self.vcpu,
-            };
-            let mut guest = KvmGuest::<T>::new(
-                pid,
-                // run_with_tool drives a single root thread (tid == pid).
-                pid,
-                tool.clone(),
-                memory.clone(),
-                &auxv,
-                registers,
-                &mut thread_state,
-                &mut guest_executor,
-                &global_state,
-                None,
-                &config,
-                &subscriptions,
-                handler_signal.clone(),
-                pending_child_starts.clone(),
-                tool_stack_top,
-                stack_checked_out.clone(),
-            );
-            drive_handler(
-                tool.handle_thread_start(&mut guest),
-                handler_signal,
-                pending_child_starts,
-            )
-            .await
-        };
-        hide_tool_scratch(&memory, tool_stack_top)?;
-        match start_outcome {
-            HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
-            HandlerOutcome::ThreadCancelled => {
-                self.notify_tool_exit(
-                    tool,
-                    (pid, pid),
+        let outcome: Result<ExitStatus> = async {
+            let registers = kvm_registers(self.vcpu.get_regs()?, 0);
+            let handler_signal = Arc::new(Mutex::new(None));
+            let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+            expose_tool_scratch(&memory, tool_stack_top)?;
+            let start_outcome = {
+                let mut guest_executor = DirectSyscallExecutor {
+                    executor: &mut executor,
+                    vcpu: &self.vcpu,
+                };
+                let mut guest = KvmGuest::<T>::new(
+                    pid,
+                    // run_with_tool drives a single root thread (tid == pid).
+                    pid,
+                    tool.clone(),
+                    memory.clone(),
+                    &auxv,
+                    registers,
+                    &mut thread_state,
+                    &mut guest_executor,
                     &global_state,
+                    None,
                     &config,
-                    thread_state,
-                    ExitStatus::SUCCESS,
+                    &subscriptions,
+                    handler_signal.clone(),
+                    pending_child_starts.clone(),
+                    tool_stack_top,
+                    stack_checked_out.clone(),
+                );
+                drive_handler(
+                    tool.handle_thread_start(&mut guest),
+                    handler_signal,
+                    pending_child_starts,
+                    wait_for_failure(&global_state, None),
                 )
-                .await?;
-                return Ok(global_state);
+                .await
+            };
+            hide_tool_scratch(&memory, tool_stack_top)?;
+            match start_outcome {
+                HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
+                HandlerOutcome::ThreadCancelled => {
+                    return Ok(ExitStatus::SUCCESS);
+                }
+                HandlerOutcome::RunFailed => return Err(Error::RunAborted),
+                HandlerOutcome::RuntimeError(error) => return Err(error),
+                HandlerOutcome::TailInjected { .. } => {}
             }
-            HandlerOutcome::RuntimeError(error) => return Err(error),
-            HandlerOutcome::TailInjected { .. } => {}
-        }
 
-        loop {
-            let vcpu_exit = self.vcpu.run()?;
-            Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
-            match vcpu_exit {
-                VcpuExit::Hypercall(exit) => {
-                    if exit.nr != VMCALL_SYSCALL_TRANSPORT {
-                        return Err(Error::UnexpectedHypercall(exit.nr));
-                    }
-                    let frame_address = exit.args[0];
-                    let return_slot = std::ptr::from_mut(exit.ret) as usize;
-                    let registers = self.vcpu.get_regs()?;
-                    let request = SyscallRequest::read_from(&memory, frame_address)?;
-                    let syscall = request.into_syscall()?;
-                    let subscribed = subscriptions
-                        .iter_syscalls()
-                        .any(|number| number == syscall.number());
-                    let result = if subscribed {
-                        // Same `ERESTARTSYS` restart protocol as the
-                        // process-syscall path below; see
-                        // `classify_handler_result`.
-                        loop {
-                            let handler_signal = Arc::new(Mutex::new(None));
-                            let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
-                            expose_tool_scratch(&memory, tool_stack_top)?;
-                            let outcome = {
-                                let mut guest_executor = DirectSyscallExecutor {
-                                    executor: &mut executor,
-                                    vcpu: &self.vcpu,
-                                };
-                                let mut guest = KvmGuest::<T>::new(
-                                    pid,
-                                    // run_with_tool drives a single root thread.
-                                    pid,
-                                    tool.clone(),
-                                    memory.clone(),
-                                    &auxv,
-                                    kvm_registers(registers, request.number()),
-                                    &mut thread_state,
-                                    &mut guest_executor,
-                                    &global_state,
-                                    None,
-                                    &config,
-                                    &subscriptions,
-                                    handler_signal.clone(),
-                                    pending_child_starts.clone(),
-                                    tool_stack_top,
-                                    stack_checked_out.clone(),
-                                );
-                                drive_handler(
-                                    tool.handle_syscall_event(&mut guest, syscall),
-                                    handler_signal,
-                                    pending_child_starts,
-                                )
-                                .await
-                            };
-                            hide_tool_scratch(&memory, tool_stack_top)?;
-                            break match outcome {
-                                HandlerOutcome::Returned(result) => {
-                                    match classify_handler_result(result)? {
-                                        Some(raw) => raw,
-                                        None => continue,
-                                    }
-                                }
-                                HandlerOutcome::TailInjected { result, .. } => {
-                                    result_to_raw(result)
-                                }
-                                HandlerOutcome::ThreadCancelled => {
-                                    self.notify_tool_exit(
-                                        tool,
-                                        (pid, pid),
-                                        &global_state,
-                                        &config,
-                                        thread_state,
-                                        ExitStatus::SUCCESS,
-                                    )
-                                    .await?;
-                                    return Ok(global_state);
-                                }
-                                HandlerOutcome::RuntimeError(error) => return Err(error),
-                            };
+            loop {
+                let vcpu_exit = self.vcpu.run()?;
+                Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+                match vcpu_exit {
+                    VcpuExit::Hypercall(exit) => {
+                        if exit.nr != VMCALL_SYSCALL_TRANSPORT {
+                            return Err(Error::UnexpectedHypercall(exit.nr));
                         }
-                    } else {
-                        executor.execute(&request, &memory)
-                    };
-                    // SAFETY: return_slot points into this vCPU's stable KVM_RUN
-                    // mapping. The vCPU remains stopped and is not run again while
-                    // the tool callback is active.
-                    unsafe {
-                        (return_slot as *mut u64).write(result as u64);
+                        let frame_address = exit.args[0];
+                        let return_slot = std::ptr::from_mut(exit.ret) as usize;
+                        let registers = self.vcpu.get_regs()?;
+                        let request = SyscallRequest::read_from(&memory, frame_address)?;
+                        let syscall = request.into_syscall()?;
+                        let subscribed = subscriptions
+                            .iter_syscalls()
+                            .any(|number| number == syscall.number());
+                        let result = if subscribed {
+                            // Same `ERESTARTSYS` restart protocol as the
+                            // process-syscall path below; see
+                            // `classify_handler_result`.
+                            loop {
+                                let handler_signal = Arc::new(Mutex::new(None));
+                                let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                                expose_tool_scratch(&memory, tool_stack_top)?;
+                                let outcome = {
+                                    let mut guest_executor = DirectSyscallExecutor {
+                                        executor: &mut executor,
+                                        vcpu: &self.vcpu,
+                                    };
+                                    let mut guest = KvmGuest::<T>::new(
+                                        pid,
+                                        // run_with_tool drives a single root thread.
+                                        pid,
+                                        tool.clone(),
+                                        memory.clone(),
+                                        &auxv,
+                                        kvm_registers(registers, request.number()),
+                                        &mut thread_state,
+                                        &mut guest_executor,
+                                        &global_state,
+                                        None,
+                                        &config,
+                                        &subscriptions,
+                                        handler_signal.clone(),
+                                        pending_child_starts.clone(),
+                                        tool_stack_top,
+                                        stack_checked_out.clone(),
+                                    );
+                                    drive_handler(
+                                        tool.handle_syscall_event(&mut guest, syscall),
+                                        handler_signal,
+                                        pending_child_starts,
+                                        wait_for_failure(&global_state, None),
+                                    )
+                                    .await
+                                };
+                                hide_tool_scratch(&memory, tool_stack_top)?;
+                                break match outcome {
+                                    HandlerOutcome::Returned(result) => {
+                                        match classify_handler_result(result)? {
+                                            Some(raw) => raw,
+                                            None => continue,
+                                        }
+                                    }
+                                    HandlerOutcome::TailInjected { result, .. } => {
+                                        result_to_raw(result)
+                                    }
+                                    HandlerOutcome::ThreadCancelled => {
+                                        return Ok(ExitStatus::SUCCESS);
+                                    }
+                                    HandlerOutcome::RunFailed => return Err(Error::RunAborted),
+                                    HandlerOutcome::RuntimeError(error) => return Err(error),
+                                };
+                            }
+                        } else {
+                            executor.execute(&request, &memory)
+                        };
+                        // SAFETY: return_slot points into this vCPU's stable KVM_RUN
+                        // mapping. The vCPU remains stopped and is not run again while
+                        // the tool callback is active.
+                        unsafe {
+                            (return_slot as *mut u64).write(result as u64);
+                        }
                     }
+                    VcpuExit::Hlt => {
+                        return Ok(ExitStatus::SUCCESS);
+                    }
+                    exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
                 }
-                VcpuExit::Hlt => {
-                    let status = ExitStatus::SUCCESS;
-                    self.notify_tool_exit(
-                        tool,
-                        (pid, pid),
-                        &global_state,
-                        &config,
-                        thread_state,
-                        status,
-                    )
-                    .await?;
-                    return Ok(global_state);
-                }
-                exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
             }
         }
+        .await;
+        if outcome.is_err() {
+            global_state.report_backend_failure(reverie::BackendFailure {
+                pid,
+                tid: pid,
+                phase: "direct Tool execution",
+            });
+        }
+        let status = outcome.as_ref().copied().unwrap_or(ExitStatus::Exited(255));
+        let cleanup = self
+            .notify_tool_exit(
+                tool,
+                (pid, pid),
+                &global_state,
+                &config,
+                thread_state,
+                status,
+            )
+            .await;
+        Error::combine(
+            [outcome.map(|_| ()), cleanup]
+                .into_iter()
+                .filter_map(Result::err)
+                .collect(),
+        )?;
+        Ok(global_state)
     }
 
     /// Runs an installed static ELF through a Reverie `Tool`.
@@ -1850,6 +1989,28 @@ impl KvmBackend {
         T::GlobalState: 'static,
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
+        let completion = self
+            .run_static_elf_with_tool_completion::<T>(config, capture_output)
+            .await?;
+        let (status, stdout, stderr) = completion.result?;
+        Ok((completion.global_state, status, stdout, stderr))
+    }
+
+    /// Runs the installed ELF and retains GlobalState even after a runtime
+    /// failure, so its owner can finish scheduler/global cleanup. An outer
+    /// error means setup failed before the global state existed, or ownership
+    /// could not be recovered after all owned children were joined.
+    pub async fn run_static_elf_with_tool_completion<T>(
+        &mut self,
+        config: <T::GlobalState as GlobalTool>::Config,
+        capture_output: bool,
+    ) -> Result<ToolRunCompletion<T::GlobalState>>
+    where
+        T: Tool + 'static,
+        T::ThreadState: 'static,
+        T::GlobalState: 'static,
+        <T::GlobalState as GlobalTool>::Config: 'static,
+    {
         let mut loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
         // Output capture replaces stdout and stderr with the executor's pipes,
         // but an explicitly configured stdin remains the guest's input. Use
@@ -1865,6 +2026,8 @@ impl KvmBackend {
         // is why the KVM backend no longer needs the caller to opt threads in.
         self.resolve_thread_ownership(T::thread_ownership(&config));
         let global_state = Arc::new(T::GlobalState::init_global_state(&config).await);
+        let failure = RunFailure::new(&global_state);
+        self.tool_failure = Some(FailureContext::new(failure.clone(), pid, pid));
         let tool = Arc::new(T::new(pid, &config));
         let subscriptions = T::subscriptions(&config);
         let thread_state = tool.init_thread_state(pid, None);
@@ -1882,12 +2045,35 @@ impl KvmBackend {
                 &subscriptions,
                 true,
             )
-            .await?;
-        let global_state = Arc::try_unwrap(global_state).map_err(|_| {
-            Error::UnexpectedVcpuExit("KVM child retained global Tool state after exit".to_owned())
-        })?;
-        let (status, stdout, stderr) = result;
-        Ok((global_state, conventional_exit_code(status), stdout, stderr))
+            .await;
+        let global_state = match Arc::try_unwrap(global_state) {
+            Ok(global) => global,
+            Err(_) => {
+                let ownership = Error::UnexpectedVcpuExit(
+                    "KVM child retained global Tool state after exit".to_owned(),
+                );
+                return Err(match result {
+                    Err(primary) => primary.with_cleanup(vec![ownership]),
+                    Ok(_) => ownership,
+                });
+            }
+        };
+        let result = match (failure.primary(), result) {
+            (Some(primary), Err(error)) => {
+                if error.retains_primary(&primary) {
+                    Err(error)
+                } else {
+                    Err(Error::SharedFailure(primary).with_cleanup(vec![error]))
+                }
+            }
+            (Some(primary), Ok(_)) => Err(Error::SharedFailure(primary)),
+            (None, result) => result
+                .map(|(status, stdout, stderr)| (conventional_exit_code(status), stdout, stderr)),
+        };
+        Ok(ToolRunCompletion {
+            global_state,
+            result,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1997,6 +2183,7 @@ impl KvmBackend {
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
         let mut process_completed = false;
         let tool_stack_top = self.tool_stack_top();
+        let failure_subscription = self.failure_subscription();
         expose_tool_scratch(memory, tool_stack_top)?;
         let process_context = if let Some(fault) = fault {
             ProcessExecutionContext::FaultBoundary(Box::new(fault.clone()))
@@ -2043,6 +2230,7 @@ impl KvmBackend {
                 tool.handle_structured_signal_event(&mut guest, pending.event),
                 handler_signal,
                 pending_child_starts.clone(),
+                wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
             )
             .await
         };
@@ -2060,6 +2248,13 @@ impl KvmBackend {
             HandlerOutcome::ThreadCancelled => {
                 self.start_pending_tool_children(executor, &pending_child_starts)?;
                 return Ok(CallbackOutcome::ThreadCancelled);
+            }
+            HandlerOutcome::RunFailed => {
+                return Err(self.cleanup_unstarted_tool_children_after_error(
+                    executor,
+                    &pending_child_starts,
+                    Error::RunAborted,
+                ));
             }
             HandlerOutcome::RuntimeError(error) => {
                 return Err(self.cleanup_unstarted_tool_children_after_error(
@@ -2127,22 +2322,27 @@ impl KvmBackend {
         T::GlobalState: 'static,
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
-        self.vcpu.track_clock()?;
+        if let Some(failure) = &self.tool_failure {
+            self.tool_failure = Some(FailureContext::new(failure.run.clone(), pid, tid));
+        }
         executor.observe_ignored_signals_with_tool();
         let tool_stack_top = self.tool_stack_top();
-        let _registration = self.register_guest_thread()?;
+        let failure_subscription = self.failure_subscription();
+        let mut _registration = None;
         let mut auxv = executor.auxv().to_vec();
         // Clones share the MAP_SHARED guest mapping; a mutable handle lets the
         // loop write syscall results back into the guest's frame.
         let mut memory = self.memory.clone();
         let stack_checked_out = Arc::new(AtomicBool::new(false));
 
-        let registers = kvm_registers(self.vcpu.get_regs()?, 0);
         let handler_signal = Arc::new(Mutex::new(None));
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
-        expose_tool_scratch(&memory, tool_stack_top)?;
         let mut _process_completed = false;
         let outcome: Result<ToolProcessExit> = async {
+            self.vcpu.track_clock()?;
+            _registration = Some(self.register_guest_thread()?);
+            let registers = kvm_registers(self.vcpu.get_regs()?, 0);
+            expose_tool_scratch(&memory, tool_stack_top)?;
             let start_outcome = {
                 let mut guest_executor = StaticElfSyscallExecutor {
                     backend: self,
@@ -2174,6 +2374,7 @@ impl KvmBackend {
                     tool.handle_thread_start(&mut guest),
                     handler_signal,
                     pending_child_starts.clone(),
+                    wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
                 )
                 .await
             };
@@ -2184,6 +2385,7 @@ impl KvmBackend {
                     return Ok(self.cancelled_tool_thread_status(executor));
                 }
                 HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
+                HandlerOutcome::RunFailed => return Err(Error::RunAborted),
                 HandlerOutcome::RuntimeError(error) => return Err(error),
                 HandlerOutcome::TailInjected { .. } => {}
             }
@@ -2321,6 +2523,12 @@ impl KvmBackend {
             // borrowed elsewhere in the loop body.
             let thread_ownership = self.thread_ownership;
             loop {
+                if wait_for_failure(global_state.as_ref(), failure_subscription.clone())
+                    .now_or_never()
+                    .is_some()
+                {
+                    return Err(Error::RunAborted);
+                }
                 if let Some(status) = self.guest_thread_group_exit_status() {
                     return Ok(ProcessExit {
                         status,
@@ -2553,6 +2761,10 @@ impl KvmBackend {
                                 tool.handle_syscall_event(&mut guest, syscall),
                                 handler_signal,
                                 pending_child_starts.clone(),
+                                wait_for_failure(
+                                    global_state.as_ref(),
+                                    failure_subscription.clone(),
+                                ),
                             )
                             .await
                         };
@@ -2608,6 +2820,7 @@ impl KvmBackend {
                                 self.start_pending_tool_children(executor, &pending_child_starts)?;
                                 return Ok(self.cancelled_tool_thread_status(executor));
                             }
+                            HandlerOutcome::RunFailed => return Err(Error::RunAborted),
                             HandlerOutcome::RuntimeError(error) => {
                                 let error = self.cleanup_unstarted_tool_children_after_error(
                                     executor,
@@ -2791,6 +3004,9 @@ impl KvmBackend {
             }
         }
         .await;
+        let outcome = outcome.map_err(|error| {
+            self.cleanup_unstarted_tool_children_after_error(executor, &pending_child_starts, error)
+        });
         self.finish_tool_process(
             executor,
             tool,
@@ -3030,6 +3246,7 @@ mod tests {
                 handler,
                 handler_signal,
                 pending_child_starts,
+                std::future::pending(),
             )),
             HandlerOutcome::Returned(true)
         ));
@@ -3052,6 +3269,7 @@ mod tests {
             std::future::pending::<()>(),
             handler_signal,
             pending_child_starts.clone(),
+            std::future::pending(),
         ));
         assert!(matches!(
             outcome,
@@ -3406,6 +3624,7 @@ mod tests {
             guest.tail_inject(syscall),
             handler_signal,
             pending_child_starts,
+            std::future::pending(),
         )) {
             HandlerOutcome::RuntimeError(Error::Reverie(reverie::Error::Errno(errno))) => {
                 assert_eq!(errno, Errno::ENOSYS)
@@ -3416,6 +3635,7 @@ mod tests {
                 panic!("tail injection unexpectedly cancelled the thread")
             }
             HandlerOutcome::Returned(_) => panic!("tail injection unexpectedly returned"),
+            HandlerOutcome::RunFailed => panic!("unexpected run failure"),
         }
     }
 
@@ -3648,3 +3868,7 @@ mod terminal_tests;
 #[cfg(test)]
 #[path = "child_exit_runtime_tests.rs"]
 mod child_exit_tests;
+
+#[cfg(test)]
+#[path = "runtime/failure_tests.rs"]
+mod failure_tests;

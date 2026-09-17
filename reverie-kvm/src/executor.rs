@@ -42,10 +42,10 @@ use crate::signal::KERNEL_SIGACTION_SIZE;
 use crate::signal::KERNEL_SIGSET_SIZE;
 use crate::signal::KernelSigaction;
 use crate::signal::KernelSigset;
-#[cfg(test)]
+#[cfg(any(test, feature = "native-test-support"))]
 use crate::signal::ProcessSignalState;
 use crate::signal::SS_AUTODISARM;
-#[cfg(test)]
+#[cfg(any(test, feature = "native-test-support"))]
 use crate::signal::SharedThreadSignalState;
 use crate::signal::event_for_process;
 use crate::signal::event_for_thread;
@@ -2454,6 +2454,14 @@ impl ElfExecutor {
 
     // TODO-HUMAN-REVIEW(PR-235): Review KVM root-exit child synchronization.
     pub(crate) fn join_all_child_processes(&mut self) -> crate::Result<()> {
+        self.finish_child_processes(false)
+    }
+
+    pub(crate) fn join_child_processes_after_failure(&mut self) -> crate::Result<()> {
+        self.finish_child_processes(true)
+    }
+
+    fn finish_child_processes(&mut self, failed: bool) -> crate::Result<()> {
         let mut errors = Vec::new();
         // Taking ownership first ensures that every handle is joined, even if
         // an earlier child lost its start gate or returned an error. Reusing
@@ -2479,8 +2487,24 @@ impl ElfExecutor {
             }
         }
         pending.sort_by_key(|(pid, _)| *pid);
+        if failed {
+            // Resolve all pending gates before joining the first child: an
+            // earlier child may need a later child's consuming cleanup.
+            for (pid, process) in &pending {
+                if matches!(
+                    process.start.cancel(),
+                    ChildStartCancellation::NewlyCancelled {
+                        delivery_failed: true
+                    }
+                ) {
+                    errors.push(crate::Error::UnexpectedVcpuExit(format!(
+                        "KVM child process {pid} lost its parent cancellation gate"
+                    )));
+                }
+            }
+        }
         for (pid, process) in pending {
-            if process.start.start().is_err() {
+            if !failed && process.start.start().is_err() {
                 errors.push(crate::Error::UnexpectedVcpuExit(format!(
                     "KVM child process {pid} lost its parent start gate"
                 )));
@@ -2522,18 +2546,7 @@ impl ElfExecutor {
                 errors.push(error);
             }
         }
-        match errors.len() {
-            0 => Ok(()),
-            1 => Err(errors.pop().unwrap()),
-            _ => Err(crate::Error::UnexpectedVcpuExit(format!(
-                "KVM child process cleanup failed: {}",
-                errors
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            ))),
-        }
+        crate::Error::combine(errors)
     }
 
     fn synchronize_wait4(&mut self, request: &SyscallRequest) -> Option<i64> {
@@ -14070,6 +14083,74 @@ const fn negative_errno(errno: libc::c_int) -> i64 {
     -(errno as i64)
 }
 
+#[cfg(any(test, feature = "native-test-support"))]
+pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
+    LoadedStaticElf {
+        entry_point: 0,
+        stack_pointer: 0,
+        heap_base: BOOT_RESERVED_END,
+        program_break: BOOT_RESERVED_END,
+        brk_limit: BOOT_RESERVED_END + PAGE_SIZE,
+        mmap_base: BOOT_RESERVED_END + PAGE_SIZE,
+        mmap_next: BOOT_RESERVED_END + PAGE_SIZE,
+        mmap_limit: BOOT_RESERVED_END + 2 * PAGE_SIZE,
+        executable_path: std::path::PathBuf::from("test"),
+        executable_file: None,
+        executable_image: Arc::from([]),
+        argv0: b"test".to_vec(),
+        cwd: cwd.to_owned(),
+        cwd_fd: std::fs::File::open(cwd).unwrap(),
+        stdin: Some(std::fs::File::open("/dev/null").unwrap()),
+        auxv: Vec::new(),
+        fs_base: 0,
+        gs_base: 0,
+        pid: 1,
+        pgid: 1,
+        tid: 1,
+        ppid: 0,
+        is_traced_tree_root: true,
+        logical_clock_ns: 0,
+        umask: 0o022,
+        random_seed: 0,
+        thread_name: *b"test\0\0\0\0\0\0\0\0\0\0\0\0",
+        thread_group_leader_name: Arc::new(Mutex::new(*b"test\0\0\0\0\0\0\0\0\0\0\0\0")),
+        thp_disabled: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+        keep_capabilities: false,
+        capability_effective: GUEST_CAPABILITY_MASK,
+        capability_permitted: GUEST_CAPABILITY_MASK,
+        capability_inheritable: 0,
+        capability_bounding: GUEST_CAPABILITY_MASK,
+        capability_ambient: 0,
+        dumpable: true,
+        nice: 0,
+        sched_policy: libc::SCHED_OTHER,
+        sched_priority: 0,
+        sched_reset_on_fork: false,
+        ioprio: 0,
+        process_signals: Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
+        thread_signals: SharedThreadSignalState::default(),
+        task_lifecycle: Arc::new(std::sync::Mutex::new(
+            crate::elf::TaskLifecycleTable::with_root(1, 1, 1, true),
+        )),
+        files: std::collections::BTreeMap::new(),
+        random_device_fds: std::collections::BTreeSet::new(),
+        stdout_alias_fds: std::collections::BTreeSet::new(),
+        stderr_alias_fds: std::collections::BTreeSet::new(),
+        cloexec_fds: std::collections::BTreeSet::new(),
+        closed_standard_fds: std::collections::BTreeSet::new(),
+        children: std::collections::BTreeMap::new(),
+        proc_files: std::collections::BTreeMap::new(),
+        fdinfo_files: std::collections::BTreeMap::new(),
+        fdinfo_table: std::sync::Weak::new(),
+        proc_mounts: Arc::new(crate::proc_mounts::ProcMountSnapshot::capture().unwrap()),
+        fd_object_inodes: std::collections::BTreeMap::new(),
+        file_identity_table: Arc::new(std::sync::Mutex::new(crate::elf::GuestFileIdentityTable {
+            next_inode: 0x2100_0000,
+            objects: std::collections::BTreeMap::new(),
+        })),
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf {
     tests::test_state(cwd)
@@ -14078,7 +14159,6 @@ pub(crate) fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::collections::BTreeSet;
     use std::io::Read;
     use std::io::Seek;
     use std::io::SeekFrom;
@@ -14428,72 +14508,7 @@ mod tests {
     }
 
     pub(super) fn test_state(cwd: &Path) -> LoadedStaticElf {
-        LoadedStaticElf {
-            entry_point: 0,
-            stack_pointer: 0,
-            heap_base: BOOT_RESERVED_END,
-            program_break: BOOT_RESERVED_END,
-            brk_limit: BOOT_RESERVED_END + PAGE_SIZE,
-            mmap_base: BOOT_RESERVED_END + PAGE_SIZE,
-            mmap_next: BOOT_RESERVED_END + PAGE_SIZE,
-            mmap_limit: BOOT_RESERVED_END + 2 * PAGE_SIZE,
-            executable_path: std::path::PathBuf::from("test"),
-            executable_file: None,
-            executable_image: Arc::from([]),
-            argv0: b"test".to_vec(),
-            cwd: cwd.to_owned(),
-            cwd_fd: std::fs::File::open(cwd).unwrap(),
-            stdin: Some(std::fs::File::open("/dev/null").unwrap()),
-            auxv: Vec::new(),
-            fs_base: 0,
-            gs_base: 0,
-            pid: 1,
-            pgid: 1,
-            tid: 1,
-            ppid: 0,
-            is_traced_tree_root: true,
-            logical_clock_ns: 0,
-            umask: 0o022,
-            random_seed: 0,
-            thread_name: *b"test\0\0\0\0\0\0\0\0\0\0\0\0",
-            thread_group_leader_name: Arc::new(Mutex::new(*b"test\0\0\0\0\0\0\0\0\0\0\0\0")),
-            thp_disabled: Arc::new(std::sync::atomic::AtomicU8::new(0)),
-            keep_capabilities: false,
-            capability_effective: GUEST_CAPABILITY_MASK,
-            capability_permitted: GUEST_CAPABILITY_MASK,
-            capability_inheritable: 0,
-            capability_bounding: GUEST_CAPABILITY_MASK,
-            capability_ambient: 0,
-            dumpable: true,
-            nice: 0,
-            sched_policy: libc::SCHED_OTHER,
-            sched_priority: 0,
-            sched_reset_on_fork: false,
-            ioprio: 0,
-            process_signals: Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
-            thread_signals: SharedThreadSignalState::default(),
-            task_lifecycle: Arc::new(std::sync::Mutex::new(
-                crate::elf::TaskLifecycleTable::with_root(1, 1, 1, true),
-            )),
-            files: BTreeMap::new(),
-            random_device_fds: BTreeSet::new(),
-            stdout_alias_fds: BTreeSet::new(),
-            stderr_alias_fds: BTreeSet::new(),
-            cloexec_fds: BTreeSet::new(),
-            closed_standard_fds: BTreeSet::new(),
-            children: BTreeMap::new(),
-            proc_files: BTreeMap::new(),
-            fdinfo_files: BTreeMap::new(),
-            fdinfo_table: std::sync::Weak::new(),
-            proc_mounts: Arc::new(crate::proc_mounts::ProcMountSnapshot::capture().unwrap()),
-            fd_object_inodes: BTreeMap::new(),
-            file_identity_table: Arc::new(std::sync::Mutex::new(
-                crate::elf::GuestFileIdentityTable {
-                    next_inode: 0x2100_0000,
-                    objects: BTreeMap::new(),
-                },
-            )),
-        }
+        native_loaded_state(cwd)
     }
 
     fn prctl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -34795,6 +34810,66 @@ mod tests {
             previous = Some(position);
         }
         assert!(executor.join_all_child_processes().is_ok());
+    }
+
+    #[test]
+    fn failed_child_cleanup_cancels_all_gates_before_joining() {
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let (later_done, wait_later) = std::sync::mpsc::channel();
+        let mut wait_later = Some(wait_later);
+        let mut later_done = Some(later_done);
+        let gates = Arc::new(Mutex::new(Vec::new()));
+        for pid in [2, 3] {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let gate = ChildStartGate::new(sender);
+            gates.lock().unwrap().push(gate.clone());
+            let wait = if pid == 2 { wait_later.take() } else { None };
+            let done = if pid == 3 { later_done.take() } else { None };
+            let handle = std::thread::spawn(move || {
+                assert_eq!(receiver.recv().unwrap(), ChildStartCommand::Cancel);
+                if let Some(done) = done {
+                    done.send(()).unwrap();
+                }
+                if let Some(wait) = wait {
+                    wait.recv().unwrap();
+                }
+                Err(crate::Error::GuestClock(format!("child {pid}")))
+            });
+            executor.register_child_process_with_gate(
+                pid,
+                gate,
+                Arc::new(Mutex::new(None)),
+                handle,
+            );
+        }
+        let (finished, wait_finished) = std::sync::mpsc::channel();
+        let rescued = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watchdog_rescued = rescued.clone();
+        let watchdog = std::thread::spawn(move || {
+            if wait_finished
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .is_err()
+            {
+                watchdog_rescued.store(true, Ordering::SeqCst);
+                for gate in gates.lock().unwrap().iter() {
+                    gate.cancel();
+                }
+            }
+        });
+        let result = executor.join_child_processes_after_failure();
+        let _ = finished.send(());
+        watchdog.join().unwrap();
+        assert!(
+            !rescued.load(Ordering::SeqCst),
+            "a later gate was held behind an earlier join"
+        );
+        let error = result.unwrap_err();
+        assert!(matches!(error.primary(), crate::Error::GuestClock(_)));
+        assert!(executor.pending_processes.is_empty());
+        assert!(executor.completed_processes.is_empty());
+        assert_eq!(error.to_string().matches("child 2").count(), 1);
+        assert_eq!(error.to_string().matches("child 3").count(), 1);
     }
 
     #[test]
