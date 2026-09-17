@@ -1710,14 +1710,29 @@ mod tests {
         assert_eq!(obligations.len(), 1);
         assert_eq!(obligations[0].baseline_legs, 4);
         assert_eq!(obligations[0].baseline_failures, 1);
-        assert_eq!(obligations[0].required_clean_legs, 21);
+        assert_eq!(obligations[0].required_clean_legs, 30);
         assert_eq!(obligations[0].observed_clean_legs_at_target, 20);
         rows.push(Fixture::new("matched", "clean-10", FIX, 12).write(&store.0));
+        let obligations = schema10_obligations(&rows, &store.0);
+        assert_eq!(obligations.len(), 1);
+        assert_eq!(obligations[0].required_clean_legs, 30);
+        assert_eq!(obligations[0].observed_clean_legs_at_target, 22);
+        for ordinal in 11..14 {
+            rows.push(
+                Fixture::new("matched", &format!("clean-{ordinal}"), FIX, ordinal + 2)
+                    .write(&store.0),
+            );
+        }
+        let obligations = schema10_obligations(&rows, &store.0);
+        assert_eq!(obligations.len(), 1);
+        assert_eq!(obligations[0].required_clean_legs, 30);
+        assert_eq!(obligations[0].observed_clean_legs_at_target, 28);
+        rows.push(Fixture::new("matched", "clean-14", FIX, 16).write(&store.0));
         assert!(schema10_obligations(&rows, &store.0).is_empty());
 
         // A target's earlier unavailable cross comparison prevents its later
         // matches from constituting a clean commit, even with enough legs.
-        rows.push(Fixture::new("reference-diverged", "unavailable", FIX, 13).write(&store.0));
+        rows.push(Fixture::new("reference-diverged", "unavailable", FIX, 17).write(&store.0));
         let obligations = schema10_obligations(&rows, &store.0);
         let cross = obligations
             .iter()
@@ -1728,7 +1743,7 @@ mod tests {
                 )
             })
             .unwrap();
-        assert_eq!(cross.observed_clean_legs_at_target, 22);
+        assert_eq!(cross.observed_clean_legs_at_target, 30);
         assert_eq!(cross.target_failures, 0);
         assert!(!cross.target_comparisons_complete);
         assert_eq!(cross.target_unavailable_comparisons, 1);
