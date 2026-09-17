@@ -139,17 +139,31 @@ pub trait GlobalTool: Send + Sync + Default {
     ///
     /// It receives a shared reference to the global state object, which must
     /// manage its own synchronization.
+    ///
+    /// On a fatal KVM run failure, an in-flight Tool callback and its inline
+    /// RPC future may be dropped at any await point. RPC implementations must
+    /// leave shared state safe for concurrent consuming cleanup when dropped;
+    /// a normal response is not manufactured to complete the abandoned RPC.
+    /// The terminal transition in `report_backend_failure` must also make
+    /// cleanup possible for requests that were admitted but did not complete.
     async fn receive_rpc(&self, _from: Tid, _message: Self::Request) -> Self::Response;
 
     /// Reports a fatal backend failure before cleanup can wait on another Tool
     /// callback. This is a failed run, not a guest exit, signal, or RPC reply.
     /// Implementations must finish their terminal transition synchronously,
     /// including making concurrent consuming cleanup safe, before returning.
+    /// Complete that transition before waking any failure subscriber. Several
+    /// workers may report distinct errors in one run, so this method must be
+    /// idempotent and preserve the first terminal cause. It must not wait for
+    /// Tool callbacks or physical worker joins that depend on that transition.
     fn report_backend_failure(&self, _event: BackendFailure) {}
 
     /// Waits until this run cannot continue faithfully. Each call must subscribe
     /// independently: multiple Tool callbacks and the scheduler may be waiting.
     /// The default preserves Tools that do not own a scheduler.
+    /// Returning allows the backend to drop in-flight callbacks, including
+    /// `receive_rpc`, and proceed to consuming exit hooks. Shared state must
+    /// already support that cleanup; returning is not an ordinary RPC reply.
     async fn wait_for_backend_failure(&self) {
         std::future::pending::<()>().await
     }
@@ -226,6 +240,14 @@ impl GlobalTool for () {
 /// process. This type is in turn a factory for *thread level states*, which are
 /// allocated dynamically upon guest thread creation. Instances of the thread
 /// state are also managed by Reverie.
+///
+/// During fatal KVM run cleanup, asynchronous event callbacks may be dropped
+/// at any await point. Their thread state is then passed to `on_exit_thread`
+/// even if the start callback was never entered or did not finish. Exit hooks
+/// must consume partially initialized state without requiring guest execution
+/// or a normal response from an abandoned callback. This contract covers
+/// returned runtime errors; arbitrary panic unwinding is not guaranteed to
+/// invoke consuming hooks.
 ///
 /// # Example
 ///
@@ -360,8 +382,10 @@ pub trait Tool: Send + Sync + Default {
     /// delaying thread execution or running initialization actions (injections
     /// or rpcs).
     ///
-    /// Both this callback and `init_thread_state` run once for every newly
-    /// created thread. The important difference is that this callback is
+    /// `init_thread_state` runs once for every constructed thread state. This
+    /// callback runs once when that thread is allowed to start; cancellation
+    /// before admission can consume the state without entering this callback.
+    /// Fatal run failure may also drop it before completion. This callback is
     /// guaranteed to run independently from the parent. It does not view the
     /// parents state, and this handler runs in its own asynchronous task.
     /// Blocking this task on an `.await` will not interfere with the progress of
@@ -488,6 +512,10 @@ pub trait Tool: Send + Sync + Default {
     /// will be no more intercepted events on this thread.
     ///
     /// Serves as a "destructor" for the thread state, and thus takes it by move.
+    /// KVM cleanup consumes each constructed state once on returned runtime
+    /// errors or cancellation, including states whose `handle_thread_start`
+    /// was never entered or completed. No further guest event is started to
+    /// perform this cleanup. Panic unwinding may bypass the hook.
     async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
         &self,
         _tid: Tid,
@@ -504,6 +532,10 @@ pub trait Tool: Send + Sync + Default {
     ///
     /// Serves as a "destructor" for the process state (`self`), and thus takes
     /// it by move.
+    /// On KVM this also consumes a constructed process cancelled before its
+    /// initial thread starts, after the thread states have been consumed. It
+    /// must support cleanup after fatal failure without ordinary guest RPC
+    /// progress. Panic unwinding may bypass the hook.
     async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
         self,
         _pid: Pid,

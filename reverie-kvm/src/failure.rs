@@ -65,6 +65,7 @@ impl RunFailure {
             .map(|(cause, _)| cause.clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn published_primary(&self) -> Option<Arc<Error>> {
         self.published
             .load(Ordering::Acquire)
@@ -73,8 +74,12 @@ impl RunFailure {
     }
 
     fn publish(&self, event: BackendFailure, error: Error) -> Error {
-        if matches!(error, Error::RunAborted) {
-            return self.primary().map_or(error, Error::SharedFailure);
+        if matches!(error.primary(), Error::RunAborted) {
+            // A Tool subscriber may already be doing terminal cleanup while
+            // the synchronous publisher is still returning. Do not sample its
+            // unpublished primary or turn this cleanup marker into success.
+            // Public completion attaches the retained cause after owned joins.
+            return error;
         }
         // Select the first cause and its event in the same publication order.
         // Keep this lock only through the synchronous terminal hook and local
@@ -108,18 +113,67 @@ impl RunFailure {
         }
         Error::SharedFailure(error)
     }
+
+    /// Called only after the run's owned workers and processes have returned.
+    /// Terminal cleanup markers do not publish a second cause; retain the
+    /// original typed cause here once its publisher has completed.
+    pub(crate) fn complete<R>(&self, result: crate::Result<R>) -> crate::Result<R> {
+        let first = self
+            .primary
+            .lock()
+            .expect("KVM failure lock poisoned")
+            .as_ref()
+            .map(|(error, event)| (error.clone(), event.tid.as_raw()));
+        match (first, result) {
+            (Some((primary, tid)), Err(error)) => Err(error.complete_after_failure(primary, tid)),
+            (Some((primary, _)), Ok(_)) => Err(Error::SharedFailure(primary)),
+            (None, result) => result,
+        }
+    }
 }
 
 #[derive(Clone)]
 pub(crate) struct FailureContext {
     pub(crate) run: Arc<RunFailure>,
+    process: Arc<ProcessFailure>,
     pid: Pid,
     tid: Pid,
 }
 
+struct ProcessFailure {
+    sender: Mutex<Option<oneshot::Sender<()>>>,
+    receiver: FailureSubscription,
+}
+
+impl ProcessFailure {
+    fn new() -> Arc<Self> {
+        let (sender, receiver) = oneshot::channel();
+        Arc::new(Self {
+            sender: Mutex::new(Some(sender)),
+            receiver: receiver.shared(),
+        })
+    }
+
+    fn publish(&self) {
+        if let Some(sender) = self
+            .sender
+            .lock()
+            .expect("KVM process failure sender lock poisoned")
+            .take()
+        {
+            let _ = sender.send(());
+        }
+    }
+}
+
 impl FailureContext {
     pub(crate) fn new(run: Arc<RunFailure>, pid: Pid, tid: Pid) -> Self {
-        Self { run, pid, tid }
+        Self {
+            run,
+            process: ProcessFailure::new(),
+            pid,
+            tid,
+        }
     }
 
     pub(crate) fn for_process(&self, pid: Pid) -> Self {
@@ -127,18 +181,41 @@ impl FailureContext {
     }
 
     pub(crate) fn for_thread(&self, tid: Pid) -> Self {
-        Self::new(self.run.clone(), self.pid, tid)
+        Self {
+            tid,
+            ..self.clone()
+        }
+    }
+
+    /// The initial owner must return every run failure. An independent process
+    /// can finish ordinary work after another process fails, unless its Tool
+    /// explicitly terminates the shared global state. Its RPCs still observe
+    /// the run-wide notification at the actual request boundary.
+    pub(crate) fn driver_subscription(&self, is_traced_tree_root: bool) -> FailureSubscription {
+        if is_traced_tree_root {
+            self.run.subscribe()
+        } else {
+            self.process.receiver.clone()
+        }
     }
 
     pub(crate) fn publish(&self, phase: &'static str, error: Error) -> Error {
-        self.run.publish(
+        let real_failure = !matches!(error.primary(), Error::RunAborted);
+        let error = self.run.publish(
             BackendFailure {
                 pid: self.pid,
                 tid: self.tid,
                 phase,
             },
             error,
-        )
+        );
+        // The synchronous Tool terminal transition has returned before either
+        // a process peer or an owned join can begin failure cleanup. A derived
+        // cancellation marker must not create a new process failure.
+        if real_failure {
+            self.process.publish();
+        }
+        error
     }
 }
 
@@ -200,6 +277,183 @@ mod tests {
     use futures::task::noop_waker;
 
     use super::*;
+
+    #[test]
+    fn completion_promotes_joined_worker_cause_without_duplicate_diagnostic() {
+        let global = Arc::new(());
+        let failure = RunFailure::new(&global);
+        let event = BackendFailure {
+            pid: Pid::from_raw(1),
+            tid: Pid::from_raw(2),
+            phase: "worker exit",
+        };
+        let published =
+            failure.publish(event, Error::Reverie(reverie::syscalls::Errno::EIO.into()));
+        let first = failure.primary().unwrap();
+        // This is the exact production shape observed in the original
+        // static_elf mode 1: the parked owner sees RunAborted while its physical
+        // join returns the already-published worker failure.
+        let joined = Error::RunAborted.with_cleanup(vec![Error::WorkerFailure {
+            tid: 2,
+            error: Arc::new(published),
+        }]);
+        assert!(
+            !joined.retains_primary(&first),
+            "publication predicate stays on the primary chain"
+        );
+        let error = failure.complete::<()>(Err(joined)).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "unexpected vCPU exit: KVM worker cleanup failed: thread 2: Reverie tool failed: -5 EIO (I/O error)"
+        );
+        assert!(error.retains_primary(&first));
+        assert_eq!(error.worker_tid(), Some(2));
+        assert!(std::ptr::eq(error.primary(), first.primary()));
+        assert_eq!(failure.primary.lock().unwrap().as_ref().unwrap().1, event);
+
+        let no_failure = RunFailure::new(&global);
+        assert!(matches!(
+            no_failure.complete::<()>(Err(Error::RunAborted)),
+            Err(Error::RunAborted)
+        ));
+
+        // A canceled peer can return the root's published cause through its
+        // own join handle. Its TID is propagation context, not the origin.
+        let root_failure = RunFailure::new(&global);
+        root_failure.publish(
+            BackendFailure {
+                pid: Pid::from_raw(1),
+                tid: Pid::from_raw(1),
+                phase: "root execution",
+            },
+            Error::InvalidGuestPid(-17),
+        );
+        let root_cause = root_failure.primary().unwrap();
+        for direct_alias in [true, false] {
+            let peer = Error::WorkerFailure {
+                tid: 2,
+                error: root_cause.clone(),
+            };
+            let result = if direct_alias {
+                Error::SharedFailure(root_cause.clone()).with_cleanup(vec![peer])
+            } else {
+                peer
+            };
+            let error = root_failure.complete::<()>(Err(result)).unwrap_err();
+            assert_eq!(error.to_string(), "invalid KVM root guest PID -17");
+            assert_eq!(
+                error.worker_tid(),
+                None,
+                "canceled peer replaced the root identity"
+            );
+            assert!(error.retains_primary(&root_cause));
+            assert!(std::ptr::eq(error.primary(), root_cause.primary()));
+        }
+    }
+
+    #[test]
+    fn completion_keeps_distinct_shared_cleanup_causes_and_first_worker_identity() {
+        fn references(error: &Error, target: &Arc<Error>) -> usize {
+            fn shared(error: &Arc<Error>, target: &Arc<Error>) -> usize {
+                if Arc::ptr_eq(error, target) {
+                    1
+                } else {
+                    references(error, target)
+                }
+            }
+            match error {
+                Error::SharedFailure(error)
+                | Error::WorkerFailure { error, .. }
+                | Error::Cleanup { error, .. } => shared(error, target),
+                Error::WithCleanup { primary, cleanup } => {
+                    shared(primary, target)
+                        + cleanup
+                            .iter()
+                            .map(|error| shared(error, target))
+                            .sum::<usize>()
+                }
+                Error::ExecWorkerTeardown(error) => references(error, target),
+                _ => 0,
+            }
+        }
+        let global = Arc::new(());
+        let failure = RunFailure::new(&global);
+        let event = BackendFailure {
+            pid: Pid::from_raw(1),
+            tid: Pid::from_raw(9),
+            phase: "worker execution",
+        };
+        failure.publish(event, Error::Reverie(reverie::syscalls::Errno::EIO.into()));
+        let first = failure.primary().unwrap();
+        // Equal diagnostic text is deliberately a different real cause.
+        let lower_tid = Arc::new(Error::Reverie(reverie::syscalls::Errno::EIO.into()));
+        let first_hook = Arc::new(Error::HostIo(std::io::Error::from_raw_os_error(
+            libc::ENOSPC,
+        )));
+        let second_hook = Arc::new(Error::Reverie(reverie::syscalls::Errno::EACCES.into()));
+        let cancelled_hook = Arc::new(Error::HostIo(std::io::Error::from_raw_os_error(
+            libc::EPIPE,
+        )));
+        let worker = |error| Error::WorkerFailure { tid: 9, error };
+        let aggregate = |primary, cleanup| Arc::new(Error::WithCleanup { primary, cleanup });
+        let joined = Error::WorkerFailure {
+            tid: 2,
+            error: lower_tid.clone(),
+        }
+        .with_cleanup(vec![
+            Error::RunAborted
+                .with_cleanup(vec![
+                    worker(aggregate(first.clone(), vec![first_hook.clone()])),
+                    Error::ExecWorkerTeardown(Box::new(worker(aggregate(
+                        first.clone(),
+                        vec![second_hook.clone()],
+                    )))),
+                    Error::WorkerFailure {
+                        tid: 10,
+                        error: aggregate(Arc::new(Error::RunAborted), vec![cancelled_hook.clone()]),
+                    },
+                    Error::SharedFailure(first.clone()),
+                ])
+                .cleanup("owner cleanup"),
+        ]);
+        assert!(!joined.retains_primary(&first));
+        let error = failure.complete::<()>(Err(joined)).unwrap_err();
+        assert!(error.retains_primary(&first));
+        assert!(std::ptr::eq(error.primary(), first.primary()));
+        assert_eq!(
+            error.worker_tid(),
+            Some(9),
+            "lower TID is not the first published cause"
+        );
+        for cause in [
+            &first,
+            &lower_tid,
+            &first_hook,
+            &second_hook,
+            &cancelled_hook,
+        ] {
+            assert_eq!(
+                references(&error, cause),
+                1,
+                "typed cause was lost or duplicated: {error:?}"
+            );
+        }
+        assert_eq!(
+            error.to_string().matches("EIO").count(),
+            2,
+            "same text is not cause identity"
+        );
+        assert!(
+            !error
+                .to_string()
+                .contains("KVM execution stopped after a fatal run failure")
+        );
+        assert!(
+            error.to_string().contains("thread 10:"),
+            "cancelled worker's real hook context was lost"
+        );
+        assert_eq!(failure.primary.lock().unwrap().as_ref().unwrap().1, event);
+    }
 
     #[test]
     fn independent_failure_subscribers_wake_before_and_after_publication() {
@@ -274,6 +528,71 @@ mod tests {
     }
 
     #[test]
+    fn process_failure_subscriptions_preserve_fork_and_thread_ownership() {
+        let global = Arc::new(());
+        let run = RunFailure::new(&global);
+        let root = FailureContext::new(run.clone(), Pid::from_raw(71), Pid::from_raw(71));
+        let child = root.for_process(Pid::from_raw(72));
+        let worker = child.for_thread(Pid::from_raw(73));
+        let nested = child.for_process(Pid::from_raw(74));
+        let independent_process = false;
+        assert!(
+            child
+                .driver_subscription(independent_process)
+                .now_or_never()
+                .is_none()
+        );
+        assert!(
+            worker
+                .driver_subscription(independent_process)
+                .now_or_never()
+                .is_none()
+        );
+        assert!(root.driver_subscription(true).now_or_never().is_none());
+
+        worker.publish("worker", Error::InvalidGuestPid(-17));
+        assert_eq!(
+            child
+                .driver_subscription(independent_process)
+                .now_or_never(),
+            Some(Ok(()))
+        );
+        assert_eq!(
+            worker
+                .driver_subscription(independent_process)
+                .now_or_never(),
+            Some(Ok(()))
+        );
+        assert_eq!(root.driver_subscription(true).now_or_never(), Some(Ok(())));
+        assert!(nested.driver_subscription(false).now_or_never().is_none());
+        assert!(matches!(
+            run.primary().unwrap().primary(),
+            Error::InvalidGuestPid(-17)
+        ));
+        assert_eq!(
+            run.primary.lock().unwrap().as_ref().unwrap().1.tid,
+            Pid::from_raw(73)
+        );
+
+        // A derived cleanup marker does not mark a healthy independent process
+        // as a second source of failure or wake its ordinary execution driver.
+        nested.publish("RPC cancellation", Error::RunAborted);
+        assert!(nested.driver_subscription(false).now_or_never().is_none());
+        let first = run.primary().unwrap();
+        nested.publish(
+            "later process failure",
+            Error::HostIo(std::io::Error::from_raw_os_error(libc::EPIPE)),
+        );
+        assert_eq!(
+            nested.driver_subscription(false).now_or_never(),
+            Some(Ok(()))
+        );
+        assert!(Arc::ptr_eq(&first, &run.primary().unwrap()));
+        let later = child.for_process(Pid::from_raw(75));
+        assert!(later.driver_subscription(false).now_or_never().is_none());
+    }
+
+    #[test]
     fn local_failure_wake_waits_for_synchronous_tool_terminal_transition() {
         let global = Arc::new(OrderedGlobal::default());
         let (entered, receive_entered) = std::sync::mpsc::channel();
@@ -283,6 +602,7 @@ mod tests {
         let failure = RunFailure::new(&global);
         let mut subscription = failure.subscribe();
         let context = FailureContext::new(failure.clone(), Pid::from_raw(1), Pid::from_raw(2));
+        let mut process_subscription = context.driver_subscription(false);
         let publisher = std::thread::spawn(move || {
             context.publish("worker", Error::GuestClock("primary".to_owned()))
         });
@@ -294,6 +614,9 @@ mod tests {
             Poll::Pending
         );
         let unpublished = failure.published_primary().is_none();
+        let process_pending = std::pin::Pin::new(&mut process_subscription)
+            .poll(&mut Context::from_waker(&noop_waker()))
+            .is_pending();
         release.send(()).unwrap();
         publisher.join().unwrap();
         assert!(
@@ -301,6 +624,11 @@ mod tests {
             "local cleanup escaped before Tool publication completed"
         );
         assert_eq!(futures::executor::block_on(subscription), Ok(()));
+        assert!(
+            process_pending,
+            "process cleanup escaped before Tool publication completed"
+        );
+        assert_eq!(futures::executor::block_on(process_subscription), Ok(()));
         assert!(failure.published_primary().is_some());
     }
 

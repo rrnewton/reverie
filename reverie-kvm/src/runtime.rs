@@ -136,7 +136,20 @@ impl PendingChildStart {
     }
 
     pub(crate) fn cancel(self) -> PendingChildCancellation {
-        match self.start.cancel() {
+        self.cancel_with_reason(false)
+    }
+
+    pub(crate) fn cancel_after_failure(self) -> PendingChildCancellation {
+        self.cancel_with_reason(true)
+    }
+
+    fn cancel_with_reason(self, failed: bool) -> PendingChildCancellation {
+        let cancelled = if failed {
+            self.start.cancel_after_failure()
+        } else {
+            self.start.cancel()
+        };
+        match cancelled {
             ChildStartCancellation::NewlyCancelled { delivery_failed } => {
                 PendingChildCancellation::NewlyCancelled {
                     child: self.child,
@@ -240,6 +253,10 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
     fn read_clock(&self) -> Result<u64>;
 
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64;
+
+    fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
+        None
+    }
 
     fn defer_signal_delivery(&mut self, _event: SignalEvent) -> std::result::Result<(), Errno> {
         Err(Errno::ENOSYS)
@@ -418,6 +435,13 @@ where
 {
     fn read_clock(&self) -> Result<u64> {
         self.backend.vcpu.read_clock()
+    }
+
+    fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
+        self.backend
+            .tool_failure
+            .as_ref()
+            .map(|failure| failure.run.subscribe())
     }
 
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
@@ -720,7 +744,39 @@ impl<T: Tool> GlobalRPC<T::GlobalState> for KvmGuest<'_, T> {
         // Route by the issuing thread's tid: the scheduler keys each thread's
         // turn (and global-time accounting) on the RPC sender. For a
         // CLONE_THREAD worker this is the worker tid, not the thread-group pid.
-        self.global_state.receive_rpc(self.tid, message).await
+        // An independent process may finish ordinary work after a peer fails,
+        // but a pending ordinary RPC can prevent its owner's physical join.
+        // Signal the driver and leave this response unconstructed on failure.
+        // Consuming hooks use KvmGlobal instead and must still deregister.
+        let response = {
+            let mut failure = pin!(wait_for_failure(
+                self.global_state,
+                self.executor.failure_subscription(),
+            ));
+            let mut response = pin!(self.global_state.receive_rpc(self.tid, message));
+            poll_fn(|context| {
+                if failure.as_mut().poll(context).is_ready() {
+                    return Poll::Ready(None);
+                }
+                let result = response.as_mut().poll(context);
+                if failure.as_mut().poll(context).is_ready() {
+                    return Poll::Ready(None);
+                }
+                result.map(Some)
+            })
+            .await
+        };
+        match response {
+            Some(response) => response,
+            None => {
+                // Drop the ordinary request before publishing its nonlocal
+                // result. A callback may poll this RPC again (for example,
+                // after select returns its losing future); terminal polls must
+                // neither resume the completed failure wait nor admit RPC work.
+                self.signal_handler(HandlerSignal::RuntimeError(Error::RunAborted));
+                std::future::pending().await
+            }
+        }
     }
 
     fn config(&self) -> &<T::GlobalState as GlobalTool>::Config {
@@ -1100,33 +1156,36 @@ async fn drive_handler<T>(
         if failure.as_mut().poll(context).is_ready() {
             return Poll::Ready(HandlerOutcome::RunFailed);
         }
+        // A callback can select another ready future after an operation records
+        // a nonlocal result. Consume that result before accepting either a
+        // returned callback value or an ordinary suspension.
+        let handler_signal = handler_signal
+            .lock()
+            .expect("KVM handler signal lock poisoned")
+            .take();
+        match handler_signal {
+            Some(HandlerSignal::ThreadCancelled) => {
+                return Poll::Ready(HandlerOutcome::ThreadCancelled);
+            }
+            Some(HandlerSignal::TailInjected {
+                result,
+                image_replaced,
+                process_exited,
+            }) => {
+                return Poll::Ready(HandlerOutcome::TailInjected {
+                    result,
+                    image_replaced,
+                    process_exited,
+                });
+            }
+            Some(HandlerSignal::RuntimeError(error)) => {
+                return Poll::Ready(HandlerOutcome::RuntimeError(error));
+            }
+            None => {}
+        }
         match result {
             Poll::Ready(result) => Poll::Ready(HandlerOutcome::Returned(result)),
             Poll::Pending => {
-                let handler_signal = handler_signal
-                    .lock()
-                    .expect("KVM handler signal lock poisoned")
-                    .take();
-                match handler_signal {
-                    Some(HandlerSignal::ThreadCancelled) => {
-                        return Poll::Ready(HandlerOutcome::ThreadCancelled);
-                    }
-                    Some(HandlerSignal::TailInjected {
-                        result,
-                        image_replaced,
-                        process_exited,
-                    }) => {
-                        return Poll::Ready(HandlerOutcome::TailInjected {
-                            result,
-                            image_replaced,
-                            process_exited,
-                        });
-                    }
-                    Some(HandlerSignal::RuntimeError(error)) => {
-                        return Poll::Ready(HandlerOutcome::RuntimeError(error));
-                    }
-                    None => {}
-                }
                 let mut starts = pending_child_starts
                     .lock()
                     .expect("KVM child-start lock poisoned");
@@ -1194,7 +1253,7 @@ where
     <T::GlobalState as GlobalTool>::Config: 'static,
 {
     let tool_stack_top = backend.tool_stack_top();
-    let failure_subscription = backend.failure_subscription();
+    let failure_subscription = backend.failure_subscription(executor.is_traced_tree_root());
     loop {
         if executor.has_eligible_pending_signal() {
             return Err(Error::UnexpectedVcpuExit(
@@ -1327,7 +1386,7 @@ where
     <T::GlobalState as GlobalTool>::Config: 'static,
 {
     let tool_stack_top = backend.tool_stack_top();
-    let failure_subscription = backend.failure_subscription();
+    let failure_subscription = backend.failure_subscription(executor.is_traced_tree_root());
     let request = initial_exec_request(memory, executor.initial_stack_pointer())?;
     let syscall = request.into_syscall()?;
     let mut registers = kvm_registers(backend.vcpu.get_regs()?, request.number());
@@ -1425,6 +1484,42 @@ impl From<ProcessExit> for ToolProcessExit {
     }
 }
 
+/// A published run failure can interrupt a permitted CLONE_THREAD worker even
+/// before the backend's ordinary cancellation flag becomes visible.
+pub(crate) fn is_peer_cancelled_tool_worker<R>(
+    identity: (Pid, Pid),
+    start_permitted: bool,
+    outcome: &Result<R>,
+) -> bool {
+    start_permitted
+        && identity.0 != identity.1
+        && outcome
+            .as_ref()
+            .is_err_and(|error| matches!(error.primary(), Error::RunAborted))
+}
+
+/// Keep the interrupted worker's error tree for final cleanup while preserving
+/// ordinary cancellation retirement and any established guest exit status.
+fn retire_peer_cancelled_tool_worker(
+    executor: &mut ElfExecutor,
+    identity: (Pid, Pid),
+    start_permitted: bool,
+    group_status: Option<ExitStatus>,
+    outcome: &Result<ToolProcessExit>,
+) -> Option<ToolProcessExit> {
+    if !is_peer_cancelled_tool_worker(identity, start_permitted, outcome) {
+        return None;
+    }
+    let exit = match group_status {
+        Some(status) => executor.retire_current_thread(status, true),
+        None => executor.cancel_current_thread(),
+    };
+    Some(ToolProcessExit {
+        exit,
+        cancelled: true,
+    })
+}
+
 #[derive(Clone, Copy)]
 struct ToolExit {
     status: ExitStatus,
@@ -1519,6 +1614,7 @@ async fn finish_tool_process_after_workers<T: Tool>(
     config: &<T::GlobalState as GlobalTool>::Config,
     thread_state: T::ThreadState,
     outcome: Result<ToolProcessExit>,
+    cancelled_exit: Option<ToolProcessExit>,
     workers: Result<()>,
     failure: Option<&FailureContext>,
 ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
@@ -1530,13 +1626,33 @@ async fn finish_tool_process_after_workers<T: Tool>(
             error
         }
     };
-    let workers = workers.map_err(|error| report("worker teardown", error));
+    let workers = workers.map_err(|error| {
+        let worker_tid = error.worker_tid().map(Pid::from_raw).unwrap_or(tid);
+        match failure {
+            Some(failure) => failure
+                .for_thread(worker_tid)
+                .publish("worker teardown", error),
+            None => {
+                global_state.report_backend_failure(reverie::BackendFailure {
+                    pid,
+                    tid: worker_tid,
+                    phase: "worker teardown",
+                });
+                error
+            }
+        }
+    });
     let natural_exit = outcome
         .as_ref()
         .is_ok_and(|exit| !exit.cancelled && !exit.exit.group);
-    let mut status = outcome
-        .as_ref()
-        .map_or(ExitStatus::Exited(255), |exit| exit.exit.status);
+    let mut status = cancelled_exit.map_or_else(
+        || {
+            outcome
+                .as_ref()
+                .map_or(ExitStatus::Exited(255), |exit| exit.exit.status)
+        },
+        |exit| exit.exit.status,
+    );
     let mut process_status = Ok(());
     if pid == tid && natural_exit {
         match executor.process_exit_status() {
@@ -1632,6 +1748,7 @@ impl KvmBackend {
         config: &<T::GlobalState as GlobalTool>::Config,
         thread_state: T::ThreadState,
         outcome: Result<ToolProcessExit>,
+        start_permitted: bool,
     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
         let (pid, tid) = identity;
         // Failed exec already reports the joined worker errors as its primary
@@ -1644,24 +1761,38 @@ impl KvmBackend {
         let natural_exit = outcome
             .as_ref()
             .is_ok_and(|exit| !exit.cancelled && !exit.exit.group);
+        let cancelled_exit = retire_peer_cancelled_tool_worker(
+            executor,
+            identity,
+            start_permitted,
+            self.guest_thread_group_exit_status(),
+            &outcome,
+        );
+        if let Some(exit) = cancelled_exit
+            && exit.exit.group
+        {
+            self.request_guest_thread_group_exit(exit.exit.status);
+        }
         // Retire the exact task generation before consuming hooks can wake a
         // peer. No guest callback can still borrow Tool or descriptor state.
-        match &outcome {
-            Ok(exit) => {
-                executor.retire_current_thread(exit.exit.status, exit.exit.group);
+        if cancelled_exit.is_none() {
+            match &outcome {
+                Ok(exit) => {
+                    executor.retire_current_thread(exit.exit.status, exit.exit.group);
+                }
+                Err(_) => executor.retire_failed_thread(),
             }
-            Err(_) => executor.retire_failed_thread(),
         }
         self.release_thread_slot();
         self.clear_registered_worker_tid_before_exit(executor);
         executor.release_files_on_exit();
         self.release_stdin_on_exit();
-        if outcome.is_err() {
+        if outcome.is_err() && cancelled_exit.is_none() {
             // A failed worker must interrupt live siblings before a leader's
             // natural join can block on an earlier handle. Cancellation does
             // not supply a guest group-exit status; the original error remains.
             if pid == tid {
-                self.cancel_guest_threads();
+                self.cancel_guest_threads_after_failure();
             } else {
                 self.record_guest_worker_failure(tid.as_raw());
             }
@@ -1685,6 +1816,7 @@ impl KvmBackend {
             config,
             thread_state,
             outcome,
+            cancelled_exit,
             workers,
             self.tool_failure.as_ref(),
         )
@@ -1716,6 +1848,7 @@ impl KvmBackend {
             config,
             thread_state,
             outcome,
+            false,
         )
         .await
     }
@@ -2046,6 +2179,9 @@ impl KvmBackend {
                 true,
             )
             .await;
+        // All owned children have returned. Do not leave the backend holding
+        // a reporter whose Weak owner is about to be consumed or released.
+        self.tool_failure = None;
         let global_state = match Arc::try_unwrap(global_state) {
             Ok(global) => global,
             Err(_) => {
@@ -2058,18 +2194,9 @@ impl KvmBackend {
                 });
             }
         };
-        let result = match (failure.primary(), result) {
-            (Some(primary), Err(error)) => {
-                if error.retains_primary(&primary) {
-                    Err(error)
-                } else {
-                    Err(Error::SharedFailure(primary).with_cleanup(vec![error]))
-                }
-            }
-            (Some(primary), Ok(_)) => Err(Error::SharedFailure(primary)),
-            (None, result) => result
-                .map(|(status, stdout, stderr)| (conventional_exit_code(status), stdout, stderr)),
-        };
+        let result = failure
+            .complete(result)
+            .map(|(status, stdout, stderr)| (conventional_exit_code(status), stdout, stderr));
         Ok(ToolRunCompletion {
             global_state,
             result,
@@ -2183,7 +2310,7 @@ impl KvmBackend {
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
         let mut process_completed = false;
         let tool_stack_top = self.tool_stack_top();
-        let failure_subscription = self.failure_subscription();
+        let failure_subscription = self.failure_subscription(executor.is_traced_tree_root());
         expose_tool_scratch(memory, tool_stack_top)?;
         let process_context = if let Some(fault) = fault {
             ProcessExecutionContext::FaultBoundary(Box::new(fault.clone()))
@@ -2323,11 +2450,11 @@ impl KvmBackend {
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
         if let Some(failure) = &self.tool_failure {
-            self.tool_failure = Some(FailureContext::new(failure.run.clone(), pid, tid));
+            self.tool_failure = Some(failure.for_thread(tid));
         }
         executor.observe_ignored_signals_with_tool();
         let tool_stack_top = self.tool_stack_top();
-        let failure_subscription = self.failure_subscription();
+        let failure_subscription = self.failure_subscription(executor.is_traced_tree_root());
         let mut _registration = None;
         let mut auxv = executor.auxv().to_vec();
         // Clones share the MAP_SHARED guest mapping; a mutable handle lets the
@@ -3015,6 +3142,7 @@ impl KvmBackend {
             config,
             thread_state,
             outcome,
+            true,
         )
         .await
     }
@@ -3234,6 +3362,9 @@ mod tests {
         let handler = poll_fn(|context| match start_receiver.try_recv() {
             Ok(ChildStartCommand::Start) => Poll::Ready(true),
             Ok(ChildStartCommand::Cancel) => Poll::Ready(false),
+            Ok(ChildStartCommand::CancelAfterFailure) => {
+                panic!("normal handler sent fatal cancellation")
+            }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 context.waker().wake_by_ref();
                 Poll::Pending
