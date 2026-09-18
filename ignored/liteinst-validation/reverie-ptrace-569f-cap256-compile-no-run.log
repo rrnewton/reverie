@@ -1,0 +1,3 @@
+   Compiling reverie-ptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.55s
+  Executable unittests src/lib.rs (target/debug/deps/reverie_ptrace-ed31c6fcd03692ed)

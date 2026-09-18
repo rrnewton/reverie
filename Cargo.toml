@@ -27,4 +27,4 @@ members = [
     "reverie-util",
     "safeptrace",
 ]
-exclude = ["public_autocargo/experimental"]
+exclude = ["public_autocargo/experimental", "third_party/liteinst2"]

@@ -1,0 +1,32 @@
+
+Elf file type is DYN (Shared object file)
+Entry point 0x0
+There are 11 program headers, starting at offset 64
+
+Program Headers:
+  Type           Offset   VirtAddr           PhysAddr           FileSiz  MemSiz   Flg Align
+  PHDR           0x000040 0x0000000000000040 0x0000000000000040 0x000268 0x000268 R   0x8
+  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x0861dc 0x0861dc R   0x1000
+  LOAD           0x0861dc 0x00000000000871dc 0x00000000000871dc 0x09b4b4 0x09b4b4 R E 0x1000
+  LOAD           0x121690 0x0000000000123690 0x0000000000123690 0x0068d8 0x006970 RW  0x1000
+  LOAD           0x127f68 0x000000000012af68 0x000000000012af68 0x002610 0x804481a RW  0x1000
+  TLS            0x121690 0x0000000000123690 0x0000000000123690 0x000030 0x0000b0 R   0x8
+  DYNAMIC        0x126f40 0x0000000000128f40 0x0000000000128f40 0x0001c0 0x0001c0 RW  0x8
+  GNU_RELRO      0x121690 0x0000000000123690 0x0000000000123690 0x0068d8 0x006970 R   0x1
+  GNU_EH_FRAME   0x071a78 0x0000000000071a78 0x0000000000071a78 0x003554 0x003554 R   0x4
+  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0
+  NOTE           0x0002a8 0x00000000000002a8 0x00000000000002a8 0x000024 0x000024 R   0x4
+
+ Section to Segment mapping:
+  Segment Sections...
+   00     
+   01     .note.gnu.build-id .dynsym .gnu.version .gnu.version_r .gnu.hash .dynstr .rela.dyn .rela.plt .gcc_except_table .rodata .eh_frame_hdr .eh_frame 
+   02     .init .fini .text .plt 
+   03     .tdata .data.rel.ro .fini_array .init_array .dynamic .got .got.plt .relro_padding 
+   04     .tm_clone_table .data .bss 
+   05     .tdata .tbss 
+   06     .dynamic 
+   07     .tdata .data.rel.ro .fini_array .init_array .dynamic .got .got.plt .relro_padding 
+   08     .eh_frame_hdr 
+   09     
+   10     .note.gnu.build-id 

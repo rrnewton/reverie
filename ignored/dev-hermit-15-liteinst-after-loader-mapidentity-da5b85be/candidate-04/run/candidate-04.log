@@ -1,0 +1,47 @@
+
+running 1 test
+
+thread 'constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks' (1089714) panicked at reverie-liteinst/tests/after_loader.rs:896:27:
+after-loader runner failed: LiteInst after-loader call failed for tracee 1089947: bound image has 0 exact retained load geometries; 83 retained observations; showing [51..83]
+51: operation="trace-only syscall completed" raw_clock=Some(2766) detail_bytes=53 detail_prefix="purpose=TraceePreinit nr=9 raw_result=140737352028160"
+52: operation="trace-only syscall admitted" raw_clock=Some(2932) detail_bytes=93 detail_prefix="purpose=TraceePreinit nr=3 args=[3, 4, 140737349944192, 18446603336359607484, 3221258242, 48]"
+53: operation="trace-only syscall completed" raw_clock=Some(2932) detail_bytes=39 detail_prefix="purpose=TraceePreinit nr=3 raw_result=0"
+54: operation="trace-only syscall admitted" raw_clock=Some(4136) detail_bytes=64 detail_prefix="purpose=TraceePreinit nr=9 args=[0, 12288, 3, 34, 4294967295, 0]"
+55: operation="trace-only syscall completed" raw_clock=Some(4136) detail_bytes=53 detail_prefix="purpose=TraceePreinit nr=9 raw_result=140737353809920"
+56: operation="trace-only syscall admitted" raw_clock=Some(4157) detail_bytes=98 detail_prefix="purpose=TraceePreinit nr=158 args=[4098, 140737353811776, 140737353855792, 34, 140737353811776, 0]"
+57: operation="trace-only syscall completed" raw_clock=Some(4157) detail_bytes=41 detail_prefix="purpose=TraceePreinit nr=158 raw_result=0"
+58: operation="trace-only syscall admitted" raw_clock=Some(4158) detail_bytes=109 detail_prefix="purpose=TraceePreinit nr=218 args=[140737353812496, 140737353811776, 140737354129432, 34, 140737353811776, 0]"
+59: operation="trace-only syscall completed" raw_clock=Some(4158) detail_bytes=47 detail_prefix="purpose=TraceePreinit nr=218 raw_result=1089947"
+60: operation="trace-only syscall admitted" raw_clock=Some(4158) detail_bytes=96 detail_prefix="purpose=TraceePreinit nr=273 args=[140737353812512, 24, 140737354129432, 34, 140737353811776, 0]"
+61: operation="trace-only syscall completed" raw_clock=Some(4158) detail_bytes=41 detail_prefix="purpose=TraceePreinit nr=273 raw_result=0"
+62: operation="trace-only syscall admitted" raw_clock=Some(4162) detail_bytes=76 detail_prefix="purpose=TraceePreinit nr=334 args=[140737353814240, 32, 0, 1392848979, 0, 0]"
+63: operation="trace-only syscall completed" raw_clock=Some(4162) detail_bytes=41 detail_prefix="purpose=TraceePreinit nr=334 raw_result=0"
+64: operation="trace-only syscall admitted" raw_clock=Some(16139) detail_bytes=83 detail_prefix="purpose=TraceePreinit nr=10 args=[140737352003584, 16384, 1, 140737349943296, 0, 0]"
+65: operation="trace-only syscall completed" raw_clock=Some(16139) detail_bytes=40 detail_prefix="purpose=TraceePreinit nr=10 raw_result=0"
+66: operation="trace-only syscall admitted" raw_clock=Some(16613) detail_bytes=76 detail_prefix="purpose=TraceePreinit nr=10 args=[4206592, 4096, 1, 0, 216, 140737352026248]"
+67: operation="trace-only syscall completed" raw_clock=Some(16613) detail_bytes=40 detail_prefix="purpose=TraceePreinit nr=10 raw_result=0"
+68: operation="trace-only syscall admitted" raw_clock=Some(17226) detail_bytes=83 detail_prefix="purpose=TraceePreinit nr=10 args=[140737354117120, 8192, 1, 140737353893712, 0, 12]"
+69: operation="trace-only syscall completed" raw_clock=Some(17226) detail_bytes=40 detail_prefix="purpose=TraceePreinit nr=10 raw_result=0"
+70: operation="trace-only syscall admitted" raw_clock=Some(17250) detail_bytes=74 detail_prefix="purpose=TraceePreinit nr=302 args=[0, 3, 0, 140737488349760, 0, 110527148]"
+71: operation="trace-only syscall completed" raw_clock=Some(17250) detail_bytes=41 detail_prefix="purpose=TraceePreinit nr=302 raw_result=0"
+72: operation="trace-only syscall admitted" raw_clock=Some(17283) detail_bytes=91 detail_prefix="purpose=TraceePreinit nr=11 args=[140737353822208, 28479, 0, 140737488349760, 0, 110527148]"
+73: operation="trace-only syscall completed" raw_clock=Some(17283) detail_bytes=40 detail_prefix="purpose=TraceePreinit nr=11 raw_result=0"
+74: operation="trace-only syscall admitted" raw_clock=Some(17607) detail_bytes=106 detail_prefix="purpose=TraceePreinit nr=5 args=[1, 140737488348592, 140737352006112, 140737351719968, 0, 140737351720224]"
+75: operation="trace-only syscall completed" raw_clock=Some(17607) detail_bytes=39 detail_prefix="purpose=TraceePreinit nr=5 raw_result=0"
+76: operation="trace-only syscall admitted" raw_clock=Some(17612) detail_bytes=94 detail_prefix="purpose=TraceePreinit nr=318 args=[140737352049912, 8, 1, 140737351719968, 0, 140737351720224]"
+77: operation="trace-only syscall completed" raw_clock=Some(17612) detail_bytes=41 detail_prefix="purpose=TraceePreinit nr=318 raw_result=8"
+78: operation="trace-only syscall admitted" raw_clock=Some(17810) detail_bytes=73 detail_prefix="purpose=TraceePreinit nr=12 args=[0, 135168, 0, 4095, 3, 140737351720224]"
+79: operation="trace-only syscall completed" raw_clock=Some(17810) detail_bytes=46 detail_prefix="purpose=TraceePreinit nr=12 raw_result=4214784"
+80: operation="trace-only syscall admitted" raw_clock=Some(17815) detail_bytes=93 detail_prefix="purpose=TraceePreinit nr=12 args=[4349952, 135168, 140737352053688, 4095, 3, 140737351720224]"
+81: operation="trace-only syscall completed" raw_clock=Some(17815) detail_bytes=46 detail_prefix="purpose=TraceePreinit nr=12 raw_result=4349952"
+82: operation="physical event partition validated" raw_clock=None detail_bytes=168 detail_prefix="observer=PhysicalObserverId(1) records=836 physical_statuses=84 successful_resumes=82 explicit_dispositions=2 ordinary_lost=0 cleanup_lost=0 after_close=0 violations=[]"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks ... FAILED
+
+failures:
+
+failures:
+    constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
