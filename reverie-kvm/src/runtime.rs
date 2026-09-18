@@ -701,9 +701,9 @@ where
             return None;
         }
         let site = self.current_parked_site()?;
-        // Match scalar write's checked descriptor conversion, not the typed
-        // accessor's truncation of a malformed raw ABI value.
-        let fd = i32::try_from(request.args()[0]).ok()?;
+        // Descriptor lookup uses Linux's low 32 bits only after exact raw-call
+        // equality above; distinct upper argument bits do not share admission.
+        let fd = request.args()[0] as libc::c_int;
         self.executor.captured_write_site(site, fd)
     }
     fn set_signal_guard(&mut self, guard: SignalGuard) -> SignalGuard {

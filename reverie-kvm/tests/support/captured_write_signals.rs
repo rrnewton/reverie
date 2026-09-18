@@ -94,7 +94,7 @@ impl Tool for CaptureTool {
                 i64::from(guest.pid().as_raw())
             );
         }
-        let expected = self.mode <= 3 || (11..=16).contains(&self.mode);
+        let expected = self.mode <= 3 || (11..=17).contains(&self.mode);
         let site = guest.captured_write_signal_site(call);
         assert_eq!(site.is_some(), expected, "mode {}", self.mode);
         record(Event::Query(site));
@@ -116,6 +116,15 @@ impl Tool for CaptureTool {
                         .is_none()
                 );
             }
+            // The same low fd is insufficient: admission requires the exact
+            // original upper bits as well as all other raw arguments.
+            let mut same_fd = raw;
+            same_fd[0] ^= 1_usize << 32;
+            assert!(
+                guest
+                    .captured_write_signal_site(saved_write(same_fd))
+                    .is_none()
+            );
             if self.mode == 12 {
                 let stack = guest.stack().await;
                 assert!(guest.captured_write_signal_site(call).is_none());
@@ -176,7 +185,7 @@ fn run_modes(modes: impl IntoIterator<Item = u8>) {
             )
             .unwrap();
         let (_, status, stdout, stderr) = futures::executor::block_on(
-            backend.run_static_elf_with_tool::<CaptureTool>(mode, mode != 4),
+            backend.run_static_elf_with_tool::<CaptureTool>(mode, !matches!(mode, 4 | 19)),
         )
         .unwrap();
         let events = EVENTS.lock().unwrap().clone();
@@ -195,7 +204,7 @@ fn run_modes(modes: impl IntoIterator<Item = u8>) {
                 .count(),
             1
         );
-        let published = mode <= 3 || (11..=16).contains(&mode);
+        let published = mode <= 3 || (11..=17).contains(&mode);
         for kind in [Event::Published, Event::Dequeue, Event::Hook] {
             assert_eq!(
                 events.iter().filter(|e| **e == kind).count(),
@@ -211,7 +220,12 @@ fn run_modes(modes: impl IntoIterator<Item = u8>) {
             let hook = events.iter().position(|e| *e == Event::Hook).unwrap();
             assert!(write < hook, "signal hook ran before actual write result");
         }
-        let standard_output = matches!(mode, 0 | 2 | 10 | 11 | 12 | 15 | 16);
+        if matches!(mode, 17 | 19) {
+            assert!(events.contains(&Event::WriteResult(Ok(3))));
+        } else if mode == 18 {
+            assert!(events.contains(&Event::WriteResult(Err(Errno::EBADF))));
+        }
+        let standard_output = matches!(mode, 0 | 2 | 10 | 11 | 12 | 15 | 16 | 17);
         if mode == 14 {
             assert_eq!(stdout.len(), 16 * 1024 * 1024 + 1);
             assert!(stdout[..stdout.len() - 1].iter().all(|byte| *byte == b'a'));
@@ -268,6 +282,6 @@ fn captured_write_signal_capability_blocks_nested_and_malformed_admission() {
     if leader_self_exec_bounded(
         "captured_write_signals::captured_write_signal_capability_blocks_nested_and_malformed_admission",
     ) {
-        run_modes([15, 16, 17]);
+        run_modes([15, 16, 17, 18, 19]);
     }
 }
