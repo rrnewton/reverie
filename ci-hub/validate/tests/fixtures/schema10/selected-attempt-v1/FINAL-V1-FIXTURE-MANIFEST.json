@@ -1,0 +1,83 @@
+{
+  "status": "actual library phase passed; synthetic parser fixtures only, not full validation or guest execution",
+  "partial_manifest_sha256": "6f653151da453f07a3a1cef89abafaf29c2ed6e5cca539adedb08adc01026e20",
+  "partial_manifest": {
+    "state": "partial producing phase still running; not an overall phase pass",
+    "source_base_head": "b5dc8ebe51c732570a7ddb21e31a4ccff73e278e",
+    "source_seal": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/structured-results-obligation-audit-20260917/goal-continuation-20260918-0333/pr3069-implementation/reader-support-1/runtime/01-library-controls/SOURCE-SEAL.json",
+    "source_seal_sha256": "864114abe63f73662b5bb32585522382e025cf2e07b07049c82743811df874fd",
+    "exact_staged_patch": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/structured-results-obligation-audit-20260917/goal-continuation-20260918-0333/pr3069-implementation/reader-support-1/runtime/01-library-controls/CANDIDATE.patch",
+    "patch_sha256": "81b416cd0b883064e4b8205999900e68615f77481e05ed97ffda03445d167ae6",
+    "files": {
+      "matched-row.json": {
+        "bytes": 4983,
+        "sha256": "4f7936b122a96d34d0701ddd8230824e24d59f230112075880926a3bada91898"
+      },
+      "matched-plan.json": {
+        "bytes": 2379,
+        "sha256": "5d58608415594b226023ada6ec57222672a89197bf93c38c615e83b0e9f2b9f4"
+      },
+      "matched-cells.jsonl": {
+        "bytes": 10335,
+        "sha256": "52f092d5af38b63c79678dfce09a846ea94d9c5f82c220af9b597ee2bfb9d6c3"
+      },
+      "matched-tests.jsonl": {
+        "bytes": 243,
+        "sha256": "6c65aad8be1f3c8a74cc4955e1c3e2a69b27497f42a8066659b714861ce77a7d"
+      },
+      "reference-diverged-row.json": {
+        "bytes": 5096,
+        "sha256": "4b80f2ac3ac5727f56a893ee618a7e36034dc8141a6f0edc9eef8ff690683c9d"
+      },
+      "reference-diverged-plan.json": {
+        "bytes": 2379,
+        "sha256": "5d58608415594b226023ada6ec57222672a89197bf93c38c615e83b0e9f2b9f4"
+      },
+      "reference-diverged-cells.jsonl": {
+        "bytes": 5958,
+        "sha256": "15d46fe5a8fcb87e9a0d1cdb31e6bf2e6f97023f70c6e69717938a95068cea94"
+      },
+      "reference-diverged-tests.jsonl": {
+        "bytes": 243,
+        "sha256": "6c65aad8be1f3c8a74cc4955e1c3e2a69b27497f42a8066659b714861ce77a7d"
+      },
+      "cross-diverged-then-matched-row.json": {
+        "bytes": 6466,
+        "sha256": "34309930eb696629f5c906b016d06b9d061e748595d21208f2ce081601950132"
+      },
+      "cross-diverged-then-matched-plan.json": {
+        "bytes": 2379,
+        "sha256": "5d58608415594b226023ada6ec57222672a89197bf93c38c615e83b0e9f2b9f4"
+      },
+      "cross-diverged-then-matched-cells.jsonl": {
+        "bytes": 19734,
+        "sha256": "5e3e960affd70fc0ec7382cfd721dd0e1b2aa0040b9224483cda6e74a631299e"
+      },
+      "cross-diverged-then-matched-tests.jsonl": {
+        "bytes": 243,
+        "sha256": "6c65aad8be1f3c8a74cc4955e1c3e2a69b27497f42a8066659b714861ce77a7d"
+      },
+      "ordinary-only-row.json": {
+        "bytes": 3214,
+        "sha256": "f405fac178e94a5d531950eb3a75189e9cc6e6d899d4749103f7acc874699428"
+      },
+      "ordinary-only-plan.json": {
+        "bytes": 2353,
+        "sha256": "0d06b7720589e999cbeb49f42ade9a52a106737fe44b706453b0d479d970e6d7"
+      },
+      "ordinary-only-cells.jsonl": {
+        "bytes": 881,
+        "sha256": "92f60a9a0adc0bcd04dcf5d02abf8899f00a5923dabc2710a665e967a30db630"
+      },
+      "ordinary-only-tests.jsonl": {
+        "bytes": 243,
+        "sha256": "6c65aad8be1f3c8a74cc4955e1c3e2a69b27497f42a8066659b714861ce77a7d"
+      }
+    },
+    "synthetic_parser_controls_not_guest_measurements": true
+  },
+  "terminal_sha256": "777f02ff489a2030198b86b88eb26e48278616a072c6edc629c149df691c20a4",
+  "complete_sha256": "70899f30761c12b7aa5659d63bdf514a147c0a6f219690857ca65f20875eae1a",
+  "result_sha256": "6834060fbf4a8e0fbeb9d34bfa6521f685d3d72697057568ca79e52a02185d44",
+  "log_sha256": "dd76b3766218498c89b2105233931dfbf14b4cb6ce154b8eef6419fa91db1af4"
+}

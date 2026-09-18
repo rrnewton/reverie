@@ -551,12 +551,17 @@ def _require_cell_results(row: dict, root: Path) -> None:
         )
     if verdict is qualifying_receipt.CellResultsVerdict.ARTIFACT_REFUSED:
         raise ValueError(f"cell_results {qualifying_receipt.validation_evidence(row).reason}")
-    if verdict is not qualifying_receipt.CellResultsVerdict.SATISFIED:
+    if verdict not in {
+        qualifying_receipt.CellResultsVerdict.SATISFIED,
+        qualifying_receipt.CellResultsVerdict.LEGACY_UNBOUND,
+    }:
         raise ValueError(f"cell_results {verdict.value}")
     if row.get("schema_version") == 10:
         # The shared verifier has read and bound all three artifacts, including
         # the full attempt records that intentionally are not copied into the
-        # compact ledger summary. Never compare that artifact using V8 keys.
+        # compact ledger summary. Legacy-unbound is readable historical evidence,
+        # not a qualifying bound receipt. Preserve its failures and observations;
+        # never compare that artifact using V8 keys.
         return
 
     evidence = row["cell_results"]

@@ -443,7 +443,7 @@ def _check_validation_evidence(
                     return fault("validation artifact checker returned an unexpected or repeated row digest")
                 if not isinstance(status, str):
                     return fault("validation artifact checker returned a malformed status")
-                if status == "verified":
+                if status in {"verified", "legacy-unbound"}:
                     if (
                         set(report) != {"row_sha256", "status", "evidence", "full_validation_refusal", "backend_parity_matches"}
                         or not _native_evidence_shape_valid(report["evidence"], json.loads(requests[digest]))
@@ -452,6 +452,17 @@ def _check_validation_evidence(
                         or (report["full_validation_refusal"] is not None and not isinstance(report["full_validation_refusal"], str))
                     ):
                         return fault("validation artifact checker returned a malformed verified response")
+                    # The native verifier owns artifact/contract authentication.
+                    # Here only enforce consistency of its typed outcome and DTO;
+                    # a transport reply may not upgrade an absent capability.
+                    cells = report["evidence"]["cell_results"]
+                    if (
+                        status == "verified" and (
+                            type(cells.get("binding_contract")) is not int
+                            or cells["binding_contract"] != 1
+                        )
+                    ) or (status == "legacy-unbound" and "binding_contract" in cells):
+                        return fault("validation artifact checker returned an inconsistent binding contract")
                     reports[digest] = _ValidationEvidence(
                         digest, status, evidence=report["evidence"],
                         full_validation_refusal=report["full_validation_refusal"],
@@ -1111,6 +1122,7 @@ class CellResultsVerdict(Enum):
     VERDICT_INVALID = "cell-verdict-invalid"
     ARTIFACT_REFUSED = "artifact-refused"
     READER_FAULT = "reader-fault"
+    LEGACY_UNBOUND = "legacy-unbound"
 
 
 _CELL_IDENTITY_KEYS = ("lane", "category", "test", "mode", "backend")
@@ -1342,6 +1354,8 @@ def cell_results_verdict(
         checked = validation_evidence(row)
         if checked.status == "reader-fault":
             return CellResultsVerdict.READER_FAULT
+        if checked.status == "legacy-unbound":
+            return CellResultsVerdict.LEGACY_UNBOUND
         return (
             CellResultsVerdict.SATISFIED
             if checked.status == "verified"
@@ -1486,7 +1500,7 @@ def cell_scorecard_projection(
     population masquerade as a measured population containing zero greens.
     """
     status = cell_results_verdict(row, pred)
-    if status is not CellResultsVerdict.SATISFIED:
+    if status not in {CellResultsVerdict.SATISFIED, CellResultsVerdict.LEGACY_UNBOUND}:
         return {
             "eligible": False,
             "cell_results_satisfied": (
@@ -1526,8 +1540,8 @@ def cell_scorecard_projection(
                     tuple(cell[key] for key in _CELL_IDENTITY_KEYS) in parity_matches
                 )
     projection = {
-        "eligible": True,
-        "cell_results_satisfied": True,
+        "eligible": status is CellResultsVerdict.SATISFIED,
+        "cell_results_satisfied": status is CellResultsVerdict.SATISFIED,
         "status": status.value,
         "path": evidence.get("path"),
         "selected": [
@@ -1539,6 +1553,10 @@ def cell_scorecard_projection(
     }
     if checked is not None:
         projection.update({
+            "binding_contract": (
+                "selected-attempt-v1" if checked.status == "verified" else "legacy-unbound"
+            ),
+            "bound_evidence_eligible": checked.status == "verified",
             "ordinary_green_count": sum(cell["ordinary_scorecard_green"] for cell in cells),
             "selected_backend_parity": evidence["selected_backend_parity"],
             "backend_parity_selected_count": len(evidence["selected_backend_parity"]),
@@ -2185,7 +2203,7 @@ def _row_qualification_with_evidence(
         coverage_schema, base, admission, cell_results
     )
     if row.get("schema_version") == 10 and evidence_reason in (
-        "qualifies", "cell_results artifact-refused"
+        "qualifies", "cell_results artifact-refused", "cell_results legacy-unbound"
     ):
         checked = validation_evidence(row)
         if checked.status == "refused":

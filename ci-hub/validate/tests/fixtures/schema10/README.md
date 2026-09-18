@@ -20,8 +20,16 @@ an additional selected cell. Both operand invocation vectors include --strict.
 
 ordinary-only selects and records one ordinary KVM comparison with no selected
 backend-parity relation. The shared verifier reports full_backend_parity false.
-Its ordinary validation can qualify while parity selected, recorded and green
-counts remain zero.
+Its ordinary observations remain readable while parity selected, recorded and
+green counts remain zero. All sixteen original exports predate the explicit
+binding contract: they are authenticated `legacy-unbound` controls and cannot
+qualify as selected-attempt-bound receipts. Their measured matches, divergences,
+and unavailable comparisons remain historical evidence; absence of the new
+capability is not artifact corruption.
+
+New selected-attempt-v1 positive controls live separately under
+`selected-attempt-v1/`, with their own producer provenance. No field has been
+inserted into these original exports to manufacture bound acceptance.
 
 The full artifact contains fabricated /home/fixture paths to check that raw
 report and invocation bytes stay in the artifact while the ledger summary

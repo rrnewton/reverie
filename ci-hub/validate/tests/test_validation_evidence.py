@@ -245,6 +245,7 @@ def test_earlier_candidate_divergence_survives_a_terminal_match():
 @pytest.mark.parametrize("mutation", ["extra-field", "unknown-relation", "boolean-attempt", "empty-match-identity"])
 def test_malformed_verified_response_is_a_reader_fault(mutation):
     row = row10()
+    row["cell_results"] = {"binding_contract": 1}
 
     class MalformedVerified(RefusingChecker):
         def __init__(self, command, *, stdin, stdout, stderr, start_new_session):
@@ -254,7 +255,7 @@ def test_malformed_verified_response_is_a_reader_fault(mutation):
                     "row_sha256": hashlib.sha256(raw.encode()).hexdigest(), "status": "verified",
                     "full_validation_refusal": None, "backend_parity_matches": [],
                     "evidence": {
-                        "cell_results": {}, "test_results": {},
+                        "cell_results": row["cell_results"], "test_results": {},
                         "observations": [observation("ordinary", "matched")],
                         "missing_cells": [], "missing_backend_parity": [], "missing_test_producers": [],
                         "full_test_results": True, "full_backend_parity": True,
@@ -270,9 +271,44 @@ def test_malformed_verified_response_is_a_reader_fault(mutation):
                     report["backend_parity_matches"] = [{}]
                 stdout.write(json.dumps(report).encode() + b"\n")
 
-    row["cell_results"] = {}
     with mock.patch.object(receipt, "_capture_validation_evidence", side_effect=captured_checker(MalformedVerified)):
         with receipt.validation_evidence_batch([row], predicate=policy10()):
             checked = receipt.validation_evidence(row)
             assert checked.status == "reader-fault"
             assert "malformed verified response" in checked.reason
+
+
+@pytest.mark.parametrize("status,marker,valid", [
+    ("legacy-unbound", "absent", True), ("verified", 1, True),
+    ("verified", "absent", False), ("legacy-unbound", 1, False),
+    ("legacy-unbound", None, False), ("verified", True, False),
+    ("verified", 1.0, False), ("verified", "1", False),
+    ("verified", 0, False), ("verified", 2, False),
+])
+def test_native_transport_checks_capability_outcome_without_inventing_it(status, marker, valid):
+    # A protocol control only. Real artifact authentication and Rust/Python
+    # qualification parity are covered by the native fixture tests.
+    row = row10()
+    cells = {} if marker == "absent" else {"binding_contract": marker}
+    row["cell_results"] = cells
+    report = {
+        "row_sha256": receipt._evidence_row_digest(row), "status": status,
+        "full_validation_refusal": None, "backend_parity_matches": [],
+        "evidence": {
+            "cell_results": cells, "test_results": {},
+            "observations": [observation("ordinary", "matched")],
+            "missing_cells": [], "missing_backend_parity": [], "missing_test_producers": [],
+            "full_test_results": True, "full_backend_parity": True,
+        },
+    }
+    with mock.patch.object(receipt, "_capture_validation_evidence", return_value=(0, json.dumps(report).encode() + b"\n", b"")):
+        with receipt.validation_evidence_batch([row], predicate=policy10()):
+            checked = receipt.validation_evidence(row)
+            assert checked.status == (status if valid else "reader-fault")
+            if not valid:
+                assert "inconsistent binding contract" in checked.reason
+            elif status == "legacy-unbound":
+                assert receipt.cell_results_verdict(row, policy10()) is receipt.CellResultsVerdict.LEGACY_UNBOUND
+                assert receipt.row_qualification(row, row["commit"], policy10()) == (False, "cell_results legacy-unbound")
+            else:
+                assert receipt.cell_results_verdict(row, policy10()) is receipt.CellResultsVerdict.SATISFIED

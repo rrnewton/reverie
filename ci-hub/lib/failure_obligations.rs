@@ -10,7 +10,7 @@
 //! ordinary full validation is neither repeated nor slowed down.
 
 use crate::records::{
-    CellIdentity, CellResult, CellResultsEvidence, CellVerdict, ComparisonObservationVerdictV10,
+    CellBindingContract, CellIdentity, CellResult, CellResultsEvidence, CellVerdict, ComparisonObservationVerdictV10,
     ComparisonRelationV10, ComparisonStrictness, ComparisonTier, HistoryRow, RequiredNullable,
     ValidatePath, VerifiedValidationEvidenceV10,
 };
@@ -78,6 +78,22 @@ impl CellKey {
 struct Observation {
     legs: u64,
     failures: u64,
+    /// Separate repair authority from the historical failure-rate denominator.
+    /// Schema-10 legacy matches remain measured legs but supply no bound legs.
+    eligible_clean_legs: u64,
+    /// Only authenticated SelectedAttemptV1 comparisons supply this authority.
+    /// Pre-schema-10 canonical evidence keeps its established legacy policy.
+    bound_clean_legs: u64,
+}
+
+impl Observation {
+    fn clean_legs(&self, requires_bound: bool) -> u64 {
+        if requires_bound {
+            self.bound_clean_legs
+        } else {
+            self.eligible_clean_legs
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -253,6 +269,10 @@ fn observation_with_comparison_fields(
     Some(Observation {
         legs: 2,
         failures: u64::from(!matched),
+        // Preserve the pre-schema-10 canonical accounting policy. A commit
+        // containing any failure still cannot discharge an obligation.
+        eligible_clean_legs: 2 - u64::from(!matched),
+        bound_clean_legs: 0,
     })
 }
 
@@ -452,6 +472,11 @@ enum ValidatedEvidence<'a> {
 }
 
 impl ValidatedEvidence<'_> {
+    fn requires_bound(&self) -> bool {
+        matches!(self, Self::Schema10(evidence)
+            if evidence.cell_results.binding_contract == CellBindingContract::SelectedAttemptV1)
+    }
+
     fn selected(&self) -> &[CellIdentity] {
         match self {
             Self::Legacy(evidence) => &evidence.selected,
@@ -499,10 +524,20 @@ impl ValidatedEvidence<'_> {
                         ComparisonObservationVerdictV10::Matched => Some(Observation {
                             legs: 2,
                             failures: 0,
+                            eligible_clean_legs: if evidence.cell_results.binding_contract
+                                == CellBindingContract::SelectedAttemptV1
+                            {
+                                2
+                            } else {
+                                0
+                            },
+                            bound_clean_legs: if self.requires_bound() { 2 } else { 0 },
                         }),
                         ComparisonObservationVerdictV10::Diverged => Some(Observation {
                             legs: 2,
                             failures: 1,
+                            eligible_clean_legs: 0,
+                            bound_clean_legs: 0,
                         }),
                         ComparisonObservationVerdictV10::UnavailableWithReason { .. } => None,
                     };
@@ -531,7 +566,8 @@ fn validated_observation_evidence<'a>(
         None => crate::validation_evidence::verify_current_store(row),
     };
     match outcome {
-        crate::validation_evidence::EvidenceOutcome::Verified { evidence, .. } => {
+        crate::validation_evidence::EvidenceOutcome::Verified { evidence, .. }
+        | crate::validation_evidence::EvidenceOutcome::LegacyUnbound { evidence, .. } => {
             Ok(Some(ValidatedEvidence::Schema10(evidence)))
         }
         crate::validation_evidence::EvidenceOutcome::Refused { reason } => Err(reason),
@@ -592,6 +628,8 @@ fn trusted_calibration(cell: &CellKey) -> Option<Observation> {
         .then_some(Observation {
             failures: 1,
             legs: 270,
+            eligible_clean_legs: 0,
+            bound_clean_legs: 0,
         })
 }
 
@@ -650,6 +688,7 @@ where
     // available and therefore cannot narrow the obligations; `Some(empty)` is
     // schema-8's explicit empty selection and must remain empty.
     let mut target_selected: Option<BTreeSet<CellKey>> = None;
+    let mut target_requires_bound = false;
     for row in qualifying_target_rows
         .iter()
         .filter(|row| row.commit.as_deref() == Some(target_sha))
@@ -660,6 +699,7 @@ where
             cell_results_schema_max,
             artifact_root,
         )? {
+            target_requires_bound |= evidence.requires_bound();
             target_selected
                 .get_or_insert_default()
                 .extend(evidence.selected().iter().map(CellKey::from));
@@ -737,6 +777,8 @@ where
                 Some(observation) => {
                     aggregate.observation.legs += observation.legs;
                     aggregate.observation.failures += observation.failures;
+                    aggregate.observation.eligible_clean_legs += observation.eligible_clean_legs;
+                    aggregate.observation.bound_clean_legs += observation.bound_clean_legs;
                 }
                 None => {
                     aggregate.complete = false;
@@ -787,7 +829,7 @@ where
                 && observation.commit != failing.commit
                 && observation.observation.failures == 0
                 && observation.complete
-                && observation.observation.legs >= required
+                && observation.observation.clean_legs(target_requires_bound) >= required
                 && is_ancestor(&failing.commit, &observation.commit)?
                 && is_ancestor(&observation.commit, target_sha)?
             {
@@ -801,7 +843,13 @@ where
         let target = observations
             .iter()
             .filter(|observation| observation.commit == target_sha)
-            .max_by_key(|observation| observation.observation.legs);
+            .max_by_key(|observation| {
+                if target_requires_bound {
+                    observation.observation.bound_clean_legs
+                } else {
+                    observation.observation.legs
+                }
+            });
         unresolved.push(UnresolvedFailureObligation {
             lane: cell.lane.clone(),
             category: cell.category.clone(),
@@ -813,12 +861,8 @@ where
             baseline_failures: rate.failures,
             baseline_legs: rate.legs,
             required_clean_legs: required,
-            observed_clean_legs_at_target: target.map_or(0, |value| {
-                value
-                    .observation
-                    .legs
-                    .saturating_sub(value.observation.failures)
-            }),
+            observed_clean_legs_at_target: target
+                .map_or(0, |value| value.observation.clean_legs(target_requires_bound)),
             target_failures: target.map_or(0, |value| value.observation.failures),
             target_comparisons_complete: target.is_some_and(|value| value.complete),
             target_unavailable_comparisons: target.map_or(0, |value| value.unavailable_comparisons),
@@ -920,6 +964,7 @@ mod tests {
                     mode: identity.mode,
                     backend: identity.backend,
                     cell_verdict: verdict,
+                    evidence_binding: None,
                 }],
             }
         }))
@@ -1023,7 +1068,9 @@ mod tests {
             canonical_observation(cell),
             Some(Observation {
                 legs: 2,
-                failures: 0
+                failures: 0,
+                eligible_clean_legs: 2,
+                bound_clean_legs: 0,
             })
         );
 
@@ -1081,7 +1128,9 @@ mod tests {
             canonical_observation(cell),
             Some(Observation {
                 legs: 2,
-                failures: 0
+                failures: 0,
+                eligible_clean_legs: 2,
+                bound_clean_legs: 0,
             })
         );
 
@@ -1740,7 +1789,7 @@ mod tests {
         let mut rows = vec![failed];
         for ordinal in 0..10 {
             rows.push(
-                Fixture::new("matched", &format!("clean-{ordinal}"), FIX, ordinal + 2)
+                Fixture::new("selected-attempt-v1/matched", &format!("clean-{ordinal}"), FIX, ordinal + 2)
                     .write(&store.0),
             );
         }
@@ -1750,14 +1799,14 @@ mod tests {
         assert_eq!(obligations[0].baseline_failures, 1);
         assert_eq!(obligations[0].required_clean_legs, 30);
         assert_eq!(obligations[0].observed_clean_legs_at_target, 20);
-        rows.push(Fixture::new("matched", "clean-10", FIX, 12).write(&store.0));
+        rows.push(Fixture::new("selected-attempt-v1/matched", "clean-10", FIX, 12).write(&store.0));
         let obligations = schema10_obligations(&rows, &store.0);
         assert_eq!(obligations.len(), 1);
         assert_eq!(obligations[0].required_clean_legs, 30);
         assert_eq!(obligations[0].observed_clean_legs_at_target, 22);
         for ordinal in 11..14 {
             rows.push(
-                Fixture::new("matched", &format!("clean-{ordinal}"), FIX, ordinal + 2)
+                Fixture::new("selected-attempt-v1/matched", &format!("clean-{ordinal}"), FIX, ordinal + 2)
                     .write(&store.0),
             );
         }
@@ -1765,7 +1814,7 @@ mod tests {
         assert_eq!(obligations.len(), 1);
         assert_eq!(obligations[0].required_clean_legs, 30);
         assert_eq!(obligations[0].observed_clean_legs_at_target, 28);
-        rows.push(Fixture::new("matched", "clean-14", FIX, 16).write(&store.0));
+        rows.push(Fixture::new("selected-attempt-v1/matched", "clean-14", FIX, 16).write(&store.0));
         assert!(schema10_obligations(&rows, &store.0).is_empty());
 
         // A target's earlier unavailable cross comparison prevents its later
@@ -1815,5 +1864,77 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error, "conflicting correction rows for run_id failed");
+    }
+
+    #[test]
+    fn schema10_mixed_history_keeps_legacy_rate_but_requires_bound_repairs() {
+        use crate::validation_evidence::fixtures::{Fixture, Store};
+        let store = Store::new();
+        let mut rows = vec![
+            Fixture::new("cross-diverged-then-matched", "old-failure", BAD, 1)
+                .write(&store.0),
+            Fixture::new("matched", "old-baseline-match", BAD, 2).write(&store.0),
+        ];
+        // Twenty old matches at the target are real measured observations, but
+        // their missing capability must not repair the historical divergence.
+        for ordinal in 0..20 {
+            rows.push(Fixture::new("matched", &format!("old-match-{ordinal}"), FIX, ordinal + 3)
+                .write(&store.0));
+        }
+        let obligations = schema10_obligations(&rows, &store.0);
+        assert_eq!(obligations.len(), 1);
+        assert_eq!(obligations[0].baseline_legs, 6);
+        assert_eq!(obligations[0].baseline_failures, 1);
+        assert_eq!(obligations[0].required_clean_legs, 40);
+        assert_eq!(obligations[0].observed_clean_legs_at_target, 0);
+        for ordinal in 0..19 {
+            rows.push(Fixture::new("selected-attempt-v1/matched", &format!("bound-{ordinal}"), FIX, ordinal + 23)
+                .write(&store.0));
+        }
+        let obligations = schema10_obligations(&rows, &store.0);
+        assert_eq!(obligations.len(), 1);
+        assert_eq!(obligations[0].baseline_legs, 6);
+        assert_eq!(obligations[0].baseline_failures, 1);
+        assert_eq!(obligations[0].observed_clean_legs_at_target, 38);
+        rows.push(Fixture::new("selected-attempt-v1/matched", "bound-19", FIX, 42)
+            .write(&store.0));
+        assert!(schema10_obligations(&rows, &store.0).is_empty());
+        // A legacy failure on that same target is still a failure after forty
+        // bound legs; a capability split in CellKey would incorrectly hide it.
+        rows.push(Fixture::new("cross-diverged-then-matched", "old-target-failure", FIX, 43)
+            .write(&store.0));
+        let obligations = schema10_obligations(&rows, &store.0);
+        assert_eq!(obligations.len(), 1);
+        assert_eq!(obligations[0].failing_commit, FIX);
+        assert_eq!(obligations[0].target_failures, 1);
+        assert_eq!(obligations[0].observed_clean_legs_at_target, 40);
+    }
+
+    #[test]
+    fn schema10_bound_target_does_not_borrow_pre10_canonical_repair_credit() {
+        use crate::validation_evidence::fixtures::{Fixture, Store};
+        let store = Store::new();
+        let bound = Fixture::new("selected-attempt-v1/ordinary-only", "bound-target", FIX, 30)
+            .write(&store.0);
+        let mut failed = schema8_candidate_target(&bound, 1);
+        failed.commit = Some(BAD.into());
+        failed.extra.insert("tree".into(), serde_json::json!(BAD));
+        let evidence = failed.cell_results.as_mut().unwrap().typed_mut().unwrap();
+        evidence.hermit_sha = BAD.into();
+        evidence.cells[0].cell_verdict = row(BAD, 1, false)
+            .cell_results.unwrap().typed().unwrap().cells[0].cell_verdict.clone();
+        let mut rows = vec![failed];
+        for ordinal in 2..12 {
+            rows.push(schema8_candidate_target(&bound, ordinal));
+        }
+        // The established pre10 policy still accepts twenty canonical legs.
+        assert!(schema10_obligations(&rows, &store.0).is_empty());
+        rows.push(bound);
+        let obligations = schema10_obligations(&rows, &store.0);
+        assert_eq!(obligations.len(), 1);
+        assert_eq!(obligations[0].baseline_failures, 1);
+        assert_eq!(obligations[0].baseline_legs, 2);
+        assert_eq!(obligations[0].required_clean_legs, 10);
+        assert_eq!(obligations[0].observed_clean_legs_at_target, 2);
     }
 }

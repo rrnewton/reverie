@@ -35,6 +35,9 @@ def retained_case(root, source, run, mutation=None):
     plan["run_id"] = run
     for key in ("cell_results", "test_results"):
         row[key]["run_id"] = run
+    for cell in row["cell_results"]["cells"]:
+        if "evidence_binding" in cell:
+            cell["evidence_binding"]["run_id"] = run
     for result in [*cells, *tests]:
         result["run_id"] = run
     if mutation:
@@ -148,13 +151,16 @@ def test_schema10_real_batch_qualification_projection_and_artifact_refusals(tmp_
     with mock.patch.object(receipt.subprocess, "Popen", wraps=real_popen) as launch, mock.patch.object(receipt, "active", return_value=predicate):
         with receipt.validation_evidence_batch(rows, predicate=predicate):
             for row in (matched, ordinary, restored):
-                assert receipt.row_qualification(row, row["commit"], predicate) == (True, "qualifies")
+                assert receipt.row_qualification(row, row["commit"], predicate) == (False, "cell_results legacy-unbound")
                 validate_rows._require_cell_results(row, tmp_path)
             checked_ordinary = receipt.validation_evidence(ordinary)
-            assert checked_ordinary.status == "verified"
+            assert checked_ordinary.status == "legacy-unbound"
             assert checked_ordinary.evidence["full_backend_parity"] is False
             assert checked_ordinary.backend_parity_matches == ()
             projection = receipt.cell_scorecard_projection(ordinary, predicate)
+            assert projection["eligible"] is False
+            assert projection["binding_contract"] == "legacy-unbound"
+            assert projection["bound_evidence_eligible"] is False
             assert len(projection["selected"]) == 1
             assert projection["ordinary_green_count"] == 1
             assert projection["selected_backend_parity"] == []
@@ -215,7 +221,7 @@ def test_schema10_explicit_artifact_store_overrides_operational_parent(tmp_path,
     custom = tmp_path / "custom"
     operational = tmp_path / "operational"
     operational.mkdir()
-    row = retained_case(custom, "matched", "custom-store")
+    row = retained_case(custom, "selected-attempt-v1/matched", "custom-store")
     monkeypatch.setenv("DEV_HERMIT_PARENT", str(operational))
     predicate = copy.deepcopy(receipt.active())
     predicate["cell_results"]["supported_schema_max"] = 10
@@ -227,15 +233,95 @@ def test_schema10_explicit_artifact_store_overrides_operational_parent(tmp_path,
         assert launch.call_args.args[0] == [str(CI_HUB / "ci-hub"), "validate-evidence", "--artifact-root", str(custom)]
 
 
+def test_schema10_real_mixed_contract_batch_preserves_history_and_refuses_upgrades(tmp_path):
+    cases = {}
+    expected = {}
+    for prefix, status in (("", "legacy-unbound"), ("selected-attempt-v1/", "verified")):
+        for source in ("matched", "ordinary-only", "reference-diverged", "cross-diverged-then-matched"):
+            label = (prefix + source).replace("/", "-")
+            cases[label] = retained_case(tmp_path, prefix + source, label)
+            expected[label] = status
+        for failure in ("missing", "corrupt"):
+            label = (prefix + failure).replace("/", "-")
+            row = retained_case(tmp_path, prefix + "matched", label)
+            path = tmp_path / row["constructed_plan"]["path"]
+            if failure == "missing":
+                path.unlink()
+            else:
+                raw = path.read_bytes()
+                path.write_bytes(b"[" + raw[1:])
+            cases[label] = row
+            expected[label] = "reader-fault" if failure == "missing" else "refused"
+    for label, marker in (("null", None), ("bool", True), ("float", 1.0), ("string", "1"), ("zero", 0), ("unknown", 2), ("false-upgrade", 1)):
+        label = "marker-" + label
+        cases[label] = retained_case(
+            tmp_path, "matched", label,
+            lambda row, plan, cells, tests, marker=marker: row["cell_results"].update(binding_contract=marker),
+        )
+        expected[label] = "refused"
+
+    def remove_contract(row, plan, cells, tests):
+        del row["cell_results"]["binding_contract"]
+    def change_binding(row, plan, cells, tests):
+        row["cell_results"]["cells"][0]["evidence_binding"]["selected_attempt"] += 1
+    def add_legacy_null_binding(row, plan, cells, tests):
+        row["cell_results"]["cells"][0]["evidence_binding"] = None
+    def add_legacy_null_attempt(row, plan, cells, tests):
+        cells[0]["selected_attempt"] = None
+    for label, source, mutation in (
+        ("stripped-contract", "selected-attempt-v1/matched", remove_contract),
+        ("wrong-attempt", "selected-attempt-v1/matched", change_binding),
+        ("legacy-null-binding", "matched", add_legacy_null_binding),
+        ("legacy-null-attempt", "matched", add_legacy_null_attempt),
+    ):
+        cases[label] = retained_case(tmp_path, source, label, mutation)
+        expected[label] = "refused"
+
+    predicate = copy.deepcopy(receipt.active())
+    predicate["cell_results"]["supported_schema_max"] = 10
+    real_popen = receipt.subprocess.Popen
+    with mock.patch.object(receipt.subprocess, "Popen", wraps=real_popen) as launch, mock.patch.object(receipt, "active", return_value=predicate):
+        with receipt.validation_evidence_batch(list(cases.values()), artifact_root=tmp_path, predicate=predicate):
+            for label, row in cases.items():
+                checked = receipt.validation_evidence(row)
+                assert checked.status == expected[label], (label, checked)
+                if checked.status == "reader-fault":
+                    with pytest.raises(receipt.ValidationEvidenceReaderFault):
+                        receipt.row_qualification(row, row["commit"], predicate)
+                    continue
+                if checked.status == "refused":
+                    with pytest.raises(ValueError):
+                        validate_rows._require_cell_results(row, tmp_path)
+                    continue
+                validate_rows._require_cell_results(row, tmp_path)
+                assert len(checked.evidence["observations"]) == (6 if "then-matched" in label else 1 if "ordinary-only" in label else 3)
+                failed = "diverged" in label
+                assert receipt.row_qualification(row, row["commit"], predicate) == (
+                    (False, "cell_results comparison-diverged") if failed else
+                    (False, "cell_results legacy-unbound") if checked.status == "legacy-unbound" else
+                    (True, "qualifies")
+                )
+                projection = receipt.cell_scorecard_projection(row, predicate)
+                assert projection["bound_evidence_eligible"] is (checked.status == "verified")
+                if "reference-diverged" in label:
+                    assert [item["verdict"]["state"] for item in checked.evidence["observations"]] == ["matched", "diverged", "unavailable-with-reason"]
+                if "then-matched" in label:
+                    assert [item["verdict"]["state"] for item in checked.evidence["observations"] if item["relation"]["kind"] == "backend_parity"] == ["diverged", "matched"]
+        assert launch.call_count == 1
+
+
 @pytest.mark.parametrize("case,accepted", [
-    ("matched", True), ("ordinary-only", True),
+    ("matched", False), ("ordinary-only", False),
+    ("selected-attempt-v1/matched", True), ("selected-attempt-v1/ordinary-only", True),
+    ("selected-attempt-v1/reference-diverged", False),
+    ("selected-attempt-v1/cross-diverged-then-matched", False),
     ("reference-diverged", False), ("cross-diverged-then-matched", False),
     ("missing-plan", False), ("base-before-missing-plan", False),
 ])
 def test_schema10_normal_rust_qualification_uses_the_retained_artifact_store(tmp_path, case, accepted):
     import tempfile
     source = "matched" if case in {"missing-plan", "base-before-missing-plan"} else case
-    row = retained_case(tmp_path, source, "rust-" + case)
+    row = retained_case(tmp_path, source, "rust-" + case.replace("/", "-"))
     if case in {"missing-plan", "base-before-missing-plan"}:
         (tmp_path / row["constructed_plan"]["path"]).unlink()
     if case == "base-before-missing-plan":

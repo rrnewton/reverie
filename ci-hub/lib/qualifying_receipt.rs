@@ -948,6 +948,12 @@ fn shared_evidence_outcome(row: &HistoryRow, pred: &QualifyingPredicate) -> Boun
                 Some(reason) => BoundaryOutcome::Refused(reason),
                 None => BoundaryOutcome::Accepted,
             },
+            crate::validation_evidence::EvidenceOutcome::LegacyUnbound {
+                full_validation_refusal,
+                ..
+            } => BoundaryOutcome::Refused(
+                full_validation_refusal.unwrap_or_else(|| "cell_results legacy-unbound".into()),
+            ),
             crate::validation_evidence::EvidenceOutcome::Refused { reason } => {
                 BoundaryOutcome::Refused(format!("cell_results {reason}"))
             }

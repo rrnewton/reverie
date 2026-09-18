@@ -2186,6 +2186,15 @@ fn local_validation_status_description(row: &HistoryRow) -> String {
     if let Some(selected) = selected {
         coverage.push(format!("{selected} cells selected by {profile}"));
     }
+    if row.schema_version == Some(10) {
+        if let Ok(Some(evidence)) = row.schema10_cell_results() {
+            // Description only; qualification authenticates the artifacts.
+            coverage.push(match evidence.binding_contract {
+                records::CellBindingContract::LegacyUnbound => "legacy unbound evidence".into(),
+                records::CellBindingContract::SelectedAttemptV1 => "selected-attempt v1 evidence".into(),
+            });
+        }
+    }
     if let Some(nodes) = &row.coverage {
         coverage.push(format!(
             "{}/{} test nodes",

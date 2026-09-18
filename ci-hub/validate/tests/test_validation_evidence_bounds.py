@@ -20,12 +20,12 @@ from test_validation_evidence import observation, policy10, receipt, row10
 @pytest.mark.parametrize("value", [[], {}, None, True, 7])
 def test_nonstring_native_primitives_are_reader_faults(field, value):
     row = row10()
-    row["cell_results"] = {}
+    row["cell_results"] = {"binding_contract": 1}
     report = {
         "row_sha256": receipt._evidence_row_digest(row), "status": "verified",
         "full_validation_refusal": None, "backend_parity_matches": [],
         "evidence": {
-            "cell_results": {}, "test_results": {},
+            "cell_results": row["cell_results"], "test_results": {},
             "observations": [observation("ordinary", "matched")],
             "missing_cells": [], "missing_backend_parity": [], "missing_test_producers": [],
             "full_test_results": True, "full_backend_parity": True,
@@ -37,9 +37,47 @@ def test_nonstring_native_primitives_are_reader_faults(field, value):
         report[field] = value
     with mock.patch.object(receipt, "_capture_validation_evidence", return_value=(0, json.dumps(report).encode() + b"\n", b"")):
         with receipt.validation_evidence_batch([row], predicate=policy10()):
-            assert receipt.validation_evidence(row).status == "reader-fault"
+            checked = receipt.validation_evidence(row)
+            assert checked.status == "reader-fault"
+            reason = {
+                "row_sha256": "an unexpected or repeated row digest",
+                "status": "a malformed status",
+                "verdict-state": "a malformed verified response",
+            }[field]
+            assert checked.reason == f"validation artifact checker returned {reason}"
             with pytest.raises(receipt.ValidationEvidenceReaderFault):
                 receipt.row_qualification(row, row["commit"], policy10())
+
+
+@pytest.mark.parametrize("fault", ["omitted", "duplicate", "mismatched-contract"])
+def test_mixed_capability_transport_fault_never_publishes_a_verified_prefix(fault):
+    rows = [row10("legacy"), row10("bound")]
+    rows[0]["cell_results"] = {}
+    rows[1]["cell_results"] = {"binding_contract": 1}
+    reports = [{
+        "row_sha256": receipt._evidence_row_digest(row),
+        "status": "legacy-unbound" if index == 0 else "verified",
+        "full_validation_refusal": None, "backend_parity_matches": [],
+        "evidence": {
+            "cell_results": row["cell_results"], "test_results": {},
+            "observations": [observation("ordinary", "matched")],
+            "missing_cells": [], "missing_backend_parity": [], "missing_test_producers": [],
+            "full_test_results": True, "full_backend_parity": True,
+        },
+    } for index, row in enumerate(rows)]
+    if fault == "omitted":
+        reports.pop()
+    elif fault == "duplicate":
+        reports.append(reports[0])
+    else:
+        reports[1]["status"] = "legacy-unbound"
+    output = b"".join(json.dumps(report).encode() + b"\n" for report in reports)
+    with mock.patch.object(receipt, "_capture_validation_evidence", return_value=(0, output, b"")):
+        with receipt.validation_evidence_batch(rows, predicate=policy10()):
+            for row in rows:
+                assert receipt.validation_evidence(row).status == "reader-fault"
+                with pytest.raises(receipt.ValidationEvidenceReaderFault):
+                    receipt.row_qualification(row, row["commit"], policy10())
 
 
 def test_incremental_row_encoding_preserves_exact_digest():
@@ -216,11 +254,11 @@ def test_request_file_error_retains_every_row_and_original_cause():
 
 def test_live_batch_overflow_cannot_accept_an_earlier_verified_response():
     first, second = row10("first"), row10("second")
-    first["cell_results"] = {}
+    first["cell_results"] = {"binding_contract": 1}
     reply = {
         "row_sha256": receipt._evidence_row_digest(first), "status": "verified",
         "full_validation_refusal": None, "backend_parity_matches": [],
-        "evidence": {"cell_results": {}, "test_results": {}, "observations": [],
+        "evidence": {"cell_results": first["cell_results"], "test_results": {}, "observations": [],
                      "missing_cells": [], "missing_backend_parity": [],
                      "missing_test_producers": [], "full_test_results": True,
                      "full_backend_parity": False},

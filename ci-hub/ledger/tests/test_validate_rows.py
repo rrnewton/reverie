@@ -1148,6 +1148,61 @@ def test_schema6_artifact_digest_mismatch_is_refused_before_spool(tmp_path: Path
     assert not validate_rows.live_spool_dir(tmp_path).exists()
 
 
+@pytest.mark.parametrize("prefix,expected_status", [
+    ("", "legacy-unbound"), ("selected-attempt-v1/", "verified"),
+])
+@pytest.mark.parametrize("case", ["matched", "reference-diverged", "cross-diverged-then-matched"])
+def test_schema10_ledger_roundtrip_retains_capability_and_original_failures(tmp_path, monkeypatch, prefix, expected_status, case):
+    # Read the exact producer exports, then exercise the real native verifier
+    # on both sides of the ordinary ledger event serialization. No parser mock.
+    receipt = validate_rows.qualifying_receipt
+    fixtures = HERE.parent.parent / "validate" / "tests" / "fixtures" / "schema10"
+    source = json.loads((fixtures / f"{prefix}{case}-row.json").read_bytes())
+    # Synthetic envelope only: this exercises event storage, not admission of
+    # a production validation run or a claim that the fabricated SHA was built.
+    source.update(
+        repo="hermit", producer="synthetic-parser-control", host="fixture",
+        cwd=str(tmp_path / "hermit"), started_at="2026-09-16T00:00:00Z",
+        finished_at="2026-09-16T00:01:00Z",
+        result="pass" if case == "matched" else "fail",
+    )
+    for reference, suffix in (
+        (source["constructed_plan"], "plan.json"),
+        (source["cell_results"]["artifact"], "cells.jsonl"),
+        (source["test_results"]["artifact"], "tests.jsonl"),
+    ):
+        target = tmp_path / reference["path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        raw = (fixtures / f"{prefix}{case}-{suffix}").read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == reference["sha256"]
+        target.write_bytes(raw)
+    predicate = copy.deepcopy(receipt.active())
+    predicate["cell_results"]["supported_schema_max"] = 10
+    monkeypatch.setattr(receipt, "active", lambda: predicate)
+    with receipt.validation_evidence_batch([source], artifact_root=tmp_path, predicate=predicate):
+        checked = receipt.validation_evidence(source)
+        assert checked.status == expected_status
+        validate_rows._require_cell_results(source, tmp_path)
+        observations = copy.deepcopy(checked.evidence["observations"])
+    validate_rows._bind_comparison_failures(source, observations)
+    event = validate_rows._event_for_row(source, tmp_path)
+    write_events(tmp_path, event)
+    restored = validate_rows.rows(root=tmp_path)
+    assert len(restored) == 1
+    restored = restored[0]
+    assert restored["cell_results"] == source["cell_results"]
+    assert restored["failed_cells"] == source["failed_cells"]
+    assert restored["failed_comparisons"] == source["failed_comparisons"]
+    assert len(restored["failed_comparisons"]) == {
+        "matched": 0, "reference-diverged": 2, "cross-diverged-then-matched": 1,
+    }[case]
+    with receipt.validation_evidence_batch([restored], artifact_root=tmp_path, predicate=predicate):
+        checked = receipt.validation_evidence(restored)
+        assert checked.status == expected_status
+        assert checked.evidence["observations"] == observations
+        validate_rows._require_cell_results(restored, tmp_path)
+
+
 def test_schema5_cannot_claim_cell_results(tmp_path: Path):
     source = with_cell_results(row(tmp_path), tmp_path)
     source["schema_version"] = 5

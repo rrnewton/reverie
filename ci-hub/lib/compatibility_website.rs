@@ -1448,6 +1448,8 @@ fn project_cell_result(cell: &CellResult) -> Result<Value, String> {
         mode,
         backend,
         cell_verdict,
+        // The schema-6–8 projection does not publish binding authority.
+        evidence_binding: _,
     } = cell;
     let identity = CellIdentity {
         lane: lane.clone(),
