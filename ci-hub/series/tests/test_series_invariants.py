@@ -2875,6 +2875,185 @@ class CellResultProjection(unittest.TestCase):
                 self.assertIsNone(rows)
                 self.assertEqual(status, 2)
 
+    def _container_failure_cell(self, disposition=None, *, run="run1", mode="verify"):
+        reason = {
+            "kind": "container_failed", "run": run,
+            "disposition": disposition if disposition is not None else {
+                "kind": "signaled", "signal": 14, "core_dumped": False,
+            },
+        }
+        cell = self._comparison_no_result_cell(reason, mode=mode)
+        cell.update(outcome="FAIL", result="crash-error", failure_class="product_failure")
+        cell["attempts"][0].update(
+            outcome="FAIL", status=125, signal=None, timed_out=False, error_kind=None,
+        )
+        return cell
+
+    def test_container_failures_retain_product_classification_and_report_identity(self):
+        dispositions = [
+            {"kind": "exited", "code": code} for code in (0, 101, 128, 193, 255)
+        ] + [
+            {"kind": "signaled", "signal": 14, "core_dumped": False},
+            {"kind": "signaled", "signal": 64, "core_dumped": True},
+        ]
+        for producer in ("validate", "pressure-test"):
+            for run in ("run1", "run2"):
+                for disposition in dispositions:
+                    with self.subTest(producer=producer, run=run, disposition=disposition):
+                        cell = self._container_failure_cell(disposition, run=run)
+                        if producer == "pressure-test":
+                            cell["run_index"] = 0
+                        original = json.dumps(cell, sort_keys=True)
+                        rows = self._project([cell], producer=producer)
+                        self.assertEqual(len(rows), 1)
+                        payload = rows[0]["series"]
+                        self.assertEqual(
+                            (payload["outcome"], payload["result"], payload["failure_class"]),
+                            ("errored", "crash-error", "product_failure"),
+                        )
+                        evidence = payload["no_verdict_evidence"]
+                        retained = evidence["attempts"][0]
+                        self.assertEqual(retained["kind"], "container_failed")
+                        self.assertEqual(retained["attempt_outcome"], "FAIL")
+                        self.assertEqual(retained["disposition"], "no_result")
+                        self.assertEqual(retained["verification_report_sha256"],
+                                         cell["attempts"][0]["verification_report_sha256"])
+                        self.assertEqual(evidence["evidence_sha256"],
+                                         series._cell_result_evidence_sha256(cell))
+                        if producer == "pressure-test":
+                            self.assertEqual(series._pressure_inner_kinds(payload), ["product"])
+                        self.assertEqual(json.dumps(cell, sort_keys=True), original)
+
+    def test_container_failure_rejects_invalid_reason_and_process_evidence(self):
+        bad_dispositions = [
+            {"kind": "exited", "code": code}
+            for code in (-1, 122, 124, 129, 142, 192, 256, True, 1.0, "1")
+        ] + [
+            {"kind": "signaled", "signal": signal, "core_dumped": False}
+            for signal in (0, 65, True, 14.0, "14")
+        ] + [
+            {"kind": "signaled", "signal": 14},
+            {"kind": "signaled", "signal": 14, "core_dumped": 0},
+            {"kind": "exited", "code": 1, "signal": 14},
+            {"kind": "stopped", "signal": 14},
+            None,
+        ]
+        for disposition in bad_dispositions:
+            with self.subTest(disposition=disposition):
+                cell = self._container_failure_cell()
+                report = json.loads(cell["attempts"][0]["verification_report"])
+                report["no_result_reason"]["disposition"] = disposition
+                self._replace_comparison_report(cell["attempts"][0], report)
+                with self.assertRaises(series.MalformedRow):
+                    self._project([self._validate_cell(1), cell], producer="validate")
+        for field, value in (
+            ("run", "run3"), ("run", []), ("extra", True),
+        ):
+            cell = self._container_failure_cell()
+            report = json.loads(cell["attempts"][0]["verification_report"])
+            report["no_result_reason"][field] = value
+            self._replace_comparison_report(cell["attempts"][0], report)
+            with self.subTest(reason_field=field, value=value), self.assertRaises(series.MalformedRow):
+                self._project([cell], producer="validate")
+        for field, value in (
+            ("outcome", "ERROR"), ("status", 0), ("status", 124),
+            ("status", True), ("signal", 14), ("timed_out", True),
+            ("error_kind", "incomplete-verification-evidence"),
+        ):
+            cell = self._container_failure_cell()
+            cell["attempts"][0][field] = value
+            with self.subTest(attempt_field=field, value=value), self.assertRaises(series.MalformedRow):
+                self._project([cell], producer="validate")
+
+    def test_container_failure_rejects_missing_duplicate_and_contradictory_report_fields(self):
+        template = json.loads(self._container_failure_cell()["attempts"][0]["verification_report"])
+        required = (
+            "verified", "bitwise_parity", "verdict", "infrastructure_error",
+            "comparison", "no_result_reason", "compared_log_messages", "guest_exit_code",
+            "guest_signal", "first_divergent_scheduler_turn", "first_divergent_virtual_nanoseconds",
+            "first_divergent_record", "first_divergent_syscall", "first_divergent_left_message",
+            "first_divergent_right_message",
+        )
+        for field in required:
+            cell = self._container_failure_cell()
+            report = dict(template)
+            del report[field]
+            self._replace_comparison_report(cell["attempts"][0], report)
+            with self.subTest(missing=field), self.assertRaises(series.MalformedRow):
+                self._project([cell], producer="validate")
+        for field in ("guest_exit_code", "guest_signal", "compared_outputs", "runtime",
+                      "dbt_counted_branches", "comparison", "first_divergent_record"):
+            cell = self._container_failure_cell()
+            report = dict(template)
+            report[field] = 1
+            self._replace_comparison_report(cell["attempts"][0], report)
+            with self.subTest(populated=field), self.assertRaises(series.MalformedRow):
+                self._project([cell], producer="validate")
+        for needle, replacement in (
+            ('"run":"run1"', '"run":"run2","run":"run1"'),
+            ('"signal":14', '"signal":14,"signal":14'),
+            ('"core_dumped":false', '"core_dumped":false,"core_dumped":false'),
+        ):
+            cell = self._container_failure_cell()
+            attempt = cell["attempts"][0]
+            raw = attempt["verification_report"]
+            self.assertIn(needle, raw)
+            attempt["verification_report"] = raw.replace(needle, replacement, 1)
+            attempt["verification_report_sha256"] = hashlib.sha256(
+                attempt["verification_report"].encode()
+            ).hexdigest()
+            with self.subTest(duplicate=needle), self.assertRaisesRegex(series.MalformedRow, "duplicate"):
+                self._project([cell], producer="validate")
+
+    def test_pressure_retains_a_container_crash_before_a_successful_retry(self):
+        cell = self._container_failure_cell()
+        cell["run_index"] = 0
+        cell.update(outcome="PASS", result="pass", failure_class=None)
+        recovered = self._attempt()
+        recovered["index"] = "2"
+        cell["attempts"].append(recovered)
+        rows = self._project([cell])
+        self.assertEqual(rows[0]["series"]["outcome"], "passed")
+        self.assertEqual(series._pressure_inner_kinds(rows[0]["series"]), ["product", "pass"])
+
+    def test_container_failures_cannot_qualify_a_pressure_campaign(self):
+        for mode in ("verify", "replay", "chaos"):
+            with self.subTest(mode=mode):
+                cells = []
+                for repetition in range(1, 11):
+                    cell = self._container_failure_cell(mode=mode)
+                    cell["run_index"] = repetition
+                    cells.append(cell)
+                rows = self._project(cells)
+                name = series._cell_name(cells[0])
+                result = series.classify_pressure_sample(rows, [name], "pressure-one")[name]
+                self.assertEqual(result["classification"], "confirmed-failing")
+                self.assertEqual(result["terminal_product_failures"], 10)
+                self.assertEqual(result["no_results"], 0)
+                self.assertEqual(result["qualifying_passes"], 0)
+                self.assertFalse(result["promotion_candidate"])
+
+    def test_container_failure_keeps_report_extensions_but_refuses_non_json_and_bad_hash(self):
+        cell = self._container_failure_cell()
+        attempt = cell["attempts"][0]
+        report = json.loads(attempt["verification_report"])
+        report["future_optional_field"] = {"detail": "still a failed container"}
+        self._replace_comparison_report(attempt, report)
+        self.assertEqual(self._project([cell], producer="validate")[0]["series"]["outcome"],
+                         "errored")
+        valid_raw = attempt["verification_report"]
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            attempt["verification_report"] = valid_raw[:-1] + ',"invalid":' + constant + '}'
+            attempt["verification_report_sha256"] = hashlib.sha256(
+                attempt["verification_report"].encode()
+            ).hexdigest()
+            with self.subTest(constant=constant), self.assertRaisesRegex(series.MalformedRow, "non-JSON"):
+                self._project([cell], producer="validate")
+        attempt["verification_report"] = valid_raw
+        attempt["verification_report_sha256"] = "f" * 64
+        with self.assertRaisesRegex(series.MalformedRow, "hash mismatch"):
+            self._project([cell], producer="validate")
+
     def test_unspecified_and_refused_comparisons_preserve_evidence(self):
         detail = "  second log exceeded its bound: left\\right\nπ  "
         for reason, expected_kind in (

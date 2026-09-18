@@ -593,7 +593,9 @@ def _pressure_inner_kinds(payload: dict) -> list[str] | None:
                 kind = "product"
             elif verdict == "infrastructure_error":
                 kind = "infrastructure"
-            elif verdict == "no_result" and comparison.get("no_result_kind") == "first_run_rejected":
+            elif verdict == "no_result" and comparison.get("no_result_kind") in {
+                "first_run_rejected", "container_failed",
+            }:
                 kind = "product"
             else:
                 kind = "no_result"
@@ -2430,6 +2432,83 @@ def _has_nonzero_process_disposition(attempt: dict) -> bool:
     )
 
 
+def _validate_container_failed_report(raw: str, attempt: dict, index: int) -> None:
+    """Match the shared report's closed container-disposition contract."""
+    def unique_fields(pairs):
+        fields = {}
+        for name, value in pairs:
+            if name in fields:
+                raise MalformedRow(
+                    f"cell attempt {index} container_failed report has duplicate field {name!r}"
+                )
+            fields[name] = value
+        return fields
+
+    def invalid_constant(value):
+        raise MalformedRow(
+            f"cell attempt {index} container_failed report has non-JSON constant {value}"
+        )
+
+    report = json.loads(raw, object_pairs_hook=unique_fields,
+                        parse_constant=invalid_constant)
+    required = {
+        "verified", "bitwise_parity", "verdict", "infrastructure_error",
+        "comparison", "no_result_reason", "compared_log_messages",
+        "guest_exit_code", "guest_signal", "first_divergent_scheduler_turn",
+        "first_divergent_virtual_nanoseconds", "first_divergent_record",
+        "first_divergent_syscall", "first_divergent_left_message",
+        "first_divergent_right_message",
+    }
+    if not required <= report.keys():
+        raise MalformedRow(
+            f"cell attempt {index} container_failed report omits current producer fields"
+        )
+    reason = report["no_result_reason"]
+    if (
+        not isinstance(reason, dict)
+        or set(reason) != {"kind", "run", "disposition"}
+        or reason["kind"] != "container_failed"
+        or not isinstance(reason["run"], str)
+        or reason["run"] not in {"run1", "run2"}
+    ):
+        raise MalformedRow(f"cell attempt {index} has invalid container_failed reason")
+    disposition = reason["disposition"]
+    valid = False
+    if isinstance(disposition, dict):
+        if set(disposition) == {"kind", "code"} and disposition["kind"] == "exited":
+            code = disposition["code"]
+            valid = (
+                type(code) is int and 0 <= code <= 255
+                and code not in {122, 124} and not 129 <= code <= 192
+            )
+        elif (
+            set(disposition) == {"kind", "signal", "core_dumped"}
+            and disposition["kind"] == "signaled"
+        ):
+            signal = disposition["signal"]
+            valid = (
+                type(signal) is int and 1 <= signal <= 64
+                and type(disposition["core_dumped"]) is bool
+            )
+    if not valid:
+        raise MalformedRow(f"cell attempt {index} has invalid container_failed disposition")
+    if (
+        any(report.get(field) is not None for field in (
+            "guest_exit_code", "guest_signal", "compared_outputs", "runtime",
+            "dbt_counted_branches",
+        ))
+        or attempt.get("outcome") != "FAIL"
+        or type(attempt.get("status")) is not int
+        or attempt["status"] != 125
+        or attempt.get("signal") is not None
+        or attempt.get("timed_out") is not False
+        or attempt.get("error_kind") is not None
+    ):
+        raise MalformedRow(
+            f"cell attempt {index} container_failed disposition is inconsistent"
+        )
+
+
 def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
     """Return matched/diverged/no_result/timeout/errored for one typed attempt."""
     if not isinstance(attempt, dict):
@@ -2672,6 +2751,8 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
                 raise MalformedRow(
                     f"cell attempt {index} comparison_refused detail or error kind is incomplete"
                 )
+        elif kind == "container_failed":
+            _validate_container_failed_report(raw, attempt, index)
         elif kind == "not_run":
             if (
                 report.get("guest_exit_code") is not None
