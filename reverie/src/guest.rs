@@ -318,7 +318,9 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// operation or injection. KVM additionally requires its existing sole-live-
     /// leader boundary, no prior injected execution, and no active observation
     /// or checked-out stack. Ordinary files, pipes, sockets and uncaptured host
-    /// streams are not admitted. Unsupported backends return `None`.
+    /// streams are not admitted by this query. The query does not change signal
+    /// publication admission; callers must act on `None` themselves. Unsupported
+    /// backends return `None`.
     fn captured_write_signal_site(
         &self,
         _call: crate::syscalls::Write,

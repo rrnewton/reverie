@@ -58,6 +58,7 @@ int main(int argc, char **argv) {
   errno = 0;
   long result = syscall(mode == 9 ? SYS_getpid : SYS_write,
                         raw_fd, data, length, 0x63617077UL, mode, 0x9876UL);
+  // Mode 17 records KVM scalar-write EBADF; Linux uses the low 32 fd bits.
   if (mode == 6 || mode == 17) {
     if (result != -1 || errno != EBADF) return 9;
   } else if (mode == 13) {
