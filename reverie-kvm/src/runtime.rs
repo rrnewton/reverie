@@ -73,6 +73,8 @@ const STACK_CAPACITY: usize = TOOL_STACK_SIZE as usize;
 pub mod native_test_support;
 
 enum HandlerSignal {
+    ParkedFatal(reverie::PreparedSignalToken),
+    ParkedCancelled(reverie::ParkedSignalFailureContext),
     ThreadCancelled,
     TailInjected {
         result: std::result::Result<i64, Errno>,
@@ -254,6 +256,12 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
 
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64;
 
+    /// Reserve backend bookkeeping before executing an injected syscall.
+    /// Refusal is terminal backend failure, never an emulated syscall errno.
+    fn prepare_signal_effects(&mut self) -> std::result::Result<(), Errno> {
+        Ok(())
+    }
+
     fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
         None
     }
@@ -277,6 +285,79 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
             kind: reverie::ProcessAlarmSignalErrorKind::Unsupported,
             errno: Errno::ENOSYS,
         }
+    }
+
+    fn signal_task_identity(&self) -> Option<reverie::SignalTaskIdentity> {
+        None
+    }
+    fn begin_signal_callback(&mut self) -> Option<reverie::CallbackSignalSite> {
+        None
+    }
+    fn parked_signal_site(&self) -> Option<reverie::CallbackSignalSite> {
+        None
+    }
+    fn set_signal_guard(&mut self, _guard: SignalGuard) -> SignalGuard {
+        SignalGuard::Ordinary
+    }
+    fn admit_signal_observation(
+        &mut self,
+        _site: reverie::CallbackSignalSite,
+        _lease: reverie::ParkedObservationLease,
+    ) -> std::result::Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn signal_failure_context_is_current(
+        &self,
+        _context: reverie::ParkedSignalFailureContext,
+    ) -> bool {
+        false
+    }
+    fn signal_dequeue_front(&self) -> Option<reverie::SignalDequeue> {
+        None
+    }
+    fn poll_signal_dequeue(
+        &self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<Option<reverie::SignalDequeue>>> {
+        std::task::Poll::Ready(Ok(self.signal_dequeue_front()))
+    }
+    fn acknowledge_signal_dequeue(
+        &mut self,
+        _effect: reverie::SignalDequeue,
+    ) -> std::result::Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn retain_signal_dequeue(&mut self, _effect: reverie::SignalDequeue) {}
+    fn retain_signal_effect_result(&mut self, _raw: Option<i64>) {}
+    fn signal_failure_context(&self) -> Option<reverie::ParkedSignalFailureContext> {
+        None
+    }
+    fn with_signal_effects(&mut self, error: Error, _raw: Option<i64>) -> Error {
+        error
+    }
+    fn take_signal_for_observation(&mut self) -> std::result::Result<Option<PendingSignal>, Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn filter_signal_replacement(
+        &mut self,
+        _event: SignalEvent,
+        _domain: crate::executor::PendingSignalDomain,
+    ) -> std::result::Result<Option<PendingSignal>, Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn signal_disposition(&self, _signal: i32) -> crate::executor::SignalDisposition {
+        crate::executor::SignalDisposition::Terminate
+    }
+    fn reserve_signal_delivery(
+        &mut self,
+        _pending: PendingSignal,
+        _id: reverie::DequeueId,
+        _fatal: bool,
+    ) -> std::result::Result<reverie::PreparedSignalToken, Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn prepared_signal_is_fatal(&self, _token: reverie::PreparedSignalToken) -> bool {
+        false
     }
 
     fn ordinary_injection_allowed(&self, _request: &SyscallRequest) -> bool {
@@ -439,6 +520,13 @@ fn signal_request_requires_return_frame(request: &SyscallRequest) -> bool {
     signal != 0
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SignalGuard {
+    Ordinary,
+    Observation,
+    DequeueNotification,
+}
+
 struct StaticElfSyscallExecutor<'a> {
     backend: &'a mut KvmBackend,
     executor: &'a mut ElfExecutor,
@@ -446,6 +534,8 @@ struct StaticElfSyscallExecutor<'a> {
     process_context: ProcessExecutionContext,
     last_result: Option<i64>,
     process_completed: &'a mut bool,
+    callback_site: Option<reverie::CallbackSignalSite>,
+    signal_guard: SignalGuard,
 }
 
 impl<T> GuestSyscallExecutor<T> for StaticElfSyscallExecutor<'_>
@@ -467,7 +557,7 @@ where
     }
 
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
-        if !self.process_context.ordinary_injection_allowed(request) {
+        if !self.signal_injection_allowed(request) {
             // KvmGuest performs the same check before dispatch. Keep the
             // production executor fail-closed as well: a future Guest caller
             // must not execute an irreversible transition and only then learn
@@ -504,7 +594,14 @@ where
         result
     }
 
+    fn prepare_signal_effects(&mut self) -> std::result::Result<(), Errno> {
+        self.executor.reserve_signal_effects(64)
+    }
+
     fn defer_signal_delivery(&mut self, event: SignalEvent) -> std::result::Result<(), Errno> {
+        if self.signal_guard == SignalGuard::DequeueNotification {
+            return Err(Errno::ENOSYS);
+        }
         if self.process_context.has_resumable_signal_boundary() {
             self.executor.defer_signal_delivery(event)
         } else {
@@ -513,6 +610,12 @@ where
     }
 
     fn queue_child_exit_signal(&mut self, event: SignalEvent) -> reverie::ChildExitSignalOutcome {
+        if self.signal_guard == SignalGuard::DequeueNotification {
+            return reverie::ChildExitSignalOutcome::RejectedBeforeCommit {
+                kind: reverie::ChildExitSignalErrorKind::Unsupported,
+                errno: Errno::ENOSYS,
+            };
+        }
         if self.process_context.has_resumable_signal_boundary() {
             self.executor.queue_child_exit_signal(event)
         } else {
@@ -527,6 +630,20 @@ where
         &mut self,
         event: SignalEvent,
     ) -> reverie::ProcessAlarmSignalOutcome {
+        if self.signal_guard == SignalGuard::DequeueNotification {
+            return reverie::ProcessAlarmSignalOutcome::RejectedBeforeCommit {
+                kind: reverie::ProcessAlarmSignalErrorKind::Unsupported,
+                errno: Errno::ENOSYS,
+            };
+        }
+        // Opted-in timer Tools require the exact original boundary and ledger.
+        // Preserve the existing primitive contexts for unopted Tools.
+        if self.executor.signal_dequeues_enabled() && self.current_parked_site().is_none() {
+            return reverie::ProcessAlarmSignalOutcome::RejectedBeforeCommit {
+                kind: reverie::ProcessAlarmSignalErrorKind::Unsupported,
+                errno: Errno::ENOSYS,
+            };
+        }
         // Process actions may consume and restore this transport. This bounded
         // primitive requires the callback's original, unconsumed boundary.
         if *self.process_completed {
@@ -536,7 +653,17 @@ where
             };
         }
         if self.process_context.has_resumable_signal_boundary() {
-            self.executor.queue_process_alarm_signal(event)
+            if let Some(site) = self.current_parked_site()
+                && let Err(errno) = self.executor.retain_parked_effects(site)
+            {
+                return reverie::ProcessAlarmSignalOutcome::RejectedBeforeCommit {
+                    kind: reverie::ProcessAlarmSignalErrorKind::Backend,
+                    errno,
+                };
+            }
+            let outcome = self.executor.queue_process_alarm_signal(event);
+            self.executor.retain_signal_publication(outcome);
+            outcome
         } else {
             reverie::ProcessAlarmSignalOutcome::RejectedBeforeCommit {
                 kind: reverie::ProcessAlarmSignalErrorKind::Unsupported,
@@ -545,12 +672,101 @@ where
         }
     }
 
+    fn signal_task_identity(&self) -> Option<reverie::SignalTaskIdentity> {
+        self.executor.signal_task_identity()
+    }
+    fn begin_signal_callback(&mut self) -> Option<reverie::CallbackSignalSite> {
+        self.callback_site = self.executor.begin_signal_callback();
+        self.current_parked_site()
+    }
+    fn parked_signal_site(&self) -> Option<reverie::CallbackSignalSite> {
+        self.current_parked_site()
+    }
+    fn set_signal_guard(&mut self, guard: SignalGuard) -> SignalGuard {
+        std::mem::replace(&mut self.signal_guard, guard)
+    }
+    fn admit_signal_observation(
+        &mut self,
+        site: reverie::CallbackSignalSite,
+        lease: reverie::ParkedObservationLease,
+    ) -> std::result::Result<(), Errno> {
+        self.executor.admit_signal_observation(site, lease)
+    }
+    fn signal_failure_context_is_current(
+        &self,
+        context: reverie::ParkedSignalFailureContext,
+    ) -> bool {
+        self.callback_site == Some(context.site)
+            && !*self.process_completed
+            && self.executor.signal_failure_context_is_current(context)
+    }
+    fn signal_dequeue_front(&self) -> Option<reverie::SignalDequeue> {
+        self.executor.signal_dequeue_front()
+    }
+    fn poll_signal_dequeue(
+        &self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<Option<reverie::SignalDequeue>>> {
+        self.executor.poll_signal_dequeue(cx)
+    }
+    fn retain_signal_dequeue(&mut self, effect: reverie::SignalDequeue) {
+        self.executor.retain_signal_dequeue(effect);
+    }
+    fn retain_signal_effect_result(&mut self, raw: Option<i64>) {
+        self.executor.retain_signal_effect_result(raw);
+    }
+    fn acknowledge_signal_dequeue(
+        &mut self,
+        effect: reverie::SignalDequeue,
+    ) -> std::result::Result<(), Errno> {
+        self.executor.acknowledge_signal_dequeue(effect)?;
+        self.executor
+            .mark_signal_dequeue_acknowledged(effect.sequence);
+        Ok(())
+    }
+    fn signal_failure_context(&self) -> Option<reverie::ParkedSignalFailureContext> {
+        self.executor.signal_failure_context()
+    }
+    fn with_signal_effects(&mut self, error: Error, raw: Option<i64>) -> Error {
+        self.executor.with_signal_effects(error, raw)
+    }
+    fn take_signal_for_observation(&mut self) -> std::result::Result<Option<PendingSignal>, Errno> {
+        self.executor.reserve_signal_effects(1)?;
+        self.executor.take_pending_signal_for_delivery()
+    }
+    fn filter_signal_replacement(
+        &mut self,
+        event: SignalEvent,
+        domain: crate::executor::PendingSignalDomain,
+    ) -> std::result::Result<Option<PendingSignal>, Errno> {
+        self.executor
+            .prepare_filtered_signal_delivery(event, domain)
+    }
+    fn signal_disposition(&self, signal: i32) -> crate::executor::SignalDisposition {
+        self.executor.signal_disposition(signal)
+    }
+    fn reserve_signal_delivery(
+        &mut self,
+        pending: PendingSignal,
+        id: reverie::DequeueId,
+        fatal: bool,
+    ) -> std::result::Result<reverie::PreparedSignalToken, Errno> {
+        self.executor.reserve_signal_delivery(pending, id, fatal)
+    }
+    fn prepared_signal_is_fatal(&self, token: reverie::PreparedSignalToken) -> bool {
+        self.callback_site == Some(token.site)
+            && !*self.process_completed
+            && self.executor.prepared_signal_is_fatal(token)
+    }
+
     fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
-        self.process_context.ordinary_injection_allowed(request)
+        self.signal_injection_allowed(request)
     }
 
     fn tail_injection_allowed(&self) -> bool {
-        self.process_context.tail_injection_allowed()
+        self.signal_guard == SignalGuard::Ordinary
+            && !self.executor.has_prepared_signal()
+            && self.process_context.tail_injection_allowed()
     }
 
     fn parent_pid(&self) -> Option<Pid> {
@@ -678,6 +894,8 @@ where
     }
 }
 
+include!("parked_signal_runtime.rs");
+
 struct KvmGlobal<'a, G: GlobalTool> {
     // The scheduler derives the requesting DetTid from the RPC sender, so this
     // is the issuing thread's tid (equal to the pid for a process leader,
@@ -715,6 +933,8 @@ struct KvmGuest<'a, T: Tool> {
     pending_child_starts: SharedChildStarts,
     tool_stack_top: u64,
     stack_checked_out: Arc<AtomicBool>,
+    observation_lease: Option<reverie::ParkedObservationLease>,
+    notifying_dequeue: bool,
 }
 
 impl<'a, T: Tool> KvmGuest<'a, T> {
@@ -737,6 +957,7 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
         tool_stack_top: u64,
         stack_checked_out: Arc<AtomicBool>,
     ) -> Self {
+        executor.begin_signal_callback();
         Self {
             pid,
             tid,
@@ -754,6 +975,8 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
             pending_child_starts,
             tool_stack_top,
             stack_checked_out,
+            observation_lease: None,
+            notifying_dequeue: false,
         }
     }
 
@@ -771,6 +994,9 @@ impl<T: Tool> GlobalRPC<T::GlobalState> for KvmGuest<'_, T> {
         &self,
         message: <T::GlobalState as GlobalTool>::Request,
     ) -> <T::GlobalState as GlobalTool>::Response {
+        if self.notifying_dequeue {
+            return self.global_state.receive_rpc(self.tid, message).await;
+        }
         // Route by the issuing thread's tid: the scheduler keys each thread's
         // turn (and global-time accounting) on the RPC sender. For a
         // CLONE_THREAD worker this is the worker tid, not the thread-group pid.
@@ -874,6 +1100,55 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         self.executor.queue_process_alarm_signal(event)
     }
 
+    fn signal_task_identity(&self) -> Option<reverie::SignalTaskIdentity> {
+        self.executor.signal_task_identity()
+    }
+    fn parked_signal_site(&self) -> Option<reverie::CallbackSignalSite> {
+        if self.notifying_dequeue || self.stack_checked_out.load(Ordering::Acquire) {
+            None
+        } else {
+            self.executor.parked_signal_site()
+        }
+    }
+    fn signal_observation_lease(&self) -> Option<reverie::ParkedObservationLease> {
+        self.observation_lease
+    }
+    async fn observe_parked_signal(
+        &mut self,
+        site: reverie::CallbackSignalSite,
+        lease: reverie::ParkedObservationLease,
+    ) -> std::result::Result<reverie::ParkedSignalObservation, reverie::SignalObservationFailure>
+    {
+        self.observe_parked_signal_impl(site, lease).await
+    }
+    fn parked_signal_failure_context(&self) -> Option<reverie::ParkedSignalFailureContext> {
+        self.executor.signal_failure_context()
+    }
+    async fn terminate_from_parked_signal(
+        &mut self,
+        selection: reverie::PreparedSignalToken,
+    ) -> std::result::Result<Never, reverie::SignalObservationFailure> {
+        if !self.executor.prepared_signal_is_fatal(selection) {
+            return Err(reverie::SignalObservationFailure::RejectedBeforeRemoval {
+                errno: Errno::EINVAL,
+            });
+        }
+        self.signal_handler(HandlerSignal::ParkedFatal(selection));
+        std::future::pending().await
+    }
+    async fn cancel_parked_signal(
+        &mut self,
+        context: reverie::ParkedSignalFailureContext,
+    ) -> std::result::Result<Never, reverie::SignalObservationFailure> {
+        if !self.executor.signal_failure_context_is_current(context) {
+            return Err(reverie::SignalObservationFailure::RejectedBeforeRemoval {
+                errno: Errno::EINVAL,
+            });
+        }
+        self.signal_handler(HandlerSignal::ParkedCancelled(context));
+        std::future::pending().await
+    }
+
     async fn stack(&mut self) -> Self::Stack {
         KvmStack::new(
             self.memory.clone(),
@@ -899,7 +1174,19 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         {
             return Err(Errno::ENOSYS);
         }
-        let mut result = raw_to_result(self.executor.execute(&request, &self.memory));
+        if let Err(errno) = self.executor.prepare_signal_effects() {
+            let error = self
+                .executor
+                .with_signal_effects(Error::Reverie(errno.into()), None);
+            self.signal_handler(HandlerSignal::RuntimeError(error));
+            return std::future::pending().await;
+        }
+        let raw = self.executor.execute(&request, &self.memory);
+        if let Err(error) = self.complete_signal_effects(Some(raw)).await {
+            self.signal_handler(HandlerSignal::RuntimeError(error));
+            return std::future::pending().await;
+        }
+        let mut result = raw_to_result(raw);
         if result.is_ok() {
             let context = ToolContext {
                 pid: self.pid,
@@ -959,7 +1246,18 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     }
 
     async fn cancel_current_thread(&mut self) -> Never {
-        self.signal_handler(HandlerSignal::ThreadCancelled);
+        if let Some(context) = self.executor.signal_failure_context() {
+            self.signal_handler(HandlerSignal::ParkedCancelled(context));
+            return std::future::pending().await;
+        }
+        if self.notifying_dequeue {
+            // A consuming notification cannot turn an irreversible removal
+            // into a successful thread cancellation, even outside a parked wait.
+            let error = self.executor.with_signal_effects(Error::RunAborted, None);
+            self.signal_handler(HandlerSignal::RuntimeError(error));
+        } else {
+            self.signal_handler(HandlerSignal::ThreadCancelled);
+        }
         std::future::pending().await
     }
 
@@ -1160,6 +1458,8 @@ impl MemoryAccess for KvmStack {
 }
 
 enum HandlerOutcome<T> {
+    ParkedFatal(reverie::PreparedSignalToken),
+    ParkedCancelled(reverie::ParkedSignalFailureContext),
     Returned(T),
     RunFailed,
     ThreadCancelled,
@@ -1183,15 +1483,26 @@ async fn drive_handler<T>(
     pending_child_starts: SharedChildStarts,
     failure: impl Future<Output = ()>,
 ) -> HandlerOutcome<T> {
+    // The callback may already have moved irreversible effects into this
+    // terminal error. Failure still wins over ordinary values/child starts,
+    // but must not replace the owned error with an empty cancellation marker.
+    let terminal = || match handler_signal
+        .lock()
+        .expect("KVM handler signal lock poisoned")
+        .take()
+    {
+        Some(HandlerSignal::RuntimeError(error)) => HandlerOutcome::RuntimeError(error),
+        _ => HandlerOutcome::RunFailed,
+    };
     let mut future = pin!(future);
     let mut failure = pin!(failure);
     poll_fn(|context| {
         if failure.as_mut().poll(context).is_ready() {
-            return Poll::Ready(HandlerOutcome::RunFailed);
+            return Poll::Ready(terminal());
         }
         let result = future.as_mut().poll(context);
         if failure.as_mut().poll(context).is_ready() {
-            return Poll::Ready(HandlerOutcome::RunFailed);
+            return Poll::Ready(terminal());
         }
         // A callback can select another ready future after an operation records
         // a nonlocal result. Consume that result before accepting either a
@@ -1201,6 +1512,12 @@ async fn drive_handler<T>(
             .expect("KVM handler signal lock poisoned")
             .take();
         match handler_signal {
+            Some(HandlerSignal::ParkedFatal(selection)) => {
+                return Poll::Ready(HandlerOutcome::ParkedFatal(selection));
+            }
+            Some(HandlerSignal::ParkedCancelled(context)) => {
+                return Poll::Ready(HandlerOutcome::ParkedCancelled(context));
+            }
             Some(HandlerSignal::ThreadCancelled) => {
                 return Poll::Ready(HandlerOutcome::ThreadCancelled);
             }
@@ -1311,6 +1628,8 @@ where
                 executor,
                 memory: memory.clone(),
                 process_context: ProcessExecutionContext::Lifecycle,
+                callback_site: None,
+                signal_guard: SignalGuard::Ordinary,
                 last_result: None,
                 process_completed: &mut _process_completed,
             };
@@ -1355,6 +1674,11 @@ where
                     executor,
                     &pending_child_starts,
                     Error::RunAborted,
+                ));
+            }
+            HandlerOutcome::ParkedFatal(_) | HandlerOutcome::ParkedCancelled(_) => {
+                return Err(Error::UnexpectedVcpuExit(
+                    "parked outcome outside its original syscall callback".to_owned(),
                 ));
             }
             HandlerOutcome::RuntimeError(error) => return Err(error),
@@ -1441,6 +1765,8 @@ where
             executor,
             memory: memory.clone(),
             process_context: ProcessExecutionContext::InitialExec(request),
+            callback_site: None,
+            signal_guard: SignalGuard::Ordinary,
             last_result: None,
             process_completed: &mut _process_completed,
         };
@@ -1502,6 +1828,9 @@ where
             &pending_child_starts,
             Error::RunAborted,
         )),
+        HandlerOutcome::ParkedFatal(_) | HandlerOutcome::ParkedCancelled(_) => Err(
+            Error::UnexpectedVcpuExit("parked outcome during initial exec".to_owned()),
+        ),
         HandlerOutcome::RuntimeError(error) => Err(error),
     }
 }
@@ -1794,6 +2123,7 @@ impl KvmBackend {
             Err(Error::ExecWorkerTeardown(primary)) => (Err(*primary), true),
             outcome => (outcome, false),
         };
+        let outcome = outcome.map_err(|error| executor.with_signal_effects(error, None));
         let outcome = outcome.map_err(|error| self.report_tool_failure("execution", error));
         let natural_exit = outcome
             .as_ref()
@@ -2006,6 +2336,11 @@ impl KvmBackend {
                     return Ok(ExitStatus::SUCCESS);
                 }
                 HandlerOutcome::RunFailed => return Err(Error::RunAborted),
+                HandlerOutcome::ParkedFatal(_) | HandlerOutcome::ParkedCancelled(_) => {
+                    return Err(Error::UnexpectedVcpuExit(
+                        "parked outcome outside its original syscall callback".to_owned(),
+                    ));
+                }
                 HandlerOutcome::RuntimeError(error) => return Err(error),
                 HandlerOutcome::TailInjected { .. } => {}
             }
@@ -2081,6 +2416,13 @@ impl KvmBackend {
                                         return Ok(ExitStatus::SUCCESS);
                                     }
                                     HandlerOutcome::RunFailed => return Err(Error::RunAborted),
+                                    HandlerOutcome::ParkedFatal(_)
+                                    | HandlerOutcome::ParkedCancelled(_) => {
+                                        return Err(Error::UnexpectedVcpuExit(
+                                            "parked outcome outside its original syscall callback"
+                                                .to_owned(),
+                                        ));
+                                    }
                                     HandlerOutcome::RuntimeError(error) => return Err(error),
                                 };
                             }
@@ -2181,6 +2523,17 @@ impl KvmBackend {
         T::GlobalState: 'static,
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
+        // Resolve thread ownership before any CLONE_THREAD worker is created: an
+        // explicit caller override wins, otherwise follow the tool's
+        // `Tool::thread_ownership` (default: Tool-owned "follow children"). This
+        // is why the KVM backend no longer needs the caller to opt threads in.
+        self.resolve_thread_ownership(T::thread_ownership(&config));
+        if T::observe_signal_dequeues(&config) && self.thread_ownership.executes_on_host() {
+            // This combination is known before GlobalState initialization or
+            // consuming the installed image. An uninstrumented worker has no
+            // removing Guest on which to acknowledge its pending-state effects.
+            return Err(Error::SignalObservationRequiresToolThreads);
+        }
         let mut loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
         // Output capture replaces stdout and stderr with the executor's pipes,
         // but an explicitly configured stdin remains the guest's input. Use
@@ -2190,11 +2543,6 @@ impl KvmBackend {
             loaded.stdin = Some(std::fs::File::open("/dev/null")?);
         }
         let pid = Pid::from_raw(self.root_pid);
-        // Resolve thread ownership before any CLONE_THREAD worker is created: an
-        // explicit caller override wins, otherwise follow the tool's
-        // `Tool::thread_ownership` (default: Tool-owned "follow children"). This
-        // is why the KVM backend no longer needs the caller to opt threads in.
-        self.resolve_thread_ownership(T::thread_ownership(&config));
         let global_state = Arc::new(T::GlobalState::init_global_state(&config).await);
         let failure = RunFailure::new(&global_state);
         self.tool_failure = Some(FailureContext::new(failure.clone(), pid, pid));
@@ -2331,16 +2679,33 @@ impl KvmBackend {
         T::GlobalState: 'static,
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
-        let pending = if let Some(fault) = fault {
-            fault.pending()
+        let selected = if let Some(fault) = fault {
+            Ok(Some(fault.pending()))
         } else {
-            let Some(pending) = executor
-                .take_pending_signal_for_delivery()
-                .map_err(|errno| Error::Reverie(errno.into()))?
-            else {
-                return Ok(CallbackOutcome::Completed(None));
-            };
-            pending
+            executor.take_pending_signal_for_delivery()
+        };
+        flush_pending_signal_effects_with_tool(
+            self,
+            executor,
+            pid,
+            tid,
+            tool,
+            memory,
+            auxv,
+            fault.map_or_else(
+                || kvm_registers(registers, syscall_number),
+                PageZeroFault::user_registers,
+            ),
+            thread_state,
+            global_state,
+            config,
+            subscriptions,
+            stack_checked_out,
+            None,
+        )
+        .await?;
+        let Some(pending) = selected.map_err(|errno| Error::Reverie(errno.into()))? else {
+            return Ok(CallbackOutcome::Completed(None));
         };
 
         let handler_signal = Arc::new(Mutex::new(None));
@@ -2366,6 +2731,8 @@ impl KvmBackend {
                 executor,
                 memory: memory.clone(),
                 process_context,
+                callback_site: None,
+                signal_guard: SignalGuard::Ordinary,
                 last_result: None,
                 process_completed: &mut process_completed,
             };
@@ -2418,6 +2785,11 @@ impl KvmBackend {
                     executor,
                     &pending_child_starts,
                     Error::RunAborted,
+                ));
+            }
+            HandlerOutcome::ParkedFatal(_) | HandlerOutcome::ParkedCancelled(_) => {
+                return Err(Error::UnexpectedVcpuExit(
+                    "parked outcome outside its original syscall callback".to_owned(),
                 ));
             }
             HandlerOutcome::RuntimeError(error) => {
@@ -2490,6 +2862,9 @@ impl KvmBackend {
             self.tool_failure = Some(failure.for_thread(tid));
         }
         executor.observe_ignored_signals_with_tool();
+        if T::observe_signal_dequeues(config) {
+            executor.enable_signal_dequeues();
+        }
         let tool_stack_top = self.tool_stack_top();
         let failure_subscription = self.failure_subscription(executor.is_traced_tree_root());
         let mut _registration = None;
@@ -2513,6 +2888,8 @@ impl KvmBackend {
                     executor,
                     memory: memory.clone(),
                     process_context: ProcessExecutionContext::Lifecycle,
+                    callback_site: None,
+                    signal_guard: SignalGuard::Ordinary,
                     last_result: None,
                     process_completed: &mut _process_completed,
                 };
@@ -2550,6 +2927,11 @@ impl KvmBackend {
                 }
                 HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
                 HandlerOutcome::RunFailed => return Err(Error::RunAborted),
+                HandlerOutcome::ParkedFatal(_) | HandlerOutcome::ParkedCancelled(_) => {
+                    return Err(Error::UnexpectedVcpuExit(
+                        "parked outcome outside its original syscall callback".to_owned(),
+                    ));
+                }
                 HandlerOutcome::RuntimeError(error) => return Err(error),
                 HandlerOutcome::TailInjected { .. } => {}
             }
@@ -2900,6 +3282,8 @@ impl KvmBackend {
                                 executor,
                                 memory: memory.clone(),
                                 process_context: ProcessExecutionContext::SyscallBoundary(boundary),
+                                callback_site: None,
+                                signal_guard: SignalGuard::Ordinary,
                                 last_result: None,
                                 process_completed: &mut handler_process_completed,
                             };
@@ -2985,6 +3369,41 @@ impl KvmBackend {
                                 return Ok(self.cancelled_tool_thread_status(executor));
                             }
                             HandlerOutcome::RunFailed => return Err(Error::RunAborted),
+                            HandlerOutcome::ParkedFatal(selection) => {
+                                if !executor.prepared_signal_is_fatal(selection) {
+                                    return Err(Error::UnexpectedVcpuExit(
+                                        "fatal selection identity changed".to_owned(),
+                                    ));
+                                }
+                                let pending = executor
+                                    .take_prepared_signal()
+                                    .map_err(|errno| Error::Reverie(errno.into()))?
+                                    .expect("validated fatal selection");
+                                self.deliver_selected_signal_from_registers(
+                                    executor,
+                                    frame_address,
+                                    registers,
+                                    pending,
+                                )?;
+                                let exit = executor.take_exit().ok_or_else(|| {
+                                    Error::UnexpectedVcpuExit(
+                                        "fatal parked selection did not terminate".to_owned(),
+                                    )
+                                })?;
+                                executor.finish_parked_delivery();
+                                if exit.group {
+                                    self.request_guest_thread_group_exit(exit.status);
+                                }
+                                return Ok(exit.into());
+                            }
+                            HandlerOutcome::ParkedCancelled(context) => {
+                                if !executor.signal_failure_context_is_current(context) {
+                                    return Err(Error::UnexpectedVcpuExit(
+                                        "parked cancellation ledger identity changed".to_owned(),
+                                    ));
+                                }
+                                return Err(executor.with_signal_effects(Error::RunAborted, None));
+                            }
                             HandlerOutcome::RuntimeError(error) => {
                                 let error = self.cleanup_unstarted_tool_children_after_error(
                                     executor,
@@ -2998,7 +3417,28 @@ impl KvmBackend {
                         break classified;
                     }
                 } else {
-                    (executor.execute(&request, &memory), false, false, false)
+                    executor.reserve_signal_effects(64).map_err(|errno| {
+                        executor.with_signal_effects(Error::Reverie(errno.into()), None)
+                    })?;
+                    let raw = executor.execute(&request, &memory);
+                    flush_pending_signal_effects_with_tool(
+                        self,
+                        executor,
+                        pid,
+                        tid,
+                        &tool,
+                        &memory,
+                        &auxv,
+                        kvm_registers(registers, request.number()),
+                        &mut thread_state,
+                        &global_state,
+                        config,
+                        subscriptions,
+                        &stack_checked_out,
+                        Some(raw),
+                    )
+                    .await?;
+                    (raw, false, false, false)
                 };
                 let mut returned_registers = process_syscall_return_registers(
                     &memory,
@@ -3097,8 +3537,13 @@ impl KvmBackend {
                     set_user_segment_base(&self.vcpu, segment, address)?;
                 }
                 if !replaced_image && pending_exit.is_none() {
-                    let pending = self
-                        .filter_one_pending_signal_with_tool(
+                    let pending = if let Some(prepared) = executor
+                        .take_prepared_signal()
+                        .map_err(|errno| Error::Reverie(errno.into()))?
+                    {
+                        CallbackOutcome::Completed(Some(prepared))
+                    } else {
+                        self.filter_one_pending_signal_with_tool(
                             executor,
                             pid,
                             tid,
@@ -3115,7 +3560,8 @@ impl KvmBackend {
                             &stack_checked_out,
                             false,
                         )
-                        .await?;
+                        .await?
+                    };
                     let pending = match pending {
                         CallbackOutcome::Completed(pending) => pending,
                         CallbackOutcome::ThreadCancelled => {
@@ -3158,6 +3604,7 @@ impl KvmBackend {
                         )?;
                     }
                 }
+                executor.finish_parked_delivery();
                 pending_exit = pending_exit.or_else(|| executor.take_exit());
                 if let Some(exit) = pending_exit {
                     if exit.group {
@@ -3796,6 +4243,9 @@ mod tests {
         )) {
             HandlerOutcome::RuntimeError(Error::Reverie(reverie::Error::Errno(errno))) => {
                 assert_eq!(errno, Errno::ENOSYS)
+            }
+            HandlerOutcome::ParkedFatal(_) | HandlerOutcome::ParkedCancelled(_) => {
+                panic!("tail refusal produced unrelated parked outcome")
             }
             HandlerOutcome::RuntimeError(error) => panic!("unexpected tail refusal: {error}"),
             HandlerOutcome::TailInjected { .. } => panic!("tail injection unexpectedly ran"),

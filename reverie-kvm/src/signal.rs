@@ -367,6 +367,26 @@ impl StandardPendingSignals {
     }
 }
 
+/// Stable per-task notification wakeup, also retained after lifecycle retirement.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SignalDequeueWake(pub(crate) Arc<futures::task::AtomicWaker>);
+#[cfg(test)]
+impl PartialEq for SignalDequeueWake {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+#[cfg(test)]
+impl Eq for SignalDequeueWake {}
+
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(Eq, PartialEq))]
+pub(crate) struct OwnedSignalDequeue {
+    pub(crate) owner: reverie::SignalTaskIdentity,
+    pub(crate) effect: reverie::SignalDequeue,
+    pub(crate) wake: SignalDequeueWake,
+}
+
 /// Signal state shared by all threads in one guest process.
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(Eq, PartialEq))]
@@ -375,6 +395,12 @@ pub(crate) struct ProcessSignalState {
     pub(crate) shared_pending: StandardPendingSignals,
     pub(crate) signalfd_masks: BTreeMap<i32, Arc<KernelSigset>>,
     pub(crate) pending_generations: PendingSignalGenerations,
+    pub(crate) dequeue_enabled: bool,
+    pub(crate) dequeue_sequence: u64,
+    pub(crate) dequeue_journal: std::collections::VecDeque<OwnedSignalDequeue>,
+    pub(crate) dequeue_acknowledged: Option<reverie::SignalDequeue>,
+    pub(crate) dequeue_acknowledged_owner: Option<reverie::SignalTaskIdentity>,
+    pub(crate) dequeue_failed: bool,
 }
 
 impl Default for ProcessSignalState {
@@ -384,6 +410,12 @@ impl Default for ProcessSignalState {
             shared_pending: StandardPendingSignals::default(),
             signalfd_masks: BTreeMap::new(),
             pending_generations: [0; PENDING_SIGNAL_GENERATION_COUNT],
+            dequeue_enabled: false,
+            dequeue_sequence: 0,
+            dequeue_journal: std::collections::VecDeque::new(),
+            dequeue_acknowledged: None,
+            dequeue_acknowledged_owner: None,
+            dequeue_failed: false,
         }
     }
 }
@@ -405,6 +437,12 @@ impl ProcessSignalState {
             shared_pending: StandardPendingSignals::default(),
             signalfd_masks: self.signalfd_masks.clone(),
             pending_generations: self.pending_generations,
+            dequeue_enabled: self.dequeue_enabled,
+            dequeue_sequence: 0,
+            dequeue_journal: std::collections::VecDeque::new(),
+            dequeue_acknowledged: None,
+            dequeue_acknowledged_owner: None,
+            dequeue_failed: false,
         }
     }
 
@@ -426,6 +464,12 @@ impl ProcessSignalState {
             shared_pending: self.shared_pending.clone(),
             signalfd_masks: self.signalfd_masks.clone(),
             pending_generations: self.pending_generations,
+            dequeue_enabled: self.dequeue_enabled,
+            dequeue_sequence: self.dequeue_sequence,
+            dequeue_journal: self.dequeue_journal.clone(),
+            dequeue_acknowledged: self.dequeue_acknowledged,
+            dequeue_acknowledged_owner: self.dequeue_acknowledged_owner,
+            dequeue_failed: self.dequeue_failed,
         }
     }
 }
@@ -441,6 +485,9 @@ pub(crate) struct ThreadSignalState {
     /// just as a ptrace signal-delivery stop does. Plain execution discards an
     /// unblocked ignored signal when it is generated.
     pub(crate) observe_ignored: bool,
+    /// Admission identity, never reconstructed from a possibly reused numeric TID.
+    pub(crate) dequeue_identity: Option<reverie::SignalTaskIdentity>,
+    pub(crate) dequeue_wake: SignalDequeueWake,
 }
 
 impl ThreadSignalState {
@@ -450,6 +497,8 @@ impl ThreadSignalState {
             altstack: self.altstack,
             pending: StandardPendingSignals::default(),
             observe_ignored: self.observe_ignored,
+            dequeue_identity: None,
+            dequeue_wake: SignalDequeueWake::default(),
         }
     }
 
@@ -459,6 +508,8 @@ impl ThreadSignalState {
             altstack: None,
             pending: StandardPendingSignals::default(),
             observe_ignored: self.observe_ignored,
+            dequeue_identity: None,
+            dequeue_wake: SignalDequeueWake::default(),
         }
     }
 
@@ -468,6 +519,8 @@ impl ThreadSignalState {
             altstack: None,
             pending: self.pending.clone(),
             observe_ignored: self.observe_ignored,
+            dequeue_identity: self.dequeue_identity,
+            dequeue_wake: self.dequeue_wake.clone(),
         }
     }
 }
