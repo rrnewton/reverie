@@ -13913,3 +13913,6 @@ mod terminal_fork;
 
 #[path = "support/leader_exit.rs"]
 mod leader_exit;
+
+#[path = "support/process_alarm_signals.rs"]
+mod process_alarm_signals;

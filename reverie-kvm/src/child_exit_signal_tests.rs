@@ -180,7 +180,10 @@ fn child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish() {
             executor.queue_child_exit_signal(event),
             RejectedBeforeCommit { kind, errno }
         );
-        assert_eq!(executor.prepare_filtered_signal_delivery(event), Err(errno));
+        assert_eq!(
+            executor.prepare_filtered_signal_delivery(event, PendingSignalDomain::Process),
+            Err(errno)
+        );
         assert_eq!(executor.take_pending_signal(), None);
         assert!(executor.state.thread_signals.lock().pending.is_empty());
         assert!(
@@ -599,7 +602,10 @@ fn child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements
         executor.queue_child_exit_signal(first),
         reverie::ChildExitSignalOutcome::Accepted { .. }
     ));
-    assert_eq!(executor.prepare_filtered_signal_delivery(second), Ok(None));
+    assert_eq!(
+        executor.prepare_filtered_signal_delivery(second, PendingSignalDomain::Process),
+        Ok(None)
+    );
     assert!(executor.state.thread_signals.lock().pending.is_empty());
     executor
         .state
@@ -609,7 +615,7 @@ fn child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements
         .remove(libc::SIGCHLD);
     assert_eq!(executor.take_pending_signal().unwrap().event, first);
     assert_eq!(
-        executor.prepare_filtered_signal_delivery(second),
+        executor.prepare_filtered_signal_delivery(second, PendingSignalDomain::Process),
         Ok(Some(PendingSignal {
             event: second,
             domain: PendingSignalDomain::Process,

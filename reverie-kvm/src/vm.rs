@@ -135,6 +135,25 @@ pub(crate) struct PageZeroFault {
 }
 
 impl PageZeroFault {
+    #[cfg(test)]
+    pub(crate) fn for_test(event: reverie::SignalEvent) -> Self {
+        Self {
+            event,
+            // SAFETY: these plain KVM ABI structures admit all-zero values.
+            // Policy and pending-domain tests never submit this fixture to KVM.
+            registers: unsafe { std::mem::zeroed() },
+            halted_registers: unsafe { std::mem::zeroed() },
+            special_registers: unsafe { std::mem::zeroed() },
+            xsave: Arc::new(unsafe { std::mem::zeroed() }),
+            code_segment: crate::signal::USER_CODE_SELECTOR,
+            stack_segment: crate::signal::USER_DATA_SELECTOR,
+            error_code: 4,
+            address: 0,
+            transport: [0; FRAME_SIZE],
+            transport_address: 0x1000,
+        }
+    }
+
     pub(crate) fn pending(&self) -> crate::executor::PendingSignal {
         crate::executor::PendingSignal {
             event: self.event,
