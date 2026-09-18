@@ -3446,6 +3446,33 @@ impl ElfExecutor {
         self.parked_signals.as_ref().map(|state| *state.context)
     }
 
+    pub(crate) fn captured_write_site(
+        &self,
+        site: reverie::CallbackSignalSite,
+        fd: libc::c_int,
+    ) -> Option<reverie::CallbackSignalSite> {
+        if self.output.is_none() || !self.signal_site_is_current(site) {
+            return None;
+        }
+        // execute() installs this authoritative table before dispatch. A
+        // sibling that has since exited may have changed it while this
+        // executor's local snapshot still names an older output alias.
+        let table = self.file_table.lock().ok()?;
+        let standard = (fd == libc::STDOUT_FILENO || fd == libc::STDERR_FILENO)
+            && !table.closed_standard_fds.contains(&fd)
+            && !table.files.contains_key(&fd);
+        if !standard && !table.files.contains_key(&fd) {
+            return None;
+        }
+        output_alias_from_sets(
+            fd,
+            &table.stdout_alias_fds,
+            &table.stderr_alias_fds,
+            standard,
+        )
+        .map(|_| site)
+    }
+
     fn signal_site_is_current(&self, site: reverie::CallbackSignalSite) -> bool {
         site.callback_nonce == self.signal_callback_nonce
             && site.boundary_nonce == site.callback_nonce
@@ -6541,13 +6568,23 @@ enum OutputAlias {
 }
 
 fn output_alias(state: &LoadedStaticElf, fd: libc::c_int) -> Option<OutputAlias> {
-    if state.stdout_alias_fds.contains(&fd)
-        || (fd == libc::STDOUT_FILENO && is_open_standard(state, fd))
-    {
+    output_alias_from_sets(
+        fd,
+        &state.stdout_alias_fds,
+        &state.stderr_alias_fds,
+        is_open_standard(state, fd),
+    )
+}
+
+fn output_alias_from_sets(
+    fd: libc::c_int,
+    stdout: &std::collections::BTreeSet<i32>,
+    stderr: &std::collections::BTreeSet<i32>,
+    standard: bool,
+) -> Option<OutputAlias> {
+    if stdout.contains(&fd) || (fd == libc::STDOUT_FILENO && standard) {
         Some(OutputAlias::Stdout)
-    } else if state.stderr_alias_fds.contains(&fd)
-        || (fd == libc::STDERR_FILENO && is_open_standard(state, fd))
-    {
+    } else if stderr.contains(&fd) || (fd == libc::STDERR_FILENO && standard) {
         Some(OutputAlias::Stderr)
     } else {
         None
@@ -19430,6 +19467,61 @@ mod tests {
             assert_eq!(&queued[..6], b"queued");
             assert_eq!(queued[6], 0);
         }
+    }
+
+    #[test]
+    fn captured_write_site_uses_current_table_and_full_callback_identity() {
+        let root = TestDir::new();
+        let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut executor = ElfExecutor::new(test_state(&root.0), true);
+        executor.enable_signal_dequeues();
+        let site = executor.begin_signal_callback().unwrap();
+        for fd in [1, 2] {
+            assert_eq!(executor.captured_write_site(site, fd), Some(site));
+        }
+        for fd in [-1, 0, 1234] {
+            assert_eq!(executor.captured_write_site(site, fd), None);
+        }
+        let mut foreign = [site; 6];
+        foreign[0].process.tgid = reverie::Pid::from_raw(site.process.tgid.as_raw() + 1);
+        foreign[1].process.generation += 1;
+        foreign[2].tid = reverie::Pid::from_raw(site.tid.as_raw() + 1);
+        foreign[3].task_generation += 1;
+        foreign[4].callback_nonce += 1;
+        foreign[5].boundary_nonce += 1;
+        for wrong in foreign {
+            assert_eq!(executor.captured_write_site(wrong, 1), None);
+        }
+        assert_eq!(executor.signal_callback_nonce, site.callback_nonce);
+        assert_eq!(executor.take_output(), (Vec::new(), Vec::new()));
+        assert!(!executor.has_shared_pending_signal());
+        let fresh = executor.begin_signal_callback().unwrap();
+        assert_eq!(executor.captured_write_site(site, 1), None);
+        assert_eq!(executor.captured_write_site(fresh, 1), Some(fresh));
+
+        // A real executor sibling changes the authoritative table, then exits.
+        // The leader's cached snapshot still identifies stdout at fd 1.
+        let mut child = executor.thread_child(executor.state.tid + 1).unwrap();
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(libc::SYS_close as u64, [1, 0, 0, 0, 0, 0]),
+                &memory
+            ),
+            0
+        );
+        child.cancel_current_thread();
+        drop(child);
+        assert!(executor.sole_signal_receiver());
+        assert!(output_alias(&executor.state, 1).is_some());
+        assert_eq!(executor.captured_write_site(fresh, 1), None);
+        assert_eq!(executor.captured_write_site(fresh, 2), Some(fresh));
+        assert_eq!(executor.take_output(), (Vec::new(), Vec::new()));
+        assert!(!executor.has_shared_pending_signal());
+
+        let mut uncaptured = ElfExecutor::new(test_state(&root.0), false);
+        let uncaptured_site = uncaptured.begin_signal_callback().unwrap();
+        assert_eq!(uncaptured.captured_write_site(uncaptured_site, 1), None);
+        assert_eq!(uncaptured.captured_write_site(uncaptured_site, 2), None);
     }
 
     #[test]

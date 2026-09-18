@@ -283,6 +283,7 @@ where
             last_result: raw,
             process_completed: &mut process_completed,
             callback_site: None,
+            original_syscall: None,
             signal_guard: SignalGuard::Ordinary,
         };
         let mut guest = KvmGuest::new(
@@ -443,6 +444,7 @@ mod signal_cleanup_tests {
                         last_result: None,
                         process_completed: &mut completed,
                         callback_site: None,
+                        original_syscall: None,
                         signal_guard: SignalGuard::Ordinary,
                     };
                     let mut guest = KvmGuest::new(

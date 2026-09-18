@@ -296,6 +296,12 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
     fn parked_signal_site(&self) -> Option<reverie::CallbackSignalSite> {
         None
     }
+    fn captured_write_signal_site(
+        &self,
+        _call: reverie::syscalls::Write,
+    ) -> Option<reverie::CallbackSignalSite> {
+        None
+    }
     fn set_signal_guard(&mut self, _guard: SignalGuard) -> SignalGuard {
         SignalGuard::Ordinary
     }
@@ -535,6 +541,7 @@ struct StaticElfSyscallExecutor<'a> {
     last_result: Option<i64>,
     process_completed: &'a mut bool,
     callback_site: Option<reverie::CallbackSignalSite>,
+    original_syscall: Option<SyscallRequest>,
     signal_guard: SignalGuard,
 }
 
@@ -681,6 +688,23 @@ where
     }
     fn parked_signal_site(&self) -> Option<reverie::CallbackSignalSite> {
         self.current_parked_site()
+    }
+    fn captured_write_signal_site(
+        &self,
+        call: reverie::syscalls::Write,
+    ) -> Option<reverie::CallbackSignalSite> {
+        let request = SyscallRequest::from_syscall(call);
+        if self.signal_guard != SignalGuard::Ordinary
+            || self.last_result.is_some()
+            || self.original_syscall != Some(request)
+        {
+            return None;
+        }
+        let site = self.current_parked_site()?;
+        // Match scalar write's checked descriptor conversion, not the typed
+        // accessor's truncation of a malformed raw ABI value.
+        let fd = i32::try_from(request.args()[0]).ok()?;
+        self.executor.captured_write_site(site, fd)
     }
     fn set_signal_guard(&mut self, guard: SignalGuard) -> SignalGuard {
         std::mem::replace(&mut self.signal_guard, guard)
@@ -1108,6 +1132,19 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
             None
         } else {
             self.executor.parked_signal_site()
+        }
+    }
+    fn captured_write_signal_site(
+        &self,
+        call: reverie::syscalls::Write,
+    ) -> Option<reverie::CallbackSignalSite> {
+        if self.notifying_dequeue
+            || self.observation_lease.is_some()
+            || self.stack_checked_out.load(Ordering::Acquire)
+        {
+            None
+        } else {
+            self.executor.captured_write_signal_site(call)
         }
     }
     fn signal_observation_lease(&self) -> Option<reverie::ParkedObservationLease> {
@@ -1629,6 +1666,7 @@ where
                 memory: memory.clone(),
                 process_context: ProcessExecutionContext::Lifecycle,
                 callback_site: None,
+                original_syscall: None,
                 signal_guard: SignalGuard::Ordinary,
                 last_result: None,
                 process_completed: &mut _process_completed,
@@ -1766,6 +1804,7 @@ where
             memory: memory.clone(),
             process_context: ProcessExecutionContext::InitialExec(request),
             callback_site: None,
+            original_syscall: None,
             signal_guard: SignalGuard::Ordinary,
             last_result: None,
             process_completed: &mut _process_completed,
@@ -2732,6 +2771,7 @@ impl KvmBackend {
                 memory: memory.clone(),
                 process_context,
                 callback_site: None,
+                original_syscall: None,
                 signal_guard: SignalGuard::Ordinary,
                 last_result: None,
                 process_completed: &mut process_completed,
@@ -2889,6 +2929,7 @@ impl KvmBackend {
                     memory: memory.clone(),
                     process_context: ProcessExecutionContext::Lifecycle,
                     callback_site: None,
+                    original_syscall: None,
                     signal_guard: SignalGuard::Ordinary,
                     last_result: None,
                     process_completed: &mut _process_completed,
@@ -3283,6 +3324,7 @@ impl KvmBackend {
                                 memory: memory.clone(),
                                 process_context: ProcessExecutionContext::SyscallBoundary(boundary),
                                 callback_site: None,
+                                original_syscall: Some(request),
                                 signal_guard: SignalGuard::Ordinary,
                                 last_result: None,
                                 process_completed: &mut handler_process_completed,
@@ -4500,3 +4542,7 @@ mod failure_tests;
 #[cfg(test)]
 #[path = "process_alarm_runtime_tests.rs"]
 mod process_alarm_tests;
+
+#[cfg(test)]
+#[path = "captured_write_runtime_tests.rs"]
+mod captured_write_tests;
