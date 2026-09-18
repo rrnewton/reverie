@@ -1422,12 +1422,13 @@ mod tests {
     /// planned test node executed, none inert, none absent — the shape a real
     /// full run stamps. `sat_coverage(13)` matches the measured 13-node lane set.
     fn sat_coverage(planned: u64) -> CoverageRow {
-        CoverageRow {
-            planned_test_nodes: planned,
-            executed_test_nodes: planned,
-            zero_executed_nodes: Some(vec![]),
-            absent_nodes: Some(vec![]),
-        }
+        serde_json::from_value(serde_json::json!({
+            "planned_test_nodes": planned,
+            "executed_test_nodes": planned,
+            "zero_executed_nodes": [],
+            "absent_nodes": [],
+        }))
+        .expect("valid coverage fixture")
     }
 
     #[test]
@@ -2122,12 +2123,15 @@ mod tests {
         absent.executed_tests = Some(749);
         absent.passed_tests = Some(749);
         absent.filtered_tests = Some(693);
-        absent.coverage = Some(CoverageRow {
-            planned_test_nodes: 13,
-            executed_test_nodes: 12,
-            zero_executed_nodes: Some(vec![]),
-            absent_nodes: Some(vec!["test.detcore_unit".into()]),
-        });
+        absent.coverage = Some(
+            serde_json::from_value(serde_json::json!({
+                "planned_test_nodes": 13,
+                "executed_test_nodes": 12,
+                "zero_executed_nodes": [],
+                "absent_nodes": ["test.detcore_unit"],
+            }))
+            .expect("valid absent-node coverage fixture"),
+        );
         let a = assess(&[absent], PASS_SHA);
         assert_eq!(a.verdict, Verdict::NotValidated);
         assert_eq!(a.verdict.exit_code(), 4);
@@ -2139,12 +2143,15 @@ mod tests {
         inert.executed_tests = Some(749);
         inert.passed_tests = Some(749);
         inert.filtered_tests = Some(693);
-        inert.coverage = Some(CoverageRow {
-            planned_test_nodes: 13,
-            executed_test_nodes: 12,
-            zero_executed_nodes: Some(vec!["test.cli".into()]),
-            absent_nodes: Some(vec![]),
-        });
+        inert.coverage = Some(
+            serde_json::from_value(serde_json::json!({
+                "planned_test_nodes": 13,
+                "executed_test_nodes": 12,
+                "zero_executed_nodes": ["test.cli"],
+                "absent_nodes": [],
+            }))
+            .expect("valid inert-node coverage fixture"),
+        );
         assert_eq!(assess(&[inert], PASS_SHA).verdict, Verdict::NotValidated);
 
         // NO planned test node at all is not a satisfied obligation either.

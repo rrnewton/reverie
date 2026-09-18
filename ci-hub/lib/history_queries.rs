@@ -1257,12 +1257,15 @@ mod tests {
                 extra: BTreeMap::new(),
             });
         }
-        row.coverage = Some(crate::records::CoverageRow {
-            planned_test_nodes: 2,
-            executed_test_nodes: 2,
-            zero_executed_nodes: Some(Vec::new()),
-            absent_nodes: Some(Vec::new()),
-        });
+        row.coverage = Some(
+            serde_json::from_value(serde_json::json!({
+                "planned_test_nodes": 2,
+                "executed_test_nodes": 2,
+                "zero_executed_nodes": [],
+                "absent_nodes": [],
+            }))
+            .expect("valid coverage fixture"),
+        );
         row.extra
             .insert("producer".into(), serde_json::json!("hermit-validate-sh"));
         row.extra.insert(
