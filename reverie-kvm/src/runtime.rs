@@ -3333,8 +3333,14 @@ impl KvmBackend {
                                 match classified {
                                     Some(raw) => (raw, false, handler_process_completed, false),
                                     None if !handler_process_completed
-                                        && executor.has_eligible_pending_signal() =>
+                                        && (executor.has_prepared_signal()
+                                            || executor.has_eligible_pending_signal()) =>
                                     {
+                                        // A prepared signal was already removed from
+                                        // pending. Deliver its frame before another
+                                        // callback invalidates the selection's nonce;
+                                        // the frame's SA_RESTART policy decides whether
+                                        // the syscall runs again after the handler.
                                         (-(libc::EINTR as i64), false, false, true)
                                     }
                                     // A restart is only meaningful while the process

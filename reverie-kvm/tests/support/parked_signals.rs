@@ -10,6 +10,7 @@ use reverie::SignalDequeue;
 use reverie::SignalObservationStep;
 use reverie::SignalObservationStop;
 use reverie::SignalTaskIdentity;
+use reverie::syscalls::Addr;
 
 use super::*;
 
@@ -19,6 +20,8 @@ enum Seen {
     Dequeue(SignalDequeue),
     Hook(DequeueId),
     Finish(CallbackSignalSite),
+    RestartReadCallback(Option<CallbackSignalSite>, i32),
+    RestartReadResult(Result<i64, Errno>),
     Exit(ExitStatus),
 }
 static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
@@ -66,6 +69,7 @@ struct ParkedTool {
     mode: u8,
     removed: AtomicU64,
     hooks: AtomicU64,
+    restart_read_calls: AtomicU64,
 }
 #[reverie::tool]
 impl Tool for ParkedTool {
@@ -195,10 +199,59 @@ impl Tool for ParkedTool {
         syscall: Syscall,
     ) -> Result<i64, reverie::Error> {
         let (_, args) = syscall.into_parts();
-        if syscall.number() != Sysno::getpid || args.arg0 != 0x7061726b {
-            guest.tail_inject(syscall).await;
+        let restart_read = (17..=19).contains(&self.mode)
+            && syscall.number() == Sysno::read
+            && args.arg3 == 0x7061726b;
+        let mut completed_read = None;
+        if restart_read {
+            assert_eq!(args.arg4 as u8, self.mode);
+            let handled = guest
+                .memory()
+                .read_value(Addr::<i32>::from_raw(args.arg5).ok_or(Errno::EFAULT)?)?;
+            seen(Seen::RestartReadCallback(
+                guest.parked_signal_site(),
+                handled,
+            ));
+            let ordinal = self.restart_read_calls.fetch_add(1, Ordering::SeqCst);
+            if ordinal != 0 {
+                assert_eq!(ordinal, 1, "the read restarted more than once");
+                assert_eq!(self.mode, 18, "only SA_RESTART may repeat the read");
+                assert_eq!(
+                    handled, 1,
+                    "callback re-entered before the prepared handler ran"
+                );
+                assert!(
+                    guest.parked_signal_site().is_some(),
+                    "restart needs a fresh callback site"
+                );
+                let result = guest.inject(syscall).await;
+                seen(Seen::RestartReadResult(result));
+                assert_eq!(result, Ok(1), "handler supplied the real restart byte");
+                return result.map_err(Into::into);
+            }
+            assert_eq!(handled, 0);
+            let result = guest.inject(syscall).await;
+            seen(Seen::RestartReadResult(result));
+            if self.mode == 19 {
+                assert_eq!(
+                    result,
+                    Ok(3),
+                    "control requires an actual positive short read"
+                );
+                completed_read = Some(3);
+            } else {
+                assert_eq!(
+                    result,
+                    Err(Errno::EAGAIN),
+                    "control requires actual zero progress"
+                );
+            }
+        } else {
+            if syscall.number() != Sysno::getpid || args.arg0 != 0x7061726b {
+                guest.tail_inject(syscall).await;
+            }
+            assert_eq!(args.arg1 as u8, self.mode);
         }
-        assert_eq!(args.arg1 as u8, self.mode);
         let site = guest
             .parked_signal_site()
             .expect("actual original syscall boundary");
@@ -284,7 +337,7 @@ impl Tool for ParkedTool {
                     ));
                 }
                 SignalObservationStop::Caught(_) => {
-                    assert!(matches!(self.mode, 2 | 3 | 5 | 12 | 16));
+                    assert!(matches!(self.mode, 2 | 3 | 5 | 12 | 16..=19));
                     let context = guest
                         .parked_signal_failure_context()
                         .expect("ledger survives caught handoff");
@@ -357,6 +410,12 @@ impl Tool for ParkedTool {
                         i64::from(guest.pid().as_raw())
                     );
                     seen(Seen::Finish(site));
+                    if let Some(count) = completed_read {
+                        return Ok(count);
+                    }
+                    if restart_read {
+                        return Err(Errno::ERESTARTSYS.into());
+                    }
                     return Err(if self.mode == 12 {
                         Errno::EFAULT
                     } else {
@@ -601,6 +660,50 @@ fn run_parked_modes(modes: impl IntoIterator<Item = u8>) {
                 } else {
                     ExitStatus::Exited(0)
                 }]
+            );
+        }
+        if (17..=19).contains(&mode) {
+            let callbacks = seen
+                .iter()
+                .filter_map(|event| match event {
+                    Seen::RestartReadCallback(site, handled) => Some((*site, *handled)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(callbacks.len(), if mode == 18 { 2 } else { 1 });
+            assert_eq!(callbacks[0].1, 0);
+            let original = callbacks[0]
+                .0
+                .expect("original read callback has a real site");
+            if mode == 18 {
+                assert_eq!(callbacks[1].1, 1, "handler precedes restart");
+                let restarted = callbacks[1].0.expect("restart has a real site");
+                assert_eq!(restarted.process, original.process);
+                assert_eq!(restarted.tid, original.tid);
+                assert_eq!(restarted.task_generation, original.task_generation);
+                assert!(restarted.callback_nonce > original.callback_nonce);
+            }
+            let reads = seen
+                .iter()
+                .filter_map(|event| match event {
+                    Seen::RestartReadResult(result) => Some(*result),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                reads,
+                match mode {
+                    17 => vec![Err(Errno::EAGAIN)],
+                    18 => vec![Err(Errno::EAGAIN), Ok(1)],
+                    19 => vec![Ok(3)],
+                    _ => unreachable!(),
+                }
+            );
+            assert_eq!(
+                seen.iter()
+                    .filter(|event| matches!(event, Seen::Finish(_)))
+                    .count(),
+                1
             );
         }
         for finish in seen.iter().filter_map(|s| {
@@ -932,6 +1035,36 @@ fn parked_signal_caught_posthook_mask_and_altstack_reach_real_frame() {
         return;
     }
     run_parked_modes(std::iter::once(16));
+}
+
+#[test]
+fn parked_signal_prepared_read_returns_eintr_without_restart() {
+    if !leader_self_exec_bounded(
+        "parked_signals::parked_signal_prepared_read_returns_eintr_without_restart",
+    ) {
+        return;
+    }
+    run_parked_modes(std::iter::once(17));
+}
+
+#[test]
+fn parked_signal_prepared_read_restarts_only_after_handler() {
+    if !leader_self_exec_bounded(
+        "parked_signals::parked_signal_prepared_read_restarts_only_after_handler",
+    ) {
+        return;
+    }
+    run_parked_modes(std::iter::once(18));
+}
+
+#[test]
+fn parked_signal_prepared_partial_read_is_not_replayed() {
+    if !leader_self_exec_bounded(
+        "parked_signals::parked_signal_prepared_partial_read_is_not_replayed",
+    ) {
+        return;
+    }
+    run_parked_modes(std::iter::once(19));
 }
 
 static ADMISSION_GLOBALS: AtomicU64 = AtomicU64::new(0);
