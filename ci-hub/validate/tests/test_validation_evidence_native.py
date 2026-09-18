@@ -24,6 +24,7 @@ from test_qualifying_receipt_mutation import _green_row
 
 FIXTURES = Path(__file__).parent / "fixtures" / "schema10"
 MANIFEST_SHA256 = "4821718ba4d479b09ea99cee7e5a20ec8750f289b2b047dcc11a43000118a7f7"
+V1_MANIFEST_SHA256 = "74ce0748c4b2ab8e197a26df852f63bd38e1aeda2050d184dc8fd4b15721a307"
 
 
 def retained_case(root, source, run, mutation=None):
@@ -70,6 +71,19 @@ def retained_case(root, source, run, mutation=None):
         coverage={"planned_test_nodes": 1, "executed_test_nodes": 1, "zero_executed_nodes": [], "absent_nodes": []},
     )
     return green
+
+
+def test_selected_attempt_v1_fixture_manifest_integrity():
+    fixtures = FIXTURES / "selected-attempt-v1"
+    manifest_bytes = (fixtures / "FINAL-V1-FIXTURE-MANIFEST.json").read_bytes()
+    assert hashlib.sha256(manifest_bytes).hexdigest() == V1_MANIFEST_SHA256
+    manifest = json.loads(manifest_bytes)["partial_manifest"]
+    assert manifest["synthetic_parser_controls_not_guest_measurements"] is True
+    assert len(manifest["files"]) == 16
+    for name, expected in manifest["files"].items():
+        raw = (fixtures / name).read_bytes()
+        assert len(raw) == expected["bytes"]
+        assert hashlib.sha256(raw).hexdigest() == expected["sha256"]
 
 
 def test_schema10_real_batch_qualification_projection_and_artifact_refusals(tmp_path, monkeypatch):

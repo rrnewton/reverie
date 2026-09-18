@@ -1936,20 +1936,17 @@ mod tests {
         let store = Store::new();
         let bound = Fixture::new("selected-attempt-v1/ordinary-only", "bound-target", FIX, 30)
             .write(&store.0);
-        let mut failed = schema8_candidate_target(&bound, 1);
-        failed.commit = Some(BAD.into());
-        failed.extra.insert("tree".into(), serde_json::json!(BAD));
-        let evidence = failed.cell_results.as_mut().unwrap().typed_mut().unwrap();
-        evidence.hermit_sha = BAD.into();
-        evidence.cells[0].cell_verdict = row(BAD, 1, false)
-            .cell_results
-            .unwrap()
-            .typed()
-            .unwrap()
-            .cells[0]
-            .cell_verdict
-            .clone();
-        let mut rows = vec![failed];
+        // Schema 8 retains its path-bearing wire shape as Other, rather than
+        // the schema-6/7 Typed shape served by typed_mut().
+        let mut failed = serde_json::to_value(schema8_candidate_target(&bound, 1)).unwrap();
+        failed["commit"] = serde_json::json!(BAD);
+        failed["tree"] = serde_json::json!(BAD);
+        failed["cell_results"]["hermit_sha"] = serde_json::json!(BAD);
+        failed["cell_results"]["cells"][0]["cell_verdict"] =
+            serde_json::to_value(row(BAD, 1, false)).unwrap()["cell_results"]["cells"][0]
+                ["cell_verdict"]
+                .clone();
+        let mut rows = vec![serde_json::from_value(failed).unwrap()];
         for ordinal in 2..12 {
             rows.push(schema8_candidate_target(&bound, ordinal));
         }
