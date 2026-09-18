@@ -2191,7 +2191,9 @@ fn local_validation_status_description(row: &HistoryRow) -> String {
             // Description only; qualification authenticates the artifacts.
             coverage.push(match evidence.binding_contract {
                 records::CellBindingContract::LegacyUnbound => "legacy unbound evidence".into(),
-                records::CellBindingContract::SelectedAttemptV1 => "selected-attempt v1 evidence".into(),
+                records::CellBindingContract::SelectedAttemptV1 => {
+                    "selected-attempt v1 evidence".into()
+                }
             });
         }
     }

@@ -10,9 +10,9 @@
 //! ordinary full validation is neither repeated nor slowed down.
 
 use crate::records::{
-    CellBindingContract, CellIdentity, CellResult, CellResultsEvidence, CellVerdict, ComparisonObservationVerdictV10,
-    ComparisonRelationV10, ComparisonStrictness, ComparisonTier, HistoryRow, RequiredNullable,
-    ValidatePath, VerifiedValidationEvidenceV10,
+    CellBindingContract, CellIdentity, CellResult, CellResultsEvidence, CellVerdict,
+    ComparisonObservationVerdictV10, ComparisonRelationV10, ComparisonStrictness, ComparisonTier,
+    HistoryRow, RequiredNullable, ValidatePath, VerifiedValidationEvidenceV10,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -861,8 +861,9 @@ where
             baseline_failures: rate.failures,
             baseline_legs: rate.legs,
             required_clean_legs: required,
-            observed_clean_legs_at_target: target
-                .map_or(0, |value| value.observation.clean_legs(target_requires_bound)),
+            observed_clean_legs_at_target: target.map_or(0, |value| {
+                value.observation.clean_legs(target_requires_bound)
+            }),
             target_failures: target.map_or(0, |value| value.observation.failures),
             target_comparisons_complete: target.is_some_and(|value| value.complete),
             target_unavailable_comparisons: target.map_or(0, |value| value.unavailable_comparisons),
@@ -1789,8 +1790,13 @@ mod tests {
         let mut rows = vec![failed];
         for ordinal in 0..10 {
             rows.push(
-                Fixture::new("selected-attempt-v1/matched", &format!("clean-{ordinal}"), FIX, ordinal + 2)
-                    .write(&store.0),
+                Fixture::new(
+                    "selected-attempt-v1/matched",
+                    &format!("clean-{ordinal}"),
+                    FIX,
+                    ordinal + 2,
+                )
+                .write(&store.0),
             );
         }
         let obligations = schema10_obligations(&rows, &store.0);
@@ -1806,8 +1812,13 @@ mod tests {
         assert_eq!(obligations[0].observed_clean_legs_at_target, 22);
         for ordinal in 11..14 {
             rows.push(
-                Fixture::new("selected-attempt-v1/matched", &format!("clean-{ordinal}"), FIX, ordinal + 2)
-                    .write(&store.0),
+                Fixture::new(
+                    "selected-attempt-v1/matched",
+                    &format!("clean-{ordinal}"),
+                    FIX,
+                    ordinal + 2,
+                )
+                .write(&store.0),
             );
         }
         let obligations = schema10_obligations(&rows, &store.0);
@@ -1871,15 +1882,16 @@ mod tests {
         use crate::validation_evidence::fixtures::{Fixture, Store};
         let store = Store::new();
         let mut rows = vec![
-            Fixture::new("cross-diverged-then-matched", "old-failure", BAD, 1)
-                .write(&store.0),
+            Fixture::new("cross-diverged-then-matched", "old-failure", BAD, 1).write(&store.0),
             Fixture::new("matched", "old-baseline-match", BAD, 2).write(&store.0),
         ];
         // Twenty old matches at the target are real measured observations, but
         // their missing capability must not repair the historical divergence.
         for ordinal in 0..20 {
-            rows.push(Fixture::new("matched", &format!("old-match-{ordinal}"), FIX, ordinal + 3)
-                .write(&store.0));
+            rows.push(
+                Fixture::new("matched", &format!("old-match-{ordinal}"), FIX, ordinal + 3)
+                    .write(&store.0),
+            );
         }
         let obligations = schema10_obligations(&rows, &store.0);
         assert_eq!(obligations.len(), 1);
@@ -1888,21 +1900,29 @@ mod tests {
         assert_eq!(obligations[0].required_clean_legs, 40);
         assert_eq!(obligations[0].observed_clean_legs_at_target, 0);
         for ordinal in 0..19 {
-            rows.push(Fixture::new("selected-attempt-v1/matched", &format!("bound-{ordinal}"), FIX, ordinal + 23)
-                .write(&store.0));
+            rows.push(
+                Fixture::new(
+                    "selected-attempt-v1/matched",
+                    &format!("bound-{ordinal}"),
+                    FIX,
+                    ordinal + 23,
+                )
+                .write(&store.0),
+            );
         }
         let obligations = schema10_obligations(&rows, &store.0);
         assert_eq!(obligations.len(), 1);
         assert_eq!(obligations[0].baseline_legs, 6);
         assert_eq!(obligations[0].baseline_failures, 1);
         assert_eq!(obligations[0].observed_clean_legs_at_target, 38);
-        rows.push(Fixture::new("selected-attempt-v1/matched", "bound-19", FIX, 42)
-            .write(&store.0));
+        rows.push(Fixture::new("selected-attempt-v1/matched", "bound-19", FIX, 42).write(&store.0));
         assert!(schema10_obligations(&rows, &store.0).is_empty());
         // A legacy failure on that same target is still a failure after forty
         // bound legs; a capability split in CellKey would incorrectly hide it.
-        rows.push(Fixture::new("cross-diverged-then-matched", "old-target-failure", FIX, 43)
-            .write(&store.0));
+        rows.push(
+            Fixture::new("cross-diverged-then-matched", "old-target-failure", FIX, 43)
+                .write(&store.0),
+        );
         let obligations = schema10_obligations(&rows, &store.0);
         assert_eq!(obligations.len(), 1);
         assert_eq!(obligations[0].failing_commit, FIX);
@@ -1922,7 +1942,13 @@ mod tests {
         let evidence = failed.cell_results.as_mut().unwrap().typed_mut().unwrap();
         evidence.hermit_sha = BAD.into();
         evidence.cells[0].cell_verdict = row(BAD, 1, false)
-            .cell_results.unwrap().typed().unwrap().cells[0].cell_verdict.clone();
+            .cell_results
+            .unwrap()
+            .typed()
+            .unwrap()
+            .cells[0]
+            .cell_verdict
+            .clone();
         let mut rows = vec![failed];
         for ordinal in 2..12 {
             rows.push(schema8_candidate_target(&bound, ordinal));

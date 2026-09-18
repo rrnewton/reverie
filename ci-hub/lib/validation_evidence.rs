@@ -5,8 +5,8 @@
 //! standalone Python reader without re-entering receipt qualification.
 
 use crate::records::{
-    CellBindingContract, CellIdentity, ComparisonObservationVerdictV10, HistoryRow, RequiredNullable,
-    VerifiedValidationEvidenceV10,
+    CellBindingContract, CellIdentity, ComparisonObservationVerdictV10, HistoryRow,
+    RequiredNullable, VerifiedValidationEvidenceV10,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -549,8 +549,12 @@ pub(crate) mod fixtures {
             "cross-diverged-then-matched" => files!("cross-diverged-then-matched"),
             "ordinary-only" => files!("ordinary-only"),
             "selected-attempt-v1/matched" => files!("selected-attempt-v1/matched"),
-            "selected-attempt-v1/reference-diverged" => files!("selected-attempt-v1/reference-diverged"),
-            "selected-attempt-v1/cross-diverged-then-matched" => files!("selected-attempt-v1/cross-diverged-then-matched"),
+            "selected-attempt-v1/reference-diverged" => {
+                files!("selected-attempt-v1/reference-diverged")
+            }
+            "selected-attempt-v1/cross-diverged-then-matched" => {
+                files!("selected-attempt-v1/cross-diverged-then-matched")
+            }
             "selected-attempt-v1/ordinary-only" => files!("selected-attempt-v1/ordinary-only"),
             _ => panic!("unknown producer fixture"),
         }
@@ -712,7 +716,10 @@ mod tests {
             let outcome = verify(&row, &store.0);
             assert!(matches!(outcome, EvidenceOutcome::LegacyUnbound { .. }));
             let (evidence, refusal, matches) = verified(outcome);
-            assert_eq!(evidence.cell_results.binding_contract, CellBindingContract::LegacyUnbound);
+            assert_eq!(
+                evidence.cell_results.binding_contract,
+                CellBindingContract::LegacyUnbound
+            );
             assert_eq!(evidence.cell_results.selected_count, 1);
             assert_eq!(evidence.cell_results.selected_backend_parity.len(), 1);
             assert_eq!(evidence.observations.len(), observations);
@@ -755,14 +762,16 @@ mod tests {
     #[test]
     fn schema10_mixed_contract_batch_keeps_each_typed_outcome() {
         let store = Store::new();
-        let legacy = Fixture::new("reference-diverged", "batch-legacy", COMMIT, 1)
-            .write(&store.0);
-        let bound = Fixture::new("selected-attempt-v1/matched", "batch-bound", COMMIT, 2)
-            .write(&store.0);
-        let missing = Fixture::new("matched", "batch-missing", COMMIT, 3)
-            .write(&store.0);
-        fs::remove_file(store.0.join(missing.constructed_plan_artifact().unwrap().unwrap().path))
-            .unwrap();
+        let legacy = Fixture::new("reference-diverged", "batch-legacy", COMMIT, 1).write(&store.0);
+        let bound =
+            Fixture::new("selected-attempt-v1/matched", "batch-bound", COMMIT, 2).write(&store.0);
+        let missing = Fixture::new("matched", "batch-missing", COMMIT, 3).write(&store.0);
+        fs::remove_file(
+            store
+                .0
+                .join(missing.constructed_plan_artifact().unwrap().unwrap().path),
+        )
+        .unwrap();
         let bound_json = serde_json::to_string(&bound).unwrap();
         assert!(bound_json.contains("\"binding_contract\":1"));
         let duplicate = bound_json.replacen(
@@ -782,23 +791,54 @@ mod tests {
             input.push(b'\n');
         }
         let mut output = Vec::new();
-        run_batch_io(&store.0, io::Cursor::new(input), &mut output, 1 << 20, 4 << 20)
-            .unwrap();
-        let reports: Vec<serde_json::Value> = String::from_utf8(output).unwrap().lines()
-            .map(|line| serde_json::from_str(line).unwrap()).collect();
+        run_batch_io(
+            &store.0,
+            io::Cursor::new(input),
+            &mut output,
+            1 << 20,
+            4 << 20,
+        )
+        .unwrap();
+        let reports: Vec<serde_json::Value> = String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
         assert_eq!(reports.len(), rows.len());
-        for ((row, report), status) in rows.iter().zip(&reports)
-            .zip(["legacy-unbound", "verified", "refused", "reader-fault"])
+        for ((row, report), status) in
+            rows.iter()
+                .zip(&reports)
+                .zip(["legacy-unbound", "verified", "refused", "reader-fault"])
         {
-            assert_eq!(report["row_sha256"], format!("{:x}", Sha256::digest(row.as_bytes())));
+            assert_eq!(
+                report["row_sha256"],
+                format!("{:x}", Sha256::digest(row.as_bytes()))
+            );
             assert_eq!(report["status"], status);
         }
-        assert!(reports[0]["evidence"]["cell_results"].get("binding_contract").is_none());
-        assert_eq!(reports[0]["evidence"]["observations"].as_array().unwrap().len(), 3);
-        assert_eq!(reports[0]["full_validation_refusal"], "cell_results comparison-diverged");
-        assert_eq!(reports[1]["evidence"]["cell_results"]["binding_contract"], 1);
+        assert!(reports[0]["evidence"]["cell_results"]
+            .get("binding_contract")
+            .is_none());
+        assert_eq!(
+            reports[0]["evidence"]["observations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(
+            reports[0]["full_validation_refusal"],
+            "cell_results comparison-diverged"
+        );
+        assert_eq!(
+            reports[1]["evidence"]["cell_results"]["binding_contract"],
+            1
+        );
         assert!(reports[1]["full_validation_refusal"].is_null());
-        assert!(reports[2]["reason"].as_str().unwrap().contains("binding_contract"));
+        assert!(reports[2]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("binding_contract"));
     }
 
     #[test]
