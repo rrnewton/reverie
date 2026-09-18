@@ -57,8 +57,8 @@ FOUR THINGS THAT MAKE A NAIVE VERSION OF THIS LIE
    high failure count is DATA, not noise. Measured: a run with 31 failures
    against 12-14 elsewhere looked like teardown collateral and was not -- its
    journal balanced 134 step_start against 134 step_end and ended properly. Only
-   truncation is grounds for exclusion here; anything else is for a human to
-   explain, so it is reported rather than dropped.
+   an incomplete or malformed journal is grounds for exclusion here; anything
+   else is for a human to explain, so it is reported rather than dropped.
 4. ABSENT IS NOT PASSED. Every id is counted against the number of runs that
    ACTUALLY OBSERVED IT, and both numbers are printed, so "9 of 9" and "9 of 10"
    can never be read as the same claim.
@@ -301,11 +301,11 @@ def classify(seen, failed, n_runs):
 def report(sha, runs, out=sys.stdout):
     w = lambda s="": print(s, file=out)
     complete = [r for r in runs if r["completed"]]
-    truncated = [r for r in runs if not r["completed"]]
+    excluded = [r for r in runs if not r["completed"]]
     w("=" * 78)
     w(f"{PROG}: hermit_sha {sha}")
     w("=" * 78)
-    w(f"retained runs: {len(runs)}   completed: {len(complete)}   truncated: {len(truncated)}")
+    w(f"retained runs: {len(runs)}   completed: {len(complete)}   excluded: {len(excluded)}")
     w()
     from_name = [r for r in runs if r["sha_source"] == "dirname"]
     if from_name:
@@ -317,7 +317,7 @@ def report(sha, runs, out=sys.stdout):
     for r in runs:
         stamp = datetime.datetime.fromtimestamp(r["mtime"]).strftime("%m-%d %H:%M")
         nfail = sum(1 for v in r["ids"].values() if v != "PASS")
-        flag = "" if r["completed"] else "   <- EXCLUDED, TRUNCATED"
+        flag = "" if r["completed"] else "   <- EXCLUDED, INCOMPLETE JOURNAL"
         src = " (name)" if r["sha_source"] == "dirname" else ""
         w(f"  {stamp}  ids={len(r['ids']):5d}  failing={nfail:3d}  {r['dir'][:44]}{src}{flag}")
         if not r["completed"]:
@@ -393,7 +393,7 @@ def _selftest() -> int:
     seen, _ = tally([{"ids": {"e2e:x/verify/ptrace": "FAIL", "test:c$x": "FAIL"}}])
     check("e2e and nextest ids stay distinct", sorted(seen), ["e2e:x/verify/ptrace", "test:c$x"])
 
-    # TRUNCATION DETECTION, on the shape a killed run actually leaves.
+    # INCOMPLETE-JOURNAL DETECTION, including the shape a killed run leaves.
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         j = Path(d) / "safe-ci-dag-runner"
@@ -422,6 +422,10 @@ def _selftest() -> int:
             "must be a boolean" in why,
             True,
         )
+        (j / "journal.jsonl").write_text("not json\n")
+        done, why = read_journal_completeness(d)
+        check("malformed JSON is refused", done, False)
+        check("and the malformed line is named", "line 1" in why, True)
         complete_with_skip = good + [
             '{"event":"step_skip","step":"b","reason":"dependency_failed"}'
         ]
