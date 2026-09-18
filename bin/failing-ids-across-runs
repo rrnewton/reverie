@@ -100,32 +100,79 @@ def die(msg: str, code: int = 2):
 
 
 def read_journal_completeness(unit_dir: str) -> tuple[bool, str]:
-    """(completed, why). A run whose journal has an unmatched step_start, or
-    whose last event is not a step_end, stopped partway through."""
+    """Return whether a journal has a well-typed terminal record per start.
+
+    A current journal may end with ``step_skip`` because the scheduler records
+    every planned step that did not run.  Older journals have no skip records,
+    so absence of skips is not itself evidence of truncation.  A malformed
+    ``step_end.ok`` is never coerced: in particular, the string ``"false"``
+    must not become a successful truthy value in a downstream reader.
+    """
     p = os.path.join(unit_dir, "safe-ci-dag-runner", "journal.jsonl")
     if not os.path.exists(p):
         return True, "no journal to check"
     evs = []
     try:
-        for line in open(p, errors="replace"):
+        for lineno, line in enumerate(open(p, errors="replace"), 1):
             line = line.strip()
             if line:
                 try:
-                    evs.append(json.loads(line))
-                except ValueError:
-                    pass
+                    event = json.loads(line)
+                except ValueError as exc:
+                    return False, f"malformed journal JSON at line {lineno} ({exc})"
+                if not isinstance(event, dict):
+                    return False, f"journal line {lineno} is not an object"
+                evs.append(event)
     except OSError as exc:
-        return True, f"journal unreadable ({exc})"
+        return False, f"journal unreadable ({exc})"
     if not evs:
-        return True, "journal empty"
-    starts = sum(1 for e in evs if e.get("event") == "step_start")
-    ends = sum(1 for e in evs if e.get("event") == "step_end")
+        return False, "journal empty"
+    for lineno, event in enumerate(evs, 1):
+        kind = event.get("event")
+        if kind in {"step_start", "step_end", "step_skip"}:
+            step = event.get("step")
+            if not isinstance(step, str) or not step:
+                return False, f"journal {kind} step at line {lineno} must be a string"
+        if kind == "step_end" and type(event.get("ok")) is not bool:
+            return False, f"journal step_end ok at line {lineno} must be a boolean"
+        if kind == "step_skip":
+            reason = event.get("reason")
+            if not isinstance(reason, str) or not reason:
+                return False, f"journal step_skip reason at line {lineno} must be a string"
+    starts = collections.Counter(
+        e.get("step") for e in evs if e.get("event") == "step_start"
+    )
+    ends = collections.Counter(
+        e.get("step") for e in evs if e.get("event") == "step_end"
+    )
+    skips = collections.Counter(
+        e.get("step") for e in evs if e.get("event") == "step_skip"
+    )
+    if None in starts or None in ends or None in skips:
+        return False, "journal step terminal record is missing its step"
+    duplicates = sorted(
+        str(step)
+        for counts in (starts, ends, skips)
+        for step, count in counts.items()
+        if count != 1
+    )
+    if duplicates:
+        return False, f"duplicate step record(s): {', '.join(duplicates)}"
+    both = sorted(str(step) for step in ends.keys() & skips.keys())
+    if both:
+        return False, f"step both ended and skipped: {', '.join(both)}"
     last = evs[-1].get("event")
     if starts != ends:
-        return False, f"unmatched step_start ({starts} started, {ends} ended)"
-    if last != "step_end":
-        return False, f"journal ends on {last!r}, not step_end"
-    return True, f"{starts} steps started and ended"
+        return False, (
+            f"unmatched step_start ({sum(starts.values())} started, "
+            f"{sum(ends.values())} ended)"
+        )
+    if last not in {"step_end", "step_skip"}:
+        return False, f"journal ends on {last!r}, not step_end or step_skip"
+    return True, (
+        f"{sum(starts.values())} steps started and ended; "
+        f"{sum(skips.values())} skipped"
+    )
 
 
 def read_run(unit_dir: str):
@@ -351,16 +398,52 @@ def _selftest() -> int:
     with tempfile.TemporaryDirectory() as d:
         j = Path(d) / "safe-ci-dag-runner"
         j.mkdir()
-        good = ['{"event":"step_start","step":"a"}', '{"event":"step_end","step":"a"}']
+        good = [
+            '{"event":"step_start","step":"a"}',
+            '{"event":"step_end","step":"a","ok":false}',
+        ]
         (j / "journal.jsonl").write_text("\n".join(good) + "\n")
-        check("a balanced journal reads as completed", read_journal_completeness(d)[0], True)
-        (j / "journal.jsonl").write_text("\n".join(good + ['{"event":"step_start","step":"b"}']) + "\n")
+        done, why = read_journal_completeness(d)
+        check("a real boolean false is a valid terminal verdict", done, True)
+        check(
+            "the structural result does not misreport false as a pass",
+            "1 steps started and ended" in why,
+            True,
+        )
+        string_false = [
+            '{"event":"step_start","step":"a"}',
+            '{"event":"step_end","step":"a","ok":"false"}',
+        ]
+        (j / "journal.jsonl").write_text("\n".join(string_false) + "\n")
+        done, why = read_journal_completeness(d)
+        check("a string false verdict is refused", done, False)
+        check(
+            "and the refusal names the required type",
+            "must be a boolean" in why,
+            True,
+        )
+        complete_with_skip = good + [
+            '{"event":"step_skip","step":"b","reason":"dependency_failed"}'
+        ]
+        (j / "journal.jsonl").write_text("\n".join(complete_with_skip) + "\n")
+        done, why = read_journal_completeness(d)
+        check("a complete journal may end on step_skip", done, True)
+        check(
+            "and reports the skipped population",
+            why,
+            "1 steps started and ended; 1 skipped",
+        )
+        (j / "journal.jsonl").write_text(
+            "\n".join(good + ['{"event":"step_start","step":"b"}']) + "\n"
+        )
         done, why = read_journal_completeness(d)
         check("an unmatched step_start reads as truncated", done, False)
         check("and it says which", "unmatched step_start" in why, True)
-        # A run that ended on a test_end rather than a step_end also stopped early.
-        (j / "journal.jsonl").write_text("\n".join(good + ['{"event":"test_end","test":"t"}']) + "\n")
-        check("a journal not ending on step_end reads as truncated",
+        # A run ending on test_end rather than a terminal step record stopped early.
+        (j / "journal.jsonl").write_text(
+            "\n".join(good + ['{"event":"test_end","test":"t"}']) + "\n"
+        )
+        check("a journal not ending on a terminal step record reads as truncated",
               read_journal_completeness(d)[0], False)
         # ABSENCE OF A JOURNAL IS NOT EVIDENCE OF TRUNCATION -- refusing those
         # would silently drop every run predating the journal.
