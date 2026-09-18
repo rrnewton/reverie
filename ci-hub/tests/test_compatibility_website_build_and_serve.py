@@ -639,7 +639,14 @@ def test_historical_compose_is_self_validating_and_discloses_every_page(
         "test ID × mode × backend",
         "deterministic execution, record/replay, or chaos concurrency testing",
         "A backend identifies the Reverie implementation",
-        "evidence recorded in the displayed snapshot; it is not a live status view",
+        "Historical measurement",
+        "This page is not a live status view",
+        "source validation run finished",
+        "not the timestamp of every cell result",
+        "qualifying measurements retained in this artifact from multiple runs",
+        "KVM and LiteInst in this artifact",
+        "not changes since an earlier snapshot",
+        "not counts of cross-backend matches",
     ):
         assert explanation in landing
     assert landing.index("The Hermit container enables") < landing.index(

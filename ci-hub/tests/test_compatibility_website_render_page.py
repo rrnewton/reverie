@@ -4493,18 +4493,70 @@ def test_cells_table_fits_a_narrow_viewport_and_the_run_table_keeps_its_fixed_la
     assert run_layout == "fixed"
 
 
-def test_landing_introduction_separates_a_dated_snapshot_from_current_progress() -> None:
-    """The review found a reader could read snapshot counts as current progress,
-    and could read the manifest as the denominator for red."""
-    landing = render_page._landing_introduction()
+def test_landing_introduction_separates_historical_results_from_current_progress() -> None:
+    """The source run time is not the time of every retained cell result."""
+    cells = (
+        {
+            "backend": "kvm",
+            "latest_result_time": "2026-09-01T04:00:00Z",
+            "state": "green",
+        },
+        {
+            "backend": "liteinst",
+            "latest_result_time": "2026-09-03T06:00:00Z",
+            "state": "red",
+        },
+    )
+    model = SimpleNamespace(
+        cells=cells,
+        data={
+            "provenance": {
+                "historical": {"finished_at": "2026-09-02T05:00:00Z"}
+            }
+        },
+    )
+    landing = render_page._landing_introduction(model)
 
-    assert "it is not a live status view" in landing
-    assert "single dated measurement run" in landing
-    assert "Backend work that landed after that run is not represented" in landing
-    assert "Green and red are counted only over cells this run actually measured" in landing
-    assert "never measured" in landing
+    assert "Historical measurement" in landing
+    assert "not a live status view" in landing
+    assert "source validation run finished" in landing
+    assert "2026-09-02 01:00:00 ET" in landing
+    assert "not the timestamp of every cell result" in landing
+    assert "2026-09-01 00:00:00 ET" in landing
+    assert "2026-09-03 02:00:00 ET" in landing
+    assert "multiple runs" in landing
+    assert "single dated measurement run" not in landing
+    assert "Green and red are counted only over cells for which this artifact has a selected result" in landing
+    assert "remaining cells are reported separately" in landing
     # The old vocabulary must not come back with the new prose.
     assert "enabled" not in landing.lower()
+
+
+def test_backend_position_derives_broad_and_leaderboard_populations() -> None:
+    model, red_kvm = _model_with_red_kvm_cell()
+    green_kvm = copy.deepcopy(red_kvm)
+    green_kvm.update(
+        cell="tests/other/verify/kvm",
+        test="tests/other",
+        latest_result="pass",
+        state="green",
+    )
+    liteinst = copy.deepcopy(green_kvm)
+    liteinst.update(
+        backend="liteinst",
+        cell="tests/other/verify/liteinst",
+    )
+    model = replace(model, cells=(*model.cells, green_kvm, liteinst))
+
+    source = render_page._backend_snapshot_position(model)
+
+    assert "1 KVM Green cell out of 2 KVM cells with a result" in source
+    assert "1 LiteInst Green cell out of 1 LiteInst cell with a result" in source
+    assert "1 KVM result cell without a ptrace-Green reference excluded" in source
+    assert "1 LiteInst result cell without a ptrace-Green reference excluded" in source
+    assert "not changes since an earlier snapshot" in source
+    assert "not counts of cross-backend matches" in source
+    assert "missing records, extra records, and virtual-time differences" in source
 
 
 def test_cell_identity_heading_breaks_only_at_its_separators(

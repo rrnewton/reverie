@@ -1454,6 +1454,46 @@ def _backend_rows(model: SiteModel) -> tuple[dict[str, Any], ...]:
     )
 
 
+def _backend_snapshot_position(model: SiteModel) -> str:
+    """Distinguish all backend results from the narrower leaderboard population."""
+    leaderboard = {str(row["backend"]): row for row in _backend_rows(model)}
+    positions = []
+    exclusions = []
+    for backend, label in (("kvm", "KVM"), ("liteinst", "LiteInst")):
+        result_cells = [
+            cell
+            for cell in model.cells
+            if cell["backend"] == backend
+            and _cell_state(cell) in {"green", "red"}
+        ]
+        green = sum(_cell_state(cell) == "green" for cell in result_cells)
+        positions.append(
+            f"{_counted(green, label + ' Green cell')} out of "
+            f"{_counted(len(result_cells), label + ' cell')} with a result"
+        )
+        row = leaderboard.get(backend)
+        if row is None:
+            exclusions.append(f"no {label} leaderboard row")
+        else:
+            exclusions.append(
+                f"{_counted(row['excluded'], label + ' result cell')} "
+                "without a ptrace-Green reference excluded"
+            )
+    return (
+        '<div class="backend-position">'
+        '<p><strong>KVM and LiteInst in this artifact.</strong> The complete Cells '
+        f"data records {positions[0]}, and {positions[1]}. These are positions in "
+        "this artifact, not changes since an earlier snapshot and not counts of "
+        "cross-backend matches.</p>"
+        "<p>The leaderboard below uses a narrower population for non-ptrace "
+        "backends: only result cells whose matching test and mode are Green on "
+        f"ptrace. It reports {exclusions[0]} and {exclusions[1]}. The aggregate "
+        "does not explain why two executions differ; missing records, extra "
+        "records, and virtual-time differences remain separate observations.</p>"
+        "</div>"
+    )
+
+
 def _backend_leaderboard(model: SiteModel) -> str:
     rows = []
     for item in _backend_rows(model):
@@ -1505,6 +1545,7 @@ def _backend_leaderboard(model: SiteModel) -> str:
     )
     return (
         '<section id="backends"><h2>Backends</h2>'
+        f'{_backend_snapshot_position(model)}'
         '<p>Non-ptrace percentages use result cells whose matching test and mode are green on ptrace. '
         'A red cell receives partial credit from its first divergent scheduler turn against the complete same-commit ptrace execution. '
         'Result cells without that ptrace-green reference are excluded and reported below. Ptrace partial credit is an estimate from its two recorded runs.</p>'
@@ -2165,21 +2206,55 @@ def _provenance(model: SiteModel, page: str = "index.html") -> str:
     </section>"""
 
 
-def _landing_introduction() -> str:
-    return """
+def _historical_measurement_note(model: SiteModel) -> str:
+    historical = model.data["provenance"].get("historical")
+    if not isinstance(historical, Mapping):
+        raise RenderRefused("historical introduction requires historical provenance")
+    finished_at = historical.get("finished_at")
+    source_run_finished = _time_element(finished_at, "historical finished_at")
+    result_times = [
+        cell.get("latest_result_time")
+        for cell in model.cells
+        if _cell_state(cell) in {"green", "red"}
+    ]
+    if not result_times or any(not isinstance(value, str) for value in result_times):
+        raise RenderRefused(
+            "historical introduction requires a timestamp for every selected result"
+        )
+    ordered = sorted(
+        result_times,
+        key=lambda value: datetime.fromisoformat(
+            str(value)[:-1] + "+00:00" if str(value).endswith("Z") else str(value)
+        ),
+    )
+    earliest = _time_element(ordered[0], "earliest selected result time")
+    latest = _time_element(ordered[-1], "latest selected result time")
+    return (
+        '<p><strong>Historical measurement.</strong> This page is not a live '
+        "status view. The time in <em>Full snapshot provenance</em> is when the "
+        f"source validation run finished ({source_run_finished}); it is not the "
+        "timestamp of every cell result. The result counts select qualifying "
+        "measurements retained in this artifact from multiple runs. The selected "
+        f"latest result for each cell spans {earliest} through {latest}. Work and "
+        "measurements not retained in this artifact are outside these counts.</p>"
+    )
+
+
+def _landing_introduction(model: SiteModel) -> str:
+    return f"""
     <div class="scorecard-introduction">
       <p>For more context, see the <a href="https://github.com/rrnewton/hermit/blob/main/README.md">README</a> and the high-level <a href="https://developers.facebook.com/blog/post/2022/11/22/hermit-deterministic-linux-testing/">introduction in the blog post</a>.</p>
       <p>Hermit testing centers on a suite of test programs, each identified by a test ID. The central compatibility matrix is indexed by <strong>test ID × mode × backend</strong>. A mode selects deterministic execution, record/replay, or chaos concurrency testing. A backend identifies the Reverie implementation and the way it instruments the guest program.</p>
-      <p>This page reports the compatibility evidence recorded in the displayed snapshot; it is not a live status view.</p>
-      <p>Every count here comes from the single dated measurement run named in the provenance above, so it answers &ldquo;what did that run measure?&rdquo; and not &ldquo;where is the project now?&rdquo;. Backend work that landed after that run is not represented, and a backend whose coverage changed since then still shows the figure this run recorded. Comparing two dates means opening two snapshots and comparing them; no page on this site does that for you.</p>
-      <p>Read the result counts against the right denominator. Green and red are counted only over cells this run actually measured, which is a much smaller population than the manifest. Cells the run did not select are reported separately as never measured; they are not failures, and folding them in would understate the pass rate as badly as ignoring them would overstate it.</p>
+      {_historical_measurement_note(model)}
+      <p>Comparing two dates means opening two snapshots and comparing them; no page on this site does that for you.</p>
+      <p>Read the result counts against the right denominator. Green and red are counted only over cells for which this artifact has a selected result, which is a much smaller population than the manifest. The remaining cells are reported separately and are not counted as failures; folding them into the result denominator would understate the pass rate.</p>
     </div>"""
 
 
 def _landing_page(model: SiteModel) -> bytes:
     page = "index.html"
     content = (
-        (_landing_introduction() if model.wording.landing_introduction else "")
+        (_landing_introduction(model) if model.wording.landing_introduction else "")
         + _overview(model, page)
         + _test_listing(model, page)
         + ("" if model.wording.disclosure else _provenance(model))
