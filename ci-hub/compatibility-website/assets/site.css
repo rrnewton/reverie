@@ -747,9 +747,22 @@ thead th,
   white-space: pre-wrap;
 }
 
-.test-card {
+.backend-leaderboard td strong {
+  font-size: 1.1rem;
+}
+
+.test-category {
   border-top: 1px solid var(--border);
-  padding: 0.75rem 0;
+  padding-top: 0.65rem;
+}
+
+.test-category h3 {
+  margin-bottom: 0.25rem;
+}
+
+.test-name-list {
+  line-height: 1.9;
+  margin-top: 0;
 }
 
 .card-list {
@@ -794,13 +807,11 @@ pre {
   white-space: pre-wrap;
 }
 
-.test-card dl,
 .provenance {
   display: grid;
   gap: 0.5rem;
 }
 
-.test-card dl > div,
 .provenance > div {
   display: grid;
   gap: 0.25rem;
@@ -847,7 +858,6 @@ footer {
     padding: 1rem;
   }
 
-  .test-card dl > div,
   .provenance > div,
   .facts > div {
     grid-template-columns: 1fr;
@@ -871,7 +881,6 @@ footer {
 
   .facts > div,
   .compact-facts > div,
-  .test-card dl > div,
   .provenance > div {
     grid-template-columns: minmax(0, 1fr);
   }

@@ -2544,6 +2544,109 @@
     });
   }
 
+  function firstDivergenceSection(record) {
+    if (record.data.latest_result !== 'product_failure') {
+      return null;
+    }
+    const divergence = exactObject(
+      record.latest_divergence,
+      ['coordinates', 'scheduler_turn_difference'],
+      'latest divergence',
+    );
+    const coordinates = exactObject(
+      divergence.coordinates,
+      [
+        'first_divergent_record',
+        'first_divergent_scheduler_turn',
+        'first_divergent_syscall',
+        'first_divergent_virtual_nanoseconds',
+      ],
+      'latest divergence coordinates',
+    );
+    const section = dataNode('section', null, 'first-divergence');
+    section.appendChild(dataNode('h2', 'First divergence'));
+    const facts = dataNode('dl', null, 'facts compact-facts');
+    for (const [label, field] of [
+      ['First divergent record', 'first_divergent_record'],
+      ['First divergent syscall', 'first_divergent_syscall'],
+      ['First divergent scheduler turn', 'first_divergent_scheduler_turn'],
+      ['First divergent virtual nanoseconds', 'first_divergent_virtual_nanoseconds'],
+    ]) {
+      const value = coordinates[field];
+      if (value !== null && (typeof value !== 'string' || !/^[0-9]+$/.test(value))) {
+        throw new Error(`${field} is invalid`);
+      }
+      appendStructured(facts, label, value === null ? 'Not recorded' : value);
+    }
+    const partialCredit = exactObject(
+      record.partial_credit,
+      ['estimated', 'reason', 'value'],
+      'partial credit',
+    );
+    if (partialCredit.value === null) {
+      if (typeof partialCredit.reason !== 'string' || !partialCredit.reason) {
+        throw new Error('unavailable partial credit has no reason');
+      }
+      appendStructured(
+        facts,
+        'Partial credit',
+        `Not available — ${partialCredit.reason}`,
+      );
+    } else {
+      if (
+        typeof partialCredit.value !== 'string' ||
+        !/^(?:100\.0|[0-9]{1,2}\.[0-9])%$/.test(partialCredit.value) ||
+        typeof partialCredit.estimated !== 'boolean' ||
+        partialCredit.reason !== null
+      ) {
+        throw new Error('partial credit is invalid');
+      }
+      appendStructured(
+        facts,
+        'Partial credit',
+        partialCredit.estimated ? `${partialCredit.value} (estimate)` : partialCredit.value,
+      );
+    }
+    const difference = exactObject(
+      divergence.scheduler_turn_difference,
+      ['previous_commit', 'reason', 'value'],
+      'scheduler-turn difference',
+    );
+    if (difference.value === null) {
+      if (typeof difference.reason !== 'string' || !difference.reason) {
+        throw new Error('unavailable scheduler-turn difference has no reason');
+      }
+      appendStructured(
+        facts,
+        'Scheduler-turn difference from previous recorded commit',
+        `Not available — ${difference.reason}`,
+      );
+    } else {
+      if (
+        typeof difference.value !== 'string' ||
+        !/^-?[0-9]+$/.test(difference.value) ||
+        typeof difference.previous_commit !== 'string' ||
+        !/^[0-9a-f]{40}$/.test(difference.previous_commit) ||
+        difference.reason !== null
+      ) {
+        throw new Error('scheduler-turn difference is invalid');
+      }
+      const value = dataNode('span');
+      const sign = difference.value.startsWith('-') || difference.value === '0' ? '' : '+';
+      value.append(
+        document.createTextNode(`${sign}${difference.value} scheduler turns compared with `),
+        hermitCommitLink(difference.previous_commit),
+      );
+      appendStructured(
+        facts,
+        'Scheduler-turn difference from previous recorded commit',
+        value,
+      );
+    }
+    section.appendChild(facts);
+    return section;
+  }
+
   function renderCellDetail(rootElement, record, urls) {
     const cell = record.data;
     rootElement.appendChild(identityNode('h1', record.identity));
@@ -2576,6 +2679,10 @@
       appendStructured(facts, label, value);
     }
     rootElement.appendChild(facts);
+    const divergence = firstDivergenceSection(record);
+    if (divergence !== null) {
+      rootElement.appendChild(divergence);
+    }
     const reproducer = dataNode('section');
     reproducer.appendChild(dataNode('h2', 'Reproducer'));
     const reproducerFacts = dataNode('dl', null, 'facts');

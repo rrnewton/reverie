@@ -772,7 +772,7 @@ def test_every_generated_data_collection_has_file_safe_controls() -> None:
     runs = _collection_structure(files["runs/index.html"])
     audit = _collection_structure(files["cells/projection-audit.html"])
     commands = _collection_structure(files["tests/custom-commands.html"])
-    assert set(landing.controls) == {"tests"}
+    assert not landing.controls
     assert set(runs.controls) == {"validation-runs"}
     if data["runs"]["projection_exclusion_counts"]:
         assert set(audit.controls) == {"projection-audit"}
@@ -784,7 +784,7 @@ def test_every_generated_data_collection_has_file_safe_controls() -> None:
         assert not commands.controls
         assert 'id="custom-commands"' in files["tests/custom-commands.html"].decode()
     assert runs.controls["validation-runs"]["data-page-size"] == "50"
-    assert landing.items["1"] == len(data["tests"])
+    assert not landing.items
     assert runs.items["1"] == len(data["runs"]["validation_history_rows"])
     assert commands.items["1"] == len(data["selected_by_full_custom_commands"])
 
@@ -826,16 +826,16 @@ def test_generic_collection_metadata_is_canonical_and_content_remains_embedded()
     runs_source = files["runs/index.html"].decode()
     runs = _collection_structure(files["runs/index.html"])
 
-    assert landing.items["1"] == len(data["tests"])
+    assert not landing.items
     assert runs.items["1"] == len(data["runs"]["validation_history_rows"])
-    assert 'data-list-item="1"' in landing_source
+    assert 'data-list-item="1"' not in landing_source
     assert "data-filter-values" not in landing_source
     assert "data-sort-values" not in landing_source
     assert 'data-query-prefix="runs_"' not in landing_source
     assert 'data-query-prefix="runs_"' in runs_source
     assert "data-list-previous" not in landing_source
     assert "data-list-next" not in landing_source
-    assert "data-list-clear" in landing_source
+    assert "data-list-clear" not in landing_source
 
 
 def test_landing_keeps_only_tests_and_moved_pages_preserve_content_and_navigation() -> (
@@ -850,7 +850,7 @@ def test_landing_keeps_only_tests_and_moved_pages_preserve_content_and_navigatio
     audit = files["cells/projection-audit.html"].decode()
     commands = files["tests/custom-commands.html"].decode()
 
-    assert set(_collection_structure(files["index.html"]).controls) == {"tests"}
+    assert not _collection_structure(files["index.html"]).controls
     assert 'id="overview"' in landing
     assert 'id="tests"' in landing
     for section in (
@@ -930,16 +930,12 @@ def test_non_table_collections_render_compact_order_buttons_and_hidden_state() -
         "not_applicable_reason": None,
         "test": "applications/custom",
     }
+    tests_source = render_page._test_listing(model, "index.html")
+    assert 'class="list-controls"' not in tests_source
+    assert 'class="listing-card"' not in tests_source
+    assert "cells in the manifest" not in tests_source
+    assert "result rows shown" not in tests_source
     sources = (
-        (
-            render_page._test_listing(model, "index.html"),
-            (
-                ("manifest", "Manifest order"),
-                ("test", "TestName"),
-                ("cells", "Manifest cells"),
-                ("results", "Result rows"),
-            ),
-        ),
         (
             render_page._custom_commands(
                 replace(model, custom_commands=(command,)), "index.html"
@@ -974,7 +970,7 @@ def test_non_table_collections_render_compact_order_buttons_and_hidden_state() -
         ) == list(expected_sorts)
     assert "TestName" in sources[0][0]
     assert "TestName" in sources[1][0]
-    assert "Test name" not in "".join(source for source, _sorts in sources)
+    assert "Test name" not in tests_source + "".join(source for source, _sorts in sources)
 
 
 def test_validation_run_record_control_uses_exact_canonical_row_values() -> None:
@@ -2782,6 +2778,302 @@ def test_recent_passing_execution_requires_the_exact_validate_verdict_join() -> 
     assert render_page._recent_passing_execution(unavailable, cell) is None
 
 
+def _model_with_red_kvm_cell() -> tuple[Any, dict[str, Any]]:
+    data = _add_runtime_counts(representative_build_data())
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    ptrace = model.cells[0]
+    current = copy.deepcopy(model.series_by_cell[str(ptrace["cell"])][0])
+    current.update(
+        event_id="event-kvm-current",
+        emitted_at="2026-09-02T00:00:00Z",
+        producer="pressure-test",
+        product_result="product_failure",
+        run_id="pressure-current",
+    )
+    current["series"].update(
+        cell="tests/hello/verify/kvm",
+        coordinates={
+            "first_divergent_record": 9,
+            "first_divergent_syscall": 7,
+            "first_divergent_scheduler_turn": 8,
+            "first_divergent_virtual_nanoseconds": 900,
+        },
+        outcome="diverged",
+        result="product_failure",
+    )
+    previous = copy.deepcopy(current)
+    previous.update(
+        event_id="event-kvm-previous",
+        emitted_at="2026-09-01T00:00:00Z",
+        run_id="pressure-previous",
+    )
+    previous["series"].update(
+        tree="2" * 40,
+        coordinates={
+            **current["series"]["coordinates"],
+            "first_divergent_scheduler_turn": 3,
+        },
+    )
+    kvm = {
+        **copy.deepcopy(ptrace),
+        "backend": "kvm",
+        "cell": "tests/hello/verify/kvm",
+        "event_ids": ["event-kvm-current", "event-kvm-previous"],
+        "latest_event_ids": ["event-kvm-current"],
+        "latest_result": "product_failure",
+        "latest_result_time": "2026-09-02T00:00:00Z",
+        "latest_result_tree": "1" * 40,
+        "qualifying_event_ids": ["event-kvm-current", "event-kvm-previous"],
+        "selected_by": {},
+        "state": "red",
+    }
+    return (
+        replace(
+            model,
+            cells=(ptrace, kvm),
+            cell_by_id={str(ptrace["cell"]): ptrace, str(kvm["cell"]): kvm},
+            series_rows=(*model.series_rows, previous, current),
+            series_by_cell={
+                str(ptrace["cell"]): model.series_by_cell[str(ptrace["cell"])],
+                str(kvm["cell"]): (previous, current),
+            },
+            series_by_event={
+                **model.series_by_event,
+                str(previous["event_id"]): previous,
+                str(current["event_id"]): current,
+            },
+            cell_paths={
+                **model.cell_paths,
+                str(kvm["cell"]): "cells/detail.html?cell="
+                + _digest_for_identity(str(kvm["cell"])),
+            },
+        ),
+        kvm,
+    )
+
+
+def test_backend_leaderboard_uses_same_commit_ptrace_scheduler_turn_length() -> None:
+    model, kvm = _model_with_red_kvm_cell()
+
+    rows = {row["backend"]: row for row in render_page._backend_rows(model)}
+    assert rows["kvm"] == {
+        "backend": "kvm",
+        "denominator": 1,
+        "excluded": 0,
+        "green": 0,
+        "green_percentage": 0.0,
+        "partial_percentage": 0.5,
+        "unavailable": 0,
+    }
+    source = render_page._backend_leaderboard(model)
+    assert "Green cells" in source
+    assert "Counting partial credit" in source
+    assert "0.0%" in source
+    assert "50.0%" in source
+    assert "same-commit ptrace execution" in source
+    assert [row["backend"] for row in render_page._backend_rows(model)] == [
+        "ptrace",
+        "kvm",
+    ]
+    no_score = {**copy.deepcopy(kvm), "backend": "liteinst", "mode": "run"}
+    no_score["cell"] = "tests/hello/run/liteinst"
+    ordered = render_page._backend_rows(replace(model, cells=(*model.cells, no_score)))
+    assert [row["backend"] for row in ordered] == ["ptrace", "kvm", "liteinst"]
+
+    wrong_commit_ptrace = copy.deepcopy(model.cell_by_id["tests/hello/verify/ptrace"])
+    wrong_commit_ptrace["latest_result_tree"] = "3" * 40
+    historical_reference_model = replace(
+        model,
+        cell_by_id={
+            **model.cell_by_id,
+            "tests/hello/verify/ptrace": wrong_commit_ptrace,
+        },
+    )
+    still_available = {
+        row["backend"]: row
+        for row in render_page._backend_rows(historical_reference_model)
+    }["kvm"]
+    assert still_available["partial_percentage"] == 0.5
+
+    unmatched = copy.deepcopy(kvm)
+    unmatched["latest_result_tree"] = "3" * 40
+    unmatched_current = copy.deepcopy(model.series_by_event["event-kvm-current"])
+    unmatched_current["series"]["tree"] = "3" * 40
+    unavailable_model = replace(
+        model,
+        cells=(model.cells[0], unmatched),
+        cell_by_id={
+            str(model.cells[0]["cell"]): model.cells[0],
+            str(unmatched["cell"]): unmatched,
+        },
+        series_by_cell={
+            **model.series_by_cell,
+            str(unmatched["cell"]): (
+                model.series_by_event["event-kvm-previous"],
+                unmatched_current,
+            ),
+        },
+        series_by_event={
+            **model.series_by_event,
+            "event-kvm-current": unmatched_current,
+        },
+    )
+    unavailable = {
+        row["backend"]: row for row in render_page._backend_rows(unavailable_model)
+    }["kvm"]
+    assert unavailable["green_percentage"] == 0.0
+    assert unavailable["partial_percentage"] is None
+    assert unavailable["unavailable"] == 1
+
+    no_reference_model = replace(
+        model,
+        cell_by_id={str(kvm["cell"]): kvm},
+        cells=(kvm,),
+    )
+    excluded = render_page._backend_rows(no_reference_model)[0]
+    assert excluded["denominator"] == 0
+    assert excluded["excluded"] == 1
+    assert excluded["green_percentage"] is None
+    assert excluded["partial_percentage"] is None
+    assert render_page._red_cell_partial_credit(no_reference_model, kvm) == {
+        "estimated": False,
+        "reason": "the matching test and mode are not green on ptrace",
+        "value": None,
+    }
+
+    native = {**copy.deepcopy(kvm), "backend": "native"}
+    native["cell"] = "tests/hello/verify/native"
+    e9patch = {**copy.deepcopy(kvm), "backend": "e9patch"}
+    e9patch["cell"] = "tests/hello/verify/e9patch"
+    without_non_backends = replace(model, cells=(*model.cells, native, e9patch))
+    assert {"native", "e9patch"}.isdisjoint(
+        row["backend"] for row in render_page._backend_rows(without_non_backends)
+    )
+
+
+def test_ptrace_scheduler_turn_length_weights_latest_passing_rows_by_num_runs() -> None:
+    cell = {
+        "cell": "tests/hello/verify/ptrace",
+        "latest_result": "pass",
+        "qualifying_event_ids": ["event-1", "event-2"],
+        "state": "green",
+    }
+
+    def row(event_id: str, weight: int, left: int, right: int) -> dict[str, Any]:
+        return {
+            "emitted_at": "2026-09-02T00:00:00Z",
+            "event_id": event_id,
+            "product_result": "pass",
+            "series": {
+                "cell": cell["cell"],
+                "num_runs": weight,
+                "runtime": {
+                    "run1": {"scheduler_turns": left},
+                    "run2": {"scheduler_turns": right},
+                },
+                "tree": "1" * 40,
+            },
+        }
+
+    rows = (row("event-1", 1, 10, 30), row("event-2", 3, 20, 40))
+    model = SimpleNamespace(series_by_cell={str(cell["cell"]): rows})
+    assert render_page._passing_scheduler_turn_length(
+        model, cell, "1" * 40
+    ) == render_page.Fraction(55, 2)
+
+
+def test_red_cell_browser_record_has_four_coordinates_and_turn_difference() -> None:
+    model, kvm = _model_with_red_kvm_cell()
+    record = render_page._browser_cell_record(model, kvm)
+
+    assert record["latest_divergence"] == {
+        "coordinates": {
+            "first_divergent_record": "9",
+            "first_divergent_scheduler_turn": "8",
+            "first_divergent_syscall": "7",
+            "first_divergent_virtual_nanoseconds": "900",
+        },
+        "scheduler_turn_difference": {
+            "previous_commit": "2" * 40,
+            "reason": None,
+            "value": "5",
+        },
+    }
+    assert record["partial_credit"] == {
+        "estimated": False,
+        "reason": None,
+        "value": "50.0%",
+    }
+
+
+def test_turn_difference_uses_qualifying_divergences() -> None:
+    model, kvm = _model_with_red_kvm_cell()
+    intervening = copy.deepcopy(model.series_by_event["event-kvm-current"])
+    intervening.update(
+        event_id="event-kvm-unqualified",
+        emitted_at="2026-09-01T12:00:00Z",
+        run_id="pressure-unqualified",
+    )
+    intervening["series"]["coordinates"]["first_divergent_scheduler_turn"] = 7
+    with_unqualified = replace(
+        model,
+        series_by_cell={
+            **model.series_by_cell,
+            str(kvm["cell"]): (*model.series_by_cell[str(kvm["cell"])], intervening),
+        },
+    )
+
+    difference = render_page._latest_divergence(with_unqualified, kvm)[
+        "scheduler_turn_difference"
+    ]
+    assert difference == {
+        "previous_commit": "2" * 40,
+        "reason": None,
+        "value": 5,
+    }
+
+
+def test_ptrace_red_partial_credit_is_labelled_as_an_estimate() -> None:
+    model, kvm = _model_with_red_kvm_cell()
+    ptrace_red = {**kvm, "backend": "ptrace"}
+
+    partial_credit = render_page._red_cell_partial_credit(model, ptrace_red)
+
+    assert partial_credit == {
+        "estimated": True,
+        "reason": None,
+        "value": render_page.Fraction(1, 2),
+    }
+
+
+def test_overview_tests_are_complete_wrapping_name_lists_by_category() -> None:
+    data = representative_build_data()
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    second = copy.deepcopy(model.tests[0])
+    second.update(category="applications", id="applications/z-last", cells=[])
+    third = copy.deepcopy(second)
+    third["id"] = "applications/a-first"
+    paths = {
+        **model.test_paths,
+        str(second["id"]): "tests/detail.html?test=" + _digest_for_identity(second["id"]),
+        str(third["id"]): "tests/detail.html?test=" + _digest_for_identity(third["id"]),
+    }
+
+    source = render_page._test_listing(
+        replace(model, tests=(model.tests[0], second, third), test_paths=paths),
+        "index.html",
+    )
+
+    assert source.count('class="test-category"') == 2
+    assert '<h3>applications</h3>' in source
+    assert "z-last" in source and "a-first" in source and "hello" in source
+    assert re.search(r">a-first</code></a>, <a [^>]+><code>z-last</code></a>", source)
+    assert 'class="test-name-list"' in source
+    assert 'class="list-controls"' not in source
+    assert 'class="listing-card"' not in source
+    assert "cells in the manifest" not in source
+
+
 def test_detail_shards_only_hold_runtime_detail_records_and_keep_evidence() -> None:
     data = data_with_all_three_states_and_one_omitted_row()
     files = render_page.render_site(_build(data), data)
@@ -3850,7 +4142,7 @@ def test_detail_pagination_uses_namespaced_queries_and_evidence_only_fragments(
     page.close()
 
 
-def test_generic_collections_push_committed_changes_and_preserve_route_state(
+def test_tests_have_no_controls_and_run_controls_preserve_route_state(
     chromium_browser: Any,
 ) -> None:
     data = representative_build_data()
@@ -3859,47 +4151,10 @@ def test_generic_collections_push_committed_changes_and_preserve_route_state(
     _browser_route(page, files)
     page.goto("http://127.0.0.1/index.html#tests")
 
-    tests = page.locator("form[data-list-controls='tests']")
+    assert page.locator("form[data-list-controls='tests']").count() == 0
     assert page.locator("form[data-list-controls='validation-runs']").count() == 0
-    pre_search_url = page.url
-    search = tests.locator("[name='q']")
-    search.press_sequentially("h")
-    page.wait_for_function("location.search.includes('tests_q=h')")
-    search.press_sequentially("ello")
-    page.wait_for_function("location.search.includes('tests_q=hello')")
-    search_url = page.url
-    history_after_search = page.evaluate("history.length")
-    assert tests.locator("button[type='submit']").count() == 0
-    assert tests.locator("select[name='sort']").is_hidden()
-    assert tests.locator("select[name='direction']").is_hidden()
-    search.press("Enter")
-    assert page.url == search_url
-    assert page.evaluate("history.length") == history_after_search
-    page.go_back()
-    page.wait_for_function("!location.search.includes('tests_q=')")
-    assert page.url == pre_search_url
-    page.go_forward()
-    page.wait_for_function("location.search.includes('tests_q=hello')")
-    assert page.url == search_url
-
-    test_order = tests.locator("[data-list-sort='test']")
-    assert test_order.inner_text() == "TestName"
-    test_order.click()
-    page.wait_for_function("location.search.includes('tests_sort=test')")
-    assert test_order.get_attribute("aria-pressed") == "true"
-    assert test_order.locator(".sort-indicator").inner_text() == "▲"
-    assert "Activate to sort descending" in (test_order.get_attribute("title") or "")
-    test_order.press("Space")
-    page.wait_for_function("location.search.includes('tests_direction=desc')")
-    assert test_order.locator(".sort-indicator").inner_text() == "▼"
-    assert "Activate to sort ascending" in (
-        test_order.get_attribute("aria-label") or ""
-    )
-    page.reload()
-    assert tests.locator("[name='q']").input_value() == "hello"
-    assert tests.locator("[name='sort']").input_value() == "test"
-    assert tests.locator("[name='direction']").input_value() == "desc"
-    assert test_order.locator(".sort-indicator").inner_text() == "▼"
+    assert page.locator("#tests .test-category").count() == 1
+    assert page.locator("#tests .test-name-list a").count() == len(data["tests"])
 
     page.goto("http://127.0.0.1/runs/index.html")
     runs = page.locator("form[data-list-controls='validation-runs']")

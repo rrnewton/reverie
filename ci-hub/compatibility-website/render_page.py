@@ -25,6 +25,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from fractions import Fraction
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlencode
@@ -51,6 +52,12 @@ LIST_PAGE_SIZE = 50
 SELECTED_GROUP_PAGE_SIZE = 8
 SELECTED_GROUP_CHILD_LIMIT = 25
 MAX_U64 = (1 << 64) - 1
+DIVERGENCE_COORDINATES = (
+    ("first_divergent_record", "First divergent record"),
+    ("first_divergent_syscall", "First divergent syscall"),
+    ("first_divergent_scheduler_turn", "First divergent scheduler turn"),
+    ("first_divergent_virtual_nanoseconds", "First divergent virtual nanoseconds"),
+)
 # The largest measured Stage 1 build record was 1,520,395 bytes in the
 # previously published 8,006-file site.  Keep four times that observed
 # file-count trajectory (32,024 files) while retaining a finite refusal bound.
@@ -1223,6 +1230,289 @@ def _result_reading(model: SiteModel) -> str:
     )
 
 
+def _percentage(value: Fraction) -> str:
+    return f"{100.0 * value:.1f}%"
+
+
+def _passing_scheduler_turn_length(
+    model: SiteModel,
+    cell: Mapping[str, Any],
+    commit: str,
+) -> Fraction | None:
+    """Return the complete paired-run length for a passing execution."""
+    if _cell_state(cell) != "green":
+        return None
+    qualifying_event_ids = cell.get("qualifying_event_ids")
+    if (
+        not isinstance(qualifying_event_ids, Sequence)
+        or isinstance(qualifying_event_ids, (str, bytes))
+    ):
+        return None
+    qualifying = {str(event_id) for event_id in qualifying_event_ids}
+    candidates = [
+        row
+        for row in model.series_by_cell.get(str(cell["cell"]), ())
+        if str(row["event_id"]) in qualifying
+        and row.get("product_result") == "pass"
+        and row["series"].get("tree") == commit
+    ]
+    if not candidates:
+        return None
+    observed = [
+        (datetime.fromisoformat(str(row["emitted_at"]).replace("Z", "+00:00")), row)
+        for row in candidates
+    ]
+    latest_time = max(value[0] for value in observed)
+    rows = tuple(row for instant, row in observed if instant == latest_time)
+    weighted_total = 0
+    weight_total = 0
+    for row in rows:
+        runtime = row["series"].get("runtime")
+        if not isinstance(runtime, Mapping):
+            return None
+        turns = []
+        for run_name in ("run1", "run2"):
+            run = runtime.get(run_name)
+            value = run.get("scheduler_turns") if isinstance(run, Mapping) else None
+            if type(value) is not int or value <= 0:
+                return None
+            turns.append(value)
+        weight = row["series"].get("num_runs")
+        if type(weight) is not int or weight <= 0:
+            return None
+        weighted_total += (turns[0] + turns[1]) * weight
+        weight_total += 2 * weight
+    return Fraction(weighted_total, weight_total) if weight_total else None
+
+
+def _ptrace_red_scheduler_turn_length(
+    model: SiteModel, cell: Mapping[str, Any]
+) -> Fraction | None:
+    """Estimate a ptrace red row's complete length from its two successful runs."""
+    rows = _latest_series_rows(model, cell)
+    if rows is None:
+        return None
+    weighted_total = 0
+    weight_total = 0
+    for row in rows:
+        if (
+            row.get("product_result") != "product_failure"
+            or row["series"].get("outcome") != "diverged"
+        ):
+            return None
+        runtime = row["series"].get("runtime")
+        if not isinstance(runtime, Mapping):
+            return None
+        turns = []
+        for run_name in ("run1", "run2"):
+            run = runtime.get(run_name)
+            value = run.get("scheduler_turns") if isinstance(run, Mapping) else None
+            if type(value) is not int or value <= 0:
+                return None
+            turns.append(value)
+        weight = row["series"].get("num_runs")
+        if type(weight) is not int or weight <= 0:
+            return None
+        weighted_total += (turns[0] + turns[1]) * weight
+        weight_total += 2 * weight
+    return Fraction(weighted_total, weight_total) if weight_total else None
+
+
+def _red_cell_partial_credit(
+    model: SiteModel, cell: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return partial credit or the precise reason it cannot be calculated."""
+    divergence = _latest_divergence(model, cell)
+    turn = (
+        None
+        if divergence is None
+        else divergence["coordinates"]["first_divergent_scheduler_turn"]
+    )
+    estimated = cell["backend"] == "ptrace"
+    if turn is None:
+        return {
+            "estimated": estimated,
+            "reason": "the first divergent scheduler turn is not recorded",
+            "value": None,
+        }
+    if estimated:
+        length = _ptrace_red_scheduler_turn_length(model, cell)
+        if length is None:
+            return {
+                "estimated": True,
+                "reason": "the two recorded runs do not provide scheduler-turn lengths",
+                "value": None,
+            }
+    else:
+        ptrace_id = f"{cell['test']}/{cell['mode']}/ptrace"
+        ptrace = model.cell_by_id.get(ptrace_id)
+        if ptrace is None or _cell_state(ptrace) != "green":
+            return {
+                "estimated": False,
+                "reason": "the matching test and mode are not green on ptrace",
+                "value": None,
+            }
+        length = _passing_scheduler_turn_length(
+            model, ptrace, str(cell["latest_result_tree"])
+        )
+        if length is None:
+            return {
+                "estimated": False,
+                "reason": "the same-commit ptrace-green execution does not provide scheduler-turn lengths",
+                "value": None,
+            }
+    return {
+        "estimated": estimated,
+        "reason": None,
+        "value": min(Fraction(1), Fraction(turn) / length),
+    }
+
+
+def _backend_rows(model: SiteModel) -> tuple[dict[str, Any], ...]:
+    by_backend: dict[str, list[Mapping[str, Any]]] = {}
+    for cell in model.cells:
+        backend = str(cell["backend"])
+        if backend in {"native", "e9patch"}:
+            continue
+        by_backend.setdefault(backend, []).append(cell)
+    rows = []
+    for backend, backend_cells in by_backend.items():
+        result_cells = [
+            cell
+            for cell in backend_cells
+            if _cell_state(cell) in {"green", "red"}
+        ]
+        excluded = 0
+        unavailable = 0
+        scores: list[Fraction] = []
+        if backend == "ptrace":
+            population = result_cells
+            for cell in population:
+                if _cell_state(cell) == "green":
+                    scores.append(Fraction(1))
+                    continue
+                partial_credit = _red_cell_partial_credit(model, cell)
+                if partial_credit["value"] is None:
+                    unavailable += 1
+                else:
+                    scores.append(partial_credit["value"])
+        else:
+            population = []
+            for cell in result_cells:
+                ptrace_id = f"{cell['test']}/{cell['mode']}/ptrace"
+                ptrace = model.cell_by_id.get(ptrace_id)
+                if ptrace is None or _cell_state(ptrace) != "green":
+                    excluded += 1
+                    continue
+                population.append(cell)
+                if _cell_state(cell) == "green":
+                    scores.append(Fraction(1))
+                    continue
+                partial_credit = _red_cell_partial_credit(model, cell)
+                if partial_credit["value"] is None:
+                    unavailable += 1
+                else:
+                    scores.append(partial_credit["value"])
+        green = sum(_cell_state(cell) == "green" for cell in population)
+        denominator = len(population)
+        rows.append(
+            {
+                "backend": backend,
+                "denominator": denominator,
+                "excluded": excluded,
+                "green": green,
+                "green_percentage": (
+                    None if denominator == 0 else Fraction(green, denominator)
+                ),
+                "partial_percentage": (
+                    None
+                    if denominator == 0 or unavailable
+                    else sum(scores, Fraction()) / denominator
+                ),
+                "unavailable": unavailable,
+            }
+        )
+    return tuple(
+        sorted(
+            rows,
+            key=lambda row: (
+                row["partial_percentage"] is None,
+                -(
+                    row["partial_percentage"]
+                    if row["partial_percentage"] is not None
+                    else Fraction()
+                ),
+                row["green_percentage"] is None,
+                -(
+                    row["green_percentage"]
+                    if row["green_percentage"] is not None
+                    else Fraction()
+                ),
+                str(row["backend"]),
+            ),
+        )
+    )
+
+
+def _backend_leaderboard(model: SiteModel) -> str:
+    rows = []
+    for item in _backend_rows(model):
+        denominator = item["denominator"]
+        green = (
+            "Not available"
+            if item["green_percentage"] is None
+            else _percentage(item["green_percentage"])
+        )
+        partial = (
+            "Not available"
+            if item["partial_percentage"] is None
+            else _percentage(item["partial_percentage"])
+        )
+        if item["backend"] == "ptrace" and item["partial_percentage"] is not None:
+            partial += " (estimate)"
+        details = [_counted(denominator, "result cell")]
+        if item["backend"] != "ptrace":
+            details.append(
+                f"{_counted(item['excluded'], 'result cell')} "
+                "without a ptrace-green reference excluded"
+            )
+        if item["unavailable"]:
+            details.append(
+                "partial credit unavailable for "
+                f"{_counted(item['unavailable'], 'red cell')}"
+            )
+        rows.append(
+            f'<tr><th scope="row"><code>{_escape(item["backend"])}</code></th>'
+            f'<td><strong>{green}</strong><span class="secondary">{item["green"]} of {denominator} cells</span></td>'
+            f'<td><strong>{partial}</strong></td><td>{_escape("; ".join(details))}</td></tr>'
+        )
+    headings = "".join(
+        (
+            _column_heading("Backend", "The backend recorded on the cell."),
+            _column_heading(
+                "Green cells",
+                "Green cells divided by the result-cell population stated in this row.",
+            ),
+            _column_heading(
+                "Counting partial credit",
+                "Green cells count as one. A red non-ptrace cell uses its first divergent scheduler turn divided by the complete scheduler-turn length of the same-commit passing ptrace execution, capped at one.",
+            ),
+            _column_heading(
+                "Population",
+                "Non-ptrace rows include only result cells whose matching test and mode are green on ptrace. Ptrace uses its own result cells.",
+            ),
+        )
+    )
+    return (
+        '<section id="backends"><h2>Backends</h2>'
+        '<p>Non-ptrace percentages use result cells whose matching test and mode are green on ptrace. '
+        'A red cell receives partial credit from its first divergent scheduler turn against the complete same-commit ptrace execution. '
+        'Result cells without that ptrace-green reference are excluded and reported below. Ptrace partial credit is an estimate from its two recorded runs.</p>'
+        '<div class="table-scroll"><table class="backend-leaderboard"><caption>Backend compatibility</caption>'
+        f'<thead><tr>{headings}</tr></thead><tbody>{"".join(rows)}</tbody></table></div></section>'
+    )
+
+
 def _overview(model: SiteModel, page: str) -> str:
     counts = model.data["counts"]
     runs = model.runs
@@ -1241,6 +1531,7 @@ def _overview(model: SiteModel, page: str) -> str:
       <p>The difference between cells in the manifest and rows with a cell page is retained as exact arithmetic. It is not assigned a cell result and has no cell row on this site.</p>
       {_state_summary(model, page)}
       {_result_reading(model)}
+      {_backend_leaderboard(model)}
       <p class="evidence-counts">
         {_count_link(page, 'cells/index.html', 'series-rows', runs['series_physical_row_count'], 'admitted canonical series rows', runs['series_represented_run_count'])}.
         {_count_link(page, 'runs/index.html', 'validation-runs', len(model.history_rows), 'admitted validation ledger rows')}.
@@ -1621,68 +1912,27 @@ def _exclusion_audit(
 
 
 def _test_listing(model: SiteModel, page: str) -> str:
-    items = []
-    omission_counts = Counter(
-        str(item["test"])
-        for item in model.data["projection_audit"]["deliberate_omissions"]
-    )
-    for index, test in enumerate(model.tests):
-        shown = sum(
-            identity in model.cell_by_id
-            and _cell_state(model.cell_by_id[str(identity)]) in {"green", "red"}
-            for identity in test["cells"]
+    by_category: dict[str, list[Mapping[str, Any]]] = {}
+    for test in model.tests:
+        by_category.setdefault(str(test["category"]), []).append(test)
+    groups = []
+    for category, tests in sorted(by_category.items()):
+        links = ", ".join(
+            _test_link(
+                model,
+                page,
+                str(test["id"]),
+                label=_test_name(test["id"], category),
+            )
+            for test in sorted(tests, key=lambda item: str(item["id"]))
         )
-        identity = str(test["id"])
-        filters = {
-            "lane": str(test.get("lane") or ""),
-            "category": str(test.get("category") or ""),
-        }
-        items.append(
-            f'<li class="listing-card" {_collection_item_attributes(filters=filters, sorts={"manifest": index, "test": identity, "cells": len(test["cells"]), "results": shown})}>{_test_link(model, page, identity)}'
-            f'<span class="secondary">{len(test["cells"])} cells in the manifest; {shown} result rows shown; {omission_counts[identity]} deliberate omissions</span></li>'
+        groups.append(
+            '<section class="test-category">'
+            f"<h3>{_escape(category)}</h3>"
+            f'<p class="test-name-list">{links}</p>'
+            "</section>"
         )
-    controls = _collection_controls(
-        "tests",
-        "tests_",
-        "tests",
-        filters=(
-            (
-                "lane",
-                "Lane",
-                tuple(
-                    sorted(
-                        {
-                            str(test.get("lane") or "")
-                            for test in model.tests
-                            if test.get("lane")
-                        }
-                    )
-                ),
-            ),
-            (
-                "category",
-                "Category",
-                tuple(
-                    sorted(
-                        {
-                            str(test.get("category") or "")
-                            for test in model.tests
-                            if test.get("category")
-                        }
-                    )
-                ),
-            ),
-        ),
-        sorts=(
-            ("manifest", "Manifest order"),
-            ("test", "TestName"),
-            ("cells", "Manifest cells"),
-            ("results", "Result rows"),
-        ),
-        default_sort="manifest",
-        item_count=len(items),
-    )
-    return f'<section id="tests"><h2>Tests</h2>{controls}<ul class="card-list">{"".join(items)}</ul></section>'
+    return f'<section id="tests"><h2>Tests</h2>{"".join(groups)}</section>'
 
 
 def _custom_commands(
@@ -2885,12 +3135,28 @@ def _browser_cell_record(model: SiteModel, cell: Mapping[str, Any]) -> dict[str,
             selected_fact["run"] = _browser_run_reference(reference)
             selected_facts.append(selected_fact)
         selection[str(path)] = selected_facts
+    latest_divergence = _latest_divergence(model, cell)
+    partial_credit = None
+    if latest_divergence is not None:
+        partial_credit = _red_cell_partial_credit(model, cell)
+        if partial_credit["value"] is not None:
+            partial_credit["value"] = _percentage(partial_credit["value"])
+        latest_divergence = _browser_copy(latest_divergence)
+        latest_divergence["coordinates"] = {
+            field: None if value is None else str(value)
+            for field, value in latest_divergence["coordinates"].items()
+        }
+        difference = latest_divergence["scheduler_turn_difference"]
+        if difference["value"] is not None:
+            difference["value"] = str(difference["value"])
     result = {
         "data": browser_data,
         "digest": _full_digest(identity),
         "evidence": evidence,
         "identity": identity,
         "kind": "cell",
+        "latest_divergence": latest_divergence,
+        "partial_credit": partial_credit,
         "raw_path": "data/cells.json.gz",
         "selection": selection,
     }
@@ -2926,47 +3192,81 @@ def _browser_test_record(
     return result
 
 
-def _recent_passing_execution(
+def _latest_series_rows(
     model: SiteModel, cell: Mapping[str, Any]
-) -> dict[str, Any] | None:
-    """Return counts only for the exact validate-to-verdict join we can prove."""
-    if cell.get("latest_result") != "pass":
+) -> tuple[Mapping[str, Any], ...] | None:
+    """Resolve a result cell's reducer-selected execution to exact series rows."""
+    if cell.get("latest_result") not in {"pass", "product_failure"}:
         return None
-    event_ids = cell.get("latest_event_ids")
-    if not isinstance(event_ids, Sequence) or isinstance(event_ids, (str, bytes)):
+    raw_event_ids = cell.get("latest_event_ids")
+    if (
+        not isinstance(raw_event_ids, Sequence)
+        or isinstance(raw_event_ids, (str, bytes))
+        or not raw_event_ids
+    ):
         return None
-    if len(event_ids) != 1:
+    event_ids = tuple(str(value) for value in raw_event_ids)
+    if len(event_ids) != len(set(event_ids)):
         return None
-    event_id = str(event_ids[0])
-    rows = [
-        row
-        for row in model.series_by_cell[str(cell["cell"])]
-        if str(row["event_id"]) == event_id
-    ]
-    if len(rows) != 1:
+    rows_by_event: dict[str, list[Mapping[str, Any]]] = {}
+    for row in model.series_by_cell.get(str(cell["cell"]), ()):
+        rows_by_event.setdefault(str(row["event_id"]), []).append(row)
+    rows = []
+    for event_id in event_ids:
+        matches = rows_by_event.get(event_id, ())
+        if len(matches) != 1:
+            return None
+        rows.append(matches[0])
+    expected = {
+        (
+            str(row.get("emitted_at")),
+            str(row.get("product_result")),
+            str(row["series"].get("tree")),
+        )
+        for row in rows
+    }
+    if expected != {
+        (
+            str(cell.get("latest_result_time")),
+            str(cell.get("latest_result")),
+            str(cell.get("latest_result_tree")),
+        )
+    }:
         return None
-    row = rows[0]
-    if row.get("producer") != "validate" or row.get("product_result") != "pass":
+    return tuple(rows)
+
+
+def _exact_validation_verdict(
+    model: SiteModel,
+    cell: Mapping[str, Any],
+    event_id: str,
+) -> Mapping[str, Any] | None:
+    """Join one validate series event to its exact terminal per-cell verdict."""
+    row = model.series_by_event.get(event_id)
+    if row is None or row.get("producer") != "validate":
         return None
     reference = model.event_run_references.get(event_id)
     if reference is None:
         return None
-    if reference.get("run_id") != row.get("run_id") or reference.get("commit") != row[
-        "series"
-    ].get("tree"):
+    series = row.get("series")
+    if not isinstance(series, Mapping):
         return None
-
-    path = str(reference["selection"])
-    selection_facts = cell.get("selected_by", {}).get(path, ())
+    if (
+        str(series.get("cell")) != str(cell["cell"])
+        or reference.get("run_id") != row.get("run_id")
+        or reference.get("commit") != series.get("tree")
+    ):
+        return None
+    path = str(reference.get("selection"))
     matching_facts = [
         fact
-        for fact in selection_facts
+        for fact in cell.get("selected_by", {}).get(path, ())
         if fact.get("run_id") == row.get("run_id")
-        and fact.get("tree") == row["series"].get("tree")
+        and fact.get("tree") == series.get("tree")
+        and fact.get("event_ids") == [event_id]
     ]
-    if len(matching_facts) != 1 or matching_facts[0].get("event_ids") != [event_id]:
+    if len(matching_facts) != 1:
         return None
-
     history_indices = [
         index
         for index, candidate_path in enumerate(model.history_paths)
@@ -2977,9 +3277,10 @@ def _recent_passing_execution(
     history = model.history_rows[history_indices[0]]
     if (
         history.get("run_id") != row.get("run_id")
-        or history.get("commit") != row["series"].get("tree")
+        or history.get("commit") != series.get("tree")
         or history.get("profile") != path
-        or history.get("history_row_sha256") != reference.get("history_row_sha256")
+        or history.get("history_row_sha256")
+        != reference.get("history_row_sha256")
     ):
         return None
     verdict_rows = [
@@ -2989,9 +3290,134 @@ def _recent_passing_execution(
         and candidate.get("category") == cell.get("category")
         and candidate.get("lane") == cell.get("lane")
     ]
-    if len(verdict_rows) != 1:
+    return verdict_rows[0]["cell_verdict"] if len(verdict_rows) == 1 else None
+
+
+def _consistent_coordinate(
+    rows: Sequence[Mapping[str, Any]], field: str
+) -> int | None:
+    values = []
+    for row in rows:
+        coordinates = row["series"].get("coordinates")
+        if not isinstance(coordinates, Mapping):
+            return None
+        value = coordinates.get(field)
+        minimum = 1 if field == "first_divergent_record" else 0
+        if type(value) is not int or value < minimum:
+            return None
+        values.append(value)
+    return values[0] if values and len(set(values)) == 1 else None
+
+
+def _scheduler_turn_difference(
+    model: SiteModel,
+    cell: Mapping[str, Any],
+    latest_rows: Sequence[Mapping[str, Any]],
+    current_turn: int | None,
+) -> dict[str, Any]:
+    unavailable = {"value": None, "previous_commit": None}
+    if current_turn is None:
+        return {**unavailable, "reason": "the latest scheduler turn is unavailable"}
+    producers = {str(row.get("producer")) for row in latest_rows}
+    times = {str(row.get("emitted_at")) for row in latest_rows}
+    trees = {str(row["series"].get("tree")) for row in latest_rows}
+    if len(producers) != 1 or len(times) != 1 or len(trees) != 1:
+        return {**unavailable, "reason": "the latest recorded execution is ambiguous"}
+    producer = next(iter(producers))
+    current_time = datetime.fromisoformat(next(iter(times)).replace("Z", "+00:00"))
+    current_tree = next(iter(trees))
+    raw_qualifying = cell.get("qualifying_event_ids")
+    if (
+        not isinstance(raw_qualifying, Sequence)
+        or isinstance(raw_qualifying, (str, bytes))
+    ):
+        return {**unavailable, "reason": "qualifying evidence is unavailable"}
+    qualifying = {str(event_id) for event_id in raw_qualifying}
+    candidates = []
+    for row in model.series_by_cell[str(cell["cell"])]:
+        if (
+            str(row.get("event_id")) not in qualifying
+            or row.get("producer") != producer
+            or row.get("product_result") != "product_failure"
+            or row["series"].get("outcome") != "diverged"
+            or row["series"].get("tree") == current_tree
+        ):
+            continue
+        observed = datetime.fromisoformat(
+            str(row["emitted_at"]).replace("Z", "+00:00")
+        )
+        if observed < current_time:
+            candidates.append((observed, row))
+    if not candidates:
+        return {
+            **unavailable,
+            "reason": "no previous recorded commit from the same producer has an earlier observation",
+        }
+    previous_time = max(value[0] for value in candidates)
+    previous_rows = [row for observed, row in candidates if observed == previous_time]
+    previous_trees = {str(row["series"].get("tree")) for row in previous_rows}
+    previous_turn = _consistent_coordinate(
+        previous_rows, "first_divergent_scheduler_turn"
+    )
+    if len(previous_trees) != 1 or previous_turn is None:
+        return {
+            **unavailable,
+            "reason": "the previous recorded commit does not identify one scheduler turn",
+        }
+    return {
+        "previous_commit": next(iter(previous_trees)),
+        "reason": None,
+        "value": current_turn - previous_turn,
+    }
+
+
+def _latest_divergence(
+    model: SiteModel, cell: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    if cell.get("latest_result") != "product_failure":
         return None
-    verdict = verdict_rows[0]["cell_verdict"]
+    rows = _latest_series_rows(model, cell)
+    if rows is None:
+        return {
+            "coordinates": {field: None for field, _label in DIVERGENCE_COORDINATES},
+            "scheduler_turn_difference": {
+                "previous_commit": None,
+                "reason": "the latest result does not identify one recorded execution",
+                "value": None,
+            },
+        }
+    coordinates = {
+        field: _consistent_coordinate(rows, field)
+        for field, _label in DIVERGENCE_COORDINATES
+    }
+    return {
+        "coordinates": coordinates,
+        "scheduler_turn_difference": _scheduler_turn_difference(
+            model,
+            cell,
+            rows,
+            coordinates["first_divergent_scheduler_turn"],
+        ),
+    }
+
+
+def _recent_passing_execution(
+    model: SiteModel, cell: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Return counts only for the exact validate-to-verdict join we can prove."""
+    if cell.get("latest_result") != "pass":
+        return None
+    rows = _latest_series_rows(model, cell)
+    if rows is None or len(rows) != 1:
+        return None
+    row = rows[0]
+    event_id = str(row["event_id"])
+    if row.get("producer") != "validate" or row.get("product_result") != "pass":
+        return None
+    reference = model.event_run_references.get(event_id)
+    verdict = _exact_validation_verdict(model, cell, event_id)
+    if reference is None or verdict is None:
+        return None
     comparison = verdict.get("comparison")
     counts = verdict.get("compared_log_messages")
     if (
