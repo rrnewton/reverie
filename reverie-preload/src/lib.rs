@@ -38,6 +38,10 @@
 //! x86-64 guests. It does not cover vDSO fast paths, the ~40 loader/startup
 //! syscalls before the constructor runs, static binaries, or `execve`. `fork`
 //! *is* fully covered because the kernel inherits the filter atomically.
+//! "Trusted" includes control flow: a guest must not jump into the runtime's
+//! private syscall or signal-restorer instructions. Seccomp's exact-IP rules
+//! are dispatch gates, not causal authentication or control-flow integrity;
+//! ordinary guest syscall and custom-restorer sites remain intercepted.
 //!
 //! # Two ways to use it
 //!

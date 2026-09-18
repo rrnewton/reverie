@@ -18,6 +18,7 @@ use reverie::syscalls::AddrMut;
 use reverie::syscalls::MemoryAccess;
 use safeptrace::Error as TraceError;
 use safeptrace::Stopped;
+use safeptrace::StoppedMemory;
 
 use super::regs::RegAccess;
 
@@ -76,19 +77,19 @@ pub struct GuestStack {
     sp: usize,
     capacity: usize,
     buf: Vec<u64>,
-    task: Stopped,
+    pid: Pid,
+    memory: StoppedMemory,
     token: StackToken,
 }
 
 impl GuestStack {
-    pub fn new(pid: Pid, flag: Arc<AtomicBool>) -> Result<Self, TraceError> {
+    pub fn new(task: &Stopped, flag: Arc<AtomicBool>) -> Result<Self, TraceError> {
         let token = match StackToken::acquire(flag) {
             Some(token) => token,
             None => panic!(
                 "Invariant violation, cannot retrieve handle on guest Stack when there is already a StackGuard still alive."
             ),
         };
-        let task = Stopped::new_unchecked(pid);
         // If the register read fails, `token` is dropped on this early return and
         // the flag is released, so a later retry on the same task is not poisoned.
         let rsp = task.getregs()?.stack_ptr() as usize;
@@ -98,7 +99,8 @@ impl GuestStack {
             sp: top,
             capacity: STACK_CAPACITY,
             buf: Vec::new(),
-            task,
+            pid: task.pid(),
+            memory: task.memory(),
             token,
         })
     }
@@ -109,7 +111,7 @@ impl GuestStack {
         if self.size() + buf_size > self.capacity() {
             panic!(
                 "guest(pid={}) stack overflow, capacity = {}",
-                self.task.pid(),
+                self.pid,
                 self.capacity()
             );
         } else {
@@ -166,7 +168,7 @@ impl Stack for GuestStack {
         // token so a failed commit does not poison the next acquisition. On
         // success we transfer the token into the guard, which keeps the flag set
         // until the caller drops the guard.
-        self.task.write_exact(remote_sp, from)?;
+        self.memory.write_exact(remote_sp, from)?;
         Ok(StackGuard { _token: self.token })
     }
 }
@@ -177,7 +179,7 @@ impl MemoryAccess for GuestStack {
         read_from: &[std::io::IoSlice],
         write_to: &mut [std::io::IoSliceMut],
     ) -> Result<usize, Errno> {
-        self.task.read_vectored(read_from, write_to)
+        self.memory.read_vectored(read_from, write_to)
     }
 
     fn write_vectored(
@@ -185,7 +187,7 @@ impl MemoryAccess for GuestStack {
         read_from: &[std::io::IoSlice],
         write_to: &mut [std::io::IoSliceMut],
     ) -> Result<usize, Errno> {
-        self.task.write_vectored(read_from, write_to)
+        self.memory.write_vectored(read_from, write_to)
     }
 }
 

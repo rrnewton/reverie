@@ -1,0 +1,9 @@
+success=true
+elapsed_seconds=19.26
+artifact=build/target/release/libreverie_liteinst.so
+artifact_sha256=17591cc11af459c038300a50c465b952ae0afb3166650c852bb60748890cac52
+staged_sha256=17591cc11af459c038300a50c465b952ae0afb3166650c852bb60748890cac52
+staged_mode=555
+staged_bytes=35300288
+reverie_ptrace_rlib_count=1
+reverie_ptrace_rlib=build/target/release/deps/libreverie_ptrace-80e0c1e52aad2218.rlib

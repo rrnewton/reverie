@@ -1,0 +1,5 @@
+   Compiling reverie-ptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace)
+warning: reverie-e9patch@0.2.0: e9patch source build completed in 4.03s (jobs=16)
+   Compiling reverie-e9patch v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-e9patch)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.62s
+  Executable unittests src/lib.rs (target/debug/deps/reverie_e9patch-3de0afa4dcf19fe1)

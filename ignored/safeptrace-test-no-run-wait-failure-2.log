@@ -1,0 +1,12 @@
+   Compiling safeptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/safeptrace)
+warning: function `waitpidfd` is never used
+  --> safeptrace/src/waitid.rs:78:8
+   |
+78 | pub fn waitpidfd(raw_fd: RawFd, flags: WaitPidFlag) -> Result<Option<i32>, Errno> {
+   |        ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `safeptrace` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.14s
+  Executable unittests src/lib.rs (target/debug/deps/safeptrace-9d746cc795456c05)

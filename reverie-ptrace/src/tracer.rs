@@ -8,9 +8,13 @@
 
 //! `Tracer` type, plus ways to spawn it and retrieve its output.
 
+#[cfg(target_arch = "x86_64")]
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+#[cfg(target_arch = "x86_64")]
+use std::ffi::OsString;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -23,10 +27,14 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Barrier;
 use std::sync::LazyLock;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock as StdOnceLock;
 use std::sync::atomic::AtomicBool;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 use std::thread::ThreadId;
@@ -55,16 +63,48 @@ use reverie::Tool;
 use reverie::process::ChildStderr;
 use reverie::process::ChildStdin;
 use reverie::process::ChildStdout;
+use reverie::process::Child as ProcessChild;
 use reverie::process::Command;
+#[cfg(target_arch = "x86_64")]
+use reverie::process::ControllerLaunchParts;
+#[cfg(target_arch = "x86_64")]
+use reverie::process::ControllerSpawnError;
+#[cfg(target_arch = "x86_64")]
+use reverie::process::ControllerSpawnFailure;
+#[cfg(target_arch = "x86_64")]
+use reverie::process::ControllerStartupPublisher;
 use reverie::process::Output;
 use reverie::process::seccomp;
 use reverie::syscalls::Sysno;
 use safeptrace::ChildOp;
+use safeptrace::CleanupStopLease;
+use safeptrace::CleanupStopTransfer;
 use safeptrace::Error as TraceError;
 use safeptrace::Event;
+use safeptrace::OriginalRootStartup;
+use safeptrace::OriginalRootStartupError;
+use safeptrace::OriginalRootStartupIdentity;
+use safeptrace::PhysicalEventGenerationId;
+use safeptrace::PhysicalEventObserver;
+#[cfg(test)]
+use safeptrace::PhysicalEventObserverConfig;
+use safeptrace::PhysicalResumeContext;
+use safeptrace::PhysicalResumeAttempt;
+use safeptrace::PhysicalResumeOperation;
+use safeptrace::PhysicalResumeOutcome;
+use safeptrace::PhysicalResumeOwner;
+use safeptrace::PhysicalStatusDisposition;
+use safeptrace::PhysicalStatusId;
+use safeptrace::PhysicalTaskIdentity;
+use safeptrace::PhysicalWaitContext;
+use safeptrace::PhysicalWaitProducer;
 use safeptrace::Running;
 use safeptrace::Stopped;
+use safeptrace::StopResolutionLaterStatus;
 use safeptrace::TerminalCleanup;
+use safeptrace::TerminalCleanupContinue;
+use safeptrace::TransferredStopCompletion;
+use safeptrace::TransferredStopResolution;
 use safeptrace::Wait;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
@@ -82,6 +122,52 @@ use crate::task::LiteinstRuntimeConfig;
 use crate::task::RootStopPause;
 use crate::task::TracedTask;
 use crate::task::TracedTaskOptions;
+
+#[cfg(target_arch = "x86_64")]
+fn freeze_after_loader_environment(
+    command: &mut Command,
+    expected: &BTreeMap<OsString, OsString>,
+) -> std::io::Result<()> {
+    let actual = command.get_captured_envs();
+    if &actual != expected {
+        return Err(std::io::Error::other(
+            "complete after-loader environment differs before final capture",
+        ));
+    }
+    command.env_clear().envs(&actual);
+    if &command.get_captured_envs() != expected {
+        return Err(std::io::Error::other(
+            "complete after-loader environment differs after final capture",
+        ));
+    }
+    Ok(())
+}
+
+type SpawnStdio = (
+    Option<ChildStdin>,
+    Option<ChildStdout>,
+    Option<ChildStderr>,
+);
+
+fn take_spawn_stdio(
+    ordinary: &mut Option<ProcessChild>,
+    controller: &mut Option<SpawnStdio>,
+) -> SpawnStdio {
+    if let Some(stdio) = controller.take() {
+        debug_assert!(ordinary.is_none());
+        return stdio;
+    }
+    let child = ordinary
+        .as_mut()
+        .expect("ordinary spawn child is absent without controller stdio");
+    let stdio = (child.stdin.take(), child.stdout.take(), child.stderr.take());
+    core::mem::forget(
+        ordinary
+            .take()
+            .expect("ordinary spawn child disappeared while taking stdio"),
+    );
+    stdio
+}
 
 /// Represents the tracer.
 ///
@@ -110,6 +196,11 @@ pub struct Tracer<G> {
     // ptrace and e9patch lifecycles retain their existing teardown behavior.
     liteinst_cleanup: Option<LiteinstTraceeCleanup>,
     liteinst_instrumentation_stats: Option<Arc<StdMutex<LiteinstInstrumentationStats>>>,
+    #[cfg(target_arch = "x86_64")]
+    liteinst_physical_observer: Option<(
+        safeptrace::PhysicalEventObserver,
+        crate::LiteinstCallerDiagnostics,
+    )>,
 
     // Present only when the caller requested general ptrace activity stats.
     backend_stats: Option<PtraceBackendStatsSource>,
@@ -117,14 +208,18 @@ pub struct Tracer<G> {
 
 struct LiteinstTraceeCleanup {
     identity: TraceeIdentity,
+    physical_observer: Option<PhysicalEventObserver>,
+    physical_generation: Option<PhysicalEventGenerationId>,
     newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
     armed: bool,
+    unstarted_terminal: Option<TerminalCleanup>,
     terminal: Option<TerminalCleanup>,
     notifier_owner: Option<ThreadId>,
     retained_descendants: HashMap<Pid, RegisteredTraceeCleanup>,
     retained_terminal_descendants: HashMap<Pid, TraceeIdentity>,
-    held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
+    held_task_stops: HeldTaskStops,
     root_frozen: bool,
+    root_frozen_stop: Option<CleanupStopLease>,
     #[cfg(test)]
     fail_discovery_once: Option<Arc<AtomicBool>>,
     #[cfg(test)]
@@ -166,10 +261,30 @@ struct EventChildLink {
 
 pub(crate) struct HeldRootStop {
     terminal: TerminalCleanup,
-    root_tid: Pid,
+    task_tid: Pid,
     status: HeldRootStopStatus,
+    cleanup_transfer: Option<CleanupStopTransfer>,
+    cleanup_lease: Option<CleanupStopLease>,
     armed: bool,
 }
+
+pub(crate) type HeldTaskStops = Arc<StdMutex<HashMap<Pid, HeldRootStop>>>;
+
+#[cfg(test)]
+struct CleanupCapturePreflightPause {
+    captured: Arc<Barrier>,
+    resume: Arc<Barrier>,
+}
+
+#[cfg(test)]
+static CLEANUP_CAPTURE_PREFLIGHT_PAUSES: LazyLock<
+    StdMutex<HashMap<PhysicalEventGenerationId, CleanupCapturePreflightPause>>,
+> = LazyLock::new(|| StdMutex::new(HashMap::new()));
+
+#[cfg(test)]
+static CLEANUP_CAPTURE_DECODED_PAUSES: LazyLock<
+    StdMutex<HashMap<PhysicalEventGenerationId, CleanupCapturePreflightPause>>,
+> = LazyLock::new(|| StdMutex::new(HashMap::new()));
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HeldRootStopStatus {
@@ -184,8 +299,28 @@ enum HeldRootStopStatus {
 }
 
 impl HeldRootStop {
-    pub(crate) fn from_event(task: &Stopped, event: &Event) -> Self {
-        let status = match event {
+    pub(crate) fn retire_causally_resolved_stop(
+        slot: &HeldTaskStops,
+        pid: Pid,
+        resolution: StopResolutionLaterStatus,
+    ) -> Result<Running, TraceError> {
+        let mut held = slot.lock().unwrap();
+        let record = held.get_mut(&pid).ok_or(Errno::EALREADY)?;
+        if !record.armed || record.task_tid != pid {
+            return Err(Errno::EINVAL.into());
+        }
+        let running = resolution
+            .retire_transfer_and_wait(&mut record.cleanup_transfer)
+            .map_err(TraceError::from)?;
+        let mut record = held
+            .remove(&pid)
+            .expect("causally resolved held stop remained present while locked");
+        record.disarm();
+        Ok(running)
+    }
+
+    fn status(task: &Stopped, event: &Event) -> HeldRootStopStatus {
+        match event {
             Event::Signal(signal) => HeldRootStopStatus::Signal(*signal),
             Event::NewChild(op, child) => HeldRootStopStatus::NewChild(EventChildLink {
                 tid: child.pid(),
@@ -198,11 +333,21 @@ impl HeldRootStop {
             Event::Seccomp => HeldRootStopStatus::Seccomp,
             Event::Stop => HeldRootStopStatus::Stop,
             Event::Syscall => HeldRootStopStatus::Syscall,
-        };
+        }
+    }
+
+    pub(crate) fn from_event(task: &Stopped, event: &Event) -> Self {
+        let status = Self::status(task, event);
         Self {
             terminal: task.terminal_cleanup(),
-            root_tid: task.pid(),
+            task_tid: task.pid(),
             status,
+            // SAFETY: HeldRootStop is the single shared cancellation shadow.
+            // Normal transitions remove and discard it before returning
+            // success; cleanup activates it only after the handler future and
+            // its typed Stopped owner have been destroyed.
+            cleanup_transfer: Some(unsafe { task.transfer_cleanup_stop() }),
+            cleanup_lease: None,
             armed: true,
         }
     }
@@ -211,59 +356,292 @@ impl HeldRootStop {
         self.armed = false;
     }
 
-    fn same_root_generation(&self, other: &Self) -> bool {
-        self.root_tid == other.root_tid && self.terminal.same_generation(&other.terminal)
+    /// Replaces a stale completed shadow with a newly delivered stop while the
+    /// sole held-stop registry remains serialized. Live and ambiguous shadows
+    /// are left untouched for their existing owner.
+    fn replace_completed_shadow(
+        held: &mut HashMap<Pid, HeldRootStop>,
+        task: &Stopped,
+        event: &Event,
+    ) -> Result<bool, TraceError> {
+        Self::replace_completed_shadow_with(
+            held,
+            task,
+            event,
+            |terminal, transfer, successor_stop_id, successor_status| {
+                terminal
+                    .consume_transferred_stop_completion_for_successor(
+                        transfer,
+                        successor_stop_id,
+                        successor_status,
+                    )
+                    .map_err(TraceError::from)
+            },
+        )
+    }
+
+    fn replace_completed_shadow_with(
+        held: &mut HashMap<Pid, HeldRootStop>,
+        task: &Stopped,
+        event: &Event,
+        resolve: impl FnOnce(
+            &TerminalCleanup,
+            &mut Option<CleanupStopTransfer>,
+            safeptrace::LogicalStopId,
+            Option<PhysicalStatusId>,
+        ) -> Result<Option<TransferredStopCompletion>, TraceError>,
+    ) -> Result<bool, TraceError> {
+        let pid = task.pid();
+        let terminal = task.terminal_cleanup();
+        let Some(current) = held.get_mut(&pid) else {
+            return Ok(false);
+        };
+        if !current.armed
+            || current.task_tid != pid
+            || !current.terminal.same_generation(&terminal)
+        {
+            return Err(Errno::EINVAL.into());
+        }
+        let Some(completion) = resolve(
+            &current.terminal,
+                &mut current.cleanup_transfer,
+                task.logical_stop_id(),
+                task.physical_status_id(),
+            )?
+        else {
+            return Ok(false);
+        };
+        let mut completed = held
+            .remove(&pid)
+            .expect("completed held stop must remain present while locked");
+        completed.disarm();
+
+        let replaced = held.insert(pid, Self::from_event(task, event));
+        debug_assert!(replaced.is_none(), "completed held stop was not removed");
+        match completion {
+            TransferredStopCompletion::Finished => Ok(true),
+            // Keep the valid successor shadow durable even though the sticky
+            // predecessor failure must be returned unchanged on this call.
+            TransferredStopCompletion::Failed(error) => Err(error.into()),
+        }
     }
 
     pub(crate) fn arm_empty(
-        slot: &Arc<StdMutex<Option<Self>>>,
+        slot: &HeldTaskStops,
         task: &Stopped,
         event: &Event,
     ) -> Result<(), TraceError> {
+        Self::arm_empty_with(slot, task, event, || {})
+    }
+
+    pub(crate) fn arm_empty_with(
+        slot: &HeldTaskStops,
+        task: &Stopped,
+        event: &Event,
+        on_committed: impl FnOnce(),
+    ) -> Result<(), TraceError> {
+        Self::arm_empty_with_resolver(
+            slot,
+            task,
+            event,
+            on_committed,
+            |terminal, transfer, successor_stop_id, successor_status| {
+                terminal
+                    .consume_transferred_stop_completion_for_successor(
+                        transfer,
+                        successor_stop_id,
+                        successor_status,
+                    )
+                    .map_err(TraceError::from)
+            },
+        )
+    }
+
+    fn arm_empty_with_resolver(
+        slot: &HeldTaskStops,
+        task: &Stopped,
+        event: &Event,
+        on_committed: impl FnOnce(),
+        resolve: impl FnOnce(
+            &TerminalCleanup,
+            &mut Option<CleanupStopTransfer>,
+            safeptrace::LogicalStopId,
+            Option<PhysicalStatusId>,
+        ) -> Result<Option<TransferredStopCompletion>, TraceError>,
+    ) -> Result<(), TraceError> {
         let mut held = slot.lock().unwrap();
-        if held.is_some() {
-            return Err(Errno::EINVAL.into());
+        if held.contains_key(&task.pid()) {
+            let predecessor_stop_id = held
+                .get(&task.pid())
+                .and_then(|current| current.cleanup_transfer.as_ref())
+                .map(CleanupStopTransfer::logical_stop_id);
+            let result = Self::replace_completed_shadow_with(
+                &mut held,
+                task,
+                event,
+                resolve,
+            );
+            let successor_installed = held
+                .get(&task.pid())
+                .is_some_and(|current| Self::matches_current(current, task, event))
+                && predecessor_stop_id
+                    .is_some_and(|predecessor| task.logical_stop_id().is_strictly_after(predecessor));
+            if matches!(&result, Ok(true)) || (result.is_err() && successor_installed)
+            {
+                on_committed();
+            }
+            return match result {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(Errno::EINVAL.into()),
+                Err(error) => Err(error),
+            };
         }
-        *held = Some(Self::from_event(task, event));
+        held.insert(task.pid(), Self::from_event(task, event));
+        on_committed();
         Ok(())
     }
 
-    pub(crate) fn ensure_current(
-        slot: &Arc<StdMutex<Option<Self>>>,
+    fn matches_current(current: &HeldRootStop, task: &Stopped, event: &Event) -> bool {
+        let terminal = task.terminal_cleanup();
+        current.armed
+            && current.task_tid == task.pid()
+            && current.terminal.same_generation(&terminal)
+            && current.status == Self::status(task, event)
+            && current.cleanup_transfer.as_ref().is_some_and(|transfer| {
+                transfer.logical_stop_id() == task.logical_stop_id()
+                    && transfer.physical_status_id() == task.physical_status_id()
+            })
+    }
+
+    pub(crate) fn ensure_current_with(
+        slot: &HeldTaskStops,
         task: &Stopped,
         event: &Event,
+        on_committed: impl FnOnce(),
     ) -> Result<(), TraceError> {
-        let replacement = Self::from_event(task, event);
         let mut held = slot.lock().unwrap();
-        match held.as_ref() {
-            None => {
-                *held = Some(replacement);
-                Ok(())
-            }
-            Some(current)
-                if current.armed
-                    && current.same_root_generation(&replacement)
-                    && current.status == replacement.status =>
+        let exact_current = held
+            .get(&task.pid())
+            .is_some_and(|current| Self::matches_current(current, task, event));
+        if held.contains_key(&task.pid()) {
+            let predecessor_stop_id = held
+                .get(&task.pid())
+                .and_then(|current| current.cleanup_transfer.as_ref())
+                .map(CleanupStopTransfer::logical_stop_id);
+            let result = Self::replace_completed_shadow(&mut held, task, event);
+            let successor_installed = held
+                .get(&task.pid())
+                .is_some_and(|current| Self::matches_current(current, task, event))
+                && predecessor_stop_id
+                    .is_some_and(|predecessor| task.logical_stop_id().is_strictly_after(predecessor));
+            if matches!(&result, Ok(true))
+                || (exact_current && matches!(&result, Ok(false)))
+                || (result.is_err() && successor_installed)
             {
+                on_committed();
+            }
+            return match result {
+                Ok(true) => Ok(()),
+                Ok(false) if exact_current => Ok(()),
+                Ok(false) => Err(Errno::EINVAL.into()),
+                Err(error) => Err(error),
+            };
+        }
+        match held.get(&task.pid()) {
+            None => {
+                held.insert(task.pid(), Self::from_event(task, event));
+                on_committed();
                 Ok(())
             }
-            Some(_) => Err(Errno::EINVAL.into()),
+            Some(_) => unreachable!("occupied held stop handled before vacant insertion"),
         }
     }
 
     pub(crate) fn supersede_with_exit(
-        slot: &Arc<StdMutex<Option<Self>>>,
+        slot: &HeldTaskStops,
         task: &Stopped,
     ) -> Result<(), TraceError> {
-        let replacement = Self::from_event(task, &Event::Exit);
+        let terminal = task.terminal_cleanup();
+        let replacement_status = task.physical_status_id();
         let mut held = slot.lock().unwrap();
-        match held.as_ref() {
+        if let Some(current) = held.get_mut(&task.pid()) {
+            if !current.armed
+                || current.task_tid != task.pid()
+                || !current.terminal.same_generation(&terminal)
+            {
+                return Err(Errno::EINVAL.into());
+            }
+            let transfer = current.cleanup_transfer.as_ref().ok_or(Errno::EINVAL)?;
+            let old_stop_id = transfer.logical_stop_id();
+            let old_status = transfer.physical_status_id();
+            if old_stop_id != task.logical_stop_id()
+                && old_status.is_some()
+                && old_status == replacement_status
+            {
+                return Err(Errno::EPROTO.into());
+            }
+            if let Some(completion) = current
+                .terminal
+                .classify_transferred_stop_for_supersession(
+                    &mut current.cleanup_transfer,
+                    task.logical_stop_id(),
+                    replacement_status,
+                )?
+            {
+                let mut completed = held
+                    .remove(&task.pid())
+                    .expect("classified held stop must remain present while locked");
+                completed.disarm();
+                let replaced = held.insert(task.pid(), Self::from_event(task, &Event::Exit));
+                debug_assert!(replaced.is_none(), "classified held stop was not removed");
+                return match completion {
+                    TransferredStopCompletion::Finished => Ok(()),
+                    TransferredStopCompletion::Failed(error) => Err(error.into()),
+                };
+            }
+        }
+        match held.get(&task.pid()) {
             None => {
-                *held = Some(replacement);
+                held.insert(task.pid(), Self::from_event(task, &Event::Exit));
                 Ok(())
             }
-            Some(current) if current.armed && current.same_root_generation(&replacement) => {
-                *held = Some(replacement);
+            Some(current)
+                if current.armed
+                    && current.task_tid == task.pid()
+                    && current.terminal.same_generation(&terminal) =>
+            {
+                if current.status == HeldRootStopStatus::Exit
+                    && current
+                        .cleanup_transfer
+                        .as_ref()
+                        .is_some_and(|transfer| {
+                            transfer.logical_stop_id() == task.logical_stop_id()
+                                && transfer.physical_status_id() == replacement_status
+                        })
+                {
+                    return Ok(());
+                }
+                if current.cleanup_transfer.as_ref().is_some_and(|transfer| {
+                    transfer.logical_stop_id() == task.logical_stop_id()
+                }) {
+                    return Err(Errno::EPROTO.into());
+                }
+                let current_status = current
+                    .cleanup_transfer
+                    .as_ref()
+                    .ok_or(Errno::EINVAL)?
+                    .physical_status_id();
+                if current_status != replacement_status
+                    && let Some(status) = current_status
+                {
+                    task.physical_event_observer()
+                        .ok_or(Errno::EPROTO)?
+                        .finish_status(
+                            status,
+                            PhysicalStatusDisposition::KernelSupersededByExitStop,
+                        );
+                }
+                held.insert(task.pid(), Self::from_event(task, &Event::Exit));
                 Ok(())
             }
             Some(_) => Err(Errno::EINVAL.into()),
@@ -278,63 +656,155 @@ impl HeldRootStop {
 /// after validating the exact carried Event generation.
 pub(crate) struct RootStopLease {
     task: Option<Stopped>,
-    held_root_stop: Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+    held_task_stops: Option<HeldTaskStops>,
 }
 
 impl RootStopLease {
-    pub(crate) fn new(
-        task: Stopped,
-        held_root_stop: Option<Arc<StdMutex<Option<HeldRootStop>>>>,
-    ) -> Self {
+    pub(crate) fn new(task: Stopped, held_task_stops: Option<HeldTaskStops>) -> Self {
         Self {
             task: Some(task),
-            held_root_stop,
+            held_task_stops,
         }
     }
 
-    fn take_for_transition(&mut self) -> Result<Stopped, TraceError> {
-        let task = self.task.take().expect("root stop lease consumed once");
-        if let Some(slot) = self.held_root_stop.as_ref() {
-            let mut held = slot.lock().unwrap().take().ok_or(Errno::EINVAL)?;
+    fn transition(
+        &mut self,
+        operation: impl FnOnce(Stopped) -> Result<Running, TraceError>,
+    ) -> Result<Running, TraceError> {
+        let mut task = self.task.take().expect("root stop lease consumed once");
+        if let Some(slot) = self.held_task_stops.as_ref() {
+            let mut held = slot.lock().unwrap();
+            let task_pid = task.pid();
             let current = task.terminal_cleanup();
-            if held.root_tid != task.pid()
-                || !held.armed
-                || !held.terminal.same_generation(&current)
+            let Some(record) = held.get(&task_pid) else {
+                return Err(Errno::EINVAL.into());
+            };
+            if record.task_tid != task_pid
+                || !record.armed
+                || !record.terminal.same_generation(&current)
+                || !record
+                    .cleanup_transfer
+                    .as_ref()
+                    .is_some_and(|transfer| {
+                        transfer.logical_stop_id() == task.logical_stop_id()
+                            && transfer.physical_status_id() == task.physical_status_id()
+                    })
             {
-                *slot.lock().unwrap() = Some(held);
                 return Err(Errno::EINVAL.into());
             }
-            held.disarm();
+            if let Some(status) = record
+                .cleanup_transfer
+                .as_ref()
+                .and_then(CleanupStopTransfer::physical_status_id)
+            {
+                // SAFETY: the validated held-stop record remains in the shared
+                // map unless the ptrace transition succeeds. On failure,
+                // whole-session cleanup owns this exact TerminalCleanup and
+                // physical status until it records CancellationCleanup.
+                unsafe {
+                    task.retain_failed_resume_disposition_for_cleanup(&record.terminal, status)?
+                };
+            }
+            let result = operation(task);
+            if result.is_ok() {
+                let mut record = held
+                    .remove(&task_pid)
+                    .expect("validated held stop must remain present while locked");
+                record.disarm();
+            }
+            return result;
         }
-        Ok(task)
+        operation(task)
     }
 
     pub(crate) fn resume<T: Into<Option<Signal>>>(
         mut self,
         signal: T,
     ) -> Result<Running, TraceError> {
-        self.take_for_transition()?.resume(signal)
+        self.transition(|task| task.resume(signal))
+    }
+
+    pub(crate) fn resume_with_physical_attempt<T: Into<Option<Signal>>>(
+        mut self,
+        signal: T,
+    ) -> Result<
+        (Running, PhysicalResumeAttempt),
+        (TraceError, Option<PhysicalResumeAttempt>, Option<Errno>),
+    > {
+        let mut task = self.task.take().expect("root stop lease consumed once");
+        let task_pid = task.pid();
+        let transition = |task: Stopped| task.resume_with_physical_attempt(signal);
+        if let Some(slot) = self.held_task_stops.as_ref() {
+            let mut held = slot.lock().unwrap();
+            let current = task.terminal_cleanup();
+            let Some(record) = held.get(&task_pid) else {
+                return Err((Errno::EINVAL.into(), None, None));
+            };
+            if record.task_tid != task_pid
+                || !record.armed
+                || !record.terminal.same_generation(&current)
+                || !record.cleanup_transfer.as_ref().is_some_and(|transfer| {
+                    transfer.logical_stop_id() == task.logical_stop_id()
+                        && transfer.physical_status_id() == task.physical_status_id()
+                })
+            {
+                return Err((Errno::EINVAL.into(), None, None));
+            }
+            if let Some(status) = record
+                .cleanup_transfer
+                .as_ref()
+                .and_then(CleanupStopTransfer::physical_status_id)
+            {
+                // SAFETY: the held transfer remains durable on raw failure and
+                // is retired only by the exact causal-successor protocol.
+                unsafe {
+                    task.retain_failed_resume_disposition_for_cleanup(&record.terminal, status)
+                        .map_err(|error| (error.into(), None, None))?;
+                }
+            }
+            return match transition(task) {
+                Ok(success) => {
+                    let mut record = held
+                        .remove(&task_pid)
+                        .expect("validated held stop must remain present while locked");
+                    record.disarm();
+                    Ok(success)
+                }
+                Err(failure) => Err((
+                    failure.error().into(),
+                    failure.attempt(),
+                    Some(failure.error()),
+                )),
+            };
+        }
+        transition(task).map_err(|failure| {
+            (
+                failure.error().into(),
+                failure.attempt(),
+                Some(failure.error()),
+            )
+        })
     }
 
     pub(crate) fn step<T: Into<Option<Signal>>>(
         mut self,
         signal: T,
     ) -> Result<Running, TraceError> {
-        self.take_for_transition()?.step(signal)
+        self.transition(|task| task.step(signal))
     }
 
     pub(crate) fn syscall<T: Into<Option<Signal>>>(
         mut self,
         signal: T,
     ) -> Result<Running, TraceError> {
-        self.take_for_transition()?.syscall(signal)
+        self.transition(|task| task.syscall(signal))
     }
 
     pub(crate) fn detach<T: Into<Option<Signal>>>(
         mut self,
         signal: T,
     ) -> Result<Running, TraceError> {
-        self.take_for_transition()?.detach(signal)
+        self.transition(|task| task.detach(signal))
     }
 }
 
@@ -392,12 +862,10 @@ impl NewbornTracee {
                 }
                 return Err(Errno::ETIMEDOUT.into());
             };
-            let state = reservation.decode()?;
+            let state = reservation.decode()?.commit();
             let Wait::Stopped(stopped, _) = state else {
-                reservation.commit();
                 continue;
             };
-            reservation.commit();
             match stopped.resume(None) {
                 Ok(_) | Err(TraceError::Died(_)) | Err(TraceError::Errno(Errno::ESRCH)) => {
                     return Ok(());
@@ -410,26 +878,44 @@ impl NewbornTracee {
 
 impl TraceeIdentity {
     pub(crate) fn open_root(pid: Pid) -> Result<Self, Errno> {
-        // `Command::spawn` is deliberately unblocked just before the child
-        // calls PTRACE_TRACEME. Bind the same procfs generation repeatedly
-        // until TracerPid becomes visible; resource/read errors remain fatal.
-        for _ in 0..2_000 {
-            match Self::capture(pid, None, false) {
-                Ok(identity)
-                    if identity.tid == identity.snapshot.tgid && identity.pidfd.is_some() =>
-                {
-                    return Ok(identity);
-                }
-                Ok(_) | Err(Errno::ESRCH | Errno::ENOENT)
-                    if std::path::Path::new(&format!("/proc/{pid}")).exists() =>
-                {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Ok(_) => return Err(Errno::ESRCH),
-                Err(error) => return Err(error),
-            }
+        let identity = Self::capture(pid, None, false)?;
+        if identity.tid == identity.snapshot.tgid && identity.pidfd.is_some() {
+            Ok(identity)
+        } else {
+            Err(Errno::ESRCH)
         }
-        Err(Errno::ETIMEDOUT)
+    }
+
+    fn from_original_root_startup(
+        proof: OriginalRootStartupIdentity,
+    ) -> (Self, PhysicalEventGenerationId) {
+        let (
+            generation,
+            tid,
+            tgid,
+            ppid,
+            tracer_pid,
+            start_time,
+            proc_inode,
+            pidfd,
+            proc_dir,
+        ) = proof.into_parts();
+        (
+            Self {
+                tid,
+                snapshot: TraceeSnapshot {
+                    tgid,
+                    ppid,
+                    tracer_pid,
+                    start_time,
+                },
+                proc_dir,
+                proc_inode,
+                pidfd: Some(pidfd),
+                parent: None,
+            },
+            generation,
+        )
     }
 
     pub(crate) fn capture_event_child(
@@ -592,6 +1078,17 @@ struct RegisteredTraceeCleanup {
     identity: TraceeIdentity,
     terminal: TerminalCleanup,
     event_link: Option<EventChildLink>,
+    frozen_stop: Option<CleanupStopLease>,
+}
+
+impl RegisteredTraceeCleanup {
+    fn continue_exit_stop(&mut self) -> std::io::Result<()> {
+        continue_registered_exit_stop(
+            &self.terminal,
+            &mut self.frozen_stop,
+            PhysicalResumeOwner::DescendantCleanup,
+        )
+    }
 }
 
 fn terminal_descendant_remains_owned(identity: &TraceeIdentity) -> bool {
@@ -607,56 +1104,367 @@ fn terminal_descendant_remains_owned(identity: &TraceeIdentity) -> bool {
             .is_some_and(|current| current.ppid == parent_tgid)
 }
 
+fn retain_cleanup_stop(
+    retained: &mut Option<CleanupStopLease>,
+    observed: Option<CleanupStopLease>,
+) -> std::io::Result<()> {
+    let Some(observed) = observed else {
+        return Ok(());
+    };
+    match retained {
+        None => {
+            *retained = Some(observed);
+            Ok(())
+        }
+        Some(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "more than one unconsumed logical stop reached cancellation cleanup",
+        )),
+    }
+}
+
+fn finish_cancelled_stop(
+    terminal: &TerminalCleanup,
+    stop: Option<CleanupStopLease>,
+) -> std::io::Result<()> {
+    if let Some(stop) = stop {
+        terminal
+            .dispose_cleanup_stop(stop)
+            .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+    }
+    Ok(())
+}
+
+fn continue_registered_exit_stop(
+    terminal: &TerminalCleanup,
+    frozen_stop: &mut Option<CleanupStopLease>,
+    owner: PhysicalResumeOwner,
+) -> std::io::Result<()> {
+    if terminal
+        .continue_external_startup_cleanup()
+        .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?
+    {
+        return Ok(());
+    }
+    let wait_failure_cleanup = terminal.terminal_error().is_some();
+    match terminal
+        .continue_exit_stop_for_cleanup(frozen_stop, owner)
+        .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?
+    {
+        TerminalCleanupContinue::WaitingForExitStop => {}
+        TerminalCleanupContinue::AlreadyFinished { .. } => {}
+        TerminalCleanupContinue::ControllerHandoffCompleted { .. } => {}
+        TerminalCleanupContinue::Attempted {
+            error,
+            ..
+        } => {
+            if wait_failure_cleanup && error.is_none() {
+                if let Some(stop) = frozen_stop.take() {
+                    finish_cancelled_stop(terminal, Some(stop))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn continue_frozen_exit_stop(
+    terminal: &TerminalCleanup,
+    frozen_stop: &mut Option<CleanupStopLease>,
+    owner: PhysicalResumeOwner,
+) -> std::io::Result<()> {
+    continue_registered_exit_stop(terminal, frozen_stop, owner)
+}
+
 impl LiteinstTraceeCleanup {
     fn new(
-        pid: Pid,
+        task: &Running,
+        startup_identity: OriginalRootStartupIdentity,
         newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
-        held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
-    ) -> Result<Self, Errno> {
-        Ok(Self {
-            identity: TraceeIdentity::open_root(pid)?,
+        held_task_stops: HeldTaskStops,
+    ) -> Self {
+        debug_assert_eq!(startup_identity.pid(), task.pid());
+        debug_assert_eq!(
+            startup_identity.generation(),
+            task.physical_event_generation()
+        );
+        let (identity, startup_generation) =
+            TraceeIdentity::from_original_root_startup(startup_identity);
+        debug_assert_eq!(identity.tid, task.pid());
+        debug_assert_eq!(startup_generation, task.physical_event_generation());
+        let physical_observer = task.physical_event_observer();
+        let physical_generation = physical_observer
+            .as_ref()
+            .map(|_| task.physical_event_generation());
+        Self {
+            identity,
+            physical_observer,
+            physical_generation,
             newborn_tracees,
             armed: true,
+            unstarted_terminal: Some(unsafe { task.unregistered_terminal_cleanup() }),
             terminal: None,
             notifier_owner: None,
             retained_descendants: HashMap::new(),
             retained_terminal_descendants: HashMap::new(),
-            held_root_stop,
+            held_task_stops,
             root_frozen: false,
+            root_frozen_stop: None,
             #[cfg(test)]
             fail_discovery_once: None,
             #[cfg(test)]
             fail_after_scan_once: None,
             #[cfg(test)]
             force_task_scan_once: None,
-        })
+        }
     }
 
     fn pid(&self) -> Pid {
         self.identity.tid
     }
 
-    fn register_notifier(&mut self, task: &Running) {
-        debug_assert!(self.terminal.is_none());
-        self.notifier_owner = Some(std::thread::current().id());
-        self.terminal = Some(task.terminal_cleanup());
+    fn ready_for_observer_close(&self) -> bool {
+        !self.armed && self.held_task_stops.lock().unwrap().is_empty()
     }
 
-    fn capture_pending_children(&self, terminal: &TerminalCleanup) -> std::io::Result<()> {
-        while let Some(reservation) = terminal.reserve_pending_for_cleanup(Duration::ZERO) {
-            let state = reservation.decode().map_err(|error| {
-                std::io::Error::other(format!("decode queued cancellation state: {error}"))
-            })?;
-            if let Wait::Stopped(stopped, Event::NewChild(op, child)) = state {
-                let child_pid = child.pid();
-                let mut newborns = self.newborn_tracees.lock().unwrap();
-                newborns
-                    .entry(child_pid)
-                    .or_insert_with(|| NewbornTracee::from_event(stopped.pid(), op, &child));
+    fn register_notifier(&mut self, task: &Running) -> Result<(), Errno> {
+        debug_assert!(self.terminal.is_none());
+        let terminal = self
+            .unstarted_terminal
+            .take()
+            .expect("unstarted LiteInst cleanup handle was already consumed");
+        debug_assert_eq!(terminal.physical_event_generation(), task.physical_event_generation());
+        if let Err(error) = terminal.ensure_registered() {
+            self.unstarted_terminal = Some(terminal);
+            return Err(error);
+        }
+        self.notifier_owner = Some(std::thread::current().id());
+        self.terminal = Some(terminal);
+        Ok(())
+    }
+
+    fn capture_pending_children(
+        newborn_tracees: &Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
+        held_task_stops: &HeldTaskStops,
+        terminal: &TerminalCleanup,
+        retained_stop: &mut Option<CleanupStopLease>,
+    ) -> std::io::Result<()> {
+        // A second FIFO front cannot be represented by the one-stop cleanup
+        // protocol. Leave it uncommitted until the retained lease is resolved.
+        if retained_stop.is_some() {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if let Some(pause) = CLEANUP_CAPTURE_PREFLIGHT_PAUSES
+            .lock()
+            .unwrap()
+            .remove(&terminal.physical_event_generation())
+        {
+            pause.captured.wait();
+            pause.resume.wait();
+        }
+        loop {
+        let Some(reservation) = terminal.reserve_pending_for_cleanup(Duration::ZERO) else {
+            terminal
+                .reclaim_available_cleanup_stop(retained_stop)
+                .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+            return Ok(());
+        };
+        let decoded = reservation.decode().map_err(|error| {
+            std::io::Error::other(format!("decode queued cancellation state: {error}"))
+        })?;
+        #[cfg(test)]
+        if let Some(pause) = CLEANUP_CAPTURE_DECODED_PAUSES
+            .lock()
+            .unwrap()
+            .remove(&terminal.physical_event_generation())
+        {
+            pause.captured.wait();
+            pause.resume.wait();
+        }
+        // Hold the sole shadow-owner registry from preflight through FIFO
+        // commit and capability conversion. A competing shadow therefore
+        // leaves the reservation uncommitted, while a conversion error can
+        // always retain the returned Stopped without a post-commit race.
+        // Decoding retains the notifier StatusState lock. Existing terminal
+        // cleanup sometimes takes held_task_stops before consulting that
+        // state, so do not wait in the reverse order: contention rolls the
+        // decoded reservation back without committing it.
+        let (decoded, mut held) = match held_task_stops.try_lock() {
+            Ok(held) => (decoded, held),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                // Release and roll back StatusState before waiting in the
+                // established held->StatusState order, then reacquire the same
+                // FIFO front while the held registry is serialized.
+                drop(decoded);
+                let held = held_task_stops.lock().unwrap();
+                let Some(reservation) = terminal.reserve_pending_for_cleanup(Duration::ZERO)
+                else {
+                    return Ok(());
+                };
+                let decoded = reservation.decode().map_err(|error| {
+                    std::io::Error::other(format!(
+                        "decode rolled-back cancellation state: {error}"
+                    ))
+                })?;
+                (decoded, held)
             }
-            // The raw FIFO front remains present until any child cleanup
-            // ownership above is durably stored.
-            reservation.commit();
+            Err(std::sync::TryLockError::Poisoned(error)) => panic!("{error}"),
+        };
+        let stopped_pid = match decoded.wait() {
+            Wait::Stopped(stopped, _) => stopped.pid(),
+            Wait::Exited(..) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "nonterminal notifier FIFO decoded a terminal state",
+                ));
+            }
+        };
+        if held.contains_key(&stopped_pid) {
+            // Destroy the duplicate decoded capability and roll its FIFO front
+            // back before activating the already-durable shadow. This is
+            // progress, not a cleanup failure; the next pass can consume the
+            // untouched FIFO successor after resolving the retained owner.
+            drop(decoded);
+            drop(held);
+            if let Some(held_stop) =
+                Self::take_held_task_stop_from(held_task_stops, stopped_pid, terminal)?
+            {
+                retain_cleanup_stop(retained_stop, held_stop.cleanup_lease)?;
+                return Ok(());
+            }
+            // A completed predecessor shadow was consumed with zero ptrace
+            // transition. Retry the rolled-back FIFO front in this call so the
+            // already-published successor cannot remain stranded.
+            continue;
+        }
+        let (stopped, event) = match decoded.commit() {
+            Wait::Stopped(stopped, event) => (stopped, event),
+            Wait::Exited(..) => unreachable!("decoded FIFO kind changed while reserved"),
+        };
+        if let Event::NewChild(op, child) = &event {
+            let child_pid = child.pid();
+            let mut newborns = newborn_tracees.lock().unwrap();
+            newborns
+                .entry(child_pid)
+                .or_insert_with(|| NewbornTracee::from_event(stopped.pid(), *op, child));
+        }
+        match stopped.into_cleanup_stop_lease() {
+            Ok(lease) => *retained_stop = Some(lease),
+            Err(error) => {
+                let (errno, stopped) = error.into_parts();
+                let replaced = held.insert(stopped_pid, HeldRootStop::from_event(&stopped, &event));
+                debug_assert!(replaced.is_none(), "preflighted cleanup slot changed while locked");
+                return Err(std::io::Error::from_raw_os_error(errno.into_raw()));
+            }
+        }
+        return Ok(());
+        }
+    }
+
+    fn take_held_task_stop(
+        &self,
+        tid: Pid,
+        terminal: &TerminalCleanup,
+    ) -> std::io::Result<Option<HeldRootStop>> {
+        Self::take_held_task_stop_from(&self.held_task_stops, tid, terminal)
+    }
+
+    fn take_held_task_stop_from(
+        held_task_stops: &HeldTaskStops,
+        tid: Pid,
+        terminal: &TerminalCleanup,
+    ) -> std::io::Result<Option<HeldRootStop>> {
+        let mut held_stops = held_task_stops.lock().unwrap();
+        let Some(held) = held_stops.get(&tid) else {
+            return Ok(None);
+        };
+        if !held.armed || held.task_tid != tid || !terminal.same_generation(&held.terminal) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("held LiteInst task stop did not match {tid}'s exact generation"),
+            ));
+        }
+        let resolution = terminal
+            .resolve_transferred_stop(
+                &mut held_stops
+                    .get_mut(&tid)
+                    .expect("validated held task stop must remain present while locked")
+                    .cleanup_transfer,
+            )
+            .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+        let mut held = held_stops
+            .remove(&tid)
+            .expect("resolved held task stop must remain present while locked");
+        held.disarm();
+        match resolution {
+            TransferredStopResolution::Leased(cleanup_lease) => {
+                held.cleanup_lease = Some(cleanup_lease);
+                Ok(Some(held))
+            }
+            TransferredStopResolution::Finished => Ok(None),
+            TransferredStopResolution::Failed(error) => {
+                Err(std::io::Error::from_raw_os_error(error.into_raw()))
+            }
+        }
+    }
+
+    fn transfer_held_descendant_stops(
+        &self,
+        descendants: &mut HashMap<Pid, RegisteredTraceeCleanup>,
+    ) -> std::io::Result<()> {
+        let tids = descendants.keys().copied().collect::<Vec<_>>();
+        for tid in tids {
+            let terminal = &descendants
+                .get(&tid)
+                .expect("listed descendant must remain registered")
+                .terminal;
+            let Some(held) = self.take_held_task_stop(tid, terminal)? else {
+                continue;
+            };
+            let stop = held.cleanup_lease;
+            retain_cleanup_stop(
+                &mut descendants
+                    .get_mut(&tid)
+                    .expect("held descendant must remain registered")
+                    .frozen_stop,
+                stop,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn finish_terminal_held_stops(&self) -> std::io::Result<()> {
+        let mut held_stops = self.held_task_stops.lock().unwrap();
+        let tids = held_stops.keys().copied().collect::<Vec<_>>();
+        for tid in tids {
+            let Some(held) = held_stops.get(&tid) else {
+                continue;
+            };
+            if !held.terminal.wait(Duration::ZERO) || !held.terminal.pending_is_empty() {
+                continue;
+            }
+            let resolution = {
+                let held = held_stops
+                    .get_mut(&tid)
+                    .expect("terminal held stop must remain present while locked");
+                held.terminal
+                    .resolve_transferred_stop(&mut held.cleanup_transfer)
+                    .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?
+            };
+            let mut held = held_stops
+                .remove(&tid)
+                .expect("resolved terminal held stop must remain present while locked");
+            held.disarm();
+            match resolution {
+                TransferredStopResolution::Leased(cleanup_lease) => {
+                    finish_cancelled_stop(&held.terminal, Some(cleanup_lease))?;
+                }
+                TransferredStopResolution::Finished => {}
+                TransferredStopResolution::Failed(error) => {
+                    return Err(std::io::Error::from_raw_os_error(error.into_raw()));
+                }
+            }
         }
         Ok(())
     }
@@ -670,10 +1478,15 @@ impl LiteinstTraceeCleanup {
             .ensure_registered()
             .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
         if self.root_frozen {
-            return self.capture_pending_children(terminal);
+            Self::capture_pending_children(
+                &self.newborn_tracees,
+                &self.held_task_stops,
+                terminal,
+                &mut self.root_frozen_stop,
+            )?;
+            return Ok(());
         }
-        if let Some(mut held) = self.held_root_stop.lock().unwrap().take() {
-            let owns_claimed_exit = matches!(held.status, HeldRootStopStatus::Exit);
+        if let Some(held) = self.take_held_task_stop(self.pid(), terminal)? {
             let matching_status = match held.status {
                 HeldRootStopStatus::Signal(signal) => {
                     let _exact_signal = signal;
@@ -697,69 +1510,146 @@ impl LiteinstTraceeCleanup {
                 | HeldRootStopStatus::Stop
                 | HeldRootStopStatus::Syscall => true,
             };
-            if !held.armed
-                || held.root_tid != self.pid()
-                || !terminal.same_generation(&held.terminal)
-                || !matching_status
-            {
+            if !matching_status {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "held root stop lease did not match the exact event generation/status",
+                    "held root stop lease did not match the exact event status",
                 ));
             }
-            if owns_claimed_exit {
-                // SAFETY: taking the exact-generation held lease is the
-                // cancellation handoff for the ExitFuture-minted Stopped. The
-                // handler future has been dropped, so no independent Stopped
-                // capability survives this exclusive slot transfer.
-                unsafe { terminal.revoke_owned_exit_stop() }
-            } else {
-                terminal.revoke_unclaimed_exit_stop()
-            }
-            .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
-            held.disarm();
+            self.root_frozen_stop = held.cleanup_lease;
             self.root_frozen = true;
-            return self.capture_pending_children(terminal);
+            Self::capture_pending_children(
+                &self.newborn_tracees,
+                &self.held_task_stops,
+                terminal,
+                &mut self.root_frozen_stop,
+            )?;
+            return Ok(());
         }
 
-        match self.identity.send_signal(Signal::SIGSTOP) {
-            Ok(()) | Err(Errno::ESRCH) => {}
-            Err(error) => return Err(std::io::Error::from_raw_os_error(error.into_raw())),
+        if terminal.terminal_error().is_some()
+            && self.notifier_owner == Some(std::thread::current().id())
+            && self.identity.is_our_tracee()
+        {
+            continue_registered_exit_stop(
+                terminal,
+                &mut self.root_frozen_stop,
+                PhysicalResumeOwner::RootCleanup,
+            )?;
+        } else {
+            match self.identity.send_signal(Signal::SIGSTOP) {
+                Ok(()) | Err(Errno::ESRCH) => {}
+                Err(error) => return Err(std::io::Error::from_raw_os_error(error.into_raw())),
+            }
         }
 
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if let Some(reservation) = terminal.reserve_pending_for_cleanup(remaining) {
-                let state = reservation.decode().map_err(|error| {
+            Self::capture_pending_children(
+                &self.newborn_tracees,
+                &self.held_task_stops,
+                terminal,
+                &mut self.root_frozen_stop,
+            )?;
+            if self.root_frozen_stop.is_some() {
+                self.root_frozen = true;
+                return Ok(());
+            }
+            if terminal.terminal_error().is_some()
+                && self.notifier_owner == Some(std::thread::current().id())
+                && self.identity.is_our_tracee()
+            {
+                continue_registered_exit_stop(
+                    terminal,
+                    &mut self.root_frozen_stop,
+                    PhysicalResumeOwner::RootCleanup,
+                )?;
+            }
+            if self.root_frozen_stop.is_none()
+                && let Some(reservation) = terminal.reserve_pending_for_cleanup(remaining)
+            {
+                let decoded = reservation.decode().map_err(|error| {
                     std::io::Error::other(format!(
                         "decode exact root freeze state for {}: {error}",
                         self.pid()
                     ))
                 })?;
-                if let Wait::Stopped(stopped, Event::NewChild(op, child)) = state {
+                let (decoded, mut held) = match self.held_task_stops.try_lock() {
+                    Ok(held) => (decoded, held),
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        drop(decoded);
+                        let held = self.held_task_stops.lock().unwrap();
+                        let Some(reservation) =
+                            terminal.reserve_pending_for_cleanup(Duration::ZERO)
+                        else {
+                            continue;
+                        };
+                        let decoded = reservation.decode().map_err(|error| {
+                            std::io::Error::other(format!(
+                                "decode rolled-back root freeze state for {}: {error}",
+                                self.pid()
+                            ))
+                        })?;
+                        (decoded, held)
+                    }
+                    Err(std::sync::TryLockError::Poisoned(error)) => panic!("{error}"),
+                };
+                let stopped_pid = match decoded.wait() {
+                    Wait::Stopped(stopped, _) => stopped.pid(),
+                    Wait::Exited(..) => unreachable!("pending cleanup status is nonterminal"),
+                };
+                if held.contains_key(&stopped_pid) {
+                    drop(decoded);
+                    drop(held);
+                    if let Some(held_stop) = Self::take_held_task_stop_from(
+                        &self.held_task_stops,
+                        stopped_pid,
+                        terminal,
+                    )? {
+                        retain_cleanup_stop(
+                            &mut self.root_frozen_stop,
+                            held_stop.cleanup_lease,
+                        )?;
+                    }
+                    continue;
+                }
+                let (stopped, event) = match decoded.commit() {
+                    Wait::Stopped(stopped, event) => (stopped, event),
+                    Wait::Exited(..) => unreachable!("pending cleanup status is nonterminal"),
+                };
+                if let Event::NewChild(op, child) = &event {
                     let child_pid = child.pid();
                     self.newborn_tracees
                         .lock()
                         .unwrap()
                         .entry(child_pid)
-                        .or_insert_with(|| NewbornTracee::from_event(stopped.pid(), op, &child));
+                        .or_insert_with(|| NewbornTracee::from_event(stopped.pid(), *op, child));
                 }
-                terminal
-                    .revoke_unclaimed_exit_stop()
-                    .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
-                reservation.commit();
-                // Any exact-generation nonterminal wait status means the root
-                // is kernel-stopped. Drain the remaining FIFO while it cannot
-                // execute and create another child.
-                self.capture_pending_children(terminal)?;
+                let cleanup_lease = match stopped.into_cleanup_stop_lease() {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        let (errno, stopped) = error.into_parts();
+                        let replaced =
+                            held.insert(stopped_pid, HeldRootStop::from_event(&stopped, &event));
+                        debug_assert!(
+                            replaced.is_none(),
+                            "preflighted root cleanup slot changed while locked"
+                        );
+                        return Err(std::io::Error::from_raw_os_error(errno.into_raw()));
+                    }
+                };
+                drop(held);
+                retain_cleanup_stop(&mut self.root_frozen_stop, Some(cleanup_lease))?;
                 self.root_frozen = true;
                 return Ok(());
             }
             if terminal.exit_stop_observed() {
-                terminal
-                    .revoke_unclaimed_exit_stop()
-                    .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+                continue_frozen_exit_stop(
+                    terminal,
+                    &mut self.root_frozen_stop,
+                    PhysicalResumeOwner::RootCleanup,
+                )?;
                 self.root_frozen = true;
                 return Ok(());
             }
@@ -776,27 +1666,37 @@ impl LiteinstTraceeCleanup {
         }
     }
 
-    fn disarm(&mut self) {
-        self.armed = false;
+    fn finish_typed_completion(&mut self) -> std::io::Result<()> {
+        if let Some(terminal) = self.terminal.as_ref() {
+            terminal.wait(Duration::from_secs(2));
+        }
+        self.confirm_reaped()
     }
 
     fn confirm_reaped(&mut self) -> std::io::Result<()> {
         if !self.armed {
             return Ok(());
         }
+        self.finish_terminal_held_stops()?;
         let notifier_finished = self
             .terminal
             .as_ref()
             .is_some_and(|terminal| terminal.wait(Duration::ZERO) && terminal.pending_is_empty());
         let identity_absent = !self.identity.same_process();
-        let unregistered_absent = self.terminal.is_none() && identity_absent;
+        let unregistered_absent =
+            self.terminal.is_none() && identity_absent && self.physical_observer.is_none();
         let newborns_empty = self.newborn_tracees.lock().unwrap().is_empty();
         let retained_empty =
             self.retained_descendants.is_empty() && self.retained_terminal_descendants.is_empty();
+        let held_stops_empty = self.held_task_stops.lock().unwrap().is_empty();
         if newborns_empty
             && retained_empty
+            && held_stops_empty
             && ((notifier_finished && identity_absent) || unregistered_absent)
         {
+            if let Some(terminal) = self.terminal.as_ref() {
+                finish_cancelled_stop(terminal, self.root_frozen_stop.take())?;
+            }
             self.armed = false;
             Ok(())
         } else {
@@ -830,10 +1730,16 @@ impl LiteinstTraceeCleanup {
         terminal_descendants: &mut HashMap<Pid, TraceeIdentity>,
     ) -> std::io::Result<()> {
         if self.terminal.is_none() {
-            terminate_and_reap_new_child_with_identity(Running::new(self.pid()), &self.identity)
-                .map_err(|error| {
-                    std::io::Error::other(format!("pre-registration LiteInst cleanup: {error}"))
-                })?;
+            let terminal = self.unstarted_terminal.as_ref().ok_or_else(|| {
+                std::io::Error::other("pre-registration LiteInst cleanup authority is absent")
+            })?;
+            unsafe {
+                terminal.terminate_unregistered_original_root(Errno::ECANCELED)
+            }
+            .map_err(|error| {
+                std::io::Error::other(format!("pre-registration LiteInst cleanup: {error}"))
+            })?;
+            self.unstarted_terminal = None;
             self.armed = false;
             return Ok(());
         }
@@ -847,7 +1753,16 @@ impl LiteinstTraceeCleanup {
             // generation-bound descendants; trying to freeze a completed root
             // would only collide with its consumed exit capability.
             if let Some(terminal) = self.terminal.as_ref() {
-                self.capture_pending_children(terminal)?;
+                if let Some(held) = self.take_held_task_stop(self.pid(), terminal)? {
+                    self.root_frozen_stop = held.cleanup_lease;
+                }
+                Self::capture_pending_children(
+                    &self.newborn_tracees,
+                    &self.held_task_stops,
+                    terminal,
+                    &mut self.root_frozen_stop,
+                )?;
+                finish_cancelled_stop(terminal, self.root_frozen_stop.take())?;
             }
             self.root_frozen = true;
         }
@@ -860,54 +1775,98 @@ impl LiteinstTraceeCleanup {
             self.newborn_tracees.lock().unwrap().clear();
         }
         self.discover_descendants(descendants, terminal_descendants)?;
+        self.transfer_held_descendant_stops(descendants)?;
+        self.finish_terminal_held_stops()?;
         let root_terminal = self.terminal.as_ref().unwrap();
-        self.capture_pending_children(root_terminal)?;
+        Self::capture_pending_children(
+            &self.newborn_tracees,
+            &self.held_task_stops,
+            root_terminal,
+            &mut self.root_frozen_stop,
+        )?;
         if !root_terminal.pending_is_empty() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
                 "root notifier FIFO changed while frozen",
             ));
         }
-        match self.identity.send_signal(Signal::SIGKILL) {
-            Ok(()) | Err(Errno::ESRCH) => {}
-            Err(error) => return Err(std::io::Error::from_raw_os_error(error.into_raw())),
+        if root_terminal.terminal_error().is_some() {
+            continue_registered_exit_stop(
+                root_terminal,
+                &mut self.root_frozen_stop,
+                PhysicalResumeOwner::RootCleanup,
+            )?;
+        } else {
+            match self.identity.send_signal(Signal::SIGKILL) {
+                Ok(()) | Err(Errno::ESRCH) => {}
+                Err(error) => return Err(std::io::Error::from_raw_os_error(error.into_raw())),
+            }
         }
-        for tracee in descendants.values() {
+        for tracee in descendants.values_mut() {
             tracee
                 .terminal
                 .ensure_registered()
                 .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
-            send_identity_sigkill(&tracee.identity)?;
+            if tracee.terminal.terminal_error().is_some() {
+                tracee.continue_exit_stop()?;
+            } else {
+                send_identity_sigkill(&tracee.identity)?;
+            }
         }
 
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
             if let Some(terminal) = self.terminal.as_ref() {
-                self.capture_pending_children(terminal)?;
+                Self::capture_pending_children(
+                    &self.newborn_tracees,
+                    &self.held_task_stops,
+                    terminal,
+                    &mut self.root_frozen_stop,
+                )?;
             }
-            for tracee in descendants.values() {
-                self.capture_pending_children(&tracee.terminal)?;
+            for tracee in descendants.values_mut() {
+                Self::capture_pending_children(
+                    &self.newborn_tracees,
+                    &self.held_task_stops,
+                    &tracee.terminal,
+                    &mut tracee.frozen_stop,
+                )?;
             }
             self.discover_descendants(descendants, terminal_descendants)?;
-            for tracee in descendants.values() {
+            self.transfer_held_descendant_stops(descendants)?;
+            self.finish_terminal_held_stops()?;
+            for tracee in descendants.values_mut() {
                 tracee
                     .terminal
                     .ensure_registered()
                     .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
-                send_identity_sigkill(&tracee.identity)?;
+                if tracee.terminal.terminal_error().is_some() {
+                    tracee.continue_exit_stop()?;
+                } else {
+                    send_identity_sigkill(&tracee.identity)?;
+                }
             }
 
             let root_done = self
                 .terminal
                 .as_ref()
                 .is_some_and(|terminal| terminal.wait(Duration::ZERO));
+            if root_done {
+                finish_cancelled_stop(root_terminal, self.root_frozen_stop.take())?;
+            }
             let completed = descendants
                 .iter()
                 .filter_map(|(pid, tracee)| tracee.terminal.wait(Duration::ZERO).then_some(*pid))
                 .collect::<Vec<_>>();
             for pid in completed {
-                if let Some(tracee) = descendants.get(&pid) {
-                    self.capture_pending_children(&tracee.terminal)?;
+                if let Some(tracee) = descendants.get_mut(&pid) {
+                    Self::capture_pending_children(
+                        &self.newborn_tracees,
+                        &self.held_task_stops,
+                        &tracee.terminal,
+                        &mut tracee.frozen_stop,
+                    )?;
+                    finish_cancelled_stop(&tracee.terminal, tracee.frozen_stop.take())?;
                 }
                 let tracee = descendants
                     .remove(&pid)
@@ -924,11 +1883,13 @@ impl LiteinstTraceeCleanup {
             terminal_descendants.retain(|_, identity| terminal_descendant_remains_owned(identity));
             let root_absent = !self.identity.same_process();
             let newborns_empty = self.newborn_tracees.lock().unwrap().is_empty();
+            let held_stops_empty = self.held_task_stops.lock().unwrap().is_empty();
             if root_done
                 && root_absent
                 && descendants.is_empty()
                 && terminal_descendants.is_empty()
                 && newborns_empty
+                && held_stops_empty
             {
                 self.armed = false;
                 return Ok(());
@@ -941,19 +1902,19 @@ impl LiteinstTraceeCleanup {
                 // Preserve parentage until every descendant is terminal and
                 // reaped. Otherwise an auto-attached child can be reparented
                 // before its notifier consumes the final wait status.
-                if !root_done && descendants.is_empty() && self.identity.is_our_tracee() {
-                    root_terminal
-                        .revoke_unclaimed_exit_stop()
-                        .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
-                    let _ = ptrace::cont(self.pid().into(), None);
+                if !root_done
+                    && (descendants.is_empty() || root_terminal.terminal_error().is_some())
+                    && self.identity.is_our_tracee()
+                {
+                    continue_registered_exit_stop(
+                        root_terminal,
+                        &mut self.root_frozen_stop,
+                        PhysicalResumeOwner::RootCleanup,
+                    )?;
                 }
-                for tracee in descendants.values() {
+                for tracee in descendants.values_mut() {
                     if tracee.identity.is_our_tracee() {
-                        tracee
-                            .terminal
-                            .revoke_unclaimed_exit_stop()
-                            .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
-                        let _ = ptrace::cont(tracee.identity.tid.into(), None);
+                        tracee.continue_exit_stop()?;
                     }
                 }
             }
@@ -1010,6 +1971,12 @@ impl LiteinstTraceeCleanup {
                 .unwrap()
                 .remove(&tid)
                 .expect("listed newborn must remain registered");
+            if let Some(observer) = self.physical_observer.as_ref() {
+                newborn
+                    .terminal
+                    .attach_physical_event_observer(observer)
+                    .map_err(|_| std::io::Error::from_raw_os_error(libc::EPROTO))?;
+            }
             let identity = match newborn.identity.take() {
                 Some(identity) => identity,
                 None => match TraceeIdentity::capture_event_child(
@@ -1038,6 +2005,7 @@ impl LiteinstTraceeCleanup {
                     identity,
                     terminal: newborn.terminal,
                     event_link: Some(newborn.link),
+                    frozen_stop: None,
                 },
             );
             transferred.push(tid);
@@ -1075,15 +2043,21 @@ impl LiteinstTraceeCleanup {
                     return Err(error);
                 }
             };
-            let terminal = Stopped::try_new_current_unchecked(tid)
-                .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?
-                .terminal_cleanup();
+            let stopped = Stopped::try_new_current_unchecked(tid)
+                .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+            if let Some(observer) = self.physical_observer.as_ref() {
+                stopped
+                    .attach_physical_event_observer(observer)
+                    .map_err(|_| std::io::Error::from_raw_os_error(libc::EPROTO))?;
+            }
+            let terminal = stopped.terminal_cleanup();
             descendants.insert(
                 tid,
                 RegisteredTraceeCleanup {
                     identity,
                     terminal,
                     event_link: None,
+                    frozen_stop: None,
                 },
             );
         }
@@ -1128,13 +2102,24 @@ impl LiteinstTraceeCleanup {
                     }
                 };
                 queue.push_back(child);
-                let terminal = Running::new(child).terminal_cleanup();
+                let running = Running::new(child);
+                if let Some(observer) = self.physical_observer.as_ref() {
+                    running
+                        .attach_physical_event_observer(observer)
+                        .map_err(|_| std::io::Error::from_raw_os_error(libc::EPROTO))?;
+                    observer.link_pre_registration_task(
+                        PhysicalTaskIdentity::direct_child(child),
+                        running.physical_event_generation(),
+                    );
+                }
+                let terminal = running.terminal_cleanup();
                 descendants.insert(
                     child,
                     RegisteredTraceeCleanup {
                         identity,
                         terminal,
                         event_link: None,
+                        frozen_stop: None,
                     },
                 );
             }
@@ -1192,27 +2177,67 @@ fn send_identity_sigkill(identity: &TraceeIdentity) -> std::io::Result<()> {
 
 impl Drop for LiteinstTraceeCleanup {
     fn drop(&mut self) {
-        if !self.armed {
+        if self.armed {
+            // Cancellation cannot await an orderly drain, so synchronously
+            // request termination and wait for the notifier-owned final reap.
+            // Before async registration, the bounded raw-wait fallback owns
+            // cleanup instead.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                match self.terminate_and_confirm() {
+                    Ok(()) => break,
+                    Err(error) if Instant::now() < deadline => {
+                        // Every failed attempt restores all descendant/newborn
+                        // ownership to this guard. Retry transient discovery
+                        // and registration errors without dropping cleanup
+                        // records.
+                        std::thread::sleep(Duration::from_millis(1));
+                        tracing::debug!(pid = %self.pid(), %error, "retrying LiteInst cancellation cleanup");
+                    }
+                    Err(error) => {
+                        let fail_stop_preparation = self
+                            .terminal
+                            .as_ref()
+                            .or(self.unstarted_terminal.as_ref())
+                            .map(TerminalCleanup::prepare_startup_cleanup_fail_stop)
+                            .transpose();
+                        tracing::error!(
+                            pid = %self.pid(),
+                            %error,
+                            ?fail_stop_preparation,
+                            "LiteInst cancellation cleanup exhausted its bounded retries; aborting controller"
+                        );
+                        // The typed helper above either spends the sole
+                        // exact-pidfd SIGKILL request or observes its retained
+                        // accepted/ESRCH/error state. It never retries a spent
+                        // request. EXITKILL is the registered-tracee backstop.
+                        std::process::abort();
+                    }
+                }
+            }
+        }
+        if !self.ready_for_observer_close() {
+            tracing::error!(
+                pid = %self.pid(),
+                held_stops = self.held_task_stops.lock().unwrap().len(),
+                "leaving LiteInst physical observer open because cancellation cleanup is still armed"
+            );
             return;
         }
-        // Cancellation cannot await an orderly drain, so synchronously request
-        // termination and wait for the notifier-owned final reap. Before async
-        // registration, the bounded raw-wait fallback owns cleanup instead.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            match self.terminate_and_confirm() {
-                Ok(()) => return,
-                Err(error) if Instant::now() < deadline => {
-                    // Every failed attempt restores all descendant/newborn
-                    // ownership to this guard. Retry transient discovery and
-                    // registration errors without dropping cleanup records.
-                    std::thread::sleep(Duration::from_millis(1));
-                    tracing::debug!(pid = %self.pid(), %error, "retrying LiteInst cancellation cleanup");
-                }
-                Err(error) => {
-                    tracing::error!(pid = %self.pid(), %error, "LiteInst cancellation cleanup failed");
-                    return;
-                }
+        if let Some(observer) = self.physical_observer.as_ref() {
+            observer.close();
+            let snapshot = observer.snapshot();
+            let validation = snapshot.validate();
+            if !validation.is_valid() {
+                tracing::error!(
+                    pid = %self.pid(),
+                    observer = ?snapshot.observer(),
+                    ordinary_lost = snapshot.ordinary_lost(),
+                    cleanup_lost = snapshot.cleanup_lost(),
+                    after_close = snapshot.after_close(),
+                    violations = ?validation.violations,
+                    "LiteInst physical partition failed during cancellation drop"
+                );
             }
         }
     }
@@ -1371,82 +2396,6 @@ fn direct_children(pid: Pid) -> std::io::Result<Vec<Pid>> {
     Ok(children)
 }
 
-fn terminate_and_reap_new_child_with_identity(
-    task: Running,
-    identity: &TraceeIdentity,
-) -> Result<(), TraceError> {
-    match identity.send_signal(Signal::SIGKILL) {
-        Ok(()) | Err(Errno::ESRCH) => {}
-        Err(error) => return Err(error.into()),
-    }
-    drain_unregistered_child(task)
-}
-
-fn drain_unregistered_child(task: Running) -> Result<(), TraceError> {
-    let pid = task.pid();
-    for _ in 0..2_000 {
-        let mut status = 0;
-        let waited =
-            unsafe { libc::waitpid(pid.as_raw(), &mut status, libc::__WALL | libc::WNOHANG) };
-        if waited == 0 {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            continue;
-        }
-        if waited == -1 {
-            let errno = Errno::last();
-            match errno {
-                Errno::EINTR => continue,
-                Errno::ECHILD
-                    if unsafe { libc::kill(pid.as_raw(), 0) } == -1
-                        && Errno::last() == Errno::ESRCH =>
-                {
-                    return Ok(());
-                }
-                Errno::ECHILD => {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                    continue;
-                }
-                _ => return Err(errno.into()),
-            }
-        }
-        if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
-            return Ok(());
-        }
-        if libc::WIFSTOPPED(status) {
-            let stopped = Stopped::new_unchecked(pid);
-            match stopped.resume(None) {
-                Ok(_) | Err(TraceError::Died(_)) | Err(TraceError::Errno(Errno::ESRCH)) => {}
-                Err(error) => return Err(error),
-            }
-        }
-    }
-    Err(Errno::ETIMEDOUT.into())
-}
-
-fn liteinst_pidfd_setup_error(
-    pid: Pid,
-    setup_error: Errno,
-    kill_error: Option<Errno>,
-    drain_result: Result<(), TraceError>,
-) -> anyhow::Error {
-    let setup_failure = if setup_error == Errno::ETIMEDOUT {
-        format!(
-            "LiteInst tracee {pid} root identity did not become a stable traced thread-group leader with a pidfd within the 2,000-attempt retry budget"
-        )
-    } else {
-        format!("failed to open pidfd for LiteInst tracee {pid}: {setup_error}")
-    };
-    match (kill_error, drain_result) {
-        (Some(kill_error), drain_result) => anyhow::anyhow!(
-            "{setup_failure}; numeric setup-failure kill also failed: {kill_error}; drain result: {drain_result:?}"
-        ),
-        (None, Err(drain_error)) => {
-            anyhow::anyhow!("{setup_failure}; cleanup drain also failed: {drain_error}")
-        }
-        (None, Ok(())) => anyhow::anyhow!(setup_failure),
-    }
-}
-
 impl<G: Default> Tracer<G> {
     /// Returns the PID of the root guest process.
     pub fn guest_pid(&self) -> Pid {
@@ -1463,6 +2412,78 @@ impl<G: Default> Tracer<G> {
     /// Returns the live ptrace activity-statistics source when collection was enabled.
     pub fn backend_stats(&self) -> Option<PtraceBackendStatsSource> {
         self.backend_stats.clone()
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn finalize_liteinst_physical_observer(
+        guest_pid: Pid,
+        slot: &mut Option<(
+            safeptrace::PhysicalEventObserver,
+            crate::LiteinstCallerDiagnostics,
+        )>,
+    ) -> Result<(), Error> {
+        let Some((observer, diagnostics)) = slot.take() else {
+            return Ok(());
+        };
+        observer.close();
+        let snapshot = observer.snapshot();
+        let validation = snapshot.validate();
+        diagnostics.record(
+            "physical event partition validated",
+            None,
+            format!(
+                "observer={:?} records={} physical_statuses={} successful_resumes={} explicit_dispositions={} ordinary_lost={} cleanup_lost={} after_close={} violations={:?}",
+                snapshot.observer(),
+                snapshot.records().len(),
+                validation.physical_statuses,
+                validation.successful_resumes,
+                validation.explicit_dispositions,
+                snapshot.ordinary_lost(),
+                snapshot.cleanup_lost(),
+                snapshot.after_close(),
+                validation.violations,
+            ),
+        )?;
+        if !validation.is_valid() {
+            let failure_tail = snapshot
+                .records()
+                .iter()
+                .rev()
+                .take(64)
+                .copied()
+                .collect::<Vec<_>>();
+            diagnostics.record(
+                "physical event partition failure tail",
+                None,
+                format!("newest_first={failure_tail:?}"),
+            )?;
+            return Err(anyhow::anyhow!(
+                "validate physical wait and resume partition failed for tracee {guest_pid}: {:?}",
+                validation.violations,
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn finalize_liteinst_physical_observer_after_cleanup(
+        guest_pid: Pid,
+        cleanup: Option<&LiteinstTraceeCleanup>,
+        slot: &mut Option<(
+            safeptrace::PhysicalEventObserver,
+            crate::LiteinstCallerDiagnostics,
+        )>,
+    ) -> Result<(), Error> {
+        if cleanup.is_some_and(|cleanup| !cleanup.ready_for_observer_close()) {
+            return Ok(());
+        }
+        Self::finalize_liteinst_physical_observer(guest_pid, slot)
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    fn finalize_liteinst_physical_observer(_guest_pid: Pid) -> Result<(), Error> {
+        Ok(())
     }
 
     /// Simultaneously waits for the tracee to exit and collect all remaining
@@ -1560,19 +2581,73 @@ impl<G: Default> Tracer<G> {
         let local_set = tokio::task::LocalSet::new();
         let exit_status = match local_set.run_until(self.tracer).await {
             Ok(status) => {
-                if let Some(cleanup) = self.liteinst_cleanup.as_mut() {
-                    cleanup.disarm();
+                let cleanup_error = self
+                    .liteinst_cleanup
+                    .as_mut()
+                    .and_then(|cleanup| cleanup.finish_typed_completion().err());
+                #[cfg(target_arch = "x86_64")]
+                let observer_error = Self::finalize_liteinst_physical_observer_after_cleanup(
+                    self.guest_pid,
+                    self.liteinst_cleanup.as_ref(),
+                    &mut self.liteinst_physical_observer,
+                )
+                .err();
+                #[cfg(not(target_arch = "x86_64"))]
+                let observer_error =
+                    Self::finalize_liteinst_physical_observer(self.guest_pid).err();
+                match (cleanup_error, observer_error) {
+                    (Some(cleanup_error), Some(observer_error)) => {
+                        return Err(anyhow::anyhow!(
+                            "LiteInst tracee completion cleanup failed: {cleanup_error}; physical partition also failed: {observer_error}"
+                        )
+                        .into());
+                    }
+                    (Some(cleanup_error), None) => {
+                        return Err(anyhow::anyhow!(
+                            "LiteInst tracee completion cleanup failed: {cleanup_error}"
+                        )
+                        .into());
+                    }
+                    (None, Some(observer_error)) => return Err(observer_error),
+                    (None, None) => {}
                 }
                 status
             }
             Err(error) => {
-                if let Some(cleanup) = self.liteinst_cleanup.as_mut()
-                    && let Err(cleanup_error) = cleanup.terminate_and_confirm()
-                {
-                    return Err(anyhow::anyhow!(
-                        "LiteInst tracee cleanup failed after {error}: {cleanup_error}"
-                    )
-                    .into());
+                let cleanup_error = if let Some(cleanup) = self.liteinst_cleanup.as_mut() {
+                    cleanup.terminate_and_confirm().err()
+                } else {
+                    None
+                };
+                #[cfg(target_arch = "x86_64")]
+                let observer_error = Self::finalize_liteinst_physical_observer_after_cleanup(
+                    self.guest_pid,
+                    self.liteinst_cleanup.as_ref(),
+                    &mut self.liteinst_physical_observer,
+                )
+                .err();
+                #[cfg(not(target_arch = "x86_64"))]
+                let observer_error =
+                    Self::finalize_liteinst_physical_observer(self.guest_pid).err();
+                match (cleanup_error, observer_error) {
+                    (Some(cleanup_error), Some(observer_error)) => {
+                        return Err(anyhow::anyhow!(
+                            "LiteInst tracee cleanup failed after {error}: {cleanup_error}; physical partition also failed: {observer_error}"
+                        ).into());
+                    }
+                    (Some(cleanup_error), None) => {
+                        return Err(anyhow::anyhow!(
+                            "LiteInst tracee cleanup failed after {error}: {cleanup_error}"
+                        )
+                        .into());
+                    }
+                    (None, Some(observer_error)) => {
+                        return Err(anyhow::anyhow!(
+                            "LiteInst physical partition failed after {error}: {observer_error}"
+                        )
+                        .into());
+                    }
+                    (None, None) => {}
                 }
                 return Err(error);
             }
@@ -1625,8 +2700,7 @@ fn report_pre_exec_capability_error(message: &'static [u8]) -> Errno {
     errno
 }
 
-/// Sets up the child process for ptracing right before execve is called.
-fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
+fn init_tracee_capabilities(intercept_rdtsc: bool) -> Result<(), Errno> {
     // NOTE: There should be *NO* allocations along the happy path here.
     // Allocating between a fork() and execve() can cause deadlocks in glibc
     // when using jemalloc.
@@ -1660,6 +2734,20 @@ fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
         }
     }
 
+    Ok(())
+}
+
+/// Sets up the child process for ptracing right before execve is called.
+fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
+    init_tracee_capabilities(intercept_rdtsc)?;
+
+    // Establish ptrace ownership while the spawn error pipe is still open, so
+    // a TRACEME failure reaches the parent as a real pre-exec error. The child
+    // raises SIGSTOP only after closing that pipe below; Command::spawn can
+    // therefore return before the stop, and the exact WNOWAIT pidfd barrier
+    // owns that finite transition without polling TracerPid.
+    safeptrace::traceme()?;
+
     // FIXME: This is a hacky workaround for `std::process::Command::spawn`
     // getting stuck in a deadlock because of the SIGSTOP below.
     // `Command::spawn` uses a pipe to communicate the error code to the parent
@@ -1681,8 +2769,11 @@ fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
         }
     }
 
-    safeptrace::traceme_and_stop()?;
+    safeptrace::stop_for_tracer()?;
+    finish_tracee_init()
+}
 
+fn finish_tracee_init() -> Result<(), Errno> {
     unsafe {
         signal::sigaction(
             signal::SIGTTIN,
@@ -1706,6 +2797,19 @@ fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
     }
 
     Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
+fn init_controller_tracee(
+    intercept_rdtsc: bool,
+    publisher: &mut ControllerStartupPublisher,
+) -> Result<(), Errno> {
+    init_tracee_capabilities(intercept_rdtsc)?;
+    safeptrace::traceme()?;
+    publisher.publish_ready()?;
+    safeptrace::stop_for_tracer()?;
+    Errno::result(unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, 0, 0, 0, 0) })?;
+    finish_tracee_init()
 }
 
 async fn run_orphaned(orphans: mpsc::Receiver<Child>) {
@@ -1817,10 +2921,35 @@ async fn postspawn<L: Tool + 'static>(
     //
     // NOTE: We may rarely get spurious signals here, like SIGWINCH, so we must
     // skip past them.
-    let (mut child, event) = child
-        .wait_for_signal(Signal::SIGSTOP)
-        .await?
-        .assume_stopped();
+    let held_task_stops = options
+        .liteinst_runtime
+        .as_ref()
+        .map(|runtime| Arc::clone(&runtime.held_task_stops));
+    let (mut child, event) = if let Some(held_task_stops) = held_task_stops {
+        let mut running = child;
+        loop {
+            match running.next_state().await? {
+                Wait::Stopped(stopped, event) => {
+                    HeldRootStop::arm_empty(&held_task_stops, &stopped, &event)?;
+                    if event == Event::Signal(Signal::SIGSTOP) {
+                        break (stopped, event);
+                    }
+                    let signal = match event {
+                        Event::Signal(signal) => Some(signal),
+                        _ => None,
+                    };
+                    running = RootStopLease::new(stopped, Some(Arc::clone(&held_task_stops)))
+                        .resume(signal)?;
+                }
+                Wait::Exited(_, _) => return Err(Errno::ECHILD.into()),
+            }
+        }
+    } else {
+        child
+            .wait_for_signal(Signal::SIGSTOP)
+            .await?
+            .assume_stopped()
+    };
     assert_eq!(event, Event::Signal(Signal::SIGSTOP));
 
     child.setoptions(
@@ -1851,7 +2980,6 @@ async fn postspawn<L: Tool + 'static>(
         gdbserver,
     );
 
-    tracer.arm_liteinst_root_stop(&child, &Event::Signal(Signal::SIGSTOP));
     child = tracer.tracee_preinit(child).await?;
 
     let tracer = Box::pin(run_task_tree(
@@ -1889,6 +3017,30 @@ fn seccomp_filter(events: &Subscription) -> seccomp::Filter {
             Action::Allow,
         )
         .build()
+}
+
+/// Creates the after-loader experiment's process-wide syscall filter.
+///
+/// Tool subscriptions remain a separate dispatch decision. Every syscall is
+/// reported to ptrace first, including raw numbers that `Sysno` cannot
+/// represent, `rt_sigreturn`, and calls from Reverie's private page. Later
+/// admission decides whether the stopped operation may execute.
+#[cfg(target_arch = "x86_64")]
+fn after_loader_seccomp_filter() -> seccomp::Filter {
+    use reverie::process::seccomp::Action;
+
+    seccomp::FilterBuilder::new()
+        .default_action(Action::Trace(0))
+        .build()
+}
+
+#[cfg(target_arch = "x86_64")]
+fn spawn_seccomp_filter(events: &Subscription, after_loader: bool) -> seccomp::Filter {
+    if after_loader {
+        after_loader_seccomp_filter()
+    } else {
+        seccomp_filter(events)
+    }
 }
 
 /// Specifies *how* the GDB server should listen for incoming connections.
@@ -2050,12 +3202,14 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     ) -> Self {
         self.liteinst_runtime = Some(LiteinstRuntimeConfig {
             preload: preload.into(),
+            #[cfg(target_arch = "x86_64")]
+            after_loader: None,
             begin_marker,
             ready_marker,
             helper_return_marker,
             syscall_marker,
             newborn_tracees: Arc::new(StdMutex::new(HashMap::new())),
-            held_root_stop: Arc::new(StdMutex::new(None)),
+            held_task_stops: Arc::new(StdMutex::new(HashMap::new())),
             root_tid: Arc::new(StdOnceLock::new()),
             multi_task: Arc::new(AtomicBool::new(false)),
             session_failure: Arc::new(StdMutex::new(None)),
@@ -2103,6 +3257,34 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             force_private_stub_mutation_once: None,
         });
         self
+    }
+
+    /// Select the explicitly bound one-task after-loader experiment.
+    /// Call after liteinst_runtime; the constructor launch remains the default.
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(test, feature = "liteinst-after-loader-experiment")
+    ))]
+    pub fn liteinst_after_loader(
+        mut self,
+        config: crate::LiteinstAfterLoaderConfig,
+    ) -> Result<Self, Error> {
+        config.validate_environment(&self.command.get_captured_envs())?;
+        let runtime = self.liteinst_runtime.as_mut().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "LiteInst runtime is absent",
+            )
+        })?;
+        if runtime.preload != config.runtime.path {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "runtime path differs from bound input",
+            )
+            .into());
+        }
+        runtime.after_loader = Some(config);
+        Ok(self)
     }
 
     #[cfg(test)]
@@ -2353,11 +3535,38 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         let mut command = self.command;
         let config = self.config.unwrap_or_default();
         let liteinst_fail_closed = self.liteinst_runtime.is_some();
+        #[cfg(target_arch = "x86_64")]
+        let after_loader_diagnostics = self
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.after_loader.as_ref())
+            .map(|config| config.diagnostics.clone());
 
         // Because this ptrace backend is CENTRALIZED, it can keep all the
         // tool's state here in a single address space.
+        #[cfg(target_arch = "x86_64")]
+        if let Some(diagnostics) = &after_loader_diagnostics {
+            diagnostics.record(
+                "Tool lifecycle: GlobalTool::init_global_state",
+                None,
+                "begin",
+            )?;
+        }
         let global_state = <T::GlobalState as GlobalTool>::init_global_state(&config).await;
+        #[cfg(target_arch = "x86_64")]
+        if let Some(diagnostics) = &after_loader_diagnostics {
+            diagnostics.record(
+                "Tool lifecycle: GlobalTool::init_global_state",
+                None,
+                "complete",
+            )?;
+            diagnostics.record("Tool lifecycle: Tool::subscriptions", None, "begin")?;
+        }
         let events = T::subscriptions(&config);
+        #[cfg(target_arch = "x86_64")]
+        if let Some(diagnostics) = &after_loader_diagnostics {
+            diagnostics.record("Tool lifecycle: Tool::subscriptions", None, "complete")?;
+        }
         let mut traced_events = events.clone();
         if self.liteinst_runtime.is_some() {
             // Mapping operations are controller-only lifecycle observations:
@@ -2381,19 +3590,115 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         // `execve`, but that is tricky when ptracing the `execve` call.
         resolve_program(&mut command)?;
 
-        // Disable sanitizers that use ptrace from running on tracer.
-        command.env("LSAN_OPTIONS", "detect_leaks=0");
-        command.env("ASAN_OPTIONS", "detect_leaks=0");
+        #[cfg(target_arch = "x86_64")]
+        let after_loader = self
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.after_loader.as_ref());
+
+        #[cfg(target_arch = "x86_64")]
+        if let Some(after_loader) = after_loader {
+            // The after-loader contract preserves the caller's complete
+            // environment. Capture inherited values once, compare that final
+            // map with the reviewed configuration, then make the command
+            // independent of later mutations to the controller environment.
+            // In particular, this mode must not inject the sanitizer variables
+            // used by the ordinary ptrace launcher.
+            freeze_after_loader_environment(&mut command, &after_loader.environment)?;
+        } else {
+            // Disable sanitizers that use ptrace from running on tracer.
+            command.env("LSAN_OPTIONS", "detect_leaks=0");
+            command.env("ASAN_OPTIONS", "detect_leaks=0");
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            // Disable sanitizers that use ptrace from running on tracer.
+            command.env("LSAN_OPTIONS", "detect_leaks=0");
+            command.env("ASAN_OPTIONS", "detect_leaks=0");
+        }
 
         let intercept_rdtsc = events.has_rdtsc();
+        #[cfg(target_arch = "x86_64")]
+        if after_loader.is_none() {
+            unsafe {
+                command.pre_exec(move || init_tracee(intercept_rdtsc));
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
         unsafe {
             command.pre_exec(move || init_tracee(intercept_rdtsc));
         }
 
+        #[cfg(target_arch = "x86_64")]
+        command.seccomp(spawn_seccomp_filter(&traced_events, after_loader.is_some()));
+        #[cfg(not(target_arch = "x86_64"))]
         command.seccomp(seccomp_filter(&traced_events));
 
-        let mut child = command.spawn().context("Failed to spawn tracee")?;
-        let guest_pid = child.id();
+        #[cfg(target_arch = "x86_64")]
+        if let Some(after_loader) = after_loader {
+            // This is the final check before Env::array serializes the child's
+            // envp in spawn. A mismatch remains a launch refusal, never a
+            // backend parity result.
+            after_loader.validate_environment(&command.get_captured_envs())?;
+        }
+
+        let mut ordinary_child: Option<ProcessChild> = None;
+        let mut controller_stdio: Option<SpawnStdio> = None;
+        #[cfg(target_arch = "x86_64")]
+        let (guest_pid, running_child) = if after_loader.is_some() {
+            match command.spawn_controller_with(|publisher| {
+                init_controller_tracee(intercept_rdtsc, publisher)
+            }) {
+                Ok(launch) => {
+                    let ControllerLaunchParts {
+                        token,
+                        stdin,
+                        stdout,
+                        stderr,
+                        phase: _,
+                    } = launch.into_parts();
+                    let guest_pid = token.child();
+                    let running_child = Running::from_controller_launch(token);
+                    controller_stdio = Some((stdin, stdout, stderr));
+                    (guest_pid, running_child)
+                }
+                Err(
+                    ControllerSpawnError::BeforeClone(error)
+                    | ControllerSpawnError::UnsupportedKernelContract(error),
+                ) => return Err(Error::Tool(anyhow::Error::new(error))),
+                Err(ControllerSpawnError::AfterClone { source, authority }) => {
+                    let cause = source.errno();
+                    let ControllerLaunchParts {
+                        token,
+                        stdin: _,
+                        stdout: _,
+                        stderr: _,
+                        phase: _,
+                    } = authority.into_parts();
+                    let running_child = Running::from_controller_launch(token);
+                    return match running_child.cleanup_failed_controller_launch(cause) {
+                        Ok(()) => Err(Error::Tool(anyhow::Error::new(source))),
+                        Err(cleanup) => Err(Error::Tool(anyhow::Error::new(cleanup).context(
+                            format!("controller startup failed before ownership-ready: {source}"),
+                        ))),
+                    };
+                }
+            }
+        } else {
+            let child = command.spawn().context("Failed to spawn tracee")?;
+            let guest_pid = child.id();
+            let running_child = Running::new(guest_pid);
+            ordinary_child = Some(child);
+            (guest_pid, running_child)
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let (guest_pid, running_child) = {
+            let child = command.spawn().context("Failed to spawn tracee")?;
+            let guest_pid = child.id();
+            let running_child = Running::new(guest_pid);
+            ordinary_child = Some(child);
+            (guest_pid, running_child)
+        };
         if let Some(runtime) = self.liteinst_runtime.as_ref() {
             // Publish the session root before any task can observe the config.
             // Everything LiteInst-root-scoped keys off this exact TID rather
@@ -2403,19 +3708,201 @@ impl<T: Tool + 'static> TracerBuilder<T> {
                 .set(guest_pid)
                 .expect("LiteInst root TID is published exactly once per spawn");
         }
-        let running_child = Running::new(guest_pid);
+        #[cfg(target_arch = "x86_64")]
+        let mut liteinst_physical_observer = self
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.after_loader.as_ref())
+            .map(|config| (config.physical_observer.clone(), config.diagnostics.clone()));
+        let mut liteinst_startup_identity = None;
+        let mut liteinst_startup_terminal = None;
+        #[cfg(target_arch = "x86_64")]
+        let mut liteinst_original_root_launch = None;
+        #[cfg(target_arch = "x86_64")]
+        if let Some(config) = self
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.after_loader.as_ref())
+        {
+            let observer_setup = (|| -> Result<(), Error> {
+                let launch = running_child
+                    .attach_original_root_physical_observer(&config.physical_observer)
+                .map_err(|_| Error::from(Errno::EPROTO))?;
+                let generation = running_child.physical_event_generation();
+                liteinst_original_root_launch = Some(launch);
+                config.diagnostics.record(
+                    "physical event observer attached",
+                    None,
+                    format!(
+                        "pid={guest_pid} observer={:?} generation={:?}",
+                        config.physical_observer.id(),
+                        generation,
+                    ),
+                )?;
+                Ok(())
+            })();
+            if let Err(error) = observer_setup {
+                let observer_was_attached = liteinst_original_root_launch.is_some();
+                if let Err(cleanup) =
+                    running_child.cleanup_failed_controller_launch(Errno::EPROTO)
+                {
+                    // Do not close the observer while its exact continuation
+                    // authority may still need to append cleanup evidence.
+                    return Err(anyhow::Error::new(cleanup)
+                        .context(format!("LiteInst physical observer setup failed: {error}"))
+                        .into());
+                }
+                let observer_error = observer_was_attached
+                    .then(|| {
+                        Tracer::<T::GlobalState>::finalize_liteinst_physical_observer(
+                            guest_pid,
+                            &mut liteinst_physical_observer,
+                        )
+                    })
+                    .transpose()
+                    .err();
+                return match observer_error {
+                    Some(observer_error) => Err(anyhow::anyhow!(
+                        "LiteInst physical observer setup failed: {error}; physical partition also failed: {observer_error}"
+                    )
+                    .into()),
+                    None => Err(error),
+                };
+            }
+
+            // The one retained exact-pidfd barrier closes Command::spawn's
+            // TracerPid race without polling. It either authenticates and
+            // returns the exact generation capabilities used by cleanup, or
+            // itself consumes/closes a terminal or failed setup generation.
+            match running_child.prepare_original_root_continued_status_authority(
+                    liteinst_original_root_launch
+                        .take()
+                        .expect("original-root observer setup did not mint launch authority"),
+                ) {
+                Ok(OriginalRootStartup::Ready(identity)) => {
+                    liteinst_startup_identity = Some(identity);
+                }
+                Ok(OriginalRootStartup::Exited(_, generation, status)) => {
+                    liteinst_startup_terminal = Some((generation, status));
+                }
+                Err(OriginalRootStartupError::BeforeBarrier(error)) => {
+                    if let Err(cleanup) =
+                        running_child.cleanup_failed_controller_launch(error)
+                    {
+                        // Preserve the exact Event/pidfd continuation and leave
+                        // its observer open for the eventual terminal proof.
+                        return Err(anyhow::Error::new(cleanup)
+                            .context(format!(
+                                "LiteInst startup barrier failed before retaining a status: {error}"
+                            ))
+                            .into());
+                    }
+                    let observer_error =
+                        Tracer::<T::GlobalState>::finalize_liteinst_physical_observer(
+                            guest_pid,
+                            &mut liteinst_physical_observer,
+                        )
+                        .err();
+                    return match observer_error {
+                        Some(observer) => Err(anyhow::anyhow!(
+                            "LiteInst startup barrier failed before retaining a status: {error}; physical partition also failed: {observer}"
+                        )
+                        .into()),
+                        None => Err(anyhow::anyhow!(
+                            "LiteInst startup barrier failed before retaining a status: {error}"
+                        )
+                        .into()),
+                    };
+                }
+                Err(OriginalRootStartupError::CleanedExactGeneration { cause }) => {
+                    let observer_error =
+                        Tracer::<T::GlobalState>::finalize_liteinst_physical_observer(
+                            guest_pid,
+                            &mut liteinst_physical_observer,
+                        )
+                        .err();
+                    return match observer_error {
+                        Some(observer) => Err(anyhow::anyhow!(
+                            "LiteInst startup barrier authentication failed: {cause}; physical partition also failed: {observer}"
+                        )
+                        .into()),
+                        None => Err(anyhow::anyhow!(
+                            "LiteInst startup barrier authentication failed: {cause}"
+                        )
+                        .into()),
+                    };
+                }
+                Err(OriginalRootStartupError::CleanedExactGenerationWithDiagnostic {
+                    cause,
+                    cleanup_error,
+                }) => {
+                    let observer_error =
+                        Tracer::<T::GlobalState>::finalize_liteinst_physical_observer(
+                            guest_pid,
+                            &mut liteinst_physical_observer,
+                        )
+                        .err();
+                    return match observer_error {
+                        Some(observer) => Err(anyhow::anyhow!(
+                            "LiteInst startup barrier authentication failed: {cause}; exact cleanup diagnostic: {cleanup_error}; physical partition also failed: {observer}"
+                        )
+                        .into()),
+                        None => Err(anyhow::anyhow!(
+                            "LiteInst startup barrier authentication failed: {cause}; exact cleanup diagnostic: {cleanup_error}"
+                        )
+                        .into()),
+                    };
+                }
+                Err(error @ (OriginalRootStartupError::CleanupIncomplete { .. }
+                    | OriginalRootStartupError::CleanupAlreadyClaimed { .. })) => {
+                    // Preserve the sole exact-Event/pidfd continuation
+                    // authority inside the returned typed error. Startup does
+                    // not retry a semantic cleanup operation here.
+                    return Err(anyhow::Error::new(error).into());
+                }
+            }
+        }
         let liteinst_newborn_tracees = self
             .liteinst_runtime
             .as_ref()
             .map(|runtime| Arc::clone(&runtime.newborn_tracees));
-        let liteinst_held_root_stop = self
+        let liteinst_held_task_stops = self
             .liteinst_runtime
             .as_ref()
-            .map(|runtime| Arc::clone(&runtime.held_root_stop));
+            .map(|runtime| Arc::clone(&runtime.held_task_stops));
         let liteinst_instrumentation_stats = self
             .liteinst_runtime
             .as_ref()
             .and_then(|runtime| runtime.instrumentation_stats.as_ref().map(Arc::clone));
+        if let Some((generation, exit_status)) = liteinst_startup_terminal {
+            if generation != running_child.physical_event_generation() {
+                return Err(anyhow::anyhow!(
+                    "LiteInst startup terminal generation changed: observed={generation:?}, running={:?}",
+                    running_child.physical_event_generation(),
+                )
+                .into());
+            }
+            #[cfg(target_arch = "x86_64")]
+            Tracer::<T::GlobalState>::finalize_liteinst_physical_observer(
+                guest_pid,
+                &mut liteinst_physical_observer,
+            )?;
+            let (stdin, stdout, stderr) =
+                take_spawn_stdio(&mut ordinary_child, &mut controller_stdio);
+            return Ok(Tracer {
+                guest_pid,
+                tracer: Box::pin(async move { Ok(exit_status) }),
+                gref,
+                stdin,
+                stdout,
+                stderr,
+                liteinst_cleanup: None,
+                liteinst_instrumentation_stats,
+                #[cfg(target_arch = "x86_64")]
+                liteinst_physical_observer,
+                backend_stats,
+            });
+        }
         #[cfg(test)]
         let fail_discovery_once = self
             .liteinst_runtime
@@ -2432,39 +3919,43 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             .as_ref()
             .and_then(|runtime| runtime.force_task_scan_once.clone());
         let mut liteinst_cleanup = if liteinst_fail_closed {
-            match LiteinstTraceeCleanup::new(
-                guest_pid,
-                liteinst_newborn_tracees.expect("LiteInst runtime config must exist"),
-                liteinst_held_root_stop.expect("LiteInst runtime config must exist"),
-            ) {
-                Ok(cleanup) => {
-                    #[cfg(test)]
-                    let cleanup = {
-                        let mut cleanup = cleanup;
-                        cleanup.fail_discovery_once = fail_discovery_once;
-                        cleanup.fail_after_scan_once = fail_after_scan_once;
-                        cleanup.force_task_scan_once = force_task_scan_once;
-                        cleanup
-                    };
-                    Some(cleanup)
-                }
-                Err(error) => {
-                    // pidfd is a required LiteInst cleanup capability. The
-                    // just-spawned, unreaped PID cannot have been reused yet,
-                    // so a one-time numeric kill is safe only on this setup
-                    // failure path; all active guards signal through pidfd.
-                    let kill_result = unsafe { libc::kill(guest_pid.as_raw(), libc::SIGKILL) };
-                    let kill_error = (kill_result == -1).then(Errno::last);
-                    let drain_result = drain_unregistered_child(Running::new(guest_pid));
-                    return Err(liteinst_pidfd_setup_error(
+            let (Some(startup_identity), Some(newborn_tracees), Some(held_task_stops)) = (
+                liteinst_startup_identity.take(),
+                liteinst_newborn_tracees,
+                liteinst_held_task_stops,
+            ) else {
+                let cleanup_result = unsafe {
+                    running_child.terminate_unregistered_original_root(Errno::EPROTO)
+                };
+                #[cfg(target_arch = "x86_64")]
+                let observer_error =
+                    Tracer::<T::GlobalState>::finalize_liteinst_physical_observer(
                         guest_pid,
-                        error,
-                        kill_error,
-                        drain_result,
+                        &mut liteinst_physical_observer,
                     )
-                    .into());
-                }
-            }
+                    .err();
+                #[cfg(not(target_arch = "x86_64"))]
+                let observer_error = None::<Error>;
+                return Err(anyhow::anyhow!(
+                    "LiteInst startup ownership was incomplete before cleanup construction; exact_pidfd_cleanup={cleanup_result:?}; physical_partition={observer_error:?}"
+                )
+                .into());
+            };
+            let cleanup = LiteinstTraceeCleanup::new(
+                &running_child,
+                startup_identity,
+                newborn_tracees,
+                held_task_stops,
+            );
+            #[cfg(test)]
+            let cleanup = {
+                let mut cleanup = cleanup;
+                cleanup.fail_discovery_once = fail_discovery_once;
+                cleanup.fail_after_scan_once = fail_after_scan_once;
+                cleanup.force_task_scan_once = force_task_scan_once;
+                cleanup
+            };
+            Some(cleanup)
         } else {
             None
         };
@@ -2478,9 +3969,41 @@ impl<T: Tool + 'static> TracerBuilder<T> {
                     GdbConnection::Path(path) => GdbServer::from_path(&path).await,
                 };
 
-                let mut server = server.with_context(|| {
-                    format!("failed to start GDB server for tracee {guest_pid}")
-                })?;
+                let mut server = match server
+                    .with_context(|| format!("failed to start GDB server for tracee {guest_pid}"))
+                {
+                    Ok(server) => server,
+                    Err(error) => {
+                        let cleanup_error = liteinst_cleanup
+                            .as_mut()
+                            .and_then(|cleanup| cleanup.terminate_and_confirm().err());
+                        #[cfg(target_arch = "x86_64")]
+                        let observer_error =
+                            Tracer::<T::GlobalState>::finalize_liteinst_physical_observer_after_cleanup(
+                                guest_pid,
+                                liteinst_cleanup.as_ref(),
+                                &mut liteinst_physical_observer,
+                            )
+                            .err();
+                        #[cfg(not(target_arch = "x86_64"))]
+                        let observer_error = None::<Error>;
+                        return match (cleanup_error, observer_error) {
+                            (Some(cleanup_error), Some(observer_error)) => Err(anyhow::anyhow!(
+                                "{error}; LiteInst tracee cleanup failed: {cleanup_error}; physical partition also failed: {observer_error}"
+                            )
+                            .into()),
+                            (Some(cleanup_error), None) => Err(anyhow::anyhow!(
+                                "{error}; LiteInst tracee cleanup failed: {cleanup_error}"
+                            )
+                            .into()),
+                            (None, Some(observer_error)) => Err(anyhow::anyhow!(
+                                "{error}; physical partition also failed: {observer_error}"
+                            )
+                            .into()),
+                            (None, None) => Err(error.into()),
+                        };
+                    }
+                };
 
                 if self.sequentialized_guest {
                     server.sequentialized_guest();
@@ -2494,8 +4017,24 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         // notifier. Cancellation and initialization errors must request
         // termination through the guard and await notifier unregistration;
         // they must never call raw waitpid for this PID.
-        if let Some(cleanup) = liteinst_cleanup.as_mut() {
-            cleanup.register_notifier(&running_child);
+        if let Some(cleanup) = liteinst_cleanup.as_mut()
+            && let Err(registration_error) = cleanup.register_notifier(&running_child)
+        {
+            let cleanup_error = cleanup.terminate_and_confirm().err();
+            #[cfg(target_arch = "x86_64")]
+            let observer_error =
+                Tracer::<T::GlobalState>::finalize_liteinst_physical_observer_after_cleanup(
+                    guest_pid,
+                    liteinst_cleanup.as_ref(),
+                    &mut liteinst_physical_observer,
+                )
+                .err();
+            #[cfg(not(target_arch = "x86_64"))]
+            let observer_error = None::<Error>;
+            return Err(anyhow::anyhow!(
+                "LiteInst notifier registration failed: {registration_error}; cleanup={cleanup_error:?}; physical_partition={observer_error:?}"
+            )
+            .into());
         }
 
         let tracer = match postspawn::<T>(
@@ -2516,28 +4055,41 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             Ok(tracer) => tracer,
             Err(err) => {
                 let error = initialization_error(guest_pid, err).await;
-                if let Some(cleanup) = liteinst_cleanup.as_mut()
-                    && let Err(cleanup_error) = cleanup.terminate_and_confirm()
-                {
-                    return Err(anyhow::anyhow!(
+                let cleanup_error = liteinst_cleanup
+                    .as_mut()
+                    .and_then(|cleanup| cleanup.terminate_and_confirm().err());
+                #[cfg(target_arch = "x86_64")]
+                let observer_error =
+                    Tracer::<T::GlobalState>::finalize_liteinst_physical_observer_after_cleanup(
+                        guest_pid,
+                        liteinst_cleanup.as_ref(),
+                        &mut liteinst_physical_observer,
+                    )
+                    .err();
+                #[cfg(not(target_arch = "x86_64"))]
+                let observer_error = None::<Error>;
+                return match (cleanup_error, observer_error) {
+                    (Some(cleanup_error), Some(observer_error)) => Err(anyhow::anyhow!(
+                        "LiteInst tracee cleanup failed after {error}: {cleanup_error}; physical partition also failed: {observer_error}"
+                    )
+                    .into()),
+                    (Some(cleanup_error), None) => Err(anyhow::anyhow!(
                         "LiteInst tracee cleanup failed after {error}: {cleanup_error}"
                     )
-                    .into());
-                }
-                return Err(error);
+                    .into()),
+                    (None, Some(observer_error)) => Err(anyhow::anyhow!(
+                        "LiteInst physical partition failed after {error}: {observer_error}"
+                    )
+                    .into()),
+                    (None, None) => Err(error),
+                };
             }
         };
 
-        let stdin = child.stdin.take();
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-
-        // Don't let the drop logic run for the child. Tokio will add the child to a
-        // "orphan queue" that will try to call `waitpid` on the process when a
-        // `SIGCHLD` signal is received. This interferes with our own process
-        // handling where we need full control over the lifetime of the child
-        // process.
-        core::mem::forget(child);
+        // The ordinary Child is still forgotten at this exact handoff, while
+        // the controller path has no Child/numeric-wait capability at all.
+        let (stdin, stdout, stderr) =
+            take_spawn_stdio(&mut ordinary_child, &mut controller_stdio);
 
         Ok(Tracer {
             guest_pid,
@@ -2548,6 +4100,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             stderr,
             liteinst_cleanup,
             liteinst_instrumentation_stats,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_physical_observer,
             backend_stats,
         })
     }
@@ -2678,6 +4232,8 @@ where
                 stderr: Some(stderr),
                 liteinst_cleanup: None,
                 liteinst_instrumentation_stats: None,
+                #[cfg(target_arch = "x86_64")]
+                liteinst_physical_observer: None,
                 backend_stats: None,
             })
         }
@@ -2815,6 +4371,228 @@ mod tests {
     use crate::error::liteinst_activation_failure_category;
     use crate::error::liteinst_activation_failure_reason;
 
+    #[cfg(target_arch = "x86_64")]
+    fn evaluate_seccomp_filter(
+        filter: &seccomp::Filter,
+        architecture: u32,
+        syscall_number: u32,
+        instruction_pointer: u64,
+    ) -> u32 {
+        const BPF_LD_W_ABS: u16 = 0x20;
+        const BPF_LD_W_MEM: u16 = 0x60;
+        const BPF_ST: u16 = 0x02;
+        const BPF_JMP_JEQ_K: u16 = 0x15;
+        const BPF_JMP_JGT_K: u16 = 0x25;
+        const BPF_JMP_JGE_K: u16 = 0x35;
+        const BPF_RET_K: u16 = 0x06;
+
+        let mut accumulator = 0u32;
+        let mut memory = [0u32; 16];
+        let mut pc = 0usize;
+        let instructions = filter.instructions();
+        while let Some(instruction) = instructions.get(pc) {
+            match instruction.code {
+                BPF_LD_W_ABS => {
+                    accumulator = match instruction.k {
+                        0 => syscall_number,
+                        4 => architecture,
+                        8 => instruction_pointer as u32,
+                        12 => (instruction_pointer >> 32) as u32,
+                        offset => panic!("unexpected seccomp_data load offset {offset}"),
+                    };
+                    pc += 1;
+                }
+                BPF_LD_W_MEM => {
+                    accumulator = memory[instruction.k as usize];
+                    pc += 1;
+                }
+                BPF_ST => {
+                    memory[instruction.k as usize] = accumulator;
+                    pc += 1;
+                }
+                BPF_JMP_JEQ_K | BPF_JMP_JGT_K | BPF_JMP_JGE_K => {
+                    let matches = match instruction.code {
+                        BPF_JMP_JEQ_K => accumulator == instruction.k,
+                        BPF_JMP_JGT_K => accumulator > instruction.k,
+                        BPF_JMP_JGE_K => accumulator >= instruction.k,
+                        _ => unreachable!(),
+                    };
+                    pc += 1 + usize::from(if matches {
+                        instruction.jt
+                    } else {
+                        instruction.jf
+                    });
+                }
+                BPF_RET_K => return instruction.k,
+                code => panic!("unexpected seccomp-BPF instruction {code:#x}"),
+            }
+        }
+        panic!("seccomp-BPF program reached the end without returning")
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn seccomp_action(
+        filter: &seccomp::Filter,
+        syscall_number: u32,
+        instruction_pointer: u64,
+    ) -> u32 {
+        // AUDIT_ARCH_X86_64 from linux/audit.h.
+        evaluate_seccomp_filter(filter, 0xc000_003e, syscall_number, instruction_pointer)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn after_loader_filter_traces_subscribed_unsubscribed_unknown_and_x32_syscalls() {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscall(Sysno::write);
+        let filter = spawn_seccomp_filter(&subscriptions, true);
+        let guest_ip = 0x0040_1000;
+        let expected = libc::SECCOMP_RET_TRACE;
+
+        assert_eq!(
+            filter.instructions().len(),
+            4,
+            "strict filter must contain only architecture validation and its Trace default",
+        );
+        assert!(
+            filter
+                .instructions()
+                .iter()
+                .all(|instruction| instruction.code != 0x06
+                    || instruction.k != libc::SECCOMP_RET_ALLOW),
+            "strict filter must contain no Allow return",
+        );
+        assert_eq!(
+            filter
+                .instructions()
+                .iter()
+                .filter(|instruction| instruction.code == 0x20)
+                .map(|instruction| instruction.k)
+                .collect::<Vec<_>>(),
+            [4],
+            "strict filter must inspect the architecture, not syscall number or IP",
+        );
+
+        assert_eq!(
+            seccomp_action(&filter, Sysno::write as i32 as u32, guest_ip),
+            expected,
+            "subscribed syscall must reach after-loader admission",
+        );
+        assert_eq!(
+            seccomp_action(&filter, Sysno::getpid as i32 as u32, guest_ip),
+            expected,
+            "unsubscribed syscall must reach after-loader admission",
+        );
+        assert_eq!(
+            seccomp_action(&filter, 0x3fff_fffe, guest_ip),
+            expected,
+            "raw unknown syscall number must not require Sysno conversion",
+        );
+        assert_eq!(
+            seccomp_action(&filter, 0x4000_0000 | Sysno::getpid as i32 as u32, guest_ip,),
+            expected,
+            "x32-marked syscall number must not bypass admission",
+        );
+        assert_eq!(
+            evaluate_seccomp_filter(&filter, 0, Sysno::write as i32 as u32, guest_ip,),
+            libc::SECCOMP_RET_KILL_PROCESS,
+            "strict filter must retain architecture validation",
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn after_loader_filter_has_no_rt_sigreturn_or_private_page_allow_rule() {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscalls([Sysno::write, Sysno::rt_sigreturn]);
+        let filter = spawn_seccomp_filter(&subscriptions, true);
+        let private_ip = (cp::TRAMPOLINE_BASE + cp::SYSCALL_INSTR_SIZE) as u64;
+
+        assert_eq!(
+            seccomp_action(&filter, Sysno::rt_sigreturn as i32 as u32, 0x0040_1000,),
+            libc::SECCOMP_RET_TRACE,
+            "rt_sigreturn must reach after-loader admission",
+        );
+        assert_eq!(
+            seccomp_action(&filter, Sysno::write as i32 as u32, private_ip),
+            libc::SECCOMP_RET_TRACE,
+            "private-page syscall must reach after-loader admission",
+        );
+        assert_eq!(
+            seccomp_action(&filter, 0x3fff_fffe, private_ip),
+            libc::SECCOMP_RET_TRACE,
+            "raw private-page syscall must reach after-loader admission",
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn ordinary_filter_keeps_subscription_and_private_page_policy() {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscalls([Sysno::write, Sysno::rt_sigreturn]);
+        let filter = spawn_seccomp_filter(&subscriptions, false);
+        let guest_ip = 0x0040_1000;
+        let private_ip = (cp::TRAMPOLINE_BASE + cp::SYSCALL_INSTR_SIZE) as u64;
+
+        assert_eq!(
+            seccomp_action(&filter, Sysno::write as i32 as u32, guest_ip),
+            libc::SECCOMP_RET_TRACE,
+        );
+        assert_eq!(
+            seccomp_action(&filter, Sysno::getpid as i32 as u32, guest_ip),
+            libc::SECCOMP_RET_ALLOW,
+        );
+        assert_eq!(
+            seccomp_action(&filter, Sysno::rt_sigreturn as i32 as u32, guest_ip,),
+            libc::SECCOMP_RET_ALLOW,
+        );
+        assert_eq!(
+            seccomp_action(&filter, Sysno::write as i32 as u32, private_ip),
+            libc::SECCOMP_RET_ALLOW,
+        );
+    }
+
+    #[test]
+    fn after_loader_environment_freeze_preserves_exact_map_and_adds_no_sanitizer_values() {
+        let expected = BTreeMap::from([
+            (OsString::from("PATH"), OsString::from("/usr/bin")),
+            (OsString::from("FIXTURE"), OsString::from("after-loader")),
+        ]);
+        let mut command = Command::new("/bin/true");
+        command.env_clear().envs(&expected);
+
+        freeze_after_loader_environment(&mut command, &expected)
+            .expect("capture exact reviewed environment");
+        assert_eq!(command.get_captured_envs(), expected);
+        assert!(
+            command
+                .get_captured_envs()
+                .get(std::ffi::OsStr::new("LSAN_OPTIONS"))
+                .is_none()
+        );
+        assert!(
+            command
+                .get_captured_envs()
+                .get(std::ffi::OsStr::new("ASAN_OPTIONS"))
+                .is_none()
+        );
+
+        command.env("ASAN_OPTIONS", "detect_leaks=0");
+        assert!(freeze_after_loader_environment(&mut command, &expected).is_err());
+        assert_eq!(
+            command
+                .get_captured_envs()
+                .get(std::ffi::OsStr::new("ASAN_OPTIONS")),
+            Some(&OsString::from("detect_leaks=0"))
+        );
+
+        let mut empty = Command::new("/bin/true");
+        empty.env_clear();
+        freeze_after_loader_environment(&mut empty, &BTreeMap::new())
+            .expect("capture explicit empty environment");
+        assert!(empty.get_captured_envs().is_empty());
+    }
+
     fn assert_liteinst_activation_failure(
         error: &Error,
         expected: LiteinstActivationFailureReason,
@@ -2923,6 +4701,12 @@ mod tests {
         assert_reaped(role, pid);
     }
 
+    fn held_task_stops(task: &Stopped, event: &Event) -> HeldTaskStops {
+        let mut stops = HashMap::new();
+        stops.insert(task.pid(), HeldRootStop::from_event(task, event));
+        Arc::new(StdMutex::new(stops))
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn normal_preinit_resume_clears_held_root_stop_lease() {
         let pid = match unsafe { unistd::fork() }.expect("fork held-stop resume child") {
@@ -2938,15 +4722,12 @@ mod tests {
             .assume_stopped();
         assert_eq!(event, Event::Signal(Signal::SIGSTOP));
 
-        let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_event(
-            &stopped,
-            &Event::Signal(Signal::SIGSTOP),
-        ))));
+        let slot = held_task_stops(&stopped, &Event::Signal(Signal::SIGSTOP));
         let running = RootStopLease::new(stopped, Some(Arc::clone(&slot)))
             .resume(None)
             .expect("resume held-stop child");
         assert!(
-            slot.lock().unwrap().is_none(),
+            slot.lock().unwrap().is_empty(),
             "normal transition left a stale lease"
         );
 
@@ -2955,6 +4736,311 @@ mod tests {
             .await
             .expect("wait resumed held-stop child");
         assert_eq!(exited.assume_exited().1, ExitStatus::Exited(0));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn failed_transition_retains_exact_task_stop_for_cleanup() {
+        let (pid, stopped, observer) = spawn_observed_held_stop_child("failed transition child");
+        let generation = stopped.terminal_cleanup();
+        let physical_status = stopped
+            .physical_status_id()
+            .expect("observed stop carries its physical status");
+        let slot = held_task_stops(&stopped, &Event::Signal(Signal::SIGSTOP));
+        let transition_slot = Arc::clone(&slot);
+        let result = std::thread::spawn(move || {
+            RootStopLease::new(stopped, Some(transition_slot)).resume(None)
+        })
+        .join()
+        .expect("join wrong-thread ptrace transition");
+        assert!(matches!(result, Err(TraceError::Died(_))));
+        {
+            let held = slot.lock().unwrap();
+            let held = held
+                .get(&pid)
+                .expect("failed transition discarded cleanup ownership");
+            assert!(held.armed);
+            assert!(held.terminal.same_generation(&generation));
+            assert_eq!(
+                held.cleanup_transfer
+                    .as_ref()
+                    .and_then(CleanupStopTransfer::physical_status_id),
+                Some(physical_status)
+            );
+        }
+
+        let mut held = slot
+            .lock()
+            .unwrap()
+            .remove(&pid)
+            .expect("failed transition retained cleanup stop");
+        assert_eq!(unsafe { libc::kill(pid.as_raw(), libc::SIGKILL) }, 0);
+        assert!(
+            held.terminal.wait(Duration::from_secs(2)),
+            "killed failed-transition tracee did not reach terminal cleanup"
+        );
+        assert!(held.terminal.pending_is_empty());
+        held.disarm();
+        let cleanup_lease = held
+            .terminal
+            .lease_transferred_stop(&mut held.cleanup_transfer)
+            .expect("activate failed transition cleanup transfer");
+        finish_cancelled_stop(&held.terminal, Some(cleanup_lease))
+            .expect("dispose failed transition stop");
+        observer.close();
+
+        let snapshot = observer.snapshot();
+        let dispositions = snapshot
+            .records()
+            .iter()
+            .filter_map(|record| match record.kind() {
+                safeptrace::PhysicalEventRecordKind::StatusDisposition {
+                    status,
+                    disposition,
+                } if status == physical_status => Some(disposition),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            dispositions,
+            [PhysicalStatusDisposition::CancellationCleanup]
+        );
+        assert!(snapshot.validate().is_valid(), "{:#?}", snapshot.validate());
+        assert_eventually_reaped("failed transition child", pid);
+    }
+
+    #[test]
+    fn registered_cleanup_resumes_exit_stop_that_superseded_retained_stop() {
+        for (role, owner) in [
+            (
+                "root cleanup exit supersession child",
+                PhysicalResumeOwner::RootCleanup,
+            ),
+            (
+                "descendant cleanup exit supersession child",
+                PhysicalResumeOwner::DescendantCleanup,
+            ),
+        ] {
+            let (pid, stopped, observer, identity, event_link, recorded_parent) =
+                if owner == PhysicalResumeOwner::DescendantCleanup {
+                    let (parent_pid, pid, control) = fork_paused_grandchild();
+                    ptrace::attach(pid.into()).expect("attach cleanup descendant");
+                    let running = Running::new(pid);
+                    let observer =
+                        PhysicalEventObserver::new(PhysicalEventObserverConfig::new(128, 32))
+                            .expect("create descendant-cleanup observer");
+                    running
+                        .attach_physical_event_observer(&observer)
+                        .expect("attach descendant observer before wait ownership");
+                    let (stopped, event) = running
+                        .wait()
+                        .expect("wait for cleanup descendant attach")
+                        .assume_stopped();
+                    assert_eq!(event, Event::Signal(Signal::SIGSTOP));
+                    let identity =
+                        TraceeIdentity::capture(pid, Some((parent_pid, Some(ChildOp::Fork))), true)
+                            .expect("capture production-shaped cleanup descendant identity");
+                    let event_link = EventChildLink {
+                        tid: pid,
+                        parent_tid: parent_pid,
+                        op: ChildOp::Fork,
+                    };
+                    assert_eq!(
+                        identity.parent,
+                        Some((parent_pid, parent_pid, Some(ChildOp::Fork)))
+                    );
+                    (
+                        pid,
+                        stopped,
+                        observer,
+                        identity,
+                        Some(event_link),
+                        Some((parent_pid, control)),
+                    )
+                } else {
+                    let (pid, stopped, observer) = spawn_observed_held_stop_child(role);
+                    let identity =
+                        TraceeIdentity::open_root(pid).expect("capture cleanup root identity");
+                    (pid, stopped, observer, identity, None, None)
+                };
+            let retained_status = stopped
+                .physical_status_id()
+                .expect("observed retained stop carries its physical status");
+            stopped
+                .setoptions(ptrace::Options::PTRACE_O_TRACEEXIT)
+                .expect("enable exit-stop observation for cleanup child");
+            let terminal = stopped.terminal_cleanup();
+            let retained_stop = stopped
+                .into_cleanup_stop_lease()
+                .expect("lease retained stop for cancellation cleanup");
+
+            identity
+                .send_signal(Signal::SIGKILL)
+                .expect("send exact-pidfd SIGKILL to cleanup child");
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while terminal.exit_stop_physical_status_id().is_none() && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert!(
+                terminal.exit_stop_observed(),
+                "cleanup child did not publish its PTRACE_EVENT_EXIT stop"
+            );
+            let exit_status = terminal
+                .exit_stop_physical_status_id()
+                .expect("published exit stop carries its physical status");
+            assert_ne!(retained_status, exit_status);
+
+            let (terminal, frozen_stop) = if owner == PhysicalResumeOwner::DescendantCleanup {
+                let mut registered = RegisteredTraceeCleanup {
+                    identity,
+                    terminal,
+                    event_link,
+                    frozen_stop: Some(retained_stop),
+                };
+                assert_eq!(registered.event_link, event_link);
+                registered
+                    .continue_exit_stop()
+                    .expect("continue registered descendant exit stop");
+                registered
+                    .continue_exit_stop()
+                    .expect("recognize already-finished descendant exit stop");
+                (registered.terminal, registered.frozen_stop)
+            } else {
+                drop(identity);
+                let mut frozen_stop = Some(retained_stop);
+                continue_registered_exit_stop(&terminal, &mut frozen_stop, owner)
+                    .expect("continue exact root exit stop");
+                continue_registered_exit_stop(&terminal, &mut frozen_stop, owner)
+                    .expect("recognize already-finished root exit stop");
+                (terminal, frozen_stop)
+            };
+            assert!(frozen_stop.is_none());
+            assert!(
+                terminal.wait(Duration::from_secs(2)),
+                "cleanup child notifier did not publish terminal state"
+            );
+            assert!(terminal.pending_is_empty());
+            observer.close();
+
+            let snapshot = observer.snapshot();
+            let validation = snapshot.validate();
+            assert_eq!(validation.physical_statuses, 3);
+            assert_eq!(validation.successful_resumes, 1);
+            assert_eq!(validation.explicit_dispositions, 2);
+            assert!(validation.is_valid(), "{validation:#?}");
+            let dispositions = snapshot
+                .records()
+                .iter()
+                .filter_map(|record| match record.kind() {
+                    safeptrace::PhysicalEventRecordKind::StatusDisposition {
+                        status,
+                        disposition,
+                    } => Some((status, disposition)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                dispositions,
+                [(
+                    retained_status,
+                    PhysicalStatusDisposition::KernelSupersededByExitStop,
+                )]
+            );
+            let resume_sources = snapshot
+                .records()
+                .iter()
+                .filter_map(|record| match record.kind() {
+                    safeptrace::PhysicalEventRecordKind::ResumeAttempt { context, .. } => {
+                        Some((context.source_status, context.owner))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(resume_sources, [(Some(exit_status), owner)]);
+            if let Some((parent_pid, mut control)) = recorded_parent {
+                control
+                    .write_all(&[1])
+                    .expect("release cleanup descendant's recorded parent");
+                drop(control);
+                Running::new(parent_pid)
+                    .wait()
+                    .expect("reap cleanup descendant's recorded parent");
+            }
+            assert_eventually_reaped(role, pid);
+        }
+    }
+
+    #[test]
+    fn registered_cleanup_remembers_unobserved_exit_stop_completion() {
+        let role = "unobserved registered cleanup child";
+        let (pid, stopped) = spawn_held_stop_child(role);
+        stopped
+            .setoptions(ptrace::Options::PTRACE_O_TRACEEXIT)
+            .expect("enable unobserved exit-stop cleanup");
+        let terminal = stopped.terminal_cleanup();
+        let retained_stop = stopped
+            .into_cleanup_stop_lease()
+            .expect("lease observerless retained stop for cleanup");
+        let identity =
+            TraceeIdentity::open_root(pid).expect("capture unobserved cleanup child identity");
+        identity
+            .send_signal(Signal::SIGKILL)
+            .expect("kill unobserved cleanup child through pidfd");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !terminal.exit_stop_observed() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            terminal.exit_stop_observed(),
+            "unobserved cleanup child did not publish its exit stop"
+        );
+        assert_eq!(terminal.exit_stop_physical_status_id(), None);
+
+        let mut registered = RegisteredTraceeCleanup {
+            identity,
+            terminal,
+            event_link: None,
+            frozen_stop: Some(retained_stop),
+        };
+        registered
+            .continue_exit_stop()
+            .expect("continue unobserved registered exit stop");
+        assert!(registered.frozen_stop.is_none());
+        registered
+            .continue_exit_stop()
+            .expect("recognize completed unobserved registered exit stop");
+        assert!(registered.frozen_stop.is_none());
+        assert!(
+            registered.terminal.wait(Duration::from_secs(2)),
+            "unobserved cleanup notifier did not publish terminal state"
+        );
+        assert!(registered.terminal.pending_is_empty());
+        drop(registered);
+        assert_eventually_reaped(role, pid);
+    }
+
+    fn spawn_observed_held_stop_child(role: &str) -> (Pid, Stopped, PhysicalEventObserver) {
+        let pid = match unsafe { unistd::fork() }
+            .unwrap_or_else(|error| panic!("fork {role}: {error}"))
+        {
+            ForkResult::Child => {
+                safeptrace::traceme_and_stop()
+                    .unwrap_or_else(|error| panic!("TRACEME {role}: {error}"));
+                unsafe { libc::_exit(0) };
+            }
+            ForkResult::Parent { child } => Pid::from(child),
+        };
+        let running = Running::new(pid);
+        let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(128, 32))
+            .expect("create failed-transition observer");
+        running
+            .attach_physical_event_observer(&observer)
+            .expect("attach failed-transition observer before wait ownership");
+        let (stopped, event) = running
+            .wait()
+            .unwrap_or_else(|error| panic!("wait {role}: {error}"))
+            .assume_stopped();
+        assert_eq!(event, Event::Signal(Signal::SIGSTOP));
+        (pid, stopped, observer)
     }
 
     fn spawn_held_stop_child(role: &str) -> (Pid, Stopped) {
@@ -2976,6 +5062,249 @@ mod tests {
         (pid, stopped)
     }
 
+    fn spawn_gated_held_stop_child(
+        role: &str,
+    ) -> (Pid, Stopped, std::os::unix::net::UnixStream) {
+        let (control, mut child_control) =
+            std::os::unix::net::UnixStream::pair().expect("create held-stop control socket");
+        let pid = match unsafe { unistd::fork() }
+            .unwrap_or_else(|error| panic!("fork {role}: {error}"))
+        {
+            ForkResult::Child => {
+                drop(control);
+                safeptrace::traceme_and_stop()
+                    .unwrap_or_else(|error| panic!("TRACEME {role}: {error}"));
+                let mut release = [0];
+                std::io::Read::read_exact(&mut child_control, &mut release)
+                    .unwrap_or_else(|error| panic!("read {role} release: {error}"));
+                unsafe { libc::_exit(0) };
+            }
+            ForkResult::Parent { child } => {
+                drop(child_control);
+                Pid::from(child)
+            }
+        };
+        let (stopped, event) = Running::new(pid)
+            .wait()
+            .unwrap_or_else(|error| panic!("wait {role}: {error}"))
+            .assume_stopped();
+        assert_eq!(event, Event::Signal(Signal::SIGSTOP));
+        (pid, stopped, control)
+    }
+
+    fn wait_for_pending_cleanup_stop(terminal: &TerminalCleanup, role: &str) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while terminal.pending_is_empty() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            !terminal.pending_is_empty(),
+            "{role} did not publish its later notifier FIFO stop"
+        );
+    }
+
+    #[test]
+    fn capture_conflict_rolls_back_fifo_before_same_tid_shadow_retry() {
+        let role = "same-tid capture-conflict child";
+        let (pid, stopped, mut control) = spawn_gated_held_stop_child(role);
+        let old_stop_id = stopped.logical_stop_id();
+        let terminal = stopped.terminal_cleanup();
+        let capture_terminal = stopped.terminal_cleanup();
+        ptrace::cont(pid.into(), None).expect("resume capture-conflict child directly");
+        signal::kill(pid.into(), Signal::SIGSTOP).expect("stop capture-conflict child again");
+        wait_for_pending_cleanup_stop(&terminal, role);
+
+        let held_task_stops = Arc::new(StdMutex::new(HashMap::new()));
+        let newborn_tracees = Arc::new(StdMutex::new(HashMap::new()));
+        let preflight_captured = Arc::new(Barrier::new(2));
+        let preflight_resume = Arc::new(Barrier::new(2));
+        let decoded_captured = Arc::new(Barrier::new(2));
+        let decoded_resume = Arc::new(Barrier::new(2));
+        CLEANUP_CAPTURE_PREFLIGHT_PAUSES.lock().unwrap().insert(
+            terminal.physical_event_generation(),
+            CleanupCapturePreflightPause {
+                captured: Arc::clone(&preflight_captured),
+                resume: Arc::clone(&preflight_resume),
+            },
+        );
+        CLEANUP_CAPTURE_DECODED_PAUSES.lock().unwrap().insert(
+            terminal.physical_event_generation(),
+            CleanupCapturePreflightPause {
+                captured: Arc::clone(&decoded_captured),
+                resume: Arc::clone(&decoded_resume),
+            },
+        );
+        let capture_held = Arc::clone(&held_task_stops);
+        let capture_newborns = Arc::clone(&newborn_tracees);
+        let capture = std::thread::spawn(move || {
+            let mut retained = None;
+            let result = LiteinstTraceeCleanup::capture_pending_children(
+                &capture_newborns,
+                &capture_held,
+                &capture_terminal,
+                &mut retained,
+            );
+            (result, retained)
+        });
+        preflight_captured.wait();
+        HeldRootStop::arm_empty(
+            &held_task_stops,
+            &stopped,
+            &Event::Signal(Signal::SIGSTOP),
+        )
+        .expect("arm competing same-TID shadow after vacancy preflight");
+        let held = held_task_stops.lock().unwrap();
+        let shadow = held.get(&pid).expect("competing shadow remains durable");
+        assert_eq!(
+            shadow
+                .cleanup_transfer
+                .as_ref()
+                .expect("armed competing shadow carries its transfer")
+                .logical_stop_id(),
+            old_stop_id
+        );
+        drop(stopped);
+        preflight_resume.wait();
+        decoded_captured.wait();
+        decoded_resume.wait();
+        assert!(
+            !terminal.pending_is_empty(),
+            "try_lock contention did not release and roll back StatusState"
+        );
+        drop(held);
+        let (conflict, mut retained) = capture.join().expect("join capture-conflict thread");
+        conflict.expect("competing same-TID shadow is recoverable cleanup progress");
+        assert!(
+            !terminal.pending_is_empty(),
+            "same-TID conflict committed and lost the notifier FIFO front"
+        );
+        assert!(newborn_tracees.lock().unwrap().is_empty());
+        assert!(held_task_stops.lock().unwrap().is_empty());
+        let old_lease = retained
+            .take()
+            .expect("conflict resolution activated the existing durable owner");
+        assert_eq!(old_lease.logical_stop_id(), old_stop_id);
+        terminal
+            .dispose_cleanup_stop(old_lease)
+            .expect("retire conflict control owner before FIFO retry");
+
+        LiteinstTraceeCleanup::capture_pending_children(
+            &newborn_tracees,
+            &held_task_stops,
+            &terminal,
+            &mut retained,
+        )
+        .expect("retry exact FIFO front after competing shadow clears");
+        let later_lease = retained
+            .take()
+            .expect("successful retry retains the later committed stop");
+        assert_ne!(later_lease.logical_stop_id(), old_stop_id);
+        assert!(terminal.pending_is_empty());
+        terminal
+            .dispose_cleanup_stop(later_lease)
+            .expect("dispose later capture-conflict stop");
+
+        control.write_all(&[1]).expect("release capture-conflict child");
+        ptrace::cont(pid.into(), None).expect("resume later capture-conflict stop");
+        assert!(terminal.wait(Duration::from_secs(2)));
+        assert_eventually_reaped(role, pid);
+    }
+
+    #[test]
+    fn committed_conversion_error_installs_successor_until_old_lease_retires() {
+        let role = "committed conversion-error child";
+        let (pid, stopped, mut control) = spawn_gated_held_stop_child(role);
+        let old_stop_id = stopped.logical_stop_id();
+        let terminal = stopped.terminal_cleanup();
+        let capture_terminal = stopped.terminal_cleanup();
+        let mut raw_cont_calls = 0usize;
+        ptrace::cont(pid.into(), None).expect("resume conversion-error child directly");
+        raw_cont_calls += 1;
+        signal::kill(pid.into(), Signal::SIGSTOP).expect("stop conversion-error child again");
+        wait_for_pending_cleanup_stop(&terminal, role);
+
+        let held_task_stops = Arc::new(StdMutex::new(HashMap::new()));
+        let newborn_tracees = Arc::new(StdMutex::new(HashMap::new()));
+        let preflight_captured = Arc::new(Barrier::new(2));
+        let preflight_resume = Arc::new(Barrier::new(2));
+        CLEANUP_CAPTURE_PREFLIGHT_PAUSES.lock().unwrap().insert(
+            terminal.physical_event_generation(),
+            CleanupCapturePreflightPause {
+                captured: Arc::clone(&preflight_captured),
+                resume: Arc::clone(&preflight_resume),
+            },
+        );
+        let capture_held = Arc::clone(&held_task_stops);
+        let capture_newborns = Arc::clone(&newborn_tracees);
+        let capture = std::thread::spawn(move || {
+            let mut retained = None;
+            let result = LiteinstTraceeCleanup::capture_pending_children(
+                &capture_newborns,
+                &capture_held,
+                &capture_terminal,
+                &mut retained,
+            );
+            assert!(retained.is_none());
+            result
+        });
+        preflight_captured.wait();
+        // Force the cross-registry race after capture's vacancy preflight. The
+        // direct raw transition above deliberately leaves this stale typed
+        // value available so the test can install the older authority at this
+        // exact boundary; production transitions cannot retain it this way.
+        let old_lease = stopped
+            .into_cleanup_stop_lease()
+            .expect("install older lease after capture preflight");
+        preflight_resume.wait();
+        let conversion_error = capture.join().expect("join conversion-error capture");
+        assert_eq!(
+            conversion_error
+                .expect_err("older lease must reject committed successor conversion")
+                .raw_os_error(),
+            Some(libc::EALREADY)
+        );
+        assert_eq!(raw_cont_calls, 1, "capture issued an unexpected raw CONT");
+        assert!(terminal.pending_is_empty(), "successor FIFO was not committed");
+        assert!(newborn_tracees.lock().unwrap().is_empty());
+        let successor_stop_id = {
+            let held = held_task_stops.lock().unwrap();
+            assert_eq!(held.len(), 1);
+            held.get(&pid)
+                .and_then(|stop| stop.cleanup_transfer.as_ref())
+                .expect("committed successor retained one durable transfer")
+                .logical_stop_id()
+        };
+        assert_ne!(successor_stop_id, old_stop_id);
+
+        terminal
+            .dispose_cleanup_stop(old_lease)
+            .expect("retire older conflicting lease");
+        let mut held = LiteinstTraceeCleanup::take_held_task_stop_from(
+            &held_task_stops,
+            pid,
+            &terminal,
+        )
+        .expect("activate held committed successor after old retirement")
+        .expect("committed successor remains in the held map");
+        assert!(held.cleanup_transfer.is_none());
+        let successor_lease = held
+            .cleanup_lease
+            .take()
+            .expect("held committed successor activates exactly once");
+        assert_eq!(successor_lease.logical_stop_id(), successor_stop_id);
+        assert!(held_task_stops.lock().unwrap().is_empty());
+        terminal
+            .dispose_cleanup_stop(successor_lease)
+            .expect("dispose committed successor lease");
+
+        control.write_all(&[1]).expect("release conversion-error child");
+        ptrace::cont(pid.into(), None).expect("resume committed successor stop");
+        raw_cont_calls += 1;
+        assert_eq!(raw_cont_calls, 2);
+        assert!(terminal.wait(Duration::from_secs(2)));
+        assert_eventually_reaped(role, pid);
+    }
+
     async fn resume_held_stop_child(role: &str, stopped: Stopped) {
         let wait = stopped
             .resume(None)
@@ -2988,34 +5317,56 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn exit_stop_atomically_supersedes_same_generation_lease() {
-        let (_pid, stopped) = spawn_held_stop_child("exit supersession child");
+        let (pid, stopped) = spawn_held_stop_child("exit supersession child");
+        stopped
+            .setoptions(ptrace::Options::PTRACE_O_TRACEEXIT)
+            .expect("enable exit-stop supersession");
         let generation = stopped.terminal_cleanup();
-        let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_event(
-            &stopped,
-            &Event::Signal(Signal::SIGSTOP),
-        ))));
+        let ordinary_stop_id = stopped.logical_stop_id();
+        let slot = held_task_stops(&stopped, &Event::Signal(Signal::SIGSTOP));
+        let running = stopped
+            .resume(None)
+            .expect("resume ordinary stop while retaining its cleanup shadow");
+        let exit_event = running.exit_event();
+        drop(running);
+        let exit_stopped = tokio::time::timeout(Duration::from_secs(2), exit_event)
+            .await
+            .expect("exit-stop supersession timed out")
+            .expect("claim distinct exit-stop capability");
+        assert_ne!(exit_stopped.logical_stop_id(), ordinary_stop_id);
 
-        HeldRootStop::supersede_with_exit(&slot, &stopped)
+        HeldRootStop::supersede_with_exit(&slot, &exit_stopped)
             .expect("same-generation exit stop must supersede existing lease");
         {
             let held = slot.lock().unwrap();
-            let held = held.as_ref().expect("exit supersession cleared the lease");
+            let held = held
+                .get(&pid)
+                .expect("exit supersession cleared the lease");
             assert!(held.armed);
             assert!(held.terminal.same_generation(&generation));
             assert!(matches!(held.status, HeldRootStopStatus::Exit));
+            assert!(held.cleanup_transfer.as_ref().is_some_and(|transfer| {
+                transfer.logical_stop_id() == exit_stopped.logical_stop_id()
+                    && transfer.physical_status_id() == exit_stopped.physical_status_id()
+            }));
         }
 
-        slot.lock().unwrap().take();
-        resume_held_stop_child("exit supersession child", stopped).await;
+        let final_running = RootStopLease::new(exit_stopped, Some(Arc::clone(&slot)))
+            .resume(None)
+            .expect("resume superseding exit stop");
+        assert!(slot.lock().unwrap().is_empty());
+        let exited = final_running
+            .next_state()
+            .await
+            .expect("wait supersession child final status");
+        assert_eq!(exited.assume_exited().1, ExitStatus::Exited(0));
+        assert!(generation.wait(Duration::from_secs(2)));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn async_exit_path_supersedes_preempted_same_generation_lease() {
         let (_pid, stopped) = spawn_held_stop_child("async exit supersession child");
-        let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_event(
-            &stopped,
-            &Event::Signal(Signal::SIGSTOP),
-        ))));
+        let slot = held_task_stops(&stopped, &Event::Signal(Signal::SIGSTOP));
 
         let status =
             TracedTask::<InitFailureTool>::handle_exit_event(stopped, Some(Arc::clone(&slot)))
@@ -3023,40 +5374,503 @@ mod tests {
                 .expect("async exit path rejected same-generation lease supersession");
         assert_eq!(status, ExitStatus::Exited(0));
         assert!(
-            slot.lock().unwrap().is_none(),
+            slot.lock().unwrap().is_empty(),
             "async exit path left its superseded lease armed"
         );
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn exit_stop_rejects_mismatched_generation_without_replacement() {
+    async fn live_supersede_rejects_physical_shape_and_wrong_kind_without_mutation() {
+        let role = "live supersede provenance child";
+        let (pid, stopped, observer) = spawn_observed_held_stop_child(role);
+        let terminal = stopped.terminal_cleanup();
+        let observed_status = stopped
+            .physical_status_id()
+            .expect("observed predecessor carries physical status");
+        let observed_stop_id = stopped.logical_stop_id();
+        let unobserved_successor = Stopped::try_new_current_unchecked(pid)
+            .expect("create same-generation unobserved successor token");
+        let unobserved_stop_id = unobserved_successor.logical_stop_id();
+        assert!(unobserved_stop_id.is_strictly_after(observed_stop_id));
+        assert_eq!(unobserved_successor.physical_status_id(), None);
+
+        let some_to_none = held_task_stops(&stopped, &Event::Signal(Signal::SIGSTOP));
+        assert!(matches!(
+            HeldRootStop::supersede_with_exit(&some_to_none, &unobserved_successor),
+            Err(TraceError::Errno(Errno::EPROTO))
+        ));
+        {
+            let held = some_to_none.lock().unwrap();
+            let held = held.get(&pid).expect("Some->None rejection lost predecessor");
+            assert!(held.terminal.same_generation(&terminal));
+            assert!(matches!(held.status, HeldRootStopStatus::Signal(Signal::SIGSTOP)));
+            assert!(held.cleanup_transfer.as_ref().is_some_and(|transfer| {
+                transfer.logical_stop_id() == observed_stop_id
+                    && transfer.physical_status_id() == Some(observed_status)
+            }));
+        }
+        some_to_none.lock().unwrap().clear();
+
+        let none_to_some = held_task_stops(
+            &unobserved_successor,
+            &Event::Signal(Signal::SIGSTOP),
+        );
+        assert!(matches!(
+            HeldRootStop::supersede_with_exit(&none_to_some, &stopped),
+            Err(TraceError::Errno(Errno::EPROTO))
+        ));
+        {
+            let held = none_to_some.lock().unwrap();
+            let held = held.get(&pid).expect("None->Some rejection lost predecessor");
+            assert!(held.terminal.same_generation(&terminal));
+            assert!(matches!(held.status, HeldRootStopStatus::Signal(Signal::SIGSTOP)));
+            assert!(held.cleanup_transfer.as_ref().is_some_and(|transfer| {
+                transfer.logical_stop_id() == unobserved_stop_id
+                    && transfer.physical_status_id().is_none()
+            }));
+        }
+        none_to_some.lock().unwrap().clear();
+
+        let repeated_some_wrong_kind =
+            held_task_stops(&stopped, &Event::Signal(Signal::SIGSTOP));
+        assert!(matches!(
+            HeldRootStop::supersede_with_exit(&repeated_some_wrong_kind, &stopped),
+            Err(TraceError::Errno(Errno::EPROTO))
+        ));
+        {
+            let held = repeated_some_wrong_kind.lock().unwrap();
+            let held = held
+                .get(&pid)
+                .expect("wrong-kind repeated status rejection lost predecessor");
+            assert!(held.terminal.same_generation(&terminal));
+            assert!(matches!(held.status, HeldRootStopStatus::Signal(Signal::SIGSTOP)));
+            assert!(held.cleanup_transfer.as_ref().is_some_and(|transfer| {
+                transfer.logical_stop_id() == observed_stop_id
+                    && transfer.physical_status_id() == Some(observed_status)
+            }));
+        }
+
+        repeated_some_wrong_kind.lock().unwrap().clear();
+        drop(unobserved_successor);
+        resume_held_stop_child(role, stopped).await;
+        assert!(terminal.wait(Duration::from_secs(2)));
+        observer.close();
+        let snapshot = observer.snapshot();
+        let validation = snapshot.validate();
+        assert!(validation.is_valid(), "{validation:#?}");
+        assert_eq!(
+            snapshot
+                .records()
+                .iter()
+                .filter(|record| matches!(
+                    record.kind(),
+                    safeptrace::PhysicalEventRecordKind::StatusDisposition {
+                        status,
+                        disposition: PhysicalStatusDisposition::KernelSupersededByExitStop,
+                    } if status == observed_status
+                ))
+                .count(),
+            0
+        );
+        assert_eventually_reaped(role, pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn live_supersede_rejects_lower_observerless_stop_without_mutation() {
+        let role = "lower observerless supersede child";
+        let (pid, stopped) = spawn_held_stop_child(role);
+        let terminal = stopped.terminal_cleanup();
+        let lower_stop_id = stopped.logical_stop_id();
+        let later = Stopped::try_new_current_unchecked(pid)
+            .expect("create later same-generation observerless token");
+        let later_stop_id = later.logical_stop_id();
+        assert!(later_stop_id.is_strictly_after(lower_stop_id));
+        let slot = held_task_stops(&later, &Event::Signal(Signal::SIGSTOP));
+
+        assert!(matches!(
+            HeldRootStop::supersede_with_exit(&slot, &stopped),
+            Err(TraceError::Errno(Errno::EPROTO))
+        ));
+        {
+            let held = slot.lock().unwrap();
+            let held = held.get(&pid).expect("lower rejection lost later owner");
+            assert!(held.terminal.same_generation(&terminal));
+            assert!(matches!(held.status, HeldRootStopStatus::Signal(Signal::SIGSTOP)));
+            assert!(held.cleanup_transfer.as_ref().is_some_and(|transfer| {
+                transfer.logical_stop_id() == later_stop_id
+                    && transfer.physical_status_id().is_none()
+            }));
+        }
+
+        slot.lock().unwrap().clear();
+        drop(later);
+        resume_held_stop_child(role, stopped).await;
+        assert!(terminal.wait(Duration::from_secs(2)));
+        assert_eventually_reaped(role, pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn typed_exit_success_freeze_observes_finished_without_raw_retry() {
+        let (pid, stopped, observer) = spawn_observed_held_stop_child("typed exit freeze child");
+        stopped
+            .setoptions(ptrace::Options::PTRACE_O_TRACEEXIT)
+            .expect("enable typed exit-stop observation");
+        let terminal = stopped.terminal_cleanup();
+        let slot = held_task_stops(&stopped, &Event::Signal(Signal::SIGSTOP));
+        let running = RootStopLease::new(stopped, Some(Arc::clone(&slot)))
+            .resume(None)
+            .expect("resume typed-exit child to exit stop");
+        assert!(slot.lock().unwrap().is_empty());
+
+        let exit_event = running.exit_event();
+        drop(running);
+        let exit_stopped = tokio::time::timeout(Duration::from_secs(2), exit_event)
+            .await
+            .expect("typed exit future timed out")
+            .expect("claim typed exit stop");
+        let exit_status = exit_stopped
+            .physical_status_id()
+            .expect("typed exit stop carries physical status");
+        HeldRootStop::supersede_with_exit(&slot, &exit_stopped)
+            .expect("arm exact claimed-exit cleanup lease");
+        let final_running = RootStopLease::new(exit_stopped, Some(Arc::clone(&slot)))
+            .resume(None)
+            .expect("continue typed exit stop");
+        assert!(
+            slot.lock().unwrap().is_empty(),
+            "typed exit success left its root-stop lease armed"
+        );
+
+        let mut frozen_stop = None;
+        continue_frozen_exit_stop(
+            &terminal,
+            &mut frozen_stop,
+            PhysicalResumeOwner::RootCleanup,
+        )
+        .expect("freeze path recognizes typed exit completion");
+        assert!(frozen_stop.is_none());
+
+        let exited = final_running
+            .next_state()
+            .await
+            .expect("wait for typed-exit child's final status");
+        assert_eq!(exited.assume_exited().1, ExitStatus::Exited(0));
+        assert!(terminal.wait(Duration::from_secs(2)));
+        observer.close();
+
+        let snapshot = observer.snapshot();
+        let validation = snapshot.validate();
+        assert!(validation.is_valid(), "{validation:#?}");
+        let exit_resumes = snapshot
+            .records()
+            .iter()
+            .filter_map(|record| match record.kind() {
+                safeptrace::PhysicalEventRecordKind::ResumeAttempt { context, .. }
+                    if context.source_status == Some(exit_status) =>
+                {
+                    Some(context.owner)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(exit_resumes, [PhysicalResumeOwner::TypedStopped]);
+        assert_eventually_reaped("typed exit freeze child", pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn normal_armer_replaces_finished_shadow_with_distinct_successor_token() {
+        let role = "finished-shadow normal-armer child";
+        let (pid, stopped) = spawn_held_stop_child(role);
+        stopped
+            .setoptions(ptrace::Options::PTRACE_O_TRACEEXIT)
+            .expect("enable finished-shadow exit stop");
+        let terminal = stopped.terminal_cleanup();
+        let lower_candidate = Stopped::try_new_current_unchecked(pid)
+            .expect("create pre-exit same-generation lower candidate");
+        let lower_stop_id = lower_candidate.logical_stop_id();
+        let slot = held_task_stops(&stopped, &Event::Signal(Signal::SIGSTOP));
+        let running = stopped
+            .resume(None)
+            .expect("resume finished-shadow child to exit stop");
+        let exit_event = running.exit_event();
+        drop(running);
+        let exit_stopped = tokio::time::timeout(Duration::from_secs(2), exit_event)
+            .await
+            .expect("finished-shadow ExitFuture timed out")
+            .expect("claim finished-shadow exit stop");
+        HeldRootStop::supersede_with_exit(&slot, &exit_stopped)
+            .expect("arm finished-shadow claimed exit stop");
+        let exit_stop_id = exit_stopped.logical_stop_id();
+        assert!(exit_stop_id.is_strictly_after(lower_stop_id));
+        // SAFETY: this deliberately forges an equal-ID negative-control view.
+        // ManuallyDrop prevents a second Arc ownership decrement, and the view
+        // is never used for ptrace or any successful ownership transfer.
+        let equal_candidate = std::mem::ManuallyDrop::new(unsafe {
+            std::ptr::read(&exit_stopped)
+        });
+
+        // This unchecked token is deliberately not presented as de-thread
+        // evidence. It supplies a distinct same-generation logical successor
+        // solely to exercise the normal armer's stale-shadow ownership path.
+        let successor = Stopped::try_new_current_unchecked(pid)
+            .expect("create distinct same-generation successor token");
+        let successor_stop_id = successor.logical_stop_id();
+        assert!(successor_stop_id.is_strictly_after(exit_stop_id));
+        let final_running = exit_stopped
+            .resume(None)
+            .expect("continue claimed exit stop exactly once");
+
+        let rejected_callbacks = AtomicUsize::new(0);
+        assert!(matches!(
+            HeldRootStop::arm_empty_with(
+                &slot,
+                &lower_candidate,
+                &Event::Exec(pid),
+                || {
+                    rejected_callbacks.fetch_add(1, Ordering::SeqCst);
+                },
+            ),
+            Err(TraceError::Errno(Errno::EPROTO))
+        ));
+        assert_eq!(rejected_callbacks.load(Ordering::SeqCst), 0);
+        {
+            let held = slot.lock().unwrap();
+            assert_eq!(held.len(), 1);
+            let held = held.get(&pid).expect("lower candidate removed Finished shadow");
+            assert!(matches!(held.status, HeldRootStopStatus::Exit));
+            assert!(held.cleanup_transfer.as_ref().is_some_and(|transfer| {
+                transfer.logical_stop_id() == exit_stop_id
+                    && transfer.physical_status_id().is_none()
+            }));
+            assert!(held.terminal.same_generation(&terminal));
+        }
+        assert!(matches!(
+            HeldRootStop::arm_empty_with(
+                &slot,
+                &*equal_candidate,
+                &Event::Exec(pid),
+                || {
+                    rejected_callbacks.fetch_add(1, Ordering::SeqCst);
+                },
+            ),
+            Err(TraceError::Errno(Errno::EPROTO))
+        ));
+        assert_eq!(rejected_callbacks.load(Ordering::SeqCst), 0);
+        {
+            let held = slot.lock().unwrap();
+            let held = held
+                .get(&pid)
+                .expect("equal candidate removed Finished shadow");
+            assert!(matches!(held.status, HeldRootStopStatus::Exit));
+            assert!(held.cleanup_transfer.as_ref().is_some_and(|transfer| {
+                transfer.logical_stop_id() == exit_stop_id
+                    && transfer.physical_status_id().is_none()
+            }));
+        }
+
+        let committed_callbacks = AtomicUsize::new(0);
+        HeldRootStop::arm_empty_with(&slot, &successor, &Event::Exec(pid), || {
+            committed_callbacks.fetch_add(1, Ordering::SeqCst);
+        })
+            .expect("normal armer must consume Finished predecessor shadow");
+        assert_eq!(committed_callbacks.load(Ordering::SeqCst), 1);
+        {
+            let held = slot.lock().unwrap();
+            assert_eq!(held.len(), 1);
+            let held = held.get(&pid).expect("successor shadow remains durable");
+            assert!(matches!(held.status, HeldRootStopStatus::Exec(replaced) if replaced == pid));
+            assert!(held.cleanup_transfer.as_ref().is_some_and(|transfer| {
+                transfer.logical_stop_id() == successor_stop_id
+                    && transfer.physical_status_id() == successor.physical_status_id()
+            }));
+        }
+        slot.lock().unwrap().clear();
+        drop(lower_candidate);
+        drop(successor);
+
+        let exited = final_running
+            .next_state()
+            .await
+            .expect("wait finished-shadow child final status");
+        assert_eq!(exited.assume_exited().1, ExitStatus::Exited(0));
+        assert!(terminal.wait(Duration::from_secs(2)));
+        assert_eventually_reaped(role, pid);
+    }
+
+    #[test]
+    fn failed_predecessor_arm_commits_newchild_successor_before_exact_error() {
+        let role = "failed-predecessor NewChild armer child";
+        let (pid, stopped, mut control) = spawn_gated_held_stop_child(role);
+        let terminal = stopped.terminal_cleanup();
+        let predecessor_stop_id = stopped.logical_stop_id();
+        let slot = held_task_stops(&stopped, &Event::Signal(Signal::SIGSTOP));
+        let successor = Stopped::try_new_current_unchecked(pid)
+            .expect("create same-generation NewChild successor token");
+        let successor_stop_id = successor.logical_stop_id();
+        assert!(successor_stop_id.is_strictly_after(predecessor_stop_id));
+        let child_pid = Pid::from_raw(i32::MAX - 20);
+        let event = Event::NewChild(ChildOp::Fork, Running::new(child_pid));
+        let expected_link = EventChildLink {
+            tid: child_pid,
+            parent_tid: pid,
+            op: ChildOp::Fork,
+        };
+        let committed_metadata = StdMutex::new(None);
+        drop(stopped);
+
+        let result = HeldRootStop::arm_empty_with_resolver(
+            &slot,
+            &successor,
+            &event,
+            || {
+                let previous = committed_metadata.lock().unwrap().replace(expected_link);
+                assert!(previous.is_none(), "NewChild metadata callback repeated");
+            },
+            |current, transfer, observed_successor, observed_status| {
+                assert!(current.same_generation(&terminal));
+                assert_eq!(observed_successor, successor_stop_id);
+                assert_eq!(observed_status, None);
+                let predecessor = transfer
+                    .take()
+                    .expect("Failed predecessor resolver lost durable transfer");
+                assert_eq!(predecessor.logical_stop_id(), predecessor_stop_id);
+                Ok(Some(TransferredStopCompletion::Failed(Errno::EPERM)))
+            },
+        );
+        assert!(matches!(result, Err(TraceError::Errno(Errno::EPERM))));
+        assert_eq!(*committed_metadata.lock().unwrap(), Some(expected_link));
+        {
+            let held = slot.lock().unwrap();
+            assert_eq!(held.len(), 1);
+            let held = held.get(&pid).expect("Failed predecessor lost successor shadow");
+            assert!(matches!(held.status, HeldRootStopStatus::NewChild(link) if link == expected_link));
+            assert!(held.cleanup_transfer.as_ref().is_some_and(|transfer| {
+                transfer.logical_stop_id() == successor_stop_id
+                    && transfer.physical_status_id().is_none()
+            }));
+        }
+        drop(successor);
+
+        let mut held = LiteinstTraceeCleanup::take_held_task_stop_from(&slot, pid, &terminal)
+            .expect("activate committed NewChild successor")
+            .expect("committed NewChild successor remains owned");
+        let successor_lease = held
+            .cleanup_lease
+            .take()
+            .expect("committed NewChild successor converts exactly once");
+        assert_eq!(successor_lease.logical_stop_id(), successor_stop_id);
+        assert!(slot.lock().unwrap().is_empty());
+        terminal
+            .dispose_cleanup_stop(successor_lease)
+            .expect("dispose committed NewChild successor without raw transition");
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup(
+                    &mut None,
+                    PhysicalResumeOwner::RootCleanup,
+                )
+                .expect("retired ordinary successor needs no raw exit continuation"),
+            TerminalCleanupContinue::WaitingForExitStop
+        );
+
+        control
+            .write_all(&[1])
+            .expect("release failed-predecessor armer child");
+        ptrace::cont(pid.into(), None).expect("resume failed-predecessor armer child");
+        assert!(terminal.wait(Duration::from_secs(2)));
+        assert_eventually_reaped(role, pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn held_stop_map_retains_independent_task_generations() {
         for _ in 0..16 {
             let (_first_pid, first) = spawn_held_stop_child("first generation child");
             let (_second_pid, second) = spawn_held_stop_child("second generation child");
             let first_generation = first.terminal_cleanup();
-            let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_event(
-                &first,
-                &Event::Signal(Signal::SIGSTOP),
-            ))));
+            let second_generation = second.terminal_cleanup();
+            let slot = held_task_stops(&first, &Event::Signal(Signal::SIGSTOP));
 
-            assert_eq!(
-                HeldRootStop::supersede_with_exit(&slot, &second),
-                Err(TraceError::Errno(Errno::EINVAL))
-            );
+            HeldRootStop::supersede_with_exit(&slot, &second)
+                .expect("a second task must receive an independent held-stop slot");
             {
                 let held = slot.lock().unwrap();
-                let held = held.as_ref().expect("mismatch removed the original lease");
-                assert!(held.terminal.same_generation(&first_generation));
+                let first_held = held
+                    .get(&first.pid())
+                    .expect("first task lease disappeared");
+                assert!(first_held.terminal.same_generation(&first_generation));
                 assert!(matches!(
-                    held.status,
+                    first_held.status,
                     HeldRootStopStatus::Signal(Signal::SIGSTOP)
                 ));
+                let second_held = held.get(&second.pid()).expect("second task lease absent");
+                assert!(second_held.terminal.same_generation(&second_generation));
+                assert!(matches!(second_held.status, HeldRootStopStatus::Exit));
             }
 
-            slot.lock().unwrap().take();
+            slot.lock().unwrap().clear();
             resume_held_stop_child("first generation child", first).await;
             resume_held_stop_child("second generation child", second).await;
         }
+    }
+
+    #[test]
+    fn held_stop_rejects_replacement_generation_for_same_task() {
+        let pid = Pid::from_raw(i32::MAX - 17);
+        let first = Stopped::new_unchecked(pid);
+        let replacement = Stopped::new_unchecked(pid);
+        let first_generation = first.terminal_cleanup();
+        let slot = held_task_stops(&first, &Event::Signal(Signal::SIGSTOP));
+
+        assert!(matches!(
+            HeldRootStop::supersede_with_exit(&slot, &replacement),
+            Err(TraceError::Errno(Errno::EINVAL))
+        ));
+        let held = slot.lock().unwrap();
+        let held = held
+            .get(&pid)
+            .expect("generation mismatch removed the original task stop");
+        assert!(held.terminal.same_generation(&first_generation));
+        assert!(matches!(
+            held.status,
+            HeldRootStopStatus::Signal(Signal::SIGSTOP)
+        ));
+    }
+
+    #[test]
+    fn rejected_newchild_arm_preserves_owner_without_metadata_callback() {
+        let pid = Pid::from_raw(i32::MAX - 18);
+        let child_pid = Pid::from_raw(i32::MAX - 19);
+        let first = Stopped::new_unchecked(pid);
+        let replacement = Stopped::new_unchecked(pid);
+        let first_generation = first.terminal_cleanup();
+        let first_stop_id = first.logical_stop_id();
+        let slot = held_task_stops(&first, &Event::Signal(Signal::SIGSTOP));
+        let child = Running::new(child_pid);
+        let event = Event::NewChild(ChildOp::Fork, child);
+        let metadata_callbacks = AtomicUsize::new(0);
+
+        assert!(matches!(
+            HeldRootStop::arm_empty_with(&slot, &first, &event, || {
+                metadata_callbacks.fetch_add(1, Ordering::SeqCst);
+            }),
+            Err(TraceError::Errno(Errno::EINVAL))
+        ));
+        assert_eq!(metadata_callbacks.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            HeldRootStop::arm_empty_with(&slot, &replacement, &event, || {
+                metadata_callbacks.fetch_add(1, Ordering::SeqCst);
+            }),
+            Err(TraceError::Errno(Errno::EINVAL))
+        ));
+        assert_eq!(metadata_callbacks.load(Ordering::SeqCst), 0);
+        let held = slot.lock().unwrap();
+        assert_eq!(held.len(), 1);
+        let held = held.get(&pid).expect("rejected NewChild arm lost predecessor");
+        assert!(held.terminal.same_generation(&first_generation));
+        assert!(matches!(held.status, HeldRootStopStatus::Signal(Signal::SIGSTOP)));
+        assert!(held.cleanup_transfer.as_ref().is_some_and(|transfer| {
+            transfer.logical_stop_id() == first_stop_id
+        }));
     }
 
     #[derive(Default)]
@@ -3747,7 +6561,7 @@ mod tests {
                 .liteinst_runtime
                 .as_ref()
                 .expect("LiteInst runtime configured")
-                .held_root_stop,
+                .held_task_stops,
         );
         let tracer = builder.spawn().await.expect("spawn precise-timer tracee");
         let root_pid = tracer.guest_pid();
@@ -3763,7 +6577,7 @@ mod tests {
         assert_eq!(stopped_pid, root_pid);
         assert!(
             matches!(
-                held.lock().unwrap().as_ref().map(|held| &held.status),
+                held.lock().unwrap().get(&root_pid).map(|held| held.status),
                 Some(HeldRootStopStatus::Signal(Signal::SIGTRAP))
             ),
             "precise-timer step did not rearm the returned SIGTRAP stop"
@@ -3786,7 +6600,7 @@ mod tests {
                 .liteinst_runtime
                 .as_ref()
                 .expect("LiteInst runtime configured")
-                .held_root_stop,
+                .held_task_stops,
         );
         let tracer = builder.spawn().await.expect("spawn precise-timer tracee");
         let (status, ()) = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
@@ -3795,7 +6609,7 @@ mod tests {
             .expect("wait normal precise-timer tracee");
         assert_eq!(status, ExitStatus::Exited(0));
         assert!(
-            held.lock().unwrap().is_none(),
+            held.lock().unwrap().is_empty(),
             "normal precise-timer path left a stale lease"
         );
     }
@@ -3832,13 +6646,13 @@ mod tests {
                 .liteinst_runtime
                 .as_ref()
                 .expect("LiteInst runtime configured")
-                .held_root_stop,
+                .held_task_stops,
         );
         let tracer = builder.spawn().await.expect("spawn normal LiteInst tracee");
         let (status, ()) = tracer.wait().await.expect("wait normal LiteInst tracee");
         assert_eq!(status, ExitStatus::Exited(0));
         assert!(
-            held.lock().unwrap().is_none(),
+            held.lock().unwrap().is_empty(),
             "normal path left stale lease"
         );
     }
@@ -3956,42 +6770,6 @@ mod tests {
         Running::new(replacement)
             .wait()
             .expect("reap replacement fixture");
-    }
-
-    #[test]
-    fn pidfd_setup_error_retains_cleanup_drain_failure() {
-        let message = liteinst_pidfd_setup_error(
-            Pid::from_raw(42),
-            Errno::EMFILE,
-            None,
-            Err(TraceError::Errno(Errno::EIO)),
-        )
-        .to_string();
-        assert!(
-            message.contains("failed to open pidfd for LiteInst tracee 42"),
-            "genuine pidfd failure lost its cause: {message}"
-        );
-        assert!(
-            message.contains("EMFILE"),
-            "missing pidfd failure: {message}"
-        );
-        assert!(message.contains("EIO"), "missing drain failure: {message}");
-    }
-
-    #[test]
-    fn pidfd_setup_timeout_names_thread_group_leader_retry_exhaustion() {
-        let message = liteinst_pidfd_setup_error(Pid::from_raw(42), Errno::ETIMEDOUT, None, Ok(()))
-            .to_string();
-        assert!(
-            message.contains(
-                "root identity did not become a stable traced thread-group leader with a pidfd within the 2,000-attempt retry budget"
-            ),
-            "missing root-identity retry exhaustion: {message}"
-        );
-        assert!(
-            !message.contains("failed to open pidfd"),
-            "timeout still blames pidfd_open: {message}"
-        );
     }
 
     #[test]

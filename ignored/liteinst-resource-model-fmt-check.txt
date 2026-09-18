@@ -1,0 +1,90 @@
+Diff in /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace/src/task/after_loader_task.rs:75:
+         && canonical_c_int_argument(args[3]) == Some(libc::STATX_ALL as i32)
+ }
+ 
+-fn descriptor_statx_bytes(
+-    tid: Pid,
+-    descriptor: u64,
+-) -> io::Result<[u8; STATX_OUTPUT_BYTES]> {
++fn descriptor_statx_bytes(tid: Pid, descriptor: u64) -> io::Result<[u8; STATX_OUTPUT_BYTES]> {
+     let file = std::fs::File::open(format!("/proc/{tid}/fd/{descriptor}"))?;
+     let mut value = std::mem::MaybeUninit::<libc::statx>::zeroed();
+     let result = unsafe {
+Diff in /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace/src/task/after_loader_task.rs:1853:
+                         "shared anonymous mapping is not one exact initializer reservation",
+                     ));
+                 }
+-                let trampoline = state
+-                    .trampoline_awaiting_shared_reservation()
+-                    .ok_or_else(|| {
+-                        self.caller_error(
+-                            "shared reservation has no unique fully aliased trampoline owner",
+-                        )
+-                    })?;
++                let trampoline =
++                    state
++                        .trampoline_awaiting_shared_reservation()
++                        .ok_or_else(|| {
++                            self.caller_error(
++                                "shared reservation has no unique fully aliased trampoline owner",
++                            )
++                        })?;
+                 (
+                     None,
+                     AfterLoaderMappingPurpose::SharedReservation { trampoline },
+Diff in /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace/src/task/after_loader_task.rs:2528:
+                     if state.shared_reservations.contains_key(trampoline)
+                         || state.trampoline_awaiting_shared_reservation() != Some(*trampoline)
+                     {
+-                        return Err(self.caller_error(
+-                            "shared reservation lost its unique trampoline owner",
+-                        ));
++                        return Err(self
++                            .caller_error("shared reservation lost its unique trampoline owner"));
+                     }
+                 }
+                 let state = self.after_loader_private_state_mut()?;
+Diff in /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace/src/task/after_loader_task.rs:2662:
+                     );
+                 }
+                 let next = if *advances {
+-                    offset
+-                        .checked_add(amount as u64)
+-                        .ok_or(Errno::EOVERFLOW)?
++                    offset.checked_add(amount as u64).ok_or(Errno::EOVERFLOW)?
+                 } else {
+                     self.after_loader_private_state()?
+                         .owned_descriptors
+Diff in /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace/src/task/after_loader_task.rs:2793:
+                         position,
+                     }) => (*device, *inode, bytes, *position),
+                     _ => {
+-                        return Err(
+-                            self.caller_error("private statx descriptor authority changed")
+-                        );
++                        return Err(self.caller_error("private statx descriptor authority changed"));
+                     }
+                 };
+                 let proc_path = format!("/proc/{}/maps", task.pid());
+Diff in /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace/src/task/after_loader_task.rs:2820:
+                 let mut actual = [0_u8; STATX_OUTPUT_BYTES];
+                 task.read_exact(*destination as usize, &mut actual)?;
+                 if actual != *expected {
+-                    return Err(self
+-                        .caller_error("private statx output differs from its exact snapshot"));
++                    return Err(
++                        self.caller_error("private statx output differs from its exact snapshot")
++                    );
+                 }
+             }
+         }
+Diff in /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace/src/task/after_loader_task.rs:3453:
+                 .owned_mappings
+                 .iter()
+                 .filter(|mapping| {
+-                    mapping.purpose
+-                        == (AfterLoaderMappingPurpose::SharedReservation { trampoline })
++                    mapping.purpose == (AfterLoaderMappingPurpose::SharedReservation { trampoline })
+                 })
+                 .collect::<Vec<_>>();
+             if aliases.len() != 2
