@@ -2968,7 +2968,7 @@ mod tests {
         let value = project(
             &canonical_bytes(&manifest()),
             "",
-            &jsonl(&[encoded.clone()]),
+            &jsonl(std::slice::from_ref(&encoded)),
             None,
             |_| Ok(Some(true)),
         )
