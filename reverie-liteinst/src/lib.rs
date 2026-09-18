@@ -250,6 +250,9 @@ impl Default for HostRuntimeConfig {
 /// reentrant valid host attempt returns `-EALREADY`, including after a preparation
 /// failure: partially published runtime state cannot be rolled back here.
 /// The existing constructor continues to select behavior from the environment.
+/// Explicit host preparation and every later site publication are quiescent:
+/// this path does not install the concurrent SIGTRAP router. A request for
+/// concurrent publication after explicit initialization is rejected.
 ///
 /// # Safety
 ///
@@ -257,6 +260,8 @@ impl Default for HostRuntimeConfig {
 /// for this call. The runtime must already be loaded and its TLS usable. The
 /// caller must keep other application threads stopped or absent, have no other
 /// runtime mode installed, and service the exact existing host handshake traps.
+/// Every later site installation must preserve that quiescence, including
+/// exclusion of signal handlers and other code writers from the patch window.
 /// This neither loads the runtime nor transfers an in-process Tool or scheduler.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_liteinst_initialize_host(

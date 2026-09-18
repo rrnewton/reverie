@@ -1,0 +1,15 @@
+
+running 1 test
+test constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks ... 
+thread 'constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks' (122679) panicked at reverie-liteinst/tests/after_loader.rs:398:5:
+ldd emitted diagnostics for /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/ignored/dev-hermit-15-liteinst-after-loader-diagfix-c75de602/stage/libreverie_liteinst.so: "ldd: warning: you do not have execution permission for `/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/ignored/dev-hermit-15-liteinst-after-loader-diagfix-c75de602/stage/libreverie_liteinst.so'\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+

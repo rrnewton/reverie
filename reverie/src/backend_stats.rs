@@ -151,6 +151,9 @@ liteinst_dispatch_paths! {
     or successful in-guest Tool dispatch. Refused in-guest attempts are counted
     by `FallbackRefusal` instead. */
     UnpatchableOrOtherFallback => "unpatchable_or_other",
+    /** A formerly patched site serviced by retained ptrace dispatch after the
+    tracer deliberately retired all direct hooks at a quiescent boundary. */
+    DeoptimizedFallback => "deoptimized_fallback",
     /// A patched-site callback that returned to the ptrace-host Tool through SIGTRAP.
     DirectHook => "direct_hook",
     /// An in-guest fallback attempt refused before ordinary Tool dispatch.

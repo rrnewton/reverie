@@ -1,0 +1,11 @@
+branch=codex/liteinst-bootstrap-rdtsc-01a0a13c
+head=6e3915b70a71657a08f0028b3f70d6074116206a
+tracked_files=19
+tracked_insertions=7597
+tracked_deletions=757
+schema=1
+dso_bytes=35299816
+dso_sha256=8c91176c882c47d31c0610f2dc4185f42d49eb87d8f1657f5d1a4c568ed436ee
+default_features=false
+features=[liteinst-after-loader-experiment]
+preload_constructor=false
