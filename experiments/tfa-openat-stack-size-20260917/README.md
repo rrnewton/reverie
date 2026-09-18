@@ -106,22 +106,55 @@ unrelated reason.
 gcc -O2 -g -o tfa_open_stack_probe tfa_open_stack_probe.c tfa_open_stack_probe.S
 ```
 
-That is the whole of it. The `.S` is assembled by the same driver invocation. **The two
-preserved sources are sufficient** — no missing header, no third source file, no extra
-link dependency. The build is clean with no warnings.
+That is the whole of it. The `.S` is assembled by the same driver invocation. **The
+preserved sources are sufficient** for both probes — no missing header, no further
+source file, no extra link dependency. Both builds are clean with no warnings.
 
-`build.sh` in this directory runs that command, and `./build.sh --verify` also runs all
-four arms and checks them:
+### The open-loop control arm
+
+`tfa_open_loop_probe.c` is the second probe in this experiment and it is **not a side
+experiment**. It opens and closes one file 5,000 times and prints `5000 opens
+completed`. It is what excluded path, symlink and open-count as causes before the
+stack hypothesis was formed, and it is therefore what makes the EFAULT attributable to
+stack space rather than to the open pattern. If this arm ever refuses, the 192/512
+bracket means much less than it appears to.
+
+Its source was still only in `/tmp` after the first promotion — the evidence was
+tracked while the thing that regenerates it was not — and it is promoted here for that
+reason. Single source, no `.S`:
+
+```bash
+gcc -O2 -g -o tfa_open_loop_probe tfa_open_loop_probe.c
+```
+
+Run it as `tfa_open_loop_probe <path>`, with any existing openable file. Under the
+frozen hermit binary it is one `bin/safehermit` invocation:
+
+```bash
+bin/safehermit "$HERMIT_BIN" run -- ./tfa_open_loop_probe <path>
+```
+
+Expected: exit 0 and `5000 opens completed`, in about a second. Re-measured 2026-09-17:
+native and hermit both produce exactly that, matching the preserved
+`hermit-906-open-loop.stdout` and its report's `exit_code=0` and `elapsed_secs=1`.
+
+### Verifying everything at once
+
+`build.sh` builds both probes, and `./build.sh --verify` also runs all six arms and
+checks them:
 
 | arm | expected |
 |---|---|
 | native 192 | exit 0, `openat raw_rc=3 errno=0` |
 | native 512 | exit 0, `openat raw_rc=3 errno=0` |
+| native open-loop | exit 0, `5000 opens completed` |
 | hermit 192 | exit 1, `openat raw_rc=-14 errno=14` |
 | hermit 512 | exit 0, `openat raw_rc=3 errno=0` |
+| hermit open-loop | exit 0, `5000 opens completed` |
 
-Measured 2026-09-17 on devbig030: all four reproduce, and the two hermit values match
-the preserved `hermit-906-open-stack-192.stdout` and `-512.stdout` byte for byte.
+Measured 2026-09-17 on devbig030: all six reproduce, and the three hermit values match
+the preserved `hermit-906-open-stack-192.stdout`, `-512.stdout` and
+`hermit-906-open-loop.stdout` byte for byte.
 
 Exit codes: `0` all four reproduced, `1` an arm disagreed, `2` the hermit arms could not
 run so the verification is **incomplete** — deliberately not the same as a pass. The
@@ -153,6 +186,11 @@ For provenance, the original second argument, recovered from
 
 It is a `buck-out` path and will not survive a clean, which is why `build.sh` does not
 depend on it.
+
+The open-loop arm's original path argument is **not recoverable**: that run's `.stderr`
+is empty and its report records no arguments. Since the probe only needs an existing
+openable file, and the arm reproduces with both the long path above and a short local
+one, nothing appears to turn on it — but it is unknown rather than known.
 
 ### Rebuilt binary is not byte-identical to hermit-906's
 
