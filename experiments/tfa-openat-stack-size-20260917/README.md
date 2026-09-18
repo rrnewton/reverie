@@ -75,9 +75,9 @@ identifiable and rebuildable:
 - GCC 11.5.0 20240719 (Red Hat 11.5.0-14/-15), dynamically linked, built with
   debug_info, not stripped
 
-**No build command survives anywhere** — not in the reports, and not in any Claude
-transcript on this host (hermit-906 ran under a different harness). The two sources
-plus the compiler version above are what a rebuild has to work from.
+**No build command survived** — not in the reports, and not in any Claude transcript
+on this host (hermit-906 ran under a different harness). One has since been re-derived
+and verified; see "Rebuilding" below. That recipe is what replaces the binary.
 
 Note for anyone promoting artifacts into `experiments/` in future: that `*.bin` rule
 skips files during `git add` while every per-file existence check still passes. The
@@ -94,3 +94,69 @@ binary_sha256=000eeb5e59345b6c9c14bf194d6d5b392294a52d25d40209e553376f3a84764a
 
 That path is under `ignored/` and is not preserved by this commit. The sha256 is
 recorded here so the binary can be identified if it is found elsewhere.
+
+## Rebuilding
+
+hermit-906 left no build command. This one was re-derived on 2026-09-17 from the two
+preserved sources and then checked against the preserved evidence, because a recipe
+that only reproduces the failing arm is indistinguishable from a probe broken for an
+unrelated reason.
+
+```bash
+gcc -O2 -g -o tfa_open_stack_probe tfa_open_stack_probe.c tfa_open_stack_probe.S
+```
+
+That is the whole of it. The `.S` is assembled by the same driver invocation. **The two
+preserved sources are sufficient** — no missing header, no third source file, no extra
+link dependency. The build is clean with no warnings.
+
+`build.sh` in this directory runs that command, and `./build.sh --verify` also runs all
+four arms and checks them:
+
+| arm | expected |
+|---|---|
+| native 192 | exit 0, `openat raw_rc=3 errno=0` |
+| native 512 | exit 0, `openat raw_rc=3 errno=0` |
+| hermit 192 | exit 1, `openat raw_rc=-14 errno=14` |
+| hermit 512 | exit 0, `openat raw_rc=3 errno=0` |
+
+Measured 2026-09-17 on devbig030: all four reproduce, and the two hermit values match
+the preserved `hermit-906-open-stack-192.stdout` and `-512.stdout` byte for byte.
+
+Exit codes: `0` all four reproduced, `1` an arm disagreed, `2` the hermit arms could not
+run so the verification is **incomplete** — deliberately not the same as a pass. The
+script refuses to run the hermit arms against anything whose sha256 is not the frozen
+`000eeb5e59345b6c9c14bf194d6d5b392294a52d25d40209e553376f3a84764a`, since a different
+hermit build is a different experiment. All three outcomes were mutation-tested rather
+than assumed.
+
+Hermit is invoked through `bin/safehermit`, as the parent `AGENTS.md` requires.
+
+### The second argument
+
+The probe takes `<writable-bytes-below-the-new-stack-pointer> <path>`. The path only
+needs to be an existing, openable file; `build.sh` creates its own so the check is
+self-contained.
+
+**Path length is not what sets the bracket**, which is worth stating because it is a
+natural guess and it is wrong. The original run used a 220-character path, long enough
+that one might assume the 221 bytes with its NUL is what overflows 192. Re-tested with
+a 67-character path: the 192 arm still returns EFAULT and the 512 arm still succeeds.
+Both path lengths reproduce both arms.
+
+For provenance, the original second argument, recovered from
+`hermit-906-open-stack-192-info.stderr`, was:
+
+```
+/home/newton/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/logdevice/logservice/server/log_store/test/__log_store_test__/__log_store_test__shared_libs_symlink_tree/libwarm_storage_common_client_prod_exception_utils.so
+```
+
+It is a `buck-out` path and will not survive a clean, which is why `build.sh` does not
+depend on it.
+
+### Rebuilt binary is not byte-identical to hermit-906's
+
+The rebuild is 26,424 bytes against the original's 25,432, so `-O2 -g` is not
+necessarily the exact original flag set. The criterion here is behavioural: the rebuilt
+probe reproduces all four arms with the recorded values. Anyone needing the original
+bytes should note they are gone — see above.
