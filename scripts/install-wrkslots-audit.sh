@@ -116,7 +116,7 @@ grep -Fq \
     exit 1
 }
 grep -Fq \
-    'ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --state-root %h/work/dev-hermit --tool-relative scripts/hermit-health-tick.sh' \
+    'ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --state-root %h/work/dev-hermit --tool-relative scripts/hermit-operational-tick' \
     "$unit_dir/$health_service" || {
     printf 'wrkslots-audit install: health service does not execute through the installed bootstrap\n' >&2
     exit 1

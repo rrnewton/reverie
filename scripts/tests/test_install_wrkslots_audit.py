@@ -100,7 +100,7 @@ class InstallWrkslotsAuditTests(unittest.TestCase):
         self.assertIn(
             "ExecStart=%h/.local/libexec/dev-hermit/operational-tool "
             "--run-current-tool --state-root %h/work/dev-hermit "
-            "--tool-relative scripts/hermit-health-tick.sh",
+            "--tool-relative scripts/hermit-operational-tick",
             health_service,
         )
         self.assertIn(
