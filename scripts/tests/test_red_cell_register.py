@@ -52,10 +52,9 @@ def cell(
         "test": test,
         "mode": "verify",
         "backend": "ptrace",
-        "enabled": True,
         "status": status,
         "measurement": measurement,
-        "ci_disabled_reason": {"result": "test", "reason": reason},
+        "not_selected_by_full_reason": {"result": "test", "reason": reason},
         "observations": [],
     }
 
@@ -71,6 +70,33 @@ class RedCellRegisterTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_reason_field_migration_accepts_each_schema_and_refuses_conflict(self) -> None:
+        current = cell(
+            "applications/current",
+            status="red",
+            measurement="never-measured",
+            reason="current reason",
+        )
+        self.assertEqual(
+            {"result": "test", "reason": "current reason"},
+            register.reason_value(current),
+        )
+
+        legacy = dict(current)
+        legacy["ci_disabled_reason"] = legacy.pop("not_selected_by_full_reason")
+        self.assertEqual(
+            {"result": "test", "reason": "current reason"},
+            register.reason_value(legacy),
+        )
+
+        conflicting = dict(current)
+        conflicting["ci_disabled_reason"] = {"result": "test", "reason": "old"}
+        with self.assertRaisesRegex(
+            register.RegisterError,
+            "conflicting not_selected_by_full_reason and ci_disabled_reason values",
+        ):
+            register.reason_value(conflicting)
 
     def commit(self, date: str, cells: list[dict[str, object]]) -> str:
         path = self.repo / register.CELL_PATH

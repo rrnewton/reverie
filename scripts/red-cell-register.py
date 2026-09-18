@@ -153,7 +153,14 @@ def cell_id(key: tuple[str, str, str, str, str]) -> str:
 
 
 def reason_value(cell: dict[str, Any]) -> Any:
-    return cell.get("ci_disabled_reason")
+    reason = cell.get("not_selected_by_full_reason")
+    legacy_reason = cell.get("ci_disabled_reason")
+    if reason is not None and legacy_reason is not None and reason != legacy_reason:
+        raise RegisterError(
+            f"{cell_id(cell_key(cell))} carries conflicting "
+            "not_selected_by_full_reason and ci_disabled_reason values"
+        )
+    return reason if reason is not None else legacy_reason
 
 
 def compact_state(
