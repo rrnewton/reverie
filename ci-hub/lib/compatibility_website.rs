@@ -2460,6 +2460,7 @@ fn no_verdict_kind_name(value: &SeriesNoVerdictKind) -> &'static str {
         SeriesNoVerdictKind::ComparisonRefused => "comparison_refused",
         SeriesNoVerdictKind::NotRun => "not_run",
         SeriesNoVerdictKind::FirstRunRejected => "first_run_rejected",
+        SeriesNoVerdictKind::ContainerFailed => "container_failed",
         SeriesNoVerdictKind::InfrastructureError => "infrastructure_error",
         SeriesNoVerdictKind::MissingReportTimeout => "missing_report_timeout",
         SeriesNoVerdictKind::NoncanonicalMatch => "noncanonical_match",
