@@ -14017,6 +14017,9 @@ mod captured_write_signals;
 #[path = "support/timestamp_terminal.rs"]
 mod timestamp_terminal;
 
+#[path = "support/capture_identity.rs"]
+mod capture_identity;
+
 #[path = "support/cpuid_dispatch.rs"]
 mod cpuid_dispatch;
 

@@ -55,6 +55,12 @@ use crate::signal::signal_info_user;
 #[path = "process_signal_publication.rs"]
 mod process_signal_publication;
 
+#[path = "capture_identity.rs"]
+mod capture_identity;
+
+use capture_identity::CaptureMetadata;
+use capture_identity::CaptureObjectIdentity;
+use capture_identity::CapturedPipeIdentities;
 use process_signal_publication::ProcessBinding;
 use process_signal_publication::ProcessSignalRegistry;
 
@@ -186,13 +192,35 @@ struct CapturedOutputInner {
     stderr: Vec<u8>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 // TODO-HUMAN-REVIEW(PR-172): Review cross-thread captured-output ownership.
 pub(crate) struct CapturedOutput {
     inner: Arc<Mutex<CapturedOutputInner>>,
+    identities: Arc<CapturedPipeIdentities>,
+}
+
+#[cfg(test)]
+impl Default for CapturedOutput {
+    fn default() -> Self {
+        Self::try_new().expect("prepare test capture identities")
+    }
 }
 
 impl CapturedOutput {
+    pub(crate) fn try_new() -> std::io::Result<Self> {
+        // Root setup calls this before consuming the image or initializing the
+        // Tool. Failure never publishes partial output or a fallback identity.
+        let identities = Arc::new(CapturedPipeIdentities::try_new()?);
+        Ok(Self {
+            inner: Arc::new(Mutex::new(CapturedOutputInner::default())),
+            identities,
+        })
+    }
+
+    fn metadata(&self) -> CaptureMetadata {
+        self.identities.metadata()
+    }
+
     pub(crate) fn take(&mut self) -> (Vec<u8>, Vec<u8>) {
         let mut inner = self.inner.lock().expect("captured output lock poisoned");
         (
@@ -354,6 +382,7 @@ fn execute_basic_syscall_with_output(
     let args = request.args();
     let number = request.number();
     let capture_output = output.is_some();
+    let capture_metadata = output.as_ref().map(|output| output.metadata());
 
     if number == libc::SYS_exit as u64 || number == libc::SYS_exit_group as u64 {
         return SyscallAction::Exit(ExitStatus::Exited((args[0] as i32) & 0xff));
@@ -532,21 +561,21 @@ fn execute_basic_syscall_with_output(
         // AUTONOMOUS-BOT-IMPLEMENTED
         memfd_create(memory, state, args)
     } else if number == libc::SYS_fstat as u64 {
-        fstat(memory, state, args, capture_output)
+        fstat(memory, state, args, capture_metadata)
     } else if number == libc::SYS_stat as u64 {
-        path_stat(memory, state, args, 0, capture_output)
+        path_stat(memory, state, args, 0, capture_metadata)
     } else if number == libc::SYS_lstat as u64 {
         path_stat(
             memory,
             state,
             args,
             libc::AT_SYMLINK_NOFOLLOW,
-            capture_output,
+            capture_metadata,
         )
     } else if number == libc::SYS_newfstatat as u64 {
-        newfstatat(memory, state, args, capture_output)
+        newfstatat(memory, state, args, capture_metadata)
     } else if number == libc::SYS_statx as u64 {
-        statx(memory, state, args, capture_output)
+        statx(memory, state, args, capture_metadata)
     } else if number == libc::SYS_statfs as u64 {
         statfs(memory, state, args)
     } else if number == libc::SYS_fstatfs as u64 {
@@ -873,10 +902,10 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_gettimeofday as u64 {
         gettimeofday(memory, args)
     } else if number == libc::SYS_readlink as u64 {
-        readlink(memory, state, args, capture_output)
+        readlink(memory, state, args, capture_metadata)
     } else if number == libc::SYS_readlinkat as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        readlinkat(memory, state, args, capture_output)
+        readlinkat(memory, state, args, capture_metadata)
     } else if number == libc::SYS_uname as u64 {
         uname(memory, args[0])
     } else if number == libc::SYS_prlimit64 as u64 {
@@ -1837,7 +1866,13 @@ impl ElfExecutor {
         (self.state.heap_base, self.state.program_break)
     }
 
-    pub(crate) fn new(mut state: LoadedStaticElf, capture_output: bool) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new(state: LoadedStaticElf, capture_output: bool) -> Self {
+        let output = capture_output.then(CapturedOutput::default);
+        Self::with_output(state, output)
+    }
+
+    pub(crate) fn with_output(mut state: LoadedStaticElf, output: Option<CapturedOutput>) -> Self {
         let file_table;
         let _retirement = state.file_retirement.hold();
         let transaction = state.signal_transaction.clone();
@@ -1883,7 +1918,7 @@ impl ElfExecutor {
             signal_effect_raw_result: None,
             address_space,
             file_table,
-            output: capture_output.then(CapturedOutput::default),
+            output,
             owns_output: true,
             next_pid: Arc::new(AtomicI32::new(next_pid)),
             sigchld_auto_reap,
@@ -6462,14 +6497,10 @@ fn guest_fd_metadata(
 fn guest_fd_link_target(
     state: &LoadedStaticElf,
     guest_fd: libc::c_int,
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> Result<Vec<u8>, i64> {
-    if capture_output && output_alias(state, guest_fd).is_some() {
-        return Ok(format!(
-            "pipe:[{}]",
-            synthetic_captured_output_stat(state, guest_fd).st_ino
-        )
-        .into_bytes());
+    if let (Some(capture), Some(alias)) = (capture, output_alias(state, guest_fd)) {
+        return Ok(format!("pipe:[{}]", capture.identity(alias).inode).into_bytes());
     }
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return Err(negative_errno(libc::ENOENT));
@@ -6500,7 +6531,7 @@ fn guest_fd_link_target(
         if target.starts_with(prefix.as_bytes()) && target.ends_with(b"]") {
             return Ok(format!(
                 "{kind}:[{}]",
-                guest_object_stat(state, guest_fd, capture_output)?.st_ino
+                guest_object_stat(state, guest_fd, capture)?.st_ino
             )
             .into_bytes());
         }
@@ -10306,12 +10337,12 @@ fn fstat(
     memory: &mut GuestMemory,
     state: &LoadedStaticElf,
     args: &[u64; 6],
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
     };
-    match guest_object_stat(state, fd, capture_output) {
+    match guest_object_stat(state, fd, capture) {
         Ok(stat) => write_struct(memory, args[1], &stat),
         Err(error) => error,
     }
@@ -10320,10 +10351,10 @@ fn fstat(
 fn guest_object_stat(
     state: &LoadedStaticElf,
     fd: libc::c_int,
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> Result<libc::stat, i64> {
-    if capture_output && output_alias(state, fd).is_some() {
-        return Ok(synthetic_captured_output_stat(state, fd));
+    if let (Some(capture), Some(alias)) = (capture, output_alias(state, fd)) {
+        return Ok(synthetic_captured_output_stat(capture.identity(alias)));
     }
     let Some(host_fd) = host_fd(state, fd) else {
         return Err(negative_errno(libc::EBADF));
@@ -10340,14 +10371,14 @@ fn guest_object_stat(
 }
 
 // TODO-HUMAN-REVIEW(PR-205): Review synthetic metadata for in-memory captured output.
-fn synthetic_captured_output_stat(state: &LoadedStaticElf, fd: libc::c_int) -> libc::stat {
+fn synthetic_captured_output_stat(identity: CaptureObjectIdentity) -> libc::stat {
     // Captured writes never reach the host descriptor, so exposing that
     // descriptor's type, size, or inode leaks the invoking shell into the
     // guest. Model the capture sink as the pipe used by process-based backends.
     // SAFETY: libc::stat is plain-old-data; a zeroed value is valid.
     let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
-    stat.st_dev = synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR);
-    stat.st_ino = synthetic_guest_fd_object_inode(state, fd);
+    stat.st_dev = identity.device;
+    stat.st_ino = identity.inode;
     stat.st_mode = libc::S_IFIFO | 0o600;
     stat.st_nlink = 1;
     stat.st_uid = 0;
@@ -10357,8 +10388,8 @@ fn synthetic_captured_output_stat(state: &LoadedStaticElf, fd: libc::c_int) -> l
     stat
 }
 
-fn synthetic_captured_output_statx(state: &LoadedStaticElf, fd: libc::c_int) -> libc::statx {
-    let stat = synthetic_captured_output_stat(state, fd);
+fn synthetic_captured_output_statx(identity: CaptureObjectIdentity) -> libc::statx {
+    let stat = synthetic_captured_output_stat(identity);
     // SAFETY: libc::statx is plain-old-data; a zeroed value is valid.
     let mut extended = unsafe { std::mem::zeroed::<libc::statx>() };
     extended.stx_mask = libc::STATX_BASIC_STATS;
@@ -10381,7 +10412,7 @@ fn path_stat(
     state: &LoadedStaticElf,
     args: &[u64; 6],
     flags: libc::c_int,
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
     fstatat_impl(
         memory,
@@ -10390,7 +10421,7 @@ fn path_stat(
         args[0],
         args[1],
         flags,
-        capture_output,
+        capture,
     )
 }
 
@@ -10398,7 +10429,7 @@ fn newfstatat(
     memory: &mut GuestMemory,
     state: &LoadedStaticElf,
     args: &[u64; 6],
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
     fstatat_impl(
         memory,
@@ -10407,7 +10438,7 @@ fn newfstatat(
         args[1],
         args[2],
         args[3] as libc::c_int,
-        capture_output,
+        capture,
     )
 }
 
@@ -10418,7 +10449,7 @@ fn fstatat_impl(
     path_address: u64,
     output_address: u64,
     flags: libc::c_int,
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
     let path = match read_c_string(memory, path_address, 4096) {
         Ok(path) => path,
@@ -10436,7 +10467,7 @@ fn fstatat_impl(
             Ok(target) => target,
             Err(error) => return error,
         };
-        if let Err(error) = fdinfo_target_generation(state, tid, fd, capture_output) {
+        if let Err(error) = fdinfo_target_generation(state, tid, fd, capture.is_some()) {
             return error;
         }
         let path = format!("/proc/{tid}/fdinfo/{fd}");
@@ -10470,13 +10501,13 @@ fn fstatat_impl(
         .map(|metadata| metadata.guest_fd)
         .or_else(|| (path.is_empty() && guest_dirfd != libc::AT_FDCWD).then_some(guest_dirfd));
     if let Some(fd) = descriptor
-        && capture_output
-        && output_alias(state, fd).is_some()
+        && let Some(capture) = capture
+        && let Some(alias) = output_alias(state, fd)
     {
         return write_struct(
             memory,
             output_address,
-            &synthetic_captured_output_stat(state, fd),
+            &synthetic_captured_output_stat(capture.identity(alias)),
         );
     }
     let executable = if flags & libc::AT_SYMLINK_NOFOLLOW == 0 {
@@ -10560,7 +10591,7 @@ fn statx(
     memory: &mut GuestMemory,
     state: &LoadedStaticElf,
     args: &[u64; 6],
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
     let path = match read_c_string(memory, args[1], 4096) {
         Ok(path) => path,
@@ -10587,7 +10618,7 @@ fn statx(
             Ok(target) => target,
             Err(error) => return error,
         };
-        if let Err(error) = fdinfo_target_generation(state, tid, fd, capture_output) {
+        if let Err(error) = fdinfo_target_generation(state, tid, fd, capture.is_some()) {
             return error;
         }
         let path = format!("/proc/{tid}/fdinfo/{fd}");
@@ -10639,18 +10670,22 @@ fn statx(
             .then_some(args[0] as libc::c_int)
     });
     if let Some(fd) = descriptor
-        && capture_output
-        && output_alias(state, fd).is_some()
+        && let Some(capture) = capture
+        && let Some(alias) = output_alias(state, fd)
     {
         // Ordinary objects continue through the native statx call below. The
-        // capture sink has no corresponding host object; validate the kernel's
+        // capture sink synthesizes fields beyond its reserved identity; validate the kernel's
         // reserved mask bit and mutually exclusive synchronization flags here.
         if args[3] as libc::c_uint & 0x8000_0000 != 0
             || flags & libc::AT_STATX_SYNC_TYPE == libc::AT_STATX_SYNC_TYPE
         {
             return negative_errno(libc::EINVAL);
         }
-        return write_struct(memory, args[4], &synthetic_captured_output_statx(state, fd));
+        return write_struct(
+            memory,
+            args[4],
+            &synthetic_captured_output_statx(capture.identity(alias)),
+        );
     }
     let opened_file;
     let host_fd = if let Some(metadata) = guest_path {
@@ -12151,6 +12186,7 @@ fn guest_fd_object_identity(
         })
 }
 
+#[cfg(test)]
 fn synthetic_guest_fd_object_inode(state: &LoadedStaticElf, guest_fd: libc::c_int) -> u64 {
     guest_fd_object_identity(state, guest_fd).inode
 }
@@ -13869,7 +13905,7 @@ fn readlink(
     memory: &mut GuestMemory,
     state: &LoadedStaticElf,
     args: &[u64; 6],
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
     readlink_at_impl(
         memory,
@@ -13878,7 +13914,7 @@ fn readlink(
         args[0],
         args[1],
         args[2],
-        capture_output,
+        capture,
     )
 }
 
@@ -13887,7 +13923,7 @@ fn readlinkat(
     memory: &mut GuestMemory,
     state: &LoadedStaticElf,
     args: &[u64; 6],
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
     readlink_at_impl(
         memory,
@@ -13896,7 +13932,7 @@ fn readlinkat(
         args[1],
         args[2],
         args[3],
-        capture_output,
+        capture,
     )
 }
 
@@ -13908,7 +13944,7 @@ fn readlink_at_impl(
     path_address: u64,
     output_address: u64,
     raw_capacity: u64,
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
     let path = match read_c_string(memory, path_address, 4096) {
         Ok(path) => path,
@@ -13923,7 +13959,7 @@ fn readlink_at_impl(
     let capacity = requested_capacity.min(MAX_HOST_IO);
 
     if let Some(guest_fd) = guest_fd_path(state, &path) {
-        let target = match guest_fd_link_target(state, guest_fd, capture_output) {
+        let target = match guest_fd_link_target(state, guest_fd, capture) {
             Ok(target) => target,
             Err(error) => return error,
         };
@@ -15215,6 +15251,7 @@ mod tests {
 
     static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(0);
 
+    include!("capture_identity_tests.rs");
     include!("pipe_fionread_tests.rs");
     include!("child_exit_signal_tests.rs");
     include!("process_alarm_signal_tests.rs");
@@ -16553,8 +16590,13 @@ mod tests {
                 }
             ));
             let stat: libc::stat = read_struct(&memory, address);
-            assert_eq!(stat.st_dev, synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR));
-            assert_eq!(stat.st_ino, synthetic_guest_fd_object_inode(&state, fd));
+            let identity = output
+                .metadata()
+                .identity(output_alias(&state, fd).unwrap());
+            assert_eq!(
+                (stat.st_dev, stat.st_ino),
+                (identity.device, identity.inode)
+            );
             assert_eq!(stat.st_mode, libc::S_IFIFO | 0o600);
             assert_eq!(stat.st_size, 0);
             assert_eq!(stat.st_blocks, 0);
@@ -25011,12 +25053,12 @@ mod tests {
     fn metadata_call(
         memory: &mut GuestMemory,
         state: &mut LoadedStaticElf,
-        capture: bool,
+        capture: Option<&mut CapturedOutput>,
         number: libc::c_long,
         args: [u64; 6],
     ) -> i64 {
-        if capture {
-            syscall_result_with_output(memory, state, &mut CapturedOutput::default(), number, args)
+        if let Some(output) = capture {
+            syscall_result_with_output(memory, state, output, number, args)
         } else {
             syscall_result(memory, state, number, args)
         }
@@ -25026,7 +25068,7 @@ mod tests {
         memory: &mut GuestMemory,
         state: &mut LoadedStaticElf,
         fd: libc::c_int,
-        capture: bool,
+        mut capture: Option<&mut CapturedOutput>,
     ) -> libc::stat {
         const PATH: u64 = 0x100;
         const STAT: u64 = 0x800;
@@ -25035,7 +25077,7 @@ mod tests {
             metadata_call(
                 memory,
                 state,
-                capture,
+                capture.as_deref_mut(),
                 libc::SYS_fstat,
                 [fd as u64, STAT, 0, 0, 0, 0]
             ),
@@ -25059,7 +25101,7 @@ mod tests {
                 metadata_call(
                     memory,
                     state,
-                    capture,
+                    capture.as_deref_mut(),
                     libc::SYS_newfstatat,
                     [dirfd as u64, PATH, STAT, flags as u64, 0, 0]
                 ),
@@ -25081,7 +25123,7 @@ mod tests {
                 metadata_call(
                     memory,
                     state,
-                    capture,
+                    capture.as_deref_mut(),
                     libc::SYS_statx,
                     [
                         dirfd as u64,
@@ -25121,7 +25163,7 @@ mod tests {
                     metadata_call(
                         memory,
                         state,
-                        capture,
+                        capture.as_deref_mut(),
                         libc::SYS_stat,
                         [PATH, STAT, 0, 0, 0, 0]
                     ),
@@ -27224,10 +27266,10 @@ mod tests {
         assert!(fd >= 0 && reopened >= 0 && distinct >= 0 && duplicate >= 0);
         let native = file_identity_stat(state.files.get(&fd).unwrap()).unwrap();
         for alias in [fd, reopened, duplicate] {
-            let stat = assert_descriptor_stat_routes(&mut memory, &mut state, alias, false);
+            let stat = assert_descriptor_stat_routes(&mut memory, &mut state, alias, None);
             assert_eq!((stat.st_dev, stat.st_ino), (native.st_dev, native.st_ino));
         }
-        let other_stat = assert_descriptor_stat_routes(&mut memory, &mut state, distinct, false);
+        let other_stat = assert_descriptor_stat_routes(&mut memory, &mut state, distinct, None);
         assert_ne!(
             (other_stat.st_dev, other_stat.st_ino),
             (native.st_dev, native.st_ino)
@@ -27241,12 +27283,12 @@ mod tests {
             ),
             i64::from(fd)
         );
-        let replaced = assert_descriptor_stat_routes(&mut memory, &mut state, fd, false);
+        let replaced = assert_descriptor_stat_routes(&mut memory, &mut state, fd, None);
         assert_eq!(
             (replaced.st_dev, replaced.st_ino),
             (other_stat.st_dev, other_stat.st_ino)
         );
-        let retained = assert_descriptor_stat_routes(&mut memory, &mut state, duplicate, false);
+        let retained = assert_descriptor_stat_routes(&mut memory, &mut state, duplicate, None);
         assert_eq!(
             (retained.st_dev, retained.st_ino),
             (native.st_dev, native.st_ino)
@@ -27259,7 +27301,7 @@ mod tests {
             None,
         ) as i32;
         assert_eq!(reused, fd);
-        let after_close = assert_descriptor_stat_routes(&mut memory, &mut state, reused, false);
+        let after_close = assert_descriptor_stat_routes(&mut memory, &mut state, reused, None);
         assert_eq!(
             (after_close.st_dev, after_close.st_ino),
             (native.st_dev, native.st_ino)
@@ -27289,7 +27331,7 @@ mod tests {
             assert_eq!(syscall_result(&mut memory, &mut state, number, args), 0);
             let fds: [i32; 2] = read_struct(&memory, 0x1800);
             for fd in fds {
-                let stat = assert_descriptor_stat_routes(&mut memory, &mut state, fd, false);
+                let stat = assert_descriptor_stat_routes(&mut memory, &mut state, fd, None);
                 let native = file_identity_stat(state.files.get(&fd).unwrap()).unwrap();
                 assert_eq!((stat.st_dev, stat.st_ino), (native.st_dev, native.st_ino));
                 let expected = format!("{kind}:[{}]", native.st_ino).into_bytes();
@@ -27312,6 +27354,7 @@ mod tests {
 
     #[test]
     fn captured_output_stat_and_link_routes_preserve_the_capture_sink() {
+        let mut output = CapturedOutput::default();
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
@@ -27324,20 +27367,26 @@ mod tests {
             Some(OutputAlias::Stdout),
         ) as i32;
         assert!(alias >= 0);
-        let ordinary = assert_descriptor_stat_routes(&mut memory, &mut state, alias, false);
+        let ordinary = assert_descriptor_stat_routes(&mut memory, &mut state, alias, None);
         assert_eq!(ordinary.st_mode & libc::S_IFMT, libc::S_IFREG);
         for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO, alias] {
-            let captured = assert_descriptor_stat_routes(&mut memory, &mut state, fd, true);
+            let captured =
+                assert_descriptor_stat_routes(&mut memory, &mut state, fd, Some(&mut output));
             assert_eq!(captured.st_mode & libc::S_IFMT, libc::S_IFIFO);
             assert_eq!(captured.st_size, 0);
-            assert_eq!(captured.st_dev, synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR));
-            assert_eq!(captured.st_ino, synthetic_guest_fd_object_inode(&state, fd));
+            let identity = output
+                .metadata()
+                .identity(output_alias(&state, fd).unwrap());
+            assert_eq!(
+                (captured.st_dev, captured.st_ino),
+                (identity.device, identity.inode)
+            );
             write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{fd}"));
             let expected = format!("pipe:[{}]", captured.st_ino).into_bytes();
             let count = metadata_call(
                 &mut memory,
                 &mut state,
-                true,
+                Some(&mut output),
                 libc::SYS_readlinkat,
                 [libc::AT_FDCWD as u64, 0x100, 0x2000, 256, 0, 0],
             );
@@ -27349,7 +27398,7 @@ mod tests {
                 metadata_call(
                     &mut memory,
                     &mut state,
-                    true,
+                    Some(&mut output),
                     libc::SYS_lstat,
                     [0x100, 0x800, 0, 0, 0, 0]
                 ),
@@ -27362,6 +27411,7 @@ mod tests {
 
     #[test]
     fn proc_fd_statx_preserves_native_masks_and_error_results() {
+        let mut output = CapturedOutput::default();
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
@@ -27402,7 +27452,7 @@ mod tests {
             let actual = metadata_call(
                 &mut memory,
                 &mut state,
-                false,
+                None,
                 libc::SYS_statx,
                 [
                     libc::AT_FDCWD as u64,
@@ -27428,7 +27478,7 @@ mod tests {
                     metadata_call(
                         &mut memory,
                         &mut state,
-                        true,
+                        Some(&mut output),
                         libc::SYS_statx,
                         [
                             libc::AT_FDCWD as u64,
@@ -39548,7 +39598,7 @@ mod tests {
                 0x100,
                 0x1000,
                 4096,
-                false,
+                None,
             );
             assert!((0..4096).contains(&count));
             let mut output = [0; 4096];
