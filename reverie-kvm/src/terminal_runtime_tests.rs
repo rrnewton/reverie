@@ -166,7 +166,7 @@ fn terminal_exit_retires_only_current_identity_and_preserves_existing_status() {
 // can tail out of a timestamp callback without a syscall return transport.
 #[test]
 fn timestamp_exit_admission_preserves_returning_ordinary_injections() {
-    let context = ProcessExecutionContext::Timestamp;
+    let context = ProcessExecutionContext::Instruction;
     for (number, tail, ordinary) in [
         (libc::SYS_exit, true, true),
         (libc::SYS_exit_group, true, true),

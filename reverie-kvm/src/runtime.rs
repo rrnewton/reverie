@@ -254,6 +254,10 @@ pub(crate) struct ToolContext<'a, T: Tool> {
 trait GuestSyscallExecutor<T: Tool>: Send + Sync {
     fn read_clock(&self) -> Result<u64>;
 
+    fn has_cpuid_interception(&self) -> bool {
+        false
+    }
+
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64;
 
     /// Reserve backend bookkeeping before executing an injected syscall.
@@ -422,7 +426,7 @@ enum ProcessExecutionContext {
     InitialExec(SyscallRequest),
     InitialExecCompleted,
     Lifecycle,
-    Timestamp,
+    Instruction,
     ThreadEntrySignal,
     SignalBoundary(CompletedSyscallBoundary),
     FaultBoundary(Box<PageZeroFault>),
@@ -443,7 +447,7 @@ impl ProcessExecutionContext {
     }
 
     fn tail_injection_allowed(&self, request: &SyscallRequest) -> bool {
-        if matches!(self, Self::Timestamp) {
+        if matches!(self, Self::Instruction) {
             // Terminal exits do not need a syscall return frame. Every other
             // tail still requires a transport that can consume its result.
             return injection_is_explicit_exit(request);
@@ -455,12 +459,12 @@ impl ProcessExecutionContext {
     }
 
     fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
-        if matches!(self, Self::Timestamp) && injection_is_explicit_exit(request) {
+        if matches!(self, Self::Instruction) && injection_is_explicit_exit(request) {
             // inject() itself is nonreturning once the real exit is staged;
             // tail_inject() uses that same path and both executor preflights.
             return true;
         }
-        if matches!(self, Self::ThreadEntrySignal | Self::Timestamp) {
+        if matches!(self, Self::ThreadEntrySignal | Self::Instruction) {
             // There is a real user continuation, but no consumed syscall
             // transport to restore after an injected process action.
             return !injection_can_be_nonreturning(request)
@@ -574,6 +578,10 @@ where
         self.backend.vcpu.read_clock()
     }
 
+    fn has_cpuid_interception(&self) -> bool {
+        self.backend.has_cpuid_interception()
+    }
+
     fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
         self.backend
             .tool_failure
@@ -591,7 +599,7 @@ where
         }
         if matches!(
             self.process_context,
-            ProcessExecutionContext::Lifecycle | ProcessExecutionContext::Timestamp
+            ProcessExecutionContext::Lifecycle | ProcessExecutionContext::Instruction
         ) && let Some(result) = self
             .executor
             .lifecycle_signal_mask_preflight(request, memory)
@@ -913,8 +921,8 @@ where
                     ProcessExecutionContext::InitialExecCompleted => unreachable!(
                         "synthetic initial exec completes before process actions are inspected"
                     ),
-                    ProcessExecutionContext::Timestamp => Err(Error::UnexpectedVcpuExit(
-                        "process injection from a timestamp callback is unsupported".to_owned(),
+                    ProcessExecutionContext::Instruction => Err(Error::UnexpectedVcpuExit(
+                        "process injection from an instruction callback is unsupported".to_owned(),
                     )),
                     ProcessExecutionContext::ThreadEntrySignal => Err(Error::UnexpectedVcpuExit(
                         "process injection from a thread-entry signal hook is unsupported"
@@ -1089,6 +1097,10 @@ impl<T: Tool> GlobalRPC<T::GlobalState> for KvmGuest<'_, T> {
 
 #[reverie::tool]
 impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
+    fn has_cpuid_interception(&self) -> bool {
+        self.executor.has_cpuid_interception()
+    }
+
     type Memory = GuestMemory;
     type Stack = KvmStack;
 
@@ -2344,9 +2356,10 @@ impl KvmBackend {
         T: Tool,
         E: SyscallExecutor,
     {
-        // This public non-ELF loop has no timestamp consumer. Establish its
+        // This public non-ELF loop has no instruction consumer. Establish its
         // ownership locally even if the vCPU previously ran a subscribed Tool.
         self.set_rdtsc_interception(false)?;
+        self.set_cpuid_interception(false)?;
         self.vcpu.track_clock()?;
         let tool_stack_top = self.tool_stack_top();
         let pid = Pid::from_raw(self.root_pid);
@@ -2949,6 +2962,7 @@ impl KvmBackend {
             // any user instruction. New fork/thread vCPUs start unarmed; the
             // tool-less Host worker loop never inherits trapping without a hook.
             self.set_rdtsc_interception(subscriptions.has_rdtsc())?;
+            self.set_cpuid_interception(subscriptions.has_cpuid())?;
             self.vcpu.track_clock()?;
             _registration = Some(self.register_guest_thread()?);
             let registers = kvm_registers(self.vcpu.get_regs()?, 0);
@@ -3171,9 +3185,8 @@ impl KvmBackend {
                         (exit.args[0], std::ptr::from_mut(exit.ret) as usize)
                     }
                     VcpuExit::Hlt => {
-                        if let Some(boundary) = self.timestamp_counter_exception()? {
-                            let request = boundary.instruction.request;
-                            executor.set_current_user_stack_pointer(boundary.registers.rsp);
+                        if let Some(boundary) = self.tool_instruction_exception()? {
+                            executor.set_current_user_stack_pointer(boundary.user_registers().rsp);
                             let handler_signal = Arc::new(Mutex::new(None));
                             let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
                             let mut process_completed = false;
@@ -3183,7 +3196,7 @@ impl KvmBackend {
                                     backend: self,
                                     executor,
                                     memory: memory.clone(),
-                                    process_context: ProcessExecutionContext::Timestamp,
+                                    process_context: ProcessExecutionContext::Instruction,
                                     callback_site: None,
                                     original_syscall: None,
                                     signal_guard: SignalGuard::Ordinary,
@@ -3209,7 +3222,28 @@ impl KvmBackend {
                                     stack_checked_out.clone(),
                                 );
                                 drive_handler(
-                                    tool.handle_rdtsc_event(&mut guest, request),
+                                    async {
+                                        match &boundary {
+                                            crate::vm::ToolInstructionBoundary::Timestamp(
+                                                boundary,
+                                            ) => tool
+                                                .handle_rdtsc_event(
+                                                    &mut guest,
+                                                    boundary.instruction.request,
+                                                )
+                                                .await
+                                                .map(crate::vm::ToolInstructionResult::Timestamp),
+                                            crate::vm::ToolInstructionBoundary::Cpuid(boundary) => {
+                                                tool.handle_cpuid_event(
+                                                    &mut guest,
+                                                    boundary.registers.rax as u32,
+                                                    boundary.registers.rcx as u32,
+                                                )
+                                                .await
+                                                .map(crate::vm::ToolInstructionResult::Cpuid)
+                                            }
+                                        }
+                                    },
                                     handler_signal,
                                     pending_child_starts,
                                     wait_for_failure(
@@ -3249,13 +3283,14 @@ impl KvmBackend {
                                     hidden?;
                                     let exit = executor.take_exit().ok_or_else(|| {
                                         Error::UnexpectedVcpuExit(
-                                            "terminal timestamp injection lost its exit".to_owned(),
+                                            "terminal instruction injection lost its exit"
+                                                .to_owned(),
                                         )
                                     })?;
                                     if exit.group {
                                         self.request_guest_thread_group_exit(exit.status);
                                     }
-                                    // The original timestamp never resumes. Normal
+                                    // The original instruction never resumes. Normal
                                     // retirement and consuming hooks own cleanup.
                                     return Ok(exit.into());
                                 }
@@ -3263,7 +3298,7 @@ impl KvmBackend {
                                 | HandlerOutcome::ParkedFatal(_)
                                 | HandlerOutcome::ParkedCancelled(_) => {
                                     return Err(Error::UnexpectedVcpuExit(
-                                        "nonreturning timestamp callback outcome".to_owned(),
+                                        "nonreturning instruction callback outcome".to_owned(),
                                     )
                                     .with_cleanup(hidden.err().into_iter().collect()));
                                 }
@@ -3271,14 +3306,14 @@ impl KvmBackend {
                             hidden?;
                             if process_completed {
                                 return Err(Error::UnexpectedVcpuExit(
-                                    "timestamp callback changed the process continuation"
+                                    "instruction callback changed the process continuation"
                                         .to_owned(),
                                 ));
                             }
                             if let Some((segment, address)) = executor.take_segment() {
                                 set_user_segment_base(&self.vcpu, segment, address)?;
                             }
-                            self.resume_timestamp_counter(boundary, value)?;
+                            self.resume_tool_instruction(boundary, value)?;
                             continue;
                         }
                         if self.try_resume_vmware_backdoor_probe()? {

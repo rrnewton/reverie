@@ -18,6 +18,7 @@
 mod bootstrap;
 mod clock;
 mod cpuid;
+mod cpuid_instruction;
 mod elf;
 mod error;
 mod executor;
