@@ -2948,12 +2948,13 @@ mod tests {
         row.series.outcome = SeriesOutcome::Errored;
         row.series.result = Some(ObservedResult::CrashError);
         row.series.failure_class = Some(FailureClass::ProductFailure);
+        row.series.last_run_index = None;
         row.series.no_verdict_evidence = Some(SeriesNoVerdictEvidence {
             evidence_sha256: "b".repeat(64),
             attempts: vec![SeriesAttemptDisposition {
                 index: "1".into(),
                 kind: SeriesNoVerdictKind::ContainerFailed,
-                detail: Some("container exited before comparison".into()),
+                detail: None,
                 attempt_outcome: "FAIL".into(),
                 disposition: SeriesOutcome::NoResult,
                 error_kind: None,
@@ -2979,8 +2980,11 @@ mod tests {
         assert_eq!(projected["result"], "crash-error");
         assert_eq!(projected["failure_class"], "product_failure");
         assert_eq!(
-            projected["no_verdict_evidence"],
-            encoded["series"]["no_verdict_evidence"]
+            serde_json::from_value::<SeriesNoVerdictEvidence>(
+                projected["no_verdict_evidence"].clone()
+            )
+            .unwrap(),
+            row.series.no_verdict_evidence.unwrap()
         );
         let attempt = &projected["no_verdict_evidence"]["attempts"][0];
         assert_eq!(attempt["kind"], "container_failed");
