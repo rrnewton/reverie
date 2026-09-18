@@ -121,6 +121,7 @@ pub struct Builder {
     sample_period: u64,
     precise_ip: u32,
     fast_reads: bool,
+    enable_on_exec: bool,
 }
 
 impl Builder {
@@ -145,6 +146,7 @@ impl Builder {
             sample_period: 0,
             precise_ip: 0,
             fast_reads: false,
+            enable_on_exec: false,
         }
     }
 
@@ -195,6 +197,14 @@ impl Builder {
         self
     }
 
+    /// Start this disabled counter when its task first commits exec. The
+    /// kernel clears the attribute at that transition; later execs keep the
+    /// existing continuous count.
+    pub(crate) fn enable_on_exec(&mut self) -> &mut Self {
+        self.enable_on_exec = true;
+        self
+    }
+
     /// Render the builder into a `PerfCounter`. Created counters begin in a
     /// disabled state. Additional initialization steps should be performed,
     /// followed by a call to [`PerfCounter::enable`].
@@ -218,7 +228,8 @@ impl Builder {
         attr.type_ = self.evt.attr_type();
         attr.config = self.evt.attr_config();
         attr.__bindgen_anon_1.sample_period = self.sample_period;
-        attr.set_disabled(1); // user must enable later
+        attr.set_disabled(1); // manual enable, or the initial command exec transition
+        attr.set_enable_on_exec(u64::from(self.enable_on_exec));
         attr.set_exclude_kernel(1); // we only care about user code
         attr.set_exclude_guest(1);
         attr.set_exclude_hv(1); // unlikely this is supported, but it doesn't hurt
