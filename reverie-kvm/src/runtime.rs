@@ -2613,6 +2613,9 @@ impl KvmBackend {
             // removing Guest on which to acknowledge its pending-state effects.
             return Err(Error::SignalObservationRequiresToolThreads);
         }
+        // Capture setup can fail before image consumption or any Tool state.
+        // Keep this root owner until the later executor and its workers retire.
+        let capture_owner = self.prepare_captured_output(capture_output)?;
         let mut loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
         // Output capture replaces stdout and stderr with the executor's pipes,
         // but an explicitly configured stdin remains the guest's input. Use
@@ -2628,7 +2631,7 @@ impl KvmBackend {
         let tool = Arc::new(T::new(pid, &config));
         let subscriptions = T::subscriptions(&config);
         let thread_state = tool.init_thread_state(pid, None);
-        let mut executor = ElfExecutor::new(loaded, capture_output);
+        let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
         let result = self
             .run_static_elf_process_with_tool(
                 &mut executor,

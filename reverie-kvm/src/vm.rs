@@ -70,6 +70,7 @@ use crate::elf::TaskLifecycleTable;
 use crate::elf::initial_thread_name;
 use crate::elf::load_static_elf;
 use crate::elf::load_static_elf_file;
+use crate::executor::CapturedOutput;
 use crate::executor::ChildCompletion;
 use crate::executor::ChildStartCommand;
 use crate::executor::ChildStartGate;
@@ -3316,17 +3317,33 @@ impl KvmBackend {
     /// Runs the installed static ELF and its forked children until the root exits.
     pub fn run_static_elf(&mut self) -> Result<i32> {
         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
-        let mut executor = ElfExecutor::new(loaded, false);
+        let mut executor = ElfExecutor::with_output(loaded, None);
         let (status, _, _) = self.run_static_elf_process(&mut executor)?;
         Ok(conventional_exit_code(status))
     }
 
     /// Runs the installed ELF process tree and captures its standard output streams.
     pub fn run_static_elf_captured(&mut self) -> Result<(i32, Vec<u8>, Vec<u8>)> {
+        // Declared before the executor so its private pipe identities outlive
+        // executor/child cleanup, including early-return and unwind paths.
+        let capture_owner = self.prepare_captured_output(true)?;
         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
-        let mut executor = ElfExecutor::new(loaded, true);
+        let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
         let (status, stdout, stderr) = self.run_static_elf_process(&mut executor)?;
         Ok((conventional_exit_code(status), stdout, stderr))
+    }
+
+    pub(crate) fn prepare_captured_output(
+        &self,
+        capture_output: bool,
+    ) -> Result<Option<CapturedOutput>> {
+        self.static_elf
+            .as_ref()
+            .ok_or(Error::StaticElfNotInstalled)?;
+        capture_output
+            .then(CapturedOutput::try_new)
+            .transpose()
+            .map_err(Into::into)
     }
 
     fn run_static_elf_process(
