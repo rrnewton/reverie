@@ -22,6 +22,14 @@ OUT="${OUT:-$PWD/tfa_open_stack_probe}"
 # third source, no extra header and no extra link dependency.
 gcc -O2 -g -o "$OUT" tfa_open_stack_probe.c tfa_open_stack_probe.S || exit 1
 echo "built $OUT"
+
+# The open-loop probe: the control arm. It excluded path, symlink and open-count as
+# causes before the stack hypothesis was formed, which is what makes the EFAULT
+# attributable to stack space rather than to the open pattern. Single source, no .S.
+LOOP_OUT="${LOOP_OUT:-$PWD/tfa_open_loop_probe}"
+gcc -O2 -g -o "$LOOP_OUT" tfa_open_loop_probe.c || exit 1
+echo "built $LOOP_OUT"
+
 [ "${1:-}" = "--verify" ] || exit 0
 
 # The probe needs one existing, openable file as its second argument. Any will do --
@@ -39,6 +47,8 @@ for off in 192 512; do
   o=$("$OUT" "$off" "$TARGET" 2>&1); rc=$?
   check "native/$off" 0 "openat raw_rc=3 errno=0" "$rc" "$o"
 done
+o=$("$LOOP_OUT" "$TARGET" 2>&1); rc=$?
+check "native/open-loop" 0 "5000 opens completed" "$rc" "$o"
 
 if [ ! -x "$HERMIT_BIN" ]; then
   echo "hermit arms SKIPPED: $HERMIT_BIN not present -- verification is INCOMPLETE"
@@ -52,11 +62,15 @@ if [ "$got_sha" != "$HERMIT_SHA_EXPECTED" ]; then
 fi
 
 # Every agent-run hermit invocation goes through bin/safehermit (parent AGENTS.md).
-echo "hermit arms (192 must REFUSE, 512 must SUCCEED -- both directions required):"
+echo "hermit arms (192 must REFUSE, 512 and open-loop must SUCCEED):"
 o=$("$SAFEHERMIT" "$HERMIT_BIN" run -- "$OUT" 192 "$TARGET" 2>/dev/null); rc=$?
 check "hermit/192" 1 "openat raw_rc=-14 errno=14" "$rc" "$o"
 o=$("$SAFEHERMIT" "$HERMIT_BIN" run -- "$OUT" 512 "$TARGET" 2>/dev/null); rc=$?
 check "hermit/512" 0 "openat raw_rc=3 errno=0" "$rc" "$o"
+# Control arm: 5,000 open/close cycles must ALL succeed. If this one refuses, the
+# defect is not specific to a tight stack and the bracket above means much less.
+o=$("$SAFEHERMIT" "$HERMIT_BIN" run -- "$LOOP_OUT" "$TARGET" 2>/dev/null); rc=$?
+check "hermit/open-loop" 0 "5000 opens completed" "$rc" "$o"
 
-[ "$fail" -eq 0 ] && echo "ALL FOUR ARMS REPRODUCE" || echo "VERIFICATION FAILED"
+[ "$fail" -eq 0 ] && echo "ALL SIX ARMS REPRODUCE" || echo "VERIFICATION FAILED"
 exit "$fail"
