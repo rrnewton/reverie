@@ -3286,13 +3286,37 @@ def sweep_completed_checkouts(
             )
             continue
         if classify_ownerless_only:
+            # Name the artifact that is ACTUALLY retained. This row is
+            # discovered whenever recorded_cleanup_path_exists() holds, and the
+            # cargo home ALONE satisfies that, so the recorded checkout may
+            # already be gone. Naming it anyway sends the reader looking for a
+            # directory that is not there. Measured on devbig014 2026-09-18:
+            # eighteen consecutive launch refusals named the deleted checkout
+            # validate-fresh-f615104d0df2-3692792-7455f186 while the cargo home
+            # was the artifact holding entry, and the block cleared by itself
+            # once that cargo home was removed -- run record byte-identical,
+            # checkout still absent, an hour spent on the wrong object.
+            blocker = checkout
+            subject = "checkout"
+            absent_detail = ""
+            if not checkout.exists():
+                raw_cargo_home = row.record.get("cargo_home")
+                if isinstance(raw_cargo_home, str):
+                    recorded_cargo_home = Path(raw_cargo_home).resolve()
+                    if recorded_cargo_home.exists():
+                        blocker = recorded_cargo_home
+                        subject = "cargo home"
+                        absent_detail = (
+                            f"; the recorded checkout {checkout} is already absent"
+                        )
             retained.append(
                 {
                     "blocks_entry": True,
-                    "checkout": str(checkout),
+                    "checkout": str(blocker),
                     "reason": (
-                        "terminal validation checkout remains retained; read-only "
+                        f"terminal validation {subject} remains retained; read-only "
                         "entry classification did not archive or remove it"
+                        f"{absent_detail}"
                     ),
                 }
             )

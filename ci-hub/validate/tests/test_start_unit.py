@@ -2295,6 +2295,76 @@ class StartUnitTest(unittest.TestCase):
                 self.assertTrue(checkout.is_dir())
                 self.assertTrue(cargo_home.is_dir())
 
+    def entry_classification(self) -> dict[str, Any]:
+        prospective_slot = "validate-fresh-next-run"
+        return start_unit.sweep_completed_checkouts(
+            self.root,
+            run=self.fake,
+            tool_root=self.root,
+            classify_ownerless_only=True,
+            prospective_slot=prospective_slot,
+            prospective_checkout=self.root / "worktrees/validate" / prospective_slot,
+        )
+
+    def test_entry_blocker_names_the_artifact_that_still_exists(self) -> None:
+        """The blocking row must name the path that is actually retained.
+
+        Measured on devbig014 2026-09-18, and this cost an hour of
+        misdirection. Run record
+        validate-main-dev-hermit-f615104d0df2-20260918T035200Z.json (RUN 1861,
+        state=completed) blocked full-profile admission for eighteen
+        consecutive launch attempts. The refusal named
+
+            1 retained checkout(s) ... first retained:
+            worktrees/validate/validate-fresh-f615104d0df2-3692792-7455f186
+
+        and THAT DIRECTORY DID NOT EXIST. The row was discovered only because
+        `recorded_cleanup_path_exists` was still true for its CARGO HOME, which
+        was removed at 09:16:28Z -- at which point the block cleared on its own,
+        with the run record byte-identical and the checkout still absent.
+
+        So the message pointed at an already-deleted checkout while the artifact
+        genuinely holding entry was the cargo home, which the message never
+        named. An operator following it looks for a directory that is not there.
+        """
+        fresh, record_path = self.managed_cleanup_record("misnamed-blocker")
+        cargo_home = self.root / "ignored/validate/cargo-homes/validate-cargo-misnamed"
+        cargo_home.mkdir(parents=True, exist_ok=True)
+        record = start_unit.run_registry.read_record(record_path)
+        record["cargo_home"] = str(cargo_home)
+        start_unit.run_registry.write_record(record_path, record)
+        shutil.rmtree(fresh)
+        self.assertFalse(fresh.exists())
+        self.assertTrue(cargo_home.is_dir())
+
+        report = self.entry_classification()
+
+        blocking = [item for item in report["retained"] if item.get("blocks_entry")]
+        self.assertEqual(1, len(blocking), report["retained"])
+        named = blocking[0]["checkout"]
+        self.assertTrue(
+            Path(named).exists(),
+            f"entry blocker named {named!r}, which does not exist; the retained "
+            f"artifact is {str(cargo_home)!r}. Blocking row: {blocking[0]!r}",
+        )
+
+    def test_entry_blocker_names_a_present_checkout_unchanged(self) -> None:
+        """Control: when the checkout IS present it must still be the named path.
+
+        Without this, 'name something that exists' could be satisfied by
+        renaming every blocker to the cargo home, and the suite would stay
+        green while the ordinary message got worse.
+        """
+        fresh, _record_path = self.managed_cleanup_record("present-blocker")
+        self.assertTrue(fresh.is_dir())
+
+        report = self.entry_classification()
+
+        self.assertEqual(1, len(report["retained"]), report["retained"])
+        self.assertEqual(str(fresh), report["retained"][0]["checkout"])
+        self.assertTrue(Path(report["retained"][0]["checkout"]).exists())
+        self.assertTrue(fresh.is_dir())
+
     def test_entry_refuses_indeterminate_create_journal_classification(self) -> None:
         checkout, cargo_home, _record_path = self.in_place_cleanup_record(
             "indeterminate-journal", temporary=False, current=True, state="unknown"
