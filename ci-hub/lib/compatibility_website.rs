@@ -2460,6 +2460,7 @@ fn no_verdict_kind_name(value: &SeriesNoVerdictKind) -> &'static str {
         SeriesNoVerdictKind::ComparisonRefused => "comparison_refused",
         SeriesNoVerdictKind::NotRun => "not_run",
         SeriesNoVerdictKind::FirstRunRejected => "first_run_rejected",
+        SeriesNoVerdictKind::ContainerFailed => "container_failed",
         SeriesNoVerdictKind::InfrastructureError => "infrastructure_error",
         SeriesNoVerdictKind::MissingReportTimeout => "missing_report_timeout",
         SeriesNoVerdictKind::NoncanonicalMatch => "noncanonical_match",
@@ -2933,6 +2934,63 @@ mod tests {
         assert_eq!(value["series_rows"].as_array().unwrap().len(), 1);
         assert_eq!(value["series_rows"][0]["producer"], "hermit-repeat");
         assert_eq!(value["validate_run_selection"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn container_failure_projection_retains_crash_and_no_comparison() {
+        let mut row: SeriesRow = serde_json::from_value(series(
+            "container-run",
+            &"d".repeat(40),
+            "event-container-failed",
+        ))
+        .unwrap();
+        row.producer = SeriesProducer::PressureTest;
+        row.series.outcome = SeriesOutcome::Errored;
+        row.series.result = Some(ObservedResult::CrashError);
+        row.series.failure_class = Some(FailureClass::ProductFailure);
+        row.series.no_verdict_evidence = Some(SeriesNoVerdictEvidence {
+            evidence_sha256: "b".repeat(64),
+            attempts: vec![SeriesAttemptDisposition {
+                index: "1".into(),
+                kind: SeriesNoVerdictKind::ContainerFailed,
+                detail: Some("container exited before comparison".into()),
+                attempt_outcome: "FAIL".into(),
+                disposition: SeriesOutcome::NoResult,
+                error_kind: None,
+                status: Some(125),
+                signal: None,
+                timed_out: false,
+                verification_report_sha256: Some("c".repeat(64)),
+            }],
+        });
+        row.validate_for_write().unwrap();
+        let encoded = serde_json::to_value(&row).unwrap();
+        let value = project(
+            &canonical_bytes(&manifest()),
+            "",
+            &jsonl(&[encoded.clone()]),
+            None,
+            |_| Ok(Some(true)),
+        )
+        .unwrap();
+        assert_eq!(value["series_rows"].as_array().unwrap().len(), 1);
+        let projected = &value["series_rows"][0]["series"];
+        assert_eq!(projected["outcome"], "errored");
+        assert_eq!(projected["result"], "crash-error");
+        assert_eq!(projected["failure_class"], "product_failure");
+        assert_eq!(
+            projected["no_verdict_evidence"],
+            encoded["series"]["no_verdict_evidence"]
+        );
+        let attempt = &projected["no_verdict_evidence"]["attempts"][0];
+        assert_eq!(attempt["kind"], "container_failed");
+        assert_eq!(attempt["attempt_outcome"], "FAIL");
+        assert_eq!(attempt["disposition"], "no_result");
+        assert_eq!(attempt["status"], 125);
+        assert_eq!(
+            value["product_results"]["event-container-failed"],
+            "crash-error"
+        );
     }
 
     #[test]
