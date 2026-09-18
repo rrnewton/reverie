@@ -1,0 +1,1 @@
+37:551: operation="physical event partition validated" raw_clock=None detail_bytes=171 detail_prefix="observer=PhysicalObserverId(1) records=2376 physical_statuses=238 successful_resumes=236 explicit_dispositions=2 ordinary_lost=0 cleanup_lost=0 after_close=0 violations=[]"

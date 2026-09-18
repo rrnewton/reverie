@@ -1,0 +1,5 @@
+package	fully_qualified_test_name
+safeptrace-notifier	notifier::test::finished_cleanup_wins_off_ptracer_authority_race
+safeptrace-notifier	notifier::test::duplicate_cleanup_handles_share_unobserved_exit_stop_completion
+safeptrace-notifier	notifier::test::observed_duplicate_cleanup_handles_retry_without_repeating_disposition
+reverie-ptrace	tracer::tests::registered_cleanup_remembers_unobserved_exit_stop_completion

@@ -1,0 +1,33 @@
+Diff in /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace/src/task/after_loader_task.rs:3235:
+             return Ok(());
+         }
+         let regs = task.getregs()?;
+-        config.diagnostics.record("first ordinary guest event after restoration",
+-            self.timer.diagnostic_clock(),
+-            format!(
+-                "tid={} generation={} physical_status={:?} event={} rip={:#x} syscall={}",
+-                task.pid(),
+-                runtime.generation,
+-                task.physical_status_id(),
+-                after_loader_event_summary(event),
+-                regs.rip,
+-                regs.orig_rax
+-            ))
++        config
++            .diagnostics
++            .record(
++                "first ordinary guest event after restoration",
++                self.timer.diagnostic_clock(),
++                format!(
++                    "tid={} generation={} physical_status={:?} event={} rip={:#x} syscall={}",
++                    task.pid(),
++                    runtime.generation,
++                    task.physical_status_id(),
++                    after_loader_event_summary(event),
++                    regs.rip,
++                    regs.orig_rax
++                ),
++            )
+             .map_err(|_| Errno::EOVERFLOW)?;
+         runtime.after_loader_guest_observed = true;
+         Ok(())

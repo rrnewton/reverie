@@ -1,0 +1,16 @@
+set -o noclobber
+candidate_log=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/ignored/dev-hermit-15-liteinst-signal-freeze-696f0cc5/candidate-08/run/candidate-08.log
+candidate_exit=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/ignored/dev-hermit-15-liteinst-signal-freeze-696f0cc5/candidate-08/run/candidate-08.exit
+if [ -e "$candidate_log" ] || [ -e "$candidate_exit" ]; then
+    exit 125
+fi
+(
+    ulimit -c 0
+    ulimit -f 8192
+    exec env TMPDIR=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/ignored/dev-hermit-15-liteinst-signal-freeze-696f0cc5/candidate-08/run/tmp CC=cc REVERIE_LITEINST_AFTER_LOADER_RUNTIME=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/ignored/dev-hermit-15-liteinst-signal-freeze-696f0cc5/candidate-08/stage-v2/libreverie_liteinst.so REVERIE_LITEINST_AFTER_LOADER_MARKER=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-signal-freeze-696f0cc5/candidate-08/stage-v2/runtime.marker REVERIE_LITEINST_AFTER_LOADER_GRAPH=/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-signal-freeze-696f0cc5/candidate-08/stage-v2/graph.manifest timeout --signal=TERM --kill-after=5s 45s /home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/ignored/dev-hermit-15-liteinst-signal-freeze-696f0cc5/candidate-08/run/after_loader-test --exact constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks --nocapture
+) > "$candidate_log" 2>&1
+candidate_rc=$?
+if ! printf '%s\n' "$candidate_rc" > "$candidate_exit"; then
+    exit 126
+fi
+exit "$candidate_rc"

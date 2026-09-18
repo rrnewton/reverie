@@ -1,0 +1,376 @@
+warning: function `waitpidfd` is never used
+  --> safeptrace/src/waitid.rs:78:8
+   |
+78 | pub fn waitpidfd(raw_fd: RawFd, flags: WaitPidFlag) -> Result<Option<i32>, Errno> {
+   |        ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `safeptrace` (lib) generated 1 warning
+warning: variable does not need to be mutable
+    --> reverie-ptrace/src/task.rs:4618:13
+     |
+4618 |         let mut wait = match running.next_state().await {
+     |             ----^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `liteinst_activation_failure_reason` is never used
+   --> reverie-ptrace/src/error.rs:140:15
+    |
+140 | pub(crate) fn liteinst_activation_failure_reason(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `liteinst_root_runtime` is never used
+    --> reverie-ptrace/src/task.rs:5068:8
+     |
+1916 | impl<L: Tool + 'static> TracedTask<L> {
+     | ------------------------------------- method in this implementation
+...
+5068 |     fn liteinst_root_runtime(&self, task: &Stopped) -> Option<&LiteinstRuntimeConfig> {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `HOST_HELPER_STACK_BYTES` is never used
+  --> reverie-ptrace/src/task/after_loader_task.rs:34:7
+   |
+34 | const HOST_HELPER_STACK_BYTES: u64 = 256 * 1024;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `guest_pid` and `guest_tid` are never used
+   --> reverie-ptrace/src/timer.rs:457:19
+    |
+452 | impl PrivateExecutionTimerSuspension {
+    | ------------------------------------ methods in this implementation
+...
+457 |     pub(crate) fn guest_pid(&self) -> Pid {
+    |                   ^^^^^^^^^
+...
+461 |     pub(crate) fn guest_tid(&self) -> Tid {
+    |                   ^^^^^^^^^
+
+warning: constant `FUNCTION_OFFSET` is never used
+  --> reverie-ptrace/src/vdso/getrandom_x86_64.rs:37:18
+   |
+37 | pub(super) const FUNCTION_OFFSET: usize = 0x1050;
+   |                  ^^^^^^^^^^^^^^^
+
+warning: method `liteinst_root_runtime` is never used
+    --> reverie-ptrace/src/task.rs:5068:8
+     |
+1916 | impl<L: Tool + 'static> TracedTask<L> {
+     | ------------------------------------- method in this implementation
+...
+5068 |     fn liteinst_root_runtime(&self, task: &Stopped) -> Option<&LiteinstRuntimeConfig> {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `reverie-ptrace` (lib) generated 6 warnings (run `cargo fix --lib -p reverie-ptrace` to apply 1 suggestion)
+warning: `reverie-ptrace` (lib test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (target/debug/deps/reverie_ptrace-ed31c6fcd03692ed)
+
+running 1 test
+
+thread 'target_loader::environment::tests::target_graph_refuses_interposition_copy_and_wrong_bss_geometry' (3059707) panicked at reverie-ptrace/src/target_loader/environment/tests.rs:700:5:
+COPY relocation was accepted: Ok(
+    TargetEnvironmentGraph {
+        tid: 101,
+        start_ticks: 202,
+        executable_phdr: 4194368,
+        libc_link_map: 9437504,
+        libc_load_bias: 7340032,
+        libc_mapping_identity: (
+            0,
+            2,
+            2,
+        ),
+        getenv_address: 7344448,
+        aliases: [
+            TargetEnvironmentAlias {
+                name: "environ",
+                address: 7354368,
+                strong: false,
+            },
+            TargetEnvironmentAlias {
+                name: "_environ",
+                address: 7354368,
+                strong: false,
+            },
+            TargetEnvironmentAlias {
+                name: "__environ",
+                address: 7354368,
+                strong: true,
+            },
+        ],
+        relocations: [
+            TargetEnvironmentRelocation {
+                link_map: 9437504,
+                load_bias: 7340032,
+                dynamic: 7348480,
+                symbol: "__environ",
+                slot: 7348736,
+                value: 7354368,
+                addend: 0,
+                mappings: [
+                    TargetEnvironmentMapping {
+                        start: 7348224,
+                        end: 7352320,
+                        offset: 8192,
+                        identity: (
+                            0,
+                            2,
+                            2,
+                        ),
+                        read: true,
+                        write: true,
+                        execute: false,
+                        private: true,
+                    },
+                ],
+            },
+        ],
+        getenv_got: TargetEnvironmentRelocation {
+            link_map: 9437504,
+            load_bias: 7340032,
+            dynamic: 7348480,
+            symbol: "__environ",
+            slot: 7348736,
+            value: 7354368,
+            addend: 0,
+            mappings: [
+                TargetEnvironmentMapping {
+                    start: 7348224,
+                    end: 7352320,
+                    offset: 8192,
+                    identity: (
+                        0,
+                        2,
+                        2,
+                    ),
+                    read: true,
+                    write: true,
+                    execute: false,
+                    private: true,
+                },
+            ],
+        },
+        writable_load: TargetEnvironmentLoad {
+            elf_start: 7348224,
+            file_end: 7349248,
+            memory_end: 7356416,
+            mapped_file_start: 7348224,
+            mapped_file_end: 7352320,
+            mapped_memory_end: 7356416,
+            mappings: [
+                TargetEnvironmentMapping {
+                    start: 7348224,
+                    end: 7352320,
+                    offset: 8192,
+                    identity: (
+                        0,
+                        2,
+                        2,
+                    ),
+                    read: true,
+                    write: true,
+                    execute: false,
+                    private: true,
+                },
+                TargetEnvironmentMapping {
+                    start: 7352320,
+                    end: 7356416,
+                    offset: 0,
+                    identity: (
+                        0,
+                        0,
+                        0,
+                    ),
+                    read: true,
+                    write: true,
+                    execute: false,
+                    private: true,
+                },
+            ],
+        },
+        environ_object: TargetEnvironmentWord {
+            address: 7354368,
+            bytes: [
+                0,
+                4,
+                144,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ],
+            value: 9438208,
+            mappings: [
+                TargetEnvironmentMapping {
+                    start: 7352320,
+                    end: 7356416,
+                    offset: 0,
+                    identity: (
+                        0,
+                        0,
+                        0,
+                    ),
+                    read: true,
+                    write: true,
+                    execute: false,
+                    private: true,
+                },
+            ],
+        },
+        pointer_array_address: 9438208,
+        pointer_array_bytes: [
+            0,
+            5,
+            144,
+            0,
+            0,
+            0,
+            0,
+            0,
+            6,
+            5,
+            144,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
+        pointer_array_mappings: [
+            TargetEnvironmentMapping {
+                start: 9437184,
+                end: 9441280,
+                offset: 0,
+                identity: (
+                    0,
+                    0,
+                    0,
+                ),
+                read: true,
+                write: true,
+                execute: false,
+                private: true,
+            },
+        ],
+        entries: [
+            TargetEnvironmentEntry {
+                pointer_slot: 9438208,
+                string_address: 9438464,
+                bytes: [
+                    65,
+                    61,
+                    111,
+                    110,
+                    101,
+                    0,
+                ],
+                key: [
+                    65,
+                ],
+                value: [
+                    111,
+                    110,
+                    101,
+                ],
+                mappings: [
+                    TargetEnvironmentMapping {
+                        start: 9437184,
+                        end: 9441280,
+                        offset: 0,
+                        identity: (
+                            0,
+                            0,
+                            0,
+                        ),
+                        read: true,
+                        write: true,
+                        execute: false,
+                        private: true,
+                    },
+                ],
+            },
+            TargetEnvironmentEntry {
+                pointer_slot: 9438216,
+                string_address: 9438470,
+                bytes: [
+                    66,
+                    61,
+                    116,
+                    119,
+                    111,
+                    0,
+                ],
+                key: [
+                    66,
+                ],
+                value: [
+                    116,
+                    119,
+                    111,
+                ],
+                mappings: [
+                    TargetEnvironmentMapping {
+                        start: 9437184,
+                        end: 9441280,
+                        offset: 0,
+                        identity: (
+                            0,
+                            0,
+                            0,
+                        ),
+                        read: true,
+                        write: true,
+                        execute: false,
+                        private: true,
+                    },
+                ],
+            },
+        ],
+        parsed: {
+            [
+                65,
+            ]: [
+                111,
+                110,
+                101,
+            ],
+            [
+                66,
+            ]: [
+                116,
+                119,
+                111,
+            ],
+        },
+        bookkeeping: None,
+    },
+)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test target_loader::environment::tests::target_graph_refuses_interposition_copy_and_wrong_bss_geometry ... FAILED
+
+failures:
+
+failures:
+    target_loader::environment::tests::target_graph_refuses_interposition_copy_and_wrong_bss_geometry
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 279 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p reverie-ptrace --lib`

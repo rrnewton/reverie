@@ -1,0 +1,354 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+warning: function `waitpidfd` is never used
+  --> safeptrace/src/waitid.rs:78:8
+   |
+78 | pub fn waitpidfd(raw_fd: RawFd, flags: WaitPidFlag) -> Result<Option<i32>, Errno> {
+   |        ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `safeptrace` (lib) generated 1 warning
+warning: variable does not need to be mutable
+    --> reverie-ptrace/src/task.rs:4618:13
+     |
+4618 |         let mut wait = match running.next_state().await {
+     |             ----^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `liteinst_root_runtime` is never used
+    --> reverie-ptrace/src/task.rs:5068:8
+     |
+1916 | impl<L: Tool + 'static> TracedTask<L> {
+     | ------------------------------------- method in this implementation
+...
+5068 |     fn liteinst_root_runtime(&self, task: &Stopped) -> Option<&LiteinstRuntimeConfig> {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `HOST_HELPER_STACK_BYTES` is never used
+  --> reverie-ptrace/src/task/after_loader_task.rs:34:7
+   |
+34 | const HOST_HELPER_STACK_BYTES: u64 = 256 * 1024;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `guest_pid` and `guest_tid` are never used
+   --> reverie-ptrace/src/timer.rs:457:19
+    |
+452 | impl PrivateExecutionTimerSuspension {
+    | ------------------------------------ methods in this implementation
+...
+457 |     pub(crate) fn guest_pid(&self) -> Pid {
+    |                   ^^^^^^^^^
+...
+461 |     pub(crate) fn guest_tid(&self) -> Tid {
+    |                   ^^^^^^^^^
+
+warning: `reverie-ptrace` (lib test) generated 4 warnings (run `cargo fix --lib -p reverie-ptrace --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/reverie_ptrace-ed31c6fcd03692ed)
+
+running 288 tests
+test after_loader::tests::loader_union_graph_has_exact_initial_and_deferred_closures ... ok
+test after_loader::tests::loader_phase_partition_refuses_missing_and_unreachable_images ... ok
+test entry_call::tests::call_return_rejects_rip_rsp_marker_each_code_byte_and_non_int3_siginfo ... ok
+test entry_call::tests::calls_refuse_a_valid_return_prepared_for_another_entry_image ... ok
+test entry_call::tests::complete_authenticated_calls_preserve_reference_and_defer_ready_until_restored ... ok
+test entry_call::tests::entry_bytes_and_call_address_bounds_are_exact ... ok
+test entry_call::tests::entry_and_call_refuse_each_entry_image_swap ... ok
+test entry_call::tests::entry_refuses_each_missing_bound_identity_field_and_existing_breakpoint ... ok
+test entry_call::tests::handshake_order_duplicate_begin_ready_and_early_return_are_refused ... ok
+test entry_call::tests::null_dlopen_and_nonzero_c_int_initializer_result_remain_failures ... ok
+test error::tests::liteinst_activation_category_accepts_general_pre_ready_reasons ... ok
+test error::tests::liteinst_activation_category_rejects_operation_failures ... ok
+test error::tests::liteinst_activation_category_rejects_post_ready_tampered_diagnostic ... ok
+test error::tests::liteinst_activation_category_rejects_untyped_lookalike ... ok
+test error::tests::liteinst_activation_reason_accepts_the_qualifying_typed_failure ... ok
+test after_loader::tests::ordinary_input_cannot_be_used_as_an_unqualified_runtime_stage ... ok
+test error::tests::tracee_error_includes_operation_and_pid ... ok
+test gdbstub::commands::base::_vFile::test::hostio_stat_size_check ... ok
+test gdbstub::commands::base::_vFile::test::hostio_sanity ... ok
+test gdbstub::commands::base::_vFile::test::unknown_vfile_operations_are_valid_commands ... ok
+test gdbstub::commands::base::_x_upper::test::can_parse_X_special ... ok
+test gdbstub::commands::base::_vFile::test::malformed_supported_vfile_operations_remain_errors ... ok
+test gdbstub::commands::test::decode_vcont_test ... ok
+test gdbstub::commands::test::malformed_command ... ok
+test gdbstub::commands::test::parse_g_with_thread_suffix ... ok
+test gdbstub::commands::test::parse_g_upper_with_thread_suffix ... ok
+test gdbstub::commands::test::parse_lldb_query_packets ... ok
+test gdbstub::commands::test::parse_qregisterinfo_hex_index ... ok
+test gdbstub::commands::test::qthreadsuffix_not_shadowed_by_qthreadevents ... ok
+test gdbstub::commands::test::split_thread_suffix_forms ... ok
+test gdbstub::commands::test::unknown_command ... ok
+test gdbstub::hex::test::decode_gdb_binary_test ... ok
+test gdbstub::hex::test::decode_gdb_hex_test ... ok
+test gdbstub::hex::test::serde_sanity ... ok
+test gdbstub::hex::test::encode_decode_sanity ... ok
+test gdbstub::packet::test::can_decode_packet ... ok
+test gdbstub::packet::test::partial_checksum_is_an_error_instead_of_a_panic ... ok
+test gdbstub::packet::test::escaped_checksum_marker_is_packet_data ... ok
+test gdbstub::regs::x86_64::test::amd64_core_regs_sanity ... ok
+test after_loader::tests::sealed_runtime_retains_exact_stage_bytes_and_refuses_write_grow_shrink ... ok
+test gdbstub::regs::x86_64::test::fp80_sanity ... ok
+test gdbstub::regs::x86_64::test::register_infos_match_coreregs_layout ... ok
+test gdbstub::regs::x86_64::test::amd64_core_regs_serde ... ok
+test gdbstub::regs::x86_64::test::st_sanity ... ok
+test gdbstub::regs::x86_64::test::xmm_sanity ... ok
+test gdbstub::response::test::response_plain_string ... ok
+test after_loader::tests::changed_regular_stage_or_marker_is_refused_before_sealed_copy ... ok
+test gdbstub::server::tests::framing_preserves_ack_nack_interrupt_and_combined_ack ... ok
+test gdbstub::server::tests::framing_keeps_checksum_header_and_incomplete_eof_refusals ... ok
+test in_guest::tests::model_cf_is_refused_before_perf_event_open ... ok
+test gdbstub::server::tests::the_relay_closes_the_session_channel_when_the_peer_departs ... ok
+test gdbstub::server::tests::framing_preserves_an_escaped_checksum_marker ... ok
+test injected_syscall::tests::frame_matches_e9tool_state_layout ... ok
+test injected_syscall::tests::shared_frame_accepts_stack_pointer_updates_for_e9patch ... ok
+test injected_syscall::tests::rejects_register_updates_the_e9_frame_cannot_represent ... ok
+test injected_syscall::tests::syscall_entry_clobbers_match_x86_64 ... ok
+test injected_syscall::tests::user_register_round_trip_preserves_writable_fields ... ok
+test liteinst_stats::tests::aggregates_all_requested_buckets_and_deduplicates_rips ... ok
+test gdbstub::server::tests::unsupported_vfile_operations_keep_session_connected ... ok
+test liteinst_stats::tests::disabled_collection_does_not_run_stats_only_classification ... ok
+test liteinst_stats::tests::equal_rips_in_different_processes_or_exec_generations_remain_distinct ... ok
+test perf::paused_tests::paused_read_errors_are_explicit_and_not_retried ... ok
+test after_loader::tests::missing_marker_and_diagnostic_overflow_remain_errors ... ok
+test perf::paused_tests::paused_read_preserves_exact_counts_without_retry ... ok
+test perf::paused_tests::paused_read_rejects_active_lost_or_unavailable_state_before_syscall ... ok
+test perf::test::bench_rdpmc_vs_read ... ignored
+test perf::paused_tests::paused_read_rejects_changed_metadata_after_one_read ... ok
+test perf::support_test::perf_event_open_errors_mean_pmu_is_unsupported ... ok
+test perf::test::test_do_branches ... ok
+test regs::tests::basic ... ok
+test perf::test::trace_self ... ok
+test in_guest::boundary_tests::hardware_paused_clock_preserves_exact_branch_trajectory ... ok
+test regs::tests::restore_syscall_clobbers_copies_rcx_r11 ... ok
+test stack::tests::stack_guard_holds_then_releases_flag ... ok
+test stack::tests::stack_token_detects_simultaneous_checkout ... ok
+test stack::tests::stack_token_releases_on_drop_without_commit ... ok
+test perf::test::trace_other_thread ... ok
+test stack::tests::transmute_sanity ... ok
+test stats::tests::enabled_source_reports_root_as_measured_activity ... ok
+test perf::test::deliver_signal ... ok
+test target_loader::environment::tests::counter_guarded_getenv_requires_exact_provider_code_metadata_and_bookkeeping ... ok
+test target_loader::environment::tests::runtime_dynamic_pointer_resolution_is_unique_same_image_and_range_complete ... ok
+test perf::test::rdpmc_read_agrees_with_syscall_read ... ok
+test target_loader::environment::tests::vdso_dynamic_image_is_bound_to_auxv_elf_pt_loads_and_exact_vma ... ok
+test target_loader::errno::tests::errno_accessor_requires_same_fully_validated_libc_with_both_public_exports ... ok
+test target_loader::ordinary::tests::accepts_exact_ordinary_unversioned_initializer_with_or_without_versym ... ok
+test target_loader::errno::tests::errno_refuses_duplicate_provider_symbol_and_executable_extent_change ... ok
+test after_loader::tests::runtime_marker_requires_every_canonical_field_and_exact_dso_binding ... ok
+test target_loader::ordinary::tests::refuses_duplicate_named_initializer_even_when_both_are_ordinary ... ok
+test target_loader::ordinary::tests::refuses_duplicate_dynamic_metadata_and_raw_symbol_metadata_outside_ro_load ... ok
+test backend::tests::output_run_also_reports_real_backend_activity ... ok
+test target_loader::errno::tests::errno_refuses_ifunc_weak_hidden_undefined_wrong_or_hidden_version ... ok
+test target_loader::tests::maps_and_auxv_refuse_malformed_or_ambiguous_inputs ... ok
+test target_loader::ordinary::tests::refuses_missing_initializer_and_invalid_extent_or_executable_mapping ... ok
+test gdbstub::server::tests::framing_honors_the_advertised_packet_limit ... ok
+test target_loader::tests::different_candidate_bytes_do_not_hide_later_mapping_failure ... ok
+test target_loader::ordinary::tests::refuses_versioned_hidden_local_ifunc_object_weak_undefined_and_reserved_exports ... ok
+test target_loader::tests::rejects_absent_and_only_corrupted_provider_after_candidate_search ... ok
+test backend::tests::stats_run_observes_real_tracee_activity ... ok
+test target_loader::tests::preserves_provider_read_failures_before_or_at_the_exact_candidate ... ok
+test backend::tests::output_run_captures_guest_stdout_generically ... ok
+test target_loader::tests::rejects_malformed_versions_and_checked_address_overflow ... ok
+test target_loader::tests::rejects_corrupted_code_mapping_offsets_identity_permissions_and_dynamic_range ... ok
+test target_loader::tests::rejects_main_and_interpreter_relationship_disagreement ... ok
+test target_loader::tests::rejects_provider_load_disagreement_overlap_and_unterminated_dynamic_table ... ok
+test target_loader::tests::rejects_memory_change_on_readback_and_read_budget_excess ... ok
+test target_loader::tests::rejects_inconsistent_loader_membership_cycles_and_duplicate_provider ... ok
+test target_loader::tests::rejects_two_exact_providers_with_distinct_mappings ... ok
+test target_loader::tests::rejects_unversioned_base_and_ambiguous_public_definitions ... ok
+test target_loader::tests::rereads_different_candidate_bytes_after_finding_exact_provider ... ok
+test target_loader::tests::rejects_wrong_version_private_version_ifunc_hidden_and_undefined_symbols ... ok
+test target_loader::tests::resolves_actual_mapped_provider_bytes_and_default_version_without_sections ... ok
+test target_loader::tests::resolves_exact_provider_after_valid_different_load_layout ... ok
+test task::after_loader_task::tests::alternate_stack_compares_all_abi_fields_and_preserves_raw_padding_evidence ... ok
+test task::after_loader_task::tests::anonymous_mmap_descriptor_accepts_only_canonical_minus_one ... ok
+test target_loader::tests::resolves_exact_provider_after_valid_different_same_layout_dso ... ok
+test task::after_loader_task::tests::canonical_c_int_arguments_refuse_mixed_high_words ... ok
+test target_loader::tests::resolves_position_independent_executable_from_kernel_phdr ... ok
+test task::after_loader_task::tests::complete_environment_rejects_duplicate_keys_and_truncation ... ok
+test task::after_loader_task::tests::geometry_byte_comparison_has_no_entry_guard_or_neighbor_exemption ... ok
+test task::after_loader_task::tests::file_and_mapping_identity_domains_bind_without_device_conflation ... ok
+test target_loader::environment::tests::getenv_shape_binds_both_counter_reads_when_bookkeeping_is_available ... ok
+test task::after_loader_task::tests::mapping_identity_match_checks_major_minor_and_inode ... ok
+test target_loader::environment::tests::bookkeeping_is_all_or_nothing_and_requires_two_exact_local_bss_words ... ok
+test task::after_loader_task::tests::private_entropy_signal_timer_exec_and_clone_requests_are_refused ... ok
+test task::after_loader_task::tests::dlopen_graph_excludes_the_unsealed_staging_runtime ... ok
+test task::after_loader_task::tests::readonly_openat_shape_keeps_flags_mode_and_high_words_exact ... ok
+test task::after_loader_task::tests::trampoline_mapping_identity_is_captured_once_per_generation ... ok
+test task::after_loader_task::tests::unsupported_cet_status_completion_reaches_the_final_caller_gate ... ok
+test target_loader::environment::tests::resolves_exact_getenv_got_aliases_bss_and_pointer_graph ... ok
+test task::tests::active_hook_footprint_rejects_destructive_mapping_overlap ... ok
+test task::tests::active_hook_noop_protection_retains_provenance ... ok
+test task::tests::cancellable_observes_cancellation_in_the_same_poll ... ok
+test task::tests::cancellable_returns_a_completed_result ... ok
+test target_loader::environment::tests::nonzero_bias_pie_preserves_dynamic_pointer_modes_and_relative_relocation_offsets ... ok
+test task::tests::exact_entry_word_recovery_and_resume_barrier_are_fail_closed ... ok
+test task::tests::command_bootstrap_arguments_preserve_types_and_raw_tail ... ok
+test task::tests::exact_entry_word_transition_refuses_every_io_failure_and_mismatch ... ok
+test task::tests::kernel_page_ranges_floor_ceil_and_reject_overflow ... ok
+test task::tests::exec_generation_replaces_image_state_without_changing_old_holders ... ok
+test task::after_loader_task::tests::private_wait_diagnostics_are_structured_and_do_not_expand_event_owners ... ok
+test task::tests::liteinst_helper_clears_only_abi_sensitive_transient_flags ... ok
+test task::tests::liteinst_rejects_stack_pointer_updates_without_weakening_shared_frame ... ok
+test task::tests::pkey_mprotect_is_a_controller_mapping_syscall ... ok
+test target_loader::environment::tests::static_parser_refuses_alias_version_relocation_and_getenv_shape_mutations ... ok
+test task::tests::proc_maps_paths_preserve_literal_whitespace_and_decode_octal_escapes ... ok
+test task::tests::retired_after_loader_trap_requires_exact_runtime_origin ... ok
+test task::tests::short_mapping_lengths_cover_the_whole_active_page ... ok
+test task::tests::syscall_skip_breakpoint_requires_exact_captured_provenance ... ok
+test task::tests::short_successful_mapping_invalidates_the_whole_attempted_page ... ok
+test target_loader::environment::tests::target_graph_refuses_interposition_copy_and_wrong_bss_geometry ... ok
+test task::tests::task_panic_marker_has_canonical_shape ... ok
+test task::tests::task_panic_marker_is_always_one_greppable_line ... ok
+test task::tests::task_panic_marker_survives_a_non_string_payload ... ok
+test timer::tests::amd_epyc_9d85_uses_reduced_skid_margin ... ok
+test timer::tests::explicit_skid_margin_overrides_processor_default ... ok
+test timer::tests::other_amd_cpus_keep_default_skid_margin ... ok
+test timer::tests::private_execution_retains_every_timer_state_field_exactly ... ok
+test timer::tests::overshoot_decision_records_witness_counts_and_attributes_per_run ... ok
+test backend::tests::output_run_reports_exact_bytes_for_loud_and_silent_guests ... ok
+test timer::tests::skid_overshoot_marker_has_canonical_shape ... ok
+test timer::tests::skid_overshoot_marker_overshoot_is_saturating ... ok
+test timer::tests::test_clock_counter_is_behind::clockcounter_new_0_0_10_0_1_some_true_expects ... ok
+test timer::tests::test_clock_counter_is_behind::clockcounter_new_1_10_200_1_11_some_true_expects ... ok
+test timer::tests::test_clock_counter_is_behind::clockcounter_new_2_100_200_3_0_some_true_expects ... ok
+test timer::tests::test_clock_counter_is_behind::clockcounter_new_2_100_2_3_0_none_expects ... ok
+test timer::tests::test_clock_counter_is_behind::clockcounter_new_4_4_4_4_3_some_false_expects ... ok
+test timer::tests::test_clock_counter_is_behind::clockcounter_new_4_4_4_4_4_some_false_expects ... ok
+test timer::tests::test_clock_counter_is_behind::clockcounter_new_4_4_4_4_5_some_true_expects ... ok
+test timer::tests::test_increment_counter_with_clock::clockcounter_new_0_0_0_0_0_1_expects ... ok
+test timer::tests::test_increment_counter_with_clock::clockcounter_new_0_1_0_1_0_2_expects ... ok
+test timer::tests::test_increment_counter_with_clock::clockcounter_new_0_1_0_2_0_2_expects ... ok
+test timer::tests::test_increment_counter_with_clock::clockcounter_new_0_1_1_0_0_2_expects ... ok
+test task::after_loader_task::tests::exact_open_file_mapping_identity_is_observed_stably_from_proc_maps ... ok
+test timer::tests::test_increment_counter_with_clock::clockcounter_new_0_1_1_1_1_0_expects ... ok
+test timer::tests::test_increment_counter_with_clock::clockcounter_new_0_1_1_2_2_0_expects ... ok
+test timer::tests::test_increment_counter_with_clock::clockcounter_new_0_1_1_3_3_0_expects ... ok
+test timer::tests::test_increment_counter_with_clock::clockcounter_new_10_0_11_10_10_1_expects ... ok
+test timer::tests::test_increment_counter_with_clock::clockcounter_new_10_1_11_10_10_2_expects ... ok
+test timer::tests::test_increment_counter_with_clock::clockcounter_new_10_1_11_11_11_0_expects ... ok
+test timer::tests::test_increment_counter_with_clock::clockcounter_new_10_1_11_12_12_0_expects ... ok
+test timer::tests::unknown_cpu_is_unavailable_to_fallible_in_guest_clock ... ok
+test timer::tests::zero_skid_margin_forces_interrupt_at_target ... ok
+test tracer::tests::after_loader_environment_freeze_preserves_exact_map_and_adds_no_sanitizer_values ... ok
+test tracer::tests::after_loader_filter_has_no_rt_sigreturn_or_private_page_allow_rule ... ok
+test tracer::tests::after_loader_filter_traces_subscribed_unsubscribed_unknown_and_x32_syscalls ... ok
+test target_loader::environment::tests::expected_map_and_active_parser_refuse_invalid_or_incomplete_bytes ... ok
+test target_loader::environment::tests::runtime_dynamic_pointers_accept_one_consistent_relative_or_absolute_form ... ok
+test target_loader::environment::tests::graph_imports_for_all_aliases_must_resolve_to_the_authenticated_object ... ok
+test tracer::tests::liteinst_clone_thread_guest ... ok
+test tracer::tests::liteinst_root_stop_pause_guest ... ok
+test target_loader::environment::tests::setenv_unsetenv_and_putenv_shapes_cannot_pass_exact_comparison ... ok
+test target_loader::environment::tests::dynamic_image_parser_rejects_duplicate_instances_bad_offsets_and_unbounded_tables ... ok
+test tracer::tests::liteinst_stats_collector_is_allocated_only_when_requested ... ok
+test tracer::tests::ordinary_filter_keeps_subscription_and_private_page_policy ... ok
+test tracer::tests::pidfd_setup_error_retains_cleanup_drain_failure ... ok
+test tracer::tests::pidfd_setup_timeout_names_thread_group_leader_retry_exhaustion ... ok
+test tracer::tests::resolving_program_preserves_explicit_arg0 ... ok
+test validation::test::test_check_for_arch_bugs_precise_ip ... ok
+test validation::test::test_check_for_ioc_period_bug_precise_ip ... ok
+test validation::test::test_check_working_counters_precise_ip ... ok
+test vdso::tests::getcpu_only_leaves_other_vdso_symbols_unselected ... ok
+test vdso::tests::each_subscription_selects_only_its_own_vdso_symbols ... ok
+test vdso::tests::patch_requirement_tracks_vdso_syscall_subscriptions ... ok
+test vdso::tests::stopped_legacy_patch_rejects_branch_into_instruction_interior ... FAILED
+test vdso::tests::stopped_legacy_patch_rejects_dynamic_symbol_alias ... FAILED
+test vdso::tests::stopped_legacy_patch_rejects_external_branch_into_rounded_tail ... FAILED
+test vdso::tests::test_align_up ... ok
+test vdso::tests::stopped_legacy_patch_rejects_non_nop_rounded_tail ... FAILED
+test vdso::tests::vdso_patch_info_is_valid ... ok
+test vdso::vdso_getrandom_x86_64::tests::changed_or_truncated_function_bytes_are_refused ... ok
+test vdso::tests::stopped_legacy_patch_rejects_symtab_only_interior_entry ... FAILED
+test vdso::vdso_getrandom_x86_64::tests::normal_branch_targets_the_existing_fallback_without_touching_its_syscall ... ok
+test vdso::vdso_getrandom_x86_64::tests::query_gate_and_query_body_remain_byte_identical ... ok
+test vdso::vdso_getrandom_x86_64::tests::recognized_present_and_absent_symbols_have_distinct_results ... ok
+test vdso::vdso_getrandom_x86_64::tests::copied_machine_code_preserves_query_and_routes_normal_work_to_the_fallback ... FAILED
+test vdso::vdso_getrandom_x86_64::tests::synthetic_elf_refuses_invalid_symbols_and_load_geometry ... FAILED
+test vdso::tests::stopped_legacy_patch_rejects_changed_indirect_call_target ... ok
+test vdso::tests::stopped_legacy_patch_admits_exact_function_and_nop_padding ... ok
+test vdso::tests::stopped_legacy_patch_admits_alias_sharing_exact_route ... ok
+test vdso::vdso_getrandom_x86_64::tests::every_raw_fallback_syscall_word_mutation_is_refused ... FAILED
+test vdso::vdso_getrandom_x86_64::tests::synthetic_elf_binds_every_public_getrandom_alias ... FAILED
+test vdso::vdso_getrandom_x86_64::tests::synthetic_elf_refuses_overlapping_executable_decode_origins ... ok
+test vdso::vdso_getrandom_x86_64::tests::synthetic_elf_refuses_ifunc_and_extra_computed_targets_for_the_actual_reason ... ok
+test vdso::vdso_getrandom_x86_64::tests::synthetic_elf_refuses_outside_direct_entries_into_changed_instructions ... FAILED
+test vdso::vdso_getrandom_x86_64::tests::production_admission_binds_every_complete_image_byte ... ok
+test vdso::vdso_getrandom_x86_64::tests::stopped_target_routes_normal_getrandom_to_existing_raw_fallback ... ok
+test vdso::vdso_getrandom_x86_64::tests::synthetic_elf_refuses_exported_alternate_instruction_streams ... ok
+test validation::test::test_check_for_arch_bugs ... ok
+test validation::test::test_check_for_ioc_period_bug ... ok
+test in_guest::boundary_tests::disabled_creation_preserves_enabled_setup_and_owns_its_descriptor ... ok
+test tracer::tests::held_stop_rejects_replacement_generation_for_same_task ... ok
+test gdbstub::server::tests::framing_preserves_binary_escapes_at_every_read_boundary ... ok
+test after_loader::tests::runtime_requires_host_export_and_refuses_legacy_init_array_entry ... ok
+test vdso::tests::can_find_vdso ... ok
+test tracer::tests::tracee_generation_survives_zombie_until_real_reap ... ok
+test tracer::tests::terminal_descendant_retention_does_not_touch_an_untraced_process ... ok
+test tracer::tests::terminal_descendant_remains_owned_until_recorded_parent_exits ... ok
+test target_loader::ordinary::tests::runtime_only_accepts_exact_64_mib_and_refuses_one_byte_over_without_changing_libc_bound ... ok
+test validation::test::test_check_working_counters ... ok
+test tracer::tests::liteinst_runtime_rejects_gdbserver_before_spawning_tracee ... ok
+test gdbstub::server::tests::vfile_frames_survive_coalesced_reads ... ok
+test vdso::tests::vdso_can_find_symbols_info ... ok
+test gdbstub::server::tests::vfile_frames_survive_fragmented_reads ... ok
+test tracer::tests::async_exit_path_supersedes_preempted_same_generation_lease ... ok
+test gdbstub::server::tests::malformed_vfile_operations_close_session ... ok
+test tracer::tests::child_death_before_initialization_error_does_not_hang ... ok
+test tracer::tests::registered_cleanup_remembers_unobserved_exit_stop_completion ... ok
+test tracer::tests::spawn_fn_never_has_command_bootstrap_provenance ... ok
+test tracer::tests::subscribed_restart_syscall_reaches_the_tool ... ok
+test tracer::tests::discovery_skips_only_confirmed_absence_or_replacement ... ok
+test tracer::tests::stale_pidfd_identity_never_signals_reused_numeric_pid ... ok
+test task::after_loader_task::tests::zero_fill_verification_reads_prot_none_without_changing_permissions ... ok
+test tracer::tests::unsubscribed_restart_syscall_retains_the_linux_result ... ok
+test task::after_loader_task::tests::exact_image_backing_guard_accepts_only_the_bound_file_and_full_bytes ... ok
+test tracer::tests::exit_stop_atomically_supersedes_same_generation_lease ... ok
+test tracer::tests::failed_transition_retains_exact_task_stop_for_cleanup ... ok
+test tracer::tests::normal_preinit_resume_clears_held_root_stop_lease ... ok
+test tracer::tests::cancellation_at_signal_handler_reaps_root ... ok
+test tracer::tests::direct_drop_retries_first_discovery_failure ... ok
+test tracer::tests::liteinst_preinit_failure_reaps_and_unregisters_root ... ok
+
+running 1 test
+
+running 1 test
+test tracer::tests::cancelling_at_clone_parent_event_reaps_sibling ... ok
+test tracer::tests::cancelling_before_clone_parent_handler_reaps_sibling ... ok
+test tracer::tests::pre_ready_mutated_private_stub_cannot_impersonate_injected_syscall_completion ... ok
+test tracer::tests::registered_cleanup_resumes_exit_stop_that_superseded_retained_stop ... ok
+test tracer::tests::cancellation_at_generic_syscall_handler_reaps_root ... ok
+
+running 1 test
+test tracer::tests::cancelling_at_new_child_event_reaps_root_and_child ... ok
+test tracer::tests::pre_ready_nested_signal_is_rejected_while_skipping_seccomp_syscall ... ok
+test tracer::tests::pre_ready_external_sigtrap_is_rejected_during_injected_syscall_step ... ok
+test tracer::tests::pre_ready_pending_signal_is_rejected_before_seccomp_resume ... ok
+test tracer::tests::normal_liteinst_completion_leaves_no_stale_root_stop_lease ... ok
+test tracer::tests::pre_ready_nested_signal_is_rejected_during_tracee_preinit ... ok
+test tracer::tests::pre_ready_external_sigtrap_is_rejected_after_exec_event ... ok
+
+running 1 test
+
+running 1 test
+test tracer::tests::clone_parent_fails_closed_and_reaps_sibling ... ok
+test tracer::tests::cancelling_at_clone_thread_event_reaps_group ... ok
+test tracer::tests::cancelling_before_clone_thread_handler_reaps_group ... ok
+test tracer::tests::liteinst_clone_thread_fails_closed_and_reaps_group ... ok
+test tracer::tests::pre_ready_nested_signal_is_rejected_during_context_none_reinjection ... ok
+test tracer::tests::post_task_scan_error_retains_exact_cleanup_for_retry ... ok
+test tracer::tests::discovery_error_restores_newborn_for_cleanup_retry ... ok
+test tracer::tests::precise_timer_delivery_reaches_tool ... ok
+test tracer::tests::pre_ready_liteinst_precise_timer_is_controller_handled_and_reaped ... ok
+test tracer::tests::normal_liteinst_precise_timer_completion_clears_root_lease ... ok
+test tracer::tests::cancellation_at_each_preinit_step_reaps_root ... ok
+test tracer::tests::held_stop_map_retains_independent_task_generations ... ok
+test gdbstub::server::tests::the_listener_is_closed_once_the_client_is_accepted ... ok
+test tracer::tests::command_bootstrap_ends_before_post_exec_and_later_guest_exec has been running for over 60 seconds
+test tracer::tests::pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition has been running for over 60 seconds

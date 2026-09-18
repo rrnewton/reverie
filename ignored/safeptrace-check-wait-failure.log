@@ -1,0 +1,50 @@
+    Checking futures-sink v0.3.34
+    Checking futures-core v0.3.34
+    Checking futures-channel v0.3.34
+    Checking serde v1.0.229
+    Checking futures-util v0.3.34
+    Checking syscalls v0.6.18
+    Checking futures-executor v0.3.34
+    Checking bytes v1.12.1
+    Checking tokio v1.53.1
+    Checking bincode v2.0.1
+    Checking thiserror v2.0.20
+    Checking futures v0.3.34
+    Checking reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-process)
+    Checking reverie-memory v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-memory)
+    Checking safeptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/safeptrace)
+warning: unused import: `super::PhysicalWaitAttemptId`
+   --> safeptrace/src/notifier.rs:131:5
+    |
+131 | use super::PhysicalWaitAttemptId;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0277]: expected an `FnOnce(i32)` closure, found `extern "C" fn(i32) -> bool {WIFSTOPPED}`
+    --> safeptrace/src/physical_observer.rs:2469:59
+     |
+2469 | ...                   && raw_status.is_some_and(libc::WIFSTOPPED)
+     |                                     ----------- ^^^^^^^^^^^^^^^^ expected an `FnOnce(i32)` closure, found `extern "C" fn(i32) -> bool {WIFSTOPPED}`
+     |                                     |
+     |                                     required by a bound introduced by this call
+     |
+     = help: the trait `FnOnce(i32)` is not implemented for fn item `extern "C" fn(i32) -> bool {WIFSTOPPED}`
+note: required by a bound in `Option::<T>::is_some_and`
+    --> /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/option.rs:659:4
+
+error[E0277]: expected an `FnOnce(i32)` closure, found `extern "C" fn(i32) -> bool {WIFSTOPPED}`
+    --> safeptrace/src/physical_observer.rs:2481:59
+     |
+2481 | ...                   && raw_status.is_some_and(libc::WIFSTOPPED)
+     |                                     ----------- ^^^^^^^^^^^^^^^^ expected an `FnOnce(i32)` closure, found `extern "C" fn(i32) -> bool {WIFSTOPPED}`
+     |                                     |
+     |                                     required by a bound introduced by this call
+     |
+     = help: the trait `FnOnce(i32)` is not implemented for fn item `extern "C" fn(i32) -> bool {WIFSTOPPED}`
+note: required by a bound in `Option::<T>::is_some_and`
+    --> /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/option.rs:659:4
+
+For more information about this error, try `rustc --explain E0277`.
+warning: `safeptrace` (lib) generated 1 warning
+error: could not compile `safeptrace` (lib) due to 2 previous errors; 1 warning emitted

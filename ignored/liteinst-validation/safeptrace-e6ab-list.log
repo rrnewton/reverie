@@ -1,0 +1,164 @@
+warning: unused variable: `task`
+   --> safeptrace/src/lib.rs:240:18
+    |
+240 |     fn new_child(task: &Stopped, child_pid: Pid) -> Result<Running, Error> {
+    |                  ^^^^ help: if this is intentional, prefix it with an underscore: `_task`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `from_raw` is never used
+  --> safeptrace/src/physical_observer.rs:83:19
+   |
+82 | impl PhysicalStatusId {
+   | --------------------- associated function in this implementation
+83 |     pub(crate) fn from_raw(raw: u64) -> Option<Self> {
+   |                   ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `is_open` is never used
+    --> safeptrace/src/physical_observer.rs:1022:19
+     |
+ 983 | impl PhysicalEventObserver {
+     | -------------------------- method in this implementation
+...
+1022 |     pub(crate) fn is_open(&self) -> bool {
+     |                   ^^^^^^^
+
+warning: `safeptrace` (lib test) generated 3 warnings (run `cargo fix --lib -p safeptrace --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/safeptrace-019878df1cfd8222)
+physical_observer::tests::cleanup_reservation_transaction_survives_ordinary_overflow: test
+physical_observer::tests::close_waits_for_foreign_token_check_and_record_transaction: test
+physical_observer::tests::close_waits_for_writer_registered_before_state_check: test
+physical_observer::tests::external_finish_rejects_foreign_observer_wait_id: test
+physical_observer::tests::identical_raw_statuses_keep_distinct_physical_ids: test
+physical_observer::tests::kernel_superseded_disposition_survives_ordinary_overflow: test
+physical_observer::tests::kernel_superseded_rejects_exit_stop_created_before_ordinary_stop: test
+physical_observer::tests::kernel_superseded_rejects_missing_consuming_delivery: test
+physical_observer::tests::kernel_superseded_stop_has_one_explicit_disposition: test
+physical_observer::tests::observer_sessions_allocate_distinct_statuses_and_reject_foreign_status: test
+physical_observer::tests::overflow_is_sticky_and_cleanup_capacity_remains_available: test
+physical_observer::tests::partition_accepts_bound_pidfd_invalidation_after_equivalent_adoption: test
+physical_observer::tests::partition_accepts_cancelled_rollback_then_exact_retry: test
+physical_observer::tests::partition_accepts_claimed_revoked_and_transferred_exit_capability_resumes: test
+physical_observer::tests::partition_accepts_consumed_stop_cancelled_after_terminal_evidence: test
+physical_observer::tests::partition_accepts_direct_stop_transfer_to_typed_stopped: test
+physical_observer::tests::partition_accepts_equivalent_captured_pidfds_across_wait_and_resume: test
+physical_observer::tests::partition_accepts_exact_notifier_died_consumption: test
+physical_observer::tests::partition_accepts_exact_retained_terminal_replay_after_finish: test
+physical_observer::tests::partition_accepts_exact_retained_terminal_replay_before_finish: test
+physical_observer::tests::partition_accepts_exact_typed_unstarted_generation_invalidations: test
+physical_observer::tests::partition_accepts_exact_worker_and_synchronous_echild_proofs: test
+physical_observer::tests::partition_accepts_external_stop_resume_and_echild_completion: test
+physical_observer::tests::partition_accepts_fatal_error_to_exact_registered_echild_transaction: test
+physical_observer::tests::partition_accepts_fifo_head_rollback_retry_then_next_status: test
+physical_observer::tests::partition_accepts_long_adoption_chain: test
+physical_observer::tests::partition_accepts_notifier_cancelled_cleanup_drop_then_drain: test
+physical_observer::tests::partition_accepts_notifier_cancelled_handoff_to_cleanup: test
+physical_observer::tests::partition_accepts_one_wait_one_delivery_one_resume: test
+physical_observer::tests::partition_accepts_ordinary_handled_after_exact_typed_esrch: test
+physical_observer::tests::partition_accepts_pre_registration_esrch_before_later_task_gone_proof: test
+physical_observer::tests::partition_accepts_pre_registration_no_status_with_wnohang: test
+physical_observer::tests::partition_accepts_registered_cleanup_stop_sigkill_handoff: test
+physical_observer::tests::partition_accepts_repeated_cancelled_rollback_before_cleanup_drain: test
+physical_observer::tests::partition_accepts_reservation_drop_rollback_without_decode: test
+physical_observer::tests::partition_accepts_retained_terminal_replay_straddling_finish: test
+physical_observer::tests::partition_accepts_sync_wait_before_later_worker_start: test
+physical_observer::tests::partition_accepts_synchronous_cancellation_success_and_tolerated_esrch: test
+physical_observer::tests::partition_accepts_synchronous_retry_rollback_before_worker_start: test
+physical_observer::tests::partition_accepts_synchronous_wait_completion_before_worker_start: test
+physical_observer::tests::partition_accepts_undecodable_status_controller_resume_and_terminal_drain: test
+physical_observer::tests::partition_accepts_undecodable_status_disposition_and_exact_echild_drain: test
+physical_observer::tests::partition_adoption_merges_direct_and_exact_task_authority: test
+physical_observer::tests::partition_rejects_adoption_cycle: test
+physical_observer::tests::partition_rejects_adoption_through_conflicting_descendant: test
+physical_observer::tests::partition_rejects_arithmetic_status_rejected_by_real_converter: test
+physical_observer::tests::partition_rejects_bare_or_mismatched_echild_terminal_proofs: test
+physical_observer::tests::partition_rejects_cleanup_resume_operation_and_signal_mismatches: test
+physical_observer::tests::partition_rejects_cleanup_terminal_action_after_transaction_completion: test
+physical_observer::tests::partition_rejects_completed_pre_registration_resume_then_worker_start: test
+physical_observer::tests::partition_rejects_conflicting_captured_stable_identity_fields: test
+physical_observer::tests::partition_rejects_died_consumption_for_non_getevent_stops: test
+physical_observer::tests::partition_rejects_dropped_status: test
+physical_observer::tests::partition_rejects_duplicate_exit_capability: test
+physical_observer::tests::partition_rejects_duplicate_identity_binding_on_one_raw_generation: test
+physical_observer::tests::partition_rejects_duplicate_resume: test
+physical_observer::tests::partition_rejects_duplicate_status_identity: test
+physical_observer::tests::partition_rejects_duplicate_sync_cancel_attempts_and_exit_stop_eio_tolerance: test
+physical_observer::tests::partition_rejects_duplicate_tolerated_resume_records: test
+physical_observer::tests::partition_rejects_empty_cleanup_transaction_without_fatal_cause: test
+physical_observer::tests::partition_rejects_external_finish_for_wrong_generation: test
+physical_observer::tests::partition_rejects_external_finish_from_non_cleanup_producer: test
+physical_observer::tests::partition_rejects_fabricated_ordinary_disposition: test
+physical_observer::tests::partition_rejects_inflight_wait_result_after_finish_boundary: test
+physical_observer::tests::partition_rejects_live_decode: test
+physical_observer::tests::partition_rejects_live_notifier_worker: test
+physical_observer::tests::partition_rejects_live_reservation: test
+physical_observer::tests::partition_rejects_malformed_captured_identity_but_allows_zero_start_time: test
+physical_observer::tests::partition_rejects_malformed_died_consumption_cross_products: test
+physical_observer::tests::partition_rejects_malformed_pre_registration_raw_statuses: test
+physical_observer::tests::partition_rejects_missing_or_mismatched_registered_echild_pidfd_proof: test
+physical_observer::tests::partition_rejects_no_status_without_wnohang_and_continued_status: test
+physical_observer::tests::partition_rejects_non_replay_reservation_after_finish: test
+physical_observer::tests::partition_rejects_notifier_cancelled_rollback_then_returned_retry: test
+physical_observer::tests::partition_rejects_orphan_registered_cleanup_waits: test
+physical_observer::tests::partition_rejects_overlapping_reservations_for_one_nonretained_status: test
+physical_observer::tests::partition_rejects_pre_registration_resume_after_or_across_worker_start: test
+physical_observer::tests::partition_rejects_pre_registration_wait_after_or_across_worker_start: test
+physical_observer::tests::partition_rejects_pre_registration_wait_without_prior_generation_link: test
+physical_observer::tests::partition_rejects_raw_eproto_error_without_undecodable_outcome: test
+physical_observer::tests::partition_rejects_registered_cleanup_eio_intermediate: test
+physical_observer::tests::partition_rejects_registered_cleanup_resume_predating_transaction_or_status_link: test
+physical_observer::tests::partition_rejects_registered_cleanup_undecodable_intermediate: test
+physical_observer::tests::partition_rejects_registered_cleanup_wait_outside_transaction_interval: test
+physical_observer::tests::partition_rejects_registered_wait_failure_resume_without_sigkill: test
+physical_observer::tests::partition_rejects_reservations_for_non_fifo_destinations: test
+physical_observer::tests::partition_rejects_reserving_later_fifo_status_before_head: test
+physical_observer::tests::partition_rejects_resume_before_publication_or_without_delivery: test
+physical_observer::tests::partition_rejects_retained_terminal_reclassified_as_cancellation: test
+physical_observer::tests::partition_rejects_retry_rollback_for_plain_signal_stop: test
+physical_observer::tests::partition_rejects_second_typed_resume_after_first_attempt_failed: test
+physical_observer::tests::partition_rejects_stopped_status_as_retained_terminal: test
+physical_observer::tests::partition_rejects_sync_cancel_attempts_reusing_completed_reservation: test
+physical_observer::tests::partition_rejects_sync_cancellation_without_sync_wait_authority: test
+physical_observer::tests::partition_rejects_synchronous_wait_after_worker_start: test
+physical_observer::tests::partition_rejects_synchronous_wait_straddling_worker_start: test
+physical_observer::tests::partition_rejects_terminal_and_continued_resume_sources: test
+physical_observer::tests::partition_rejects_terminal_cancellation_without_consumed_stop: test
+physical_observer::tests::partition_rejects_two_consuming_commits_for_one_status: test
+physical_observer::tests::partition_rejects_typed_stopped_resume_of_registered_cleanup_stop: test
+physical_observer::tests::partition_rejects_undecodable_status_accepted_by_real_converter: test
+physical_observer::tests::partition_rejects_undecodable_status_publication_and_reservation: test
+physical_observer::tests::partition_rejects_undecodable_status_without_cleanup_lifecycle: test
+physical_observer::tests::partition_rejects_unlinked_registered_cleanup_success: test
+physical_observer::tests::partition_rejects_unmatched_cleanup_resume: test
+physical_observer::tests::partition_rejects_wait_and_resume_before_late_identity_binding: test
+physical_observer::tests::partition_rejects_wait_and_resume_for_wrong_task: test
+physical_observer::tests::partition_rejects_wait_siginfo_no_status_with_nonzero_pid: test
+physical_observer::tests::partition_rejects_wait_siginfo_wrong_pid_and_raw_mismatch: test
+physical_observer::tests::partition_rejects_wrong_generation: test
+physical_observer::tests::partition_rejects_wrong_or_duplicate_generation_invalidation_causes: test
+physical_observer::tests::partition_rejects_wrong_wait_option_bits_for_each_producer: test
+physical_observer::tests::partition_rejects_zero_pid_no_status_with_nonzero_fields: test
+physical_observer::tests::partition_requires_failed_result_before_exit_capability_retry_attempt: test
+test::basic: test
+test::getsiginfo_should_success: test
+test::group_exit_stress: test
+test::peeksiginfo_returns_pending_siginfo: test
+test::serialized_threads: test
+test::stop_on_exit: test
+test::trace_from_another_thread: test
+test::trace_killed_by_signal: test
+waitid::tests::exact_raw_wait_oracle_rejects_impossible_or_noncanonical_shapes: test
+waitid::tests::exact_siginfo_oracle_rejects_malformed_signal_and_continued_statuses: test
+waitid::tests::exact_siginfo_oracle_rejects_out_of_domain_exit_and_trap_statuses: test
+waitid::tests::exact_wait_oracle_fails_closed_on_valid_unsupported_realtime_signals: test
+waitid::tests::physical_raw_wait_oracle_excludes_valid_continued_status_by_vocabulary: test
+waitid::tests::waitid_w_exited_0: test
+waitid::tests::waitid_w_exited_1: test
+waitid::tests::waitid_w_exited_no_wait_then_wait: test
+waitid::tests::waitid_w_exited_then_echild: test
+waitid::tests::waitid_w_killed_by_signal: test
+waitid::tests::waitid_w_nohang_kill_nohang_nowait_wait: test
+waitid::tests::waitid_w_nohang_then_kill: test

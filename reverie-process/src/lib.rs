@@ -17,6 +17,7 @@
 mod builder;
 mod child;
 mod clone;
+mod controller_launch;
 mod container;
 mod env;
 mod error;
@@ -38,6 +39,15 @@ use std::io;
 
 pub use child::Child;
 pub use child::Output;
+pub use controller_launch::ControllerLaunch;
+pub use controller_launch::ControllerLaunchId;
+pub use controller_launch::ControllerLaunchPhase;
+pub use controller_launch::ControllerLaunchParts;
+pub use controller_launch::ControllerSpawnError;
+pub use controller_launch::ControllerSpawnFailure;
+pub use controller_launch::ControllerSpawnToken;
+pub use controller_launch::ControllerStartupPublisher;
+pub use controller_launch::PendingControllerLaunch;
 pub use container::Container;
 pub use container::DeferredContainerRun;
 pub use container::RunError;
