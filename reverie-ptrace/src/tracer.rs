@@ -1942,6 +1942,9 @@ pub struct TracerBuilder<T: Tool + 'static> {
 
     /// Whether to collect general ptrace activity statistics.
     backend_stats_request: BackendStatsRequest,
+
+    #[cfg(all(test, target_arch = "x86_64"))]
+    clock_test_launcher_branches: u64,
 }
 
 impl<T: Tool + 'static> TracerBuilder<T> {
@@ -1955,6 +1958,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             injected_syscall_trap: None,
             liteinst_runtime: None,
             backend_stats_request: BackendStatsRequest::DISABLED,
+            #[cfg(all(test, target_arch = "x86_64"))]
+            clock_test_launcher_branches: 0,
         }
     }
 
@@ -2386,8 +2391,26 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         command.env("ASAN_OPTIONS", "detect_leaks=0");
 
         let intercept_rdtsc = events.has_rdtsc();
+        #[cfg(all(test, target_arch = "x86_64"))]
+        let clock_test_launcher_branches = self.clock_test_launcher_branches;
         unsafe {
-            command.pre_exec(move || init_tracee(intercept_rdtsc));
+            command.pre_exec(move || {
+                init_tracee(intercept_rdtsc)?;
+                // A caller's earlier pre_exec callback runs before init_tracee
+                // stops. This private test seam instead runs after the parent
+                // has constructed the stopped child's clock and resumed it.
+                #[cfg(all(test, target_arch = "x86_64"))]
+                if clock_test_launcher_branches != 0 {
+                    core::arch::asm!(
+                        "2:",
+                        "dec {count}",
+                        "jnz 2b",
+                        count = inout(reg) clock_test_launcher_branches => _,
+                        options(nomem, nostack),
+                    );
+                }
+                Ok(())
+            });
         }
 
         command.seccomp(seccomp_filter(&traced_events));
@@ -2683,6 +2706,14 @@ where
         }
     }
 }
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "clock_origin_tests.rs"]
+mod clock_origin_tests;
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "injection_stop_tests.rs"]
+mod injection_stop_tests;
 
 #[cfg(test)]
 mod tests {

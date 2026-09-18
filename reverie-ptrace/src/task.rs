@@ -983,7 +983,11 @@ pub struct TracedTask<L: Tool> {
     /// True if we can intercept CPUID, false otherwise.
     has_cpuid_interception: bool,
 
-    /// Set to `Some` if the syscall has not been injected yet. `None` if it has.
+    /// Original call still owned by the current syscall callback. Only an
+    /// ordinary, unconverted seccomp callback owns a kernel entry to skip;
+    /// an injected frame and an already-skipped call are logical operations.
+    /// Taking this record consumes that authority, including fast tail injection
+    /// which transfers the original call to the callback's final resume.
     pending_syscall: Option<(Sysno, SyscallArgs)>,
 
     /// The pending syscall was converted out of its seccomp stop before Tool dispatch.
@@ -1172,7 +1176,11 @@ impl<L: Tool> TracedTask<L> {
             liteinst_failure: None,
             next_state,
             next_state_rx: Some(next_state_rx),
-            timer: Timer::new(tid, tid),
+            timer: if options.command_bootstrap {
+                Timer::for_initial_command(tid, tid)
+            } else {
+                Timer::new(tid, tid)
+            },
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
             child_procs: Arc::new(Mutex::new(Children::new())),
@@ -2871,6 +2879,10 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> Result<Wait, TraceError> {
         // PTRACE_EVENT_EXEC proves replacement succeeded. Clear before any
         // post-exec Tool callback; failed exec attempts retain launch provenance.
+        let initial_command = self.command_bootstrap;
+        if initial_command {
+            self.timer.begin_initial_exec();
+        }
         self.command_bootstrap = false;
         if self.global_state.liteinst_runtime.is_some() {
             if former_tid != self.tid() {
@@ -2916,13 +2928,13 @@ impl<L: Tool + 'static> TracedTask<L> {
             // or controller-stack address may be reused by the new image.
             self.liteinst_runtime = Arc::new(StdMutex::new(next));
             self.liteinst_entry_guard = None;
-            self.injected_syscall_frame = None;
-            self.pending_syscall_already_skipped = false;
         }
         // execve/execveat are tail injected, however, after exec, the new
         // program start as a clean slate, hence it is actually ok to do either
         // inject or tail inject after execve succeeded.
         self.pending_syscall = None;
+        self.pending_syscall_already_skipped = false;
+        self.injected_syscall_frame = None;
 
         // TODO: Update PID? Need to write a test checking this.
 
@@ -3039,6 +3051,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         }
 
+        if initial_command {
+            self.timer.finish_initial_exec();
+        }
         self.process_state.clone().handle_post_exec(self).await?;
         self.timer.finalize_requests();
 
@@ -4102,15 +4117,15 @@ impl<L: Tool + 'static> TracedTask<L> {
             })
             .await;
 
-            let emulate_legacy_vsyscall = is_legacy_vsyscall && self.pending_syscall.is_some();
-            if emulate_legacy_vsyscall {
-                // The kernel owns the synthetic `ret` from the fixed
-                // vsyscall page. Leave the task at its seccomp stop and mark
-                // the syscall skipped below; resuming then lets the kernel
-                // return directly to the caller without single-stepping the
-                // caller's first instruction.
-                self.pending_syscall = None;
-            } else if self.pending_syscall.is_some() && !syscall_already_skipped {
+            // A returned emulation must consume its original stop just like an
+            // injection. Keeping Some after skipping would let a later signal
+            // or timer callback mistake an ordinary stop for a seccomp entry.
+            let pending_syscall = self.pending_syscall.take();
+            let emulate_legacy_vsyscall = is_legacy_vsyscall && pending_syscall.is_some();
+            // The kernel owns the synthetic `ret` from the fixed vsyscall
+            // page. That path stays at its seccomp stop and is marked skipped
+            // below, so the kernel returns without stepping the caller.
+            if pending_syscall.is_some() && !syscall_already_skipped && !emulate_legacy_vsyscall {
                 task = self
                     .skip_seccomp_syscall(task)
                     .await
@@ -5323,7 +5338,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(result)
     }
 
-    // Helper function
+    // Replace an actual, unconverted seccomp entry. The caller must have taken
+    // its pending record; this is not valid for a stopped task with no original
+    // syscall left to consume (for example, a post-exec callback).
     async fn private_inject(
         &mut self,
         task: Stopped,
@@ -5488,17 +5505,20 @@ impl<L: Tool + 'static> TracedTask<L> {
         if self.injected_syscall_frame.is_some() || self.pending_syscall_already_skipped {
             self.pending_syscall = None;
             self.untraced_syscall(task, nr, args).await
-        } else if self.pending_syscall.take() == Some((nr, args)) {
-            // If we're reinjecting the same syscall with the same arguments,
-            // then we can just let the tracee continue and stop at sysexit.
-            self.validate_liteinst_mapping_execution(nr, args)?;
-            let wait = self.syscall_stopped(task, None)?.next_state().await?;
-            self.arm_liteinst_wait(&wait);
-            let result = self.status_to_result(wait, None, None).await?;
-            self.observe_liteinst_mapping_result(nr, args, result);
-            Ok(result)
         } else {
-            self.private_inject(task, nr, args).await
+            match self.pending_syscall.take() {
+                Some(original) if original == (nr, args) => {
+                    // Run the exact pending syscall and stop at its exit.
+                    self.validate_liteinst_mapping_execution(nr, args)?;
+                    let wait = self.syscall_stopped(task, None)?.next_state().await?;
+                    self.arm_liteinst_wait(&wait);
+                    let result = self.status_to_result(wait, None, None).await?;
+                    self.observe_liteinst_mapping_result(nr, args, result);
+                    Ok(result)
+                }
+                Some(_) => self.private_inject(task, nr, args).await,
+                None => self.untraced_syscall(task, nr, args).await,
+            }
         }
     }
 
@@ -5558,15 +5578,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Ok(result);
         }
 
-        if self.pending_syscall.take() == Some((nr, args)) {
-            // We're reinjecting the same syscall with the same arguments.
-            // Nothing to actually do but let the tracee resume.
-
-            // The return value here doesn't matter.
-            Ok(Ok(0))
-        } else {
-            // Syscall has already been injected. Can't do the optimization.
-            self.private_inject(task, nr, args).await
+        match self.pending_syscall.take() {
+            Some(original) if original == (nr, args) => {
+                // The callback is cancelled next. Its final resume still owns
+                // execution of this original syscall; no second skip is due.
+                Ok(Ok(0))
+            }
+            Some(_) => self.private_inject(task, nr, args).await,
+            None => self.untraced_syscall(task, nr, args).await,
         }
     }
 

@@ -397,17 +397,27 @@ pub enum HandleFailure {
 impl Timer {
     /// Create a new timer monitoring the specified thread.
     pub fn new(guest_pid: Pid, guest_tid: Tid) -> Self {
+        Self::with_initial_command(guest_pid, guest_tid, false)
+    }
+
+    pub(crate) fn for_initial_command(guest_pid: Pid, guest_tid: Tid) -> Self {
+        Self::with_initial_command(guest_pid, guest_tid, true)
+    }
+
+    fn with_initial_command(guest_pid: Pid, guest_tid: Tid, initial_command: bool) -> Self {
         // No errors are exposed here, as the construction should be
         // bullet-proof, and if it wasn't, consumers wouldn't be able to
         // meaningfully handle the error anyway.
         Self {
             inner: if is_perf_supported() {
-                Some(TimerImpl::new(guest_pid, guest_tid).unwrap_or_else(|err| {
-                    panic!(
-                        "failed to initialize perf timer for tracee {guest_tid} \
+                Some(
+                    TimerImpl::new(guest_pid, guest_tid, initial_command).unwrap_or_else(|err| {
+                        panic!(
+                            "failed to initialize perf timer for tracee {guest_tid} \
                          in process {guest_pid}: {err}"
-                    )
-                }))
+                        )
+                    }),
+                )
             } else {
                 None
             },
@@ -424,6 +434,23 @@ impl Timer {
 
     fn inner_mut_noinit(&mut self) -> Option<&mut TimerImpl> {
         self.inner.as_mut()
+    }
+
+    /// Both ordinary and injected initial exec stops use this transition.
+    /// The kernel has already started the clock, but notifications remain held
+    /// through the backend's existing post-exec initialization.
+    pub(crate) fn begin_initial_exec(&mut self) {
+        if let Some(timer) = self.inner_mut_noinit() {
+            timer.begin_initial_exec();
+        }
+    }
+
+    /// Release the notification hold before the first Tool post-exec callback.
+    /// No pre-exec request is replayed or physically armed here.
+    pub(crate) fn finish_initial_exec(&mut self) {
+        if let Some(timer) = self.inner_mut_noinit() {
+            timer.finish_initial_exec();
+        }
     }
 
     /// Read the thread-local deterministic clock. Represents total elapsed RCBs
@@ -568,11 +595,27 @@ struct TimerImpl {
     /// Whether or not the active timer event requires an artificial signal
     send_artificial_signal: bool,
 
+    initial_command: InitialCommand,
+
+    /// Requests made before the first post-exec callback have no physical
+    /// notification. Taking this record retires each request once.
+    held_initial_event: Option<ActiveEvent>,
+
+    #[cfg(test)]
+    fail_next_notification: Option<Errno>,
+
     /// Pid (tgid) of the monitored thread
     guest_pid: Pid,
 
     /// Tid of the monitored thread
     guest_tid: Tid,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum InitialCommand {
+    WaitingForExec,
+    InitializingExec,
+    Ordinary,
 }
 
 /// Tracks cancellation status of a timer event in response to other reverie
@@ -719,7 +762,7 @@ impl ClockCounter {
 }
 
 impl TimerImpl {
-    pub fn new(guest_pid: Pid, guest_tid: Tid) -> Result<Self, Errno> {
+    pub fn new(guest_pid: Pid, guest_tid: Tid, initial_command: bool) -> Result<Self, Errno> {
         let evt = get_pmu_config().rcb_event();
 
         // measure the target tid irrespective of CPU
@@ -737,14 +780,20 @@ impl TimerImpl {
         timer.set_signal_delivery(guest_tid, MARKER_SIGNAL)?;
         timer.reset()?;
         // measure the target tid irrespective of CPU
-        let clock = Builder::new(guest_tid.as_raw(), -1)
+        let mut clock_builder = Builder::new(guest_tid.as_raw(), -1);
+        clock_builder
             // counting event
             .sample_period(0)
             .event(evt)
-            .fast_reads(true)
-            .create()?;
+            .fast_reads(true);
+        if initial_command {
+            clock_builder.enable_on_exec();
+        }
+        let clock = clock_builder.create()?;
         clock.reset()?;
-        clock.enable()?;
+        if !initial_command {
+            clock.enable()?;
+        }
 
         Ok(Self {
             timer,
@@ -755,6 +804,14 @@ impl TimerImpl {
             },
             timer_status: EventStatus::Cancelled,
             send_artificial_signal: false,
+            initial_command: if initial_command {
+                InitialCommand::WaitingForExec
+            } else {
+                InitialCommand::Ordinary
+            },
+            held_initial_event: None,
+            #[cfg(test)]
+            fail_next_notification: None,
             guest_pid,
             guest_tid,
         })
@@ -770,6 +827,24 @@ impl TimerImpl {
         if delivery == 0 {
             return Err(Errno::EINVAL); // bail before setting timer
         }
+        if self.initial_command != InitialCommand::Ordinary {
+            self.event = Self::event_at(evt, self.read_clock() + delivery);
+            self.held_initial_event = Some(self.event);
+            self.timer_status = EventStatus::Scheduled;
+            debug_assert!(!self.send_artificial_signal);
+            return Ok(());
+        }
+        self.prepare_notification(notification)?;
+        self.event = Self::event_at(evt, self.read_clock() + delivery);
+        self.timer_status = EventStatus::Scheduled;
+        Ok(())
+    }
+
+    fn prepare_notification(&mut self, notification: u64) -> Result<(), Errno> {
+        #[cfg(test)]
+        if let Some(error) = self.fail_next_notification.take() {
+            return Err(error);
+        }
         self.send_artificial_signal = if notification <= SINGLESTEP_TIMEOUT_RCBS {
             // If there's an existing event making use of the timer counter,
             // we need to "overwrite" it the same way setting an actual RCB
@@ -782,8 +857,11 @@ impl TimerImpl {
             self.timer.enable()?;
             false
         };
-        let clock = self.read_clock() + delivery;
-        self.event = match evt {
+        Ok(())
+    }
+
+    fn event_at(evt: TimerEventRequest, clock: u64) -> ActiveEvent {
+        match evt {
             TimerEventRequest::Precise(_) => ActiveEvent::Precise {
                 clock_target: clock,
                 offset: 0,
@@ -793,9 +871,29 @@ impl TimerImpl {
                 offset: instr_offset,
             },
             TimerEventRequest::Imprecise(_) => ActiveEvent::Imprecise { clock_min: clock },
-        };
-        self.timer_status = EventStatus::Scheduled;
-        Ok(())
+        }
+    }
+
+    fn retire_initial_event(&mut self) {
+        let _ = self.held_initial_event.take();
+        self.timer_status = EventStatus::Cancelled;
+        self.send_artificial_signal = false;
+    }
+
+    fn begin_initial_exec(&mut self) {
+        if self.initial_command == InitialCommand::WaitingForExec {
+            self.retire_initial_event();
+            self.initial_command = InitialCommand::InitializingExec;
+        }
+    }
+
+    fn finish_initial_exec(&mut self) {
+        if self.initial_command == InitialCommand::InitializingExec {
+            // Current setup makes no Tool callback in this interval. Retire
+            // any new internal request as well, without revisiting a taken one.
+            self.retire_initial_event();
+            self.initial_command = InitialCommand::Ordinary;
+        }
     }
 
     pub fn observe_event(&mut self) {
@@ -807,7 +905,11 @@ impl TimerImpl {
     }
 
     pub fn cancel(&self) -> Result<(), Errno> {
-        self.timer.disable()
+        if self.initial_command == InitialCommand::Ordinary {
+            self.timer.disable()
+        } else {
+            Ok(())
+        }
     }
 
     fn is_timer_generated_signal(signal: &libc::siginfo_t) -> bool {
@@ -820,7 +922,8 @@ impl TimerImpl {
     }
 
     fn generated_signal(&self, signal: &libc::siginfo_t) -> bool {
-        signal.si_signo == MARKER_SIGNAL as i32
+        self.initial_command == InitialCommand::Ordinary
+            && signal.si_signo == MARKER_SIGNAL as i32
             // If we sent an artificial signal, it doesn't have any siginfo
             && (self.send_artificial_signal
             // If not, the fd should match. This could possibly lead to a
@@ -836,6 +939,10 @@ impl TimerImpl {
     }
 
     pub fn finalize_requests(&self) {
+        if self.initial_command != InitialCommand::Ordinary {
+            debug_assert!(!self.send_artificial_signal);
+            return;
+        }
         if self.send_artificial_signal {
             debug!("Sending artificial timer signal");
 
@@ -1058,6 +1165,86 @@ mod tests {
     use super::ClockCounter;
     #[cfg(target_arch = "x86_64")]
     use super::PmuConfig;
+
+    #[test]
+    fn initial_command_requests_retire_without_physical_notification() {
+        use reverie::Errno;
+        use reverie::Pid;
+
+        use super::ActiveEvent;
+        use super::EventStatus;
+        use super::InitialCommand;
+        use super::TimerEventRequest;
+        use super::TimerImpl;
+
+        let pid = Pid::from_raw(unsafe { libc::getpid() });
+        let tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
+        let mut timer = TimerImpl::new(pid, tid, true).expect("control requires a working PMU");
+        timer.fail_next_notification = Some(Errno::EIO);
+        for (request, expected) in [
+            (
+                TimerEventRequest::Precise(1),
+                ActiveEvent::Precise {
+                    clock_target: 1,
+                    offset: 0,
+                },
+            ),
+            (
+                TimerEventRequest::PreciseInstruction(4, 7),
+                ActiveEvent::Precise {
+                    clock_target: 4,
+                    offset: 7,
+                },
+            ),
+            (
+                TimerEventRequest::Imprecise(1_000_000),
+                ActiveEvent::Imprecise {
+                    clock_min: 1_000_000,
+                },
+            ),
+        ] {
+            timer.request_event(request).unwrap();
+            assert_eq!(timer.held_initial_event, Some(expected));
+            assert_eq!(timer.event, expected);
+            assert_eq!(timer.timer_status, EventStatus::Scheduled);
+            timer.finalize_requests();
+            assert!(!timer.send_artificial_signal);
+            assert_eq!(timer.fail_next_notification, Some(Errno::EIO));
+        }
+        let retained = timer.held_initial_event;
+        assert_eq!(
+            timer.request_event(TimerEventRequest::Precise(0)),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(timer.held_initial_event, retained);
+        assert_eq!(timer.timer_status, EventStatus::Scheduled);
+        timer.observe_event();
+        assert_eq!(timer.timer_status, EventStatus::Armed);
+        timer.begin_initial_exec();
+        assert_eq!(timer.initial_command, InitialCommand::InitializingExec);
+        assert_eq!(timer.held_initial_event, None);
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+        timer.begin_initial_exec();
+        assert_eq!(timer.held_initial_event, None);
+        // An internal request in backend initialization is a new held record,
+        // not permission to reactivate the request just retired at exec.
+        timer
+            .request_event(TimerEventRequest::Imprecise(9))
+            .unwrap();
+        timer.finalize_requests();
+        timer.finish_initial_exec();
+        assert_eq!(timer.initial_command, InitialCommand::Ordinary);
+        assert_eq!(timer.held_initial_event, None);
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+        assert!(!timer.send_artificial_signal);
+        assert_eq!(timer.fail_next_notification, Some(Errno::EIO));
+        assert_eq!(
+            timer.request_event(TimerEventRequest::Precise(1)),
+            Err(Errno::EIO)
+        );
+        assert_eq!(timer.fail_next_notification, None);
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+    }
 
     #[cfg(target_arch = "x86_64")]
     #[test]
