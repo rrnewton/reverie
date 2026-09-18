@@ -14,13 +14,16 @@ WorkingDirectory=%h
 # it executes the version-controlled health wrapper. The shared parent checkout
 # is mutable state and can be unable to fast-forward while another agent has a
 # nested checkout on a different revision; it must not select the wrapper code.
-ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --state-root %h/work/dev-hermit --tool-relative scripts/hermit-health-tick.sh
+ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --state-root %h/work/dev-hermit --tool-relative scripts/hermit-operational-tick
 # The tick's own pin-guard exit is expected signal, not a unit failure.
 SuccessExitStatus=0 1
 # NOTE: a tick that exceeds this is KILLED before it can append its invocation
 # line, which is why the alarm reads the timer's LastTriggerUSec rather than the
 # invocation log's mtime -- see scripts/hermit-health-staleness.sh.
-TimeoutStartSec=300
+# The version-controlled entry point owns the 1200s CPU budget and 619s blocked-
+# work backstop. This outer deadline leaves its cgroup accounting and report
+# persistence 31 seconds to finish before systemd applies a final service kill.
+TimeoutStartSec=650
 
 [Install]
 WantedBy=default.target

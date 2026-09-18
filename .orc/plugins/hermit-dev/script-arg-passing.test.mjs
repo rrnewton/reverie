@@ -57,12 +57,12 @@ function check(name, cond, detail = "") {
 
 check(
   "operational workflow source line remains stable",
-  sourceLineOf("export async function operationalHealthHeartbeat") === 613,
+  sourceLineOf("export async function operationalHealthHeartbeat") === 632,
   String(sourceLineOf("export async function operationalHealthHeartbeat")),
 );
 check(
   "policy reload workflow source line remains stable",
-  sourceLineOf("export async function policyReloadHeartbeat") === 643,
+  sourceLineOf("export async function policyReloadHeartbeat") === 733,
   String(sourceLineOf("export async function policyReloadHeartbeat")),
 );
 

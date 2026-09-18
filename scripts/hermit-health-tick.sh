@@ -21,9 +21,10 @@ ROOT="${HOME:?HOME must be set}/work/dev-hermit"
 FIRED_STATE="$ROOT/.tick-hub/fired-state"
 INVLOG="$HOME/.local/state/hermit-health-tick-invocations.log"
 # ⚠️ THE REPORT MUST EXIST ON DISK BEFORE THE TICK FINISHES, because the tick
-# does not always finish. It is run under an outer bound by both drivers -- 180s
-# from the ORC script registration, 300s from TimeoutStartSec -- and both kill
-# it. Capturing health-tick's output in a command substitution meant the entire
+# does not always finish. Both drivers run it through hermit-operational-tick's
+# 1200s whole-subtree CPU budget and 619s blocked-work backstop, with a 650s
+# last-resort outer deadline. Capturing health-tick's output in a command
+# substitution meant the entire
 # report lived in a shell variable of a process that was about to be killed, so
 # every finding it had already made was destroyed. Measured 2026-09-03: two runs
 # entered the gate loop, one of them for 508 seconds, and neither left a single

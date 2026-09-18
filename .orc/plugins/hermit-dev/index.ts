@@ -110,7 +110,10 @@ const OPERATIONAL_TICK_SCRIPT_NAME = "hermitOperationalTick";
 const OPERATIONAL_TICK_COMMAND =
   'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
   'HERMIT_AGENT_SNAPSHOT_JSON="$1" ' +
-  './scripts/hermit-health-tick.sh --emit-output';
+  './scripts/hermit-operational-tick --emit-output';
+// The bounded entry point reaps at 619s. Give its cgroup accounting and report
+// persistence 31s to finish before ORC applies its last-resort outer kill.
+const OPERATIONAL_TICK_SCRIPT_TIMEOUT_SECONDS = 650;
 const OPERATIONAL_TICK_INTERVAL_MS = 30 * 60 * 1000;
 const OPERATIONAL_TICK_WORKFLOW_NAME = "hermit-dev-operational-health-v1";
 // Claim ownership expires after ten minutes without a complete ORC snapshot.
@@ -1270,6 +1273,7 @@ function hermitDevStatus() {
     operationalTickConfig: SHELL_WORKSPACE_ROOT +
       "/ci-hub/health/tick-hub.yaml",
     operationalTickIntervalMinutes: OPERATIONAL_TICK_INTERVAL_MS / 60000,
+    operationalTickTimeoutSeconds: OPERATIONAL_TICK_SCRIPT_TIMEOUT_SECONDS,
     agentSnapshotWorkflow: AGENT_SNAPSHOT_WORKFLOW_NAME,
     agentSnapshotIntervalMinutes: AGENT_SNAPSHOT_INTERVAL_MS / 60000,
     agentSnapshotWarningIntervalMinutes:
@@ -1550,7 +1554,7 @@ function registerPluginSurface(): void {
   orc.registerScript(OPERATIONAL_TICK_SCRIPT_NAME, {
     script: OPERATIONAL_TICK_COMMAND,
     description: "Run the version-pinned dev-hermit tick-hub operational poll",
-    timeoutSec: 180,
+    timeoutSec: OPERATIONAL_TICK_SCRIPT_TIMEOUT_SECONDS,
   });
 
   orc.registerScript(AGENT_SNAPSHOT_SCRIPT_NAME, {

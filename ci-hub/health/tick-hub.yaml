@@ -176,8 +176,8 @@ reminders:
       title: "worktree slots are idle on disk and reclaimable: {summary}"
 
   # WRKSLOTS IS THE LIFECYCLE AUTHORITY. The expensive audit now runs from an
-  # independent persistent calendar timer, outside this tick's 180-second
-  # aggregate wall cap. This cheap gate consumes only its typed atomic result.
+  # independent persistent calendar timer, outside this tick's bounded
+  # subtree. This cheap gate consumes only its typed atomic result.
   # Missing, stale, malformed, or wrong-provenance evidence is NO_RESULT: an
   # absent audit can never make the ordinary health tick green.
   #
@@ -266,9 +266,9 @@ reminders:
   # validate-run then performs its own current-main checks, uses --no-wait, and
   # rechecks the exact-tip ledger while holding a slot. Its caller runs in a
   # separately tracked transient user unit, while this gate returns after
-  # recording that unit's name. The 75-second internal decision deadline and 90-second
-  # gate bound leave half of the health tick's 180-second ORC bound for the
-  # other serial gates; the systemd service has a 300-second aggregate bound.
+  # recording that unit's name. The 75-second internal decision deadline and
+  # 90-second gate bound leave room for the other serial gates inside the
+  # health tick's independently derived CPU and wall bounds.
   - name: integration_tip_validate
     cadence_secs: 3600
     gate:

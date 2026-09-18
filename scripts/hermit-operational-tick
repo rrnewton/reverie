@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# CPU-bounded entry point shared by the ORC workflow and the durable timer.
+set -uo pipefail
+
+SCRIPT_ROOT=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")/.." rev-parse --show-toplevel)
+STATE_DIR="${HERMIT_HEALTH_TICK_STATE_DIR:-${HOME:?HOME must be set}/.local/state}"
+INVLOG="$STATE_DIR/hermit-health-tick-invocations.log"
+BOX_RUN="${HERMIT_HEALTH_TICK_BOX_RUN:-$SCRIPT_ROOT/scripts/hermit-box-run}"
+HEALTH_TICK="${HERMIT_HEALTH_TICK_COMMAND:-$SCRIPT_ROOT/scripts/hermit-health-tick.sh}"
+
+# BOUND DERIVATION, measured 2026-09-17/18 on devbig014.
+#
+# Cheap ticks are a different population: a 2.4s run emitted 3 instructions
+# because most gates were not due.  Only completed full ticks were used here.
+# Their tick-reported wall samples were 168.691s, 169.880s, and 206.274s for
+# 12-14 emitted instructions, so nearest-rank p90 is 206.274s.  The owner rule
+# selects 3x rather than 4x when 4x exceeds 120s: ceil(3 * 206.274) = 619s.
+#
+# The loaded-box verification of the 14-instruction run measured 797.756 CPU-s
+# for the complete cgroup subtree.  That is the only trustworthy CPU sample:
+# the older COST ACTUAL lines used wait4 and did not retain their CPU fields,
+# while cgroup accounting includes descendants that outlive a process group.
+# Its observed p90 is therefore 797.756s; 1.5x is 1196.634s, rounded up to a
+# 1200s CPU budget.  Every completed run below records instruction count, wall,
+# and cgroup CPU together so the next recalibration has a partitionable history.
+OPERATIONAL_TICK_CPU_BUDGET_SECONDS=1200
+OPERATIONAL_TICK_WALL_BACKSTOP_SECONDS=619
+
+if [[ ${1:-} == --print-bounds ]]; then
+    printf 'cpu_budget_seconds=%s wall_backstop_seconds=%s\n' \
+        "$OPERATIONAL_TICK_CPU_BUDGET_SECONDS" \
+        "$OPERATIONAL_TICK_WALL_BACKSTOP_SECONDS"
+    exit 0
+fi
+
+mkdir -p -- "$STATE_DIR" || exit 73
+measurement_dir=$(mktemp -d "$STATE_DIR/.hermit-operational-tick.XXXXXX") || exit 73
+output_file="$measurement_dir/output"
+actual_json="$measurement_dir/box-actual.json"
+started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+started_ns=$(date +%s%N)
+cleanup() {
+    rm -f -- "$output_file" "$actual_json"
+    rmdir -- "$measurement_dir" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+set +e
+"$BOX_RUN" \
+    --passthrough \
+    --cpu-budget "$OPERATIONAL_TICK_CPU_BUDGET_SECONDS" \
+    --wall "$OPERATIONAL_TICK_WALL_BACKSTOP_SECONDS" \
+    --actual-json "$actual_json" \
+    -- "$HEALTH_TICK" "$@" | tee "$output_file"
+pipeline_status=("${PIPESTATUS[@]}")
+set -e
+box_status=${pipeline_status[0]}
+tee_status=${pipeline_status[1]}
+finished_ns=$(date +%s%N)
+wall_seconds=$(awk -v start="$started_ns" -v finish="$finished_ns" \
+    'BEGIN { printf "%.3f", (finish - start) / 1000000000 }')
+
+instructions=$(sed -n \
+    's/^NOTE: emitted \([0-9][0-9]*\) instruction(s) this tick.*$/\1/p' \
+    "$output_file" | tail -1)
+[[ $instructions =~ ^[0-9]+$ ]] || instructions=not_available
+
+cpu_seconds=not_available
+termination=not_available
+if [[ -s $actual_json ]] && cpu=$(jq -er '.cpu_seconds' "$actual_json" 2>/dev/null) && \
+        reason=$(jq -er '.termination' "$actual_json" 2>/dev/null); then
+    if [[ $cpu =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        cpu_seconds=$cpu
+        termination=$reason
+    fi
+fi
+
+printf '%s operational_tick_cost instructions=%s wall_seconds=%s cpu_seconds=%s termination=%s exit=%s\n' \
+    "$started_at" "$instructions" "$wall_seconds" "$cpu_seconds" \
+    "$termination" "$box_status" >>"$INVLOG"
+
+# A failed tee means the caller did not receive the report even if the measured
+# tick itself succeeded. Preserve the measured command's status otherwise.
+if [[ $tee_status -ne 0 ]]; then
+    exit "$tee_status"
+fi
+exit "$box_status"
