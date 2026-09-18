@@ -11,7 +11,9 @@ still bypassing the registry.
 This harness drives each consumer in its OWN process so the
 `QUALIFYING_RECEIPT_PREDICATE` env override (never the live file) is read fresh --
 the predicate is cached process-wide, so an in-process import would leak the live
-value across scenarios. For each scenario it asserts the whole panel agrees:
+value across scenarios. Shared run-predicate scenarios assert panel unanimity;
+the producer-map case separately asserts the established local-run versus
+immutable-receipt policy:
 
   * POSITIVE (live): a genuine schema-5 full green qualifies in EVERY consumer.
   * MUTATION (executed_tests_min 1 -> 999999): that same green is REJECTED by
@@ -704,7 +706,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             if name != "finalize_receipt.py"
         }
 
-    # -- scenarios: each asserts unanimity across the whole panel.
+    # -- scenarios: each asserts the complete expected consumer panel.
 
     def test_live_accepts_genuine_green_unanimously(self) -> None:
         """POSITIVE control: a real schema-5 full green is accepted everywhere."""
@@ -755,8 +757,8 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             f"schema-4 plus non-null coverage must be refused everywhere: {panel}",
         )
 
-    def test_live_refuses_semantic_green_from_unregistered_producer_per_leg(self) -> None:
-        """A real commit with a different producer map is not green authority."""
+    def test_changed_producer_map_preserves_local_and_immutable_authority(self) -> None:
+        """Local run authority and immutable producer registration are distinct."""
         with tempfile.TemporaryDirectory() as tmp:
             checkout = Path(tmp) / "unregistered-producer"
             subprocess.run(
@@ -773,7 +775,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             )
             # Mutate a path from the LIVE registered whole map.  `validate.sh`
             # used to be such a path, but the Rust producer cutover removed it;
-            # continuing to edit that retired path made this negative vacuous.
+            # continuing to edit that retired path made this fixture vacuous.
             registered_paths = sorted(
                 json.loads(PRODUCER_REGISTRY.read_text())["registered"]
             )
@@ -812,11 +814,50 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
             ).stdout.strip()
+            # Since 341f043979a3e5bdd2e1e827b422871716765e57, local
+            # authority follows the completed run, not registered file hashes.
+            # Immutable receipt publication/verification retain that registry.
+            # Keep every leg explicit: neither policy may silently absorb the
+            # other (see validation/test_local_producer_authority.py).
+            expected = {
+                "validate_status.rs": True,
+                "query.py": True,
+                "publish_receipt.py": False,
+                "anchor_select.py": True,
+                "finalize_receipt.py": True,
+                "main_soft_green.py": True,
+                "receipt-digest canonical": True,
+                "verify_receipt.sh": False,
+            }
             panel = self._panel(row, predicate=None)
-        self.assertFalse(
-            any(panel.values()),
-            f"unregistered producer map must be refused by every boundary: {panel}",
-        )
+            print(f"\nCHANGED PRODUCER MAP: panel={panel}")
+            self.assertEqual(panel, expected)
+
+            # Removing the file-map prerequisite never admits a failed run,
+            # an unadmitted run, or an unknown writer. Exercise each separately
+            # against this same real changed commit, with all eight consumers.
+            mutations = {
+                "failed-run": {
+                    "result": "fail",
+                    "raw_result": "fail",
+                    "exit_code": 1,
+                    "failures": 1,
+                    "passed_tests": row["executed_tests"] - 1,
+                },
+                "unadmitted-run": {"admission": "none"},
+                "unknown-writer": {"producer": "unregistered-forged-writer"},
+            }
+            for condition, fields in mutations.items():
+                with self.subTest(condition=condition):
+                    refused_row = copy.deepcopy(row)
+                    refused_row.update(fields)
+                    refused = self._panel(refused_row, predicate=None)
+                    print(f"\nCHANGED PRODUCER MAP {condition}: panel={refused}")
+                    self.assertEqual(
+                        refused,
+                        {name: False for name in expected},
+                        f"{condition} must still be refused by every consumer",
+                    )
 
     def test_each_admission_condition_is_load_bearing_per_leg(self) -> None:
         """Mutate one condition at a time so no composite refusal is vacuous."""
