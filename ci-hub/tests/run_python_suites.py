@@ -114,6 +114,9 @@ DEFAULT_SUITES = (
     # same gap that let safehermit pass all its own tests while being invoked by
     # nothing. The bracket also invokes verify_artifact.py end to end.
     ("experiments/compat_repeat_sweep_external_214x6x5_20260810/tools", 7),
+    # TFA schema, semantic refusal, and index-integration bracket: 58 tests
+    # measured at introduction; a floor of 53 keeps the standard 10% margin.
+    ("experiments/tfa-flaky-tests_20260917/tools", 53),
 )
 
 

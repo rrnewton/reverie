@@ -19,6 +19,12 @@ WHAT IT MINES, per experiment directory:
   who       metadata.json agent/author, else the directory's first git author
   where     the path
 
+Directories whose metadata.json status is SCHEMA_ONLY_NO_EXPERIMENTS_RUN are
+excluded only while they contain no experiment.json file. They define how a
+future measurement will be recorded, but contain no record to index. Once any
+record exists the directory fails open into the index, even if its status is
+stale or the record is malformed.
+
 Rows are pipe-delimited so `grep` finds them and `awk -F'|'` parses them.
 
 USAGE
@@ -158,9 +164,28 @@ def artifacts(d: Path) -> str:
     return "+".join(x.replace(".md", "").replace(".json", "").replace(".csv", "") for x in have) or "none"
 
 
+def is_schema_only(d: Path) -> bool:
+    """Return whether metadata marks a directory with no target records."""
+    meta = d / "metadata.json"
+    if not meta.exists():
+        return False
+    try:
+        value = json.loads(read(meta))
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not (
+        isinstance(value, dict)
+        and value.get("status") == "SCHEMA_ONLY_NO_EXPERIMENTS_RUN"
+    ):
+        return False
+    return not any(d.rglob("experiment.json"))
+
+
 def build_rows() -> list[tuple[str, ...]]:
     rows = []
     for d in sorted([p for p in ROOT.iterdir() if p.is_dir()], key=lambda p: p.name):
+        if is_schema_only(d):
+            continue
         rows.append((
             slug_date(d.name, d),
             d.name,
