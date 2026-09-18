@@ -2427,7 +2427,7 @@ def test_validation_runs_default_to_started_descending_and_use_recorded_wall_clo
     ({"width": 1280, "height": 800}, {"width": 360, "height": 700}),
     ids=("desktop", "mobile"),
 )
-def test_long_fallback_run_id_is_single_line_clipped_and_fully_accessible(
+def test_long_fallback_run_id_is_contained_and_fully_accessible(
     chromium_browser: Any, viewport: dict[str, int]
 ) -> None:
     template = representative_build_data()["runs"]["validation_history_rows"][0]
@@ -2469,26 +2469,40 @@ def test_long_fallback_run_id_is_single_line_clipped_and_fully_accessible(
     assert link.get_attribute("title") == full_label
     assert link.get_attribute("href") == PurePosixPath(history_path).name
     assert full_label in link.aria_snapshot()
-    assert link.evaluate(
+    rendering = link.evaluate(
         "element => ({"
         "overflow: getComputedStyle(element).overflow, "
         "textOverflow: getComputedStyle(element).textOverflow, "
         "whiteSpace: getComputedStyle(element).whiteSpace, "
         "clipped: element.scrollWidth > element.clientWidth"
         "})"
-    ) == {
-        "overflow": "hidden",
-        "textOverflow": "ellipsis",
-        "whiteSpace": "nowrap",
-        "clipped": True,
-    }
+    )
     cell_box = cell.bounding_box()
     link_box = link.bounding_box()
     assert cell_box is not None
     assert link_box is not None
-    assert cell_box["width"] <= 190
-    assert link_box["height"] <= 26
-    assert cell_box["height"] <= 80
+    if viewport["width"] <= 480:
+        assert rendering == {
+            "overflow": "hidden",
+            "textOverflow": "ellipsis",
+            "whiteSpace": "normal",
+            "clipped": False,
+        }
+        assert cell.get_attribute("data-mobile-label") == "Run"
+        scroll = page.locator("#validation-runs .table-scroll")
+        assert scroll.evaluate("element => element.scrollWidth") == scroll.evaluate(
+            "element => element.clientWidth"
+        )
+    else:
+        assert rendering == {
+            "overflow": "hidden",
+            "textOverflow": "ellipsis",
+            "whiteSpace": "nowrap",
+            "clipped": True,
+        }
+        assert cell_box["width"] <= 190
+        assert link_box["height"] <= 26
+        assert cell_box["height"] <= 80
 
     numbered_link = page.get_by_role("link", name="Run 42", exact=True)
     assert numbered_link.get_attribute("class") is None
@@ -4450,67 +4464,127 @@ def test_ordinary_words_are_not_broken_mid_word(chromium_browser: Any) -> None:
     assert styles["runCell"] == "anywhere"
 
 
-def test_cells_table_fits_a_narrow_viewport_and_the_run_table_keeps_its_fixed_layout(
+def test_cell_and_validation_tables_are_readable_without_horizontal_travel(
     chromium_browser: Any,
 ) -> None:
     """Measured at 390x844 before this fix: 1856px of cells table inside a 322px
-    scroller, 5.76 viewport widths of horizontal travel to relate an identity to
-    its result.
-
-    The validation-run table is deliberately NOT included. Its fixed layout and
-    overflowing scroller are asserted elsewhere in this file at a 600px viewport,
-    so releasing its width would mean editing those tests to match the code.
+    scroller and 1345px of validation runs inside the same width. Run detail
+    reached 1720px. Each narrow row must retain every field with its visible
+    heading while keeping identity and result in the same viewport.
     """
     data = representative_build_data()
     data = _validated(data)
     files = render_page.render_site(_build(data), data)
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    _many_browser_cells(files, 330)
 
     page = chromium_browser.new_page(viewport={"width": 390, "height": 844})
     _browser_route(page, files)
     page.goto("http://127.0.0.1/cells/index.html")
     _wait_for_verified_data(page)
-    # DIFFERENTIAL, not an absolute bar. Ten columns of cell identity cannot be
-    # made to fit 322px without dropping data, so an absolute threshold here
-    # would either be unreachable or be whatever number happened to pass. This
-    # measures the same page twice -- once as shipped, once with the narrow-width
-    # rule defeated -- so it proves the rule is doing the work rather than
-    # asserting a figure chosen after the fact.
-    ratio = (
+    assert page.locator("#cell-results > tr:not([hidden])").count() == 50
+    assert "Showing 1–50 of 330 matching cells" in page.locator(
+        "[data-cell-page-summary]"
+    ).inner_text()
+    filter_layout = page.evaluate(
         "() => {"
-        "  const scroll = document.querySelector('#all-cells .table-scroll');"
-        "  return scroll.scrollWidth / Math.max(1, scroll.clientWidth);"
+        "  const form = document.querySelector('.cell-filters');"
+        "  const search = form.querySelector('.search-control').getBoundingClientRect();"
+        "  const lane = form.elements.namedItem('lane').closest('label').getBoundingClientRect();"
+        "  const category = form.elements.namedItem('category').closest('label').getBoundingClientRect();"
+        "  return {searchWidth: search.width, fieldWidth: lane.width, "
+        "          laneTop: lane.top, categoryTop: category.top};"
         "}"
     )
-    cells_ratio = page.evaluate(ratio)
-    page.add_style_tag(
-        content=(
-            "@media (max-width: 48rem) {"
-            "  .table-scroll table:not(.validation-runs-table) {"
-            "    width: max-content;"
-            "  }"
-            "}"
-        )
+    assert filter_layout["searchWidth"] >= 1.8 * filter_layout["fieldWidth"]
+    assert filter_layout["laneTop"] == filter_layout["categoryTop"]
+    cell_scroll = page.locator("#all-cells .table-scroll")
+    assert cell_scroll.evaluate("element => element.scrollWidth") == cell_scroll.evaluate(
+        "element => element.clientWidth"
     )
-    unfixed_ratio = page.evaluate(ratio)
+    cell_labels = page.locator(
+        "#cell-results > tr:not([hidden])"
+    ).first.locator(":scope > *").evaluate_all(
+        "cells => cells.map(cell => cell.dataset.mobileLabel)"
+    )
+    assert cell_labels == [
+        "Category",
+        "TestName",
+        "Mode",
+        "Backend",
+        "Lane",
+        "Latest result",
+        "Latest result time",
+        "Latest result tree",
+        "Physical rows",
+        "Represented Hermit runs",
+    ]
+    assert page.locator("#cell-results > tr:not([hidden]) > td").first.evaluate(
+        "cell => getComputedStyle(cell, '::before').content"
+    ) == '"Category"'
+    cell_order = page.locator(".cell-filters .mobile-table-order")
+    assert cell_order.is_visible()
+    cell_order.locator('select[name="sort"]').select_option("result")
+    cell_order.locator('select[name="direction"]').select_option("desc")
+    assert "sort=result" in urlsplit(page.url).query
+    assert "direction=desc" in urlsplit(page.url).query
+
     page.goto("http://127.0.0.1/runs/index.html")
     page.wait_for_selector(".validation-runs-table")
-    run_layout = page.evaluate(
-        "() => getComputedStyle("
-        "document.querySelector('.validation-runs-table')).tableLayout"
+    run_scroll = page.locator("#validation-runs .table-scroll")
+    assert run_scroll.evaluate("element => element.scrollWidth") == run_scroll.evaluate(
+        "element => element.clientWidth"
     )
-    page.close()
+    heading_box = page.locator(".validation-runs-table thead").bounding_box()
+    assert heading_box is not None
+    assert heading_box["width"] <= 1
+    assert heading_box["height"] <= 1
+    assert page.locator(
+        ".validation-runs-table thead .table-sort"
+    ).first.get_attribute("tabindex") == "-1"
+    run_labels = page.locator(
+        ".validation-runs-table tbody tr:not([hidden])"
+    ).first.locator(":scope > *").evaluate_all(
+        "cells => cells.map(cell => cell.dataset.mobileLabel)"
+    )
+    assert run_labels == [
+        "Run",
+        "Ledger record",
+        "Validate path",
+        "Cells selected by that path",
+        "Cells recorded",
+        "Run result",
+        "Hermit commit",
+        "Started",
+        "Wall clock",
+    ]
+    run_order = page.locator(
+        '[data-list-controls="validation-runs"] .mobile-table-order'
+    )
+    assert run_order.is_visible()
+    run_order.locator('select[name="sort"]').select_option("path")
+    run_order.locator('select[name="direction"]').select_option("asc")
+    assert "runs_sort=path" in urlsplit(page.url).query
+    assert "runs_direction=asc" in urlsplit(page.url).query
 
-    assert unfixed_ratio > cells_ratio, "the narrow-width rule changed nothing"
-    assert cells_ratio <= unfixed_ratio * 0.75, (
-        "the narrow-width rule should remove a substantial part of the "
-        f"horizontal travel; measured {cells_ratio:.2f} against {unfixed_ratio:.2f}"
-    )
-    # Honest bound: this REDUCES the sideways travel, it does not remove it. Ten
-    # columns still do not fit a phone, and the residual is reported as an
-    # unfixed part of the review finding rather than hidden behind a passing
-    # threshold.
-    assert cells_ratio > 1.0
-    assert run_layout == "fixed"
+    page.goto(f"http://127.0.0.1/{model.history_paths[0]}")
+    recorded = page.locator("#recorded-cells .responsive-record-table")
+    recorded.wait_for()
+    recorded_scroll = recorded.locator("xpath=..")
+    assert recorded_scroll.evaluate(
+        "element => element.scrollWidth"
+    ) == recorded_scroll.evaluate("element => element.clientWidth")
+    assert recorded.locator("tbody tr").first.locator(":scope > *").evaluate_all(
+        "cells => cells.map(cell => cell.dataset.mobileLabel)"
+    ) == [
+        "Cell",
+        "TEST-RESULT",
+        "COMMIT-VERDICT",
+        "Comparison tier",
+        "Recorded comparison details",
+    ]
+    assert page.evaluate("() => document.documentElement.scrollWidth") == 390
+    page.close()
 
 
 def test_landing_introduction_separates_historical_results_from_current_progress() -> None:

@@ -2183,7 +2183,7 @@ def _run_listing(model: SiteModel, page: str, *, show_heading: bool = True) -> s
       {heading}
       <p>Whole-run result, the cells selected by its named validate path, and each cell verdict are separate recorded facts.</p>
       {controls}
-      <div class="table-scroll"><table class="validation-runs-table"><caption>Current and superseded admitted validation ledger rows.</caption><colgroup><col class="run-column"><col class="record-column"><col class="path-column"><col class="count-column"><col class="count-column"><col class="result-column"><col class="commit-column"><col class="time-column"><col class="duration-column"></colgroup>
+      <div class="table-scroll"><table class="validation-runs-table responsive-record-table"><caption>Current and superseded admitted validation ledger rows.</caption><colgroup><col class="run-column"><col class="record-column"><col class="path-column"><col class="count-column"><col class="count-column"><col class="result-column"><col class="commit-column"><col class="time-column"><col class="duration-column"></colgroup>
         <thead><tr>{headings}</tr></thead>
         <tbody>{"".join(rows)}</tbody></table></div>
     </section>"""
@@ -2423,7 +2423,14 @@ def _collection_controls(
         '<option value="asc">Ascending</option><option value="desc">Descending</option></select>'
     )
     if sort_in_table:
-        sort_controls = hidden_sort_controls
+        sort_controls = (
+            '<div class="mobile-table-order">'
+            f'<label>Order <select name="sort" aria-label="Sort key for {_escape(noun)}">'
+            f"{sort_options}</select></label>"
+            f'<label>Direction <select name="direction" aria-label="Sort direction for {_escape(noun)}">'
+            '<option value="asc">Ascending</option><option value="desc">Descending</option></select></label>'
+            "</div>"
+        )
     else:
         sort_buttons = "".join(
             _collection_sort_button(
@@ -2458,7 +2465,7 @@ def _collection_controls(
     return f"""
       <form class="list-controls" data-list-controls="{_escape(collection_id)}" data-query-prefix="{_escape(query_prefix)}" data-page-size="{page_size}" data-default-sort="{_escape(default_sort)}" data-default-direction="{_escape(default_direction)}" data-tie-source="{_escape(tie_source)}" data-tie-direction="{_escape(tie_direction)}"{tie_sort_attribute}{child_attribute} hidden>
         <fieldset><legend>Find and order {_escape(noun)}</legend>
-          <label>Search <input name="q" type="search" maxlength="256"></label>
+          <label class="search-control">Search <input name="q" type="search" maxlength="256"></label>
           {filter_controls}
           {sort_controls}
         </fieldset>
@@ -2509,7 +2516,7 @@ def _cell_filter_form(
     return f"""
     <form class="cell-filters" data-cell-filter-form hidden>
       <fieldset><legend>Find cells</legend>
-        <label>Search <input name="q" type="search" maxlength="256"></label>
+        <label class="search-control">Search <input name="q" type="search" maxlength="256"></label>
         <input name="page" type="hidden" value="1">
         <label>Lane <select name="lane">{_options(values('lane'))}</select></label>
         <label>Category <select name="category">{_options(values('category'))}</select></label>
@@ -2524,10 +2531,10 @@ def _cell_filter_form(
         <label>Population <select name="population"><option value="in_manifest">In the manifest</option><option value="not_in_current_manifest">Recorded identity outside current manifest</option></select></label>
         <select name="evidence" hidden><option value=""></option><option value="complete">Recorded</option></select>
       </fieldset>
-      <select name="sort" aria-label="Sort" hidden>
-        <option value="manifest">Manifest order</option><option value="cell">Cell</option><option value="test">TestName</option><option value="lane">Lane</option><option value="category">Category</option><option value="mode">Mode</option><option value="backend">Backend</option><option value="selected_by_path">Selected by path</option><option value="state">State</option><option value="result">Latest result</option><option value="latest_result_time">Latest result time</option><option value="latest_result_tree">Latest result tree</option><option value="physical_row_count">Physical rows</option><option value="represented_run_count">Represented Hermit runs</option>
-      </select>
-      <select name="direction" aria-label="Sort direction" hidden><option value="asc">Ascending</option><option value="desc">Descending</option></select>
+      <div class="mobile-table-order">
+        <label>Order <select name="sort" aria-label="Sort"><option value="manifest">Manifest order</option><option value="cell">Cell</option><option value="test">TestName</option><option value="lane">Lane</option><option value="category">Category</option><option value="mode">Mode</option><option value="backend">Backend</option><option value="selected_by_path">Selected by path</option><option value="state">State</option><option value="result">Latest result</option><option value="latest_result_time">Latest result time</option><option value="latest_result_tree">Latest result tree</option><option value="physical_row_count">Physical rows</option><option value="represented_run_count">Represented Hermit runs</option></select></label>
+        <label>Direction <select name="direction" aria-label="Sort direction"><option value="asc">Ascending</option><option value="desc">Descending</option></select></label>
+      </div>
       <div class="filter-actions"><button type="button" data-clear-cell-filters>Clear filters</button></div>
     </form>"""
 
@@ -2593,7 +2600,7 @@ def _outside_table(model: SiteModel, page: str) -> str:
     return f"""
     <div id="recorded-not-in-current-manifest" hidden>
       <h3>Recorded cell identities outside the current manifest</h3>
-      <div class="table-scroll"><table><caption>Recorded evidence whose cell identity is outside the current manifest.</caption><thead><tr>{headings}</tr></thead><tbody id="recorded-not-in-current-manifest-results">{"".join(rows)}</tbody></table></div>
+      <div class="table-scroll"><table class="responsive-record-table"><caption>Recorded evidence whose cell identity is outside the current manifest.</caption><thead><tr>{headings}</tr></thead><tbody id="recorded-not-in-current-manifest-results">{"".join(rows)}</tbody></table></div>
     </div>"""
 
 
@@ -2692,7 +2699,7 @@ def _cells_listing_page(
     <section id="test-matrix"><h2>Test Matrix</h2>{pagination}
       <div id="all-cells" data-in-manifest-listing>
         <p>{model.data['counts']['in_manifest_cell_count']} cells are in the manifest; this table has {len(cells)} rows. {table_explanation}</p>
-        <div class="table-scroll"><table><caption>{_escape(table_caption)}</caption><thead><tr>{headings}</tr></thead><tbody id="cell-results">{rows}</tbody></table></div>
+        <div class="table-scroll"><table class="responsive-record-table"><caption>{_escape(table_caption)}</caption><thead><tr>{headings}</tr></thead><tbody id="cell-results">{rows}</tbody></table></div>
       </div>
       {_outside_table(model, page)}
     </section>
@@ -3037,7 +3044,7 @@ def _recorded_cells(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
             f'<section id="recorded-cells"><h2>Recorded results for cells selected by {_escape(path_name)}</h2>'
             f'<p>{len(selected_records)} selected cells have recorded results in this ledger row.</p>'
             f'{controls(selected_records, "recorded-cells", "recorded_", "recorded selected cells")}'
-            f'<div class="table-scroll"><table><caption>TEST-RESULT and COMMIT-VERDICT are separate adjacent columns.</caption><thead><tr>{headings(include_reason=False)}</tr></thead>'
+            f'<div class="table-scroll"><table class="responsive-record-table"><caption>TEST-RESULT and COMMIT-VERDICT are separate adjacent columns.</caption><thead><tr>{headings(include_reason=False)}</tr></thead>'
             f'<tbody data-list-target="recorded-cells">{"".join(row_html(record, include_reason=False) for record in selected_records[:LIST_PAGE_SIZE])}</tbody></table></div>'
             f'<template data-list-records="recorded-cells"><span data-list-records-json>{_escape(_canonical(inline_records))}</span></template></section>'
         )
@@ -3046,7 +3053,7 @@ def _recorded_cells(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
             f'<section id="recorded-not-selected"><h2>Recorded but not selected by {_escape(path_name)}</h2>'
             f'<p>{len(other_records)} recorded cells are absent from this run\'s {_escape(path_name)} selection.</p>'
             f'{controls(other_records, "recorded-not-selected", "recorded_other_", "recorded cells not selected by this path")}'
-            f'<div class="table-scroll"><table><caption>Recorded cell results outside this run\'s named selection.</caption><thead><tr>{headings(include_reason=True)}</tr></thead>'
+            f'<div class="table-scroll"><table class="responsive-record-table"><caption>Recorded cell results outside this run\'s named selection.</caption><thead><tr>{headings(include_reason=True)}</tr></thead>'
             f'<tbody>{"".join(row_html(record, include_reason=True) for record in other_records)}</tbody></table></div></section>'
         )
     artifact = results["recorded"]["artifact"]

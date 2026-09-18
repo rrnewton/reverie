@@ -628,6 +628,7 @@
         : hydratedOutsideRow(record),
     );
     body.replaceChildren(...rows);
+    labelResponsiveTable(body.closest('.responsive-record-table'));
   }
 
   function showInvalid(view, message) {
@@ -1593,6 +1594,7 @@
         record.parent.appendChild(record.element);
       }
     }
+    labelResponsiveTables(view.scope);
     return {ok: true, page, matching: matching.length, childCount: null};
   }
 
@@ -1851,6 +1853,7 @@
   }
 
   function initializeGeneric() {
+    labelResponsiveTables();
     const forms = Array.from(document.querySelectorAll('[data-list-controls]'));
     if (!forms.length) {
       return;
@@ -2074,6 +2077,44 @@
       element.className = className;
     }
     return element;
+  }
+
+  function labelResponsiveTable(table) {
+    if (!table) {
+      return;
+    }
+    const headings = Array.from(
+      table.querySelectorAll(':scope > thead > tr > th'),
+    ).map(heading => {
+      const wrapper = heading.querySelector('.column-heading');
+      const button = heading.querySelector('.table-sort');
+      const label = wrapper?.firstElementChild || button?.firstElementChild;
+      return label?.textContent.trim() || '';
+    });
+    if (!headings.length || headings.some(label => !label)) {
+      throw new Error('responsive table has an incomplete heading');
+    }
+    for (const row of table.querySelectorAll(':scope > tbody > tr')) {
+      const cells = Array.from(row.children);
+      if (cells.length !== headings.length) {
+        throw new Error('responsive table row does not match its headings');
+      }
+      cells.forEach((cell, index) => {
+        cell.dataset.mobileLabel = headings[index];
+      });
+    }
+    const narrow =
+      typeof root.matchMedia === 'function' &&
+      root.matchMedia('(max-width: 30rem)').matches;
+    for (const button of table.querySelectorAll('thead .table-sort')) {
+      button.tabIndex = narrow ? -1 : 0;
+    }
+  }
+
+  function labelResponsiveTables(scope = document) {
+    for (const table of scope.querySelectorAll('.responsive-record-table')) {
+      labelResponsiveTable(table);
+    }
   }
 
   // A cell identity is one unbroken token far wider than a phone, so the only

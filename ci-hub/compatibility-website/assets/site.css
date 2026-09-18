@@ -898,6 +898,19 @@ footer {
     gap: 0.3rem;
   }
 
+  .cell-filters fieldset,
+  .list-controls fieldset {
+    gap: 0.5rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cell-filters .search-control,
+  .list-controls .search-control,
+  .list-controls legend,
+  .mobile-table-order {
+    grid-column: 1 / -1;
+  }
+
   .list-pagination {
     align-items: center;
   }
@@ -909,32 +922,94 @@ footer {
    on the left to its result on the right meant scrolling across four to six
    screens and back, with nothing holding the identity in view.
 
-   The cause is `table { width: max-content }` plus a fixed `width: 80rem` on the
-   validation-run table: together they tell the table never to wrap, at every
-   viewport. Releasing both below 48rem lets the columns wrap and the table fit
-   the screen. The table gets taller, which is the correct trade on a phone --
-   vertical scrolling is one gesture and keeps each row's identity beside its
-   result, horizontal scrolling is two and does not.
+   Below 48rem ordinary cell tables may wrap. Below 30rem the high-column-count
+   cell and validation tables become labelled rows. Every value remains present,
+   but an identity and its result can be read without horizontal travel. Desktop
+   and 600px layouts retain the fixed validation-run table and its clipped run id. */
+.mobile-table-order {
+  display: none;
+}
 
-   Deliberately scoped to narrow viewports. The reviewer found the desktop
-   layout sound, so it keeps `max-content` and is not touched here. The
-   horizontal scroller stays in place as the fallback for anything that still
-   cannot fit.
-
-   THE VALIDATION-RUN TABLE IS DELIBERATELY EXCLUDED, and that exclusion is the
-   whole reason this selector carries a `:not()`. Its fixed layout, its run-id
-   column under 250px, its clipped-with-ellipsis run id and the fact that its
-   scroller overflows are all ASSERTED by
-   test_compatibility_website_render_page.py -- at a 600px viewport, which is
-   inside this media query. Releasing its width made
-   `test_validation_runs_default_to_started_descending_and_use_recorded_wall_clock`
-   and `test_long_fallback_run_id_is_single_line_clipped_and_fully_accessible`
-   fail. That table's horizontal scroll is a decision the suite protects, not an
-   oversight, so satisfying the review finding there would have meant editing
-   those tests to match the code. It is left alone and reported as unfixed
-   instead. */
 @media (max-width: 48rem) {
   .table-scroll table:not(.validation-runs-table) {
     width: auto;
+  }
+}
+
+@media (max-width: 30rem) {
+  .mobile-table-order {
+    display: flex;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .mobile-table-order label {
+    flex: 1 1 8rem;
+  }
+
+  .responsive-record-table {
+    display: block;
+    min-width: 0;
+    table-layout: auto;
+    width: 100%;
+  }
+
+  .responsive-record-table caption,
+  .responsive-record-table tbody,
+  .responsive-record-table tr {
+    display: block;
+    width: 100%;
+  }
+
+  .responsive-record-table colgroup,
+  .responsive-record-table thead {
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    height: 1px;
+    overflow: hidden;
+    position: absolute;
+    white-space: nowrap;
+    width: 1px;
+  }
+
+  .responsive-record-table tbody tr {
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    margin: 0 0 0.75rem;
+  }
+
+  .responsive-record-table tbody tr[hidden] {
+    display: none;
+  }
+
+  .responsive-record-table tbody th,
+  .responsive-record-table tbody td {
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    display: grid;
+    gap: 0.5rem;
+    grid-template-columns: minmax(6.75rem, 2fr) minmax(0, 3fr);
+    min-width: 0;
+    overflow: visible;
+    padding: 0.45rem 0.6rem;
+    white-space: normal;
+    width: 100%;
+  }
+
+  .responsive-record-table tbody th::before,
+  .responsive-record-table tbody td::before {
+    color: var(--muted);
+    content: attr(data-mobile-label);
+    font-weight: 700;
+    overflow-wrap: break-word;
+  }
+
+  .responsive-record-table tbody tr > :last-child {
+    border-bottom: 0;
+  }
+
+  .responsive-record-table .run-id-link {
+    white-space: normal;
   }
 }
