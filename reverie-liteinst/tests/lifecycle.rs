@@ -17,11 +17,9 @@ use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_liteinst::LiteinstBackend;
 use reverie_liteinst::LiteinstDispatchPath;
-use reverie_liteinst::TOOL_PRELOAD_ENV;
 
 const RPC_GETPID: u64 = 1;
 const RPC_FORK: u64 = 4;
-const BACKEND_OUTPUT_CHILD_ENV: &str = "REVERIE_LITEINST_BACKEND_OUTPUT_TEST_CHILD";
 
 #[derive(Debug, Default)]
 struct LifecycleGlobal {
@@ -275,47 +273,38 @@ async fn fallback_fork_reports_both_process_dispatch_paths() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn backend_trait_output_capture_reports_bytes_status_and_stats() {
-    if std::env::var_os(BACKEND_OUTPUT_CHILD_ENV).is_none() {
-        let (_preload_directory, preload) = compile_noop_preload();
-        let child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "backend_trait_output_capture_reports_bytes_status_and_stats",
-                "--exact",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(BACKEND_OUTPUT_CHILD_ENV, "1")
-            .env(TOOL_PRELOAD_ENV, preload)
-            .output()
-            .unwrap();
-        assert!(
-            child.status.success(),
-            "isolated Backend::run_with_output test failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&child.stdout),
-            String::from_utf8_lossy(&child.stderr)
+async fn backend_trait_fails_closed_before_resolving_a_preload_or_spawning() {
+    fn assert_unsupported(error: Error) {
+        let Error::Io(error) = error else {
+            panic!("generic LiteInst Backend refusal has the wrong type: {error}");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert_eq!(
+            error.to_string(),
+            "the generic LiteInst Backend contract is disabled until the reviewed after-loader authority is part of its API"
         );
-        return;
     }
 
-    let (output, global, stats) = tokio::time::timeout(
-        Duration::from_secs(10),
-        <LiteinstBackend as Backend>::run_with_output::<CoordinatorOnlyTool>(
-            guest_command("fast-path"),
-            (),
-        ),
-    )
-    .await
-    .expect("Backend::run_with_output hung on the LiteInst path")
-    .unwrap();
-
-    assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
-    assert_eq!(output.stdout, b"calls=8 traps=1 hooks=8\n", "{output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
-    assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
-    assert_eq!(stats.process_reports(), 1, "{stats}");
-    assert!(stats.patch_shapes().patched_rips() >= 1, "{stats}");
-    assert!(stats.patch_shapes().candidate_rips() >= 1, "{stats}");
+    let command = || Command::new("/definitely/not/spawned/by-liteinst-backend");
+    assert_unsupported(
+        <LiteinstBackend as Backend>::run::<CoordinatorOnlyTool>(command(), ())
+            .await
+            .expect_err("generic LiteInst Backend::run unexpectedly launched direct mode"),
+    );
+    assert_unsupported(
+        <LiteinstBackend as Backend>::run_with_stats::<CoordinatorOnlyTool>(command(), ())
+            .await
+            .expect_err(
+                "generic LiteInst Backend::run_with_stats unexpectedly launched direct mode",
+            ),
+    );
+    assert_unsupported(
+        <LiteinstBackend as Backend>::run_with_output::<CoordinatorOnlyTool>(command(), ())
+            .await
+            .expect_err(
+                "generic LiteInst Backend::run_with_output unexpectedly launched direct mode",
+            ),
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

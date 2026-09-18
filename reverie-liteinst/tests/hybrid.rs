@@ -1680,28 +1680,28 @@ async fn task_subscriber_does_not_report_task_creation_without_one() {
     assert!(output.status.success(), "{output:?}");
 }
 
-/// KNOWN GAP, committed as a reproducer rather than described: two generations
-/// of children do not reliably complete under this harness.
+/// The hybrid follows a second-generation child and retires both exact
+/// descendant cleanup records after their typed task futures join.
 ///
-/// The grandchild's new-task event belongs to a NON-root parent, which is the
-/// case the cleanup guard's newborn registration has to cover -- scoping that
-/// registration to the root leaves the grandchild unregistered and
-/// `handle_new_task` aborts on `stored child event ownership must remain
-/// registered`. That much is fixed and this fixture does reach
-/// `fork-tree-followed`: it passed once here, and Hermit's
-/// `determinism-stress-c/fork-tree` reaches canonical L2 under the real Detcore
-/// tool, which sequentializes the guest.
-///
-/// It is `ignore`d because it is NOT reliable here: after that single pass it
-/// wedged with no forward progress on three consecutive runs, under both this
-/// tool and a variant that also subscribes to the task-creating syscalls. A
-/// flaky hang is worse than no test, so it does not run by default. Do not
-/// treat the fix it covers as verified until this is diagnosed and the `ignore`
-/// removed.
+/// The fixture holds the grandchild behind a pipe until its non-root parent has
+/// continued far enough to publish a readiness byte. Thus no racing SIGCHLD can
+/// mask an erroneous post-NewChild single-step. Run it once without subscribing
+/// to task-creating syscalls and once with those sites instrumented; both paths
+/// must reach and reap the grandchild, while the subscribing path must report
+/// exactly the fixture's two forks.
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "known gap: second-generation fork does not reliably complete in this harness"]
 async fn hybrid_follows_a_grandchild() {
     run_multi_task_fixture::<PassthroughGetpid>("hybrid_fork_tree.c", "fork-tree-followed\n").await;
+    let global = run_multi_task_fixture::<PassthroughGetpidAndTaskCreation>(
+        "hybrid_fork_tree.c",
+        "fork-tree-followed\n",
+    )
+    .await;
+    assert_eq!(
+        global.task_creation_events.load(Ordering::SeqCst),
+        2,
+        "the task-subscribing tool did not observe exactly the two fixture forks"
+    );
 }
 
 /// A child that removes the required preload before exec fails the whole

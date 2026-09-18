@@ -1,0 +1,2535 @@
+    Checking safeptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/safeptrace)
+    Checking reverie-ptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace)
+error: digits of hex, binary or octal literal not in groups of equal size
+    --> reverie-ptrace/src/task/after_loader_task.rs:7704:26
+     |
+7704 |             (0x7d6_f702, 0x7d70_000),
+     |                          ^^^^^^^^^^ help: consider: `0x07d7_0000`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#unusual_byte_groupings
+     = note: `-D clippy::unusual-byte-groupings` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::unusual_byte_groupings)]`
+
+error: fields `sha256` and `bytes` are never read
+   --> reverie-ptrace/src/after_loader.rs:159:5
+    |
+153 | pub(crate) struct ImmutableAfterLoaderArtifact {
+    |                   ---------------------------- fields in this struct
+...
+159 |     sha256: [u8; 32],
+    |     ^^^^^^
+160 |     bytes: Arc<[u8]>,
+    |     ^^^^^
+    |
+    = note: `ImmutableAfterLoaderArtifact` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `-D dead-code` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: multiple methods are never used
+   --> reverie-ptrace/src/after_loader.rs:240:19
+    |
+164 | impl ImmutableAfterLoaderArtifact {
+    | --------------------------------- methods in this implementation
+...
+240 |     pub(crate) fn role(&self) -> &ImmutableAfterLoaderRole {
+    |                   ^^^^
+...
+244 |     pub(crate) fn logical_path(&self) -> &Path {
+    |                   ^^^^^^^^^^^^
+...
+248 |     pub(crate) fn source_identity(&self) -> FileIdentity {
+    |                   ^^^^^^^^^^^^^^^
+...
+252 |     pub(crate) fn sealed_source(&self) -> &Path {
+    |                   ^^^^^^^^^^^^^
+...
+256 |     pub(crate) fn raw_fd(&self) -> i32 {
+    |                   ^^^^^^
+...
+260 |     pub(crate) fn bytes(&self) -> &[u8] {
+    |                   ^^^^^
+...
+264 |     pub(crate) fn sealed_identity(&self) -> FileIdentity {
+    |                   ^^^^^^^^^^^^^^^
+...
+268 |     pub(crate) fn sha256(&self) -> [u8; 32] {
+    |                   ^^^^^^
+
+error: method `artifact` is never used
+   --> reverie-ptrace/src/after_loader.rs:299:19
+    |
+279 | impl ImmutableAfterLoaderBundle {
+    | ------------------------------- method in this implementation
+...
+299 |     pub(crate) fn artifact(
+    |                   ^^^^^^^^
+
+error: fields `interpreter`, `immutable_bundle`, and `loader_policy` are never read
+    --> reverie-ptrace/src/after_loader.rs:1026:16
+     |
+1024 | pub struct LiteinstAfterLoaderConfig {
+     |            ------------------------- fields in this struct
+1025 |     pub(crate) executable: LiteinstCallerImage,
+1026 |     pub(crate) interpreter: LiteinstCallerImage,
+     |                ^^^^^^^^^^^
+...
+1030 |     pub(crate) immutable_bundle: Arc<ImmutableAfterLoaderBundle>,
+     |                ^^^^^^^^^^^^^^^^
+1031 |     loader_policy: LiteinstLoaderPolicy,
+     |     ^^^^^^^^^^^^^
+     |
+     = note: `LiteinstAfterLoaderConfig` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+error: methods `immutable_bundle` and `loader_policy` are never used
+    --> reverie-ptrace/src/after_loader.rs:1229:19
+     |
+1056 | impl LiteinstAfterLoaderConfig {
+     | ------------------------------ methods in this implementation
+...
+1229 |     pub(crate) fn immutable_bundle(&self) -> &Arc<ImmutableAfterLoaderBundle> {
+     |                   ^^^^^^^^^^^^^^^^
+...
+1233 |     pub(crate) fn loader_policy(&self) -> &LiteinstLoaderPolicy {
+     |                   ^^^^^^^^^^^^^
+
+error: constant `EXT4_SUPER_MAGIC` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:11:7
+   |
+11 | const EXT4_SUPER_MAGIC: i64 = 0xef53;
+   |       ^^^^^^^^^^^^^^^^
+
+error: constant `BTRFS_SUPER_MAGIC` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:12:7
+   |
+12 | const BTRFS_SUPER_MAGIC: i64 = 0x9123_683e;
+   |       ^^^^^^^^^^^^^^^^^
+
+error: constant `F2FS_SUPER_MAGIC` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:13:7
+   |
+13 | const F2FS_SUPER_MAGIC: i64 = 0xf2f5_2010;
+   |       ^^^^^^^^^^^^^^^^
+
+error: constant `XFS_SUPER_MAGIC` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:14:7
+   |
+14 | const XFS_SUPER_MAGIC: i64 = 0x5846_5342;
+   |       ^^^^^^^^^^^^^^^
+
+error: constant `FS_IOC_GETFLAGS` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:16:7
+   |
+16 | const FS_IOC_GETFLAGS: libc::c_ulong = 0x8008_6601;
+   |       ^^^^^^^^^^^^^^^
+
+error: constant `FS_IOC_GETVERSION` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:17:7
+   |
+17 | const FS_IOC_GETVERSION: libc::c_ulong = 0x8008_7601;
+   |       ^^^^^^^^^^^^^^^^^
+
+error: constant `EXT4_IOC_GETVERSION` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:18:7
+   |
+18 | const EXT4_IOC_GETVERSION: libc::c_ulong = 0x8008_6603;
+   |       ^^^^^^^^^^^^^^^^^^^
+
+error: constant `FS_IOC_FSGETXATTR` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:19:7
+   |
+19 | const FS_IOC_FSGETXATTR: libc::c_ulong = 0x801c_581f;
+   |       ^^^^^^^^^^^^^^^^^
+
+error: constant `FS_SECRM_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:21:7
+   |
+21 | const FS_SECRM_FL: u32 = 0x0000_0001;
+   |       ^^^^^^^^^^^
+
+error: constant `FS_UNRM_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:22:7
+   |
+22 | const FS_UNRM_FL: u32 = 0x0000_0002;
+   |       ^^^^^^^^^^
+
+error: constant `FS_COMPR_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:23:7
+   |
+23 | const FS_COMPR_FL: u32 = 0x0000_0004;
+   |       ^^^^^^^^^^^
+
+error: constant `FS_SYNC_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:24:7
+   |
+24 | const FS_SYNC_FL: u32 = 0x0000_0008;
+   |       ^^^^^^^^^^
+
+error: constant `FS_IMMUTABLE_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:25:7
+   |
+25 | const FS_IMMUTABLE_FL: u32 = 0x0000_0010;
+   |       ^^^^^^^^^^^^^^^
+
+error: constant `FS_APPEND_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:26:7
+   |
+26 | const FS_APPEND_FL: u32 = 0x0000_0020;
+   |       ^^^^^^^^^^^^
+
+error: constant `FS_NODUMP_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:27:7
+   |
+27 | const FS_NODUMP_FL: u32 = 0x0000_0040;
+   |       ^^^^^^^^^^^^
+
+error: constant `FS_NOATIME_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:28:7
+   |
+28 | const FS_NOATIME_FL: u32 = 0x0000_0080;
+   |       ^^^^^^^^^^^^^
+
+error: constant `FS_DIRTY_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:29:7
+   |
+29 | const FS_DIRTY_FL: u32 = 0x0000_0100;
+   |       ^^^^^^^^^^^
+
+error: constant `FS_COMPRBLK_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:30:7
+   |
+30 | const FS_COMPRBLK_FL: u32 = 0x0000_0200;
+   |       ^^^^^^^^^^^^^^
+
+error: constant `FS_NOCOMP_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:31:7
+   |
+31 | const FS_NOCOMP_FL: u32 = 0x0000_0400;
+   |       ^^^^^^^^^^^^
+
+error: constant `FS_ENCRYPT_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:32:7
+   |
+32 | const FS_ENCRYPT_FL: u32 = 0x0000_0800;
+   |       ^^^^^^^^^^^^^
+
+error: constant `FS_INDEX_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:33:7
+   |
+33 | const FS_INDEX_FL: u32 = 0x0000_1000;
+   |       ^^^^^^^^^^^
+
+error: constant `FS_IMAGIC_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:34:7
+   |
+34 | const FS_IMAGIC_FL: u32 = 0x0000_2000;
+   |       ^^^^^^^^^^^^
+
+error: constant `FS_JOURNAL_DATA_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:35:7
+   |
+35 | const FS_JOURNAL_DATA_FL: u32 = 0x0000_4000;
+   |       ^^^^^^^^^^^^^^^^^^
+
+error: constant `FS_NOTAIL_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:36:7
+   |
+36 | const FS_NOTAIL_FL: u32 = 0x0000_8000;
+   |       ^^^^^^^^^^^^
+
+error: constant `FS_DIRSYNC_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:37:7
+   |
+37 | const FS_DIRSYNC_FL: u32 = 0x0001_0000;
+   |       ^^^^^^^^^^^^^
+
+error: constant `FS_TOPDIR_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:38:7
+   |
+38 | const FS_TOPDIR_FL: u32 = 0x0002_0000;
+   |       ^^^^^^^^^^^^
+
+error: constant `FS_HUGE_FILE_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:39:7
+   |
+39 | const FS_HUGE_FILE_FL: u32 = 0x0004_0000;
+   |       ^^^^^^^^^^^^^^^
+
+error: constant `FS_EXTENT_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:40:7
+   |
+40 | const FS_EXTENT_FL: u32 = 0x0008_0000;
+   |       ^^^^^^^^^^^^
+
+error: constant `FS_VERITY_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:41:7
+   |
+41 | const FS_VERITY_FL: u32 = 0x0010_0000;
+   |       ^^^^^^^^^^^^
+
+error: constant `FS_EA_INODE_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:42:7
+   |
+42 | const FS_EA_INODE_FL: u32 = 0x0020_0000;
+   |       ^^^^^^^^^^^^^^
+
+error: constant `FS_EOFBLOCKS_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:43:7
+   |
+43 | const FS_EOFBLOCKS_FL: u32 = 0x0040_0000;
+   |       ^^^^^^^^^^^^^^^
+
+error: constant `FS_NOCOW_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:44:7
+   |
+44 | const FS_NOCOW_FL: u32 = 0x0080_0000;
+   |       ^^^^^^^^^^^
+
+error: constant `FS_DAX_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:45:7
+   |
+45 | const FS_DAX_FL: u32 = 0x0200_0000;
+   |       ^^^^^^^^^
+
+error: constant `FS_INLINE_DATA_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:46:7
+   |
+46 | const FS_INLINE_DATA_FL: u32 = 0x1000_0000;
+   |       ^^^^^^^^^^^^^^^^^
+
+error: constant `FS_PROJINHERIT_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:47:7
+   |
+47 | const FS_PROJINHERIT_FL: u32 = 0x2000_0000;
+   |       ^^^^^^^^^^^^^^^^^
+
+error: constant `FS_CASEFOLD_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:48:7
+   |
+48 | const FS_CASEFOLD_FL: u32 = 0x4000_0000;
+   |       ^^^^^^^^^^^^^^
+
+error: constant `FS_RESERVED_FL` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:49:7
+   |
+49 | const FS_RESERVED_FL: u32 = 0x8000_0000;
+   |       ^^^^^^^^^^^^^^
+
+error: constant `KNOWN_FS_FLAGS` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:50:7
+   |
+50 | const KNOWN_FS_FLAGS: u32 = FS_SECRM_FL
+   |       ^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_REALTIME` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:80:7
+   |
+80 | const FS_XFLAG_REALTIME: u32 = 0x0000_0001;
+   |       ^^^^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_PREALLOC` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:81:7
+   |
+81 | const FS_XFLAG_PREALLOC: u32 = 0x0000_0002;
+   |       ^^^^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_IMMUTABLE` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:82:7
+   |
+82 | const FS_XFLAG_IMMUTABLE: u32 = 0x0000_0008;
+   |       ^^^^^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_APPEND` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:83:7
+   |
+83 | const FS_XFLAG_APPEND: u32 = 0x0000_0010;
+   |       ^^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_SYNC` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:84:7
+   |
+84 | const FS_XFLAG_SYNC: u32 = 0x0000_0020;
+   |       ^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_NOATIME` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:85:7
+   |
+85 | const FS_XFLAG_NOATIME: u32 = 0x0000_0040;
+   |       ^^^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_NODUMP` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:86:7
+   |
+86 | const FS_XFLAG_NODUMP: u32 = 0x0000_0080;
+   |       ^^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_RTINHERIT` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:87:7
+   |
+87 | const FS_XFLAG_RTINHERIT: u32 = 0x0000_0100;
+   |       ^^^^^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_PROJINHERIT` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:88:7
+   |
+88 | const FS_XFLAG_PROJINHERIT: u32 = 0x0000_0200;
+   |       ^^^^^^^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_NOSYMLINKS` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:89:7
+   |
+89 | const FS_XFLAG_NOSYMLINKS: u32 = 0x0000_0400;
+   |       ^^^^^^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_EXTSIZE` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:90:7
+   |
+90 | const FS_XFLAG_EXTSIZE: u32 = 0x0000_0800;
+   |       ^^^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_EXTSZINHERIT` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:91:7
+   |
+91 | const FS_XFLAG_EXTSZINHERIT: u32 = 0x0000_1000;
+   |       ^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_NODEFRAG` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:92:7
+   |
+92 | const FS_XFLAG_NODEFRAG: u32 = 0x0000_2000;
+   |       ^^^^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_FILESTREAM` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:93:7
+   |
+93 | const FS_XFLAG_FILESTREAM: u32 = 0x0000_4000;
+   |       ^^^^^^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_DAX` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:94:7
+   |
+94 | const FS_XFLAG_DAX: u32 = 0x0000_8000;
+   |       ^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_COWEXTSIZE` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:95:7
+   |
+95 | const FS_XFLAG_COWEXTSIZE: u32 = 0x0001_0000;
+   |       ^^^^^^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_VERITY` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:97:7
+   |
+97 | const FS_XFLAG_VERITY: u32 = 0x0002_0000;
+   |       ^^^^^^^^^^^^^^^
+
+error: constant `FS_XFLAG_HASATTR` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:98:7
+   |
+98 | const FS_XFLAG_HASATTR: u32 = 0x8000_0000;
+   |       ^^^^^^^^^^^^^^^^
+
+error: constant `KNOWN_FS_XFLAGS` is never used
+  --> reverie-ptrace/src/after_loader/inode_policy.rs:99:7
+   |
+99 | const KNOWN_FS_XFLAGS: u32 = FS_XFLAG_REALTIME
+   |       ^^^^^^^^^^^^^^^
+
+error: constant `COMMON_STABLE_FS_FLAGS` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:118:7
+    |
+118 | const COMMON_STABLE_FS_FLAGS: u32 = FS_SYNC_FL | FS_IMMUTABLE_FL | FS_NODUMP_FL | FS_NOATIME_FL;
+    |       ^^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `COMMON_STABLE_FS_XFLAGS` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:119:7
+    |
+119 | const COMMON_STABLE_FS_XFLAGS: u32 =
+    |       ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_COMPRESSED` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:122:7
+    |
+122 | const STATX_ATTR_COMPRESSED: u64 = 0x0000_0004;
+    |       ^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_IMMUTABLE` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:123:7
+    |
+123 | const STATX_ATTR_IMMUTABLE: u64 = 0x0000_0010;
+    |       ^^^^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_APPEND` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:124:7
+    |
+124 | const STATX_ATTR_APPEND: u64 = 0x0000_0020;
+    |       ^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_NODUMP` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:125:7
+    |
+125 | const STATX_ATTR_NODUMP: u64 = 0x0000_0040;
+    |       ^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_ENCRYPTED` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:126:7
+    |
+126 | const STATX_ATTR_ENCRYPTED: u64 = 0x0000_0800;
+    |       ^^^^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_VERITY` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:127:7
+    |
+127 | const STATX_ATTR_VERITY: u64 = 0x0010_0000;
+    |       ^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_DAX` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:128:7
+    |
+128 | const STATX_ATTR_DAX: u64 = 0x0020_0000;
+    |       ^^^^^^^^^^^^^^
+
+error: constant `STATX_INODE_POLICY_ATTRIBUTES` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:129:7
+    |
+129 | const STATX_INODE_POLICY_ATTRIBUTES: u64 = STATX_ATTR_COMPRESSED
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: enum `StableInodeKind` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:157:17
+    |
+157 | pub(crate) enum StableInodeKind {
+    |                 ^^^^^^^^^^^^^^^
+
+error: method `encoding_tag` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:167:14
+    |
+166 | impl StableInodeKind {
+    | -------------------- method in this implementation
+167 |     const fn encoding_tag(self) -> u8 {
+    |              ^^^^^^^^^^^^
+
+error: enum `StableFilesystemProfile` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:180:6
+    |
+180 | enum StableFilesystemProfile {
+    |      ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: multiple associated items are never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:190:8
+    |
+189 | impl StableFilesystemProfile {
+    | ---------------------------- associated items in this implementation
+190 |     fn from_filesystem_type(filesystem_type: i64, kind: StableInodeKind) -> io::Result<Self> {
+    |        ^^^^^^^^^^^^^^^^^^^^
+...
+202 |     fn validate_kind(self, kind: StableInodeKind) -> io::Result<()> {
+    |        ^^^^^^^^^^^^^
+...
+211 |     const fn filesystem_type(self) -> i64 {
+    |              ^^^^^^^^^^^^^^^
+...
+220 |     const fn encoding_tag(self) -> u8 {
+    |              ^^^^^^^^^^^^
+...
+232 |     const fn statx_capability_mask(self) -> u64 {
+    |              ^^^^^^^^^^^^^^^^^^^^^
+...
+250 |     const fn allowed_flags(self, kind: StableInodeKind) -> u32 {
+    |              ^^^^^^^^^^^^^
+...
+277 |     const fn allowed_xflags(self, kind: StableInodeKind) -> u32 {
+    |              ^^^^^^^^^^^^^^
+...
+294 |     fn validate_payload(
+    |        ^^^^^^^^^^^^^^^^
+
+error: enum `InodeGenerationQuery` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:319:6
+    |
+319 | enum InodeGenerationQuery {
+    |      ^^^^^^^^^^^^^^^^^^^^
+
+error: struct `StableInodePolicy` is never constructed
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:330:19
+    |
+330 | pub(crate) struct StableInodePolicy {
+    |                   ^^^^^^^^^^^^^^^^^
+
+error: associated items `read`, `validate_statx`, `encode`, and `validate` are never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:345:19
+    |
+342 | impl StableInodePolicy {
+    | ---------------------- associated items in this implementation
+...
+345 |     pub(crate) fn read(
+    |                   ^^^^
+...
+375 |     pub(crate) fn validate_statx(
+    |                   ^^^^^^^^^^^^^^
+...
+419 |     pub(crate) fn encode(self, output: &mut Vec<u8>) {
+    |                   ^^^^^^
+...
+432 |     fn validate(self) -> io::Result<()> {
+    |        ^^^^^^^^
+
+error: function `mandatory_u32_ioctl` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:479:4
+    |
+479 | fn mandatory_u32_ioctl(descriptor: RawFd, request: libc::c_ulong, label: &str) -> io::Result<u32> {
+    |    ^^^^^^^^^^^^^^^^^^^
+
+error: function `read_fsxattr` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:493:4
+    |
+493 | fn read_fsxattr(descriptor: RawFd) -> io::Result<KernelFsxattr> {
+    |    ^^^^^^^^^^^^
+
+error: function `validate_fsxattr` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:514:4
+    |
+514 | fn validate_fsxattr(value: KernelFsxattr) -> io::Result<KernelFsxattr> {
+    |    ^^^^^^^^^^^^^^^^
+
+error: function `read_generation` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:521:4
+    |
+521 | fn read_generation(descriptor: RawFd, filesystem: StableFilesystemProfile) -> io::Result<u32> {
+    |    ^^^^^^^^^^^^^^^
+
+error: function `reconcile_ext4_generations` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:531:4
+    |
+531 | fn reconcile_ext4_generations(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `require_generation_value` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:547:4
+    |
+547 | fn require_generation_value(result: InodeGenerationQuery) -> io::Result<u32> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `optional_generation_ioctl` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:556:4
+    |
+556 | fn optional_generation_ioctl(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `classify_generation_result` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:572:4
+    |
+572 | fn classify_generation_result(result: Result<u32, i32>) -> io::Result<InodeGenerationQuery> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `invalid` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:582:4
+    |
+582 | fn invalid(message: impl Into<String>) -> io::Error {
+    |    ^^^^^^^
+
+error: constant `MAX_REVIEWED_MANIFEST` is never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:19:7
+   |
+19 | const MAX_REVIEWED_MANIFEST: usize = 64 * 1024;
+   |       ^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `MAX_COVERS` is never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:20:7
+   |
+20 | const MAX_COVERS: usize = 32;
+   |       ^^^^^^^^^^
+
+error: constant `MAX_LOADER_IMAGES` is never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:21:7
+   |
+21 | const MAX_LOADER_IMAGES: usize = 32;
+   |       ^^^^^^^^^^^^^^^^^
+
+error: constant `MAX_ENVIRONMENT` is never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:22:7
+   |
+22 | const MAX_ENVIRONMENT: usize = 256;
+   |       ^^^^^^^^^^^^^^^
+
+error: constant `MAX_ENVIRONMENT_BYTES` is never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:23:7
+   |
+23 | const MAX_ENVIRONMENT_BYTES: usize = 1024 * 1024;
+   |       ^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `PROFILE` is never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:24:7
+   |
+24 | const PROFILE: &str = "DynamicX86_64EtExecV3";
+   |       ^^^^^^^
+
+error: constant `STORE_POLICY` is never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:25:7
+   |
+25 | const STORE_POLICY: &str = "store_policy=fs-verity-sha256-local-ro-noatime-single-link-v1";
+   |       ^^^^^^^^^^^^
+
+error: constant `COVER_POLICY` is never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:26:7
+   |
+26 | const COVER_POLICY: &str = "cover_policy=local-ro-noatime-broker-epoch-v2";
+   |       ^^^^^^^^^^^^
+
+error: constant `XATTR_POLICY` is never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:27:7
+   |
+27 | const XATTR_POLICY: &str = "xattr_policy=absent-v1";
+   |       ^^^^^^^^^^^^
+
+error: constant `LOADER_SEARCH_POLICY` is never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:28:7
+   |
+28 | const LOADER_SEARCH_POLICY: &str = "loader_search=mounted-bundle-only";
+   |       ^^^^^^^^^^^^^^^^^^^^
+
+error: constant `PROVIDER_SONAME` is never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:29:7
+   |
+29 | const PROVIDER_SONAME: &str = "libc.so.6";
+   |       ^^^^^^^^^^^^^^^
+
+error: enum `DependencyPhase` is never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:33:17
+   |
+33 | pub(super) enum DependencyPhase {
+   |                 ^^^^^^^^^^^^^^^
+
+error: enum `ManifestRole` is never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:42:17
+   |
+42 | pub(super) enum ManifestRole {
+   |                 ^^^^^^^^^^^^
+
+error: methods `requires_executable_source` and `soname` are never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:66:25
+   |
+64 | impl ManifestRole {
+   | ----------------- methods in this implementation
+65 |     /// Whether the stable source must admit a private executable mapping.
+66 |     pub(super) const fn requires_executable_source(&self) -> bool {
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+70 |     fn soname(&self) -> Option<&str> {
+   |        ^^^^^^
+
+error: enum `ArtifactScope` is never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:82:17
+   |
+82 | pub(super) enum ArtifactScope {
+   |                 ^^^^^^^^^^^^^
+
+error: method `guest_path` is never used
+  --> reverie-ptrace/src/after_loader/manifest_v4.rs:91:19
+   |
+89 | impl ArtifactScope {
+   | ------------------ method in this implementation
+90 |     /// Exact guest path, or `None` for a controller-only artifact.
+91 |     pub(super) fn guest_path(&self) -> Option<&Path> {
+   |                   ^^^^^^^^^^
+
+error: struct `ManifestCover` is never constructed
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:101:19
+    |
+101 | pub(super) struct ManifestCover {
+    |                   ^^^^^^^^^^^^^
+
+error: methods `logical_root`, `source_path`, `identity`, `metadata_sha256`, and `tree_sha256` are never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:111:19
+    |
+109 | impl ManifestCover {
+    | ------------------ methods in this implementation
+110 |     /// Exact guest-visible root covered during the private loader epoch.
+111 |     pub(super) fn logical_root(&self) -> &Path {
+    |                   ^^^^^^^^^^^^
+...
+116 |     pub(super) fn source_path(&self) -> &Path {
+    |                   ^^^^^^^^^^^
+...
+121 |     pub(super) const fn identity(&self) -> FileIdentity {
+    |                         ^^^^^^^^
+...
+126 |     pub(super) const fn metadata_sha256(&self) -> [u8; 32] {
+    |                         ^^^^^^^^^^^^^^^
+...
+131 |     pub(super) const fn tree_sha256(&self) -> [u8; 32] {
+    |                         ^^^^^^^^^^^
+
+error: struct `ManifestArtifact` is never constructed
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:138:19
+    |
+138 | pub(super) struct ManifestArtifact {
+    |                   ^^^^^^^^^^^^^^^^
+
+error: methods `role`, `scope`, `store_path`, and `expectation` are never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:147:19
+    |
+145 | impl ManifestArtifact {
+    | --------------------- methods in this implementation
+146 |     /// Exact semantic role.
+147 |     pub(super) fn role(&self) -> &ManifestRole {
+    |                   ^^^^
+...
+152 |     pub(super) fn scope(&self) -> &ArtifactScope {
+    |                   ^^^^^
+...
+157 |     pub(super) fn store_path(&self) -> &Path {
+    |                   ^^^^^^^^^^
+...
+162 |     pub(super) const fn expectation(&self) -> StableVerityExpectation {
+    |                         ^^^^^^^^^^^
+
+error: struct `ReviewedManifestV4` is never constructed
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:169:19
+    |
+169 | pub(super) struct ReviewedManifestV4 {
+    |                   ^^^^^^^^^^^^^^^^^^
+
+error: associated items `parse`, `system_preload`, `covers`, `artifacts`, and `environment` are never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:178:19
+    |
+176 | impl ReviewedManifestV4 {
+    | ----------------------- associated items in this implementation
+177 |     /// Parse and structurally validate exact canonical schema-4 bytes.
+178 |     pub(super) fn parse(bytes: &[u8]) -> io::Result<Self> {
+    |                   ^^^^^
+...
+276 |     pub(super) fn system_preload(&self) -> &Path {
+    |                   ^^^^^^^^^^^^^^
+...
+281 |     pub(super) fn covers(&self) -> &[ManifestCover] {
+    |                   ^^^^^^
+...
+286 |     pub(super) fn artifacts(&self) -> &[ManifestArtifact] {
+    |                   ^^^^^^^^^
+...
+291 |     pub(super) fn environment(&self) -> &BTreeMap<OsString, OsString> {
+    |                   ^^^^^^^^^^^
+
+error: function `parse_cover` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:296:4
+    |
+296 | fn parse_cover(value: &str, label: &str) -> io::Result<ManifestCover> {
+    |    ^^^^^^^^^^^
+
+error: function `parse_artifact` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:313:4
+    |
+313 | fn parse_artifact(value: &str, label: &str) -> io::Result<ManifestArtifact> {
+    |    ^^^^^^^^^^^^^^
+
+error: function `fixed_role` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:383:4
+    |
+383 | fn fixed_role(loader_name: &str, role: ManifestRole, label: &str) -> io::Result<ManifestRole> {
+    |    ^^^^^^^^^^
+
+error: function `parse_loader_name` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:390:4
+    |
+390 | fn parse_loader_name(value: &str, label: &str) -> io::Result<String> {
+    |    ^^^^^^^^^^^^^^^^^
+
+error: function `validate_structure` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:402:4
+    |
+402 | fn validate_structure(
+    |    ^^^^^^^^^^^^^^^^^^
+
+error: function `validate_artifact_order` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:498:4
+    |
+498 | fn validate_artifact_order(artifacts: &[ManifestArtifact]) -> io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `cover_count` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:566:4
+    |
+566 | fn cover_count(path: &Path, covers: &[ManifestCover]) -> usize {
+    |    ^^^^^^^^^^^
+
+error: function `strict_descendant` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:573:4
+    |
+573 | fn strict_descendant(path: &Path, root: &Path) -> bool {
+    |    ^^^^^^^^^^^^^^^^^
+
+error: function `paths_overlap` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:577:4
+    |
+577 | fn paths_overlap(left: &Path, right: &Path) -> bool {
+    |    ^^^^^^^^^^^^^
+
+error: function `is_root` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:581:4
+    |
+581 | fn is_root(path: &Path) -> bool {
+    |    ^^^^^^^
+
+error: function `lexical_absolute_path` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:585:4
+    |
+585 | fn lexical_absolute_path(value: &str, label: &str) -> io::Result<PathBuf> {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+error: function `parse_identity` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:603:4
+    |
+603 | fn parse_identity(device: &str, inode: &str, label: &str) -> io::Result<FileIdentity> {
+    |    ^^^^^^^^^^^^^^
+
+error: function `parse_hex_u64` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:610:4
+    |
+610 | fn parse_hex_u64(value: &str, label: &str) -> io::Result<u64> {
+    |    ^^^^^^^^^^^^^
+
+error: function `parse_sha256` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:619:4
+    |
+619 | fn parse_sha256(value: &str, label: &str) -> io::Result<[u8; 32]> {
+    |    ^^^^^^^^^^^^
+
+error: function `decode_hex` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:625:4
+    |
+625 | fn decode_hex(value: &str, allow_empty: bool, label: &str) -> io::Result<Vec<u8>> {
+    |    ^^^^^^^^^^
+
+error: function `canonical_hex` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:641:4
+    |
+641 | fn canonical_hex(value: &str) -> bool {
+    |    ^^^^^^^^^^^^^
+
+error: function `hex_nibble` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:647:4
+    |
+647 | fn hex_nibble(byte: u8) -> u8 {
+    |    ^^^^^^^^^^
+
+error: function `valid_environment_key` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:655:4
+    |
+655 | fn valid_environment_key(key: &[u8]) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+error: function `required_value` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:666:4
+    |
+666 | fn required_value<'a>(
+    |    ^^^^^^^^^^^^^^
+
+error: function `require_line` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:678:4
+    |
+678 | fn require_line<'a>(
+    |    ^^^^^^^^^^^^
+
+error: function `exact_fields` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:689:4
+    |
+689 | fn exact_fields<'a, const N: usize>(value: &'a str, label: &str) -> io::Result<[&'a str; N]> {
+    |    ^^^^^^^^^^^^
+
+error: function `invalid` is never used
+   --> reverie-ptrace/src/after_loader/manifest_v4.rs:697:4
+    |
+697 | fn invalid(message: impl Into<String>) -> io::Error {
+    |    ^^^^^^^
+
+error: constant `MAX_TREE_ENTRIES` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:56:7
+   |
+56 | const MAX_TREE_ENTRIES: usize = 128;
+   |       ^^^^^^^^^^^^^^^^
+
+error: constant `MAX_RELATIVE_PATH_BYTES` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:57:7
+   |
+57 | const MAX_RELATIVE_PATH_BYTES: usize = 64 * 1024;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `GETDENTS_BUFFER_BYTES` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:58:7
+   |
+58 | const GETDENTS_BUFFER_BYTES: usize = 16 * 1024;
+   |       ^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `RESOLVE_NO_XDEV` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:60:7
+   |
+60 | const RESOLVE_NO_XDEV: u64 = 0x01;
+   |       ^^^^^^^^^^^^^^^
+
+error: constant `RESOLVE_NO_MAGICLINKS` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:61:7
+   |
+61 | const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+   |       ^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `RESOLVE_NO_SYMLINKS` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:62:7
+   |
+62 | const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+   |       ^^^^^^^^^^^^^^^^^^^
+
+error: constant `RESOLVE_BENEATH` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:63:7
+   |
+63 | const RESOLVE_BENEATH: u64 = 0x08;
+   |       ^^^^^^^^^^^^^^^
+
+error: constant `ST_RDONLY_FLAG` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:65:7
+   |
+65 | const ST_RDONLY_FLAG: u64 = 0x0001;
+   |       ^^^^^^^^^^^^^^
+
+error: constant `ST_VALID_FLAG` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:66:7
+   |
+66 | const ST_VALID_FLAG: u64 = 0x0020;
+   |       ^^^^^^^^^^^^^
+
+error: constant `ST_NOATIME_FLAG` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:67:7
+   |
+67 | const ST_NOATIME_FLAG: u64 = 0x0400;
+   |       ^^^^^^^^^^^^^^^
+
+error: constant `REQUIRED_MOUNT_FLAGS` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:68:7
+   |
+68 | const REQUIRED_MOUNT_FLAGS: u64 = ST_RDONLY_FLAG | ST_NOATIME_FLAG;
+   |       ^^^^^^^^^^^^^^^^^^^^
+
+error: constant `EXT4_SUPER_MAGIC` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:70:7
+   |
+70 | const EXT4_SUPER_MAGIC: i64 = 0xef53;
+   |       ^^^^^^^^^^^^^^^^
+
+error: constant `BTRFS_SUPER_MAGIC` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:71:7
+   |
+71 | const BTRFS_SUPER_MAGIC: i64 = 0x9123_683e;
+   |       ^^^^^^^^^^^^^^^^^
+
+error: constant `F2FS_SUPER_MAGIC` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:72:7
+   |
+72 | const F2FS_SUPER_MAGIC: i64 = 0xf2f5_2010;
+   |       ^^^^^^^^^^^^^^^^
+
+error: constant `XFS_SUPER_MAGIC` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:73:7
+   |
+73 | const XFS_SUPER_MAGIC: i64 = 0x5846_5342;
+   |       ^^^^^^^^^^^^^^^
+
+error: constant `STATX_BASIC_STATS` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:75:7
+   |
+75 | const STATX_BASIC_STATS: u32 = 0x0000_07ff;
+   |       ^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_BTIME` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:76:7
+   |
+76 | const STATX_BTIME: u32 = 0x0000_0800;
+   |       ^^^^^^^^^^^
+
+error: constant `STATX_MNT_ID` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:77:7
+   |
+77 | const STATX_MNT_ID: u32 = 0x0000_1000;
+   |       ^^^^^^^^^^^^
+
+error: constant `STATX_DIOALIGN` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:78:7
+   |
+78 | const STATX_DIOALIGN: u32 = 0x0000_2000;
+   |       ^^^^^^^^^^^^^^
+
+error: constant `STATX_MNT_ID_UNIQUE` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:79:7
+   |
+79 | const STATX_MNT_ID_UNIQUE: u32 = 0x0000_4000;
+   |       ^^^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_SUBVOL` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:80:7
+   |
+80 | const STATX_SUBVOL: u32 = 0x0000_8000;
+   |       ^^^^^^^^^^^^
+
+error: constant `STATX_WRITE_ATOMIC` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:81:7
+   |
+81 | const STATX_WRITE_ATOMIC: u32 = 0x0001_0000;
+   |       ^^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_DIO_READ_ALIGN` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:82:7
+   |
+82 | const STATX_DIO_READ_ALIGN: u32 = 0x0002_0000;
+   |       ^^^^^^^^^^^^^^^^^^^^
+
+error: constant `KNOWN_STATX_MASK` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:83:7
+   |
+83 | const KNOWN_STATX_MASK: u32 = STATX_BASIC_STATS
+   |       ^^^^^^^^^^^^^^^^
+
+error: constant `BASE_STATX_MASK` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:91:7
+   |
+91 | const BASE_STATX_MASK: u32 = KNOWN_STATX_MASK & !STATX_MNT_ID_UNIQUE;
+   |       ^^^^^^^^^^^^^^^
+
+error: constant `REQUIRED_STATX_MASK` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:92:7
+   |
+92 | const REQUIRED_STATX_MASK: u32 = STATX_BASIC_STATS | STATX_BTIME | STATX_MNT_ID;
+   |       ^^^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_COMPRESSED` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:94:7
+   |
+94 | const STATX_ATTR_COMPRESSED: u64 = 0x0000_0004;
+   |       ^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_IMMUTABLE` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:95:7
+   |
+95 | const STATX_ATTR_IMMUTABLE: u64 = 0x0000_0010;
+   |       ^^^^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_APPEND` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:96:7
+   |
+96 | const STATX_ATTR_APPEND: u64 = 0x0000_0020;
+   |       ^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_NODUMP` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:97:7
+   |
+97 | const STATX_ATTR_NODUMP: u64 = 0x0000_0040;
+   |       ^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_ENCRYPTED` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:98:7
+   |
+98 | const STATX_ATTR_ENCRYPTED: u64 = 0x0000_0800;
+   |       ^^^^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_AUTOMOUNT` is never used
+  --> reverie-ptrace/src/after_loader/stable_cover.rs:99:7
+   |
+99 | const STATX_ATTR_AUTOMOUNT: u64 = 0x0000_1000;
+   |       ^^^^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_MOUNT_ROOT` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:100:7
+    |
+100 | const STATX_ATTR_MOUNT_ROOT: u64 = 0x0000_2000;
+    |       ^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_VERITY` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:101:7
+    |
+101 | const STATX_ATTR_VERITY: u64 = 0x0010_0000;
+    |       ^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_DAX` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:102:7
+    |
+102 | const STATX_ATTR_DAX: u64 = 0x0020_0000;
+    |       ^^^^^^^^^^^^^^
+
+error: constant `STATX_ATTR_WRITE_ATOMIC` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:103:7
+    |
+103 | const STATX_ATTR_WRITE_ATOMIC: u64 = 0x0040_0000;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `KNOWN_STATX_ATTRIBUTES` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:104:7
+    |
+104 | const KNOWN_STATX_ATTRIBUTES: u64 = STATX_ATTR_COMPRESSED
+    |       ^^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `STABLE_COVER_XATTR_POLICY` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:118:18
+    |
+118 | pub(crate) const STABLE_COVER_XATTR_POLICY: &str = "absent-v1";
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `STABLE_COVER_XATTR_POLICY_BYTES` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:119:7
+    |
+119 | const STABLE_COVER_XATTR_POLICY_BYTES: &[u8] = b"absent-v1";
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `STABLE_INODE_POLICY_ENCODING_BYTES` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:120:7
+    |
+120 | const STABLE_INODE_POLICY_ENCODING_BYTES: usize = 38;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `METADATA_DIGEST_DOMAIN` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:121:7
+    |
+121 | const METADATA_DIGEST_DOMAIN: &[u8] = b"reverie-stable-cover-metadata-v4\0";
+    |       ^^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `TREE_DIGEST_DOMAIN` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:122:7
+    |
+122 | const TREE_DIGEST_DOMAIN: &[u8] = b"reverie-stable-cover-tree-v4\0";
+    |       ^^^^^^^^^^^^^^^^^^
+
+error: enum `CoverEntryKind` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:222:6
+    |
+222 | enum CoverEntryKind {
+    |      ^^^^^^^^^^^^^^
+
+error: methods `digest_tag` and `inode_kind` are never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:228:14
+    |
+227 | impl CoverEntryKind {
+    | ------------------- methods in this implementation
+228 |     const fn digest_tag(self) -> u8 {
+    |              ^^^^^^^^^^
+...
+235 |     const fn inode_kind(self) -> StableInodeKind {
+    |              ^^^^^^^^^^
+
+error: struct `CanonicalInodePolicy` is never constructed
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:247:8
+    |
+247 | struct CanonicalInodePolicy([u8; STABLE_INODE_POLICY_ENCODING_BYTES]);
+    |        ^^^^^^^^^^^^^^^^^^^^
+
+error: associated items `read` and `encode` are never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:250:8
+    |
+249 | impl CanonicalInodePolicy {
+    | ------------------------- associated items in this implementation
+250 |     fn read(
+    |        ^^^^
+...
+275 |     fn encode(&self, output: &mut Vec<u8>) {
+    |        ^^^^^^
+
+error: struct `StableFilesystemMetadata` is never constructed
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:283:8
+    |
+283 | struct StableFilesystemMetadata {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: associated items `read`, `validate`, and `encode` are never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:294:8
+    |
+293 | impl StableFilesystemMetadata {
+    | ----------------------------- associated items in this implementation
+294 |     fn read(descriptor: RawFd) -> io::Result<Self> {
+    |        ^^^^
+...
+348 |     fn validate(self) -> io::Result<()> {
+    |        ^^^^^^^^
+...
+364 |     fn encode(&self, output: &mut Vec<u8>) {
+    |        ^^^^^^
+
+error: struct `CanonicalMetadata` is never constructed
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:376:8
+    |
+376 | struct CanonicalMetadata {
+    |        ^^^^^^^^^^^^^^^^^
+
+error: associated items `read`, `kind`, `validate_root`, `validate_entry`, and `encode` are never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:411:8
+    |
+410 | impl CanonicalMetadata {
+    | ---------------------- associated items in this implementation
+411 |     fn read(descriptor: RawFd) -> io::Result<Self> {
+    |        ^^^^
+...
+459 |     fn kind(&self) -> io::Result<CoverEntryKind> {
+    |        ^^^^
+...
+469 |     fn validate_root(&self) -> io::Result<()> {
+    |        ^^^^^^^^^^^^^
+...
+476 |     fn validate_entry(&self, kind: CoverEntryKind) -> io::Result<()> {
+    |        ^^^^^^^^^^^^^^
+...
+491 |     fn encode(&self, output: &mut Vec<u8>) {
+    |        ^^^^^^
+
+error: struct `TreeRecord` is never constructed
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:528:8
+    |
+528 | struct TreeRecord {
+    |        ^^^^^^^^^^
+
+error: struct `DirectoryEntry` is never constructed
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:536:8
+    |
+536 | struct DirectoryEntry {
+    |        ^^^^^^^^^^^^^^
+
+error: struct `InodeObservation` is never constructed
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:542:8
+    |
+542 | struct InodeObservation {
+    |        ^^^^^^^^^^^^^^^^
+
+error: struct `CoverSnapshot` is never constructed
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:550:8
+    |
+550 | struct CoverSnapshot {
+    |        ^^^^^^^^^^^^^
+
+error: struct `StableLoaderCover` is never constructed
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:566:19
+    |
+566 | pub(crate) struct StableLoaderCover {
+    |                   ^^^^^^^^^^^^^^^^^
+
+error: multiple associated items are never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:582:19
+    |
+572 | impl StableLoaderCover {
+    | ---------------------- associated items in this implementation
+...
+582 |     pub(crate) fn open_verified(
+    |                   ^^^^^^^^^^^^^
+...
+636 |     pub(crate) fn canonical_path(&self) -> &Path {
+    |                   ^^^^^^^^^^^^^^
+...
+640 |     pub(crate) const fn identity(&self) -> FileIdentity {
+    |                         ^^^^^^^^
+...
+644 |     pub(crate) const fn metadata_sha256(&self) -> [u8; 32] {
+    |                         ^^^^^^^^^^^^^^^
+...
+648 |     pub(crate) const fn tree_sha256(&self) -> [u8; 32] {
+    |                         ^^^^^^^^^^^
+...
+652 |     pub(crate) fn entry_count(&self) -> usize {
+    |                   ^^^^^^^^^^^
+...
+658 |     pub(crate) fn contains_directory(&self, relative_path: &[u8]) -> io::Result<bool> {
+    |                   ^^^^^^^^^^^^^^^^^^
+...
+666 |     pub(crate) fn contains_empty_placeholder(&self, relative_path: &[u8]) -> io::Result<bool> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+679 |     pub(crate) fn proves_absent_with_directory_ancestors(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+689 |     pub(crate) fn empty_placeholder_paths(&self) -> impl Iterator<Item = &[u8]> + '_ {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+...
+696 |     pub(crate) fn has_exact_empty_placeholder_paths<'a>(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+704 |     pub(crate) fn revalidate_source(&self) -> io::Result<()> {
+    |                   ^^^^^^^^^^^^^^^^^
+...
+739 |     pub(crate) fn duplicate_revalidated_source(&self) -> io::Result<File> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `find_tree_record` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:745:4
+    |
+745 | fn find_tree_record<'a>(records: &'a [TreeRecord], relative_path: &[u8]) -> Option<&'a TreeRecord> {
+    |    ^^^^^^^^^^^^^^^^
+
+error: function `empty_placeholder_paths` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:752:4
+    |
+752 | fn empty_placeholder_paths(records: &[TreeRecord]) -> impl Iterator<Item = &[u8]> + '_ {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `proves_absent_with_directory_ancestors` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:759:4
+    |
+759 | fn proves_absent_with_directory_ancestors(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `has_exact_empty_placeholder_paths` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:778:4
+    |
+778 | fn has_exact_empty_placeholder_paths<'a>(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `exact_absolute_path` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:800:4
+    |
+800 | fn exact_absolute_path(path: &Path) -> io::Result<CString> {
+    |    ^^^^^^^^^^^^^^^^^^^
+
+error: function `validate_relative_path` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:819:4
+    |
+819 | fn validate_relative_path(path: &[u8]) -> io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `openat2_file` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:834:4
+    |
+834 | fn openat2_file(
+    |    ^^^^^^^^^^^^
+
+error: function `open_relative_path` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:864:4
+    |
+864 | fn open_relative_path(directory: RawFd, name: &[u8], directory_only: bool) -> io::Result<File> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+error: function `open_enumeration_descriptor` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:876:4
+    |
+876 | fn open_enumeration_descriptor(directory: RawFd) -> io::Result<File> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `observe_directory_inode_policy` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:885:4
+    |
+885 | fn observe_directory_inode_policy(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `open_placeholder_observation_descriptor` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:913:4
+    |
+913 | fn open_placeholder_observation_descriptor(directory: RawFd, name: &[u8]) -> io::Result<File> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `verify_path_descriptor_flags` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:924:4
+    |
+924 | fn verify_path_descriptor_flags(descriptor: RawFd) -> io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `verify_enumeration_descriptor_flags` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:941:4
+    |
+941 | fn verify_enumeration_descriptor_flags(descriptor: RawFd) -> io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `verify_placeholder_observation_descriptor_flags` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:962:4
+    |
+962 | fn verify_placeholder_observation_descriptor_flags(descriptor: RawFd) -> io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `require_caller_visible_xattr_zero_result` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:988:4
+    |
+988 | fn require_caller_visible_xattr_zero_result(result: Result<usize, i32>) -> io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `list_caller_visible_xattrs` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1000:4
+     |
+1000 | fn list_caller_visible_xattrs(descriptor: RawFd) -> Result<usize, i32> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `verify_inode_observation` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1016:4
+     |
+1016 | fn verify_inode_observation(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `statx_empty_path` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1051:4
+     |
+1051 | fn statx_empty_path(descriptor: RawFd, mask: u32) -> io::Result<KernelStatx> {
+     |    ^^^^^^^^^^^^^^^^
+
+error: function `validate_statx_response` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1069:4
+     |
+1069 | fn validate_statx_response(value: &KernelStatx, require_unique_mount: bool) -> io::Result<()> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `require_same_statx_observation` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1099:4
+     |
+1099 | fn require_same_statx_observation(base: &KernelStatx, unique: &KernelStatx) -> io::Result<()> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `raw_fstatfs_x86_64` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1115:4
+     |
+1115 | fn raw_fstatfs_x86_64(descriptor: RawFd) -> io::Result<KernelStatfsX86_64> {
+     |    ^^^^^^^^^^^^^^^^^^
+
+error: function `normalize_kernel_statfs_mount_flags` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1146:4
+     |
+1146 | fn normalize_kernel_statfs_mount_flags(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `nonnegative_filesystem_word` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1167:4
+     |
+1167 | fn nonnegative_filesystem_word(value: i64, message: &'static str) -> io::Result<u64> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `descriptor_identity` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1171:4
+     |
+1171 | fn descriptor_identity(descriptor: RawFd) -> io::Result<FileIdentity> {
+     |    ^^^^^^^^^^^^^^^^^^^
+
+error: function `linux_device_major` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1183:4
+     |
+1183 | fn linux_device_major(device: u64) -> u32 {
+     |    ^^^^^^^^^^^^^^^^^^
+
+error: function `linux_device_minor` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1187:4
+     |
+1187 | fn linux_device_minor(device: u64) -> u32 {
+     |    ^^^^^^^^^^^^^^^^^^
+
+error: function `scan_cover` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1191:4
+     |
+1191 | fn scan_cover(root: RawFd) -> io::Result<CoverSnapshot> {
+     |    ^^^^^^^^^^
+
+error: function `scan_directory` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1256:4
+     |
+1256 | fn scan_directory(
+     |    ^^^^^^^^^^^^^^
+
+error: function `read_directory_entries` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1429:4
+     |
+1429 | fn read_directory_entries(descriptor: RawFd) -> io::Result<Vec<DirectoryEntry>> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `insert_unique_identity` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1513:4
+     |
+1513 | fn insert_unique_identity(
+     |    ^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `require_enumerated_inode` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1523:4
+     |
+1523 | fn require_enumerated_inode(enumerated: u64, opened: u64) -> io::Result<()> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `validate_dentry_name` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1532:4
+     |
+1532 | fn validate_dentry_name(name: &[u8]) -> io::Result<()> {
+     |    ^^^^^^^^^^^^^^^^^^^^
+
+error: function `metadata_digest` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1540:4
+     |
+1540 | fn metadata_digest(
+     |    ^^^^^^^^^^^^^^^
+
+error: function `metadata_digest_with_policy` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1553:4
+     |
+1553 | fn metadata_digest_with_policy(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `tree_digest` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1568:4
+     |
+1568 | fn tree_digest(
+     |    ^^^^^^^^^^^
+
+error: function `tree_digest_with_policy` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1583:4
+     |
+1583 | fn tree_digest_with_policy(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `encode_xattr_policy` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1631:4
+     |
+1631 | fn encode_xattr_policy(output: &mut Vec<u8>, xattr_policy: &[u8]) {
+     |    ^^^^^^^^^^^^^^^^^^^
+
+error: function `require_expected_snapshot` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1639:4
+     |
+1639 | fn require_expected_snapshot(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `encode_timestamp` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1656:4
+     |
+1656 | fn encode_timestamp(output: &mut Vec<u8>, value: KernelStatxTimestamp) {
+     |    ^^^^^^^^^^^^^^^^
+
+error: function `put_u16` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1661:4
+     |
+1661 | fn put_u16(output: &mut Vec<u8>, value: u16) {
+     |    ^^^^^^^
+
+error: function `put_u32` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1665:4
+     |
+1665 | fn put_u32(output: &mut Vec<u8>, value: u32) {
+     |    ^^^^^^^
+
+error: function `put_u64` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1669:4
+     |
+1669 | fn put_u64(output: &mut Vec<u8>, value: u64) {
+     |    ^^^^^^^
+
+error: function `put_i64` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1673:4
+     |
+1673 | fn put_i64(output: &mut Vec<u8>, value: i64) {
+     |    ^^^^^^^
+
+error: function `invalid_data` is never used
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1677:4
+     |
+1677 | fn invalid_data(message: impl Into<String>) -> io::Error {
+     |    ^^^^^^^^^^^^
+
+error: constant `FS_VERITY_HASH_ALG_SHA256` is never used
+  --> reverie-ptrace/src/after_loader/stable_store.rs:38:7
+   |
+38 | const FS_VERITY_HASH_ALG_SHA256: u16 = 1;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `FS_IOC_MEASURE_VERITY_NUMBER` is never used
+  --> reverie-ptrace/src/after_loader/stable_store.rs:40:7
+   |
+40 | const FS_IOC_MEASURE_VERITY_NUMBER: u8 = 134;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `READ_CHUNK_BYTES` is never used
+  --> reverie-ptrace/src/after_loader/stable_store.rs:41:7
+   |
+41 | const READ_CHUNK_BYTES: usize = 16 * 1024;
+   |       ^^^^^^^^^^^^^^^^
+
+error: constant `STATX_MNT_ID_UNIQUE` is never used
+  --> reverie-ptrace/src/after_loader/stable_store.rs:42:7
+   |
+42 | const STATX_MNT_ID_UNIQUE: u32 = 0x0000_4000;
+   |       ^^^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_SUBVOL` is never used
+  --> reverie-ptrace/src/after_loader/stable_store.rs:43:7
+   |
+43 | const STATX_SUBVOL: u32 = 0x0000_8000;
+   |       ^^^^^^^^^^^^
+
+error: constant `STATX_WRITE_ATOMIC` is never used
+  --> reverie-ptrace/src/after_loader/stable_store.rs:44:7
+   |
+44 | const STATX_WRITE_ATOMIC: u32 = 0x0001_0000;
+   |       ^^^^^^^^^^^^^^^^^^
+
+error: constant `STATX_DIO_READ_ALIGN` is never used
+  --> reverie-ptrace/src/after_loader/stable_store.rs:45:7
+   |
+45 | const STATX_DIO_READ_ALIGN: u32 = 0x0002_0000;
+   |       ^^^^^^^^^^^^^^^^^^^^
+
+error: constant `STABLE_STATX_MASK` is never used
+  --> reverie-ptrace/src/after_loader/stable_store.rs:46:7
+   |
+46 | const STABLE_STATX_MASK: u32 = libc::STATX_BASIC_STATS
+   |       ^^^^^^^^^^^^^^^^^
+
+error: constant `REQUIRED_STATX_MASK` is never used
+  --> reverie-ptrace/src/after_loader/stable_store.rs:53:7
+   |
+53 | const REQUIRED_STATX_MASK: u32 = libc::STATX_BASIC_STATS | libc::STATX_BTIME | libc::STATX_MNT_ID;
+   |       ^^^^^^^^^^^^^^^^^^^
+
+error: constant `STABLE_METADATA_DOMAIN` is never used
+  --> reverie-ptrace/src/after_loader/stable_store.rs:54:7
+   |
+54 | const STABLE_METADATA_DOMAIN: &[u8] = b"reverie-stable-verity-metadata-v3\0";
+   |       ^^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `CALLER_VISIBLE_XATTR_EVIDENCE` is never used
+  --> reverie-ptrace/src/after_loader/stable_store.rs:55:7
+   |
+55 | const CALLER_VISIBLE_XATTR_EVIDENCE: &[u8] = b"caller-visible-zero-v1";
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: constant `STABLE_XATTR_POLICY` is never used
+  --> reverie-ptrace/src/after_loader/stable_store.rs:66:18
+   |
+66 | pub(crate) const STABLE_XATTR_POLICY: &str = "absent-v1";
+   |                  ^^^^^^^^^^^^^^^^^^^
+
+error: associated function `for_sha256_measurement` is never used
+  --> reverie-ptrace/src/after_loader/stable_store.rs:88:8
+   |
+87 | impl FsVerityDigestPacket {
+   | ------------------------- associated function in this implementation
+88 |     fn for_sha256_measurement() -> Self {
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+
+error: struct `StableTimestamp` is never constructed
+   --> reverie-ptrace/src/after_loader/stable_store.rs:125:8
+    |
+125 | struct StableTimestamp {
+    |        ^^^^^^^^^^^^^^^
+
+error: associated items `from_statx` and `update_digest` are never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:131:8
+    |
+130 | impl StableTimestamp {
+    | -------------------- associated items in this implementation
+131 |     fn from_statx(timestamp: libc::statx_timestamp) -> io::Result<Self> {
+    |        ^^^^^^^^^^
+...
+141 |     fn update_digest(self, digest: &mut Sha256) {
+    |        ^^^^^^^^^^^^^
+
+error: struct `StableFileMetadata` is never constructed
+   --> reverie-ptrace/src/after_loader/stable_store.rs:155:8
+    |
+155 | struct StableFileMetadata {
+    |        ^^^^^^^^^^^^^^^^^^
+
+error: associated items `read`, `identity`, and `update_digest` are never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:191:8
+    |
+190 | impl StableFileMetadata {
+    | ----------------------- associated items in this implementation
+191 |     fn read(file: &File) -> io::Result<Self> {
+    |        ^^^^
+...
+288 |     fn identity(self) -> FileIdentity {
+    |        ^^^^^^^^
+...
+295 |     fn update_digest(self, digest: &mut Sha256) {
+    |        ^^^^^^^^^^^^^
+
+error: struct `StableArtifactMetadata` is never constructed
+   --> reverie-ptrace/src/after_loader/stable_store.rs:339:8
+    |
+339 | struct StableArtifactMetadata {
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+
+error: associated items `read_from_ordinary_descriptor`, `identity`, `digest`, and `digest_with_contract` are never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:345:8
+    |
+344 | impl StableArtifactMetadata {
+    | --------------------------- associated items in this implementation
+345 |     fn read_from_ordinary_descriptor(file: &File) -> io::Result<Self> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+359 |     fn identity(self) -> FileIdentity {
+    |        ^^^^^^^^
+...
+363 |     fn digest(self) -> [u8; SHA256_DIGEST_BYTES] {
+    |        ^^^^^^
+...
+370 |     fn digest_with_contract(
+    |        ^^^^^^^^^^^^^^^^^^^^
+
+error: function `metadata_digest_from_encoding` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:386:4
+    |
+386 | fn metadata_digest_from_encoding(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `read_statx` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:404:4
+    |
+404 | fn read_statx(file: &File, mask: u32) -> io::Result<libc::statx> {
+    |    ^^^^^^^^^^
+
+error: struct `StableVerityExpectation` is never constructed
+   --> reverie-ptrace/src/after_loader/stable_store.rs:427:19
+    |
+427 | pub(crate) struct StableVerityExpectation {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: associated items `new`, `content_sha256`, `verity_sha256`, `identity`, and `metadata_sha256` are never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:435:25
+    |
+434 | impl StableVerityExpectation {
+    | ---------------------------- associated items in this implementation
+435 |     pub(crate) const fn new(
+    |                         ^^^
+...
+449 |     pub(crate) const fn content_sha256(self) -> [u8; SHA256_DIGEST_BYTES] {
+    |                         ^^^^^^^^^^^^^^
+...
+453 |     pub(crate) const fn verity_sha256(self) -> [u8; SHA256_DIGEST_BYTES] {
+    |                         ^^^^^^^^^^^^^
+...
+457 |     pub(crate) const fn identity(self) -> FileIdentity {
+    |                         ^^^^^^^^
+...
+461 |     pub(crate) const fn metadata_sha256(self) -> [u8; SHA256_DIGEST_BYTES] {
+    |                         ^^^^^^^^^^^^^^^
+
+error: struct `ExecutableSourceProof` is never constructed
+   --> reverie-ptrace/src/after_loader/stable_store.rs:474:19
+    |
+474 | pub(crate) struct ExecutableSourceProof {
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+
+error: methods `mapped_length` and `executable_permission_bits` are never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:481:25
+    |
+479 | impl ExecutableSourceProof {
+    | -------------------------- methods in this implementation
+480 |     /// Number of source bytes covered by the temporary RX mapping request.
+481 |     pub(crate) const fn mapped_length(self) -> usize {
+    |                         ^^^^^^^^^^^^^
+...
+486 |     pub(crate) const fn executable_permission_bits(self) -> u32 {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: struct `StableVerityArtifact` is never constructed
+   --> reverie-ptrace/src/after_loader/stable_store.rs:505:19
+    |
+505 | pub(crate) struct StableVerityArtifact {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+
+error: multiple associated items are never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:535:19
+    |
+517 | impl StableVerityArtifact {
+    | ------------------------- associated items in this implementation
+...
+535 |     pub(crate) fn open_verified(
+    |                   ^^^^^^^^^^^^^
+...
+618 |     pub(crate) fn canonical_path(&self) -> &Path {
+    |                   ^^^^^^^^^^^^^^
+...
+623 |     pub(crate) fn bytes(&self) -> &[u8] {
+    |                   ^^^^^
+...
+628 |     pub(crate) const fn identity(&self) -> FileIdentity {
+    |                         ^^^^^^^^
+...
+633 |     pub(crate) const fn content_sha256(&self) -> [u8; SHA256_DIGEST_BYTES] {
+    |                         ^^^^^^^^^^^^^^
+...
+641 |     pub(crate) const fn verity_sha256(&self) -> [u8; SHA256_DIGEST_BYTES] {
+    |                         ^^^^^^^^^^^^^
+...
+646 |     pub(crate) const fn len(&self) -> u64 {
+    |                         ^^^
+...
+651 |     pub(crate) const fn is_empty(&self) -> bool {
+    |                         ^^^^^^^^
+...
+658 |     pub(crate) const fn executable_source_proof(&self) -> Option<ExecutableSourceProof> {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^
+...
+667 |     pub(crate) fn metadata_sha256(&self) -> [u8; SHA256_DIGEST_BYTES] {
+    |                   ^^^^^^^^^^^^^^^
+...
+672 |     pub(crate) fn revalidate_source(&self) -> io::Result<()> {
+    |                   ^^^^^^^^^^^^^^^^^
+...
+682 |     pub(crate) fn revalidate_retained(&self) -> io::Result<()> {
+    |                   ^^^^^^^^^^^^^^^^^^^
+...
+718 |     pub(crate) fn duplicate_revalidated_source(&self) -> io::Result<File> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `revalidate_path_source` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:731:4
+    |
+731 | fn revalidate_path_source(
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `exact_absolute_path` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:753:4
+    |
+753 | fn exact_absolute_path(path: &Path) -> io::Result<PathBuf> {
+    |    ^^^^^^^^^^^^^^^^^^^
+
+error: function `open_path_pin` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:775:4
+    |
+775 | fn open_path_pin(path: &Path) -> io::Result<File> {
+    |    ^^^^^^^^^^^^^
+
+error: function `openat2_file` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:786:4
+    |
+786 | fn openat2_file(directory: i32, path: &CStr, flags: i32, resolve: u64) -> io::Result<File> {
+    |    ^^^^^^^^^^^^
+
+error: function `reopen_pinned_regular` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:814:4
+    |
+814 | fn reopen_pinned_regular(path_pin: &File, canonical_path: &Path) -> io::Result<File> {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+error: function `verified_proc_fd_directory` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:846:4
+    |
+846 | fn verified_proc_fd_directory() -> io::Result<File> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `validate_thread_self_target` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:881:4
+    |
+881 | fn validate_thread_self_target(target: &[u8]) -> io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `readlinkat_bounded` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:902:4
+    |
+902 | fn readlinkat_bounded(directory: &File, name: &CStr) -> io::Result<Vec<u8>> {
+    |    ^^^^^^^^^^^^^^^^^^
+
+error: function `require_readlinkat` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:926:4
+    |
+926 | fn require_readlinkat(
+    |    ^^^^^^^^^^^^^^^^^^
+
+error: function `require_filesystem_type` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:939:4
+    |
+939 | fn require_filesystem_type(file: &File, expected: libc::c_long) -> io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `filesystem_type` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:947:4
+    |
+947 | fn filesystem_type(file: &File) -> io::Result<libc::c_long> {
+    |    ^^^^^^^^^^^^^^^
+
+error: function `stable_mount_policy` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:957:4
+    |
+957 | fn stable_mount_policy(file: &File) -> io::Result<(i64, u64)> {
+    |    ^^^^^^^^^^^^^^^^^^^
+
+error: function `verify_descriptor_flags` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:987:4
+    |
+987 | fn verify_descriptor_flags(file: &File) -> io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `require_caller_visible_zero_xattr_names` is never used
+    --> reverie-ptrace/src/after_loader/stable_store.rs:1008:4
+     |
+1008 | fn require_caller_visible_zero_xattr_names(file: &File) -> io::Result<()> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `require_caller_visible_zero_xattr_enumeration` is never used
+    --> reverie-ptrace/src/after_loader/stable_store.rs:1029:4
+     |
+1029 | fn require_caller_visible_zero_xattr_enumeration(result: io::Result<usize>) -> io::Result<()> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `duplicate_readonly_cloexec` is never used
+    --> reverie-ptrace/src/after_loader/stable_store.rs:1039:4
+     |
+1039 | fn duplicate_readonly_cloexec(file: &File) -> io::Result<File> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `require_expected_identity` is never used
+    --> reverie-ptrace/src/after_loader/stable_store.rs:1045:4
+     |
+1045 | fn require_expected_identity(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `require_expected_metadata` is never used
+    --> reverie-ptrace/src/after_loader/stable_store.rs:1055:4
+     |
+1055 | fn require_expected_metadata(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `require_exact_sha256` is never used
+    --> reverie-ptrace/src/after_loader/stable_store.rs:1067:4
+     |
+1067 | fn require_exact_sha256(
+     |    ^^^^^^^^^^^^^^^^^^^^
+
+error: function `require_same_file_metadata` is never used
+    --> reverie-ptrace/src/after_loader/stable_store.rs:1078:4
+     |
+1078 | fn require_same_file_metadata(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `require_same_artifact_metadata` is never used
+    --> reverie-ptrace/src/after_loader/stable_store.rs:1089:4
+     |
+1089 | fn require_same_artifact_metadata(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `measure_sha256_verity` is never used
+    --> reverie-ptrace/src/after_loader/stable_store.rs:1100:4
+     |
+1100 | fn measure_sha256_verity(file: &File) -> io::Result<[u8; SHA256_DIGEST_BYTES]> {
+     |    ^^^^^^^^^^^^^^^^^^^^^
+
+error: function `validate_sha256_verity_response` is never used
+    --> reverie-ptrace/src/after_loader/stable_store.rs:1116:4
+     |
+1116 | fn validate_sha256_verity_response(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `read_exact_bounded` is never used
+    --> reverie-ptrace/src/after_loader/stable_store.rs:1129:4
+     |
+1129 | fn read_exact_bounded(file: &File, expected_length: u64, maximum: usize) -> io::Result<Vec<u8>> {
+     |    ^^^^^^^^^^^^^^^^^^
+
+error: function `prove_executable_source` is never used
+    --> reverie-ptrace/src/after_loader/stable_store.rs:1179:4
+     |
+1179 | fn prove_executable_source(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `require_executable_permission_bits` is never used
+    --> reverie-ptrace/src/after_loader/stable_store.rs:1222:4
+     |
+1222 | fn require_executable_permission_bits(source_mode: u32) -> io::Result<u32> {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `invalid_data` is never used
+    --> reverie-ptrace/src/after_loader/stable_store.rs:1232:4
+     |
+1232 | fn invalid_data(message: &'static str) -> io::Error {
+     |    ^^^^^^^^^^^^
+
+error: this function has too many arguments (10/7)
+    --> reverie-ptrace/src/after_loader/stable_cover.rs:1256:1
+     |
+1256 | / fn scan_directory(
+1257 | |     directory: RawFd,
+1258 | |     filesystem: &StableFilesystemMetadata,
+1259 | |     prefix: &[u8],
+...    |
+1266 | |     inode_observations: &mut Vec<InodeObservation>,
+1267 | | ) -> io::Result<CanonicalInodePolicy> {
+     | |_____________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+     = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: manually constructing a nul-terminated string
+   --> reverie-ptrace/src/task/after_loader_task.rs:146:13
+    |
+146 |             b"\0".as_ptr().cast(),
+    |             ^^^^^ help: use a `c""` literal: `c""`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_c_str_literals
+    = note: `-D clippy::manual-c-str-literals` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_c_str_literals)]`
+
+error: manual `!Range::contains` implementation
+   --> reverie-ptrace/src/task/after_loader_task.rs:521:13
+    |
+521 |             raw_result < -4095 || raw_result >= 0
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use: `!(-4095..0).contains(&raw_result)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_range_contains
+    = note: `-D clippy::manual-range-contains` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_range_contains)]`
+
+error: very complex type used. Consider factoring parts into `type` definitions
+    --> reverie-ptrace/src/task/after_loader_task.rs:1832:34
+     |
+1832 | fn descriptor_state(tid: Pid) -> io::Result<BTreeMap<u32, (u64, u64, Vec<u8>)>> {
+     |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#type_complexity
+     = note: `-D clippy::type-complexity` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::type_complexity)]`
+
+error: manual implementation of `.is_multiple_of()`
+    --> reverie-ptrace/src/task/after_loader_task.rs:2475:28
+     |
+2475 |                         || args[0] % PAGE != 0
+     |                            ^^^^^^^^^^^^^^^^^^^ help: replace with: `!args[0].is_multiple_of(PAGE)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+     = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`
+
+error: manual implementation of `.is_multiple_of()`
+    --> reverie-ptrace/src/task/after_loader_task.rs:2506:24
+     |
+2506 |                     || args[0] % PAGE != 0
+     |                        ^^^^^^^^^^^^^^^^^^^ help: replace with: `!args[0].is_multiple_of(PAGE)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+
+error: manual implementation of `.is_multiple_of()`
+    --> reverie-ptrace/src/task/after_loader_task.rs:2537:24
+     |
+2537 |                     && args[0] % PAGE == 0
+     |                        ^^^^^^^^^^^^^^^^^^^ help: replace with: `args[0].is_multiple_of(PAGE)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+
+error: match expression looks like `matches!` macro
+    --> reverie-ptrace/src/task/after_loader_task.rs:2691:24
+     |
+2691 |                       && match (state.owned_descriptors.get(&args[0]), function) {
+     |  ________________________^
+2692 | |                         (
+2693 | |                             Some(AfterLoaderOwnedDescriptor::ProcMaps { .. }),
+2694 | |                             CallerFunction::Initializer,
+...    |
+2703 | |                         _ => false,
+2704 | |                     } =>
+     | |_____________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#match_like_matches_macro
+     = note: `-D clippy::match-like-matches-macro` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::match_like_matches_macro)]`
+help: use `matches!` directly
+     |
+2691 ~                     && matches!((state.owned_descriptors.get(&args[0]), function), (
+2692 +                             Some(AfterLoaderOwnedDescriptor::ProcMaps { .. }),
+2693 +                             CallerFunction::Initializer,
+2694 +                         ) | (
+2695 +                             Some(
+2696 +                                 AfterLoaderOwnedDescriptor::SealedRuntime { .. }
+2697 +                                 | AfterLoaderOwnedDescriptor::BoundImage { .. },
+2698 +                             ),
+2699 +                             CallerFunction::Dlopen,
+2700 ~                         )) =>
+     |
+
+error: manual implementation of `.is_multiple_of()`
+    --> reverie-ptrace/src/task/after_loader_task.rs:2791:20
+     |
+2791 |                 if args[0] % 4 != 0
+     |                    ^^^^^^^^^^^^^^^^ help: replace with: `!args[0].is_multiple_of(4)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+
+error: unnecessary use of `get(image).is_none()`
+    --> reverie-ptrace/src/task/after_loader_task.rs:3417:49
+     |
+3417 |                         if state.image_mappings.get(image).is_none() {
+     |                            ---------------------^^^^^^^^^^^^^^^^^^^^
+     |                            |
+     |                            help: replace it with: `!state.image_mappings.contains_key(image)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#unnecessary_get_then_check
+     = note: `-D clippy::unnecessary-get-then-check` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::unnecessary_get_then_check)]`
+
+error: this function has too many arguments (8/7)
+    --> reverie-ptrace/src/task/after_loader_task.rs:3745:5
+     |
+3745 | /     fn after_loader_image_geometry_matches(
+3746 | |         &self,
+3747 | |         task: &Stopped,
+3748 | |         image: &LiteinstCallerImage,
+...    |
+3753 | |         isolation: Option<&AfterLoaderHelperIsolation>,
+3754 | |     ) -> Result<std::result::Result<(), ImageGeometryMismatch>, Error> {
+     | |______________________________________________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+
+error: equality checks against false can be replaced by a negation
+    --> reverie-ptrace/src/task/after_loader_task.rs:3970:12
+     |
+3970 |         if elf.is_64 == false
+     |            ^^^^^^^^^^^^^^^^^^ help: try: `!elf.is_64`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#bool_comparison
+     = note: `-D clippy::bool-comparison` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::bool_comparison)]`
+
+error: equality checks against false can be replaced by a negation
+    --> reverie-ptrace/src/task/after_loader_task.rs:3971:16
+     |
+3971 |             || elf.little_endian == false
+     |                ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `!elf.little_endian`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#bool_comparison
+
+error: the following explicit lifetimes could be elided: 'a
+    --> reverie-ptrace/src/task/after_loader_task.rs:4168:43
+     |
+4168 |     fn bind_after_loader_image_geometries<'a>(
+     |                                           ^^
+...
+4171 |         selected: Vec<&'a LiteinstCallerImage>,
+     |                        ^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_lifetimes
+     = note: `-D clippy::needless-lifetimes` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::needless_lifetimes)]`
+help: elide the lifetimes
+     |
+4168 ~     fn bind_after_loader_image_geometries(
+4169 |         &mut self,
+4170 |         task: &Stopped,
+4171 ~         selected: Vec<&LiteinstCallerImage>,
+     |
+
+error: this function has too many arguments (8/7)
+    --> reverie-ptrace/src/task/after_loader_task.rs:5742:5
+     |
+5742 | /     async fn caller_function(
+5743 | |         &mut self,
+5744 | |         task: Stopped,
+5745 | |         image: ImageIdentity,
+...    |
+5750 | |         function: CallerFunction,
+5751 | |     ) -> Result<(Stopped, u64), Error> {
+     | |______________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+
+error: this function has too many arguments (8/7)
+    --> reverie-ptrace/src/task.rs:1192:1
+     |
+1192 | / fn liteinst_helper_entry_scalars_match(
+1193 | |     arm: &LiteinstInstallHelperArm,
+1194 | |     tid: Pid,
+1195 | |     generation: u64,
+...    |
+1200 | |     request: LiteinstInstallRequest,
+1201 | | ) -> bool {
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+
+error: using `chunks_exact_mut` with a constant chunk size
+    --> reverie-ptrace/src/task.rs:1444:10
+     |
+1444 |         .chunks_exact_mut(core::mem::size_of::<u64>())
+     |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `as_chunks_mut` instead: `as_chunks_mut::<{ core::mem::size_of::<u64>() }>().0.iter_mut()`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#chunks_exact_to_as_chunks
+     = note: `-D clippy::chunks-exact-to-as-chunks` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::chunks_exact_to_as_chunks)]`
+
+error: large size difference between variants
+    --> reverie-ptrace/src/task.rs:1809:1
+     |
+1809 | /   enum LiteinstInstalledEventPhase {
+1810 | |       AwaitingRuntimeTrap,
+1811 | | /     AwaitingCompletion {
+1812 | | |         runtime_status: u64,
+1813 | | |     },
+     | | |_____- the second-largest variant contains at least 8 bytes
+1814 | | /     AwaitStopResolution {
+1815 | | |         prior: LiteinstInstalledPrivatePhase,
+1816 | | |         snapshot: LiteinstStopResolutionSnapshot,
+1817 | | |     },
+     | | |_____- the largest variant contains at least 280 bytes
+1818 | |   }
+     | |___^ the entire enum is at least 280 bytes
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#large_enum_variant
+     = note: `-D clippy::large-enum-variant` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::large_enum_variant)]`
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+     |
+1816 -         snapshot: LiteinstStopResolutionSnapshot,
+1816 +         snapshot: Box<LiteinstStopResolutionSnapshot>,
+     |
+
+error: this function has too many arguments (9/7)
+    --> reverie-ptrace/src/task.rs:2274:5
+     |
+2274 | /     fn validates_retired_runtime_trap(
+2275 | |         self,
+2276 | |         generation: u64,
+2277 | |         observed_marker: u64,
+...    |
+2283 | |         mapping: &GuestMap,
+2284 | |     ) -> bool {
+     | |_____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+
+error: this function has too many arguments (8/7)
+    --> reverie-ptrace/src/task.rs:2737:1
+     |
+2737 | / fn after_loader_liteinst_ready_is_publishable(
+2738 | |     state: &LiteinstRuntimeState,
+2739 | |     generation: u64,
+2740 | |     frame: LiteinstHandshakeFrame,
+...    |
+2745 | |     initializer: &crate::target_loader::TargetHostInitializer,
+2746 | | ) -> bool {
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+
+error: this function has too many arguments (8/7)
+    --> reverie-ptrace/src/task.rs:2835:1
+     |
+2835 | / fn commit_after_loader_liteinst_ready(
+2836 | |     state: &mut LiteinstRuntimeState,
+2837 | |     generation: u64,
+2838 | |     prepared_arenas: Vec<PreparedArenaFootprint>,
+...    |
+2843 | |     initializer: crate::target_loader::TargetHostInitializer,
+2844 | | ) {
+     | |_^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+
+error: this function has too many arguments (9/7)
+    --> reverie-ptrace/src/task.rs:8324:5
+     |
+8324 | /     async fn restore_liteinst_helper_and_source(
+8325 | |         &mut self,
+8326 | |         task: Stopped,
+8327 | |         saved: &LiteinstHelperSavedState,
+...    |
+8333 | |         helper_was_executable: bool,
+8334 | |     ) -> Result<(Stopped, Vec<String>), Error> {
+     | |______________________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+
+error: the `Err`-variant returned from this function is very large
+    --> reverie-ptrace/src/task.rs:9604:10
+     |
+9604 |       ) -> Result<
+     |  __________^
+9605 | |         (Running, safeptrace::PhysicalResumeAttempt),
+9606 | |         (
+9607 | |             TraceError,
+...    |
+9610 | |         ),
+9611 | |     > {
+     | |_____^ the `Err`-variant is at least 208 bytes
+     |
+     = help: try reducing the size of `(safeptrace::Error, std::option::Option<safeptrace::PhysicalResumeAttempt>, std::option::Option<reverie::Errno>)`, for example by boxing large elements or replacing it with `Box<(safeptrace::Error, std::option::Option<safeptrace::PhysicalResumeAttempt>, std::option::Option<reverie::Errno>)>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#result_large_err
+     = note: `-D clippy::result-large-err` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::result_large_err)]`
+
+error: very complex type used. Consider factoring parts into `type` definitions
+    --> reverie-ptrace/src/task.rs:9604:10
+     |
+9604 |       ) -> Result<
+     |  __________^
+9605 | |         (Running, safeptrace::PhysicalResumeAttempt),
+9606 | |         (
+9607 | |             TraceError,
+...    |
+9610 | |         ),
+9611 | |     > {
+     | |_____^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#type_complexity
+
+error: the `Err`-variant returned from this function is very large
+   --> reverie-ptrace/src/timer.rs:662:10
+    |
+384 |     Event(Wait),
+    |     ----------- the largest variant contains at least 136 bytes
+...
+662 |     ) -> Result<Stopped, HandleFailure> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: try reducing the size of `timer::HandleFailure`, for example by boxing large elements or replacing it with `Box<timer::HandleFailure>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> reverie-ptrace/src/timer.rs:1569:10
+     |
+ 384 |     Event(Wait),
+     |     ----------- the largest variant contains at least 136 bytes
+...
+1569 |     ) -> Result<Stopped, HandleFailure> {
+     |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: try reducing the size of `timer::HandleFailure`, for example by boxing large elements or replacing it with `Box<timer::HandleFailure>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> reverie-ptrace/src/timer.rs:1646:10
+     |
+ 384 |     Event(Wait),
+     |     ----------- the largest variant contains at least 136 bytes
+...
+1646 |     ) -> Result<Stopped, HandleFailure> {
+     |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: try reducing the size of `timer::HandleFailure`, for example by boxing large elements or replacing it with `Box<timer::HandleFailure>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+   --> reverie-ptrace/src/tracer.rs:705:10
+    |
+705 |       ) -> Result<
+    |  __________^
+706 | |         (Running, PhysicalResumeAttempt),
+707 | |         (TraceError, Option<PhysicalResumeAttempt>, Option<Errno>),
+708 | |     > {
+    | |_____^ the `Err`-variant is at least 208 bytes
+    |
+    = help: try reducing the size of `(safeptrace::Error, std::option::Option<safeptrace::PhysicalResumeAttempt>, std::option::Option<reverie::Errno>)`, for example by boxing large elements or replacing it with `Box<(safeptrace::Error, std::option::Option<safeptrace::PhysicalResumeAttempt>, std::option::Option<reverie::Errno>)>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#result_large_err
+
+error: very complex type used. Consider factoring parts into `type` definitions
+   --> reverie-ptrace/src/tracer.rs:705:10
+    |
+705 |       ) -> Result<
+    |  __________^
+706 | |         (Running, PhysicalResumeAttempt),
+707 | |         (TraceError, Option<PhysicalResumeAttempt>, Option<Errno>),
+708 | |     > {
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#type_complexity
+
+error: could not compile `reverie-ptrace` (lib) due to 315 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: associated function `read` is never used
+   --> reverie-ptrace/src/after_loader/inode_policy.rs:345:19
+    |
+342 | impl StableInodePolicy {
+    | ---------------------- associated function in this implementation
+...
+345 |     pub(crate) fn read(
+    |                   ^^^^
+    |
+    = note: `-D dead-code` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: method `inode_kind` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:235:14
+    |
+227 | impl CoverEntryKind {
+    | ------------------- method in this implementation
+...
+235 |     const fn inode_kind(self) -> StableInodeKind {
+    |              ^^^^^^^^^^
+
+error: associated function `read` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:250:8
+    |
+249 | impl CanonicalInodePolicy {
+    | ------------------------- associated function in this implementation
+250 |     fn read(
+    |        ^^^^
+
+error: associated function `read` is never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:294:8
+    |
+293 | impl StableFilesystemMetadata {
+    | ----------------------------- associated function in this implementation
+294 |     fn read(descriptor: RawFd) -> io::Result<Self> {
+    |        ^^^^
+
+error: associated items `read` and `validate_root` are never used
+   --> reverie-ptrace/src/after_loader/stable_cover.rs:411:8
+    |
+410 | impl CanonicalMetadata {
+    | ---------------------- associated items in this implementation
+411 |     fn read(descriptor: RawFd) -> io::Result<Self> {
+    |        ^^^^
+...
+469 |     fn validate_root(&self) -> io::Result<()> {
+    |        ^^^^^^^^^^^^^
+
+error: associated function `from_statx` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:131:8
+    |
+130 | impl StableTimestamp {
+    | -------------------- associated function in this implementation
+131 |     fn from_statx(timestamp: libc::statx_timestamp) -> io::Result<Self> {
+    |        ^^^^^^^^^^
+
+error: associated function `read` is never used
+   --> reverie-ptrace/src/after_loader/stable_store.rs:191:8
+    |
+190 | impl StableFileMetadata {
+    | ----------------------- associated function in this implementation
+191 |     fn read(file: &File) -> io::Result<Self> {
+    |        ^^^^
+
+error: this function has too many arguments (9/7)
+    --> reverie-ptrace/src/task.rs:2798:1
+     |
+2798 | / fn publish_after_loader_liteinst_ready(
+2799 | |     state: &mut LiteinstRuntimeState,
+2800 | |     generation: u64,
+2801 | |     frame: LiteinstHandshakeFrame,
+...    |
+2807 | |     initializer: crate::target_loader::TargetHostInitializer,
+2808 | | ) -> bool {
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+
+error: this function has too many arguments (8/7)
+    --> reverie-ptrace/src/task.rs:3920:9
+     |
+3920 | /         async fn setup_special_mmap_page<L: Tool + 'static>(
+3921 | |             owner: &mut TracedTask<L>,
+3922 | |             task: Stopped,
+3923 | |             saved_regs: &libc::user_regs_struct,
+...    |
+3928 | |             #[cfg(test)] force_preinit_signal_once: &Option<Arc<AtomicBool>>,
+3929 | |         ) -> Result<Stopped, TraceError> {
+     | |________________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+
+error: field assignment outside of initializer for an instance created with Default::default()
+     --> reverie-ptrace/src/task.rs:13030:9
+      |
+13030 |         successful.attempted_sites = before.clone();
+      |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+note: consider initializing the variable with `task::LiteinstRuntimeState { attempted_sites: before.clone(), ..Default::default() }` and removing relevant reassignments
+     --> reverie-ptrace/src/task.rs:13029:9
+      |
+13029 |         let mut successful = LiteinstRuntimeState::default();
+      |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#field_reassign_with_default
+      = note: `-D clippy::field-reassign-with-default` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::field_reassign_with_default)]`
+
+error: field assignment outside of initializer for an instance created with Default::default()
+     --> reverie-ptrace/src/task.rs:13055:9
+      |
+13055 |         failed.attempted_sites = before.clone();
+      |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+note: consider initializing the variable with `task::LiteinstRuntimeState { attempted_sites: before.clone(), ..Default::default() }` and removing relevant reassignments
+     --> reverie-ptrace/src/task.rs:13054:9
+      |
+13054 |         let mut failed = LiteinstRuntimeState::default();
+      |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#field_reassign_with_default
+
+error: could not compile `reverie-ptrace` (lib test) due to 105 previous errors

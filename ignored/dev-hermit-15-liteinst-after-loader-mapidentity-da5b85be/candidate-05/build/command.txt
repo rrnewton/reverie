@@ -1,0 +1,1 @@
+CARGO_TARGET_DIR=<candidate-05>/build/target CARGO_NET_OFFLINE=true cargo build --offline --locked --release -p reverie-liteinst --lib --no-default-features --features liteinst-after-loader-experiment --message-format=json-render-diagnostics

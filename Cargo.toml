@@ -26,5 +26,6 @@ members = [
     "reverie-syscalls",
     "reverie-util",
     "safeptrace",
+    "third_party/liteinst2",
 ]
 exclude = ["public_autocargo/experimental"]

@@ -93,12 +93,16 @@ where
 /// This has the same process-global effects as [`install_tool`], but skips the
 /// concurrent instruction-tearing and straddler protocol when publishing a new
 /// site. The caller must keep every other application thread from fetching
-/// guest text for the full lifetime of the installed tool.
+/// guest text and must exclude nested signal-handler execution for the full
+/// lifetime of the installed tool.
 ///
 /// # Safety
 ///
 /// In addition to [`install_tool`]'s requirements, the caller asserts that no
-/// other application thread can execute while a syscall site is installed.
+/// other application thread or nested signal handler can execute while a
+/// syscall site is installed. This exclusion covers allocator reentry as well
+/// as guest-text execution because quiescent installation uses a process-wide,
+/// non-TLS patch-allocation scope.
 pub unsafe fn install_tool_quiescent<T>(coordinator: impl AsRef<Path>) -> io::Result<()>
 where
     T: Tool + 'static,
@@ -163,7 +167,7 @@ where
         rdtsc: subscriptions.has_rdtsc(),
     };
     runtime::preflight_instruction_faulting(instruction_subscriptions)?;
-    let vdso_sites = reverie_ptrace::patch_current_vdso(&subscriptions)
+    let vdso_patch = reverie_ptrace::patch_current_vdso(&subscriptions)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let _signal_state = runtime::prepare_guest_signal_state(instruction_subscriptions)?;
     let syscall_subscriptions = subscriptions.iter_syscalls().collect();
@@ -185,7 +189,14 @@ where
         .map_err(|_| {
             io::Error::new(io::ErrorKind::AlreadyExists, "Reverie tool installed twice")
         })?;
-    runtime::initialize_reverie_tool(stats, publication, instruction_subscriptions, &vdso_sites)
+    runtime::initialize_reverie_tool(
+        stats,
+        publication,
+        instruction_subscriptions,
+        vdso_patch.sites(),
+    )?;
+    vdso_patch.commit();
+    Ok(())
 }
 
 pub(crate) fn dispatch(event: &mut SyscallEvent) {
@@ -324,6 +335,7 @@ where
             // This is the original unsubscribed guest operation. Private
             // inject/tail_inject below deliberately keep caller rights.
             event.result = unsafe { event.forward() };
+            runtime::observe_injected_mapping_result(number, args, event.result);
             return;
         }
         let args = guest.event.args.map(|arg| arg as usize);
@@ -725,29 +737,7 @@ fn forward_plain_fork(number: i64, args: [u64; 6], guest_pkru: Option<&mut Optio
     }
     let result = physical.result;
     if number == libc::SYS_vfork && result > 0 {
-        let mut info = core::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
-        loop {
-            let waited = unsafe {
-                raw_syscall6(
-                    libc::SYS_waitid,
-                    [
-                        libc::P_PID as u64,
-                        result as u64,
-                        info.as_mut_ptr() as u64,
-                        (libc::WEXITED | libc::WNOWAIT) as u64,
-                        0,
-                        0,
-                    ],
-                )
-            };
-            if waited == -i64::from(libc::EINTR) {
-                continue;
-            }
-            if waited < 0 {
-                return waited;
-            }
-            break;
-        }
+        return unsafe { runtime::wait_for_translated_vfork_child(result) };
     }
     result
 }
@@ -763,7 +753,9 @@ fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
     let protected_signal =
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-133): Review fail-closed guest signal-handler policy.
-        !runtime::signal_action_supported(number, args)
+        number == libc::SYS_rt_sigreturn
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        || !runtime::signal_action_supported(number, args)
         // AUTONOMOUS-BOT-IMPLEMENTED
         || (number == libc::SYS_sigaltstack && args[0] != 0)
         // AUTONOMOUS-BOT-IMPLEMENTED
@@ -773,6 +765,8 @@ fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
         Some(Errno::EOPNOTSUPP)
     } else if protected_signal {
         Some(Errno::EPERM)
+    } else if let Some(error) = runtime::injected_mapping_control_error(number, args) {
+        Some(error)
     } else {
         None
     }
@@ -942,6 +936,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         }
 
         let result = unsafe { raw_syscall6(number, raw_args) };
+        runtime::observe_injected_mapping_result(number, raw_args, result);
         Errno::from_ret(result as usize).map(|value| value as i64)
     }
 
@@ -977,22 +972,18 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
             self.tail.set_exit(number, args);
         } else {
             let value = unsafe { raw_syscall6(number, args) };
+            runtime::observe_injected_mapping_result(number, args, value);
             self.tail.set_result(value);
         }
         std::future::pending().await
     }
 
-    // TODO-HUMAN-REVIEW(PR-326): Review the coarse
-    // syscall-boundary clock until the minimal ptrace supervisor wires PMU delivery.
-    fn set_timer(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        // Every intercepted syscall remains a deterministic scheduling boundary,
-        // but a CPU-bound thread cannot yet be preempted between syscalls.
-        Ok(())
+    fn set_timer(&mut self, sched: TimerSchedule) -> Result<(), Error> {
+        unsupported_timer_request(sched, TimerPrecision::Imprecise)
     }
 
-    fn set_timer_precise(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        // Same coarse boundary as set_timer; never synthesize host time.
-        Ok(())
+    fn set_timer_precise(&mut self, sched: TimerSchedule) -> Result<(), Error> {
+        unsupported_timer_request(sched, TimerPrecision::Precise)
     }
 
     fn read_clock(&mut self) -> Result<u64, Error> {
@@ -1002,6 +993,25 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
     fn has_cpuid_interception(&self) -> bool {
         self.cpuid_interception
     }
+}
+
+#[derive(Clone, Copy)]
+enum TimerPrecision {
+    Imprecise,
+    Precise,
+}
+
+fn unsupported_timer_request(
+    _sched: TimerSchedule,
+    precision: TimerPrecision,
+) -> Result<(), Error> {
+    let message = match precision {
+        TimerPrecision::Imprecise => "LiteInst Tool host does not implement timer-event delivery",
+        TimerPrecision::Precise => {
+            "LiteInst Tool host does not implement precise timer-event delivery"
+        }
+    };
+    Err(io::Error::new(io::ErrorKind::Unsupported, message).into())
 }
 
 pub struct LocalStack {
@@ -1094,5 +1104,157 @@ fn fatal(status: i32) -> ! {
     }
     loop {
         core::hint::spin_loop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_unsupported_timer(result: Result<(), Error>, expected_message: &'static str) {
+        match result {
+            Err(Error::Io(error)) => {
+                assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+                assert_eq!(error.to_string(), expected_message);
+            }
+            other => panic!("timer request did not fail closed: {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn timer_requests_never_report_success_without_delivery() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("timer-test.sock");
+        let server =
+            reverie_rpc_transport::RpcServer::bind(&socket, std::sync::Arc::new(()), ()).unwrap();
+        let serving = tokio::spawn(async move { server.serve_one().await });
+        let rpc = tokio::task::spawn_blocking(move || CoordinatorRpc::<()>::connect(socket))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut event = SyscallEvent {
+            number: libc::SYS_getpid,
+            args: [0; 6],
+            instruction_pointer: 0,
+            result: 0,
+            context: 0,
+            dispatch: runtime::SyscallDispatch::InstalledHook,
+            guest_pkru: None,
+        };
+        let pid = Pid::from_raw(std::process::id() as i32);
+        let mut state = ();
+        let tail = TailResult::default();
+        let mut guest = LiteinstGuest::<()> {
+            event: &mut event,
+            tid: pid,
+            pid,
+            ppid: None,
+            state: &mut state,
+            rpc: &rpc,
+            tail: &tail,
+            cpuid_interception: false,
+            fork_parent_state: None,
+        };
+
+        let imprecise_message = "LiteInst Tool host does not implement timer-event delivery";
+        for schedule in [
+            TimerSchedule::Time(core::time::Duration::from_nanos(1)),
+            TimerSchedule::Rcbs(1),
+            TimerSchedule::RcbsAndInstructions(1, 1),
+        ] {
+            assert_unsupported_timer(Guest::set_timer(&mut guest, schedule), imprecise_message);
+        }
+
+        let precise_message = "LiteInst Tool host does not implement precise timer-event delivery";
+        for schedule in [
+            TimerSchedule::Time(core::time::Duration::from_nanos(1)),
+            TimerSchedule::Rcbs(1),
+            TimerSchedule::RcbsAndInstructions(1, 1),
+        ] {
+            assert_unsupported_timer(
+                Guest::set_timer_precise(&mut guest, schedule),
+                precise_message,
+            );
+        }
+
+        drop(guest);
+        drop(rpc);
+        let _ = serving.await;
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct KernelSigaction {
+        handler: u64,
+        flags: u64,
+        restorer: u64,
+        mask: u64,
+    }
+
+    #[test]
+    fn injected_rt_sigreturn_cannot_consume_runtime_frame() {
+        assert_eq!(
+            injected_syscall_guard(libc::SYS_rt_sigreturn, [0; 6]),
+            Some(Errno::EPERM),
+        );
+    }
+
+    #[test]
+    fn toolhost_vfork_accepts_auto_reaped_sigchld_ignored_child() {
+        let outer = unsafe { raw_syscall6(libc::SYS_fork, [0; 6]) };
+        assert!(outer >= 0, "fork isolated ToolHost SIGCHLD=SIG_IGN test");
+        if outer == 0 {
+            let ignored = KernelSigaction {
+                handler: libc::SIG_IGN as u64,
+                ..KernelSigaction::default()
+            };
+            let installed = unsafe {
+                raw_syscall6(
+                    libc::SYS_rt_sigaction,
+                    [
+                        libc::SIGCHLD as u64,
+                        (&raw const ignored) as u64,
+                        0,
+                        core::mem::size_of::<u64>() as u64,
+                        0,
+                        0,
+                    ],
+                )
+            };
+            if installed != 0 {
+                unsafe { raw_syscall6(libc::SYS_exit_group, [81, 0, 0, 0, 0, 0]) };
+                unreachable!();
+            }
+
+            let result = forward_plain_fork(libc::SYS_vfork, [0; 6], None);
+            let code = if result == 0 {
+                // Translated COW child: finish the supported vfork boundary.
+                0
+            } else if result > 0 {
+                // Translated parent: the shared exact-child wait accepted the
+                // auto-reaped ECHILD proof and retained the child PID result.
+                0
+            } else {
+                82
+            };
+            unsafe { raw_syscall6(libc::SYS_exit_group, [code, 0, 0, 0, 0, 0]) };
+            unreachable!();
+        }
+
+        let mut status = 0_i32;
+        loop {
+            let waited = unsafe {
+                raw_syscall6(
+                    libc::SYS_wait4,
+                    [outer as u64, (&raw mut status) as u64, 0, 0, 0, 0],
+                )
+            };
+            if waited == -i64::from(libc::EINTR) {
+                continue;
+            }
+            assert_eq!(waited, outer);
+            break;
+        }
+        assert_eq!(status, 0, "ToolHost vfork SIGCHLD=SIG_IGN regression");
     }
 }

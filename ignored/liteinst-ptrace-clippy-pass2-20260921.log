@@ -1,0 +1,43 @@
+    Blocking waiting for file lock on build directory
+    Checking safeptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/safeptrace)
+warning: unused variable: `source_logical_stop`
+     --> safeptrace/src/notifier.rs:13123:14
+      |
+13123 |         let (source_logical_stop, source_status, tolerated_resume, inject_sigkill) = match *phase {
+      |              ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_source_logical_stop`
+      |
+      = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `safeptrace` (lib) generated 1 warning (run `cargo clippy --fix --lib -p safeptrace -- --no-deps -D warnings` to apply 1 suggestion)
+    Checking reverie-ptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-ptrace)
+error: digits of hex, binary or octal literal not in groups of equal size
+    --> reverie-ptrace/src/task/after_loader_task.rs:7704:26
+     |
+7704 |             (0x7d6_f702, 0x7d70_000),
+     |                          ^^^^^^^^^^ help: consider: `0x07d7_0000`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#unusual_byte_groupings
+     = note: `-D clippy::unusual-byte-groupings` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::unusual_byte_groupings)]`
+
+error[E0277]: the trait bound `[u8; 8]: std::convert::TryFrom<&[u8; 8]>` is not satisfied
+   --> reverie-ptrace/src/after_loader.rs:727:42
+    |
+727 |         let raw = u64::from_le_bytes(raw.try_into().unwrap());
+    |                                          ^^^^^^^^ the trait `std::convert::From<&[u8; 8]>` is not implemented for `[u8; 8]`
+    |
+help: the trait `From<&[u8; 8]>` is not implemented for `[u8; 8]`
+      but trait `From<reverie::reverie_process::Error>` is implemented for it
+   --> reverie-process/src/error.rs:185:1
+    |
+185 | impl From<Error> for [u8; 8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for that trait implementation, expected `reverie::reverie_process::Error`, found `&[u8; 8]`
+    = note: required for `&[u8; 8]` to implement `std::convert::Into<[u8; 8]>`
+    = note: required for `[u8; 8]` to implement `std::convert::TryFrom<&[u8; 8]>`
+    = note: required for `&[u8; 8]` to implement `std::convert::TryInto<[u8; 8]>`
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `reverie-ptrace` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `reverie-ptrace` (lib test) due to 2 previous errors
