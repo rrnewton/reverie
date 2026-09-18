@@ -692,6 +692,68 @@ def test_never_measured_is_reachable_without_javascript_but_not_default() -> Non
     assert _digest_for_identity(never["cell"]) not in test_record["cell_digests"]
 
 
+def test_static_cell_pages_retain_the_complete_no_javascript_population() -> None:
+    data = representative_build_data()
+    green = data["cells"][0]
+    base_test = data["tests"][0]
+    expected = set()
+    for index in range(121):
+        test_id = f"tests/static-{index:03d}"
+        identity = f"{test_id}/run/ptrace"
+        cell = _policy_cell(green, identity)
+        cell.update(
+            event_ids=[],
+            physical_row_count=0,
+            qualifying_event_ids=[],
+            qualifying_physical_row_count=0,
+            qualifying_represented_run_count=0,
+            represented_run_count=0,
+            selected_by={},
+            state="never-measured",
+        )
+        for key in (
+            "latest_result",
+            "latest_event_ids",
+            "latest_result_time",
+            "latest_result_tree",
+        ):
+            cell.pop(key, None)
+        test = copy.deepcopy(base_test)
+        test.update(id=test_id, program=test_id, cells=[identity])
+        data["cells"].append(cell)
+        data["tests"].append(test)
+        expected.add(identity)
+    data["counts"].update(
+        in_manifest_cell_count=len(data["cells"]),
+        never_measured_cell_count=len(expected),
+        test_count=len(data["tests"]),
+    )
+    data = _validated(data)
+    files = render_page.render_site(_build(data), data)
+    paths = [
+        "cells/never-measured.html",
+        "cells/never-measured-2.html",
+        "cells/never-measured-3.html",
+    ]
+
+    rendered = set()
+    for path in paths:
+        source = files[path].decode()
+        rows = set(re.findall(r'data-cell-row="1" data-cell="([^"]+)"', source))
+        assert len(rows) <= render_page.LIST_PAGE_SIZE
+        assert rendered.isdisjoint(rows)
+        rendered.update(rows)
+    assert rendered == expected
+    assert 'href="never-measured-2.html#all-cells"' in files[paths[0]].decode()
+    assert 'href="never-measured.html#all-cells"' in files[paths[1]].decode()
+    assert 'href="never-measured-3.html#all-cells"' in files[paths[1]].decode()
+    assert render_page._cell_listing_path(
+        explicit_never_measured=False, page_number=2
+    ) == "cells/results-2.html"
+    render_page._validate_output_files(files)
+
+
+
 def test_result_and_never_measured_pages_have_one_latest_result_control() -> None:
     data = data_with_all_three_states_and_one_omitted_row()
     files = render_page.render_site(_build(data), data)

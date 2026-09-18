@@ -2604,7 +2604,7 @@ def _outside_table(model: SiteModel, page: str) -> str:
     </div>"""
 
 
-def _cell_table_headings() -> str:
+def _cell_table_headings(*, sortable: bool = True) -> str:
     definitions = (
         (
             "Category",
@@ -2646,8 +2646,67 @@ def _cell_table_headings() -> str:
         ),
     )
     return "".join(
-        _column_heading(label, description, sort=sort, sort_kind="cell")
+        _column_heading(
+            label,
+            description,
+            sort=sort if sortable else None,
+            sort_kind="cell" if sortable else None,
+        )
         for label, description, sort in definitions
+    )
+
+
+def _cell_listing_path(*, explicit_never_measured: bool, page_number: int) -> str:
+    if page_number < 1:
+        raise RenderRefused("static cell page number must be positive")
+    if explicit_never_measured:
+        name = (
+            "never-measured.html"
+            if page_number == 1
+            else f"never-measured-{page_number}.html"
+        )
+    else:
+        name = "index.html" if page_number == 1 else f"results-{page_number}.html"
+    return f"cells/{name}"
+
+
+def _static_cell_pagination(
+    page: str,
+    *,
+    item_count: int,
+    page_number: int,
+    explicit_never_measured: bool,
+) -> str:
+    page_count = max(1, (item_count + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE)
+    if page_number < 1 or page_number > page_count:
+        raise RenderRefused("static cell page lies outside its population")
+    if page_count == 1:
+        return ""
+    first = (page_number - 1) * LIST_PAGE_SIZE + 1
+    last = min(page_number * LIST_PAGE_SIZE, item_count)
+    links = []
+    if page_number > 1:
+        target = _cell_listing_path(
+            explicit_never_measured=explicit_never_measured,
+            page_number=page_number - 1,
+        )
+        links.append(
+            f'<a rel="prev" href="{_escape(_href(page, target, "all-cells"))}">Previous page</a>'
+        )
+    links.append(
+        f"<span>Showing {first}–{last} of {item_count}; page {page_number} of {page_count}.</span>"
+    )
+    if page_number < page_count:
+        target = _cell_listing_path(
+            explicit_never_measured=explicit_never_measured,
+            page_number=page_number + 1,
+        )
+        links.append(
+            f'<a rel="next" href="{_escape(_href(page, target, "all-cells"))}">Next page</a>'
+        )
+    return (
+        '<nav class="list-pagination matrix-pagination static-cell-pagination" '
+        'aria-label="Static cell pages">' + "".join(links) + "</nav>"
     )
 
 
@@ -2690,13 +2749,26 @@ def _cells_listing_page(
         <span aria-live="polite" data-cell-page-summary>Showing all cells.</span>
         <button type="button" data-cell-next>Next</button>
       </nav>"""
+    static_pagination = _static_cell_pagination(
+        page,
+        item_count=len(cells),
+        page_number=1,
+        explicit_never_measured=explicit_never_measured,
+    )
+    static_access = (
+        "<noscript><p>Without JavaScript, every row remains available through "
+        "these page links.</p>"
+        f"{static_pagination}</noscript>"
+        if static_pagination
+        else ""
+    )
     content = f"""
     <p class="data-status" data-load-status data-load-state="loading" role="status">Loading verified local data…</p>
     <section id="cell-filters"><h2>Search and filter</h2><p>{other_view}</p>{fixed_state}{_cell_filter_form(model, cells, fixed_state="never-measured" if explicit_never_measured else None)}
       <p id="cell-filter-error" class="notice" hidden></p><p id="cell-filter-empty" hidden>No rows match these filters.</p>
       <p id="cell-filter-counts" hidden><strong data-matching-count>0</strong> <span data-matching-label>matching cells in the manifest</span>; <span data-evidence-label>those cells have</span> <strong data-physical-count>0</strong> physical rows representing <strong data-represented-count>0</strong> Hermit runs.</p>
     </section>
-    <section id="test-matrix"><h2>Test Matrix</h2>{pagination}
+    <section id="test-matrix"><h2>Test Matrix</h2>{pagination}{static_access}
       <div id="all-cells" data-in-manifest-listing>
         <p>{model.data['counts']['in_manifest_cell_count']} cells are in the manifest; this table has {len(cells)} rows. {table_explanation}</p>
         <div class="table-scroll"><table class="responsive-record-table"><caption>{_escape(table_caption)}</caption><thead><tr>{headings}</tr></thead><tbody id="cell-results">{rows}</tbody></table></div>
@@ -2713,6 +2785,67 @@ def _cells_listing_page(
         model.wording,
         ("assets/site.js",),
         page_kind="never-list" if explicit_never_measured else "cell-list",
+    )
+
+
+def _static_cells_listing_page(
+    model: SiteModel,
+    *,
+    title: str,
+    lead: str,
+    cells: Sequence[Mapping[str, Any]],
+    explicit_never_measured: bool,
+    page_number: int,
+) -> bytes:
+    page = _cell_listing_path(
+        explicit_never_measured=explicit_never_measured,
+        page_number=page_number,
+    )
+    start = (page_number - 1) * LIST_PAGE_SIZE
+    selected = cells[start : start + LIST_PAGE_SIZE]
+    if not selected:
+        raise RenderRefused("static cell page has no rows")
+    rows = "".join(_cell_table_row(model, page, cell) for cell in selected)
+    pagination = _static_cell_pagination(
+        page,
+        item_count=len(cells),
+        page_number=page_number,
+        explicit_never_measured=explicit_never_measured,
+    )
+    first = start + 1
+    last = start + len(selected)
+    table_caption = (
+        "Cells in the manifest with no qualifying admitted row."
+        if explicit_never_measured
+        else model.wording.cell_table_caption
+    )
+    primary = _cell_listing_path(
+        explicit_never_measured=explicit_never_measured,
+        page_number=1,
+    )
+    content = f"""
+    <p><a href="{_escape(_href(page, primary, "cell-filters"))}">Search and filter this population</a> with JavaScript, or continue through every static row below.</p>
+    <section id="test-matrix"><h2>Test Matrix</h2>{pagination}
+      <div id="all-cells" data-in-manifest-listing>
+        <p>Showing rows {first}–{last} of {len(cells)}.</p>
+        <div class="table-scroll"><table class="responsive-record-table"><caption>{_escape(table_caption)}</caption><thead><tr>{_cell_table_headings(sortable=False)}</tr></thead><tbody>{rows}</tbody></table></div>
+      </div>
+      {pagination}
+    </section>"""
+    page_title = f"{title}, page {page_number}"
+    return _layout(
+        page,
+        page_title,
+        lead,
+        content,
+        (
+            ("Overview", "index.html"),
+            (title, primary),
+            (f"Page {page_number}", None),
+        ),
+        model.wording,
+        ("assets/site.js",),
+        page_kind="static",
     )
 
 
@@ -3853,6 +3986,35 @@ def render_site(
         "tests/detail.html": _detail_shell(model, "test"),
         **_browser_data_files(model),
     }
+    result_cells = tuple(
+        cell for cell in model.cells if _cell_state(cell) in {"green", "red"}
+    )
+    never_measured_cells = tuple(
+        cell for cell in model.cells if _cell_state(cell) == "never-measured"
+    )
+    for title, lead, explicit_never_measured, cells in (
+        ("Cells", model.wording.cells_lead, False, result_cells),
+        (
+            "Never measured",
+            "Cells in the manifest for which no qualifying admitted row exists.",
+            True,
+            never_measured_cells,
+        ),
+    ):
+        page_count = (len(cells) + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE
+        for page_number in range(2, page_count + 1):
+            path = _cell_listing_path(
+                explicit_never_measured=explicit_never_measured,
+                page_number=page_number,
+            )
+            files[path] = _static_cells_listing_page(
+                model,
+                title=title,
+                lead=lead,
+                cells=cells,
+                explicit_never_measured=explicit_never_measured,
+                page_number=page_number,
+            )
     for index, row in enumerate(model.history_rows):
         files[model.history_paths[index]] = _run_page(model, index, row)
     files = dict(sorted(files.items()))
