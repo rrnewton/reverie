@@ -476,6 +476,31 @@ pub trait Tool: Send + Sync + Default {
         Ok(Some(signal))
     }
 
+    /// Enables acknowledgment of real KVM pending removals before thread start.
+    /// Other Tools retain their existing pending-state behavior by default.
+    /// The static-ELF runner requires effective [`ThreadOwnership::Tool`],
+    /// including caller overrides, and rejects an incompatible Host choice
+    /// before initializing GlobalState or consuming/executing the installed ELF.
+    fn observe_signal_dequeues(_config: &<Self::GlobalState as GlobalTool>::Config) -> bool {
+        false
+    }
+
+    /// Acknowledges one irreversible pending removal before any later Tool/guest work.
+    /// The backend retains the journal entry until this returns success. An error
+    /// is terminal; it is never a rollback or an ordinary guest syscall errno.
+    /// Notifications are process-wide FIFO, but each runs on its removing Guest.
+    /// Another owner can wait here before posting its next Tool scheduler request.
+    /// An opted-in Tool must complete this acknowledgment without requiring that
+    /// waiting owner to make progress or relinquish its scheduler token. FIFO
+    /// sequencing alone does not establish deterministic event membership.
+    async fn handle_signal_dequeue<G: Guest<Self>>(
+        &self,
+        _guest: &mut G,
+        _dequeue: crate::SignalDequeue,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+
     /// Handles a structured guest signal immediately before a virtual backend
     /// delivers it.
     ///

@@ -13916,3 +13916,6 @@ mod leader_exit;
 
 #[path = "support/process_alarm_signals.rs"]
 mod process_alarm_signals;
+
+#[path = "support/parked_signals.rs"]
+mod parked_signals;

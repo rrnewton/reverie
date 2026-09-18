@@ -488,6 +488,7 @@ fn joined_rpc_control_with_panic(fail: bool, cleanup_fails: bool, worker_panics:
                         Some(&context),
                         &panic_group,
                         3,
+                        Error::GuestWorkerPanic,
                         payload,
                         || {
                             assert_eq!(

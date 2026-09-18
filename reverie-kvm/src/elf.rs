@@ -474,6 +474,9 @@ pub(crate) struct LoadedStaticElf {
     pub process_signals: std::sync::Arc<std::sync::Mutex<ProcessSignalState>>,
     /// Mask, alternate stack, and pending signals private to this thread.
     pub thread_signals: SharedThreadSignalState,
+    /// First observation-bookkeeping refusal for this executor lifetime.
+    /// This is separate from guest pending state and from raw syscall results.
+    pub signal_dequeue_failure: Option<reverie::syscalls::Errno>,
     // One process-tree-wide membership table distinguishes a live task with no
     // robust-list registration from an unknown/dead tid. Entries are created
     // with each executor, reset across exec, and removed when that executor is
@@ -590,6 +593,7 @@ impl LoadedStaticElf {
             },
             process_signals: std::sync::Arc::new(std::sync::Mutex::new(process_signals)),
             thread_signals: self.thread_signals.for_fork(),
+            signal_dequeue_failure: None,
             task_lifecycle: self.task_lifecycle.clone(),
             files,
             random_device_fds: self.random_device_fds.clone(),
@@ -704,6 +708,7 @@ impl LoadedStaticElf {
         // `execve` replaces the image, never the position in the process tree.
         self.is_traced_tree_root = previous.is_traced_tree_root;
         self.logical_clock_ns = previous.logical_clock_ns;
+        self.signal_dequeue_failure = previous.signal_dequeue_failure;
         self.umask = previous.umask;
         self.random_seed = previous.random_seed;
         // `thread_name` intentionally remains the replacement image's name.
@@ -1019,6 +1024,7 @@ fn load_executable(
         ioprio: 0,
         process_signals: std::sync::Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
         thread_signals: SharedThreadSignalState::default(),
+        signal_dequeue_failure: None,
         task_lifecycle: std::sync::Arc::new(std::sync::Mutex::new(TaskLifecycleTable::with_root(
             1, 1, 1, true,
         ))),

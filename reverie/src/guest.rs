@@ -295,6 +295,57 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         }
     }
 
+    /// Backend process/task lifetime identity, including at thread start.
+    fn signal_task_identity(&self) -> Option<crate::SignalTaskIdentity> {
+        None
+    }
+
+    /// Current parked-observation capability, bound to this exact callback.
+    fn parked_signal_site(&self) -> Option<crate::CallbackSignalSite> {
+        None
+    }
+
+    /// Active nested observation, available to the Tool's real signal-hook RPCs.
+    fn signal_observation_lease(&self) -> Option<crate::ParkedObservationLease> {
+        None
+    }
+
+    /// Sequentially observes real pending events without abandoning the original syscall.
+    async fn observe_parked_signal(
+        &mut self,
+        _site: crate::CallbackSignalSite,
+        _lease: crate::ParkedObservationLease,
+    ) -> Result<crate::ParkedSignalObservation, crate::SignalObservationFailure> {
+        Err(crate::SignalObservationFailure::RejectedBeforeRemoval {
+            errno: Errno::ENOSYS,
+        })
+    }
+
+    /// Transfers a reserved fatal selection to the driver; success never returns.
+    async fn terminate_from_parked_signal(
+        &mut self,
+        _selection: crate::PreparedSignalToken,
+    ) -> Result<Never, crate::SignalObservationFailure> {
+        Err(crate::SignalObservationFailure::RejectedBeforeRemoval {
+            errno: Errno::ENOSYS,
+        })
+    }
+
+    /// Retained irreversible effects, independently of the current observation lease.
+    fn parked_signal_failure_context(&self) -> Option<crate::ParkedSignalFailureContext> {
+        None
+    }
+
+    /// Cancels through the driver without tail-injecting Exit or rolling back effects.
+    async fn cancel_parked_signal(
+        &mut self,
+        _context: crate::ParkedSignalFailureContext,
+    ) -> Result<Never, crate::SignalObservationFailure> {
+        Err(crate::SignalObservationFailure::RejectedBeforeRemoval {
+            errno: Errno::ENOSYS,
+        })
+    }
+
     /// Like [`Guest::inject`], but will retry the syscall if `EINTR` or
     /// `ERESTARTSYS` are returned.
     ///
@@ -551,6 +602,38 @@ where
         event: SignalEvent,
     ) -> crate::ProcessAlarmSignalOutcome {
         self.inner.queue_process_alarm_signal(event).await
+    }
+
+    fn signal_task_identity(&self) -> Option<crate::SignalTaskIdentity> {
+        self.inner.signal_task_identity()
+    }
+    fn parked_signal_site(&self) -> Option<crate::CallbackSignalSite> {
+        self.inner.parked_signal_site()
+    }
+    fn signal_observation_lease(&self) -> Option<crate::ParkedObservationLease> {
+        self.inner.signal_observation_lease()
+    }
+    async fn observe_parked_signal(
+        &mut self,
+        site: crate::CallbackSignalSite,
+        lease: crate::ParkedObservationLease,
+    ) -> Result<crate::ParkedSignalObservation, crate::SignalObservationFailure> {
+        self.inner.observe_parked_signal(site, lease).await
+    }
+    async fn terminate_from_parked_signal(
+        &mut self,
+        selection: crate::PreparedSignalToken,
+    ) -> Result<Never, crate::SignalObservationFailure> {
+        self.inner.terminate_from_parked_signal(selection).await
+    }
+    fn parked_signal_failure_context(&self) -> Option<crate::ParkedSignalFailureContext> {
+        self.inner.parked_signal_failure_context()
+    }
+    async fn cancel_parked_signal(
+        &mut self,
+        context: crate::ParkedSignalFailureContext,
+    ) -> Result<Never, crate::SignalObservationFailure> {
+        self.inner.cancel_parked_signal(context).await
     }
 
     fn set_timer(&mut self, sched: TimerSchedule) -> Result<(), Error> {
