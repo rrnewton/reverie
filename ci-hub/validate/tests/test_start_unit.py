@@ -9051,6 +9051,237 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("SCORECARD HANDOFF NOT PUBLISHED", error)
         self.assertIn("retained for recovery", error)
 
+    def test_sweep_registry_read_waits_for_a_contended_state_lock(self) -> None:
+        """Preserve the original PR lock-wait behavioral control."""
+        self.managed_cleanup_record("wait-lock-flag")
+
+        start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        status_commands = [
+            command
+            for command in self.fake.commands
+            if wrkslots_action(command, "status")
+        ]
+        self.assertEqual(1, len(status_commands), status_commands)
+        command = status_commands[0]
+        self.assertIn("--wait-lock", command)
+        self.assertEqual(
+            str(start_unit.WRKSLOTS_STATUS_LOCK_WAIT_SECONDS),
+            command[command.index("--wait-lock") + 1],
+        )
+        # The wait must be a real one. A zero wait is the defect wearing the
+        # flag, and would satisfy a presence-only assertion.
+        self.assertGreater(start_unit.WRKSLOTS_STATUS_LOCK_WAIT_SECONDS, 0)
+
+
+    def test_a_state_lock_that_clears_within_the_wait_does_not_refuse_the_batch(
+        self,
+    ) -> None:
+        """Preserve the original PR lock-wait behavioral control."""
+        fresh, _record_path = self.managed_cleanup_record("lock-clears")
+        inner = self.fake
+
+        def contended(command: list[str], **kwargs: object):
+            if wrkslots_action(command, "status"):
+                waited = (
+                    "--wait-lock" in command
+                    and float(command[command.index("--wait-lock") + 1]) > 0
+                )
+                if not waited:
+                    inner.wrkslots_status_rc = 3
+                    inner.wrkslots_status_stderr = (
+                        "REFUSED: state lock is busy for "
+                        f"{self.root}/worktrees/ACTIVE; retry after the current "
+                        "command exits"
+                    )
+                else:
+                    inner.wrkslots_status_rc = 0
+                    inner.wrkslots_status_stderr = ""
+            return inner(command, **kwargs)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=contended, tool_root=self.root
+        )
+
+        self.assertEqual([str(fresh)], report["removed"], report)
+        self.assertEqual([], report["retained"], report)
+
+
+    def test_a_registry_read_failure_that_is_not_the_lock_still_refuses(
+        self,
+    ) -> None:
+        """Preserve the original PR lock-wait behavioral control."""
+        fresh, _record_path = self.managed_cleanup_record("registry-unreadable")
+        self.fake.wrkslots_status_rc = 3
+        self.fake.wrkslots_status_stderr = "REFUSED: registry storage is inconsistent"
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.is_dir())
+        reasons = [row["reason"] for row in report["retained"]]
+        self.assertTrue(
+            any("registry storage is inconsistent" in reason for reason in reasons),
+            reasons,
+        )
+        self.assertTrue(
+            any("30s state-lock wait limit" in reason for reason in reasons),
+            reasons,
+        )
+
+
+    def test_real_registry_lock_wait_refusal_release_and_deadline(self) -> None:
+        # Use the recorded provider with an empty, isolated project. No real
+        # registrations, validation roots, or cleanup operations are involved.
+        tool = Path(__file__).resolve().parents[2] / "bin/wrkslots"
+        project = self.root / "lock-project"
+        project.mkdir()
+        (project / "liveness.py").write_text("raise SystemExit(2)\n")
+        environment = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith("WRKSLOTS_")
+        }
+        provider = tool.parents[2] / "hermit/agent-utils/py/wrkslots/__main__.py"
+        initialized = subprocess.run(
+            [sys.executable, str(provider), "--machine", "lock-test", "init", str(project),
+             "--liveness-command", "liveness.py"],
+            env=environment, text=True, capture_output=True, timeout=10,
+        )
+        self.assertEqual(0, initialized.returncode, initialized.stderr)
+        command = [str(tool), "--project-root", str(project), "--machine", "lock-test"]
+        unlocked = subprocess.run(
+            [*command, "status", "--format", "json"],
+            env=environment, text=True, capture_output=True, timeout=10,
+        )
+        self.assertEqual(0, unlocked.returncode, unlocked.stderr)
+        snapshot = json.loads(unlocked.stdout)
+        self.assertEqual(str(project), snapshot["project_root"])
+        self.assertEqual([], snapshot["active"])
+        lock = Path(snapshot["control_dir"]) / "ACTIVE.global.lock"
+        self.assertTrue(lock.is_relative_to(project))
+        # Bind the actual interpreter PID for the wait observation. The normal
+        # wrapper above proves status transport; PATH's python3 may be a launcher.
+        command = [sys.executable, str(provider), *command[1:]]
+        with lock.open("r+") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            for limit in (0.0, 0.25):
+                started = time.monotonic()
+                refused = subprocess.run(
+                    [*command, "--wait-lock", str(limit), "status", "--format", "json"],
+                    env=environment, text=True, capture_output=True, timeout=10,
+                )
+                elapsed = time.monotonic() - started
+                self.assertEqual(3, refused.returncode, refused.stdout + refused.stderr)
+                self.assertIn("state lock is busy", refused.stderr)
+                self.assertGreaterEqual(elapsed, limit)
+                print(f"registry-lock-control held limit={limit} exit={refused.returncode} elapsed={elapsed:.6f}")
+            started = time.monotonic()
+            child = subprocess.Popen(
+                [*command, "--wait-lock", "3", "status", "--format", "json"],
+                env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            try:
+                deadline = time.monotonic() + 5
+                waiting = False
+                observations = set()
+                while child.poll() is None and time.monotonic() < deadline:
+                    process = Path(f"/proc/{child.pid}")
+                    descriptors = list((process / "fd").iterdir())
+                    self.assertLess(len(descriptors), 256)
+                    lock_open = False
+                    for descriptor in descriptors:
+                        try:
+                            lock_open |= descriptor.readlink() == lock
+                        except FileNotFoundError:
+                            pass
+                    wchan = (process / "wchan").read_text().strip()
+                    observations.add((lock_open, wchan))
+                    if lock_open and wchan == "hrtimer_nanosleep":
+                        waiting = True
+                        break
+                    time.sleep(0.01)
+                self.assertTrue(waiting, f"status did not observably wait on ACTIVE.global.lock; observations={sorted(observations)!r}, exit={child.poll()!r}")
+                self.assertIsNone(child.poll(), "status exited while the lock was still held")
+                print(f"registry-lock-control observed-wait pid={child.pid} lock={lock}")
+                fcntl.flock(held, fcntl.LOCK_UN)
+                stdout, stderr = child.communicate(timeout=10)
+                self.assertEqual(0, child.returncode, stderr)
+                self.assertEqual(snapshot, json.loads(stdout))
+                print(f"registry-lock-control released limit=3 exit={child.returncode} elapsed={time.monotonic() - started:.6f}")
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                child.communicate(timeout=10)
+
+    def test_sweep_caches_registry_refusals_and_requeries_on_next_sweep(self) -> None:
+        checkouts = [self.managed_cleanup_record(f"registry-{n}")[0] for n in range(3)]
+        failures = (
+            (3, "", "REFUSED: state lock is busy", "30s state-lock wait limit"),
+            (3, "", "configuration is unsafe", "configuration is unsafe"),
+            (0, "not JSON", "", "invalid JSON"),
+            (0, "[]", "", "did not identify the exact project"),
+            (0, json.dumps({"schema": 1, "project_root": str(self.root), "active": []}), "", "did not identify the exact project"),
+            (0, json.dumps({"schema": 2, "project_root": "/wrong-root", "active": []}), "", "did not identify the exact project"),
+            (0, json.dumps({"schema": 2, "project_root": str(self.root), "active": {}}), "", "did not identify the exact project"),
+        )
+        for rc, output, diagnostic, expected in failures:
+            with self.subTest(output=output, diagnostic=diagnostic):
+                self.fake.commands.clear()
+                self.fake.wrkslots_status_rc = rc
+                self.fake.wrkslots_status_output = output
+                self.fake.wrkslots_status_stderr = diagnostic
+                report = start_unit.sweep_completed_checkouts(
+                    self.root, run=self.fake, tool_root=self.root
+                )
+                commands = [cmd for cmd in self.fake.commands if wrkslots_action(cmd, "status")]
+                self.assertEqual(1, len(commands))
+                self.assertEqual("30.0", commands[0][commands[0].index("--wait-lock") + 1])
+                self.assertEqual([], report["removed"])
+                self.assertEqual([], report["removed_cargo_homes"])
+                self.assertEqual([], report["scorecard_handoffs"])
+                self.assertEqual(sorted(map(str, checkouts)), sorted(row["checkout"] for row in report["retained"]))
+                self.assertEqual(1, len({row["reason"] for row in report["retained"]}))
+                for row in report["retained"]:
+                    self.assertIn(expected, row["reason"])
+                    if diagnostic:
+                        self.assertIn(diagnostic, row["reason"])
+                    self.assertNotIn("after waiting", row["reason"])
+                self.assertTrue(all(path.exists() for path in checkouts))
+                self.assertFalse(any(wrkslots_action(cmd, "remove-validate-batch") for cmd in self.fake.commands))
+                self.assertEqual([], self.fake.removed)
+        self.fake.commands.clear()
+        self.fake.wrkslots_status_rc = 0
+        self.fake.wrkslots_status_output = None
+        self.fake.wrkslots_status_stderr = ""
+        recovered = start_unit.sweep_completed_checkouts(self.root, run=self.fake, tool_root=self.root)
+        self.assertEqual(sorted(map(str, checkouts)), sorted(recovered["removed"]))
+        self.assertEqual([], recovered["retained"])
+        self.assertEqual(1, sum(wrkslots_action(cmd, "status") for cmd in self.fake.commands))
+        self.assertFalse(any(path.exists() for path in checkouts))
+
+    def test_sweep_caches_registry_command_launch_failure(self) -> None:
+        checkouts = [self.managed_cleanup_record(f"launch-error-{n}")[0] for n in range(3)]
+        calls = []
+
+        def run(command, **kwargs):
+            if wrkslots_action(command, "status"):
+                calls.append(command)
+                raise OSError("registry executable unavailable")
+            return self.fake(command, **kwargs)
+
+        for _ in range(2):
+            report = start_unit.sweep_completed_checkouts(self.root, run=run, tool_root=self.root)
+            self.assertEqual([], report["removed"])
+            self.assertEqual(sorted(map(str, checkouts)), sorted(row["checkout"] for row in report["retained"]))
+            self.assertEqual({"registry executable unavailable"}, {row["reason"] for row in report["retained"]})
+            self.assertTrue(all(path.exists() for path in checkouts))
+        self.assertEqual(2, len(calls))
+        self.assertEqual([], self.fake.removed)
+
     def test_sweep_hands_off_pre_fix_materialized_scorecard_before_removal(self) -> None:
         fresh, record_path = self.managed_cleanup_record("materialized-scorecard")
         record = start_unit.run_registry.read_record(record_path)

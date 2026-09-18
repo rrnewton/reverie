@@ -573,6 +573,10 @@ TEARDOWN_ENTRY_POINT = "ci-hub/validate/start_unit.py"
 # picks the tree up. Prefer the second.
 VALIDATE_TEARDOWN_TIMEOUT_SECONDS = 600
 
+# One registry query per sweep, including refusals. This bounds only lock
+# acquisition; the separate removal census keeps its existing budget.
+WRKSLOTS_STATUS_LOCK_WAIT_SECONDS = 30.0
+
 
 def systemd_exec_value(argv: Sequence[str]) -> str:
     """Render one argv as a systemd `ExecStopPost=` value, losing nothing.
@@ -3175,39 +3179,53 @@ def sweep_completed_checkouts(
     deferred: list[dict[str, str]] = []
     bookkeeping_errors: list[dict[str, str]] = []
     registration_status: Mapping[str, Any] | None = None
+    registration_error: OSError | RuntimeError | ValueError | None = None
 
     def shared_registration_status() -> Mapping[str, Any]:
-        nonlocal registration_status
+        nonlocal registration_status, registration_error
+        if registration_error is not None:
+            raise registration_error
         if registration_status is not None:
             return registration_status
-        result = run(
-            [
-                str(tool_root / "ci-hub/bin/wrkslots"),
-                "--project-root",
-                str(root.resolve()),
-                "--allow-existing-unregistered-worktrees",
-                "status",
-                "--format",
-                "json",
-            ],
-            check=False,
-        )
-        if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip() or (
-                f"exit {result.returncode}"
-            )
-            raise RuntimeError(f"cannot verify live wrkslots registrations: {detail}")
         try:
-            value = json.loads(result.stdout)
-        except json.JSONDecodeError as error:
-            raise RuntimeError(f"wrkslots status emitted invalid JSON: {error}") from error
-        if (
-            not isinstance(value, dict)
-            or value.get("schema") != 2
-            or value.get("project_root") != str(root.resolve())
-            or not isinstance(value.get("active"), list)
-        ):
-            raise RuntimeError("wrkslots status did not identify the exact project")
+            result = run(
+                [
+                    str(tool_root / "ci-hub/bin/wrkslots"),
+                    "--project-root",
+                    str(root.resolve()),
+                    "--allow-existing-unregistered-worktrees",
+                    "--wait-lock",
+                    str(WRKSLOTS_STATUS_LOCK_WAIT_SECONDS),
+                    "status",
+                    "--format",
+                    "json",
+                ],
+                check=False,
+            )
+            if result.returncode != 0:
+                detail = result.stderr.strip() or result.stdout.strip() or (
+                    f"exit {result.returncode}"
+                )
+                raise RuntimeError(
+                    "cannot verify live wrkslots registrations with a "
+                    f"{WRKSLOTS_STATUS_LOCK_WAIT_SECONDS:g}s state-lock wait limit: {detail}"
+                )
+            try:
+                value = json.loads(result.stdout)
+            except json.JSONDecodeError as error:
+                raise RuntimeError(f"wrkslots status emitted invalid JSON: {error}") from error
+            if (
+                not isinstance(value, dict)
+                or value.get("schema") != 2
+                or value.get("project_root") != str(root.resolve())
+                or not isinstance(value.get("active"), list)
+            ):
+                raise RuntimeError("wrkslots status did not identify the exact project")
+        except (OSError, RuntimeError, ValueError) as error:
+            # Reuse the original refusal for every eligible checkout. A new
+            # sweep gets a new closure and may query the registry again.
+            registration_error = error
+            raise
         registration_status = value
         return registration_status
     if not runs.is_dir():
