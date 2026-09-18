@@ -229,6 +229,7 @@ const PENDING_SIGNAL_GENERATION_COUNT: usize = 65;
 pub(crate) type PendingSignalGenerations = [u64; PENDING_SIGNAL_GENERATION_COUNT];
 
 #[derive(Clone, Debug)]
+#[cfg_attr(test, derive(Eq, PartialEq))]
 struct QueuedStandardSignal {
     event: SignalEvent,
     generation: u64,
@@ -236,6 +237,7 @@ struct QueuedStandardSignal {
 
 /// One coalescing standard-signal pending domain.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(test, derive(Eq, PartialEq))]
 pub(crate) struct StandardPendingSignals(BTreeMap<i32, QueuedStandardSignal>);
 
 impl StandardPendingSignals {
@@ -367,6 +369,7 @@ impl StandardPendingSignals {
 
 /// Signal state shared by all threads in one guest process.
 #[derive(Clone, Debug)]
+#[cfg_attr(test, derive(Eq, PartialEq))]
 pub(crate) struct ProcessSignalState {
     pub(crate) dispositions: BTreeMap<i32, KernelSigaction>,
     pub(crate) shared_pending: StandardPendingSignals,
@@ -429,6 +432,7 @@ impl ProcessSignalState {
 
 /// Signal state private to one guest thread.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(test, derive(Eq, PartialEq))]
 pub(crate) struct ThreadSignalState {
     pub(crate) blocked: KernelSigset,
     pub(crate) altstack: Option<GuestStack>,

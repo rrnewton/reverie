@@ -74,6 +74,70 @@ pub enum ChildExitSignalOutcome {
     },
 }
 
+/// Current disposition of a process-pending alarm, before Tool filtering.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessAlarmSignalDisposition {
+    /// The Tool may observe the signal, but this disposition runs no handler.
+    Ignored,
+    /// A caught disposition; delivery and interruption have not occurred.
+    Caught,
+    /// The default SIGALRM action terminates the process when delivered.
+    DefaultFatal,
+}
+
+/// State captured when a process-alarm pending operation commits.
+///
+/// This is a publication receipt, not a dequeue identity, timer rearm, Tool
+/// observation, handler execution, or authorization to return `EINTR`. A later
+/// mask or disposition change may invalidate this eligibility snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProcessAlarmSignalReceipt {
+    /// Whether the sole receiver currently blocks SIGALRM.
+    pub blocked: bool,
+    /// The disposition at publication, independently of the receiver's mask.
+    pub disposition: ProcessAlarmSignalDisposition,
+    /// The SIGALRM disposition/pending generation, not a delivery counter.
+    pub pending_generation: u64,
+    /// An existing shared standard signal retained its first complete siginfo.
+    pub coalesced: bool,
+}
+
+/// Why a process-alarm operation was refused without changing backend state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessAlarmSignalErrorKind {
+    /// This backend, callback, receiver configuration or producer is unsupported.
+    Unsupported,
+    /// The complete metadata or current receiver identity is invalid.
+    Invalid,
+    /// A backend operation failed before publication.
+    Backend,
+}
+
+/// Complete result of publishing a process-pending SIGALRM.
+///
+/// Accepted alarms always belong to the shared process pending set, including
+/// blocked or ignored alarms. A Tool still observes eligible ignored signals.
+/// Retrying a failure after publication as if it were a refusal is incorrect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessAlarmSignalOutcome {
+    /// Shared pending state and its signalfd readiness were published.
+    Accepted(ProcessAlarmSignalReceipt),
+    /// Neither pending state nor signalfd readiness changed.
+    RejectedBeforeCommit {
+        /// Failure class independent of diagnostic text.
+        kind: ProcessAlarmSignalErrorKind,
+        /// Original errno.
+        errno: Errno,
+    },
+    /// Shared insertion/coalescing committed before a readiness update failed.
+    FailedAfterCommit {
+        /// Original readiness-update errno.
+        errno: Errno,
+        /// The published state; some readiness updates may also have completed.
+        receipt: ProcessAlarmSignalReceipt,
+    },
+}
+
 /// Identifies both the selected guest task and whether a signal was originally
 /// process-directed or thread-directed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

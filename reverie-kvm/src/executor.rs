@@ -3085,14 +3085,184 @@ impl ElfExecutor {
         }
     }
 
+    /// Publishes only the normal Linux ITIMER_REAL process-alarm payload.
+    /// The runtime adapter separately owns the transported boundary witness.
+    pub(crate) fn queue_process_alarm_signal(
+        &mut self,
+        event: reverie::SignalEvent,
+    ) -> reverie::ProcessAlarmSignalOutcome {
+        use reverie::ProcessAlarmSignalDisposition;
+        use reverie::ProcessAlarmSignalErrorKind::Backend;
+        use reverie::ProcessAlarmSignalErrorKind::Invalid;
+        use reverie::ProcessAlarmSignalErrorKind::Unsupported;
+        use reverie::ProcessAlarmSignalOutcome::Accepted;
+        use reverie::ProcessAlarmSignalOutcome::FailedAfterCommit;
+        use reverie::ProcessAlarmSignalOutcome::RejectedBeforeCommit;
+        use reverie::ProcessAlarmSignalReceipt;
+        use reverie::syscalls::Errno;
+
+        let info = event.siginfo();
+        let code = i32::from_ne_bytes(info[8..12].try_into().expect("siginfo code"));
+        if event.signal() != libc::SIGALRM || code != libc::SI_KERNEL {
+            return RejectedBeforeCommit {
+                kind: Unsupported,
+                errno: Errno::ENOSYS,
+            };
+        }
+        let reverie::SignalTarget::Process { pid } = event.target() else {
+            return RejectedBeforeCommit {
+                kind: Unsupported,
+                errno: Errno::ENOSYS,
+            };
+        };
+        if pid.as_raw() <= 0 || pid.as_raw() != self.state.pid {
+            return RejectedBeforeCommit {
+                kind: Invalid,
+                errno: Errno::ESRCH,
+            };
+        }
+        // SEND_SIG_PRIV clears the complete siginfo before setting these two
+        // fields. Reject nonzero errno, pid/uid, padding and expansion bytes.
+        let mut expected = [0; reverie::SIGNAL_INFO_SIZE];
+        expected[0..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
+        expected[8..12].copy_from_slice(&libc::SI_KERNEL.to_ne_bytes());
+        if info != expected {
+            return RejectedBeforeCommit {
+                kind: Invalid,
+                errno: Errno::EINVAL,
+            };
+        }
+        if self.has_pending_exit() {
+            return RejectedBeforeCommit {
+                kind: Invalid,
+                errno: Errno::ESRCH,
+            };
+        }
+        // A pending exec has no return to the original image, and a pending
+        // fork/thread action has not finished establishing its receivers.
+        if self.process_action.is_some() {
+            return RejectedBeforeCommit {
+                kind: Unsupported,
+                errno: Errno::ENOSYS,
+            };
+        }
+        let (receipt, matching_fds) = {
+            // Retirement, reuse and sibling creation cannot cross publication.
+            // Keep lifecycle -> process signal -> thread signal lock order.
+            let lifecycle = self
+                .state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !lifecycle.get(self.state.tid).is_some_and(|task| {
+                task.generation == self.task_generation
+                    && task.process_generation == self.process_generation
+                    && task.tgid == self.state.pid
+            }) {
+                return RejectedBeforeCommit {
+                    kind: Invalid,
+                    errno: Errno::ESRCH,
+                };
+            }
+            if !self.is_thread_group_leader()
+                || lifecycle.has_live_sibling(self.state.tid, self.state.pid)
+            {
+                return RejectedBeforeCommit {
+                    kind: Unsupported,
+                    errno: Errno::ENOSYS,
+                };
+            }
+            let mut process = self
+                .state
+                .process_signals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let thread = self.state.thread_signals.lock();
+            let pending_generation = process.pending_generation(libc::SIGALRM);
+            let action = process
+                .dispositions
+                .get(&libc::SIGALRM)
+                .copied()
+                .unwrap_or_default();
+            let disposition = if action.is_ignored() {
+                ProcessAlarmSignalDisposition::Ignored
+            } else if action.handler == libc::SIG_DFL as u64 {
+                ProcessAlarmSignalDisposition::DefaultFatal
+            } else {
+                ProcessAlarmSignalDisposition::Caught
+            };
+            let matching_fds = process
+                .signalfd_masks
+                .iter()
+                .filter_map(|(&fd, mask)| mask.contains(libc::SIGALRM).then_some(fd))
+                .collect::<Vec<_>>();
+            if matching_fds
+                .iter()
+                .any(|fd| !self.state.files.contains_key(fd))
+            {
+                return RejectedBeforeCommit {
+                    kind: Backend,
+                    errno: Errno::EBADF,
+                };
+            }
+            // Unlike child-exit generation, SIG_IGN does not suppress this
+            // Tool-observable alarm. In particular blocked+ignored is pending.
+            let inserted = match process.shared_pending.enqueue(event, pending_generation) {
+                Ok(inserted) => inserted,
+                Err(errno) => {
+                    // Defensive: enqueue currently rejects only nonstandard
+                    // signals, but this path has already validated SIGALRM.
+                    return RejectedBeforeCommit {
+                        kind: Backend,
+                        errno,
+                    };
+                }
+            };
+            (
+                ProcessAlarmSignalReceipt {
+                    blocked: thread.blocked.contains(libc::SIGALRM),
+                    disposition,
+                    pending_generation,
+                    coalesced: !inserted,
+                },
+                matching_fds,
+            )
+        };
+        // Publication is final before bounded eventfd I/O. A readiness error
+        // must never be represented as permission to retry an uncommitted send.
+        // Also refresh after coalescing: setting ready is idempotent, and a
+        // caller retrying after a prior readiness failure can repair readiness
+        // without replacing the first siginfo or publishing another signal.
+        for fd in matching_fds {
+            let file = self
+                .state
+                .files
+                .get(&fd)
+                .expect("preflighted signalfd disappeared");
+            if let Err(error) = set_signalfd_ready(file, true) {
+                return FailedAfterCommit {
+                    errno: Errno::new(i32::try_from(-error).unwrap_or(libc::EIO)),
+                    receipt,
+                };
+            }
+        }
+        Accepted(receipt)
+    }
+
     /// Resolves the exact event returned by a Tool hook for this boundary.
     ///
     /// If the replacement is blocked, preserve its thread or process pending
     /// ownership and end the boundary. Otherwise return it directly so the
     /// delivery path cannot accidentally dequeue a different unfiltered event.
+    /// The original domain also applies to a SIGCHLD replacement of a private
+    /// signal or fault; replacement provenance does not change queue ownership.
+    /// Linux's dequeue_signal/get_signal pass the original type to ptrace_signal,
+    /// which uses that type when a tracer replacement is reblocked:
+    /// https://github.com/gregkh/linux/blob/199c9959d3a9b53f346c221757fc7ac507fbac50/kernel/signal.c#L2734
     pub(crate) fn prepare_filtered_signal_delivery(
         &mut self,
         event: reverie::SignalEvent,
+        domain: PendingSignalDomain,
     ) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
         let child_exit = event.signal() == libc::SIGCHLD;
         if child_exit {
@@ -3102,19 +3272,17 @@ impl ElfExecutor {
             self.validate_deferred_signal_event(event)?;
         }
         if signal_is_blocked(&self.state, event.signal()) {
-            queue_signal_event(&mut self.state, event, child_exit).map_err(|raw| {
+            queue_signal_event(
+                &mut self.state,
+                event,
+                domain == PendingSignalDomain::Process,
+            )
+            .map_err(|raw| {
                 reverie::syscalls::Errno::new(i32::try_from(-raw).unwrap_or(libc::EIO))
             })?;
             return Ok(None);
         }
-        Ok(Some(PendingSignal {
-            event,
-            domain: if child_exit {
-                PendingSignalDomain::Process
-            } else {
-                PendingSignalDomain::Thread
-            },
-        }))
+        Ok(Some(PendingSignal { event, domain }))
     }
 
     /// Removes the next eligible event, preferring the caller's thread queue
@@ -14202,6 +14370,7 @@ mod tests {
 
     include!("pipe_fionread_tests.rs");
     include!("child_exit_signal_tests.rs");
+    include!("process_alarm_signal_tests.rs");
 
     #[test]
     fn proc_root_identity_requires_qualified_mount_and_directory() {
@@ -27286,7 +27455,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             executor
-                .prepare_filtered_signal_delivery(replacement)
+                .prepare_filtered_signal_delivery(replacement, selected.domain)
                 .unwrap(),
             None,
         );
@@ -36323,7 +36492,7 @@ mod tests {
         )
         .unwrap();
         let pending = executor
-            .prepare_filtered_signal_delivery(replaced)
+            .prepare_filtered_signal_delivery(replaced, PendingSignalDomain::Thread)
             .unwrap()
             .unwrap();
 
@@ -36388,7 +36557,7 @@ mod tests {
 
         assert_eq!(
             executor
-                .prepare_filtered_signal_delivery(replacement)
+                .prepare_filtered_signal_delivery(replacement, selected.domain)
                 .unwrap(),
             None,
             "a replacement newly blocked by its signal number is requeued",

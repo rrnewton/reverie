@@ -269,6 +269,16 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
         }
     }
 
+    fn queue_process_alarm_signal(
+        &mut self,
+        _event: SignalEvent,
+    ) -> reverie::ProcessAlarmSignalOutcome {
+        reverie::ProcessAlarmSignalOutcome::RejectedBeforeCommit {
+            kind: reverie::ProcessAlarmSignalErrorKind::Unsupported,
+            errno: Errno::ENOSYS,
+        }
+    }
+
     fn ordinary_injection_allowed(&self, _request: &SyscallRequest) -> bool {
         true
     }
@@ -332,6 +342,18 @@ enum ProcessExecutionContext {
 }
 
 impl ProcessExecutionContext {
+    fn has_resumable_signal_boundary(&self) -> bool {
+        // These contexts carry an exact user continuation for a signal frame.
+        // Lifecycle and initial-exec callbacks have no such transport.
+        matches!(
+            self,
+            Self::SignalBoundary(_)
+                | Self::FaultBoundary(_)
+                | Self::SyscallBoundary(_)
+                | Self::ThreadEntrySignal
+        )
+    }
+
     fn tail_injection_allowed(&self) -> bool {
         !matches!(
             self,
@@ -483,35 +505,43 @@ where
     }
 
     fn defer_signal_delivery(&mut self, event: SignalEvent) -> std::result::Result<(), Errno> {
-        match self.process_context {
-            // The stopped syscall transport provides an exact userspace
-            // register file and a frame slot for delivery at this boundary.
-            // SignalBoundary is the same transport while the structured hook
-            // filters the selected event.
-            ProcessExecutionContext::SignalBoundary(_)
-            | ProcessExecutionContext::FaultBoundary(_)
-            | ProcessExecutionContext::SyscallBoundary(_)
-            | ProcessExecutionContext::ThreadEntrySignal => {
-                self.executor.defer_signal_delivery(event)
-            }
-            // Initial-start/post-exec callbacks do not have that transport.
-            // Refuse rather than silently delaying until an unrelated syscall.
-            _ => Err(Errno::ENOSYS),
+        if self.process_context.has_resumable_signal_boundary() {
+            self.executor.defer_signal_delivery(event)
+        } else {
+            Err(Errno::ENOSYS)
         }
     }
 
     fn queue_child_exit_signal(&mut self, event: SignalEvent) -> reverie::ChildExitSignalOutcome {
-        match self.process_context {
-            ProcessExecutionContext::SignalBoundary(_)
-            | ProcessExecutionContext::FaultBoundary(_)
-            | ProcessExecutionContext::SyscallBoundary(_)
-            | ProcessExecutionContext::ThreadEntrySignal => {
-                self.executor.queue_child_exit_signal(event)
-            }
-            _ => reverie::ChildExitSignalOutcome::RejectedBeforeCommit {
+        if self.process_context.has_resumable_signal_boundary() {
+            self.executor.queue_child_exit_signal(event)
+        } else {
+            reverie::ChildExitSignalOutcome::RejectedBeforeCommit {
                 kind: reverie::ChildExitSignalErrorKind::Unsupported,
                 errno: Errno::ENOSYS,
-            },
+            }
+        }
+    }
+
+    fn queue_process_alarm_signal(
+        &mut self,
+        event: SignalEvent,
+    ) -> reverie::ProcessAlarmSignalOutcome {
+        // Process actions may consume and restore this transport. This bounded
+        // primitive requires the callback's original, unconsumed boundary.
+        if *self.process_completed {
+            return reverie::ProcessAlarmSignalOutcome::RejectedBeforeCommit {
+                kind: reverie::ProcessAlarmSignalErrorKind::Unsupported,
+                errno: Errno::ENOSYS,
+            };
+        }
+        if self.process_context.has_resumable_signal_boundary() {
+            self.executor.queue_process_alarm_signal(event)
+        } else {
+            reverie::ProcessAlarmSignalOutcome::RejectedBeforeCommit {
+                kind: reverie::ProcessAlarmSignalErrorKind::Unsupported,
+                errno: Errno::ENOSYS,
+            }
         }
     }
 
@@ -835,6 +865,13 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         event: SignalEvent,
     ) -> reverie::ChildExitSignalOutcome {
         self.executor.queue_child_exit_signal(event)
+    }
+
+    async fn queue_process_alarm_signal(
+        &mut self,
+        event: SignalEvent,
+    ) -> reverie::ProcessAlarmSignalOutcome {
+        self.executor.queue_process_alarm_signal(event)
     }
 
     async fn stack(&mut self) -> Self::Stack {
@@ -2413,7 +2450,7 @@ impl KvmBackend {
                     Some(fault.pending())
                 } else {
                     executor
-                        .prepare_filtered_signal_delivery(event)
+                        .prepare_filtered_signal_delivery(event, pending.domain)
                         .map_err(|errno| Error::Reverie(errno.into()))?
                 };
                 if pending.is_some_and(|pending| {
@@ -4003,3 +4040,7 @@ mod child_exit_tests;
 #[cfg(test)]
 #[path = "runtime/failure_tests.rs"]
 mod failure_tests;
+
+#[cfg(test)]
+#[path = "process_alarm_runtime_tests.rs"]
+mod process_alarm_tests;

@@ -272,6 +272,29 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         }
     }
 
+    /// Publishes a Tool-selected process alarm at this stopped task's boundary.
+    ///
+    /// The caller owns deterministic ordering and supplies the complete normal
+    /// Linux SIGALRM/SI_KERNEL siginfo (zero except for signo and code). KVM
+    /// supports only the current sole live receiver, with no pending process
+    /// action and a resumable transported boundary that has not completed an
+    /// injected process action. The operation preserves
+    /// shared pending ownership and first siginfo, including when blocked or
+    /// ignored. Installing SIG_IGN later invalidates older pending generations.
+    ///
+    /// No Tool hook, guest instruction, timer operation, or wait completion is
+    /// performed. The receipt is only pending-state publication. The historical
+    /// private [`Guest::defer_signal_delivery`] operation remains independent.
+    async fn queue_process_alarm_signal(
+        &mut self,
+        _event: SignalEvent,
+    ) -> crate::ProcessAlarmSignalOutcome {
+        crate::ProcessAlarmSignalOutcome::RejectedBeforeCommit {
+            kind: crate::ProcessAlarmSignalErrorKind::Unsupported,
+            errno: Errno::ENOSYS,
+        }
+    }
+
     /// Like [`Guest::inject`], but will retry the syscall if `EINTR` or
     /// `ERESTARTSYS` are returned.
     ///
@@ -521,6 +544,13 @@ where
         event: SignalEvent,
     ) -> crate::ChildExitSignalOutcome {
         self.inner.queue_child_exit_signal(event).await
+    }
+
+    async fn queue_process_alarm_signal(
+        &mut self,
+        event: SignalEvent,
+    ) -> crate::ProcessAlarmSignalOutcome {
+        self.inner.queue_process_alarm_signal(event).await
     }
 
     fn set_timer(&mut self, sched: TimerSchedule) -> Result<(), Error> {
