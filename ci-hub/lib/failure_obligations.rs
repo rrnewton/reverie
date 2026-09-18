@@ -1736,13 +1736,25 @@ mod tests {
 
     fn schema8_candidate_target(source: &HistoryRow, ordinal: u64) -> HistoryRow {
         let evidence = source.schema10_cell_results().unwrap().unwrap();
+        // This synthetic historical row predates selected-attempt bindings.
+        // ordinary() preserves them, so omit the v1-only field deliberately.
+        let mut cell = evidence.cells[0].ordinary();
+        cell.evidence_binding = None;
         let mut target = serde_json::to_value(schema8_row(FIX, ordinal, true, "full")).unwrap();
         target["cell_results"]["selected"] = serde_json::to_value(&evidence.selected).unwrap();
-        target["cell_results"]["cells"] = serde_json::json!([evidence.cells[0].ordinary()]);
+        target["cell_results"]["cells"] = serde_json::json!([cell]);
         target["cell_results"]["population_sha256"] =
             serde_json::json!(population_sha256(&evidence.selected));
         target["finished_at"] = serde_json::json!(format!("2026-09-16T00:{ordinal:02}:00Z"));
-        serde_json::from_value(target).unwrap()
+        let target: HistoryRow = serde_json::from_value(target).unwrap();
+        let decoded = target
+            .cell_results_evidence()
+            .expect("synthetic schema-8 candidate must decode");
+        assert!(decoded
+            .cells
+            .iter()
+            .all(|cell| cell.evidence_binding.is_none()));
+        target
     }
 
     #[test]
