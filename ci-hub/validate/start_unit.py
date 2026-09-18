@@ -332,6 +332,7 @@ class CleanupUnitObservation:
     unit: str | None
     state: CleanupUnitState
     reason: str | None
+    cleanup_failed: bool = False
 
     @property
     def blocks_entry(self) -> bool:
@@ -346,6 +347,7 @@ class CleanupUnitObservation:
 class CleanupHold:
     reason: str
     blocks_entry: bool
+    cleanup_failed: bool = False
 
 
 TERMINAL_STATES = frozenset(("failed", "inactive"))
@@ -2897,13 +2899,13 @@ def discover_cleanup_groups(
     dict[str, CleanupGroup],
     list[CleanupRow],
     list[CleanupRow],
-    list[dict[str, str]],
+    list[dict[str, Any]],
     dict[str, int],
 ]:
     groups: dict[str, CleanupGroup] = {}
     singles: list[CleanupRow] = []
     rows: list[CleanupRow] = []
-    retained: list[dict[str, str]] = []
+    retained: list[dict[str, Any]] = []
     unattributable = False
     # Counted so the report can say what discovery LOOKED AT, not only what it
     # acted on. A gate that reports "removed 0" is unreadable without knowing
@@ -2935,6 +2937,7 @@ def discover_cleanup_groups(
             retained.append(
                 {
                     "checkout": str(path),
+                    "cleanup_failed": True,
                     "reason": (
                         "framework result sidecar has no run handle at "
                         f"{handle}; it is not a candidate and not expected"
@@ -2945,14 +2948,26 @@ def discover_cleanup_groups(
         try:
             raw = read_cleanup_record_object(path)
         except RuntimeError as error:
-            retained.append({"checkout": str(path), "reason": str(error)})
+            retained.append(
+                {
+                    "checkout": str(path),
+                    "cleanup_failed": True,
+                    "reason": str(error),
+                }
+            )
             unattributable = True
             continue
         discovery_counts["run_handle_candidates"] += 1
         checkout = cleanup_checkout_reference(root, raw)
         if not run_registry.is_current_schema_version(raw.get("schema_version")):
             error = RuntimeError(f"validation handle {path} has an unsupported schema")
-            retained.append({"checkout": str(path), "reason": str(error)})
+            retained.append(
+                {
+                    "checkout": str(path),
+                    "cleanup_failed": True,
+                    "reason": str(error),
+                }
+            )
             if checkout is not None:
                 managed = checkout.parent == validate_checkout_parent(root)
                 groups.setdefault(str(checkout), CleanupGroup(checkout, managed)).reasons.append(str(error))
@@ -2971,7 +2986,13 @@ def discover_cleanup_groups(
         for group in groups.values():
             group.reasons.append(reason)
         for row in singles:
-            retained.append({"checkout": str(row.record.get("checkout", "")), "reason": reason})
+            retained.append(
+                {
+                    "checkout": str(row.record.get("checkout", "")),
+                    "cleanup_failed": True,
+                    "reason": reason,
+                }
+            )
         singles.clear()
         rows.clear()
     return groups, singles, rows, retained, discovery_counts
@@ -2985,7 +3006,7 @@ def terminal_cleanup_unit(
         properties, unit_absent = service_properties_with_absence(unit, run=run)
     except (OSError, RuntimeError, ValueError) as error:
         return CleanupUnitObservation(
-            None, CleanupUnitState.INDETERMINATE, str(error)
+            None, CleanupUnitState.INDETERMINATE, str(error), cleanup_failed=True
         )
     if properties is not None and properties.get("ActiveState") not in TERMINAL_STATES:
         return CleanupUnitObservation(
@@ -3036,6 +3057,7 @@ def preflight_cleanup_group(
                 CleanupHold(
                     observation.reason,
                     blocks_entry,
+                    cleanup_failed=observation.cleanup_failed,
                 )
             )
         _checkout, checkout_error = classify_recorded_checkout(root, row.record)
@@ -3210,6 +3232,11 @@ def sweep_completed_checkouts(
                 {
                     "blocks_entry": observation.blocks_entry,
                     "checkout": str(row.record.get("checkout", "")),
+                    **(
+                        {"cleanup_failed": True}
+                        if observation.cleanup_failed
+                        else {}
+                    ),
                     "reason": observation.reason or "unit state unavailable",
                 }
             )
@@ -3235,6 +3262,11 @@ def sweep_completed_checkouts(
                 {
                     "blocks_entry": protected_reason is None,
                     "checkout": str(row.record.get("checkout", "")),
+                    **(
+                        {"cleanup_failed": True}
+                        if observation.cleanup_failed
+                        else {}
+                    ),
                     "reason": (
                         f"{observation.reason}; {protected_reason}"
                         if protected_reason is not None
@@ -3281,6 +3313,11 @@ def sweep_completed_checkouts(
                 {
                     "blocks_entry": observation.blocks_entry,
                     "checkout": str(row.record.get("checkout", "")),
+                    **(
+                        {"cleanup_failed": True}
+                        if observation.cleanup_failed
+                        else {}
+                    ),
                     "reason": observation.reason or "unit state unavailable",
                 }
             )
@@ -3344,7 +3381,12 @@ def sweep_completed_checkouts(
                 run=run, tool_root=tool_root,
             )
         except (OSError, RuntimeError, ValueError) as error:
-            retained.append({"checkout": str(row.record.get("checkout", "")), "reason": str(error)})
+            retained.append(
+                {
+                    "checkout": str(row.record.get("checkout", "")),
+                    "reason": str(error),
+                }
+            )
         else:
             if cleaned:
                 removed.append(str(row.record.get("checkout")))
@@ -3412,6 +3454,7 @@ def sweep_completed_checkouts(
                 {
                     "blocks_entry": hold.blocks_entry,
                     "checkout": str(group.checkout),
+                    **({"cleanup_failed": True} if hold.cleanup_failed else {}),
                     "reason": hold.reason,
                 }
             )
@@ -3442,7 +3485,10 @@ def sweep_completed_checkouts(
                 except (OSError, RuntimeError, ValueError) as error:
                     group.reasons.append(str(error))
                     retained.append(
-                        {"checkout": str(group.checkout), "reason": str(error)}
+                        {
+                            "checkout": str(group.checkout),
+                            "reason": str(error),
+                        }
                     )
         if not group.reasons:
             prepared.append(group)
@@ -3482,6 +3528,7 @@ def sweep_completed_checkouts(
                     {
                         "blocks_entry": True,
                         "checkout": str(group.checkout),
+                        "cleanup_failed": True,
                         "reason": "ownerless cleanup returned no result for this checkout",
                     }
                 )
@@ -3532,6 +3579,7 @@ def sweep_completed_checkouts(
                     {
                         "blocks_entry": True,
                         "checkout": str(group.checkout),
+                        "cleanup_failed": True,
                         "reason": "frozen cleanup returned no result for this checkout",
                     }
                 )
@@ -3575,6 +3623,7 @@ def sweep_completed_checkouts(
                 retained.append(
                     {
                         "checkout": str(group.checkout),
+                        "cleanup_failed": True,
                         "reason": "authored-work state could not be read",
                     }
                 )
@@ -3697,7 +3746,11 @@ def sweep_completed_checkouts(
                 )
             except (OSError, RuntimeError, ValueError) as error:
                 retained.append(
-                    {"checkout": str(cargo_home), "reason": str(error)}
+                    {
+                        "checkout": str(cargo_home),
+                        "cleanup_failed": True,
+                        "reason": str(error),
+                    }
                 )
                 continue
             if reason is not None:

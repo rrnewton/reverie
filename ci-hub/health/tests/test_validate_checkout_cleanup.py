@@ -48,20 +48,38 @@ def test_running_checkout_is_expected_and_does_not_fail_the_recurring_cleanup() 
     assert "retained 1 running checkout(s)" in fields["summary"]
 
 
-def test_non_running_retention_fails_and_names_the_path_and_reason() -> None:
+def test_correct_permanent_refusal_is_visible_without_failing_cleanup() -> None:
+    retained = [
+        {
+            "checkout": "/held-primary",
+            "reason": "this refusal is correct and permanent -- do not remove it",
+        }
+    ]
+    retained.extend(
+        {
+            "checkout": f"/held-{index}",
+            "reason": "cleanup correctly refused this path",
+        }
+        for index in range(6)
+    )
     code, fields = run_with(
         {
-            "removed": ["/old"],
-            "removed_cargo_homes": [],
-            "retained": [{"checkout": "/held", "reason": "live process"}],
+            "removed": [],
+            "removed_cargo_homes": ["/cargo-one", "/cargo-two"],
+            "retained": retained,
             "deferred": [],
             "bookkeeping_errors": [],
         }
     )
-    assert code == 1
-    assert fields["state"] == "failed"
-    assert "/held: live process" in fields["summary"]
-    assert fields["cleanup_failures"] == "1"
+    assert code == 0
+    assert fields["state"] == "ok"
+    assert fields["removed_cargo_homes"] == "2"
+    assert (
+        "/held-primary: this refusal is correct and permanent -- do not remove it"
+        in fields["summary"]
+    )
+    assert fields["cleanup_refusals"] == "7"
+    assert fields["cleanup_failures"] == "0"
 
 
 def test_bookkeeping_failure_is_not_reported_as_clean() -> None:
@@ -79,6 +97,46 @@ def test_bookkeeping_failure_is_not_reported_as_clean() -> None:
     assert code == 1
     assert fields["state"] == "failed"
     assert "/record.json: old schema" in fields["summary"]
+    assert fields["cleanup_refusals"] == "0"
+    assert fields["cleanup_failures"] == "1"
+
+
+def test_cleanup_attempt_error_is_not_reported_as_a_refusal() -> None:
+    code, fields = run_with(
+        {
+            "removed": [],
+            "removed_cargo_homes": [],
+            "retained": [
+                {
+                    "checkout": "/candidate",
+                    "cleanup_failed": True,
+                    "reason": "cleanup provider returned no result",
+                }
+            ],
+            "deferred": [],
+            "bookkeeping_errors": [],
+        }
+    )
+    assert code == 1
+    assert fields["state"] == "failed"
+    assert fields["cleanup_refusals"] == "0"
+    assert fields["cleanup_failures"] == "1"
+    assert "/candidate: cleanup provider returned no result" in fields["summary"]
+
+
+def test_sweep_error_remains_nonzero_and_could_not_determine() -> None:
+    output = io.StringIO()
+    with mock.patch.object(
+        cleanup.start_unit,
+        "sweep_completed_checkouts",
+        side_effect=RuntimeError("process census unavailable"),
+    ), contextlib.redirect_stdout(output):
+        code = cleanup.main(["--state-root", str(ROOT), "--sweep", "--json"])
+
+    assert code == cleanup.start_unit.EXIT_COULD_NOT_DETERMINE
+    rendered = json.loads(output.getvalue())
+    assert rendered["state"] == "could-not-determine"
+    assert "process census unavailable" in rendered["summary"]
 
 
 def test_recurring_cleanup_is_wired_into_tick_hub() -> None:
@@ -181,6 +239,36 @@ def test_drain_repeats_bounded_sweeps_until_nothing_is_deferred(
         (tmp_path / cleanup.STATE_RELATIVE / "latest.json").read_text()
     )
     assert latest == rendered
+
+
+def test_drain_still_fails_when_authorized_cleanup_cannot_finish(
+    tmp_path: Path,
+) -> None:
+    report = {
+        "removed": ["/checkout"],
+        "removed_cargo_homes": [],
+        "retained": [
+            {
+                "checkout": "/protected",
+                "reason": "refused because the checkout holds authored work",
+            }
+        ],
+        "deferred": [],
+        "bookkeeping_errors": [
+            {"record": "/record.json", "reason": "could not record removal"}
+        ],
+    }
+    output = io.StringIO()
+    with mock.patch.object(
+        cleanup.start_unit, "sweep_completed_checkouts", return_value=report
+    ), contextlib.redirect_stdout(output):
+        code = cleanup.main(["--state-root", str(tmp_path), "--drain", "--json"])
+
+    assert code == 1
+    rendered = json.loads(output.getvalue())
+    assert rendered["status"] == "failed"
+    assert rendered["last"]["cleanup_refusals"] == 1
+    assert rendered["last"]["cleanup_failures"] == 1
 
 
 def test_controller_launches_immutable_bounded_worker_and_reports_no_prior_result(

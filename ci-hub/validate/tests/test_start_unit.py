@@ -5624,7 +5624,13 @@ class StartUnitTest(unittest.TestCase):
         )
 
         self.assertEqual([], report["removed"])
-        self.assertTrue(any("unsupported schema" in row["reason"] for row in report["retained"]))
+        unsupported = [
+            row
+            for row in report["retained"]
+            if "unsupported schema" in row["reason"]
+        ]
+        self.assertTrue(unsupported)
+        self.assertTrue(all(row.get("cleanup_failed") is True for row in unsupported))
         self.assertFalse(
             any(wrkslots_action(command, "remove-validate-batch") for command in self.fake.commands)
         )
@@ -8303,9 +8309,14 @@ class StartUnitTest(unittest.TestCase):
 
         self.assertEqual([], report["removed"])
         self.assertTrue(fresh.is_dir())
+        refusals = [
+            row
+            for row in report["retained"]
+            if "already-published verified" in row["reason"]
+        ]
+        self.assertTrue(refusals, report["retained"])
         self.assertTrue(
-            any("already-published verified" in row["reason"] for row in report["retained"]),
-            report["retained"],
+            all(row.get("cleanup_failed") is not True for row in refusals)
         )
 
     def test_sweep_retains_historical_run_with_unverified_handoff(self) -> None:

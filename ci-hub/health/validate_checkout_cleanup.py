@@ -84,23 +84,48 @@ def emit(output: Mapping[str, Any], *, as_json: bool) -> None:
         print(f"{key}={' '.join(str(value).split())}")
 
 
-def summarize(report: Mapping[str, Any]) -> tuple[str, str, list[Mapping[str, str]]]:
+def summarize(
+    report: Mapping[str, Any],
+) -> tuple[
+    str,
+    str,
+    list[Mapping[str, Any]],
+    list[Mapping[str, Any]],
+]:
     retained = list(report.get("retained", []))
     deferred = list(report.get("deferred", []))
     active = [row for row in retained if row.get("reason") == "unit-running"]
-    failures = [row for row in retained if row.get("reason") != "unit-running"]
+    refusals = [
+        row
+        for row in retained
+        if row.get("reason") != "unit-running"
+        and row.get("cleanup_failed") is not True
+    ]
+    failures = [row for row in retained if row.get("cleanup_failed") is True]
     failures.extend(report.get("bookkeeping_errors", []))
     state = "failed" if failures else "ok"
     summary = (
         f"removed {len(report.get('removed', []))} checkout(s) and "
         f"{len(report.get('removed_cargo_homes', []))} Cargo home(s); "
         f"retained {len(active)} running checkout(s)"
+        f"; refused {len(refusals)} path(s)"
         f"; deferred {len(deferred)} checkout(s) to a later bounded batch"
     )
-    if failures:
-        def one_line(value: object) -> str:
-            return " ".join(str(value).split())
+    def one_line(value: object) -> str:
+        return " ".join(str(value).split())
 
+    if refusals:
+        details = "; ".join(
+            one_line(
+                f"{row.get('checkout') or row.get('record') or '(unknown)'}: "
+                f"{row.get('reason', 'unknown reason')}"
+            )
+            for row in refusals[:3]
+        )
+        if len(refusals) > 3:
+            details += f"; and {len(refusals) - 3} more"
+        summary += f"; refusal details: {details}"
+    if failures:
         details = "; ".join(
             one_line(
                 f"{row.get('checkout') or row.get('record') or '(unknown)'}: "
@@ -111,11 +136,11 @@ def summarize(report: Mapping[str, Any]) -> tuple[str, str, list[Mapping[str, st
         if len(failures) > 3:
             details += f"; and {len(failures) - 3} more"
         summary += f"; could not clean {len(failures)} path(s): {details}"
-    return state, summary, failures
+    return state, summary, refusals, failures
 
 
-def report_output(report: Mapping[str, Any]) -> tuple[dict[str, Any], list[Mapping[str, str]]]:
-    state, summary, failures = summarize(report)
+def report_output(report: Mapping[str, Any]) -> tuple[dict[str, Any], list[Mapping[str, Any]]]:
+    state, summary, refusals, failures = summarize(report)
     discovery = report.get("discovery") or {}
     return (
         {
@@ -135,6 +160,7 @@ def report_output(report: Mapping[str, Any]) -> tuple[dict[str, Any], list[Mappi
             "retained": report.get("retained", []),
             "deferred": report.get("deferred", []),
             "bookkeeping_errors": report.get("bookkeeping_errors", []),
+            "cleanup_refusals": len(refusals),
             "cleanup_failures": len(failures),
         },
         failures,
