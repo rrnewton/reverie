@@ -52,6 +52,12 @@ use crate::signal::event_for_thread;
 #[cfg(test)]
 use crate::signal::signal_info_user;
 
+#[path = "process_signal_publication.rs"]
+mod process_signal_publication;
+
+use process_signal_publication::ProcessBinding;
+use process_signal_publication::ProcessSignalRegistry;
+
 const MAX_HOST_IO: usize = 16 * 1024 * 1024;
 const MAX_CAPTURED_OUTPUT: usize = 64 * 1024 * 1024;
 const PAGE_SIZE: u64 = 4096;
@@ -1075,6 +1081,8 @@ pub(crate) struct ElfExecutor {
     state: LoadedStaticElf,
     task_generation: u64,
     process_generation: u64,
+    signal_registry: Arc<ProcessSignalRegistry>,
+    signal_binding: Arc<ProcessBinding>,
     address_space: Arc<std::sync::Mutex<AddressSpaceState>>,
     file_table: Arc<std::sync::Mutex<FileTableState>>,
     output: Option<CapturedOutput>,
@@ -1240,7 +1248,9 @@ struct AddressSpaceState {
 #[derive(Debug, Default)]
 pub(crate) struct FileTableState {
     stdin: Option<std::fs::File>,
+    stdin_entry_id: Arc<()>,
     files: std::collections::BTreeMap<i32, std::fs::File>,
+    fd_entry_ids: std::collections::BTreeMap<i32, Arc<()>>,
     random_device_fds: std::collections::BTreeSet<i32>,
     stdout_alias_fds: std::collections::BTreeSet<i32>,
     stderr_alias_fds: std::collections::BTreeSet<i32>,
@@ -1596,25 +1606,63 @@ fn open_fdinfo(
                 return io_error(error);
             }
         };
-        state.files.insert(fd, file);
+        let retired = state.insert_file(fd, file);
+        state.file_retirement.retire(retired);
         state.fdinfo_files.insert(fd, description);
     }
     result
 }
 
 impl FileTableState {
+    fn retire(self, retirement: &crate::elf::FileRetirement) {
+        retirement.retire(self.stdin.into_iter().chain(self.files.into_values()));
+    }
+
     fn try_from_elf(state: &LoadedStaticElf) -> std::io::Result<Self> {
-        Ok(Self {
-            stdin: state
+        Self::prepare_from_elf(state, false)
+    }
+
+    fn same_stdin_entry(&self, state: &LoadedStaticElf) -> bool {
+        self.stdin.is_some() == state.stdin.is_some()
+            && Arc::ptr_eq(&self.stdin_entry_id, &state.stdin_entry_id)
+    }
+
+    fn update_from_elf(&mut self, state: &LoadedStaticElf) -> std::io::Result<()> {
+        let same_stdin = self.same_stdin_entry(state);
+        // Stage every required clone before taking an authoritative handle.
+        // A failed clone leaves the entire previous table intact.
+        let mut next = Self::prepare_from_elf(state, same_stdin)?;
+        if same_stdin {
+            next.stdin = self.stdin.take();
+        }
+        let retired = std::mem::replace(self, next);
+        retired.retire(&state.file_retirement);
+        Ok(())
+    }
+
+    fn prepare_from_elf(state: &LoadedStaticElf, preserve_stdin: bool) -> std::io::Result<Self> {
+        let stdin = if preserve_stdin {
+            None
+        } else {
+            state
                 .stdin
                 .as_ref()
-                .map(std::fs::File::try_clone)
-                .transpose()?,
-            files: state
-                .files
-                .iter()
-                .map(|(&fd, file)| Ok((fd, file.try_clone()?)))
-                .collect::<std::io::Result<_>>()?,
+                .map(|file| state.file_retirement.stage_clone(file))
+                .transpose()?
+        };
+        let files = state
+            .files
+            .iter()
+            .map(|(&fd, file)| Ok((fd, state.file_retirement.stage_clone(file)?)))
+            .collect::<std::io::Result<std::collections::BTreeMap<_, _>>>()?;
+        Ok(Self {
+            stdin: stdin.map(crate::elf::StagedFile::into_file),
+            stdin_entry_id: state.stdin_entry_id.clone(),
+            files: files
+                .into_iter()
+                .map(|(fd, file)| (fd, file.into_file()))
+                .collect(),
+            fd_entry_ids: state.fd_entry_ids.clone(),
             random_device_fds: state.random_device_fds.clone(),
             stdout_alias_fds: state.stdout_alias_fds.clone(),
             stderr_alias_fds: state.stderr_alias_fds.clone(),
@@ -1636,30 +1684,59 @@ impl FileTableState {
 
     // TODO-HUMAN-REVIEW(PR-235): Review stable host-fd preservation during table sync.
     fn install(&self, state: &mut LoadedStaticElf) -> std::io::Result<()> {
-        state.stdin = self
-            .stdin
-            .as_ref()
-            .map(std::fs::File::try_clone)
-            .transpose()?;
-        let mut previous_files = std::mem::take(&mut state.files);
+        // Finish every required fallible clone before replacing state.
+        // An unchanged entry keeps its actual host fd for epoll MOD/DEL. Inode
+        // equality cannot prove this: closing and reopening a linked file keeps
+        // its filesystem identity but installs a different open description.
+        let same_stdin = self.same_stdin_entry(state);
+        let stdin = if same_stdin {
+            None
+        } else {
+            self.stdin
+                .as_ref()
+                .map(|file| state.file_retirement.stage_clone(file))
+                .transpose()?
+        };
         let mut installed_files = std::collections::BTreeMap::new();
         for (&fd, shared_file) in &self.files {
-            let same_object = state
-                .fd_object_inodes
-                .get(&fd)
-                .zip(self.fd_object_inodes.get(&fd))
-                .is_some_and(|(previous, shared)| Arc::ptr_eq(previous, shared));
-            let file = if same_object {
-                match previous_files.remove(&fd) {
-                    Some(file) => file,
-                    None => shared_file.try_clone()?,
-                }
-            } else {
-                shared_file.try_clone()?
-            };
-            installed_files.insert(fd, file);
+            let same_entry = state.files.contains_key(&fd)
+                && state
+                    .fd_entry_ids
+                    .get(&fd)
+                    .zip(self.fd_entry_ids.get(&fd))
+                    .is_some_and(|(previous, shared)| Arc::ptr_eq(previous, shared));
+            if !same_entry {
+                installed_files.insert(fd, state.file_retirement.stage_clone(shared_file)?);
+            }
         }
+        let mut installed_files: std::collections::BTreeMap<_, _> = installed_files
+            .into_iter()
+            .map(|(fd, file)| (fd, file.into_file()))
+            .collect();
+        let mut previous_files = std::mem::take(&mut state.files);
+        for &fd in self.files.keys() {
+            installed_files.entry(fd).or_insert_with(|| {
+                previous_files
+                    .remove(&fd)
+                    .expect("unchanged descriptor entry has its original host fd")
+            });
+        }
+        let retired_stdin = if same_stdin {
+            None
+        } else {
+            std::mem::replace(
+                &mut state.stdin,
+                stdin.map(crate::elf::StagedFile::into_file),
+            )
+        };
+        state.stdin_entry_id.clone_from(&self.stdin_entry_id);
         state.files = installed_files;
+        state.file_retirement.retire(
+            retired_stdin
+                .into_iter()
+                .chain(previous_files.into_values()),
+        );
+        state.fd_entry_ids.clone_from(&self.fd_entry_ids);
         state.random_device_fds.clone_from(&self.random_device_fds);
         state.stdout_alias_fds.clone_from(&self.stdout_alias_fds);
         state.stderr_alias_fds.clone_from(&self.stderr_alias_fds);
@@ -1761,6 +1838,10 @@ impl ElfExecutor {
     }
 
     pub(crate) fn new(mut state: LoadedStaticElf, capture_output: bool) -> Self {
+        let file_table;
+        let _retirement = state.file_retirement.hold();
+        let transaction = state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let task_generation = state
             .task_lifecycle
             .lock()
@@ -1782,15 +1863,20 @@ impl ElfExecutor {
         let next_pid = state.pid.saturating_add(1);
         let sigchld_auto_reap = Arc::new(AtomicBool::new(sigchld_auto_reaps(&state)));
         let address_space = Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state)));
-        let file_table = Arc::new(std::sync::Mutex::new(
+        file_table = Arc::new(std::sync::Mutex::new(
             FileTableState::try_from_elf(&state).expect("clone initial KVM file table"),
         ));
         state.fdinfo_table = Arc::downgrade(&file_table);
+        let signal_registry = Arc::new(ProcessSignalRegistry::default());
+        let signal_binding =
+            signal_registry.register(&state, &file_table, process_generation, None);
         let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
         Self {
             state,
             task_generation,
             process_generation,
+            signal_registry,
+            signal_binding,
             signal_callback_nonce: 0,
             parked_signals: None,
             completed_signal_effects: Vec::new(),
@@ -1816,6 +1902,7 @@ impl ElfExecutor {
     }
 
     fn execute_accept(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> Option<i64> {
+        let _retirement = self.state.file_retirement.hold();
         let raw_flags = accept_flags(request)?;
         let flags = match raw_flags {
             Ok(flags) => flags,
@@ -1828,10 +1915,11 @@ impl ElfExecutor {
                 return Some(io_error(error));
             }
         }
+        self.state.file_retirement.drain_unlocked();
 
         let mut memory = memory.clone();
         let accepted = match accept_socket(&mut memory, &self.state, request.args(), flags) {
-            Ok(file) => file,
+            Ok(file) => self.state.file_retirement.stage(file),
             Err(error) => return Some(error),
         };
 
@@ -1841,13 +1929,14 @@ impl ElfExecutor {
         }
         let result = insert_file_with_flags(
             &mut self.state,
-            accepted,
+            accepted.into_file(),
             flags & libc::SOCK_CLOEXEC != 0,
             None,
         );
         if result >= 0 {
-            *shared_files =
-                FileTableState::try_from_elf(&self.state).expect("clone updated KVM file table");
+            shared_files
+                .update_from_elf(&self.state)
+                .expect("clone updated KVM file table");
         }
         Some(result)
     }
@@ -2151,6 +2240,13 @@ impl ElfExecutor {
         clear_sighand: bool,
         share_address_space: bool,
     ) -> crate::Result<Self> {
+        // Declare owned child state and its cleanup scope before either guard.
+        let mut state;
+        let file_table;
+        let _child_retirement;
+        let _retirement = self.state.file_retirement.hold();
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         if !self
             .state
             .process_signals
@@ -2163,7 +2259,8 @@ impl ElfExecutor {
                 "cannot fork a KVM process while a virtual signalfd is open".to_owned(),
             ));
         }
-        let mut state = self.state.try_clone_for_fork(child_pid)?;
+        state = self.state.try_clone_for_fork_locked(child_pid)?;
+        _child_retirement = state.file_retirement.hold();
         if share_address_space {
             state.thp_disabled = self.state.thp_disabled.clone();
         }
@@ -2177,7 +2274,7 @@ impl ElfExecutor {
                 .retain(|_, action| action.is_ignored());
         }
         let address_space = Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state)));
-        let file_table = Arc::new(std::sync::Mutex::new(FileTableState::try_from_elf(&state)?));
+        file_table = Arc::new(std::sync::Mutex::new(FileTableState::try_from_elf(&state)?));
         state.fdinfo_table = Arc::downgrade(&file_table);
         let task_generation = state
             .task_lifecycle
@@ -2198,11 +2295,22 @@ impl ElfExecutor {
             .expect("registered KVM task exists")
             .process_generation;
         let sigchld_auto_reap = sigchld_auto_reaps(&state);
+        let signal_binding = self.signal_registry.register(
+            &state,
+            &file_table,
+            process_generation,
+            Some(reverie::SignalProcessId {
+                tgid: reverie::Pid::from_raw(self.state.pid),
+                generation: self.process_generation,
+            }),
+        );
         let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
         let child = Self {
             state,
             task_generation,
             process_generation,
+            signal_registry: self.signal_registry.clone(),
+            signal_binding,
             signal_callback_nonce: 0,
             parked_signals: None,
             completed_signal_effects: Vec::new(),
@@ -2239,6 +2347,12 @@ impl ElfExecutor {
         child_tid: i32,
         observe_ignored: bool,
     ) -> crate::Result<Self> {
+        // Declare owned child state and its cleanup scope before either guard.
+        let mut state;
+        let _child_retirement;
+        let _retirement = self.state.file_retirement.hold();
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         if self.has_shared_pending_signal()
             || !self
                 .state
@@ -2253,7 +2367,8 @@ impl ElfExecutor {
                     .to_owned(),
             ));
         }
-        let mut state = self.state.try_clone_for_fork(child_tid)?;
+        state = self.state.try_clone_for_fork_locked(child_tid)?;
+        _child_retirement = state.file_retirement.hold();
         state.pid = self.state.pid;
         state.ppid = self.state.ppid;
         // A CLONE_THREAD worker stays inside the same process, so it inherits the
@@ -2263,6 +2378,7 @@ impl ElfExecutor {
         state.thread_group_leader_name = self.state.thread_group_leader_name.clone();
         state.thp_disabled = self.state.thp_disabled.clone();
         state.process_signals = self.state.process_signals.clone();
+        state.signal_transaction = self.state.signal_transaction.clone();
         state.thread_signals = self.state.thread_signals.for_clone_thread();
         state.thread_signals.lock().observe_ignored = observe_ignored;
         let task_generation = state
@@ -2288,6 +2404,8 @@ impl ElfExecutor {
             state,
             task_generation,
             process_generation,
+            signal_registry: self.signal_registry.clone(),
+            signal_binding: self.signal_binding.clone(),
             signal_callback_nonce: 0,
             parked_signals: None,
             completed_signal_effects: Vec::new(),
@@ -2475,10 +2593,27 @@ impl ElfExecutor {
     /// sibling retains the old shared table; clearing its contents would close
     /// that sibling's descriptors too.
     pub(crate) fn release_files_on_exit(&mut self) {
-        self.state.stdin = None;
-        self.state.files.clear();
+        let _retirement = self.state.file_retirement.hold();
+        let files = self.file_table.clone();
+        let _files = files.lock().unwrap_or_else(|p| p.into_inner());
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        let stdin = self.state.take_stdin();
+        let retired = std::mem::take(&mut self.state.files);
+        self.state.fd_entry_ids.clear();
         self.file_table = Arc::new(Mutex::new(FileTableState::default()));
-        self.process_action = None;
+        let action = self.process_action.take();
+        drop(_transaction);
+        drop(_files);
+        self.state
+            .file_retirement
+            .retire(retired.into_values().chain(stdin));
+        if let Some(ProcessAction::Exec {
+            executable_file, ..
+        }) = action
+        {
+            self.state.file_retirement.retire_shared(executable_file);
+        }
     }
 
     /// A worker cannot wait for a fork that needs the leader's exit hooks.
@@ -2767,8 +2902,14 @@ impl ElfExecutor {
     }
 
     pub(crate) fn replace_after_exec(&mut self, state: LoadedStaticElf) {
+        let _retirement = self.state.file_retirement.hold();
+        let file_table = self.file_table.clone();
+        let mut files = file_table.lock().expect("KVM file-table lock poisoned");
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let previous = std::mem::replace(&mut self.state, state);
-        self.state.inherit_process_state(previous);
+        let retired = self.state.inherit_process_state_locked(previous);
+        self.state.file_retirement.retire(retired);
         let identity = self
             .state
             .task_lifecycle
@@ -2782,17 +2923,18 @@ impl ElfExecutor {
             .address_space
             .lock()
             .expect("KVM address-space lock poisoned") = AddressSpaceState::from_elf(&self.state);
-        *self
-            .file_table
-            .lock()
-            .expect("KVM file-table lock poisoned") =
-            FileTableState::try_from_elf(&self.state).expect("clone post-exec KVM file table");
+        files
+            .update_from_elf(&self.state)
+            .expect("clone post-exec KVM file table");
+        self.signal_binding.rebind(&self.state, &file_table);
         self.sigchld_auto_reap
             .store(sigchld_auto_reaps(&self.state), Ordering::SeqCst);
         self.pending_segment = None;
         self.exit_status = None;
         self.exit_group = false;
         self.clear_child_tid = None;
+        drop(_transaction);
+        drop(files);
     }
 
     pub(crate) fn append_output(&mut self, stdout: Vec<u8>, stderr: Vec<u8>) {
@@ -2989,6 +3131,8 @@ impl ElfExecutor {
         &mut self,
         event: reverie::SignalEvent,
     ) -> reverie::ChildExitSignalOutcome {
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         use reverie::ChildExitSignalDisposition::Ignored;
         use reverie::ChildExitSignalDisposition::PendingBlocked;
         use reverie::ChildExitSignalDisposition::PendingEligible;
@@ -3121,6 +3265,8 @@ impl ElfExecutor {
         &mut self,
         event: reverie::SignalEvent,
     ) -> reverie::ProcessAlarmSignalOutcome {
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         use reverie::ProcessAlarmSignalDisposition;
         use reverie::ProcessAlarmSignalErrorKind::Backend;
         use reverie::ProcessAlarmSignalErrorKind::Invalid;
@@ -3294,6 +3440,8 @@ impl ElfExecutor {
         event: reverie::SignalEvent,
         domain: PendingSignalDomain,
     ) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let child_exit = event.signal() == libc::SIGCHLD;
         if child_exit {
             self.validate_child_exit_signal_event(event)
@@ -3302,7 +3450,7 @@ impl ElfExecutor {
             self.validate_deferred_signal_event(event)?;
         }
         if signal_is_blocked(&self.state, event.signal()) {
-            queue_signal_event(
+            queue_signal_event_locked(
                 &mut self.state,
                 event,
                 domain == PendingSignalDomain::Process,
@@ -3671,6 +3819,8 @@ impl ElfExecutor {
     }
 
     pub(crate) fn enable_signal_dequeues(&self) {
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let mut process = self
             .state
             .process_signals
@@ -3837,19 +3987,18 @@ impl ElfExecutor {
     pub(crate) fn take_pending_signal_for_delivery(
         &mut self,
     ) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         self.reserve_signal_effects(1)?;
-        let pending = take_signal_event(&mut self.state, SignalSelection::Delivery)?;
-        self.refresh_signalfd_readiness()?;
+        let pending = take_signal_event_locked(&mut self.state, SignalSelection::Delivery)?;
+        refresh_all_signalfd_readiness_locked(&self.state).map_err(|raw| {
+            reverie::syscalls::Errno::new(i32::try_from(-raw).unwrap_or(libc::EIO))
+        })?;
         Ok(pending)
     }
 
     /// Recomputes every signalfd alias after another consumer removes or
     /// requeues pending state.
-    pub(crate) fn refresh_signalfd_readiness(&self) -> Result<(), reverie::syscalls::Errno> {
-        refresh_all_signalfd_readiness(&self.state)
-            .map_err(|raw| reverie::syscalls::Errno::new(i32::try_from(-raw).unwrap_or(libc::EIO)))
-    }
-
     pub(crate) fn has_eligible_pending_signal(&self) -> bool {
         let process_signals = self
             .state
@@ -3931,6 +4080,8 @@ impl ElfExecutor {
     }
 
     pub(crate) fn observe_ignored_signals_with_tool(&self) {
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         self.state.thread_signals.lock().observe_ignored = true;
     }
 
@@ -3951,6 +4102,8 @@ impl ElfExecutor {
     }
 
     pub(crate) fn prepare_captured_page_zero_fault(&mut self) {
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         if self.signal_mask().contains(libc::SIGSEGV)
             || self.signal_disposition(libc::SIGSEGV) == SignalDisposition::Ignore
         {
@@ -4014,6 +4167,8 @@ impl ElfExecutor {
         action: KernelSigaction,
         autodisarm: bool,
     ) {
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let signal = pending.event.signal();
         let mut process_signals = self
             .state
@@ -4040,6 +4195,8 @@ impl ElfExecutor {
         stack: GuestStack,
         restorer_stack_pointer: u64,
     ) {
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         blocked.clear_unmaskable();
         let mut thread_signals = self.state.thread_signals.lock();
         thread_signals.blocked = blocked;
@@ -4075,6 +4232,8 @@ impl ElfExecutor {
 
     /// Returns and clears a pending thread-local or group-wide exit.
     pub(crate) fn take_exit(&mut self) -> Option<ProcessExit> {
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let status = self.exit_status.take()?;
         let group = std::mem::take(&mut self.exit_group);
         let status = self
@@ -4100,6 +4259,8 @@ impl ElfExecutor {
     }
 
     pub(crate) fn retire_failed_thread(&mut self) {
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         self.state
             .task_lifecycle
             .lock()
@@ -4129,6 +4290,8 @@ impl ElfExecutor {
 
 impl Drop for ElfExecutor {
     fn drop(&mut self) {
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let mut lifecycle = self
             .state
             .task_lifecycle
@@ -4143,6 +4306,7 @@ impl Drop for ElfExecutor {
 
 impl SyscallExecutor for ElfExecutor {
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+        let _retirement = self.state.file_retirement.hold();
         if let Some(result) = self.synchronize_wait4(request) {
             return result;
         }
@@ -4174,6 +4338,7 @@ impl SyscallExecutor for ElfExecutor {
         let mutating_file_table = mutates_file_table(request.number());
         if !mutating_file_table {
             shared_files.take();
+            self.state.file_retirement.drain_unlocked();
         }
         if let Some(result) = self.execute_process_action(request, memory) {
             return result;
@@ -4229,8 +4394,9 @@ impl SyscallExecutor for ElfExecutor {
             }
         }
         if let Some(mut shared_files) = shared_files {
-            *shared_files =
-                FileTableState::try_from_elf(&self.state).expect("clone updated KVM file table");
+            shared_files
+                .update_from_elf(&self.state)
+                .expect("clone updated KVM file table");
         }
         match action {
             SyscallAction::Continue { result, segment } => {
@@ -6706,13 +6872,20 @@ fn insert_file_with_flags(
     let Some(fd) = (0..GUEST_NOFILE_LIMIT)
         .find(|fd| !is_open_standard(state, *fd) && !state.files.contains_key(fd))
     else {
+        state.file_retirement.retire([file]);
         return negative_errno(libc::EMFILE);
     };
     let object_inode = match allocate_fd_object_inode(state, &file) {
         Ok(inode) => inode,
-        Err(error) => return error,
+        Err(error) => {
+            state.file_retirement.retire([file]);
+            return error;
+        }
     };
-    state.files.insert(fd, file);
+    // The selected slot is vacant; this cannot retire a description,
+    // including when the caller holds signal_transaction.
+    let retired = state.insert_file(fd, file);
+    state.file_retirement.retire(retired);
     state.fd_object_inodes.insert(fd, object_inode);
     if close_on_exec {
         state.cloexec_fds.insert(fd);
@@ -6802,6 +6975,9 @@ fn duplicate_fd_at_or_above(
     close_on_exec: bool,
     source: DuplicateFdSource,
 ) -> i64 {
+    let _retirement = state.file_retirement.hold();
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
     let minimum = raw_minimum as libc::c_int;
     if !(0..GUEST_NOFILE_LIMIT).contains(&minimum) {
         return negative_errno(libc::EINVAL);
@@ -6820,7 +6996,7 @@ fn duplicate_fd_at_or_above(
     }
     // SAFETY: fcntl returned a new owned descriptor.
     let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
-    state.files.insert(fd, file);
+    let retired = state.insert_file(fd, file);
     state.fd_object_inodes.insert(fd, source.object_inode);
     if source.is_random {
         state.random_device_fds.insert(fd);
@@ -6843,6 +7019,8 @@ fn duplicate_fd_at_or_above(
     if let Some(description) = source.fdinfo {
         state.fdinfo_files.insert(fd, description);
     }
+    drop(_transaction);
+    state.file_retirement.retire(retired);
     i64::from(fd)
 }
 
@@ -6854,6 +7032,9 @@ fn duplicate_fd(
     raw_flags: u64,
     is_dup3: bool,
 ) -> i64 {
+    let _retirement = state.file_retirement.hold();
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
     let flags = raw_flags as libc::c_int;
     if !is_dup3 && flags != 0 {
         return negative_errno(libc::EINVAL);
@@ -6900,7 +7081,7 @@ fn duplicate_fd(
     // SAFETY: fcntl returned a new owned descriptor.
     let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
     if let Some(new_fd) = new_fd {
-        state.files.insert(new_fd, file);
+        let retired = state.insert_file(new_fd, file);
         state.fd_object_inodes.insert(new_fd, source_object_inode);
         if source_is_random {
             state.random_device_fds.insert(new_fd);
@@ -6930,6 +7111,8 @@ fn duplicate_fd(
         } else {
             state.proc_files.remove(&new_fd);
         }
+        drop(_transaction);
+        state.file_retirement.retire(retired);
         i64::from(new_fd)
     } else {
         let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
@@ -6997,12 +7180,12 @@ fn insert_file_pair(
     files: [std::fs::File; 2],
     close_on_exec: bool,
 ) -> i64 {
-    let [first_file, second_file] = files;
-    let first_fd = insert_file_with_flags(state, first_file, close_on_exec, None);
+    let [first_file, second_file] = files.map(|file| state.file_retirement.stage(file));
+    let first_fd = insert_file_with_flags(state, first_file.into_file(), close_on_exec, None);
     if first_fd < 0 {
         return first_fd;
     }
-    let second_fd = insert_file_with_flags(state, second_file, close_on_exec, None);
+    let second_fd = insert_file_with_flags(state, second_file.into_file(), close_on_exec, None);
     if second_fd < 0 {
         remove_inserted_file(state, first_fd as libc::c_int);
         return second_fd;
@@ -7022,7 +7205,8 @@ fn insert_file_pair(
 }
 
 fn remove_inserted_file(state: &mut LoadedStaticElf, fd: libc::c_int) {
-    state.files.remove(&fd);
+    let retired = state.remove_file(fd);
+    state.file_retirement.retire(retired);
     state.fd_object_inodes.remove(&fd);
     state.cloexec_fds.remove(&fd);
     cleanup_fd_object_inodes(state);
@@ -7511,6 +7695,9 @@ fn signalfd(
     args: &[u64; 6],
     raw_flags: u64,
 ) -> i64 {
+    let _retirement = state.file_retirement.hold();
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
     if args[2] != KERNEL_SIGSET_SIZE as u64 {
         return negative_errno(libc::EINVAL);
     }
@@ -7662,6 +7849,16 @@ fn queue_signal_event(
     event: reverie::SignalEvent,
     process_directed: bool,
 ) -> Result<(), i64> {
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+    queue_signal_event_locked(state, event, process_directed)
+}
+
+fn queue_signal_event_locked(
+    state: &mut LoadedStaticElf,
+    event: reverie::SignalEvent,
+    process_directed: bool,
+) -> Result<(), i64> {
     let signal = event.signal();
     let matching_fds = {
         // Queue insertion and disposition-driven generation changes share this
@@ -7780,11 +7977,11 @@ fn encode_signalfd_siginfo(event: reverie::SignalEvent) -> [u8; SIGNALFD_RECORD_
     bytes
 }
 
-fn refresh_all_signalfd_readiness(state: &LoadedStaticElf) -> Result<(), i64> {
-    refresh_signalfd_readiness_for_signal(state, None)
+fn refresh_all_signalfd_readiness_locked(state: &LoadedStaticElf) -> Result<(), i64> {
+    refresh_signalfd_readiness_for_signal_locked(state, None)
 }
 
-fn refresh_signalfd_readiness_for_signal(
+fn refresh_signalfd_readiness_for_signal_locked(
     state: &LoadedStaticElf,
     signal: Option<i32>,
 ) -> Result<(), i64> {
@@ -7828,7 +8025,17 @@ enum SignalSelection {
     TimedWait(KernelSigset),
 }
 
+#[cfg(test)]
 fn take_signal_event(
+    state: &mut LoadedStaticElf,
+    selection: SignalSelection,
+) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+    take_signal_event_locked(state, selection)
+}
+
+fn take_signal_event_locked(
     state: &mut LoadedStaticElf,
     selection: SignalSelection,
 ) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
@@ -7945,9 +8152,11 @@ fn take_signalfd_event(
     state: &mut LoadedStaticElf,
     mask: KernelSigset,
 ) -> Result<Option<reverie::SignalEvent>, i64> {
-    let pending = take_signal_event(state, SignalSelection::SignalFd(mask))
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+    let pending = take_signal_event_locked(state, SignalSelection::SignalFd(mask))
         .map_err(|errno| -(i64::from(errno.into_raw())))?;
-    refresh_all_signalfd_readiness(state)?;
+    refresh_all_signalfd_readiness_locked(state)?;
     Ok(pending.map(|pending| pending.event))
 }
 
@@ -9140,25 +9349,35 @@ fn install_received_rights(
     rights: Vec<PendingReceivedRight>,
     close_on_exec: bool,
 ) -> Result<Vec<libc::c_int>, i64> {
+    let rights: Vec<_> = rights
+        .into_iter()
+        .map(|right| {
+            (
+                right.control_offset,
+                state.file_retirement.stage(right.file),
+            )
+        })
+        .collect();
     let guest_fds = available_guest_fds_with_limit(state, rights.len(), GUEST_NOFILE_LIMIT)?;
     let mut installed = Vec::with_capacity(rights.len());
 
-    for (right, guest_fd) in rights.into_iter().zip(guest_fds) {
-        let proc_inode = match received_proc_inode(&right.file) {
+    for ((control_offset, file), guest_fd) in rights.into_iter().zip(guest_fds) {
+        let proc_inode = match received_proc_inode(file.as_file()) {
             Ok(inode) => inode,
             Err(error) => {
                 rollback_received_rights(state, &installed);
                 return Err(error);
             }
         };
-        let object_inode = match allocate_fd_object_inode(state, &right.file) {
+        let object_inode = match allocate_fd_object_inode(state, file.as_file()) {
             Ok(object_inode) => object_inode,
             Err(error) => {
                 rollback_received_rights(state, &installed);
                 return Err(error);
             }
         };
-        state.files.insert(guest_fd, right.file);
+        let retired = state.insert_file(guest_fd, file.into_file());
+        state.file_retirement.retire(retired);
         state.fd_object_inodes.insert(guest_fd, object_inode);
         if let Some(inode) = proc_inode {
             state.proc_files.insert(guest_fd, inode);
@@ -9171,7 +9390,7 @@ fn install_received_rights(
             state.cloexec_fds.remove(&guest_fd);
         }
         set_output_alias(state, guest_fd, None);
-        if let Err(error) = write_control_fd(control, right.control_offset, guest_fd) {
+        if let Err(error) = write_control_fd(control, control_offset, guest_fd) {
             installed.push(guest_fd);
             rollback_received_rights(state, &installed);
             return Err(error);
@@ -12241,10 +12460,12 @@ fn host_dirfd_and_path(
 
 // TODO-HUMAN-REVIEW(PR-136): Review descriptor object-identity cleanup.
 fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
     let Ok(fd) = i32::try_from(raw_fd) else {
         return negative_errno(libc::EBADF);
     };
-    if state.files.remove(&fd).is_some() {
+    if let Some(retired) = state.remove_file(fd) {
         state.cloexec_fds.remove(&fd);
         state.random_device_fds.remove(&fd);
         replace_signalfd_mask(state, fd, None);
@@ -12253,12 +12474,16 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
         state.fd_object_inodes.remove(&fd);
         cleanup_fd_object_inodes(state);
         set_output_alias(state, fd, None);
+        drop(_transaction);
+        state.file_retirement.retire([retired]);
         return 0;
     }
     if is_open_standard(state, fd) {
-        if fd == libc::STDIN_FILENO {
-            state.stdin.take();
-        }
+        let retired = if fd == libc::STDIN_FILENO {
+            state.take_stdin()
+        } else {
+            None
+        };
         state.closed_standard_fds.insert(fd);
         state.cloexec_fds.remove(&fd);
         state.random_device_fds.remove(&fd);
@@ -12266,6 +12491,8 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
         state.fd_object_inodes.remove(&fd);
         cleanup_fd_object_inodes(state);
         set_output_alias(state, fd, None);
+        drop(_transaction);
+        state.file_retirement.retire(retired);
         return 0;
     }
     negative_errno(libc::EBADF)
@@ -13832,6 +14059,8 @@ fn prlimit64(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
 }
 
 fn rt_sigaction(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
     if args[3] != KERNEL_SIGSET_SIZE as u64 {
         return negative_errno(libc::EINVAL);
     }
@@ -13957,6 +14186,8 @@ fn prospective_sigprocmask(
 }
 
 fn rt_sigprocmask(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
     let previous = state.thread_signals.lock().blocked;
     match prospective_sigprocmask(memory, previous, args) {
         Ok(Some(next)) => state.thread_signals.lock().blocked = next,
@@ -14024,6 +14255,8 @@ pub(crate) enum SignalDisposition {
 /// signals use the named receiver's private queue and return boundary.
 // TODO-HUMAN-REVIEW(#95): Review self-signal termination and the default-disposition table.
 fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> SyscallAction {
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
     let is_kill = number == libc::SYS_kill as u64;
     let is_tgkill = number == libc::SYS_tgkill as u64;
 
@@ -14186,7 +14419,7 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
         Ok(event) => event,
         Err(errno) => return continue_with(negative_errno(errno.into_raw())),
     };
-    match queue_signal_event(state, event, is_kill) {
+    match queue_signal_event_locked(state, event, is_kill) {
         Ok(()) => continue_with(0),
         Err(error) => continue_with(error),
     }
@@ -14275,7 +14508,7 @@ fn send_thread_signal(
     // Threaded signalfd is already refused. The self-directed single-thread
     // case still updates its eventfd readiness, after every state lock is gone.
     if target == state.tid
-        && let Err(error) = refresh_all_signalfd_readiness(state)
+        && let Err(error) = refresh_all_signalfd_readiness_locked(state)
     {
         return continue_with(error);
     }
@@ -14404,6 +14637,8 @@ fn sigaltstack(
     current_user_stack_pointer: Option<u64>,
     args: &[u64; 6],
 ) -> i64 {
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
     let requested = if args[0] == 0 {
         None
     } else {
@@ -14461,6 +14696,8 @@ fn sigaltstack(
 /// domain is deterministic.
 // TODO-HUMAN-REVIEW(rrnewton/reverie#315): Review virtual rt_sigtimedwait dequeue semantics.
 fn rt_sigtimedwait(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
     if args[3] != KERNEL_SIGSET_SIZE as u64 {
         return negative_errno(libc::EINVAL);
     }
@@ -14469,14 +14706,14 @@ fn rt_sigtimedwait(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: 
         Err(error) => return error,
     };
     set.clear_unmaskable();
-    let event = match take_signal_event(state, SignalSelection::TimedWait(set)) {
+    let event = match take_signal_event_locked(state, SignalSelection::TimedWait(set)) {
         Ok(pending) => pending.map(|pending| pending.event),
         Err(errno) => return -(i64::from(errno.into_raw())),
     };
     let Some(event) = event else {
         return negative_errno(libc::EAGAIN);
     };
-    if let Err(error) = refresh_signalfd_readiness_for_signal(state, Some(event.signal())) {
+    if let Err(error) = refresh_signalfd_readiness_for_signal_locked(state, Some(event.signal())) {
         return error;
     }
     // Preserve all event metadata rather than synthesizing a second siginfo.
@@ -14895,6 +15132,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         cwd: cwd.to_owned(),
         cwd_fd: std::fs::File::open(cwd).unwrap(),
         stdin: Some(std::fs::File::open("/dev/null").unwrap()),
+        stdin_entry_id: Arc::new(()),
         auxv: Vec::new(),
         fs_base: 0,
         gs_base: 0,
@@ -14922,12 +15160,15 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         sched_reset_on_fork: false,
         ioprio: 0,
         process_signals: Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
+        signal_transaction: Default::default(),
         thread_signals: SharedThreadSignalState::default(),
         signal_dequeue_failure: None,
         task_lifecycle: Arc::new(std::sync::Mutex::new(
             crate::elf::TaskLifecycleTable::with_root(1, 1, 1, true),
         )),
         files: std::collections::BTreeMap::new(),
+        file_retirement: crate::elf::FileRetirement::default(),
+        fd_entry_ids: std::collections::BTreeMap::new(),
         random_device_fds: std::collections::BTreeSet::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
         stderr_alias_fds: std::collections::BTreeSet::new(),
@@ -24995,6 +25236,1227 @@ mod tests {
                 assert_eq!(Self::field(bytes, field, 10), Self::field(&raw, field, 10));
             }
         }
+    }
+
+    fn inherited_pipe_stdin_fixture(capture: bool) -> (FdinfoFixture, std::fs::File) {
+        let root = TestDir::new();
+        for (name, data) in [("a", b"abc"), ("b", b"def"), ("c", b"ghi")] {
+            std::fs::write(root.0.join(name), data).unwrap();
+        }
+        let mut pipe = [-1; 2];
+        // SAFETY: pipe has storage for both returned descriptors.
+        assert_eq!(
+            unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        let mut state = test_state(&root.0);
+        // This is loader setup, before the executor publishes its file table.
+        // SAFETY: each successful pipe descriptor is transferred to one File.
+        state.stdin = Some(unsafe { std::fs::File::from_raw_fd(pipe[0]) });
+        let writer = unsafe { std::fs::File::from_raw_fd(pipe[1]) };
+        (
+            FdinfoFixture {
+                executor: ElfExecutor::new(state, capture),
+                memory: GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap(),
+                root,
+            },
+            writer,
+        )
+    }
+
+    #[test]
+    fn inherited_stdin_epoll_preserves_local_and_authoritative_handles() {
+        for capture in [false, true] {
+            let (mut f, mut writer) = inherited_pipe_stdin_fixture(capture);
+            let epoll = f.call(libc::SYS_epoll_create1, [0; 6]);
+            assert!(epoll >= 3);
+            let event = libc::epoll_event {
+                events: libc::EPOLLIN as u32,
+                u64: 71,
+            };
+            assert_eq!(write_struct(&mut f.memory, PAGE_SIZE, &event), 0);
+            assert_eq!(
+                f.call(
+                    libc::SYS_epoll_ctl,
+                    [epoll as u64, libc::EPOLL_CTL_ADD as u64, 0, PAGE_SIZE, 0, 0]
+                ),
+                0
+            );
+            let local = f.executor.state.stdin.as_ref().unwrap().as_raw_fd();
+            let authoritative = f
+                .executor
+                .file_table
+                .lock()
+                .unwrap()
+                .stdin
+                .as_ref()
+                .unwrap()
+                .as_raw_fd();
+            let modified = libc::epoll_event {
+                events: (libc::EPOLLIN | libc::EPOLLONESHOT) as u32,
+                u64: 72,
+            };
+            assert_eq!(write_struct(&mut f.memory, PAGE_SIZE, &modified), 0);
+            // execute() installs the shared table before epoll_ctl reaches the
+            // host. This is the decisive ADD -> synchronization -> MOD oracle.
+            assert_eq!(
+                f.call(
+                    libc::SYS_epoll_ctl,
+                    [epoll as u64, libc::EPOLL_CTL_MOD as u64, 0, PAGE_SIZE, 0, 0]
+                ),
+                0,
+                "unchanged inherited stdin must retain epoll registration identity"
+            );
+            assert_eq!(f.executor.state.stdin.as_ref().unwrap().as_raw_fd(), local);
+            assert_eq!(
+                f.executor
+                    .file_table
+                    .lock()
+                    .unwrap()
+                    .stdin
+                    .as_ref()
+                    .unwrap()
+                    .as_raw_fd(),
+                authoritative
+            );
+            // F_GETFL uses the mutating-table writeback path. It must preserve
+            // the authoritative handle as well as the executor's local one.
+            let flags = f.call(libc::SYS_fcntl, [0, libc::F_GETFL as u64, 0, 0, 0, 0]);
+            assert!(flags >= 0);
+            assert_eq!(
+                flags & i64::from(libc::O_ACCMODE),
+                i64::from(libc::O_RDONLY)
+            );
+            assert_eq!(f.call(libc::SYS_getpid, [0; 6]), 1);
+            assert_eq!(f.executor.state.stdin.as_ref().unwrap().as_raw_fd(), local);
+            assert_eq!(
+                f.executor
+                    .file_table
+                    .lock()
+                    .unwrap()
+                    .stdin
+                    .as_ref()
+                    .unwrap()
+                    .as_raw_fd(),
+                authoritative
+            );
+            std::io::Write::write_all(&mut writer, b"xyz").unwrap();
+            assert_eq!(
+                f.call(libc::SYS_epoll_wait, [epoll as u64, PAGE_SIZE, 1, 0, 0, 0]),
+                1
+            );
+            let delivered: libc::epoll_event = read_struct(&f.memory, PAGE_SIZE);
+            let data = delivered.u64;
+            assert_eq!(data, 72);
+            assert_eq!(f.call(libc::SYS_read, [0, PAGE_SIZE, 3, 0, 0, 0]), 3);
+            let mut bytes = [0; 3];
+            f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"xyz");
+            assert_eq!(
+                f.call(
+                    libc::SYS_epoll_ctl,
+                    [epoll as u64, libc::EPOLL_CTL_DEL as u64, 0, 1, 0, 0]
+                ),
+                0
+            );
+            assert_eq!(write_struct(&mut f.memory, PAGE_SIZE, &modified), 0);
+            assert_eq!(
+                f.call(
+                    libc::SYS_epoll_ctl,
+                    [epoll as u64, libc::EPOLL_CTL_MOD as u64, 0, PAGE_SIZE, 0, 0]
+                ),
+                negative_errno(libc::ENOENT),
+                "DEL must remove the original registration"
+            );
+        }
+    }
+
+    #[test]
+    fn inherited_stdin_sibling_replacement_preserves_old_dup() {
+        for use_dup2 in [false, true] {
+            let (mut f, mut writer) = inherited_pipe_stdin_fixture(false);
+            let alias = f.call(libc::SYS_dup, [0; 6]);
+            assert!(alias >= 3);
+            let replacement = f.open("b", libc::O_RDONLY);
+            assert!(replacement > alias);
+            let alias_host = f.executor.state.files[&(alias as i32)].as_raw_fd();
+            let mut sibling = f.executor.thread_child(2).unwrap();
+            if use_dup2 {
+                assert_eq!(
+                    sibling.execute(
+                        &SyscallRequest::new(
+                            libc::SYS_dup2 as u64,
+                            [replacement as u64, 0, 0, 0, 0, 0]
+                        ),
+                        &f.memory
+                    ),
+                    0
+                );
+            } else {
+                assert_eq!(
+                    sibling.execute(
+                        &SyscallRequest::new(libc::SYS_close as u64, [0; 6]),
+                        &f.memory
+                    ),
+                    0
+                );
+                f.memory.write(0x100, b"b\0").unwrap();
+                assert_eq!(
+                    sibling.execute(
+                        &SyscallRequest::new(
+                            libc::SYS_openat as u64,
+                            [libc::AT_FDCWD as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0]
+                        ),
+                        &f.memory
+                    ),
+                    0
+                );
+            }
+            assert_eq!(f.call(libc::SYS_read, [0, PAGE_SIZE, 3, 0, 0, 0]), 3);
+            let mut bytes = [0; 3];
+            f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"def");
+            assert!(f.executor.state.stdin.is_none());
+            assert!(f.executor.file_table.lock().unwrap().stdin.is_none());
+            assert!(f.executor.state.files.contains_key(&0));
+            assert_eq!(
+                f.executor.state.files[&(alias as i32)].as_raw_fd(),
+                alias_host
+            );
+            std::io::Write::write_all(&mut writer, b"old").unwrap();
+            assert_eq!(
+                f.call(libc::SYS_read, [alias as u64, PAGE_SIZE, 3, 0, 0, 0]),
+                3
+            );
+            f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"old");
+            assert_eq!(f.call(libc::SYS_close, [0; 6]), 0);
+            assert_eq!(
+                f.call(libc::SYS_read, [0, PAGE_SIZE, 1, 0, 0, 0]),
+                negative_errno(libc::EBADF)
+            );
+            assert_eq!(f.open("a", libc::O_RDONLY), 0);
+            assert_eq!(f.call(libc::SYS_read, [0, PAGE_SIZE, 3, 0, 0, 0]), 3);
+            f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"abc");
+            assert!(
+                f.executor.state.stdin.is_none(),
+                "mapped close/reopen must not restore inherited stdin"
+            );
+        }
+    }
+
+    #[test]
+    fn inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime() {
+        let (mut f, mut writer) = inherited_pipe_stdin_fixture(false);
+        let local = f.executor.state.stdin.as_ref().unwrap().as_raw_fd();
+        let authoritative = f
+            .executor
+            .file_table
+            .lock()
+            .unwrap()
+            .stdin
+            .as_ref()
+            .unwrap()
+            .as_raw_fd();
+        let mut child = f.executor.fork_child(2, false, false).unwrap();
+        assert!(!Arc::ptr_eq(&f.executor.file_table, &child.file_table));
+        let child_local = child.state.stdin.as_ref().unwrap().as_raw_fd();
+        let child_authoritative = child
+            .file_table
+            .lock()
+            .unwrap()
+            .stdin
+            .as_ref()
+            .unwrap()
+            .as_raw_fd();
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(libc::SYS_getpid as u64, [0; 6]),
+                &f.memory
+            ),
+            2
+        );
+        assert_eq!(child.state.stdin.as_ref().unwrap().as_raw_fd(), child_local);
+        assert_eq!(
+            child
+                .file_table
+                .lock()
+                .unwrap()
+                .stdin
+                .as_ref()
+                .unwrap()
+                .as_raw_fd(),
+            child_authoritative
+        );
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(libc::SYS_close as u64, [0; 6]),
+                &f.memory
+            ),
+            0
+        );
+        child.release_files_on_exit();
+        drop(child);
+        assert_eq!(f.call(libc::SYS_getpid, [0; 6]), 1);
+        assert_eq!(f.executor.state.stdin.as_ref().unwrap().as_raw_fd(), local);
+        assert_eq!(
+            f.executor
+                .file_table
+                .lock()
+                .unwrap()
+                .stdin
+                .as_ref()
+                .unwrap()
+                .as_raw_fd(),
+            authoritative
+        );
+        let replacement = test_state(&f.root.0);
+        f.executor.replace_after_exec(replacement);
+        assert_eq!(f.executor.state.stdin.as_ref().unwrap().as_raw_fd(), local);
+        assert_eq!(
+            f.executor
+                .file_table
+                .lock()
+                .unwrap()
+                .stdin
+                .as_ref()
+                .unwrap()
+                .as_raw_fd(),
+            authoritative
+        );
+        std::io::Write::write_all(&mut writer, b"ok").unwrap();
+        assert_eq!(f.call(libc::SYS_read, [0, PAGE_SIZE, 2, 0, 0, 0]), 2);
+        let mut bytes = [0; 2];
+        f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"ok");
+        assert_eq!(
+            f.call(
+                libc::SYS_fcntl,
+                [0, libc::F_SETFD as u64, libc::FD_CLOEXEC as u64, 0, 0, 0]
+            ),
+            0
+        );
+        f.executor.replace_after_exec(test_state(&f.root.0));
+        assert!(f.executor.state.stdin.is_none());
+        assert!(f.executor.file_table.lock().unwrap().stdin.is_none());
+        assert_eq!(
+            f.call(libc::SYS_read, [0, PAGE_SIZE, 1, 0, 0, 0]),
+            negative_errno(libc::EBADF)
+        );
+        f.executor.release_files_on_exit();
+        assert!(f.executor.state.stdin.is_none());
+    }
+
+    type RetirementObservations = Arc<Mutex<Vec<Vec<(i32, libc::mode_t)>>>>;
+
+    // Pause the real owned retirement batch before its File/Arc<File> values
+    // are destroyed. A separate host thread must acquire both actual mutexes;
+    // try_lock makes the violating ordering fail without a linger timing test.
+    fn observe_unlocked_retirement(executor: &ElfExecutor) -> RetirementObservations {
+        observe_unlocked_retirement_then(executor, |_| {})
+    }
+
+    fn observe_unlocked_retirement_then(
+        executor: &ElfExecutor,
+        after: impl Fn(&[i32]) + Send + Sync + 'static,
+    ) -> RetirementObservations {
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let observed = observations.clone();
+        let table = executor.file_table.clone();
+        let transaction = executor.state.signal_transaction.clone();
+        executor
+            .state
+            .file_retirement
+            .set_probe(Some(Arc::new(move |descriptors| {
+                assert!(!descriptors.is_empty());
+                let mut batch = Vec::new();
+                for &fd in descriptors {
+                    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+                    // SAFETY: each descriptor is still owned by the paused batch.
+                    assert_eq!(unsafe { libc::fstat(fd, stat.as_mut_ptr()) }, 0);
+                    // SAFETY: successful fstat initialized stat.
+                    batch.push((fd, unsafe { stat.assume_init() }.st_mode));
+                }
+                let files = table.clone();
+                let signals = transaction.clone();
+                let checked = std::thread::spawn(move || {
+                    let files = files.try_lock();
+                    let signals = signals.try_lock();
+                    (files.is_ok(), signals.is_ok())
+                })
+                .join()
+                .expect("retirement lock checker panicked");
+                assert_eq!(
+                    checked,
+                    (true, true),
+                    "both guards must be released before close"
+                );
+                observed.lock().unwrap().push(batch);
+                after(descriptors);
+            })));
+        observations
+    }
+
+    fn observed_retired_fds(observations: &Mutex<Vec<Vec<(i32, libc::mode_t)>>>) -> Vec<i32> {
+        observations
+            .lock()
+            .unwrap()
+            .iter()
+            .flatten()
+            .map(|&(fd, _)| fd)
+            .collect()
+    }
+
+    #[test]
+    fn descriptor_retirement_close_and_dup_release_both_guards() {
+        for number in [
+            libc::SYS_close,
+            libc::SYS_close_range,
+            libc::SYS_dup2,
+            libc::SYS_dup3,
+        ] {
+            let mut f = FdinfoFixture::new(false);
+            let source = f.open("a", libc::O_RDWR);
+            let target = f.open("b", libc::O_RDWR);
+            assert!(source >= 3 && target > source);
+            let old_local = f.executor.state.files[&(target as i32)].as_raw_fd();
+            let old_shared =
+                f.executor.file_table.lock().unwrap().files[&(target as i32)].as_raw_fd();
+            let old_entry = f.executor.state.fd_entry_ids[&(target as i32)].clone();
+            let observed = observe_unlocked_retirement(&f.executor);
+            let args = match number {
+                libc::SYS_close => [target as u64, 0, 0, 0, 0, 0],
+                libc::SYS_close_range => [target as u64, target as u64, 0, 0, 0, 0],
+                libc::SYS_dup2 => [source as u64, target as u64, 0, 0, 0, 0],
+                libc::SYS_dup3 => [
+                    source as u64,
+                    target as u64,
+                    libc::O_CLOEXEC as u64,
+                    0,
+                    0,
+                    0,
+                ],
+                _ => unreachable!(),
+            };
+            let expected = if number == libc::SYS_dup2 || number == libc::SYS_dup3 {
+                target
+            } else {
+                0
+            };
+            assert_eq!(f.call(number, args), expected);
+            f.executor.state.file_retirement.set_probe(None);
+            let retired = observed_retired_fds(&observed);
+            assert!(retired.contains(&old_local));
+            assert!(retired.contains(&old_shared));
+            if expected == 0 {
+                assert!(!f.executor.state.files.contains_key(&(target as i32)));
+                assert!(
+                    !f.executor
+                        .file_table
+                        .lock()
+                        .unwrap()
+                        .files
+                        .contains_key(&(target as i32))
+                );
+                assert!(!f.executor.state.fd_entry_ids.contains_key(&(target as i32)));
+            } else {
+                assert!(!Arc::ptr_eq(
+                    &old_entry,
+                    &f.executor.state.fd_entry_ids[&(target as i32)]
+                ));
+                assert_eq!(f.seek(source, 7, libc::SEEK_SET), 7);
+                assert_eq!(f.seek(target, 0, libc::SEEK_CUR), 7);
+                assert_eq!(
+                    f.executor.state.cloexec_fds.contains(&(target as i32)),
+                    number == libc::SYS_dup3
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn descriptor_retirement_exec_and_exit_release_both_guards() {
+        {
+            let mut f = FdinfoFixture::new(false);
+            let target = f.open("a", libc::O_RDWR | libc::O_CLOEXEC);
+            assert!(target >= 3);
+            assert_eq!(
+                f.call(
+                    libc::SYS_fcntl,
+                    [0, libc::F_SETFD as u64, libc::FD_CLOEXEC as u64, 0, 0, 0]
+                ),
+                0
+            );
+            f.executor.state.executable_file =
+                Some(Arc::new(std::fs::File::open(f.root.0.join("b")).unwrap()));
+            let old_executable = f
+                .executor
+                .state
+                .executable_file
+                .as_ref()
+                .unwrap()
+                .as_raw_fd();
+            let old_local = f.executor.state.files[&(target as i32)].as_raw_fd();
+            let old_shared =
+                f.executor.file_table.lock().unwrap().files[&(target as i32)].as_raw_fd();
+            let old_stdin = f.executor.state.stdin.as_ref().unwrap().as_raw_fd();
+            let replacement = test_state(&f.root.0);
+            let replacement_cwd = replacement.cwd_fd.as_raw_fd();
+            let replacement_stdin = replacement.stdin.as_ref().unwrap().as_raw_fd();
+            let observed = observe_unlocked_retirement(&f.executor);
+            f.executor.replace_after_exec(replacement);
+            f.executor.state.file_retirement.set_probe(None);
+            let retired = observed_retired_fds(&observed);
+            for fd in [
+                old_executable,
+                old_local,
+                old_shared,
+                old_stdin,
+                replacement_cwd,
+                replacement_stdin,
+            ] {
+                assert!(
+                    retired.contains(&fd),
+                    "missing exec-owned retired descriptor {fd}"
+                );
+            }
+            assert!(f.executor.state.stdin.is_none());
+            assert!(!f.executor.state.files.contains_key(&(target as i32)));
+            assert!(!f.executor.state.fd_entry_ids.contains_key(&(target as i32)));
+            assert!(
+                !f.executor
+                    .file_table
+                    .lock()
+                    .unwrap()
+                    .files
+                    .contains_key(&(target as i32))
+            );
+        }
+        {
+            let mut f = FdinfoFixture::new(false);
+            let target = f.open("a", libc::O_RDWR);
+            let file = Arc::new(std::fs::File::open(f.root.0.join("b")).unwrap());
+            let action_file = file.as_raw_fd();
+            let old_local = f.executor.state.files[&(target as i32)].as_raw_fd();
+            let old_stdin = f.executor.state.stdin.as_ref().unwrap().as_raw_fd();
+            f.executor.process_action = Some(ProcessAction::Exec {
+                executable_path: f.root.0.join("b"),
+                executable_file: Some(file),
+                image: Vec::new(),
+                argv: Vec::new(),
+                envp: Vec::new(),
+            });
+            let observed = observe_unlocked_retirement(&f.executor);
+            f.executor.release_files_on_exit();
+            f.executor.state.file_retirement.set_probe(None);
+            let retired = observed_retired_fds(&observed);
+            for fd in [action_file, old_local, old_stdin] {
+                assert!(retired.contains(&fd), "missing exit-owned descriptor {fd}");
+            }
+            assert!(f.executor.process_action.is_none());
+            assert!(f.executor.state.files.is_empty());
+            assert!(f.executor.state.fd_entry_ids.is_empty());
+            assert!(f.executor.state.stdin.is_none());
+        }
+    }
+
+    #[test]
+    fn descriptor_retirement_install_error_releases_both_guards() {
+        let mut f = FdinfoFixture::new(false);
+        let first = f.open("a", libc::O_RDWR);
+        let second = f.open("b", libc::O_RDWR);
+        let third = f.open("c", libc::O_RDWR);
+        let before: Vec<_> = f
+            .executor
+            .state
+            .files
+            .iter()
+            .map(|(&fd, file)| (fd, file.as_raw_fd()))
+            .collect();
+        let mut sibling = f.executor.thread_child(2).unwrap();
+        for target in [first, second, third] {
+            assert_eq!(
+                sibling.execute(
+                    &SyscallRequest::new(libc::SYS_close as u64, [target as u64, 0, 0, 0, 0, 0]),
+                    &f.memory
+                ),
+                0
+            );
+            f.memory.write(0x100, b"c\0").unwrap();
+            assert_eq!(
+                sibling.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_openat as u64,
+                        [libc::AT_FDCWD as u64, 0x100, libc::O_RDWR as u64, 0, 0, 0]
+                    ),
+                    &f.memory
+                ),
+                target
+            );
+        }
+        let observed = observe_unlocked_retirement(&f.executor);
+        // Three genuinely replaced entries require three clones. Fail after
+        // two successful staged clones, preserving the same partial-install
+        // cleanup boundary now that unchanged stdin requires no clone.
+        // The separate real-EMFILE child remains unchanged apart from its
+        // comment describing which required clones exhaust the host limit.
+        f.executor.state.file_retirement.fail_clone_after(Some(2));
+        assert_eq!(
+            f.call(libc::SYS_getpid, [0; 6]),
+            negative_errno(libc::EMFILE)
+        );
+        f.executor.state.file_retirement.fail_clone_after(None);
+        f.executor.state.file_retirement.set_probe(None);
+        let after: Vec<_> = f
+            .executor
+            .state
+            .files
+            .iter()
+            .map(|(&fd, file)| (fd, file.as_raw_fd()))
+            .collect();
+        assert_eq!(
+            after, before,
+            "failed install must retain all original handles"
+        );
+        assert_eq!(
+            observed_retired_fds(&observed).len(),
+            2,
+            "both staged clones must be retired after unlock"
+        );
+        assert_eq!(f.call(libc::SYS_getpid, [0; 6]), 1);
+    }
+
+    #[test]
+    fn descriptor_retirement_accept_cleanup_releases_both_guards() {
+        for fail_second_install in [false, true] {
+            let mut f = FdinfoFixture::new(false);
+            let socket_path = f.root.0.join("retire-accept.sock");
+            let path = socket_path.as_os_str().as_bytes();
+            let mut address = libc::sockaddr_un {
+                sun_family: libc::AF_UNIX as libc::sa_family_t,
+                sun_path: [0; 108],
+            };
+            assert!(path.len() < address.sun_path.len());
+            for (destination, source) in address.sun_path.iter_mut().zip(path) {
+                *destination = *source as libc::c_char;
+            }
+            let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len() + 1;
+            assert_eq!(write_struct(&mut f.memory, 0x100, &address), 0);
+            let server = f.call(
+                libc::SYS_socket,
+                [libc::AF_UNIX as u64, libc::SOCK_STREAM as u64, 0, 0, 0, 0],
+            );
+            assert!(server >= 3);
+            assert_eq!(
+                f.call(
+                    libc::SYS_bind,
+                    [server as u64, 0x100, length as u64, 0, 0, 0]
+                ),
+                0
+            );
+            assert_eq!(f.call(libc::SYS_listen, [server as u64, 1, 0, 0, 0, 0]), 0);
+            let mut client = std::os::unix::net::UnixStream::connect(&socket_path).unwrap();
+            client.set_nonblocking(true).unwrap();
+            let target = f.open("a", libc::O_RDWR);
+            assert!(target > server);
+            let old_sentinel_host = f.executor.state.files[&(target as i32)].as_raw_fd();
+            let mut sibling = f.executor.thread_child(2).unwrap();
+            f.memory.write(0x100, b"a\0").unwrap();
+            assert_eq!(
+                sibling.execute(
+                    &SyscallRequest::new(libc::SYS_close as u64, [target as u64, 0, 0, 0, 0, 0]),
+                    &f.memory
+                ),
+                0
+            );
+            assert_eq!(
+                sibling.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_openat as u64,
+                        [libc::AT_FDCWD as u64, 0x100, libc::O_RDWR as u64, 0, 0, 0]
+                    ),
+                    &f.memory
+                ),
+                target
+            );
+            let first_installed_id =
+                f.executor.file_table.lock().unwrap().fd_entry_ids[&(target as i32)].clone();
+            let between_installs = Mutex::new(sibling);
+            let before: Vec<_> = f
+                .executor
+                .file_table
+                .lock()
+                .unwrap()
+                .files
+                .keys()
+                .copied()
+                .collect();
+            let replaced_between_installs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let replaced = replaced_between_installs.clone();
+            let memory = f.memory.clone();
+            let observed = observe_unlocked_retirement_then(&f.executor, move |descriptors| {
+                if descriptors.contains(&old_sentinel_host)
+                    && replaced
+                        .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                {
+                    // The first required install clone has completed; its old
+                    // local owner is at the real unlocked retirement drain.
+                    // Replace that entry again through an actual sibling before
+                    // accept resumes, making the second install require a clone.
+                    let mut sibling = between_installs.lock().unwrap();
+                    assert_eq!(
+                        sibling.execute(
+                            &SyscallRequest::new(
+                                libc::SYS_close as u64,
+                                [target as u64, 0, 0, 0, 0, 0]
+                            ),
+                            &memory
+                        ),
+                        0
+                    );
+                    assert_eq!(
+                        sibling.execute(
+                            &SyscallRequest::new(
+                                libc::SYS_openat as u64,
+                                [libc::AT_FDCWD as u64, 0x100, libc::O_RDWR as u64, 0, 0, 0]
+                            ),
+                            &memory
+                        ),
+                        target
+                    );
+                }
+            });
+            if fail_second_install {
+                // The first changed entry consumes the one permitted clone;
+                // the second install fails after the real host accept succeeds.
+                f.executor.state.file_retirement.fail_clone_after(Some(1));
+            }
+            let result = f.call(
+                libc::SYS_accept4,
+                [server as u64, 0, 0, libc::SOCK_CLOEXEC as u64, 0, 0],
+            );
+            f.executor.state.file_retirement.fail_clone_after(None);
+            f.executor.state.file_retirement.set_probe(None);
+            assert!(!observed.lock().unwrap().is_empty());
+            assert_eq!(replaced_between_installs.load(Ordering::SeqCst), 1);
+            if fail_second_install {
+                assert!(Arc::ptr_eq(
+                    &f.executor.state.fd_entry_ids[&(target as i32)],
+                    &first_installed_id
+                ));
+                assert!(!Arc::ptr_eq(
+                    &f.executor.file_table.lock().unwrap().fd_entry_ids[&(target as i32)],
+                    &first_installed_id
+                ));
+                assert_eq!(result, negative_errno(libc::EMFILE));
+                assert_eq!(
+                    f.executor
+                        .file_table
+                        .lock()
+                        .unwrap()
+                        .files
+                        .keys()
+                        .copied()
+                        .collect::<Vec<_>>(),
+                    before
+                );
+                assert!(
+                    observed
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .flatten()
+                        .any(|&(_, mode)| mode & libc::S_IFMT == libc::S_IFSOCK),
+                    "the actually accepted socket must reach deferred cleanup"
+                );
+                let mut byte = [0_u8; 1];
+                assert_eq!(
+                    std::io::Read::read(&mut client, &mut byte).unwrap(),
+                    0,
+                    "failed accept installation must close its host socket"
+                );
+            } else {
+                assert!(Arc::ptr_eq(
+                    &f.executor.state.fd_entry_ids[&(target as i32)],
+                    &f.executor.file_table.lock().unwrap().fd_entry_ids[&(target as i32)]
+                ));
+                assert!(!Arc::ptr_eq(
+                    &f.executor.state.fd_entry_ids[&(target as i32)],
+                    &first_installed_id
+                ));
+                assert!(result > server);
+                assert!(
+                    f.executor
+                        .file_table
+                        .lock()
+                        .unwrap()
+                        .files
+                        .contains_key(&(result as i32))
+                );
+                assert!(f.executor.state.cloexec_fds.contains(&(result as i32)));
+                assert_eq!(f.call(libc::SYS_close, [result as u64, 0, 0, 0, 0, 0]), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn shared_file_table_reopen_same_inode_replaces_description() {
+        let mut f = FdinfoFixture::new(false);
+        std::fs::write(f.root.0.join("a"), b"0123456789").unwrap();
+        let target = f.open("a", libc::O_RDWR);
+        assert!(target >= 3, "initial open: {target}");
+        assert_eq!(f.seek(target, 1, libc::SEEK_SET), 1);
+        let original_flags = f.call(
+            libc::SYS_fcntl,
+            [target as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+        );
+        assert!(original_flags >= 0);
+        assert_eq!(
+            original_flags & i64::from(libc::O_ACCMODE),
+            i64::from(libc::O_RDWR)
+        );
+        assert_eq!(original_flags & i64::from(libc::O_APPEND), 0);
+        assert_eq!(
+            f.call(libc::SYS_fstat, [target as u64, PAGE_SIZE, 0, 0, 0, 0]),
+            0
+        );
+        let original_stat = read_guest_struct::<libc::stat>(&f.memory, PAGE_SIZE).unwrap();
+        let alias = f.call(libc::SYS_dup, [target as u64, 0, 0, 0, 0, 0]);
+        assert!(alias > target, "retained dup: {alias}");
+        // Confirm that the alias initially shares the original description.
+        assert_eq!(f.seek(alias, 2, libc::SEEK_SET), 2);
+        assert_eq!(f.seek(target, 0, libc::SEEK_CUR), 2);
+        assert_eq!(f.seek(alias, 1, libc::SEEK_SET), 1);
+
+        let mut sibling = f.executor.thread_child(2).unwrap();
+        // Use the real shared-table execute path. No direct state/table edits
+        // or manual snapshot refresh can make the later assertions pass.
+        f.memory.write(0x100, b"a\0").unwrap();
+        {
+            let mut call = |number: libc::c_long, args: [u64; 6]| {
+                sibling.execute(&SyscallRequest::new(number as u64, args), &f.memory)
+            };
+            assert_eq!(call(libc::SYS_close, [target as u64, 0, 0, 0, 0, 0]), 0);
+            assert_eq!(
+                call(
+                    libc::SYS_openat,
+                    [libc::AT_FDCWD as u64, 0x100, libc::O_RDWR as u64, 0, 0, 0]
+                ),
+                target
+            );
+            assert_eq!(
+                call(
+                    libc::SYS_lseek,
+                    [target as u64, 5, libc::SEEK_SET as u64, 0, 0, 0]
+                ),
+                5
+            );
+            assert_eq!(
+                call(
+                    libc::SYS_fcntl,
+                    [
+                        target as u64,
+                        libc::F_SETFL as u64,
+                        libc::O_APPEND as u64,
+                        0,
+                        0,
+                        0
+                    ]
+                ),
+                0
+            );
+            assert_eq!(
+                call(
+                    libc::SYS_fcntl,
+                    [target as u64, libc::F_GETFL as u64, 0, 0, 0, 0]
+                ),
+                original_flags | i64::from(libc::O_APPEND)
+            );
+        }
+
+        // Collect the read/offset observations before F_GETFL: current execute
+        // classifies every fcntl as table-mutating and writes its snapshot back.
+        let target_before = f.seek(target, 0, libc::SEEK_CUR);
+        f.memory.write(PAGE_SIZE, b"?").unwrap();
+        let read_result = f.call(libc::SYS_read, [target as u64, PAGE_SIZE, 1, 0, 0, 0]);
+        let mut byte = [0_u8; 1];
+        f.memory.read(PAGE_SIZE, &mut byte).unwrap();
+        let target_after = f.seek(target, 0, libc::SEEK_CUR);
+        let alias_position = f.seek(alias, 0, libc::SEEK_CUR);
+        assert_eq!(
+            f.call(libc::SYS_fstat, [target as u64, PAGE_SIZE, 0, 0, 0, 0]),
+            0
+        );
+        let target_stat = read_guest_struct::<libc::stat>(&f.memory, PAGE_SIZE).unwrap();
+        assert_eq!(
+            f.call(libc::SYS_fstat, [alias as u64, PAGE_SIZE, 0, 0, 0, 0]),
+            0
+        );
+        let alias_stat = read_guest_struct::<libc::stat>(&f.memory, PAGE_SIZE).unwrap();
+        let target_flags = f.call(
+            libc::SYS_fcntl,
+            [target as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+        );
+        let alias_flags = f.call(
+            libc::SYS_fcntl,
+            [alias as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+        );
+        assert_eq!(
+            (target_stat.st_dev, target_stat.st_ino),
+            (original_stat.st_dev, original_stat.st_ino)
+        );
+        assert_eq!(
+            (alias_stat.st_dev, alias_stat.st_ino),
+            (original_stat.st_dev, original_stat.st_ino)
+        );
+        assert_eq!(
+            (
+                target_before,
+                target_flags,
+                read_result,
+                byte,
+                target_after,
+                alias_position,
+                alias_flags,
+            ),
+            (
+                5,
+                original_flags | i64::from(libc::O_APPEND),
+                1,
+                [b'5'],
+                6,
+                1,
+                original_flags,
+            ),
+            "same inode must not retain the replaced OFD; the dup keeps the original OFD"
+        );
+    }
+
+    #[test]
+    fn shared_file_table_install_emfile_preserves_original_descriptions() {
+        const TEST: &str =
+            "executor::tests::shared_file_table_install_emfile_preserves_original_descriptions";
+        const CHILD_ENV: &str = "REVERIE_FILE_TABLE_EMFILE_CHILD";
+        const COMPLETE: &str = "file-table EMFILE control completed";
+
+        fn nofile_limit() -> libc::rlimit {
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: limit is writable storage for the current process's limit.
+            assert_eq!(
+                unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+                0
+            );
+            limit
+        }
+
+        if std::env::var(CHILD_ENV).as_deref() != Ok(TEST) {
+            assert!(std::env::var_os(CHILD_ENV).is_none());
+            let before = nofile_limit();
+            let output = std::process::Command::new("/usr/bin/timeout")
+                .args(["--kill-after=2s", "10s"])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--test-threads=1", "--nocapture"])
+                .env(CHILD_ENV, TEST)
+                .output()
+                .expect("failed to exec isolated file-table EMFILE control");
+            let after = nofile_limit();
+            assert_eq!(
+                (after.rlim_cur, after.rlim_max),
+                (before.rlim_cur, before.rlim_max)
+            );
+            eprintln!(
+                "isolated file-table control status={}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(output.status.success(), "isolated EMFILE control failed");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr)
+                    .lines()
+                    .filter(|line| *line == COMPLETE)
+                    .count(),
+                1,
+                "the exact child must reach every post-restoration assertion"
+            );
+            return;
+        }
+
+        // Only this separately exec'd exact-test child changes RLIMIT_NOFILE.
+        let mut f = FdinfoFixture::new(false);
+        let first = f.open("a", libc::O_RDWR);
+        let second = f.open("b", libc::O_RDWR);
+        assert!(first >= 3 && second > first);
+        assert_eq!(f.seek(first, 1, libc::SEEK_SET), 1);
+        assert_eq!(f.seek(second, 2, libc::SEEK_SET), 2);
+        let event = f.call(
+            libc::SYS_eventfd2,
+            [0, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0],
+        );
+        let epoll = f.call(libc::SYS_epoll_create1, [0; 6]);
+        assert!(event > second && epoll > event);
+        let registration = libc::epoll_event {
+            events: libc::EPOLLIN as u32,
+            u64: 71,
+        };
+        assert_eq!(write_struct(&mut f.memory, PAGE_SIZE, &registration), 0);
+        assert_eq!(
+            f.call(
+                libc::SYS_epoll_ctl,
+                [
+                    epoll as u64,
+                    libc::EPOLL_CTL_ADD as u64,
+                    event as u64,
+                    PAGE_SIZE,
+                    0,
+                    0
+                ]
+            ),
+            0
+        );
+        let mut sibling = f.executor.thread_child(2).unwrap();
+        f.memory.write(0x100, b"c\0").unwrap();
+        for (target, position) in [(first, 5), (second, 6)] {
+            let mut call = |number: libc::c_long, args: [u64; 6]| {
+                sibling.execute(&SyscallRequest::new(number as u64, args), &f.memory)
+            };
+            assert_eq!(call(libc::SYS_close, [target as u64, 0, 0, 0, 0, 0]), 0);
+            assert_eq!(
+                call(
+                    libc::SYS_openat,
+                    [
+                        libc::AT_FDCWD as u64,
+                        0x100,
+                        (libc::O_RDWR | libc::O_APPEND) as u64,
+                        0,
+                        0,
+                        0
+                    ]
+                ),
+                target
+            );
+            assert_eq!(
+                call(
+                    libc::SYS_lseek,
+                    [target as u64, position, libc::SEEK_SET as u64, 0, 0, 0]
+                ),
+                position as i64
+            );
+        }
+
+        // Do not execute another parent syscall: it would first install the
+        // sibling's table and erase the original local snapshot under test.
+        let file_handles = |state: &LoadedStaticElf| {
+            state
+                .files
+                .iter()
+                .map(|(&fd, file)| (fd, file.as_raw_fd()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let flags = |raw: i32| {
+            // SAFETY: these queries do not allocate or change a descriptor.
+            let status = unsafe { libc::fcntl(raw, libc::F_GETFL) };
+            let descriptor = unsafe { libc::fcntl(raw, libc::F_GETFD) };
+            assert!(
+                status >= 0 && descriptor >= 0,
+                "original handle was closed: {raw}"
+            );
+            (status, descriptor)
+        };
+        let old_stdin = f.executor.state.stdin.as_ref().unwrap().as_raw_fd();
+        let old_stdin_flags = flags(old_stdin);
+        let old_handles = file_handles(&f.executor.state);
+        let old_flags: BTreeMap<_, _> = old_handles
+            .iter()
+            .map(|(&fd, &raw)| (fd, flags(raw)))
+            .collect();
+        let old_entries = f.executor.state.fd_entry_ids.clone();
+        let old_objects = f.executor.state.fd_object_inodes.clone();
+        let metadata = |state: &LoadedStaticElf| {
+            (
+                state.random_device_fds.clone(),
+                state.stdout_alias_fds.clone(),
+                state.stderr_alias_fds.clone(),
+                state.cloexec_fds.clone(),
+                state.closed_standard_fds.clone(),
+                state.proc_files.clone(),
+            )
+        };
+        let old_metadata = metadata(&f.executor.state);
+        assert!(f.executor.state.fdinfo_files.is_empty());
+        let shared = f.executor.file_table.clone();
+        let authoritative = shared.lock().unwrap();
+        for fd in [first as i32, second as i32] {
+            assert!(!Arc::ptr_eq(
+                &old_entries[&fd],
+                &authoritative.fd_entry_ids[&fd]
+            ));
+            assert!(!Arc::ptr_eq(
+                &old_objects[&fd],
+                &authoritative.fd_object_inodes[&fd]
+            ));
+        }
+        let clone_source = authoritative.stdin.as_ref().unwrap();
+        let original_limit = nofile_limit();
+        let reduced = libc::rlimit {
+            rlim_cur: original_limit.rlim_cur.min(256),
+            rlim_max: original_limit.rlim_max,
+        };
+        let mut fillers = Vec::with_capacity(257);
+        let mut exhausted = None;
+        let mut attempt = None;
+        // No assertions or output occur between lowering and restoring the
+        // soft limit. The real install must stage both changed mapped entries;
+        // unchanged stdin no longer consumes a host descriptor.
+        let lowered = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &reduced) };
+        if lowered == 0 {
+            for _ in 0..=256 {
+                let raw =
+                    unsafe { libc::fcntl(clone_source.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+                if raw < 0 {
+                    exhausted = std::io::Error::last_os_error().raw_os_error();
+                    break;
+                }
+                // SAFETY: successful F_DUPFD_CLOEXEC returned a new owned fd.
+                fillers.push(unsafe { std::fs::File::from_raw_fd(raw) });
+            }
+            if exhausted == Some(libc::EMFILE) && !fillers.is_empty() {
+                drop(fillers.pop());
+                attempt = Some((|| -> std::io::Result<_> {
+                    // Prove one real clone succeeds and a simultaneous second
+                    // clone fails. Releasing the probe restores that one slot.
+                    let probe = clone_source.try_clone()?;
+                    let probe_fd = probe.as_raw_fd();
+                    let second_probe = clone_source.try_clone();
+                    let probe_error = second_probe
+                        .as_ref()
+                        .err()
+                        .and_then(std::io::Error::raw_os_error);
+                    drop(second_probe);
+                    drop(probe);
+                    let install = authoritative.install(&mut f.executor.state);
+                    Ok((probe_fd, probe_error, install))
+                })());
+            }
+        }
+        let restored = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &original_limit) };
+        drop(fillers);
+        assert_eq!(
+            restored, 0,
+            "child must restore its original limit before assertions"
+        );
+        let current_limit = nofile_limit();
+        assert_eq!(
+            (current_limit.rlim_cur, current_limit.rlim_max),
+            (original_limit.rlim_cur, original_limit.rlim_max)
+        );
+        assert_eq!(lowered, 0, "child limit setup failed");
+        assert_eq!(exhausted, Some(libc::EMFILE));
+        let (probe_fd, probe_error, install) =
+            attempt.expect("one-slot setup did not complete").unwrap();
+        assert!(probe_fd >= 3);
+        assert_eq!(probe_error, Some(libc::EMFILE));
+        assert_eq!(install.unwrap_err().raw_os_error(), Some(libc::EMFILE));
+        assert_eq!(
+            f.executor.state.stdin.as_ref().unwrap().as_raw_fd(),
+            old_stdin
+        );
+        assert_eq!(flags(old_stdin), old_stdin_flags);
+        assert_eq!(file_handles(&f.executor.state), old_handles);
+        for (&fd, &raw) in &old_handles {
+            assert_eq!(flags(raw), old_flags[&fd]);
+        }
+        assert_eq!(f.executor.state.fd_entry_ids.len(), old_entries.len());
+        for (&fd, identity) in &old_entries {
+            assert!(Arc::ptr_eq(&f.executor.state.fd_entry_ids[&fd], identity));
+        }
+        assert_eq!(f.executor.state.fd_object_inodes.len(), old_objects.len());
+        for (&fd, identity) in &old_objects {
+            assert!(Arc::ptr_eq(
+                &f.executor.state.fd_object_inodes[&fd],
+                identity
+            ));
+        }
+        assert_eq!(metadata(&f.executor.state), old_metadata);
+        assert!(f.executor.state.fdinfo_files.is_empty());
+        for (fd, position) in [(first, 1), (second, 2)] {
+            assert_eq!(
+                unsafe { libc::lseek(old_handles[&(fd as i32)], 0, libc::SEEK_CUR) },
+                position
+            );
+        }
+        let epoll_host = old_handles[&(epoll as i32)];
+        let event_host = old_handles[&(event as i32)];
+        let mut modified = libc::epoll_event {
+            events: (libc::EPOLLIN | libc::EPOLLONESHOT) as u32,
+            u64: 72,
+        };
+        // Use the unchanged real host handles before any successful sync can
+        // hide damage. This registration was created by the guest syscall path.
+        assert_eq!(
+            unsafe { libc::epoll_ctl(epoll_host, libc::EPOLL_CTL_MOD, event_host, &mut modified) },
+            0
+        );
+        assert_eq!(
+            unsafe {
+                libc::epoll_ctl(
+                    epoll_host,
+                    libc::EPOLL_CTL_DEL,
+                    event_host,
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        assert_eq!(
+            unsafe { libc::epoll_ctl(epoll_host, libc::EPOLL_CTL_ADD, event_host, &mut modified) },
+            0
+        );
+
+        authoritative.install(&mut f.executor.state).unwrap();
+        assert_eq!(
+            f.executor.state.files[&(epoll as i32)].as_raw_fd(),
+            epoll_host
+        );
+        assert_eq!(
+            f.executor.state.files[&(event as i32)].as_raw_fd(),
+            event_host
+        );
+        for (fd, position) in [(first, 5), (second, 6)] {
+            let raw = f.executor.state.files[&(fd as i32)].as_raw_fd();
+            assert_ne!(raw, old_handles[&(fd as i32)]);
+            assert_eq!(unsafe { libc::lseek(raw, 0, libc::SEEK_CUR) }, position);
+            assert_eq!(
+                flags(raw),
+                flags(authoritative.files[&(fd as i32)].as_raw_fd())
+            );
+            assert_ne!(flags(raw).0 & libc::O_APPEND, 0);
+            assert!(Arc::ptr_eq(
+                &f.executor.state.fd_entry_ids[&(fd as i32)],
+                &authoritative.fd_entry_ids[&(fd as i32)]
+            ));
+        }
+        assert_eq!(
+            unsafe { libc::epoll_ctl(epoll_host, libc::EPOLL_CTL_MOD, event_host, &mut modified) },
+            0
+        );
+        assert_eq!(
+            unsafe {
+                libc::epoll_ctl(
+                    epoll_host,
+                    libc::EPOLL_CTL_DEL,
+                    event_host,
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        eprintln!("{COMPLETE}");
     }
 
     #[test]

@@ -357,6 +357,12 @@ impl TaskLifecycleTable {
         self.tasks.get(&tid).copied()
     }
 
+    pub(crate) fn contains_process(&self, tgid: i32, generation: u64) -> bool {
+        self.tasks
+            .values()
+            .any(|task| task.tgid == tgid && task.process_generation == generation)
+    }
+
     pub(crate) fn has_live_sibling(&self, tid: i32, tgid: i32) -> bool {
         self.tasks
             .iter()
@@ -385,6 +391,187 @@ impl TaskLifecycleTable {
     }
 }
 
+/// Retired descriptions belong to one executor. A scope declared before its
+/// file-table/transaction guards keeps closes outside both guards, including
+/// ordinary early returns. The queue mutex is never held during destruction.
+#[derive(Clone, Default)]
+pub(crate) struct FileRetirement(Arc<std::sync::Mutex<FileRetirementState>>);
+
+#[cfg(test)]
+type RetirementProbe = Arc<dyn Fn(&[i32]) + Send + Sync>;
+
+#[derive(Default)]
+struct FileRetirementState {
+    scopes: usize,
+    files: Vec<RetiredFile>,
+    #[cfg(test)]
+    probe: Option<RetirementProbe>,
+    #[cfg(test)]
+    clones_before_failure: Option<usize>,
+}
+
+enum RetiredFile {
+    Owned(File),
+    Shared(Arc<File>),
+}
+
+impl std::fmt::Debug for FileRetirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileRetirement").finish_non_exhaustive()
+    }
+}
+
+pub(crate) struct FileRetirementScope(FileRetirement);
+
+pub(crate) struct StagedFile {
+    file: Option<File>,
+    retirement: FileRetirement,
+}
+
+impl FileRetirement {
+    pub(crate) fn hold(&self) -> FileRetirementScope {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).scopes += 1;
+        FileRetirementScope(self.clone())
+    }
+
+    pub(crate) fn retire(&self, files: impl IntoIterator<Item = File>) {
+        self.retire_inner(files.into_iter().map(RetiredFile::Owned));
+    }
+
+    pub(crate) fn retire_shared(&self, files: impl IntoIterator<Item = Arc<File>>) {
+        self.retire_inner(files.into_iter().map(RetiredFile::Shared));
+    }
+
+    fn retire_inner(&self, files: impl IntoIterator<Item = RetiredFile>) {
+        let retired = {
+            let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            state.files.extend(files);
+            if state.scopes == 0 {
+                std::mem::take(&mut state.files)
+            } else {
+                Vec::new()
+            }
+        };
+        self.destroy(retired);
+    }
+
+    /// The caller has released both executor guards and is about to enter an
+    /// operation that may block. Do not retain stale descriptions across it.
+    pub(crate) fn drain_unlocked(&self) {
+        let retired = {
+            let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            std::mem::take(&mut state.files)
+        };
+        self.destroy(retired);
+    }
+
+    fn destroy(&self, files: Vec<RetiredFile>) {
+        if files.is_empty() {
+            return;
+        }
+        #[cfg(test)]
+        {
+            let probe = self
+                .0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .probe
+                .clone();
+            if let Some(probe) = probe {
+                let descriptors: Vec<_> = files
+                    .iter()
+                    .map(|file| match file {
+                        RetiredFile::Owned(file) => file.as_raw_fd(),
+                        RetiredFile::Shared(file) => file.as_raw_fd(),
+                    })
+                    .collect();
+                // The actual owners remain alive until the probe permits this
+                // destructor to continue; no queue or executor guard is held.
+                probe(&descriptors);
+            }
+        }
+        for file in files {
+            match file {
+                RetiredFile::Owned(file) => drop(file),
+                RetiredFile::Shared(file) => drop(file),
+            }
+        }
+    }
+
+    pub(crate) fn stage(&self, file: File) -> StagedFile {
+        StagedFile {
+            file: Some(file),
+            retirement: self.clone(),
+        }
+    }
+
+    pub(crate) fn stage_clone(&self, file: &File) -> std::io::Result<StagedFile> {
+        #[cfg(test)]
+        {
+            let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(remaining) = state.clones_before_failure.as_mut() {
+                if *remaining == 0 {
+                    return Err(std::io::Error::from_raw_os_error(libc::EMFILE));
+                }
+                *remaining -= 1;
+            }
+        }
+        file.try_clone().map(|file| self.stage(file))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_probe(&self, probe: Option<RetirementProbe>) {
+        let retired = {
+            let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            std::mem::replace(&mut state.probe, probe)
+        };
+        drop(retired);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_clone_after(&self, successful: Option<usize>) {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clones_before_failure = successful;
+    }
+}
+
+impl Drop for FileRetirementScope {
+    fn drop(&mut self) {
+        let retired = {
+            let mut state = self.0.0.lock().unwrap_or_else(|p| p.into_inner());
+            state.scopes -= 1;
+            if state.scopes == 0 {
+                std::mem::take(&mut state.files)
+            } else {
+                Vec::new()
+            }
+        };
+        self.0.destroy(retired);
+    }
+}
+
+impl StagedFile {
+    pub(crate) fn as_file(&self) -> &File {
+        self.file
+            .as_ref()
+            .expect("staged descriptor was already transferred")
+    }
+
+    pub(crate) fn into_file(mut self) -> File {
+        self.file
+            .take()
+            .expect("staged descriptor was already transferred")
+    }
+}
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        self.retirement.retire(self.file.take());
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct LoadedStaticElf {
     pub entry_point: u64,
@@ -404,6 +591,10 @@ pub(crate) struct LoadedStaticElf {
     pub cwd: PathBuf,
     pub cwd_fd: std::fs::File,
     pub stdin: Option<std::fs::File>,
+    /// Identity of the inherited stdin slot, distinct from its inode/OFD.
+    /// Loader setup precedes table publication; fork and exec retain this
+    /// identity, while closing or replacing the slot creates a new identity.
+    pub stdin_entry_id: std::sync::Arc<()>,
     pub auxv: Vec<(libc::c_ulong, libc::c_ulong)>,
     pub fs_base: u64,
     pub gs_base: u64,
@@ -472,6 +663,15 @@ pub(crate) struct LoadedStaticElf {
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-235): Review process-local virtual signalfd state.
     pub process_signals: std::sync::Arc<std::sync::Mutex<ProcessSignalState>>,
+    // Serializes pending-state changes with their signalfd readiness update.
+    // Threads share this guard; fork creates a new one and exec preserves it.
+    // Ordinary partial order: file table, transaction, lifecycle, process, thread.
+    // The inactive publisher takes the run failure guard after lifecycle and
+    // before process signals, and retains it through readiness I/O. Initial
+    // registry/image lookups release their guards before the file table; image
+    // validation and child lookup briefly reacquire them below transaction and
+    // lifecycle respectively, releasing them before failure/process acquisition.
+    pub signal_transaction: std::sync::Arc<std::sync::Mutex<()>>,
     /// Mask, alternate stack, and pending signals private to this thread.
     pub thread_signals: SharedThreadSignalState,
     /// First observation-bookkeeping refusal for this executor lifetime.
@@ -483,6 +683,11 @@ pub(crate) struct LoadedStaticElf {
     // destroyed.
     pub task_lifecycle: std::sync::Arc<std::sync::Mutex<TaskLifecycleTable>>,
     pub files: std::collections::BTreeMap<i32, std::fs::File>,
+    pub file_retirement: FileRetirement,
+    /// Identity of each descriptor entry, independent of its filesystem object.
+    /// Insertion, including a dup destination, creates a new identity. Table
+    /// snapshots and fork copies retain it so unchanged host handles stay stable.
+    pub fd_entry_ids: std::collections::BTreeMap<i32, std::sync::Arc<()>>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Keep deterministic random descriptors on the Tool path.
     // TODO-HUMAN-REVIEW(PR-235): Review random-device descriptor lifecycle parity.
     pub random_device_fds: std::collections::BTreeSet<i32>,
@@ -515,7 +720,41 @@ pub(crate) struct LoadedStaticElf {
 }
 
 impl LoadedStaticElf {
+    /// Return replaced descriptions, including inherited stdin at fd 0, so
+    /// callers retire them after both the authoritative file-table and
+    /// signal-transaction guards are released.
+    pub(crate) fn insert_file(&mut self, fd: i32, file: std::fs::File) -> Vec<std::fs::File> {
+        let mut retired: Vec<_> = self.files.insert(fd, file).into_iter().collect();
+        if fd == libc::STDIN_FILENO {
+            retired.extend(self.take_stdin());
+        }
+        self.fd_entry_ids.insert(fd, std::sync::Arc::new(()));
+        retired
+    }
+
+    pub(crate) fn take_stdin(&mut self) -> Option<std::fs::File> {
+        let stdin = self.stdin.take();
+        if stdin.is_some() {
+            self.stdin_entry_id = std::sync::Arc::new(());
+        }
+        stdin
+    }
+
+    pub(crate) fn remove_file(&mut self, fd: i32) -> Option<std::fs::File> {
+        let file = self.files.remove(&fd);
+        self.fd_entry_ids.remove(&fd);
+        file
+    }
+
+    #[cfg(test)]
     pub(crate) fn try_clone_for_fork(&self, child_pid: i32) -> Result<Self> {
+        let _retirement = self.file_retirement.hold();
+        let transaction = self.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        self.try_clone_for_fork_locked(child_pid)
+    }
+
+    pub(crate) fn try_clone_for_fork_locked(&self, child_pid: i32) -> Result<Self> {
         // TODO-HUMAN-REVIEW(PR-136): Review shared file identity inheritance across fork.
         // TODO-HUMAN-REVIEW(PR-119): Review scheduler reset and ioprio fork inheritance.
         let reset_realtime = self.sched_reset_on_fork
@@ -523,8 +762,14 @@ impl LoadedStaticElf {
         let files = self
             .files
             .iter()
-            .map(|(&fd, file)| Ok((fd, file.try_clone()?)))
-            .collect::<Result<_>>()?;
+            .map(|(&fd, file)| Ok((fd, self.file_retirement.stage_clone(file)?)))
+            .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
+        let cwd_fd = self.file_retirement.stage_clone(&self.cwd_fd)?;
+        let stdin = self
+            .stdin
+            .as_ref()
+            .map(|file| self.file_retirement.stage_clone(file))
+            .transpose()?;
         let process_signals = self
             .process_signals
             .lock()
@@ -544,12 +789,9 @@ impl LoadedStaticElf {
             executable_image: self.executable_image.clone(),
             argv0: self.argv0.clone(),
             cwd: self.cwd.clone(),
-            cwd_fd: self.cwd_fd.try_clone()?,
-            stdin: self
-                .stdin
-                .as_ref()
-                .map(std::fs::File::try_clone)
-                .transpose()?,
+            cwd_fd: cwd_fd.into_file(),
+            stdin: stdin.map(StagedFile::into_file),
+            stdin_entry_id: self.stdin_entry_id.clone(),
             auxv: self.auxv.clone(),
             fs_base: self.fs_base,
             gs_base: self.gs_base,
@@ -592,10 +834,16 @@ impl LoadedStaticElf {
                 self.ioprio
             },
             process_signals: std::sync::Arc::new(std::sync::Mutex::new(process_signals)),
+            signal_transaction: Default::default(),
             thread_signals: self.thread_signals.for_fork(),
             signal_dequeue_failure: None,
             task_lifecycle: self.task_lifecycle.clone(),
-            files,
+            files: files
+                .into_iter()
+                .map(|(fd, file)| (fd, file.into_file()))
+                .collect(),
+            file_retirement: FileRetirement::default(),
+            fd_entry_ids: self.fd_entry_ids.clone(),
             random_device_fds: self.random_device_fds.clone(),
             stdout_alias_fds: self.stdout_alias_fds.clone(),
             stderr_alias_fds: self.stderr_alias_fds.clone(),
@@ -612,15 +860,42 @@ impl LoadedStaticElf {
     }
 
     // TODO-HUMAN-REVIEW(PR-136): Review live identity filtering across exec.
+    #[cfg(test)]
     pub(crate) fn inherit_process_state(&mut self, previous: Self) {
+        let _retirement = previous.file_retirement.hold();
+        let transaction = previous.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        let retired = self.inherit_process_state_locked(previous);
+        drop(_transaction);
+        self.file_retirement.retire(retired);
+    }
+
+    pub(crate) fn inherit_process_state_locked(&mut self, previous: Self) -> Vec<std::fs::File> {
         let thp_disabled =
             std::sync::Arc::new(AtomicU8::new(previous.thp_disabled.load(Ordering::SeqCst)));
         let cloexec_fds = previous.cloexec_fds;
+        let mut retired = Vec::new();
+        previous
+            .file_retirement
+            .retire_shared(previous.executable_file);
         let mut stdin = previous.stdin;
+        let mut stdin_entry_id = previous.stdin_entry_id;
         let files: std::collections::BTreeMap<_, _> = previous
             .files
             .into_iter()
-            .filter(|(fd, _)| !cloexec_fds.contains(fd))
+            .filter_map(|(fd, file)| {
+                if cloexec_fds.contains(&fd) {
+                    retired.push(file);
+                    None
+                } else {
+                    Some((fd, file))
+                }
+            })
+            .collect();
+        let fd_entry_ids = previous
+            .fd_entry_ids
+            .into_iter()
+            .filter(|(fd, _)| files.contains_key(fd))
             .collect();
         let random_device_fds = previous
             .random_device_fds
@@ -662,7 +937,8 @@ impl LoadedStaticElf {
         }
         let mut closed_standard_fds = previous.closed_standard_fds;
         if cloexec_fds.contains(&libc::STDIN_FILENO) {
-            stdin = None;
+            retired.extend(stdin.take());
+            stdin_entry_id = std::sync::Arc::new(());
             closed_standard_fds.insert(libc::STDIN_FILENO);
         }
         for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
@@ -699,8 +975,9 @@ impl LoadedStaticElf {
         };
 
         self.cwd = previous.cwd;
-        self.cwd_fd = previous.cwd_fd;
-        self.stdin = stdin;
+        retired.push(std::mem::replace(&mut self.cwd_fd, previous.cwd_fd));
+        retired.extend(std::mem::replace(&mut self.stdin, stdin));
+        self.stdin_entry_id = stdin_entry_id;
         self.pid = previous.pid;
         self.pgid = previous.pgid;
         self.tid = previous.tid;
@@ -728,9 +1005,12 @@ impl LoadedStaticElf {
         self.sched_reset_on_fork = previous.sched_reset_on_fork;
         self.ioprio = previous.ioprio;
         self.process_signals = std::sync::Arc::new(std::sync::Mutex::new(process_signals));
+        self.signal_transaction = previous.signal_transaction;
         self.thread_signals = thread_signals;
         self.task_lifecycle = task_lifecycle;
-        self.files = files;
+        retired.extend(std::mem::replace(&mut self.files, files).into_values());
+        self.file_retirement = previous.file_retirement;
+        self.fd_entry_ids = fd_entry_ids;
         self.random_device_fds = random_device_fds;
         self.stdout_alias_fds = stdout_alias_fds;
         self.stderr_alias_fds = stderr_alias_fds;
@@ -743,6 +1023,8 @@ impl LoadedStaticElf {
         self.fdinfo_table = previous.fdinfo_table;
         self.fd_object_inodes = fd_object_inodes;
         self.file_identity_table = file_identity_table;
+        // The caller releases both descriptor and transaction guards before close.
+        retired
     }
 }
 
@@ -992,6 +1274,7 @@ fn load_executable(
         cwd: cwd.to_owned(),
         cwd_fd,
         stdin: None,
+        stdin_entry_id: std::sync::Arc::new(()),
         auxv,
         fs_base: 0,
         gs_base: 0,
@@ -1023,12 +1306,15 @@ fn load_executable(
         sched_reset_on_fork: false,
         ioprio: 0,
         process_signals: std::sync::Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
+        signal_transaction: Default::default(),
         thread_signals: SharedThreadSignalState::default(),
         signal_dequeue_failure: None,
         task_lifecycle: std::sync::Arc::new(std::sync::Mutex::new(TaskLifecycleTable::with_root(
             1, 1, 1, true,
         ))),
         files: std::collections::BTreeMap::new(),
+        file_retirement: FileRetirement::default(),
+        fd_entry_ids: std::collections::BTreeMap::new(),
         random_device_fds: std::collections::BTreeSet::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
         stderr_alias_fds: std::collections::BTreeSet::new(),
