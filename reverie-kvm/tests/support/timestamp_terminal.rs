@@ -7,6 +7,7 @@ use super::*;
 #[derive(Debug, Default)]
 struct SiblingGates {
     entered: bool,
+    worker_group_exit: bool,
     leader_entry: Option<oneshot::Sender<()>>,
     worker_terminal: Option<oneshot::Sender<()>>,
     leader_exit: Option<oneshot::Sender<()>>,
@@ -74,9 +75,21 @@ impl GlobalTool for TerminalLog {
                     .await
                     .expect("worker must acknowledge its consuming exit hook");
             }
+            12 => {
+                assert_eq!(from.as_raw(), 2);
+                let mut gates = self.gates.lock().unwrap();
+                assert!(!gates.worker_group_exit);
+                gates.worker_group_exit = true;
+                assert!(gates.leader_exit.is_none());
+            }
             2 if from.as_raw() == 2 => {
-                let sender = self.gates.lock().unwrap().leader_exit.take().unwrap();
-                sender.send(()).unwrap();
+                let mut gates = self.gates.lock().unwrap();
+                if gates.worker_group_exit {
+                    assert!(gates.leader_exit.is_none());
+                } else {
+                    let sender = gates.leader_exit.take().unwrap();
+                    sender.send(()).unwrap();
+                }
             }
             _ => {}
         }
@@ -100,7 +113,7 @@ impl Tool for TerminalTool {
     fn subscriptions(mode: &u8) -> Subscription {
         let mut subscriptions = Subscription::none();
         subscriptions.rdtsc();
-        if *mode == 7 {
+        if matches!(*mode, 7 | 10) {
             subscriptions.syscalls([Sysno::exit_group]);
         }
         subscriptions
@@ -137,6 +150,11 @@ impl Tool for TerminalTool {
                 assert_eq!(guest.tid().as_raw(), 2);
                 guest.send_rpc((10, ExitStatus::SUCCESS)).await;
                 Syscall::from_raw(Sysno::exit, SyscallArgs::new(0, 0, 0, 0, 0, 0))
+            }
+            10 => {
+                assert_eq!(guest.tid().as_raw(), 2);
+                guest.send_rpc((12, ExitStatus::SUCCESS)).await;
+                Syscall::from_raw(Sysno::exit_group, SyscallArgs::new(29, 0, 0, 0, 0, 0))
             }
             _ => panic!("unknown terminal timestamp mode"),
         };
@@ -288,11 +306,7 @@ fn nonterminal_tails_refuse_before_side_effects() {
     }
 }
 
-#[test]
-fn worker_terminal_rpc_precedes_real_sibling_exit_group() {
-    if !kvm_available("timestamp worker cancellation before exit_group") {
-        return;
-    }
+fn sibling_terminal_program(park_leader: bool) -> Vec<u8> {
     const STACK: u64 = LOAD_ADDRESS + 0x1900;
     let flags = libc::CLONE_VM as u64
         | libc::CLONE_FS as u64
@@ -312,8 +326,18 @@ fn worker_terminal_rpc_precedes_real_sibling_exit_group() {
         0x0f, 0x84, 0, 0, 0, 0, // jz worker
         0x83, 0xf8, 0x02, // cmp eax, 2
         0x0f, 0x85, 0, 0, 0, 0, // jne failure
-        0xb8, 0xe7, 0, 0, 0, 0xbf, 17, 0, 0, 0, 0x0f, 0x05, // exit_group(17)
         0x0f, 0x0b,
+    ]);
+    // Keep the existing mode-7 leader exit bytes exact. For the worker's
+    // ExitGroup control, the leader remains in guest instructions until the
+    // backend's real group-exit request interrupts it. A mere worker Exit
+    // would leave this guest spinning and cannot pass the bounded control.
+    code.truncate(code.len() - 2); // append leader exit before its existing ud2
+    if park_leader {
+        code.extend_from_slice(&[0xeb, 0xfe]); // jmp to itself
+    }
+    code.extend_from_slice(&[
+        0xb8, 0xe7, 0, 0, 0, 0xbf, 17, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
     ]);
     let child_jump = args_operand + 8 + 11;
     let failure_jump = child_jump + 4 + 5;
@@ -335,6 +359,15 @@ fn worker_terminal_rpc_precedes_real_sibling_exit_group() {
     args[40..48].copy_from_slice(&STACK.to_le_bytes());
     args[48..56].copy_from_slice(&0x600_u64.to_le_bytes());
     code.extend_from_slice(&args);
+    code
+}
+
+#[test]
+fn worker_terminal_rpc_precedes_real_sibling_exit_group() {
+    if !kvm_available("timestamp worker cancellation before exit_group") {
+        return;
+    }
+    let code = sibling_terminal_program(false);
     let (completion, _) = run_terminal(7, &code);
     let (status, stdout, stderr) = completion.result.unwrap();
     assert_eq!(status, 17);
@@ -365,5 +398,50 @@ fn worker_terminal_rpc_precedes_real_sibling_exit_group() {
             .copied()
             .collect::<Vec<_>>(),
         vec![(3, 1, ExitStatus::Exited(17))]
+    );
+}
+
+#[test]
+fn worker_timestamp_exit_group_terminates_leader_and_runs_hooks_once() {
+    if !kvm_available("timestamp worker ExitGroup control") {
+        return;
+    }
+    let (completion, _) = run_terminal(10, &sibling_terminal_program(true));
+    let (status, stdout, stderr) = completion.result.unwrap();
+    assert_eq!(status, 29);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    let events = completion.global_state.events.lock().unwrap();
+    let selected = |kind| {
+        events
+            .iter()
+            .filter(|(k, _, _)| *k == kind)
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    let mut starts = selected(0);
+    starts.sort_by_key(|(_, tid, _)| *tid);
+    assert_eq!(
+        starts,
+        vec![(0, 1, ExitStatus::SUCCESS), (0, 2, ExitStatus::SUCCESS)]
+    );
+    assert_eq!(selected(1), vec![(1, 2, ExitStatus::SUCCESS)]);
+    assert_eq!(selected(12), vec![(12, 2, ExitStatus::SUCCESS)]);
+    assert_eq!(
+        selected(2),
+        vec![
+            (2, 2, ExitStatus::Exited(29)),
+            (2, 1, ExitStatus::Exited(29))
+        ]
+    );
+    assert_eq!(selected(3), vec![(3, 1, ExitStatus::Exited(29))]);
+    assert!(
+        selected(11).is_empty(),
+        "the leader's guest exit_group(17) never runs"
+    );
+    assert_eq!(
+        events.len(),
+        7,
+        "no duplicate hooks, resumed timestamp or unexpected RPC"
     );
 }
