@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Run potentially slow physical removals outside the 30-second health-gate
+# process. The Python worker limits each sweep to eight checkouts or one Cargo
+# home and repeats only while a later bounded batch is explicitly needed.
+# Do not wrap this in hermit-box-run. wrkslots deliberately re-enters a
+# host-process-view user service for destructive work; a PID-namespace wrapper
+# makes the coordinator PID incomparable at that boundary. The fixed outer
+# service name prevents concurrent workers, while the provider's own journals
+# and process/path bounds continue to protect each mutation.
+set -euo pipefail
+
+ROOT=$(cd "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+STATE_ROOT=${1:?usage: validate-checkout-cleanup-worker STATE_ROOT}
+exec python3 "$ROOT/ci-hub/health/validate_checkout_cleanup.py" \
+    --state-root "$STATE_ROOT" --drain --json

@@ -2031,9 +2031,7 @@ def remove_ownerless_checkouts_batch(
     for raw_checkout, raw_record, raw_source in checkouts:
         checkout = raw_checkout.resolve()
         record = raw_record.resolve()
-        repository = (
-            raw_source if raw_source.is_absolute() else state_root / raw_source
-        )
+        repository = raw_source if raw_source.is_absolute() else state_root / raw_source
         try:
             record_relative = record.relative_to(state_root).as_posix()
             repository_relative = repository.relative_to(state_root).as_posix()
@@ -3143,6 +3141,42 @@ def sweep_completed_checkouts(
     retained: list[dict[str, Any]] = []
     deferred: list[dict[str, str]] = []
     bookkeeping_errors: list[dict[str, str]] = []
+    registration_status: Mapping[str, Any] | None = None
+
+    def shared_registration_status() -> Mapping[str, Any]:
+        nonlocal registration_status
+        if registration_status is not None:
+            return registration_status
+        result = run(
+            [
+                str(tool_root / "ci-hub/bin/wrkslots"),
+                "--project-root",
+                str(root.resolve()),
+                "--allow-existing-unregistered-worktrees",
+                "status",
+                "--format",
+                "json",
+            ],
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or (
+                f"exit {result.returncode}"
+            )
+            raise RuntimeError(f"cannot verify live wrkslots registrations: {detail}")
+        try:
+            value = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(f"wrkslots status emitted invalid JSON: {error}") from error
+        if (
+            not isinstance(value, dict)
+            or value.get("schema") != 2
+            or value.get("project_root") != str(root.resolve())
+            or not isinstance(value.get("active"), list)
+        ):
+            raise RuntimeError("wrkslots status did not identify the exact project")
+        registration_status = value
+        return registration_status
     if not runs.is_dir():
         # Absent is a real answer and it carries its own zeros, so a reader can
         # tell "there was nothing to look at" from "the counts are missing".
@@ -3264,6 +3298,10 @@ def sweep_completed_checkouts(
             )
             continue
         try:
+            # Use one complete registry snapshot for every handoff in this
+            # sweep. The removal batch rechecks exact slot, generation, and
+            # storage under the provider lock; repeating the same complete
+            # status audit for every row consumed the old gate before removal.
             handoff = publish_recorded_scorecard_handoff(
                 root,
                 row.path,
@@ -3272,6 +3310,7 @@ def sweep_completed_checkouts(
                 row.unit,
                 run=run,
                 tool_root=tool_root,
+                registration_status=shared_registration_status(),
             )
             if handoff is not None:
                 row.scorecard_handoff = str(handoff)
@@ -3365,6 +3404,7 @@ def sweep_completed_checkouts(
                         row.unit or row.path.stem,
                         run=run,
                         tool_root=tool_root,
+                        registration_status=shared_registration_status(),
                     )
                     if handoff is not None:
                         row.scorecard_handoff = str(handoff)
@@ -3565,6 +3605,7 @@ def sweep_completed_checkouts(
                 else:
                     removed.append(str(group.checkout))
 
+    cargo_candidates: dict[str, tuple[Path, list[CleanupRow]]] = {}
     for row in singles + [row for group in selected for row in group.rows]:
         if row.unit is None:
             continue
@@ -3591,26 +3632,67 @@ def sweep_completed_checkouts(
                 }
             )
             continue
-        try:
-            cleaned, reason = cleanup_recorded_cargo_home(
-                root, row.record, record_path=row.path, run=run, tool_root=tool_root
+        if batch_groups:
+            deferred.append(
+                {
+                    "checkout": str(cargo_home),
+                    "reason": (
+                        "deferred so this sweep runs one validation storage "
+                        "process-and-path census"
+                    ),
+                }
             )
-        except (OSError, RuntimeError, ValueError) as error:
-            retained.append({"checkout": str(row.record.get("cargo_home", "")), "reason": str(error)})
             continue
-        if reason is not None:
-            retained.append({"checkout": str(row.record.get("cargo_home", "")), "reason": reason})
-        if not cleaned:
-            continue
-        removed_cargo_homes.append(str(row.record.get("cargo_home")))
-        try:
-            run_registry.update_record(
-                row.path,
-                blocking=False,
-                cargo_home_removed_at=datetime.now(timezone.utc).isoformat(),
-            )
-        except (OSError, RuntimeError, ValueError) as error:
-            bookkeeping_errors.append({"record": str(row.path), "reason": str(error)})
+        key = str(cargo_home)
+        if key in cargo_candidates:
+            cargo_candidates[key][1].append(row)
+        else:
+            cargo_candidates[key] = (cargo_home, [row])
+
+    # Cargo homes can contain millions of filesystem entries.  Their physical
+    # removal is deliberately one item per sweep: the worker immediately runs
+    # another bounded sweep, while no process/path observation is carried past
+    # a long deletion and no second per-item probe is charged to this sweep.
+    selected_cargo = list(cargo_candidates.values())[:1]
+    for cargo_home, _rows in list(cargo_candidates.values())[1:]:
+        deferred.append(
+            {
+                "checkout": str(cargo_home),
+                "reason": "deferred by the one-item validation Cargo-home cleanup batch",
+            }
+        )
+    if selected_cargo:
+        for cargo_home, rows in selected_cargo:
+            try:
+                cleaned, reason = cleanup_recorded_cargo_home(
+                    root,
+                    rows[0].record,
+                    record_path=rows[0].path,
+                    run=run,
+                    tool_root=tool_root,
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                retained.append(
+                    {"checkout": str(cargo_home), "reason": str(error)}
+                )
+                continue
+            if reason is not None:
+                retained.append({"checkout": str(cargo_home), "reason": reason})
+            if not cleaned:
+                continue
+            removed_cargo_homes.append(str(cargo_home))
+            removed_at = datetime.now(timezone.utc).isoformat()
+            for row in rows:
+                try:
+                    run_registry.update_record(
+                        row.path,
+                        blocking=False,
+                        cargo_home_removed_at=removed_at,
+                    )
+                except (OSError, RuntimeError, ValueError) as error:
+                    bookkeeping_errors.append(
+                        {"record": str(row.path), "reason": str(error)}
+                    )
 
     removed_set = set(removed)
     for group in prepared:
@@ -5140,6 +5222,7 @@ def require_live_scorecard_checkout(
     *,
     run: Runner,
     tool_root: Path,
+    registration_status: Mapping[str, Any] | None = None,
 ) -> None:
     """Prove the handoff source is still the exact registered validation checkout."""
 
@@ -5153,29 +5236,37 @@ def require_live_scorecard_checkout(
         raise RuntimeError(
             f"scorecard handoff checkout HEAD is {head}, expected validated target {target}"
         )
-    result = run(
-        [
-            str(tool_root / "ci-hub/bin/wrkslots"),
-            "--project-root",
-            str(root.resolve()),
-            "--allow-existing-unregistered-worktrees",
-            "status",
-            "--slot",
-            wrkslots.slot,
-            "--format",
-            "json",
-        ],
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
-        raise RuntimeError(f"cannot verify live wrkslots registration: {detail}")
-    try:
-        status = json.loads(result.stdout)
-    except json.JSONDecodeError as error:
-        raise RuntimeError(f"wrkslots status emitted invalid JSON: {error}") from error
+    if registration_status is None:
+        result = run(
+            [
+                str(tool_root / "ci-hub/bin/wrkslots"),
+                "--project-root",
+                str(root.resolve()),
+                "--allow-existing-unregistered-worktrees",
+                "status",
+                "--slot",
+                wrkslots.slot,
+                "--format",
+                "json",
+            ],
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+            raise RuntimeError(f"cannot verify live wrkslots registration: {detail}")
+        try:
+            status: Mapping[str, Any] = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(f"wrkslots status emitted invalid JSON: {error}") from error
+    else:
+        status = registration_status
     active = status.get("active") if isinstance(status, dict) else None
-    row = active[0] if isinstance(active, list) and len(active) == 1 else None
+    matches = (
+        [row for row in active if isinstance(row, dict) and row.get("slot") == wrkslots.slot]
+        if isinstance(active, list)
+        else []
+    )
+    row = matches[0] if len(matches) == 1 else None
     checkouts = row.get("checkouts") if isinstance(row, dict) else None
     registered = checkouts[0] if isinstance(checkouts, list) and len(checkouts) == 1 else None
     raw_path = registered.get("path") if isinstance(registered, dict) else None
@@ -5318,6 +5409,7 @@ def publish_scorecard_handoff(
     wrkslots: WrkslotsIdentity,
     run: Runner,
     tool_root: Path,
+    registration_status: Mapping[str, Any] | None = None,
 ) -> Path:
     """Atomically publish generated scorecard files outside a disposable checkout."""
     if SHA_RE.fullmatch(target) is None:
@@ -5335,6 +5427,7 @@ def publish_scorecard_handoff(
         wrkslots,
         run=run,
         tool_root=tool_root,
+        registration_status=registration_status,
     )
     manifest, files = _scorecard_handoff_payload(
         checkout,
@@ -5387,6 +5480,7 @@ def publish_recorded_scorecard_handoff(
     *,
     run: Runner,
     tool_root: Path,
+    registration_status: Mapping[str, Any] | None = None,
 ) -> Path | None:
     """Preserve or verify a materialized Hermit scorecard before cleanup.
 
@@ -5551,6 +5645,7 @@ def publish_recorded_scorecard_handoff(
         wrkslots=wrkslots,
         run=run,
         tool_root=tool_root,
+        registration_status=registration_status,
     )
 
 

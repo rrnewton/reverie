@@ -291,10 +291,11 @@ reminders:
   # including bench records it cannot interpret; cleanup now considers only
   # records whose disposable checkout or Cargo home still exists.
   #
-  # This runs the existing evidence-preserving cleanup: checkout-local receipts
-  # are archived first, active units and paths held by live processes are kept,
-  # and only then is a terminal checkout removed.  A running checkout is an
-  # expected retention and stays quiet; any other retained path is a failure.
+  # This observes the prior evidence-preserving cleanup and launches the next
+  # fixed-name worker. The gate stays short because safe removal of one large
+  # Cargo home can itself take minutes. The worker uses bounded sweeps: one
+  # shared process/path census for up to eight checkouts, or one Cargo home,
+  # then immediately repeats while another bounded batch is deferred.
   - name: validate_checkout_cleanup
     cadence_secs: 3600
     gate:

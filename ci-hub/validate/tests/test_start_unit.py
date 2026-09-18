@@ -282,14 +282,28 @@ class FakeRun:
             if self.wrkslots_status_output is not None:
                 return completed(command, stdout=self.wrkslots_status_output)
             project_root = Path(command[command.index("--project-root") + 1])
-            slot = command[command.index("--slot") + 1]
-            status_checkout = project_root / "worktrees/validate" / slot
-            if self.scorecard_tamper_on_status is not None:
+            slots = (
+                [command[command.index("--slot") + 1]]
+                if "--slot" in command
+                else sorted(
+                    {
+                        *(slot for slot, _generation in self.registered_validate_slots),
+                        *(
+                            path.name
+                            for path in (project_root / "worktrees/validate").glob(
+                                "validate-fresh-*"
+                            )
+                            if path.is_dir()
+                        ),
+                    }
+                )
+            )
+            status_checkout = (
+                project_root / "worktrees/validate" / slots[0] if slots else None
+            )
+            if self.scorecard_tamper_on_status is not None and status_checkout is not None:
                 tampered = status_checkout / self.scorecard_tamper_on_status
                 tampered.write_text(tampered.read_text() + "tampered after writeback\n")
-            relative = self.wrkslots_status_path or status_checkout.relative_to(
-                project_root
-            ).as_posix()
             active = (
                 []
                 if self.wrkslots_status_active is False
@@ -306,11 +320,17 @@ class FakeRun:
                         "checkouts": [
                             {
                                 "name": "checkout",
-                                "path": relative,
+                                "path": (
+                                    self.wrkslots_status_path
+                                    or (
+                                        project_root / "worktrees/validate" / slot
+                                    ).relative_to(project_root).as_posix()
+                                ),
                                 "head": self.wrkslots_status_head or self.target,
                             }
                         ],
                     }
+                    for slot in slots
                 ]
             )
             return completed(
@@ -2662,6 +2682,29 @@ class StartUnitTest(unittest.TestCase):
             )
         )
 
+    def test_sweep_bounds_terminal_cargo_homes_to_one_per_pass(self) -> None:
+        inputs = [
+            self.in_place_cleanup_record(
+                f"cargo-batch-{index}", temporary=False, current=True
+            )
+            for index in range(3)
+        ]
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        cargo_homes = [cargo_home for _checkout, cargo_home, _record in inputs]
+        self.assertEqual([str(cargo_homes[0])], report["removed_cargo_homes"])
+        self.assertEqual(2, len(report["deferred"]))
+        commands = [
+            command
+            for command in self.fake.commands
+            if wrkslots_action(command, "recover")
+            and "--ownerless-validate-cargo-home" in command
+        ]
+        self.assertEqual(1, len(commands))
+
     def test_entry_cleanup_refuses_after_one_read_only_bounded_backlog_batch(self) -> None:
         stale = [
             self.managed_cleanup_record(f"entry-backlog-{index:03d}")[0]
@@ -4997,10 +5040,13 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(0, rc, err.getvalue())
         report = json.loads(out.getvalue())
         self.assertEqual([str(fresh)], report["removed"])
-        self.assertEqual([str(cargo_home)], report["removed_cargo_homes"])
+        self.assertEqual([], report["removed_cargo_homes"])
         self.assertEqual([], report["retained"])
+        self.assertTrue(
+            any(row["checkout"] == str(cargo_home) for row in report["deferred"])
+        )
         self.assertFalse(fresh.exists())
-        self.assertFalse(cargo_home.exists())
+        self.assertTrue(cargo_home.exists())
         archived = (
             self.root
             / "ignored/validate/orphaned-receipts/validate-sweep/reports/result.jsonl"
@@ -5008,7 +5054,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(f'{{"commit": "{SHA}"}}\n', archived.read_text())
         durable = start_unit.run_registry.read_record(record_path)
         self.assertIsInstance(durable.get("checkout_removed_at"), str)
-        self.assertIsInstance(durable.get("cargo_home_removed_at"), str)
+        self.assertNotIn("cargo_home_removed_at", durable)
         self.assertEqual([str(archived)], durable["archived_orphaned_receipts"])
 
         out = io.StringIO()
@@ -5021,7 +5067,16 @@ class StartUnitTest(unittest.TestCase):
             )
         self.assertEqual(0, second_rc)
         self.assertEqual([], json.loads(out.getvalue())["removed"])
-        self.assertEqual([], json.loads(out.getvalue())["removed_cargo_homes"])
+        self.assertEqual(
+            [str(cargo_home)], json.loads(out.getvalue())["removed_cargo_homes"]
+        )
+        self.assertFalse(cargo_home.exists())
+        self.assertIsInstance(
+            start_unit.run_registry.read_record(record_path).get(
+                "cargo_home_removed_at"
+            ),
+            str,
+        )
         self.assertEqual(
             [str(archived)],
             start_unit.run_registry.read_record(record_path)[
@@ -8940,6 +8995,55 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual("{}\nupdated\n", (handoff / "ci/compat-envelope/cells.json").read_text())
         durable = start_unit.run_registry.read_record(record_path)
         self.assertEqual(str(handoff), durable["scorecard_handoff"])
+        status_commands = [
+            command
+            for command in self.fake.commands
+            if wrkslots_action(command, "status")
+        ]
+        self.assertEqual(1, len(status_commands))
+        self.assertNotIn("--slot", status_commands[0])
+
+    def test_sweep_shares_one_registration_snapshot_before_the_removal_batch(
+        self,
+    ) -> None:
+        checkouts: list[Path] = []
+        for suffix in ("materialized-one", "materialized-two"):
+            fresh, record_path = self.managed_cleanup_record(suffix)
+            record = start_unit.run_registry.read_record(record_path)
+            record.update(
+                target=SHA,
+                materialized_target=True,
+                scorecard_writeback={"status": "completed"},
+            )
+            (fresh / "SCORECARD.md").write_text(f"{suffix}\n")
+            cells = fresh / "ci/compat-envelope/cells.json"
+            cells.parent.mkdir(parents=True)
+            cells.write_text("{}\n")
+            record["scorecard_writeback_files"] = (
+                start_unit.scorecard_writeback_files(fresh)
+            )
+            start_unit.run_registry.write_record(record_path, record)
+            checkouts.append(fresh)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual(sorted(map(str, checkouts)), sorted(report["removed"]))
+        status_commands = [
+            command
+            for command in self.fake.commands
+            if wrkslots_action(command, "status")
+        ]
+        self.assertEqual(1, len(status_commands))
+        self.assertNotIn("--slot", status_commands[0])
+        removal_commands = [
+            command
+            for command in self.fake.commands
+            if wrkslots_action(command, "remove-validate-batch")
+        ]
+        self.assertEqual(1, len(removal_commands))
+        self.assertEqual(2, removal_commands[0].count("--slot"))
 
     def test_sweep_retains_materialized_checkout_without_writer_file_identities(
         self,
