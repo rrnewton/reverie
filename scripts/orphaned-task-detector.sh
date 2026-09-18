@@ -15,21 +15,14 @@
 # (see scripts/worktree-gc.sh orphan-candidate column). ONE root cause, two
 # surfaces: NO LIVENESS SIGNAL TIES A RESOURCE TO A LIVE OWNER.
 #
-# WHY THIS SURFACE IS EXACT (and the slot surface was not):
-#   tg has an explicit `owner` column AND the live fleet is directly
-#   enumerable. NOTE, corrected 2026-09-13: an agent is a tmux PANE, not a tmux
-#   WINDOW, and a window can hold several panes whose names differ from the
-#   agents in them. Window names alone are therefore a PROXY and they missed a
-#   live lane. The fleet is now the union of window names and ORC's agent
-#   registry, which is the only place the agent-name to pane mapping is recorded.
-#   The worktree-gc orphan column had to fall back to an idle-hours (source
-#   mtime) heuristic precisely because worktree-state.json has no owner field
-#   and no liveness link; there, an agent mid-thought looks idle and the signal
-#   is ambiguous. HERE there is no idle-vs-dead ambiguity: a task owned by a
-#   name that is NOT a live window is unambiguously orphaned, regardless of age.
-#   => NO time threshold N is needed or used. Age is printed for triage only.
-#   (Recycle cadence ~30-60 min is context, not a gate; deriving N would only
-#   matter if we lacked the exact owner-existence check, which we do not.)
+# OWNER IDENTITY LIMIT: window names and the ORC registry recognize known live
+# names, but they do not authenticate an alias for every TaskGraph owner. A
+# recent task note is evidence of task activity, not proof that its owner is
+# alive: any writer can add one. For an absent name with recent activity, report
+# the task and owner as INDETERMINATE, without routing it as an orphan or clearing
+# the gate. The one-hour activity window is only a reporting distinction; it is
+# neither a claim TTL nor a bound on detecting owner death. Missing/stale notes
+# retain the existing orphan report. Invalid/future note times are indeterminate.
 #
 # REPORT ONLY — SAME SHAPE AS THE GC ORPHAN COLUMN. This tool NEVER reassigns,
 # closes, or edits a task. It cross-references and prints. The coordinator
@@ -50,12 +43,13 @@
 # Usage:
 #   scripts/orphaned-task-detector.sh              # report orphaned IN_PROGRESS tasks
 #   scripts/orphaned-task-detector.sh --all-status # also scan OPEN/BACKLOG owned tasks
-#   scripts/orphaned-task-detector.sh --gate       # same report; exit 1 iff orphans found
+#   scripts/orphaned-task-detector.sh --gate       # 1: orphan; 2: unresolved owner/input
 #
 # --gate changes ONLY the exit code, never the output: it lets a composite health
 # poll (`ci-hub health`) go non-green when a real orphan exists, so orphans
 # surface on EVERY poll instead of a one-off audit. The default (no --gate)
-# keeps the report-only contract: exit 0 whether or not orphans exist. In BOTH
+# keeps the report-only contract: exit 0 after a completed census, even with
+# unresolved owners. Mixed populations keep exit 1 for known orphans. In BOTH
 # modes a fail-safe fleet-read abort is exit 3 and flags nothing.
 #
 # TWO INPUTS, BOTH FAIL CLOSED. The report is a cross-reference of the live
@@ -74,9 +68,10 @@
 #
 # Exit codes:
 #   0  = ran; default mode (orphans may or may not exist, see report), or
-#        --gate mode with ZERO orphans.
+#        --gate mode with ZERO orphans and ZERO unresolved owners.
 #   1  = --gate mode ONLY: ran and found >=1 orphan (actionable).
-#   2  = could not read the task graph (nothing scanned; fail-closed).
+#   2  = could not read the task graph (nothing scanned; fail-closed), or
+#        --gate: unresolved owner identity and no known orphan (see report).
 #   3  = could not determine the live fleet (nothing flagged; fail-safe).
 #   64 = usage error.
 set -uo pipefail
@@ -185,11 +180,18 @@ fi
 
 # --- Owned, non-terminal tasks from the tg DB. Sentinel prefix 'ROW|' makes ---
 # --- parsing immune to the sql header/separator/'(N rows)' footer.           ---
-STATUS_FILTER="status='IN_PROGRESS'"
-(( ALL_STATUS )) && STATUS_FILTER="status IN ('IN_PROGRESS','OPEN','BACKLOG')"
-QUERY="SELECT 'ROW|' || owner || '|' || status || '|' || local_modified_at || '|' || local_id \
-       FROM tasks WHERE owner IS NOT NULL AND owner != '' AND $STATUS_FILTER \
-       ORDER BY owner, local_modified_at DESC"
+STATUS_FILTER="t.status='IN_PROGRESS'"
+(( ALL_STATUS )) && STATUS_FILTER="t.status IN ('IN_PROGRESS','OPEN','BACKLOG')"
+# Keep the owner last: it can contain a pipe. Parse timestamps before MAX so
+# offsets sort chronologically. Invalid timestamps must not collapse to the
+# no-note case; uncertainty cannot authorize orphan routing.
+QUERY="SELECT 'ROW|' || t.status || '|' || t.local_modified_at || '|' || t.local_id || '|' || \
+       (SELECT CASE WHEN COUNT(*) = 0 THEN '' \
+         WHEN COUNT(strftime('%s', n.created_at)) != COUNT(*) THEN 'invalid' \
+         ELSE CAST(MAX(CAST(strftime('%s', n.created_at) AS INTEGER)) AS TEXT) END \
+        FROM task_notes n WHERE n.task_id = t.local_id) || '|' || t.owner \
+       FROM tasks t WHERE t.owner IS NOT NULL AND t.owner != '' AND $STATUS_FILTER \
+       ORDER BY t.owner, t.local_modified_at DESC"
 
 # Run the query BEFORE printing any report line, and check its status. A failed
 # `tg sql` used to be swallowed by `2>/dev/null` inside a process substitution,
@@ -216,14 +218,28 @@ printf '%-46s %-16s %-12s %8s\n' TASK OWNER status age_h
 echo "-------------------------------------------------------------------------------------"
 
 orphan_n=0; owned_n=0
+recent_note_window_s=3600
 declare -A ORPHAN_OWNERS
-while IFS='|' read -r _tag owner status modified local_id; do
+declare -a UNRESOLVED=()
+while IFS='|' read -r _tag status modified local_id latest_note_s owner; do
     owned_n=$((owned_n+1))
     # age in hours from last local modification (informational triage only).
     mt=$(date -d "$modified" +%s 2>/dev/null || echo "$now")
     age_h=$(( (now - mt) / 3600 ))
     if [[ -n ${LIVE[$owner]:-} ]]; then
-        continue   # owner is a live window — not orphaned
+        continue   # recognized by the existing window/registry fleet — not orphaned
+    fi
+    reason=""
+    if [[ -n $latest_note_s ]]; then
+        if [[ ! $latest_note_s =~ ^-?(0|[1-9][0-9]{0,11})$ ]] || (( latest_note_s > now )); then
+            reason="invalid or future task-note timestamp"
+        elif (( now - latest_note_s <= recent_note_window_s )); then
+            reason="recent task activity is not owner liveness"
+        fi
+    fi
+    if [[ -n $reason ]]; then
+        UNRESOLVED+=("  task=$local_id owner=$owner status=$status: $reason")
+        continue
     fi
     orphan_n=$((orphan_n+1))
     ORPHAN_OWNERS[$owner]=$(( ${ORPHAN_OWNERS[$owner]:-0} + 1 ))
@@ -236,15 +252,24 @@ if (( orphan_n > 0 )); then
     echo "orphan owners (agent no longer exists):"
     for o in "${!ORPHAN_OWNERS[@]}"; do echo "  $o  -> ${ORPHAN_OWNERS[$o]} task(s)"; done
     echo
-    echo "ROUTE each (never a silent third state):"
+    echo "ROUTE only the orphan rows above (never a silent third state):"
     echo "  * still wanted -> reassign: tg claim <task> (as the new owner) or tg update <task> --owner <agent>"
     echo "  * done/moot    -> record the evidence in a note, then close: tg update <task> --status closed"
     echo "                    (already landed? use ./ci-hub/bin/close-task so CLOSURE-VERIFIED clears the landing debt)"
     echo "This tool only DETECTS. It does not reassign or close anything."
 fi
+if (( ${#UNRESOLVED[@]} > 0 )); then
+    echo
+    echo "INDETERMINATE owner identity: ${#UNRESOLVED[@]}"
+    printf '%s\n' "${UNRESOLVED[@]}"
+    echo "Owner-to-live-agent mapping is unresolved; these rows are not orphan-routing advice."
+fi
 # --gate: signal orphan presence through the exit code so a composite health poll
 # can go non-green. Default mode stays report-only (exit 0 regardless).
 if (( GATE && orphan_n > 0 )); then
     exit 1
+fi
+if (( GATE && ${#UNRESOLVED[@]} > 0 )); then
+    exit 2
 fi
 exit 0

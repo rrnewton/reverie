@@ -24,6 +24,7 @@ import sqlite3
 import tempfile
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -235,6 +236,228 @@ printf 'result\\n------\\n\\n(0 rows)\\n'
         self.assertIn("runtime diagnostic", result.stderr)
         self.assertIn(f"task graph: {database}", result.stdout)
         self.assertNotIn("runtime diagnostic", result.stdout)
+
+
+FIXTURE_NOW = 2_000_000_000
+
+
+def note_time(offset: int) -> str:
+    return datetime.fromtimestamp(FIXTURE_NOW + offset, timezone.utc).isoformat()
+
+
+def run_identity_fixture(
+    tasks: list[tuple[str, str]],
+    notes: list[tuple[str, str, str]],
+    *,
+    registry_names: tuple[str, ...] = (),
+    gate: bool = True,
+    query_failure: bool = False,
+    unreadable_fleet: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """Execute the real detector/resolver and its SQL on an isolated graph.
+
+    Only fleet enumeration, time, and the tg CLI framing are supplied. The SQL
+    is executed by SQLite, including task-note correlation and timestamp parsing.
+    Note authors are fixture data, not an authenticated owner/session mapping.
+    """
+    with tempfile.TemporaryDirectory(prefix="degraded-unresolved-orphan-test-") as directory:
+        root = Path(directory)
+        fake_bin = root / "bin"
+        fake_bin.mkdir()
+        socket = root / "tmux"
+        socket.mkdir()
+        database = root / "taskgraph.db"
+        with sqlite3.connect(database) as conn:
+            conn.executescript(
+                "CREATE TABLE tasks(local_id TEXT, owner TEXT, status TEXT, "
+                "local_modified_at TEXT);"
+                "CREATE TABLE task_notes(task_id TEXT, created_at TEXT, "
+                "author_unixname TEXT);"
+            )
+            conn.executemany(
+                "INSERT INTO tasks VALUES (?, ?, 'IN_PROGRESS', ?)",
+                [(task, owner, note_time(-7200)) for task, owner in tasks],
+            )
+            conn.executemany("INSERT INTO task_notes VALUES (?, ?, ?)", notes)
+        registry = root / ".orc" / "sessions" / "fixture" / "agents_v1.db"
+        registry.parent.mkdir(parents=True)
+        with sqlite3.connect(registry) as conn:
+            conn.execute("CREATE TABLE agents_v(name TEXT, status TEXT)")
+            conn.executemany(
+                "INSERT INTO agents_v VALUES (?, 'running')",
+                [(name,) for name in registry_names],
+            )
+        date = shutil.which("date")
+        assert date is not None
+        scripts = {
+            "tg": f"""#!{sys.executable}
+import os, sqlite3, sys
+assert sys.argv[1] == 'sql'
+if os.environ.get('FIXTURE_QUERY_FAILURE') == '1':
+    print('fixture query failed', file=sys.stderr)
+    sys.exit(17)
+with sqlite3.connect('file:' + os.environ['TG_DB_PATH'] + '?mode=ro', uri=True) as conn:
+    rows = conn.execute(sys.argv[2]).fetchall()
+print('result\\n------')
+for row in rows:
+    print(row[0])
+print('(%d rows)' % len(rows))
+""",
+            "sqlite3": f"""#!{sys.executable}
+import sqlite3, sys
+with sqlite3.connect('file:' + sys.argv[1] + '?mode=ro', uri=True) as conn:
+    for row in conn.execute(sys.argv[2]):
+        print(row[0])
+""",
+            "orc": "#!/bin/sh\nprintf 'orc socket (TMUX_TMPDIR): %s\\n' \"$FIXTURE_SOCKET\"\n",
+            "tmux": """#!/bin/sh
+[ "$FIXTURE_UNREADABLE_FLEET" = 1 ] && exit 17
+case "$1" in
+  list-sessions) printf 'fixture-session\\n' ;;
+  list-windows) printf 'roster-display-name\\n' ;;
+  *) exit 64 ;;
+esac
+""",
+            "date": f"""#!{sys.executable}
+import os, sys
+if sys.argv[1:] == ['+%s']:
+    print({FIXTURE_NOW})
+else:
+    os.execv({date!r}, [{date!r}, *sys.argv[1:]])
+""",
+        }
+        for name, body in scripts.items():
+            path = fake_bin / name
+            path.write_text(body)
+            path.chmod(0o755)
+        env = dict(os.environ)
+        env.update(
+            HOME=str(root),
+            PATH=str(fake_bin) + os.pathsep + env.get("PATH", ""),
+            TG_DB_PATH=str(database),
+            FIXTURE_SOCKET=str(socket),
+            FIXTURE_QUERY_FAILURE=str(int(query_failure)),
+            FIXTURE_UNREADABLE_FLEET=str(int(unreadable_fleet)),
+        )
+        return subprocess.run(
+            [str(DETECTOR), *(["--gate"] if gate else [])],
+            cwd=ROOT, env=env, text=True, capture_output=True, timeout=15,
+        )
+
+
+class OrphanDetectorIdentityUncertainty(unittest.TestCase):
+    def assert_unresolved(self, result: subprocess.CompletedProcess[str], task: str, owner: str) -> None:
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("INDETERMINATE owner identity: 1", result.stdout)
+        self.assertIn(task, result.stdout)
+        self.assertIn(owner, result.stdout)
+        self.assertNotIn("tg claim", result.stdout)
+        self.assertNotIn("tg update", result.stdout)
+        self.assertIn("ORPHANED (owner not in live fleet): 0", result.stdout)
+
+    def test_dead_owner_with_fresh_third_party_note_cannot_clear(self) -> None:
+        result = run_identity_fixture(
+            [("dead-owner-task", "gone-owner")],
+            [("dead-owner-task", note_time(-1), "unrelated-coordinator")],
+        )
+        self.assert_unresolved(result, "dead-owner-task", "gone-owner")
+        self.assertIn("recent task activity is not owner liveness", result.stdout)
+
+    def test_recent_activity_with_true_name_mismatch_remains_unresolved(self) -> None:
+        result = run_identity_fixture(
+            [("live-task", "internal-name")],
+            [("live-task", note_time(-1), "internal-name")],
+            registry_names=("roster-display-name",),
+        )
+        self.assert_unresolved(result, "live-task", "internal-name")
+
+    def test_confirmed_live_registry_name_stays_clear(self) -> None:
+        result = run_identity_fixture(
+            [("live-task", "confirmed-owner")], [],
+            registry_names=("confirmed-owner",),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("live-task", result.stdout)
+        self.assertIn("ORPHANED (owner not in live fleet): 0", result.stdout)
+
+    def test_absent_owner_with_old_or_no_notes_still_fails(self) -> None:
+        for notes in ([], [("orphan-task", note_time(-3601), "old-writer")]):
+            with self.subTest(notes=notes):
+                result = run_identity_fixture([("orphan-task", "gone-owner")], notes)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("orphan-task", result.stdout)
+                self.assertIn("ORPHANED (owner not in live fleet): 1", result.stdout)
+                self.assertIn("tg claim", result.stdout)
+
+    def test_mixed_population_keeps_known_failure_and_separates_uncertainty(self) -> None:
+        result = run_identity_fixture(
+            [("known-orphan", "gone-owner"), ("unresolved-task", "unknown-owner")],
+            [("unresolved-task", note_time(-1), "third-party")],
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("ORPHANED (owner not in live fleet): 1", result.stdout)
+        self.assertIn("INDETERMINATE owner identity: 1", result.stdout)
+        table = result.stdout.split("-------------------------------------------------------------------------------------")[1]
+        self.assertIn("known-orphan", table)
+        self.assertNotIn("unresolved-task", table)
+        self.assertIn("unresolved-task", result.stdout)
+        self.assertIn("ROUTE only the orphan rows above", result.stdout)
+
+    def test_future_or_malformed_note_is_never_owner_evidence(self) -> None:
+        for timestamp in (note_time(1), "not-a-date", ""):
+            with self.subTest(timestamp=timestamp):
+                result = run_identity_fixture(
+                    [("uncertain-task", "unknown-owner")],
+                    [("uncertain-task", timestamp, "third-party")],
+                )
+                self.assert_unresolved(result, "uncertain-task", "unknown-owner")
+                self.assertIn("invalid or future task-note timestamp", result.stdout)
+
+    def test_recent_note_is_correlated_to_its_task(self) -> None:
+        result = run_identity_fixture(
+            [("no-note-task", "gone-owner"), ("different-task", "confirmed-owner")],
+            [("different-task", note_time(-1), "third-party")],
+            registry_names=("confirmed-owner",),
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("no-note-task", result.stdout)
+        self.assertNotIn("different-task", result.stdout)
+        self.assertIn("ORPHANED (owner not in live fleet): 1", result.stdout)
+
+    def test_latest_note_uses_chronological_order_across_offsets(self) -> None:
+        older_local_date = datetime.fromtimestamp(
+            FIXTURE_NOW - 7200, timezone.utc
+        ).astimezone(timezone(timedelta(hours=12))).isoformat()
+        result = run_identity_fixture(
+            [("recent-task", "unknown-owner")],
+            [("recent-task", older_local_date, "old-writer"),
+             ("recent-task", note_time(-1), "new-writer")],
+        )
+        self.assert_unresolved(result, "recent-task", "unknown-owner")
+
+    def test_report_only_names_uncertainty_without_routing(self) -> None:
+        result = run_identity_fixture(
+            [("unresolved-task", "unknown-owner")],
+            [("unresolved-task", note_time(-1), "third-party")], gate=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("INDETERMINATE owner identity: 1", result.stdout)
+        self.assertIn("unresolved-task", result.stdout)
+        self.assertNotIn("tg claim", result.stdout)
+
+    def test_query_failure_does_not_produce_a_census(self) -> None:
+        result = run_identity_fixture([], [], query_failure=True)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("COULD NOT MEASURE", result.stderr)
+        self.assertNotIn("scanned", result.stdout)
+
+    def test_fleet_failure_does_not_classify_tasks(self) -> None:
+        result = run_identity_fixture(
+            [("task", "owner")], [], unreadable_fleet=True,
+        )
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("FAIL-SAFE ABORT", result.stderr)
+        self.assertNotIn("scanned", result.stdout)
 
 
 if __name__ == "__main__":

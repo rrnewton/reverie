@@ -37,6 +37,48 @@ class ResidueSweepTest(unittest.TestCase):
             ):
                 residue_sweep.read_live_fleet()
 
+    def test_actual_detector_uncertainty_is_not_a_sweepable_orphan(self) -> None:
+        from test_orphaned_task_detector_fails_closed import (
+            note_time,
+            run_identity_fixture,
+        )
+
+        result = run_identity_fixture(
+            [("uncertain-task", "unknown-owner")],
+            [("uncertain-task", note_time(-1), "third-party")],
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        with mock.patch.object(residue_sweep, "run_checked", return_value=result):
+            with self.assertRaisesRegex(residue_sweep.SweepUnavailable, "rc=2"):
+                residue_sweep.read_live_fleet()
+
+    def test_actual_mixed_detector_only_routes_the_known_orphan(self) -> None:
+        from test_orphaned_task_detector_fails_closed import (
+            note_time,
+            run_identity_fixture,
+        )
+
+        result = run_identity_fixture(
+            [("known-orphan", "gone-owner"), ("uncertain-task", "unknown-owner")],
+            [("uncertain-task", note_time(-1), "third-party")],
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        with mock.patch.object(residue_sweep, "run_checked", return_value=result):
+            live, orphans = residue_sweep.read_live_fleet()
+        self.assertEqual(live, {"roster-display-name"})
+        self.assertEqual([row.key for row in orphans], ["known-orphan"])
+        self.assertEqual(orphans[0].route_authority, "coordinator")
+
+    def test_detector_unknown_and_error_statuses_never_clear_sweep(self) -> None:
+        for code in (2, 3, 64, 137):
+            with self.subTest(code=code):
+                result = mock.Mock(
+                    returncode=code, stdout="live agents: worker\n", stderr=""
+                )
+                with mock.patch.object(residue_sweep, "run_checked", return_value=result):
+                    with self.assertRaisesRegex(residue_sweep.SweepUnavailable, f"rc={code}"):
+                        residue_sweep.read_live_fleet()
+
     def _owner_registry(self) -> dict[str, object]:
         return {
             "slots": {

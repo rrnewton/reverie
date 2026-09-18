@@ -1752,8 +1752,9 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
             // (an agent recycles ~every 30-60 min; the owned task row survives,
             // the owner does not, and nothing else emits a signal for it). This
             // reuses the verified report-only detector; --gate makes it exit 1
-            // when a real orphan exists and 3 on a fail-safe unreadable-fleet
-            // abort. The detector prints a plain-text report, so it is skipped
+            // when an orphan exists, 2 for unresolved owner/input, and 3 on a
+            // fail-safe unreadable-fleet abort. Uncertainty is a partial result,
+            // never a clean census. The plain-text report is skipped
             // in --json mode (a JSON poller can call the detector directly).
             let orphan_contrib = if args.json {
                 0
@@ -1767,14 +1768,17 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
                     // routes it (reassign or close). Exit 1 stays inside the
                     // range the live-health probe classifies as authoritative.
                     1 => 1,
-                    // Fail-safe (exit 3, fleet unreadable) or clean (0): printed
-                    // but never reddens health — an unreadable fleet must not
-                    // masquerade as an orphan wave.
-                    _ => 0,
+                    0 => 0,
+                    code => {
+                        eprintln!(
+                            "PARTIAL RESULT: orphan detector status {code}; owner census is unresolved"
+                        );
+                        2
+                    }
                 }
             };
-            // Preserve main/PR's more-informative exit 2; orphans only redden a
-            // health poll that would otherwise be green.
+            // Preserve main/PR's existing failure precedence; the owner census
+            // only changes a health poll that would otherwise be green.
             let base = if main_code != 0 { main_code } else { pr_code };
             Ok(if base != 0 { base } else { orphan_contrib })
         }
@@ -11637,6 +11641,60 @@ mod tests {
             },
         });
         row
+    }
+
+    #[test]
+    fn health_owner_census_keeps_unknown_statuses_non_clear() {
+        let root = std::env::temp_dir().join(format!(
+            "degraded-unresolved-health-owner-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        std::fs::create_dir_all(root.join("ci-hub/health")).unwrap();
+        std::fs::create_dir(root.join("scripts")).unwrap();
+        for (main_code, pr_code, detector_code, expected) in [
+            (0, 0, 0, 0),
+            (0, 0, 1, 1),
+            (0, 0, 2, 2),
+            (0, 0, 3, 2),
+            (0, 0, 64, 2),
+            (0, 0, 137, 2),
+            (1, 0, 2, 1),
+            (2, 1, 1, 2),
+            (0, 1, 2, 1),
+            (0, 2, 1, 2),
+        ] {
+            for (name, code) in [
+                ("github_main_health.py", main_code),
+                ("pr_status.py", pr_code),
+            ] {
+                std::fs::write(
+                    root.join("ci-hub/health").join(name),
+                    format!("raise SystemExit({code})\n"),
+                )
+                .unwrap();
+            }
+            std::fs::write(
+                root.join("scripts/orphaned-task-detector.sh"),
+                format!("[ \"$1\" = --gate ] || exit 99\nexit {detector_code}\n"),
+            )
+            .unwrap();
+            let actual = execute(
+                &root,
+                HubCommand::Health(HealthArgs {
+                    repos: vec![],
+                    limit: 1,
+                    warn_threshold: 1,
+                    json: false,
+                }),
+            )
+            .unwrap();
+            assert_eq!(
+                actual, expected,
+                "main={main_code}, pr={pr_code}, detector={detector_code}"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
