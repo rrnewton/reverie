@@ -468,6 +468,33 @@ def test_manifest_refuses_identity_named_and_stale_artifacts(
         website._validate_manifest(changed)
 
 
+def test_artifact_inventory_accepts_only_exact_cell_continuation_pages() -> None:
+    counts = {
+        "green_cell_count": 51,
+        "red_cell_count": 50,
+        "never_measured_cell_count": 101,
+        "validation_history_row_count": 0,
+    }
+    continuation = {
+        "cells/results-2.html",
+        "cells/results-3.html",
+        "cells/never-measured-2.html",
+        "cells/never-measured-3.html",
+    }
+    paths = website.FIXED_SITE_ARTIFACT_PATHS | continuation
+
+    website._require_exact_artifact_inventory(paths, counts)
+
+    with pytest.raises(website.WebsiteRefused, match="artifact inventory"):
+        website._require_exact_artifact_inventory(
+            paths | {"cells/results-4.html"}, counts
+        )
+    with pytest.raises(website.WebsiteRefused, match="artifact inventory"):
+        website._require_exact_artifact_inventory(
+            paths - {"cells/never-measured-3.html"}, counts
+        )
+
+
 def test_manifest_requires_embedded_stage_1_schema_three(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

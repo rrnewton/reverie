@@ -910,19 +910,50 @@ def _is_run_artifact_path(path: str) -> bool:
     )
 
 
+def _cell_continuation_artifact_paths(counts: Mapping[str, Any]) -> set[str]:
+    page_size = _integer(
+        _modules().renderer.LIST_PAGE_SIZE,
+        "renderer cell-list page size",
+    )
+    if page_size < 1:
+        raise WebsiteRefused("renderer cell-list page size must be positive")
+
+    populations = (
+        (
+            "results",
+            _integer(counts.get("green_cell_count"), "website counts.green_cell_count")
+            + _integer(counts.get("red_cell_count"), "website counts.red_cell_count"),
+        ),
+        (
+            "never-measured",
+            _integer(
+                counts.get("never_measured_cell_count"),
+                "website counts.never_measured_cell_count",
+            ),
+        ),
+    )
+    return {
+        f"cells/{name}-{page}.html"
+        for name, population in populations
+        for page in range(2, (population + page_size - 1) // page_size + 1)
+    }
+
+
 def _require_exact_artifact_inventory(
     paths: Collection[str], counts_value: Any
 ) -> None:
     counts = _object(counts_value, "website counts")
     artifact_paths = set(paths)
-    run_paths = artifact_paths - FIXED_SITE_ARTIFACT_PATHS
+    continuation_paths = _cell_continuation_artifact_paths(counts)
+    expected_fixed_paths = FIXED_SITE_ARTIFACT_PATHS | continuation_paths
+    run_paths = artifact_paths - expected_fixed_paths
     expected_runs = _integer(
         counts.get("validation_history_row_count"),
         "website counts.validation_history_row_count",
     )
     if (
         len(artifact_paths) != len(paths)
-        or not FIXED_SITE_ARTIFACT_PATHS <= artifact_paths
+        or not expected_fixed_paths <= artifact_paths
         or len(run_paths) != expected_runs
         or any(not _is_run_artifact_path(path) for path in run_paths)
     ):
