@@ -370,7 +370,7 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
         true
     }
 
-    fn tail_injection_allowed(&self) -> bool {
+    fn tail_injection_allowed(&self, _request: &SyscallRequest) -> bool {
         true
     }
 
@@ -422,6 +422,7 @@ enum ProcessExecutionContext {
     InitialExec(SyscallRequest),
     InitialExecCompleted,
     Lifecycle,
+    Timestamp,
     ThreadEntrySignal,
     SignalBoundary(CompletedSyscallBoundary),
     FaultBoundary(Box<PageZeroFault>),
@@ -441,7 +442,12 @@ impl ProcessExecutionContext {
         )
     }
 
-    fn tail_injection_allowed(&self) -> bool {
+    fn tail_injection_allowed(&self, request: &SyscallRequest) -> bool {
+        if matches!(self, Self::Timestamp) {
+            // Terminal exits do not need a syscall return frame. Every other
+            // tail still requires a transport that can consume its result.
+            return injection_is_explicit_exit(request);
+        }
         !matches!(
             self,
             Self::SignalBoundary(_) | Self::FaultBoundary(_) | Self::ThreadEntrySignal
@@ -449,7 +455,12 @@ impl ProcessExecutionContext {
     }
 
     fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
-        if matches!(self, Self::ThreadEntrySignal) {
+        if matches!(self, Self::Timestamp) && injection_is_explicit_exit(request) {
+            // inject() itself is nonreturning once the real exit is staged;
+            // tail_inject() uses that same path and both executor preflights.
+            return true;
+        }
+        if matches!(self, Self::ThreadEntrySignal | Self::Timestamp) {
             // There is a real user continuation, but no consumed syscall
             // transport to restore after an injected process action.
             return !injection_can_be_nonreturning(request)
@@ -472,6 +483,13 @@ impl ProcessExecutionContext {
                     | Self::ThreadEntrySignal
             )
     }
+}
+
+fn injection_is_explicit_exit(request: &SyscallRequest) -> bool {
+    matches!(
+        request.number() as libc::c_long,
+        libc::SYS_exit | libc::SYS_exit_group
+    )
 }
 
 /// Returns whether a successful injected syscall can abandon the current Tool
@@ -571,10 +589,12 @@ where
             // that SignalBoundary cannot resume its Tool hook.
             return -(i64::from(Errno::ENOSYS.into_raw()));
         }
-        if matches!(self.process_context, ProcessExecutionContext::Lifecycle)
-            && let Some(result) = self
-                .executor
-                .lifecycle_signal_mask_preflight(request, memory)
+        if matches!(
+            self.process_context,
+            ProcessExecutionContext::Lifecycle | ProcessExecutionContext::Timestamp
+        ) && let Some(result) = self
+            .executor
+            .lifecycle_signal_mask_preflight(request, memory)
         {
             return result;
         }
@@ -787,10 +807,10 @@ where
         self.signal_injection_allowed(request)
     }
 
-    fn tail_injection_allowed(&self) -> bool {
+    fn tail_injection_allowed(&self, request: &SyscallRequest) -> bool {
         self.signal_guard == SignalGuard::Ordinary
             && !self.executor.has_prepared_signal()
-            && self.process_context.tail_injection_allowed()
+            && self.process_context.tail_injection_allowed(request)
     }
 
     fn parent_pid(&self) -> Option<Pid> {
@@ -893,6 +913,9 @@ where
                     ProcessExecutionContext::InitialExecCompleted => unreachable!(
                         "synthetic initial exec completes before process actions are inspected"
                     ),
+                    ProcessExecutionContext::Timestamp => Err(Error::UnexpectedVcpuExit(
+                        "process injection from a timestamp callback is unsupported".to_owned(),
+                    )),
                     ProcessExecutionContext::ThreadEntrySignal => Err(Error::UnexpectedVcpuExit(
                         "process injection from a thread-entry signal hook is unsupported"
                             .to_owned(),
@@ -1265,7 +1288,8 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     }
 
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
-        if !self.executor.tail_injection_allowed() {
+        let request = SyscallRequest::from_syscall(syscall);
+        if !self.executor.tail_injection_allowed(&request) {
             // Refuse before executing any syscall so write/fd/process/address-
             // space/pending/exit state cannot change before the hook errors.
             self.signal_handler(HandlerSignal::RuntimeError(Error::Reverie(
@@ -2320,6 +2344,9 @@ impl KvmBackend {
         T: Tool,
         E: SyscallExecutor,
     {
+        // This public non-ELF loop has no timestamp consumer. Establish its
+        // ownership locally even if the vCPU previously ran a subscribed Tool.
+        self.set_rdtsc_interception(false)?;
         self.vcpu.track_clock()?;
         let tool_stack_top = self.tool_stack_top();
         let pid = Pid::from_raw(self.root_pid);
@@ -2918,6 +2945,10 @@ impl KvmBackend {
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
         let mut _process_completed = false;
         let outcome: Result<ToolProcessExit> = async {
+            // Each actual Tool consumer admits its own subscription before
+            // any user instruction. New fork/thread vCPUs start unarmed; the
+            // tool-less Host worker loop never inherits trapping without a hook.
+            self.set_rdtsc_interception(subscriptions.has_rdtsc())?;
             self.vcpu.track_clock()?;
             _registration = Some(self.register_guest_thread()?);
             let registers = kvm_registers(self.vcpu.get_regs()?, 0);
@@ -3140,6 +3171,116 @@ impl KvmBackend {
                         (exit.args[0], std::ptr::from_mut(exit.ret) as usize)
                     }
                     VcpuExit::Hlt => {
+                        if let Some(boundary) = self.timestamp_counter_exception()? {
+                            let request = boundary.instruction.request;
+                            executor.set_current_user_stack_pointer(boundary.registers.rsp);
+                            let handler_signal = Arc::new(Mutex::new(None));
+                            let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                            let mut process_completed = false;
+                            expose_tool_scratch(&memory, tool_stack_top)?;
+                            let result = {
+                                let mut guest_executor = StaticElfSyscallExecutor {
+                                    backend: self,
+                                    executor,
+                                    memory: memory.clone(),
+                                    process_context: ProcessExecutionContext::Timestamp,
+                                    callback_site: None,
+                                    original_syscall: None,
+                                    signal_guard: SignalGuard::Ordinary,
+                                    last_result: None,
+                                    process_completed: &mut process_completed,
+                                };
+                                let mut guest = KvmGuest::<T>::new(
+                                    pid,
+                                    tid,
+                                    tool.clone(),
+                                    memory.clone(),
+                                    &auxv,
+                                    boundary.user_registers(),
+                                    &mut thread_state,
+                                    &mut guest_executor,
+                                    global_state.as_ref(),
+                                    Some(global_state.clone()),
+                                    config,
+                                    subscriptions,
+                                    handler_signal.clone(),
+                                    pending_child_starts.clone(),
+                                    tool_stack_top,
+                                    stack_checked_out.clone(),
+                                );
+                                drive_handler(
+                                    tool.handle_rdtsc_event(&mut guest, request),
+                                    handler_signal,
+                                    pending_child_starts,
+                                    wait_for_failure(
+                                        global_state.as_ref(),
+                                        failure_subscription.clone(),
+                                    ),
+                                )
+                                .await
+                            };
+                            // Hide scratch even on callback failure. The outer
+                            // process supervisor retains any committed effects.
+                            let hidden = hide_tool_scratch(&memory, tool_stack_top);
+                            let value = match result {
+                                HandlerOutcome::Returned(Ok(value)) => value,
+                                HandlerOutcome::Returned(Err(error)) => {
+                                    return Err(Error::Reverie(error.into())
+                                        .with_cleanup(hidden.err().into_iter().collect()));
+                                }
+                                HandlerOutcome::ThreadCancelled => {
+                                    hidden?;
+                                    return Ok(self.cancelled_tool_thread_status(executor));
+                                }
+                                HandlerOutcome::RunFailed => {
+                                    return Err(Error::RunAborted
+                                        .with_cleanup(hidden.err().into_iter().collect()));
+                                }
+                                HandlerOutcome::RuntimeError(error) => {
+                                    return Err(
+                                        error.with_cleanup(hidden.err().into_iter().collect())
+                                    );
+                                }
+                                HandlerOutcome::TailInjected {
+                                    result: Ok(_),
+                                    image_replaced: false,
+                                    process_exited: true,
+                                } => {
+                                    hidden?;
+                                    let exit = executor.take_exit().ok_or_else(|| {
+                                        Error::UnexpectedVcpuExit(
+                                            "terminal timestamp injection lost its exit".to_owned(),
+                                        )
+                                    })?;
+                                    if exit.group {
+                                        self.request_guest_thread_group_exit(exit.status);
+                                    }
+                                    // The original timestamp never resumes. Normal
+                                    // retirement and consuming hooks own cleanup.
+                                    return Ok(exit.into());
+                                }
+                                HandlerOutcome::TailInjected { .. }
+                                | HandlerOutcome::ParkedFatal(_)
+                                | HandlerOutcome::ParkedCancelled(_) => {
+                                    return Err(Error::UnexpectedVcpuExit(
+                                        "nonreturning timestamp callback outcome".to_owned(),
+                                    )
+                                    .with_cleanup(hidden.err().into_iter().collect()));
+                                }
+                            };
+                            hidden?;
+                            if process_completed {
+                                return Err(Error::UnexpectedVcpuExit(
+                                    "timestamp callback changed the process continuation"
+                                        .to_owned(),
+                                ));
+                            }
+                            if let Some((segment, address)) = executor.take_segment() {
+                                set_user_segment_base(&self.vcpu, segment, address)?;
+                            }
+                            self.resume_timestamp_counter(boundary, value)?;
+                            continue;
+                        }
                         if self.try_resume_vmware_backdoor_probe()? {
                             continue;
                         }
@@ -4068,7 +4209,7 @@ mod tests {
             })
         }
 
-        fn tail_injection_allowed(&self) -> bool {
+        fn tail_injection_allowed(&self, _request: &SyscallRequest) -> bool {
             false
         }
     }
@@ -4312,13 +4453,16 @@ mod tests {
     #[test]
     fn signal_hook_tail_injection_is_rejected_before_every_executor_side_effect() {
         let boundary = test_process_boundary();
+        let request = SyscallRequest::new(libc::SYS_write as u64, [1, 0x100, 4, 0, 0, 0]);
         assert!(
-            !ProcessExecutionContext::SignalBoundary(boundary.clone()).tail_injection_allowed()
+            !ProcessExecutionContext::SignalBoundary(boundary.clone())
+                .tail_injection_allowed(&request)
         );
         assert!(
-            ProcessExecutionContext::SyscallBoundary(boundary.clone()).tail_injection_allowed()
+            ProcessExecutionContext::SyscallBoundary(boundary.clone())
+                .tail_injection_allowed(&request)
         );
-        assert!(ProcessExecutionContext::Lifecycle.tail_injection_allowed());
+        assert!(ProcessExecutionContext::Lifecycle.tail_injection_allowed(&request));
 
         let nonfatal_signal =
             SyscallRequest::new(libc::SYS_kill as u64, [1, libc::SIGUSR1 as u64, 0, 0, 0, 0]);
