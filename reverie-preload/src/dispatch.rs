@@ -16,6 +16,9 @@
 use crate::signal;
 use crate::trap;
 
+#[cfg(target_arch = "x86_64")]
+const X32_SYSCALL_BIT: i64 = 0x4000_0000;
+
 // TODO-HUMAN-REVIEW(PR-264): Review the public dispatch-origin contract used by
 // direct binary-rewriter trampolines.
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -214,6 +217,28 @@ pub fn is_fork_like(number: i64) -> bool {
         || number == libc::SYS_clone3
 }
 
+/// Whether a raw x86-64 syscall register contains only the canonical zero or
+/// sign extension of the signed low-32-bit number consumed by Linux.
+pub fn syscall_number_has_canonical_encoding(number: i64) -> bool {
+    let low = number as u32;
+    number == i64::from(low) || number == i64::from(low as i32)
+}
+
+/// Whether the shared x86-64 dispatch boundary must answer `ENOSYS` before a
+/// backend can inspect or forward the raw number.
+pub fn syscall_number_requires_enosys(number: i64) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        !syscall_number_has_canonical_encoding(number)
+            || (number >= 0 && number & X32_SYSCALL_BIT != 0)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = number;
+        false
+    }
+}
+
 /// The default dispatcher: forward every syscall to the kernel, applying the
 /// fail-closed guards that the ld-preload derisking work proved mandatory.
 ///
@@ -247,6 +272,11 @@ impl PassthroughDispatcher {
         let number = event.number();
         let args = event.args();
 
+        if syscall_number_requires_enosys(number) {
+            event.fail(libc::ENOSYS);
+            return true;
+        }
+
         // AUTONOMOUS-BOT-IMPLEMENTED
         // exec cannot safely cross an inherited trap filter: the filter survives
         // but the handler, altstack, and mappings do not.
@@ -258,6 +288,16 @@ impl PassthroughDispatcher {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // Keep SIGSYS reserved for the runtime until disposition is virtualized.
         if number == libc::SYS_rt_sigaction && signal::is_reserved(args[0] as i32) {
+            event.fail(libc::EPERM);
+            return true;
+        }
+
+        // An ordinary guest rt_sigreturn entry reaches this dispatcher under a
+        // fresh SIGSYS frame; forwarding it would consume that runtime frame
+        // and could restore caller-crafted mask or alternate-stack state. The
+        // exact restorer IP is a trusted private gate under the same documented
+        // boundary as the runtime's existing syscall gates.
+        if number == libc::SYS_rt_sigreturn {
             event.fail(libc::EPERM);
             return true;
         }
@@ -357,6 +397,37 @@ mod tests {
         let mut event = SyscallEvent::new(libc::SYS_rt_sigaction, args, 0);
         assert!(PassthroughDispatcher::apply_guards(&mut event));
         assert_eq!(event.result(), Some(-i64::from(libc::EPERM)));
+    }
+
+    #[test]
+    fn guest_rt_sigreturn_is_guarded_eperm() {
+        let mut event = SyscallEvent::new(libc::SYS_rt_sigreturn, [0; 6], 0);
+        assert!(PassthroughDispatcher::apply_guards(&mut event));
+        assert_eq!(event.result(), Some(-i64::from(libc::EPERM)));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x32_syscalls_are_guarded_enosys_before_native_policy_matching() {
+        // The structure-taking x32 calls use their compat-table numbers.
+        for low in [512_i64, 513_i64, libc::SYS_getpid] {
+            let mut event = SyscallEvent::new(low | X32_SYSCALL_BIT, [0; 6], 0);
+            assert!(PassthroughDispatcher::apply_guards(&mut event));
+            assert_eq!(event.result(), Some(-i64::from(libc::ENOSYS)));
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn mixed_high_syscall_numbers_are_guarded_before_policy_matching() {
+        for low in [libc::SYS_rt_sigreturn, libc::SYS_execve, libc::SYS_getpid] {
+            let mut event = SyscallEvent::new((1_i64 << 32) | low, [0; 6], 0);
+            assert!(PassthroughDispatcher::apply_guards(&mut event));
+            assert_eq!(event.result(), Some(-i64::from(libc::ENOSYS)));
+        }
+        assert!(syscall_number_has_canonical_encoding(libc::SYS_getpid));
+        assert!(syscall_number_has_canonical_encoding(-1));
+        assert!(syscall_number_has_canonical_encoding(u32::MAX as i64));
     }
 
     #[test]

@@ -68,6 +68,7 @@ pub(crate) enum LiteinstActivationFailureReason {
     NewbornIdentity,
     VforkUnsupported,
     TerminatedBeforeHandshake,
+    AfterLoaderCall,
 }
 
 impl LiteinstActivationFailureReason {
@@ -136,6 +137,7 @@ impl LiteinstActivationFailure {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn liteinst_activation_failure_reason(
     error: &reverie::Error,
 ) -> Option<LiteinstActivationFailureReason> {

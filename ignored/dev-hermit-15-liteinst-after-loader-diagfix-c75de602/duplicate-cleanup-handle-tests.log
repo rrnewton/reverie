@@ -1,0 +1,40 @@
+   Compiling futures-core v0.3.34
+   Compiling futures-sink v0.3.34
+   Compiling getrandom v0.4.3
+   Compiling rand_core v0.10.1
+   Compiling bytes v1.12.1
+   Compiling aho-corasick v1.1.5
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling futures-channel v0.3.34
+   Compiling rand v0.10.2
+   Compiling regex-automata v0.4.18
+   Compiling futures-macro v0.3.34
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling tokio-macros v2.7.2
+   Compiling serde_repr v0.1.21
+   Compiling quickcheck_macros v1.2.0
+   Compiling tokio v1.53.1
+   Compiling futures-util v0.3.34
+   Compiling regex v1.13.1
+   Compiling thiserror v2.0.20
+   Compiling env_filter v2.0.0
+   Compiling env_logger v0.11.11
+   Compiling quickcheck v1.1.0
+   Compiling serde v1.0.229
+   Compiling bincode v2.0.1
+   Compiling syscalls v0.6.18
+   Compiling futures-executor v0.3.34
+   Compiling futures v0.3.34
+   Compiling reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-process)
+   Compiling safeptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/safeptrace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.74s
+     Running unittests src/lib.rs (ignored/dev-hermit-15-liteinst-after-loader-diagfix-c75de602/components-target/debug/deps/safeptrace-b36d703b206c9adc)
+
+running 2 tests
+test notifier::test::duplicate_cleanup_handles_share_unobserved_exit_stop_completion ... ok
+test notifier::test::observed_duplicate_cleanup_handles_retry_without_repeating_disposition ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 112 filtered out; finished in 0.00s
+

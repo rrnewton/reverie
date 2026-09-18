@@ -1,0 +1,1 @@
+CC=cc REVERIE_LITEINST_AFTER_LOADER_RUNTIME=<candidate-05>/stage/libreverie_liteinst.so REVERIE_LITEINST_AFTER_LOADER_MARKER=<candidate-05>/stage/runtime.marker REVERIE_LITEINST_AFTER_LOADER_GRAPH=<candidate-05>/stage/graph.manifest <candidate-05>/run/after_loader-test --exact constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks --nocapture

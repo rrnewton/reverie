@@ -202,6 +202,76 @@ fn create_preload_bootstrap(coordinator: &Path, tool_data: &[u8]) -> io::Result<
 pub struct LiteinstBackend;
 
 impl LiteinstBackend {
+    /// Run the separately bound single-task after-loader host experiment.
+    ///
+    /// The original command's argv and environment are passed unchanged.
+    /// The configuration's unsafe graph preconditions must have been proved
+    /// before constructing it. Ptrace retains the sole Tool and GlobalTool;
+    /// private loader/runtime execution is bracketed by exact suspension of the
+    /// existing ptrace Timer and is restored before the guest resumes.
+    #[cfg(all(target_arch = "x86_64", feature = "liteinst-after-loader-experiment"))]
+    pub async fn run_host_after_loader<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        runtime: impl Into<PathBuf>,
+        caller: reverie_ptrace::LiteinstAfterLoaderConfig,
+    ) -> Result<(ExitStatus, T::GlobalState), Error>
+    where
+        T: Tool + 'static,
+    {
+        // No configure_host_command: that path changes LD_PRELOAD/selectors.
+        let runtime = runtime.into().canonicalize()?;
+        TracerBuilder::<T>::new(command)
+            .config(config)
+            .liteinst_runtime(
+                runtime,
+                crate::runtime::HOST_BEGIN_MARKER,
+                crate::runtime::HOST_READY_MARKER,
+                crate::runtime::HOST_HELPER_RETURN_MARKER,
+                crate::runtime::HOST_SYSCALL_MARKER,
+            )
+            .liteinst_after_loader(caller)?
+            .spawn()
+            .await?
+            .wait()
+            .await
+    }
+
+    /// Run the after-loader experiment and capture the guest's output.
+    ///
+    /// This has the same fixed-fixture and exact-restoration contract as
+    /// [`Self::run_host_after_loader`]. The command's environment and argv are
+    /// unchanged; only stdout and stderr are replaced with pipes.
+    #[cfg(all(target_arch = "x86_64", feature = "liteinst-after-loader-experiment"))]
+    pub async fn run_host_with_output_after_loader<T>(
+        mut command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        runtime: impl Into<PathBuf>,
+        caller: reverie_ptrace::LiteinstAfterLoaderConfig,
+    ) -> Result<(ReverieOutput, T::GlobalState), Error>
+    where
+        T: Tool + 'static,
+    {
+        command
+            .stdout(ReverieStdio::piped())
+            .stderr(ReverieStdio::piped());
+        let runtime = runtime.into().canonicalize()?;
+        TracerBuilder::<T>::new(command)
+            .config(config)
+            .liteinst_runtime(
+                runtime,
+                crate::runtime::HOST_BEGIN_MARKER,
+                crate::runtime::HOST_READY_MARKER,
+                crate::runtime::HOST_HELPER_RETURN_MARKER,
+                crate::runtime::HOST_SYSCALL_MARKER,
+            )
+            .liteinst_after_loader(caller)?
+            .spawn()
+            .await?
+            .wait_with_output()
+            .await
+    }
+
     /// Runs a Tool under the ptrace-owned LiteInst hybrid runtime.
     ///
     /// Ptrace owns the sole Tool and GlobalTool from exec onward; the preload

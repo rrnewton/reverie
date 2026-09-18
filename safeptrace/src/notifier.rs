@@ -62,7 +62,9 @@
 //! be used instead.) The downside of this approach is that we
 //! can end up spawning a lot of guest threads.
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::fs;
@@ -87,6 +89,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 #[cfg(test)]
@@ -106,17 +109,49 @@ use nix::sys::wait::WaitPidFlag;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;
-
 use super::Errno;
 use super::Error;
+use super::ExitStatus;
+use super::ControllerSpawnToken;
+use super::LogicalStopId;
+use super::OriginalRootLaunchToken;
+use super::PhysicalCleanupTransaction;
+use super::PhysicalContinuedStatusRoute;
+use super::PhysicalDecodeOutcome;
+use super::PhysicalDecodeOwner;
+use super::PhysicalEventGenerationId;
+use super::PhysicalEventObserver;
+use super::PhysicalExitCapabilityTransition;
+use super::PhysicalObserverAttachError;
+use super::PhysicalOriginalRootLaunchId;
+use super::PhysicalReservationId;
+use super::PhysicalResumeAttempt;
+use super::PhysicalResumeContext;
+use super::PhysicalResumeOperation;
+use super::PhysicalResumeOutcome;
+use super::PhysicalResumeOwner;
+use super::PhysicalStatusDisposition;
+use super::PhysicalStatusId;
+use super::PhysicalStatusPublication;
+use super::PhysicalStartupCleanupOwner;
+use super::PhysicalTaskIdentity;
+use super::PhysicalWaitAttempt;
+use super::PhysicalWaitContext;
+use super::PhysicalWaitProducer;
+use super::PhysicalWaitSiginfo;
 use super::Pid;
 use super::Running;
+use super::Signal;
 use super::Stopped;
 use super::TraceeToken;
 use super::Wait;
 use super::waitid;
 
 static NOTIFIER: LazyLock<Notifier> = LazyLock::new(Notifier::new);
+
+static CONTINUED_AUTHORITY_GENERATIONS: LazyLock<
+    Mutex<HashMap<(i32, u64, u64), Weak<Event>>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
 static CAPTURE_ERRORS: LazyLock<Mutex<HashMap<Pid, Errno>>> =
@@ -144,6 +179,14 @@ static PIDFD_OPEN_ERRORS: LazyLock<Mutex<HashMap<Pid, Errno>>> =
 
 #[cfg(test)]
 static PIDFD_LIVENESS_ERRORS: LazyLock<Mutex<HashMap<Pid, VecDeque<Errno>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static ECHILD_PROOF_ERRORS: LazyLock<Mutex<HashMap<Pid, VecDeque<Errno>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static WAIT_SIGINFO_CODE_OVERRIDES: LazyLock<Mutex<HashMap<Pid, VecDeque<i32>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
@@ -204,6 +247,10 @@ static SPAWN_FAILURE_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
+static WORKER_START_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
 static PRE_REGISTRATION_REAP_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -229,6 +276,26 @@ static SYNC_STATUS_PUBLICATION_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCaptureP
 
 #[cfg(test)]
 static SYNC_RETURN_COMMIT_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static EXIT_CLEANUP_LOCK_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static EXIT_CLEANUP_AUTHORITY_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static EXIT_CLEANUP_PRECHECK_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static EXIT_CLEANUP_AFTER_LOCK_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static TYPED_EXIT_LOCK_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
@@ -297,6 +364,9 @@ const INVALID_STATUS: i32 = -1;
 /// The notifier worker found that the PID is no longer a waitable child.
 const ECHILD_STATUS: i32 = -2;
 
+/// A notifier worker reached a typed terminal failure after a kernel wait.
+const TERMINAL_ERROR_STATUS: i32 = -3;
+
 /// No `PTRACE_EVENT_EXIT` outcome has been published yet.
 const EXIT_PENDING: i32 = 0;
 
@@ -305,6 +375,10 @@ const EXIT_STOPPED: i32 = 1;
 
 /// The tracee became terminal without an observed `PTRACE_EVENT_EXIT`.
 const EXIT_ECHILD: i32 = 2;
+
+/// The notifier reached a retained typed terminal error before publishing an
+/// exit-stop capability. The exact errno lives in `registration_error`.
+const EXIT_ERROR: i32 = 3;
 
 const EXIT_CAP_PENDING: u8 = 0;
 const EXIT_CAP_AVAILABLE: u8 = 1;
@@ -324,6 +398,10 @@ const WAIT_OWNER_NOTIFIER: u8 = 2;
 const WAIT_OWNER_SYNC_RETURNING: u8 = 3;
 const WAIT_OWNER_NOTIFIER_RETURNING: u8 = 4;
 
+const CONTINUED_AUTHORITY_DISABLED: u8 = 0;
+const CONTINUED_AUTHORITY_LIVE: u8 = 1;
+const CONTINUED_AUTHORITY_REVOKED: u8 = 2;
+
 /// A newly forked TRACEME child can change TracerPid between the two procfs
 /// snapshots used to bind its exact pidfd identity. Retry that finite
 /// transition without ever falling back to a numeric wait.
@@ -331,6 +409,20 @@ const SYNC_IDENTITY_CAPTURE_RETRIES: usize = 8;
 
 /// The number we get when in a PTRACE_EVENT_EXIT stop.
 const PTRACE_EVENT_EXIT_STOP: i32 = (libc::PTRACE_EVENT_EXIT << 16) | (libc::SIGTRAP << 8) | 0x7f;
+
+fn is_new_child_stop(status: i32) -> bool {
+    libc::WIFSTOPPED(status)
+        && matches!(
+            (status >> 16) & 0xffff,
+            libc::PTRACE_EVENT_FORK | libc::PTRACE_EVENT_VFORK | libc::PTRACE_EVENT_CLONE
+        )
+}
+
+fn is_plain_sigstop(status: i32) -> bool {
+    libc::WIFSTOPPED(status)
+        && libc::WSTOPSIG(status) == libc::SIGSTOP
+        && ((status as u32 >> 16) & 0xffff) == 0
+}
 
 #[derive(Debug, Default)]
 struct WakerSlot {
@@ -418,17 +510,65 @@ impl ExitWaiters {
 }
 
 #[derive(Debug)]
+struct ControllerLaunchCapability {
+    token: Option<ControllerSpawnToken>,
+    physical_link: Option<PhysicalOriginalRootLaunchId>,
+}
+
+impl ControllerLaunchCapability {
+    fn from_token(token: ControllerSpawnToken) -> Self {
+        Self {
+            token: Some(token),
+            physical_link: None,
+        }
+    }
+}
+
+#[derive(Debug)]
 struct Event {
+    /// Process-local diagnostic identity of this immutable generation.
+    generation: PhysicalEventGenerationId,
+
+    /// Optional preallocated observer installed before wait ownership starts.
+    observer: OnceLock<PhysicalEventObserver>,
+
+    /// One-shot clone-time authority for the original controller child.  The
+    /// pidfd was created atomically with the child and is moved, never reopened
+    /// from its numeric PID.
+    controller_launch: Mutex<Option<ControllerLaunchCapability>>,
+
+    /// Immutable provenance for the sole controller-launched after-loader root
+    /// that may consume this thread group's process-wide WCONTINUED state.
+    continued_authority: AtomicU8,
+    continued_authority_provenance: OnceLock<ContinuedAuthorityProvenance>,
+
+    /// Prevents duplicate identity records when attachment races capture.
+    identity_recorded: AtomicBool,
+
+    /// Exact pidfd/procfs capability retained when startup fails before a
+    /// WorkerIdentity can be bound.  Cleanup errors keep this slot populated;
+    /// no caller falls back to a reusable numeric PID or has to reopen it.
+    unstarted_cleanup_identity: Mutex<Option<OriginalRootPreBarrierIdentity>>,
+    unstarted_cleanup_cause: OnceLock<Errno>,
+    startup_barrier_cleanup: Mutex<Option<StartupBarrierCleanupState>>,
+
     /// Cancellation-safe weak registrations for every pending exit waiter.
     exit_waiters: ExitWaiters,
 
     /// Serializes the two-phase exit-stop publication with terminal
     /// finalization. The notifier worker normally supplies statuses in order,
     /// but unstarted-completion paths may publish ECHILD independently.
-    exit_publication: Mutex<()>,
+    exit_publication: Mutex<ExitPublicationState>,
 
     /// Waker for regular status events.
     status_waker: WakerSlot,
+
+    /// Single generation-bound observer for job-control stop resolution.
+    /// This channel exists for the whole Event lifetime even when no watcher
+    /// is armed, so the worker can always divert `WCONTINUED` away from typed
+    /// [`Wait`] decoding.
+    stop_resolution: Mutex<StopResolutionChannel>,
+    stop_resolution_waker: WakerSlot,
 
     /// Ordered regular statuses plus a retained terminal publication.
     status: Mutex<StatusState>,
@@ -441,13 +581,41 @@ struct Event {
     /// event from a held [`ExitFuture`].
     exit_status: AtomicI32,
 
+    /// Physical status behind `exit_status`, or zero while unavailable.
+    exit_physical_status: AtomicU64,
+
+    /// Mandatory logical identity behind the retained exit stop.
+    exit_logical_stop: AtomicU64,
+
+    /// Next generation-local logical stop identity. Zero is reserved for
+    /// "unavailable" in atomic storage.
+    next_logical_stop: AtomicU64,
+
+    /// Next generation-local nonce proving one live cleanup lease instance.
+    next_cleanup_lease_nonce: AtomicU64,
+
     /// Linear claim for the one stopped-state capability represented by this
     /// exact Event generation's retained exit-stop observation.
     exit_capability: AtomicU8,
 
+    /// Prevents the PENDING-revoke/publication race from recording the same
+    /// capability revocation twice once its physical status becomes known.
+    exit_revocation_recorded: AtomicBool,
+
     /// Last notifier registration error. Resource/read failures are retryable
     /// and must not be collapsed into terminal ECHILD.
     registration_error: Mutex<Option<Errno>>,
+
+    /// Causal failure retained after an active wait owner has crossed a
+    /// terminal protocol boundary. Unlike `registration_error`, this is never
+    /// cleared by a later registration attempt.
+    terminal_error: Mutex<Option<Errno>>,
+
+    /// Controller-thread handoff for a stop that the pidfd waiter consumed but
+    /// could not expose as a typed status. The waiter cannot issue ptrace
+    /// requests itself because Linux binds ptrace authority to the tracer task.
+    wait_failure_cleanup: Mutex<WaitFailureCleanupPhase>,
+    wait_failure_cleanup_changed: Condvar,
 
     /// Monotonic activity state owned by this exact Event generation.
     worker_state: AtomicI32,
@@ -465,23 +633,808 @@ struct Event {
     #[cfg(test)]
     new_child_decode_pause: Mutex<Option<NewChildDecodePause>>,
     #[cfg(test)]
+    status_after_error_check_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
+    ambiguous_resolution_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
     cleanup_return_pause: Mutex<Option<BoundedTestPause>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ContinuedAuthorityProvenance {
+    launch: PhysicalOriginalRootLaunchId,
+    generation: PhysicalEventGenerationId,
+    root: Pid,
+    controller_tgid: Pid,
+    controller_tracer_tid: Pid,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StopResolutionStopped {
+    logical_stop: LogicalStopId,
+    physical_status: Option<PhysicalStatusId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContinuedStatusRoute {
+    UnwatchedRoot,
+    BeforeFirstStop,
+    AfterFirstStop,
+    AfterAcknowledgedGroupStop,
+}
+
+impl ContinuedStatusRoute {
+    fn physical(self) -> PhysicalContinuedStatusRoute {
+        match self {
+            Self::UnwatchedRoot => PhysicalContinuedStatusRoute::UnwatchedRoot,
+            Self::BeforeFirstStop => PhysicalContinuedStatusRoute::BeforeFirstStop,
+            Self::AfterFirstStop => PhysicalContinuedStatusRoute::AfterFirstStop,
+            Self::AfterAcknowledgedGroupStop => {
+                PhysicalContinuedStatusRoute::AfterAcknowledgedGroupStop
+            }
+        }
+    }
+}
+
+/// Exact-generation kernel outcome observed after a group stop was
+/// acknowledged by [`StopResolutionWatcher`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StopResolutionOutcome {
+    /// A `WCONTINUED` status was consumed by the side channel.
+    Continued {
+        /// Physical observer identity of the continued status, when enabled.
+        physical_status: Option<PhysicalStatusId>,
+    },
+    /// A later stopped status was published to the ordinary FIFO.
+    Stopped {
+        /// Mandatory generation-local identity of the later stopped status.
+        logical_stop: LogicalStopId,
+        /// Physical observer identity of the later stopped status, when enabled.
+        physical_status: Option<PhysicalStatusId>,
+    },
+    /// A later `PTRACE_EVENT_EXIT` stop was published through the independent
+    /// exit-capability plane and remains owned by the outer exit path.
+    ExitStop {
+        /// Mandatory generation-local identity of the exit stop.
+        logical_stop: LogicalStopId,
+        /// Physical observer identity of the exit stop, when enabled.
+        physical_status: Option<PhysicalStatusId>,
+    },
+    /// A real final wait status was retained for ordinary waiters.
+    Terminal {
+        /// Physical observer identity of the terminal status, when enabled.
+        physical_status: Option<PhysicalStatusId>,
+    },
+    /// This immutable notifier generation ended without another real status.
+    GenerationEnded {
+        /// Exact retained terminal error, including proven `ECHILD`/detach.
+        error: Errno,
+    },
+}
+
+/// Resolution of an ESRCH/EIO returned by the one post-C group-stop resume.
+pub enum StopResolutionResumeErrorOutcome {
+    /// Exact exiting/terminal generation evidence superseded held G.
+    Boundary(StopResolutionOutcome),
+    /// A trusted later regular-FIFO stop proves the kernel advanced beyond G.
+    LaterStatus(StopResolutionLaterStatus),
+}
+
+/// Opaque causal proof linking failed resume A and later status S to held G.
+///
+/// The value must consume the durable G cleanup transfer before it can mint a
+/// same-generation wait-only capability for S.
+#[must_use = "retire the matching held-stop transfer before waiting for the successor"]
+pub struct StopResolutionLaterStatus {
+    pid: Pid,
+    event: EventHandle,
+    delivery: StopResolutionStopped,
+    group_stop: StopResolutionStopped,
+    continued: PhysicalStatusId,
+    successor: StopResolutionStopped,
+    attempt: PhysicalResumeAttempt,
+}
+
+impl StopResolutionLaterStatus {
+    /// Atomically retires the exact held-G cleanup shadow, records causal
+    /// disposition A->S, and returns a capability which can only wait on this
+    /// immutable generation's already-published FIFO.
+    pub fn retire_transfer_and_wait(
+        self,
+        transfer: &mut Option<CleanupStopTransfer>,
+    ) -> Result<Running, Errno> {
+        let transfer_ref = transfer.as_ref().ok_or(Errno::EALREADY)?;
+        if transfer_ref.pid != self.pid
+            || !Arc::ptr_eq(transfer_ref.event.event(), self.event.event())
+            || transfer_ref.stop_id != self.group_stop.logical_stop
+            || transfer_ref.diagnostic_status != self.group_stop.physical_status
+            || !self
+                .successor
+                .logical_stop
+                .is_strictly_after(self.group_stop.logical_stop)
+        {
+            return Err(Errno::EPROTO);
+        }
+        let source = self.group_stop.physical_status.ok_or(Errno::EPROTO)?;
+        let successor = self.successor.physical_status.ok_or(Errno::EPROTO)?;
+        if source == successor {
+            return Err(Errno::EPROTO);
+        }
+        let context = self.attempt.context();
+        if context.generation != Some(self.event.event().generation)
+            || context.task != self.event.physical_task_identity(self.pid)
+            || context.source_status != Some(source)
+            || context.operation != PhysicalResumeOperation::Continue
+            || context.signal.is_some()
+            || context.owner != PhysicalResumeOwner::TypedStopped
+        {
+            return Err(Errno::EPROTO);
+        }
+        let event = self.event.event();
+        let mut publication = event.exit_publication.lock();
+        let key = CleanupStopKey(self.group_stop.logical_stop);
+        if publication.is_retired(key)
+            || !matches!(publication.cleanup_authority, CleanupAuthorityState::Vacant)
+        {
+            return Err(Errno::EALREADY);
+        }
+        event
+            .observer()
+            .ok_or(Errno::EPROTO)?
+            .resolve_ambiguous_resume_with_later_status(self.attempt, successor);
+        publication.retire(key);
+        event
+            .observer()
+            .ok_or(Errno::EPROTO)?
+            .record_stop_resolution_resume_causally_closed(
+                event.generation,
+                self.delivery.physical_status.ok_or(Errno::EPROTO)?,
+                source,
+                self.continued,
+                self.attempt,
+                successor,
+            );
+        drop(publication);
+        drop(
+            transfer
+                .take()
+                .expect("validated causal cleanup transfer disappeared"),
+        );
+        Ok(Running::from_token(
+            self.pid,
+            TraceeToken::from_event(self.event),
+        ))
+    }
+}
+
+/// Exact original-root identity authenticated by the retained startup barrier.
+///
+/// This proof is deliberately non-`Clone`. Its pidfd and proc-directory fd are
+/// duplicates of the capabilities bound to the immutable notifier Event, so a
+/// cleanup owner can reuse the same generation without reopening `/proc`.
+#[derive(Debug)]
+pub struct OriginalRootStartupIdentity {
+    generation: PhysicalEventGenerationId,
+    pid: Pid,
+    tgid: Pid,
+    ppid: Pid,
+    tracer_pid: Pid,
+    start_time: u64,
+    proc_inode: u64,
+    pidfd: OwnedFd,
+    proc_dir: OwnedFd,
+}
+
+impl OriginalRootStartupIdentity {
+    fn duplicate(
+        generation: PhysicalEventGenerationId,
+        identity: &WorkerIdentity,
+    ) -> Result<Self, Errno> {
+        Ok(Self {
+            generation,
+            pid: identity.pid,
+            tgid: identity.snapshot.tgid,
+            ppid: identity.snapshot.ppid,
+            tracer_pid: identity.snapshot.tracer_pid,
+            start_time: identity.snapshot.start_time,
+            proc_inode: identity.proc_inode,
+            pidfd: identity.pidfd.try_clone().map_err(io_errno)?,
+            proc_dir: identity.proc_dir.try_clone().map_err(io_errno)?,
+        })
+    }
+
+    /// Returns the immutable notifier generation authenticated by the proof.
+    pub fn generation(&self) -> PhysicalEventGenerationId {
+        self.generation
+    }
+
+    /// Returns the original root TID authenticated by the proof.
+    pub fn pid(&self) -> Pid {
+        self.pid
+    }
+
+    /// Consumes the proof into the exact scalar snapshot and duplicated kernel
+    /// capabilities used by a long-lived cleanup guard.
+    pub fn into_parts(
+        self,
+    ) -> (
+        PhysicalEventGenerationId,
+        Pid,
+        Pid,
+        Pid,
+        Pid,
+        u64,
+        u64,
+        OwnedFd,
+        OwnedFd,
+    ) {
+        (
+            self.generation,
+            self.pid,
+            self.tgid,
+            self.ppid,
+            self.tracer_pid,
+            self.start_time,
+            self.proc_inode,
+            self.pidfd,
+            self.proc_dir,
+        )
+    }
+}
+
+/// Outcome of the one retained original-root startup observation.
+#[derive(Debug)]
+pub enum OriginalRootStartup {
+    /// The expected initial stopped status remains retained for the notifier,
+    /// and this exact generation may now start its authorized root worker.
+    Ready(OriginalRootStartupIdentity),
+    /// The child was already terminal; the barrier path consumed and closed
+    /// the unstarted generation and preserved the real exit status.
+    Exited(Pid, PhysicalEventGenerationId, ExitStatus),
+}
+
+/// Linear authority to continue one incomplete exact-generation startup
+/// cleanup. It is intentionally non-`Clone`; dropping it never retries,
+/// reopens a PID, or claims completion.
+#[derive(Debug)]
+pub struct OriginalRootCleanupAuthority {
+    pid: Pid,
+    event: EventHandle,
+    cause: Errno,
+}
+
+impl OriginalRootCleanupAuthority {
+    /// Explicitly continues the same transaction without repeating any spent
+    /// ptrace resume permit.
+    pub fn continue_cleanup(self) -> Result<(), OriginalRootStartupError> {
+        let Self { pid, event, cause } = self;
+        match event.continue_original_root_cleanup(pid, cause) {
+            Ok(status) => Ok(status),
+            Err(cleanup_error) => Err(OriginalRootStartupError::CleanupIncomplete {
+                cause,
+                cleanup_error,
+                authority: Self { pid, event, cause },
+            }),
+        }
+    }
+}
+
+/// Failure from original-root startup authority preparation.
+#[derive(Debug, thiserror::Error)]
+pub enum OriginalRootStartupError {
+    /// No retained status was observed; the caller still owns ordinary
+    /// pre-registration cleanup.
+    #[error("original-root startup failed before retaining a status: {0}")]
+    BeforeBarrier(Errno),
+    /// A retained status was observed and this operation performed exact-pidfd
+    /// cleanup before returning the setup error.
+    #[error("original-root startup failed after exact-generation cleanup: {cause}")]
+    CleanedExactGeneration {
+        /// Causal setup error.
+        cause: Errno,
+    },
+    /// Cleanup is incomplete but its exact Event/pidfd and transaction remain
+    /// owned by this non-Clone continuation authority.
+    #[error(
+        "original-root startup cleanup remains incomplete: cause={cause}, cleanup={cleanup_error}"
+    )]
+    CleanupIncomplete {
+        /// Causal setup/authentication error.
+        cause: Errno,
+        /// Exact cleanup operation error.
+        cleanup_error: Errno,
+        /// Sole explicit continuation authority.
+        authority: OriginalRootCleanupAuthority,
+    },
+}
+
+#[derive(Debug)]
+enum StopResolutionWatchPhase {
+    Pending {
+        continued_before_first: bool,
+        first_stopped: Option<StopResolutionStopped>,
+        following: Option<StopResolutionOutcome>,
+        ended_before_first: Option<StopResolutionOutcome>,
+    },
+    GroupStopAcknowledged {
+        group_stop: StopResolutionStopped,
+        following: Option<StopResolutionOutcome>,
+    },
+    ContinuedClaimed {
+        group_stop: StopResolutionStopped,
+        continued: PhysicalStatusId,
+        resolution: Option<StopResolutionOutcome>,
+    },
+    ResumeInFlight {
+        group_stop: StopResolutionStopped,
+        continued: PhysicalStatusId,
+        boundary: Option<StopResolutionOutcome>,
+        successor: Option<StopResolutionStopped>,
+    },
+    ResumeFailedAwaitingBoundary {
+        group_stop: StopResolutionStopped,
+        continued: PhysicalStatusId,
+        error: Errno,
+        attempt: PhysicalResumeAttempt,
+        boundary: Option<StopResolutionOutcome>,
+        successor: Option<StopResolutionStopped>,
+    },
+    ProbeFailedAwaitingBoundary {
+        group_stop: StopResolutionStopped,
+        continued: PhysicalStatusId,
+        error: Errno,
+        boundary: Option<StopResolutionOutcome>,
+    },
+}
+
+#[derive(Debug)]
+struct ActiveStopResolutionWatch {
+    nonce: u64,
+    delivery: StopResolutionStopped,
+    phase: StopResolutionWatchPhase,
+}
+
+enum StopResolutionResumeResolution {
+    Boundary(StopResolutionOutcome),
+    LaterStatus {
+        delivery: StopResolutionStopped,
+        group_stop: StopResolutionStopped,
+        continued: PhysicalStatusId,
+        successor: StopResolutionStopped,
+        attempt: PhysicalResumeAttempt,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DrainedPlainSigstop {
+    stopped: StopResolutionStopped,
+    final_no_status_attempt: PhysicalWaitAttempt,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RetainedStartupBarrier {
+    attempt: PhysicalWaitAttempt,
+    raw_status: Option<i32>,
+    siginfo: PhysicalWaitSiginfo,
+}
+
+struct RetainedStartupBarrierError {
+    cause: Errno,
+    retained: Option<RetainedStartupBarrier>,
+}
+
+enum StartupBarrierConsumeOutcome {
+    Terminal(ExitStatus),
+    Cleaned,
+}
+
+#[derive(Debug)]
+enum StartupBarrierCleanupPhase {
+    SourcePending,
+    Draining,
+    WaitFailed(Errno),
+    TerminalObserved,
+    Completed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StartupCleanupTermination {
+    NotRequested,
+    Requested,
+    PidfdSignalFailed(Errno),
+}
+
+#[derive(Debug)]
+enum StartupBarrierCleanupState {
+    Prepared(StartupBarrierFallbackPrepared),
+    Reserved(StartupBarrierCleanupReservation),
+    Active(StartupBarrierCleanupOwner),
+    SetupNoStatus(StartupSetupNoStatusOwner),
+}
+
+#[derive(Debug)]
+enum StartupBarrierFailurePromotion {
+    NotStartup,
+    Activated {
+        transaction: PhysicalCleanupTransaction,
+    },
+    ClaimedRejected(Errno),
+}
+
+/// Neutral fallback installed before notifier registration.  It retains exact
+/// generation capabilities but does not claim wait or completion ownership.
+#[derive(Debug)]
+struct StartupBarrierFallbackPrepared {
+    launch: PhysicalOriginalRootLaunchId,
+    pid: Pid,
+    identity: Arc<WorkerIdentity>,
+    task: PhysicalTaskIdentity,
+    barrier: RetainedStartupBarrier,
+    transaction: PhysicalCleanupTransaction,
+}
+
+/// Event-completion ownership selected before external cleanup is allowed to
+/// consume the retained WNOWAIT status.
+#[derive(Debug)]
+struct StartupBarrierCleanupReservation {
+    pid: Pid,
+    identity: StartupCleanupIdentity,
+    task: PhysicalTaskIdentity,
+    kind: StartupCleanupKind,
+    transaction: PhysicalCleanupTransaction,
+    wait_failure: Option<(Errno, Option<PhysicalWaitAttempt>)>,
+    signaled: bool,
+}
+
+#[derive(Debug)]
+struct StartupSetupNoStatusOwner {
+    pid: Pid,
+    identity: StartupCleanupIdentity,
+    task: PhysicalTaskIdentity,
+    error: Errno,
+    launch: PhysicalOriginalRootLaunchId,
+    transaction: PhysicalCleanupTransaction,
+    terminal_wait: PhysicalWaitAttempt,
+}
+
+#[derive(Debug)]
+enum StartupCleanupIdentity {
+    Bound(Arc<WorkerIdentity>),
+    PreBarrier(OriginalRootPreBarrierIdentity),
+}
+
+impl StartupCleanupIdentity {
+    fn pidfd(&self) -> &OwnedFd {
+        match self {
+            Self::Bound(identity) => &identity.pidfd,
+            Self::PreBarrier(identity) => &identity.pidfd,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StartupCleanupKind {
+    Barrier {
+        launch: PhysicalOriginalRootLaunchId,
+        barrier: RetainedStartupBarrier,
+    },
+    Setup {
+        error: Errno,
+        launch: PhysicalOriginalRootLaunchId,
+    },
+}
+
+impl StartupCleanupKind {
+    fn launch(self) -> PhysicalOriginalRootLaunchId {
+        match self {
+            Self::Barrier { launch, .. } | Self::Setup { launch, .. } => launch,
+        }
+    }
+}
+
+/// Sole runtime owner for a retained startup-barrier cleanup transaction.
+/// Diagnostic IDs inside are Copy, but this owner and its resume permits are
+/// not; it remains stored in the immutable Event across explicit continuation.
+#[derive(Debug)]
+struct StartupBarrierCleanupOwner {
+    owner: PhysicalStartupCleanupOwner,
+    pid: Pid,
+    identity: StartupCleanupIdentity,
+    task: PhysicalTaskIdentity,
+    kind: StartupCleanupKind,
+    transaction: PhysicalCleanupTransaction,
+    cause_wait: PhysicalWaitAttempt,
+    source_status: PhysicalStatusId,
+    slots: [Option<StartupCleanupStatusSlot>; STARTUP_CLEANUP_STATUS_CAPACITY],
+    used_slots: u8,
+    pending_slot: Option<u8>,
+    phase: StartupBarrierCleanupPhase,
+    termination: StartupCleanupTermination,
+}
+
+const STARTUP_CLEANUP_STATUS_CAPACITY: usize = 10;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StartupCleanupStatusPhase {
+    ResumePending,
+    ControllerTransferred,
+    ResumeAttempted,
+    Deferred,
+    Terminal,
+    Closed,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct StartupCleanupStatusSlot {
+    attempt: PhysicalWaitAttempt,
+    status: PhysicalStatusId,
+    raw: Option<i32>,
+    siginfo: PhysicalWaitSiginfo,
+    phase: StartupCleanupStatusPhase,
+    tolerated_resume: Option<(PhysicalResumeAttempt, Errno)>,
+}
+
+impl StartupBarrierCleanupOwner {
+    fn capture_status(
+        &mut self,
+        attempt: PhysicalWaitAttempt,
+        status: PhysicalStatusId,
+        raw: Option<i32>,
+        siginfo: PhysicalWaitSiginfo,
+        phase: StartupCleanupStatusPhase,
+    ) -> Result<u8, Errno> {
+        let index = usize::from(self.used_slots);
+        if index >= self.slots.len() {
+            return Err(Errno::ENOSPC);
+        }
+        self.slots[index] = Some(StartupCleanupStatusSlot {
+            attempt,
+            status,
+            raw,
+            siginfo,
+            phase,
+            tolerated_resume: None,
+        });
+        self.used_slots = self.used_slots.checked_add(1).ok_or(Errno::ENOSPC)?;
+        Ok(index as u8)
+    }
+}
+
+/// Exact kernel-task capability retained before any fallible procfs capture.
+///
+/// A failed procfs snapshot must not throw away the pidfd and force startup
+/// cleanup back through a reusable numeric PID.
+#[derive(Debug)]
+struct OriginalRootPreBarrierIdentity {
+    pid: Pid,
+    pidfd: OwnedFd,
+    task: PhysicalTaskIdentity,
+    launch: Option<PhysicalOriginalRootLaunchId>,
+}
+
+impl OriginalRootPreBarrierIdentity {
+    fn physical_identity(&self) -> PhysicalTaskIdentity {
+        self.task
+    }
+}
+
+#[derive(Debug, Default)]
+struct StopResolutionChannel {
+    next_nonce: u64,
+    active: Option<ActiveStopResolutionWatch>,
+    latest_stopped: Option<StopResolutionStopped>,
+    drained_plain_sigstop: Option<DrainedPlainSigstop>,
+    startup_barrier: Option<RetainedStartupBarrier>,
+    startup_barrier_consumed: bool,
+    terminal: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExitStopCleanupCompletion {
+    NotAttempted,
+    Ambiguous {
+        stop_id: LogicalStopId,
+        diagnostic_status: Option<PhysicalStatusId>,
+        attempt: Option<PhysicalResumeAttempt>,
+        error: Errno,
+    },
+    Failed {
+        stop_id: LogicalStopId,
+        diagnostic_status: Option<PhysicalStatusId>,
+        attempt: Option<PhysicalResumeAttempt>,
+        error: Errno,
+    },
+    Finished {
+        stop_id: LogicalStopId,
+        diagnostic_status: Option<PhysicalStatusId>,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum AmbiguousCleanupResolution {
+    /// A real stopped status was committed to this Event generation after the
+    /// ambiguous resume result.
+    LaterStopped(ObservedStatus),
+    /// A real final wait status was retained by this Event generation after
+    /// the ambiguous resume result.
+    FinalStatus(ObservedStatus),
+    /// Exact-generation pidfd/proc evidence proved an ECHILD result terminal.
+    ProvenEchild(Option<PhysicalWaitAttempt>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CleanupStopKey(LogicalStopId);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CleanupLeaseNonce(u64);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupAuthorityState {
+    Vacant,
+    Leased {
+        key: CleanupStopKey,
+        nonce: CleanupLeaseNonce,
+    },
+    Available {
+        key: CleanupStopKey,
+        diagnostic_status: Option<PhysicalStatusId>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ExitPublicationState {
+    cleanup: ExitStopCleanupCompletion,
+    /// Sole cleanup authority retained outside this mutex or rolled back into
+    /// this exact Event generation for internal reacquisition.
+    cleanup_authority: CleanupAuthorityState,
+    /// Monotonic frontier through which stop identities are permanently
+    /// retired. Active or available newer authority never erases it.
+    retired_through: Option<CleanupStopKey>,
+    /// Older retained stop already disposed when the exit stop superseded it.
+    superseded_status: Option<PhysicalStatusId>,
+}
+
+impl Default for ExitPublicationState {
+    fn default() -> Self {
+        Self {
+            cleanup: ExitStopCleanupCompletion::NotAttempted,
+            cleanup_authority: CleanupAuthorityState::Vacant,
+            retired_through: None,
+            superseded_status: None,
+        }
+    }
+}
+
+impl ExitPublicationState {
+    fn is_retired(&self, key: CleanupStopKey) -> bool {
+        self.retired_through
+            .is_some_and(|retired| key.0.get() <= retired.0.get())
+    }
+
+    fn advance_retired_through(&mut self, key: CleanupStopKey) {
+        if self
+            .retired_through
+            .is_none_or(|retired| key.0.get() > retired.0.get())
+        {
+            self.retired_through = Some(key);
+        }
+    }
+
+    fn retire(&mut self, key: CleanupStopKey) {
+        self.advance_retired_through(key);
+        self.cleanup_authority = CleanupAuthorityState::Vacant;
+    }
 }
 
 #[derive(Debug)]
 struct StatusState {
-    pending: VecDeque<i32>,
-    terminal: i32,
+    pending: VecDeque<ObservedStatus>,
+    terminal: ObservedStatus,
 }
 
 struct StatusReservation<'a> {
-    status: i32,
+    status: ObservedStatus,
+    reservation: Option<PhysicalReservationId>,
+    event: &'a Event,
     state: Option<MutexGuard<'a, StatusState>>,
+    cleanup_rollback: Cell<bool>,
+    completed: bool,
 }
 
-enum StatusReturn<T> {
+enum StatusReturn<'a, T> {
     Returned(T),
-    Cancelled(i32),
+    Cancelled(CancelledStatusReservation<'a>),
+}
+
+struct CancelledStatusReservation<'a> {
+    reservation: Option<StatusReservation<'a>>,
+}
+
+impl CancelledStatusReservation<'_> {
+    fn status(&self) -> ObservedStatus {
+        self.reservation
+            .as_ref()
+            .expect("cancelled status reservation was already consumed")
+            .status
+    }
+
+    fn commit(mut self) {
+        let reservation = self
+            .reservation
+            .take()
+            .expect("cancelled status reservation committed twice");
+        reservation.commit();
+    }
+}
+
+impl Drop for CancelledStatusReservation<'_> {
+    fn drop(&mut self) {
+        if let Some(reservation) = self.reservation.take() {
+            drop(reservation);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ObservedStatus {
+    raw: i32,
+    physical: Option<PhysicalStatusId>,
+    logical_stop: Option<LogicalStopId>,
+}
+
+impl ObservedStatus {
+    const fn unobserved(raw: i32) -> Self {
+        Self {
+            raw,
+            physical: None,
+            logical_stop: None,
+        }
+    }
+
+    const fn observed(raw: i32, physical: Option<PhysicalStatusId>) -> Self {
+        Self {
+            raw,
+            physical,
+            logical_stop: None,
+        }
+    }
+}
+
+impl From<i32> for ObservedStatus {
+    fn from(raw: i32) -> Self {
+        Self::unobserved(raw)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct StatusUpdateResult {
+    previous: ObservedStatus,
+    accepted: bool,
+    terminal: bool,
+    stop_resolution_changed: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DeferredCleanupDisposition {
+    status: PhysicalStatusId,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+enum WaitFailureCleanupPhase {
+    #[default]
+    Idle,
+    AwaitingController {
+        source_logical_stop: Option<LogicalStopId>,
+        source_status: Option<PhysicalStatusId>,
+        tolerated_resume: Option<(PhysicalResumeAttempt, Errno)>,
+    },
+    Ready {
+        source_logical_stop: Option<LogicalStopId>,
+        source_status: Option<PhysicalStatusId>,
+        deferred: Option<DeferredCleanupDisposition>,
+        tolerated_resume: Option<(PhysicalResumeAttempt, Errno)>,
+        controller_resume_succeeded: bool,
+    },
 }
 
 struct ReturnTransaction<'a> {
@@ -530,6 +1483,7 @@ impl Drop for ReturnTransaction<'_> {
 enum ReturnTransactionStart<'a> {
     Begun(ReturnTransaction<'a>),
     Cancelled,
+    TerminalError(Errno),
 }
 
 struct SyncWaitOwner<'a> {
@@ -538,12 +1492,17 @@ struct SyncWaitOwner<'a> {
 }
 
 impl SyncWaitOwner<'_> {
-    fn decode_status_return<T>(
+    fn decode_status_return<'a, T>(
         &mut self,
         _pid: Pid,
-        reservation: StatusReservation<'_>,
-        decode: impl FnOnce(i32) -> Result<T, Error>,
-    ) -> Result<StatusReturn<T>, Error> {
+        reservation: StatusReservation<'a>,
+        decode: impl FnOnce(
+            i32,
+            Option<PhysicalStatusId>,
+            Option<LogicalStopId>,
+        ) -> Result<T, Error>,
+    ) -> Result<StatusReturn<'a, T>, Error> {
+        reservation.begin_decode(PhysicalDecodeOwner::Synchronous);
         let transaction = match self.event.begin_status_return(
             reservation.status,
             WAIT_OWNER_SYNC,
@@ -551,7 +1510,20 @@ impl SyncWaitOwner<'_> {
         ) {
             ReturnTransactionStart::Begun(transaction) => transaction,
             ReturnTransactionStart::Cancelled => {
-                return Ok(StatusReturn::Cancelled(reservation.status));
+                reservation.finish_decode(
+                    PhysicalDecodeOutcome::Cancelled,
+                    PhysicalDecodeOwner::Synchronous,
+                );
+                return Ok(StatusReturn::Cancelled(CancelledStatusReservation {
+                    reservation: Some(reservation),
+                }));
+            }
+            ReturnTransactionStart::TerminalError(error) => {
+                reservation.finish_decode(
+                    PhysicalDecodeOutcome::Cancelled,
+                    PhysicalDecodeOwner::Synchronous,
+                );
+                return Err(error.into());
             }
         };
         #[cfg(test)]
@@ -573,7 +1545,24 @@ impl SyncWaitOwner<'_> {
         // do not replace it with a blanket commit. (The ESRCH-spin liveness fix
         // lives on the async `Event`/notifier path below, which has no cleanup
         // claimant to hand off to and so must consume-on-error.)
-        let decoded = decode(reservation.status)?;
+        let decoded = match decode(
+            reservation.raw(),
+            reservation.physical(),
+            reservation.logical_stop(),
+        ) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                reservation.finish_decode(
+                    PhysicalDecodeOutcome::RetryRolledBack,
+                    PhysicalDecodeOwner::Synchronous,
+                );
+                return Err(error);
+            }
+        };
+        reservation.finish_decode(
+            PhysicalDecodeOutcome::Returned,
+            PhysicalDecodeOwner::Synchronous,
+        );
         reservation.commit();
         transaction.commit(WAIT_OWNER_NONE);
         self.released = true;
@@ -650,28 +1639,125 @@ enum CancellableNotifierWaitOwnership<'a> {
 }
 
 impl StatusReservation<'_> {
+    fn raw(&self) -> i32 {
+        self.status.raw
+    }
+
+    fn physical(&self) -> Option<PhysicalStatusId> {
+        self.status.physical
+    }
+
+    fn logical_stop(&self) -> Option<LogicalStopId> {
+        self.status.logical_stop
+    }
+
+    fn begin_decode(&self, owner: PhysicalDecodeOwner) {
+        if let (Some(observer), Some(reservation), Some(status)) =
+            (self.event.observer(), self.reservation, self.physical())
+        {
+            observer.record_decode_started(reservation, status, owner);
+        }
+    }
+
+    fn finish_decode(&self, outcome: PhysicalDecodeOutcome, owner: PhysicalDecodeOwner) {
+        if matches!(outcome, PhysicalDecodeOutcome::Cancelled)
+            || matches!(owner, PhysicalDecodeOwner::Cleanup)
+        {
+            self.cleanup_rollback.set(true);
+        }
+        if let (Some(observer), Some(reservation), Some(status)) =
+            (self.event.observer(), self.reservation, self.physical())
+        {
+            observer.record_decode_finished(reservation, status, outcome, owner);
+        }
+    }
+
     fn commit(mut self) {
+        let retained_terminal = self.state.is_none();
         if let Some(state) = self.state.as_mut() {
             let committed = state.pending.pop_front();
             debug_assert_eq!(committed, Some(self.status));
+        }
+        if let (Some(observer), Some(reservation), Some(status)) =
+            (self.event.observer(), self.reservation, self.physical())
+        {
+            if retained_terminal {
+                observer.record_terminal_replayed(reservation, status);
+            } else if self.cleanup_rollback.get() {
+                observer.record_cleanup_reservation_committed(reservation, status);
+            } else {
+                observer.record_reservation_committed(reservation, status);
+            }
+        }
+        self.completed = true;
+    }
+
+    fn replay(mut self) {
+        if let (Some(observer), Some(reservation), Some(status)) =
+            (self.event.observer(), self.reservation, self.physical())
+        {
+            observer.record_terminal_replayed(reservation, status);
+        }
+        self.completed = true;
+    }
+}
+
+impl Drop for StatusReservation<'_> {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        if let (Some(observer), Some(reservation), Some(status)) =
+            (self.event.observer(), self.reservation, self.physical())
+        {
+            if self.cleanup_rollback.get() {
+                observer.record_cleanup_reservation_rolled_back(reservation, status);
+            } else {
+                observer.record_ordinary_reservation_rolled_back(reservation, status);
+            }
         }
     }
 }
 
 impl Event {
     pub fn new() -> Self {
+        Self::new_with_controller_launch(None)
+    }
+
+    fn new_with_controller_launch(
+        controller_launch: Option<ControllerLaunchCapability>,
+    ) -> Self {
         Self {
+            generation: PhysicalEventGenerationId::allocate(),
+            observer: OnceLock::new(),
+            controller_launch: Mutex::new(controller_launch),
+            continued_authority: AtomicU8::new(CONTINUED_AUTHORITY_DISABLED),
+            continued_authority_provenance: OnceLock::new(),
+            identity_recorded: AtomicBool::new(false),
+            unstarted_cleanup_identity: Mutex::new(None),
+            unstarted_cleanup_cause: OnceLock::new(),
+            startup_barrier_cleanup: Mutex::new(None),
             exit_waiters: ExitWaiters::default(),
-            exit_publication: Mutex::new(()),
+            exit_publication: Mutex::new(ExitPublicationState::default()),
             status_waker: WakerSlot::default(),
+            stop_resolution: Mutex::new(StopResolutionChannel::default()),
+            stop_resolution_waker: WakerSlot::default(),
             status: Mutex::new(StatusState {
                 pending: VecDeque::new(),
-                terminal: INVALID_STATUS,
+                terminal: ObservedStatus::unobserved(INVALID_STATUS),
             }),
             status_changed: Condvar::new(),
             exit_status: AtomicI32::new(EXIT_PENDING),
+            exit_physical_status: AtomicU64::new(0),
+            exit_logical_stop: AtomicU64::new(0),
+            next_logical_stop: AtomicU64::new(1),
+            next_cleanup_lease_nonce: AtomicU64::new(1),
             exit_capability: AtomicU8::new(EXIT_CAP_PENDING),
+            exit_revocation_recorded: AtomicBool::new(false),
             registration_error: Mutex::new(None),
+            terminal_error: Mutex::new(None),
+            wait_failure_cleanup: Mutex::new(WaitFailureCleanupPhase::Idle),
+            wait_failure_cleanup_changed: Condvar::new(),
             worker_state: AtomicI32::new(WORKER_NOT_STARTED),
             worker_done_lock: Mutex::new(()),
             worker_done_changed: Condvar::new(),
@@ -683,7 +1769,1418 @@ impl Event {
             #[cfg(test)]
             new_child_decode_pause: Mutex::new(None),
             #[cfg(test)]
+            status_after_error_check_pause: Mutex::new(None),
+            #[cfg(test)]
+            ambiguous_resolution_pause: Mutex::new(None),
+            #[cfg(test)]
             cleanup_return_pause: Mutex::new(None),
+        }
+    }
+
+    fn observer(&self) -> Option<&PhysicalEventObserver> {
+        self.observer.get()
+    }
+
+    fn allocate_logical_stop(&self) -> LogicalStopId {
+        let raw = self.next_logical_stop.fetch_add(1, Ordering::Relaxed);
+        LogicalStopId::from_raw(raw).expect("logical stop identity counter wrapped to zero")
+    }
+
+    fn allocate_cleanup_lease_nonce(&self) -> CleanupLeaseNonce {
+        let raw = self
+            .next_cleanup_lease_nonce
+            .fetch_add(1, Ordering::Relaxed);
+        assert_ne!(raw, 0, "cleanup lease nonce counter wrapped to zero");
+        CleanupLeaseNonce(raw)
+    }
+
+    fn identify_stop(&self, mut status: ObservedStatus) -> ObservedStatus {
+        if libc::WIFSTOPPED(status.raw) && status.logical_stop.is_none() {
+            status.logical_stop = Some(self.allocate_logical_stop());
+        }
+        status
+    }
+
+    fn enable_continued_authority(
+        &self,
+        root: Pid,
+        identity: &WorkerIdentity,
+        barrier: RetainedStartupBarrier,
+    ) -> Result<(), Errno> {
+        let _owner = self.wait_owner_lock.lock();
+        let mut channel = self.stop_resolution.lock();
+        let fallback = self.startup_barrier_cleanup.lock();
+        let prepared_launch = match fallback.as_ref() {
+            Some(StartupBarrierCleanupState::Prepared(prepared))
+                if prepared.pid == root
+                    && prepared.barrier == barrier
+                    && prepared.identity.same_generation(identity) =>
+            {
+                Some(prepared.launch)
+            }
+            _ => None,
+        };
+        if self.wait_owner.load(Ordering::Acquire) != WAIT_OWNER_NONE
+            || self.worker_state.load(Ordering::Acquire) != WORKER_NOT_STARTED
+            || self.observer().is_none()
+            || channel.startup_barrier != Some(barrier)
+            || channel.startup_barrier_consumed
+            || barrier.raw_status.is_none()
+            || prepared_launch.is_none()
+        {
+            return Err(Errno::EBUSY);
+        }
+        let provenance = ContinuedAuthorityProvenance {
+            launch: prepared_launch.expect("validated prepared startup fallback lost launch"),
+            generation: self.generation,
+            root,
+            controller_tgid: Pid::from_raw(unsafe { libc::getpid() }),
+            controller_tracer_tid: Pid::from_raw(unsafe {
+                libc::syscall(libc::SYS_gettid) as i32
+            }),
+        };
+        if identity.pid != root
+            || identity.snapshot.tgid != root
+            || identity.snapshot.ppid != provenance.controller_tgid
+            || identity.snapshot.tracer_pid != provenance.controller_tracer_tid
+            || !tracer_is_current(identity.snapshot.tracer_pid)?
+        {
+            return Err(Errno::EPROTO);
+        }
+        self.continued_authority_provenance
+            .set(provenance)
+            .map_err(|_| Errno::EALREADY)?;
+        self.continued_authority
+            .compare_exchange(
+                CONTINUED_AUTHORITY_DISABLED,
+                CONTINUED_AUTHORITY_LIVE,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .map_err(|_| Errno::EALREADY)?;
+        if let Some(observer) = self.observer() {
+            observer.record_continued_authority_enabled(
+                self.generation,
+                root,
+                provenance.controller_tgid,
+                provenance.controller_tracer_tid,
+            );
+        }
+        Ok(())
+    }
+
+    fn continued_authority_is_live(&self) -> bool {
+        self.continued_authority.load(Ordering::Acquire) == CONTINUED_AUTHORITY_LIVE
+    }
+
+    fn continued_worker_is_authorized(&self) -> bool {
+        matches!(
+            self.continued_authority.load(Ordering::Acquire),
+            CONTINUED_AUTHORITY_LIVE | CONTINUED_AUTHORITY_REVOKED
+        )
+    }
+
+    fn revoke_continued_authority_locked(&self, _channel: &mut StopResolutionChannel) {
+        if self
+            .continued_authority
+            .compare_exchange(
+                CONTINUED_AUTHORITY_LIVE,
+                CONTINUED_AUTHORITY_REVOKED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+            && let Some(observer) = self.observer()
+        {
+            observer.record_continued_authority_revoked(self.generation);
+        }
+    }
+
+    fn revoke_continued_authority(&self) {
+        let mut channel = self.stop_resolution.lock();
+        self.revoke_continued_authority_locked(&mut channel);
+    }
+
+    fn validate_continued_authority(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<(), Errno> {
+        if !self.continued_worker_is_authorized() {
+            return Ok(());
+        }
+        let provenance = self
+            .continued_authority_provenance
+            .get()
+            .ok_or(Errno::EPROTO)?;
+        if provenance.generation != self.generation
+            || !self.startup_barrier_cleanup.lock().as_ref().is_some_and(|state| {
+                matches!(state, StartupBarrierCleanupState::Prepared(prepared)
+                    if prepared.launch == provenance.launch)
+            })
+            || provenance.root != identity.pid
+            || provenance.root != identity.snapshot.tgid
+            || provenance.controller_tgid != identity.snapshot.ppid
+            || provenance.controller_tracer_tid != identity.snapshot.tracer_pid
+            || !worker_group_is_singleton(identity.snapshot.tgid)?
+        {
+            return Err(Errno::EPROTO);
+        }
+        if !tracer_is_current(identity.snapshot.tracer_pid)? {
+            return Err(Errno::EPROTO);
+        }
+        Ok(())
+    }
+
+    fn consume_startup_barrier(
+        &self,
+        status: ObservedStatus,
+        attempt: Option<PhysicalWaitAttempt>,
+        siginfo: Option<PhysicalWaitSiginfo>,
+    ) -> Result<(), Errno> {
+        if !self.continued_worker_is_authorized() {
+            return Ok(());
+        }
+        let mut channel = self.stop_resolution.lock();
+        let mut fallback = self.startup_barrier_cleanup.lock();
+        if channel.startup_barrier_consumed {
+            return Ok(());
+        }
+        let barrier = channel.startup_barrier.ok_or(Errno::EPROTO)?;
+        let attempt = attempt.ok_or(Errno::EPROTO)?;
+        let siginfo = siginfo.ok_or(Errno::EPROTO)?;
+        let physical = status.physical.ok_or(Errno::EPROTO)?;
+        let prepared_matches = fallback.as_ref().is_some_and(|state| {
+            matches!(state, StartupBarrierCleanupState::Prepared(prepared)
+                if prepared.barrier == barrier
+                    && self
+                        .continued_authority_provenance
+                        .get()
+                        .is_some_and(|provenance| provenance.launch == prepared.launch)
+                    && prepared.task.tid() == attempt.context().task.tid()
+                    && prepared.task.tgid() == attempt.context().task.tgid()
+                    && prepared.task.start_time() == attempt.context().task.start_time()
+                    && prepared.task.proc_inode() == attempt.context().task.proc_inode())
+        });
+        if attempt.context().generation != Some(self.generation)
+            || attempt.context().producer != PhysicalWaitProducer::AuthorizedRootNotifier
+            || Some(status.raw) != barrier.raw_status
+            || siginfo != barrier.siginfo
+            || !prepared_matches
+        {
+            return Err(Errno::EPROTO);
+        }
+        self.observer()
+            .ok_or(Errno::EPROTO)?
+            .record_pre_registration_barrier_consumed(
+                self.generation,
+                barrier.attempt,
+                attempt,
+                physical,
+            );
+        self.observer()
+            .expect("startup barrier observer disappeared")
+            .record_startup_barrier_fallback_released(
+                self.generation,
+                barrier.attempt,
+                attempt,
+                physical,
+            );
+        channel.startup_barrier = None;
+        channel.startup_barrier_consumed = true;
+        *fallback = None;
+        Ok(())
+    }
+
+    /// Atomically turns the neutral startup fallback into the sole fixed-slot
+    /// cleanup owner for the authorized worker's mismatching first result.
+    /// Only a result which never belonged to this startup transaction may
+    /// return `NotStartup`; once Prepared is observed, every rejection remains
+    /// claimed and can never fall through to a second generic transaction.
+    fn promote_prepared_startup_failure(
+        &self,
+        attempt: PhysicalWaitAttempt,
+        physical: PhysicalStatusId,
+        siginfo: PhysicalWaitSiginfo,
+        raw: Option<i32>,
+    ) -> StartupBarrierFailurePromotion {
+        if !self.continued_worker_is_authorized() {
+            return StartupBarrierFailurePromotion::NotStartup;
+        }
+        let mut channel = self.stop_resolution.lock();
+        let mut fallback = self.startup_barrier_cleanup.lock();
+        if channel.startup_barrier_consumed {
+            return if fallback.is_none() {
+                StartupBarrierFailurePromotion::NotStartup
+            } else {
+                StartupBarrierFailurePromotion::ClaimedRejected(Errno::EALREADY)
+            };
+        }
+        let Some(barrier) = channel.startup_barrier else {
+            return StartupBarrierFailurePromotion::ClaimedRejected(Errno::EPROTO);
+        };
+        let prepared = match fallback.as_ref() {
+            Some(StartupBarrierCleanupState::Prepared(prepared)) => prepared,
+            None => return StartupBarrierFailurePromotion::ClaimedRejected(Errno::EPROTO),
+            Some(_) => {
+                return StartupBarrierFailurePromotion::ClaimedRejected(Errno::EALREADY)
+            }
+        };
+        if prepared.barrier != barrier
+            || attempt.context().generation != Some(self.generation)
+            || attempt.context().producer != PhysicalWaitProducer::AuthorizedRootNotifier
+            || prepared.task != attempt.context().task
+            || (raw == barrier.raw_status && siginfo == barrier.siginfo)
+        {
+            return StartupBarrierFailurePromotion::ClaimedRejected(Errno::EPROTO);
+        }
+        let Some(observer) = self.observer() else {
+            return StartupBarrierFailurePromotion::ClaimedRejected(Errno::EPROTO);
+        };
+        let transaction = observer.begin_startup_barrier_cleanup_transaction(
+            prepared.transaction,
+            self.generation,
+            prepared.task,
+            barrier.attempt,
+            attempt,
+            PhysicalStartupCleanupOwner::AuthorizedWorker,
+        );
+        observer.link_registered_cleanup_status(transaction, physical);
+        observer.record_pre_registration_barrier_failure_linked(
+            self.generation,
+            barrier.attempt,
+            attempt,
+            physical,
+            transaction,
+        );
+        if raw.is_some_and(|raw| libc::WIFEXITED(raw) || libc::WIFSIGNALED(raw)) {
+            observer.finish_startup_barrier_cleanup_terminal_status(
+                self.generation,
+                physical,
+            );
+        } else {
+            observer.record_cleanup_status_published(
+                self.generation,
+                physical,
+                PhysicalStatusPublication::StartupBarrierFailureCleanup,
+            );
+        }
+        let prepared = match fallback.take() {
+            Some(StartupBarrierCleanupState::Prepared(prepared)) => prepared,
+            _ => unreachable!("validated startup fallback changed while locked"),
+        };
+        let mut slots = [None; STARTUP_CLEANUP_STATUS_CAPACITY];
+        slots[0] = Some(StartupCleanupStatusSlot {
+            attempt,
+            status: physical,
+            raw,
+            siginfo,
+            phase: raw.map_or(StartupCleanupStatusPhase::Deferred, |raw| {
+                if libc::WIFEXITED(raw) || libc::WIFSIGNALED(raw) {
+                    StartupCleanupStatusPhase::Terminal
+                } else if libc::WIFSTOPPED(raw) {
+                    StartupCleanupStatusPhase::ControllerTransferred
+                } else {
+                    StartupCleanupStatusPhase::Deferred
+                }
+            }),
+            tolerated_resume: None,
+        });
+        let source_stopped = raw.is_some_and(libc::WIFSTOPPED);
+        if source_stopped {
+            self.install_wait_failure_cleanup_transition(Some(physical), true);
+        }
+        channel.startup_barrier = None;
+        channel.startup_barrier_consumed = true;
+        *fallback = Some(StartupBarrierCleanupState::Active(
+            StartupBarrierCleanupOwner {
+                owner: PhysicalStartupCleanupOwner::AuthorizedWorker,
+                pid: prepared.pid,
+                identity: StartupCleanupIdentity::Bound(prepared.identity),
+                task: prepared.task,
+                kind: StartupCleanupKind::Barrier {
+                    launch: prepared.launch,
+                    barrier: prepared.barrier,
+                },
+                transaction,
+                cause_wait: attempt,
+                source_status: physical,
+                slots,
+                used_slots: 1,
+                pending_slot: source_stopped.then_some(0),
+                phase: StartupBarrierCleanupPhase::SourcePending,
+                termination: StartupCleanupTermination::NotRequested,
+            },
+        ));
+        StartupBarrierFailurePromotion::Activated { transaction }
+    }
+
+    fn startup_cleanup_owner(
+        &self,
+        transaction: PhysicalCleanupTransaction,
+    ) -> Option<PhysicalStartupCleanupOwner> {
+        let cleanup = self.startup_barrier_cleanup.lock();
+        match cleanup.as_ref() {
+            Some(StartupBarrierCleanupState::Active(owner))
+                if owner.transaction == transaction =>
+            {
+                Some(owner.owner)
+            }
+            _ => None,
+        }
+    }
+
+    fn arm_stop_resolution_watch(
+        &self,
+        delivery: StopResolutionStopped,
+    ) -> Result<u64, Errno> {
+        let _owner = self.wait_owner_lock.lock();
+        if self.wait_owner.load(Ordering::Acquire) != WAIT_OWNER_NOTIFIER
+            || self.worker_state.load(Ordering::Acquire) != WORKER_RUNNING
+        {
+            return Err(Errno::EINVAL);
+        }
+        let mut channel = self.stop_resolution.lock();
+        if !self.continued_authority_is_live() {
+            return Err(Errno::EINVAL);
+        }
+        if channel.active.is_some() {
+            return Err(Errno::EALREADY);
+        }
+        let Some(drained) = channel.drained_plain_sigstop else {
+            return Err(Errno::EPROTO);
+        };
+        if channel.terminal
+            || channel.latest_stopped != Some(delivery)
+            || drained.stopped != delivery
+            || drained.final_no_status_attempt.context().generation != Some(self.generation)
+            || drained.final_no_status_attempt.context().producer
+                != PhysicalWaitProducer::PreStopContinuedDrain
+        {
+            return Err(Errno::EPROTO);
+        }
+        let delivery_physical = delivery.physical_status.ok_or(Errno::EPROTO)?;
+        channel.next_nonce = channel
+            .next_nonce
+            .checked_add(1)
+            .filter(|nonce| *nonce != 0)
+            .expect("stop-resolution watcher nonce wrapped");
+        let nonce = channel.next_nonce;
+        channel.active = Some(ActiveStopResolutionWatch {
+            nonce,
+            delivery,
+            phase: StopResolutionWatchPhase::Pending {
+                continued_before_first: false,
+                first_stopped: None,
+                following: None,
+                ended_before_first: None,
+            },
+        });
+        channel.drained_plain_sigstop = None;
+        self.observer()
+            .ok_or(Errno::EPROTO)?
+            .record_stop_resolution_watch_armed(self.generation, delivery_physical);
+        Ok(nonce)
+    }
+
+    fn stop_resolution_physical_is_after(
+        predecessor: Option<PhysicalStatusId>,
+        successor: Option<PhysicalStatusId>,
+    ) -> bool {
+        match (predecessor, successor) {
+            (None, None) => true,
+            (Some(predecessor), Some(successor)) => successor.get() > predecessor.get(),
+            (None, Some(_)) | (Some(_), None) => false,
+        }
+    }
+
+    fn stop_resolution_outcome_is_after(
+        predecessor: StopResolutionStopped,
+        outcome: StopResolutionOutcome,
+    ) -> bool {
+        match outcome {
+            StopResolutionOutcome::Continued { physical_status }
+            | StopResolutionOutcome::Terminal { physical_status } => {
+                Self::stop_resolution_physical_is_after(
+                    predecessor.physical_status,
+                    physical_status,
+                )
+            }
+            StopResolutionOutcome::Stopped {
+                logical_stop,
+                physical_status,
+            }
+            | StopResolutionOutcome::ExitStop {
+                logical_stop,
+                physical_status,
+            } => {
+                logical_stop.is_strictly_after(predecessor.logical_stop)
+                    && Self::stop_resolution_physical_is_after(
+                        predecessor.physical_status,
+                        physical_status,
+                    )
+            }
+            StopResolutionOutcome::GenerationEnded { .. } => true,
+        }
+    }
+
+    fn merge_stop_resolution_following(
+        existing: StopResolutionOutcome,
+        incoming: StopResolutionOutcome,
+    ) -> StopResolutionOutcome {
+        match (existing, incoming) {
+            // Preserve real kernel terminal status over every provisional or
+            // synthetic channel result, including a previously retained
+            // protocol error. The physical terminal publication remains the
+            // outer waiter's canonical result.
+            (_, terminal @ StopResolutionOutcome::Terminal { .. }) => terminal,
+            (terminal @ StopResolutionOutcome::Terminal { .. }, _) => terminal,
+            (
+                StopResolutionOutcome::Continued { .. },
+                terminal @ (StopResolutionOutcome::ExitStop { .. }
+                | StopResolutionOutcome::GenerationEnded { .. }),
+            ) => terminal,
+            (
+                terminal @ (StopResolutionOutcome::ExitStop { .. }
+                | StopResolutionOutcome::GenerationEnded { .. }),
+                StopResolutionOutcome::Continued { .. },
+            ) => terminal,
+            (
+                exit_stop @ StopResolutionOutcome::ExitStop { .. },
+                StopResolutionOutcome::GenerationEnded { .. },
+            ) => exit_stop,
+            (
+                StopResolutionOutcome::GenerationEnded { .. },
+                exit_stop @ StopResolutionOutcome::ExitStop { .. },
+            ) => exit_stop,
+            _ => StopResolutionOutcome::GenerationEnded {
+                error: Errno::EPROTO,
+            },
+        }
+    }
+
+    fn is_exact_stop_resolution_terminal(outcome: StopResolutionOutcome) -> bool {
+        matches!(
+            outcome,
+            StopResolutionOutcome::Terminal { .. } | StopResolutionOutcome::ExitStop { .. }
+        ) || matches!(
+            outcome,
+            StopResolutionOutcome::GenerationEnded {
+                error: Errno::ECHILD | Errno::ESRCH | Errno::EIO,
+            }
+        )
+    }
+
+    fn publish_stop_resolution_outcome_locked(
+        &self,
+        channel: &mut StopResolutionChannel,
+        mut outcome: StopResolutionOutcome,
+    ) -> (bool, Option<ContinuedStatusRoute>) {
+        let route = matches!(outcome, StopResolutionOutcome::Continued { .. }).then(|| {
+            match channel.active.as_ref().map(|active| &active.phase) {
+                None => ContinuedStatusRoute::UnwatchedRoot,
+                Some(StopResolutionWatchPhase::Pending {
+                    first_stopped: None,
+                    ..
+                }) => ContinuedStatusRoute::BeforeFirstStop,
+                Some(StopResolutionWatchPhase::Pending { .. }) => {
+                    ContinuedStatusRoute::AfterFirstStop
+                }
+                Some(StopResolutionWatchPhase::GroupStopAcknowledged { .. }) => {
+                    ContinuedStatusRoute::AfterAcknowledgedGroupStop
+                }
+                Some(StopResolutionWatchPhase::ContinuedClaimed { .. }) => {
+                    ContinuedStatusRoute::AfterAcknowledgedGroupStop
+                }
+                Some(
+                    StopResolutionWatchPhase::ResumeInFlight { .. }
+                    | StopResolutionWatchPhase::ResumeFailedAwaitingBoundary { .. }
+                    | StopResolutionWatchPhase::ProbeFailedAwaitingBoundary { .. },
+                ) => ContinuedStatusRoute::AfterAcknowledgedGroupStop,
+            }
+        });
+        match outcome {
+            StopResolutionOutcome::Stopped {
+                logical_stop,
+                physical_status,
+            } => {
+                channel.latest_stopped = Some(StopResolutionStopped {
+                    logical_stop,
+                    physical_status,
+                });
+                channel.drained_plain_sigstop = None;
+            }
+            StopResolutionOutcome::ExitStop {
+                logical_stop,
+                physical_status,
+            } => {
+                channel.latest_stopped = Some(StopResolutionStopped {
+                    logical_stop,
+                    physical_status,
+                });
+                channel.terminal = true;
+                channel.drained_plain_sigstop = None;
+            }
+            StopResolutionOutcome::Terminal { .. }
+            | StopResolutionOutcome::GenerationEnded { .. } => {
+                channel.terminal = true;
+                channel.drained_plain_sigstop = None;
+            }
+            StopResolutionOutcome::Continued { .. } => {
+                if channel.active.is_none() {
+                    // A continued status observed after the no-status fence
+                    // supersedes that fence. Never arm D from a stale epoch.
+                    channel.drained_plain_sigstop = None;
+                }
+            }
+        }
+        let Some(predecessor) = channel.active.as_ref().map(|active| match &active.phase {
+            StopResolutionWatchPhase::Pending { first_stopped, .. } => {
+                first_stopped.unwrap_or(active.delivery)
+            }
+            StopResolutionWatchPhase::GroupStopAcknowledged { group_stop, .. } => *group_stop,
+            StopResolutionWatchPhase::ContinuedClaimed { group_stop, .. } => *group_stop,
+            StopResolutionWatchPhase::ResumeInFlight { group_stop, .. }
+            | StopResolutionWatchPhase::ResumeFailedAwaitingBoundary { group_stop, .. }
+            | StopResolutionWatchPhase::ProbeFailedAwaitingBoundary { group_stop, .. } => {
+                *group_stop
+            }
+        }) else {
+            return (false, route);
+        };
+        if !Self::stop_resolution_outcome_is_after(predecessor, outcome) {
+            outcome = StopResolutionOutcome::GenerationEnded {
+                error: Errno::EPROTO,
+            };
+            channel.terminal = true;
+        }
+        let active = channel
+            .active
+            .as_mut()
+            .expect("validated active stop-resolution watch disappeared");
+        let active_delivery = active.delivery;
+        let protocol_error = StopResolutionOutcome::GenerationEnded {
+            error: Errno::EPROTO,
+        };
+        let changed = match &mut active.phase {
+            StopResolutionWatchPhase::Pending {
+                continued_before_first,
+                first_stopped,
+                following,
+                ended_before_first,
+            } => match outcome {
+                StopResolutionOutcome::Continued { .. }
+                    if first_stopped.is_none()
+                        && ended_before_first.is_none()
+                        && !*continued_before_first =>
+                {
+                    *continued_before_first = true;
+                    true
+                }
+                StopResolutionOutcome::Stopped {
+                    logical_stop,
+                    physical_status,
+                } if first_stopped.is_none() && ended_before_first.is_none() => {
+                    if let (
+                        Some(observer),
+                        Some(delivery),
+                        Some(stopped),
+                    ) = (
+                        self.observer(),
+                        active_delivery.physical_status,
+                        physical_status,
+                    ) {
+                        observer.record_stop_resolution_first_stopped(
+                            self.generation,
+                            delivery,
+                            stopped,
+                        );
+                    }
+                    *first_stopped = Some(StopResolutionStopped {
+                        logical_stop,
+                        physical_status,
+                    });
+                    true
+                }
+                StopResolutionOutcome::Terminal { .. }
+                | StopResolutionOutcome::ExitStop { .. }
+                | StopResolutionOutcome::GenerationEnded { .. }
+                    if first_stopped.is_none() && ended_before_first.is_none() =>
+                {
+                    *ended_before_first = Some(outcome);
+                    true
+                }
+                _ if first_stopped.is_none() => {
+                    // No second process-wide outcome may be hidden before the
+                    // first stopped candidate. Retain a sticky protocol error
+                    // so a later candidate cannot authenticate this epoch.
+                    *ended_before_first = Some(protocol_error);
+                    true
+                }
+                _ if following.is_none() => {
+                    *following = Some(outcome);
+                    true
+                }
+                _ => {
+                    // C is provisional until the controller consumes it and
+                    // resumes held G. Exact terminal/generation proof takes
+                    // precedence in either arrival order; other multiplicity
+                    // is a protocol error.
+                    *following = Some(Self::merge_stop_resolution_following(
+                        following.expect("occupied following outcome disappeared"),
+                        outcome,
+                    ));
+                    true
+                }
+            },
+            StopResolutionWatchPhase::GroupStopAcknowledged { following, .. } => {
+                if following.is_none() {
+                    *following = Some(outcome);
+                } else {
+                    *following = Some(Self::merge_stop_resolution_following(
+                        following.expect("occupied following outcome disappeared"),
+                        outcome,
+                    ));
+                }
+                true
+            }
+            StopResolutionWatchPhase::ContinuedClaimed { resolution, .. } => {
+                if resolution.is_none() {
+                    *resolution = Some(match outcome {
+                        StopResolutionOutcome::Terminal { .. }
+                        | StopResolutionOutcome::ExitStop { .. }
+                        | StopResolutionOutcome::GenerationEnded { .. } => outcome,
+                        StopResolutionOutcome::Continued { .. }
+                        | StopResolutionOutcome::Stopped { .. } => protocol_error,
+                    });
+                } else {
+                    *resolution = Some(Self::merge_stop_resolution_following(
+                        resolution.expect("occupied continued resolution disappeared"),
+                        outcome,
+                    ));
+                }
+                true
+            }
+            StopResolutionWatchPhase::ResumeInFlight {
+                boundary,
+                successor,
+                ..
+            } => {
+                match outcome {
+                    StopResolutionOutcome::Stopped {
+                        logical_stop,
+                        physical_status,
+                    } if boundary.is_none() => {
+                        // The first ordinary successor can race userspace's
+                        // recording of a successful PTRACE_CONT result. It is
+                        // already visible in the normal FIFO and is retained
+                        // here only until that exact result linearizes.
+                        if successor.is_some() {
+                            *boundary = Some(protocol_error);
+                        } else {
+                            *successor = Some(StopResolutionStopped {
+                                logical_stop,
+                                physical_status,
+                            });
+                        }
+                    }
+                    StopResolutionOutcome::Terminal { .. }
+                    | StopResolutionOutcome::ExitStop { .. }
+                    | StopResolutionOutcome::GenerationEnded { .. } => {
+                        *boundary = Some(match boundary.take() {
+                            Some(existing) => {
+                                Self::merge_stop_resolution_following(existing, outcome)
+                            }
+                            None => outcome,
+                        });
+                    }
+                    StopResolutionOutcome::Continued { .. }
+                    | StopResolutionOutcome::Stopped { .. } => {
+                        *boundary = Some(protocol_error);
+                    }
+                }
+                true
+            }
+            StopResolutionWatchPhase::ResumeFailedAwaitingBoundary {
+                boundary,
+                successor,
+                ..
+            } => {
+                match outcome {
+                    StopResolutionOutcome::Terminal { .. }
+                    | StopResolutionOutcome::ExitStop { .. }
+                    | StopResolutionOutcome::GenerationEnded { .. } => {
+                        *boundary = Some(match boundary.take() {
+                            Some(existing) => {
+                                Self::merge_stop_resolution_following(existing, outcome)
+                            }
+                            None => outcome,
+                        });
+                    }
+                    StopResolutionOutcome::Stopped {
+                        logical_stop,
+                        physical_status,
+                    } if successor.is_none() => {
+                        *successor = Some(StopResolutionStopped {
+                            logical_stop,
+                            physical_status,
+                        });
+                    }
+                    StopResolutionOutcome::Stopped { .. } => {
+                        *boundary = Some(protocol_error);
+                    }
+                    StopResolutionOutcome::Continued { .. } => {
+                        *boundary = Some(protocol_error);
+                    }
+                }
+                true
+            }
+            StopResolutionWatchPhase::ProbeFailedAwaitingBoundary { boundary, .. } => {
+                match outcome {
+                    StopResolutionOutcome::Terminal { .. }
+                    | StopResolutionOutcome::ExitStop { .. }
+                    | StopResolutionOutcome::GenerationEnded { .. } => {
+                        *boundary = Some(match boundary.take() {
+                            Some(existing) => {
+                                Self::merge_stop_resolution_following(existing, outcome)
+                            }
+                            None => outcome,
+                        });
+                    }
+                    StopResolutionOutcome::Stopped { .. } => {}
+                    StopResolutionOutcome::Continued { .. } => {
+                        *boundary = Some(protocol_error);
+                    }
+                }
+                true
+            }
+        };
+        (changed, route)
+    }
+
+    fn acknowledge_stop_resolution_group(
+        &self,
+        nonce: u64,
+        stopped: StopResolutionStopped,
+    ) -> Result<(), Errno> {
+        let mut channel = self.stop_resolution.lock();
+        let active = channel.active.as_mut().ok_or(Errno::EALREADY)?;
+        if active.nonce != nonce {
+            return Err(Errno::EALREADY);
+        }
+        let StopResolutionWatchPhase::Pending {
+            continued_before_first,
+            first_stopped,
+            following,
+            ended_before_first,
+        } = &mut active.phase
+        else {
+            return Err(Errno::EALREADY);
+        };
+        if *continued_before_first
+            || *first_stopped != Some(stopped)
+            || ended_before_first.is_some()
+        {
+            return Err(Errno::EPROTO);
+        }
+        active.phase = StopResolutionWatchPhase::GroupStopAcknowledged {
+            group_stop: stopped,
+            following: following.take(),
+        };
+        let observer = self.observer().ok_or(Errno::EPROTO)?;
+        observer.record_stop_resolution_group_acknowledged(
+            self.generation,
+            active.delivery.physical_status.ok_or(Errno::EPROTO)?,
+            stopped.physical_status.ok_or(Errno::EPROTO)?,
+        );
+        Ok(())
+    }
+
+    fn complete_cancelled_stop_resolution(
+        &self,
+        nonce: u64,
+        stopped: StopResolutionStopped,
+    ) -> Result<(), Errno> {
+        let mut channel = self.stop_resolution.lock();
+        let active = channel.active.as_ref().ok_or(Errno::EALREADY)?;
+        if active.nonce != nonce {
+            return Err(Errno::EALREADY);
+        }
+        let StopResolutionWatchPhase::Pending {
+            continued_before_first,
+            first_stopped,
+            following,
+            ended_before_first,
+        } = &active.phase
+        else {
+            return Err(Errno::EALREADY);
+        };
+        if *first_stopped != Some(stopped)
+            || *continued_before_first
+            || following.is_some()
+            || ended_before_first.is_some()
+        {
+            return Err(Errno::EPROTO);
+        }
+        let delivery = active.delivery.physical_status.ok_or(Errno::EPROTO)?;
+        self.observer()
+            .ok_or(Errno::EPROTO)?
+            .record_stop_resolution_watch_closed(self.generation, delivery);
+        channel.active = None;
+        Ok(())
+    }
+
+    fn poll_pending_stop_resolution_terminal(
+        &self,
+        nonce: u64,
+        waker: &Waker,
+    ) -> Poll<Result<StopResolutionOutcome, Errno>> {
+        self.stop_resolution_waker.register(waker);
+        let mut channel = self.stop_resolution.lock();
+        let active = match channel.active.as_mut() {
+            Some(active) if active.nonce == nonce => active,
+            _ => return Poll::Ready(Err(Errno::EALREADY)),
+        };
+        let StopResolutionWatchPhase::Pending {
+            first_stopped,
+            ended_before_first,
+            ..
+        } = &mut active.phase
+        else {
+            return Poll::Ready(Err(Errno::EINVAL));
+        };
+        if first_stopped.is_some() {
+            return Poll::Ready(Err(Errno::EPROTO));
+        }
+        let Some(outcome) = ended_before_first.take() else {
+            return Poll::Pending;
+        };
+        if !Self::is_exact_stop_resolution_terminal(outcome) {
+            return Poll::Ready(Err(Errno::EPROTO));
+        }
+        let delivery = active.delivery.physical_status.ok_or(Errno::EPROTO)?;
+        self.observer()
+            .ok_or(Errno::EPROTO)?
+            .record_stop_resolution_watch_closed(self.generation, delivery);
+        channel.active = None;
+        Poll::Ready(Ok(outcome))
+    }
+
+    fn poll_unacknowledged_stop_resolution_terminal(
+        &self,
+        nonce: u64,
+        stopped: StopResolutionStopped,
+        waker: &Waker,
+    ) -> Poll<Result<StopResolutionOutcome, Errno>> {
+        self.stop_resolution_waker.register(waker);
+        let mut channel = self.stop_resolution.lock();
+        let active = match channel.active.as_mut() {
+            Some(active) if active.nonce == nonce => active,
+            _ => return Poll::Ready(Err(Errno::EALREADY)),
+        };
+        let StopResolutionWatchPhase::Pending {
+            first_stopped,
+            following,
+            ended_before_first,
+            ..
+        } = &mut active.phase
+        else {
+            return Poll::Ready(Err(Errno::EINVAL));
+        };
+        if *first_stopped != Some(stopped) || ended_before_first.is_some() {
+            return Poll::Ready(Err(Errno::EPROTO));
+        }
+        let Some(outcome) = following.take() else {
+            return Poll::Pending;
+        };
+        if !Self::is_exact_stop_resolution_terminal(outcome) {
+            return Poll::Ready(Err(Errno::EPROTO));
+        }
+        let delivery = active.delivery.physical_status.ok_or(Errno::EPROTO)?;
+        let stopped_status = stopped.physical_status.ok_or(Errno::EPROTO)?;
+        let observer = self.observer().ok_or(Errno::EPROTO)?;
+        observer.finish_status(
+            stopped_status,
+            if matches!(outcome, StopResolutionOutcome::ExitStop { .. }) {
+                PhysicalStatusDisposition::KernelSupersededByExitStop
+            } else {
+                PhysicalStatusDisposition::CancellationCleanup
+            },
+        );
+        observer.record_stop_resolution_watch_closed(self.generation, delivery);
+        channel.active = None;
+        Poll::Ready(Ok(outcome))
+    }
+
+    fn poll_stop_resolution_following(
+        &self,
+        nonce: u64,
+        waker: &Waker,
+    ) -> Poll<Result<(StopResolutionOutcome, bool), Errno>> {
+        self.stop_resolution_waker.register(waker);
+        let mut channel = self.stop_resolution.lock();
+        let active = match channel.active.as_mut() {
+            Some(active) if active.nonce == nonce => active,
+            _ => return Poll::Ready(Err(Errno::EALREADY)),
+        };
+        let StopResolutionWatchPhase::GroupStopAcknowledged { following, .. } = &mut active.phase
+        else {
+            return Poll::Ready(Err(Errno::EINVAL));
+        };
+        let Some(outcome) = following.take() else {
+            return Poll::Pending;
+        };
+        let continued_claimed = matches!(outcome, StopResolutionOutcome::Continued { .. });
+        if continued_claimed {
+            let continued = match outcome {
+                StopResolutionOutcome::Continued {
+                    physical_status: Some(continued),
+                } => continued,
+                _ => return Poll::Ready(Err(Errno::EPROTO)),
+            };
+            let group_stop = match &active.phase {
+                StopResolutionWatchPhase::GroupStopAcknowledged { group_stop, .. } => *group_stop,
+                _ => unreachable!("validated group-stop phase changed"),
+            };
+            active.phase = StopResolutionWatchPhase::ContinuedClaimed {
+                group_stop,
+                continued,
+                resolution: None,
+            };
+            let Some(observer) = self.observer() else {
+                return Poll::Ready(Err(Errno::EPROTO));
+            };
+            let Some(group_stop) = group_stop.physical_status else {
+                return Poll::Ready(Err(Errno::EPROTO));
+            };
+            observer.record_stop_resolution_continued_claimed(
+                self.generation,
+                group_stop,
+                continued,
+            );
+        } else {
+            let delivery = active.delivery.physical_status.ok_or(Errno::EPROTO)?;
+            self.observer()
+                .ok_or(Errno::EPROTO)?
+                .record_stop_resolution_watch_closed(self.generation, delivery);
+            channel.active = None;
+        }
+        Poll::Ready(Ok((outcome, continued_claimed)))
+    }
+
+    fn begin_continued_stop_resolution(
+        &self,
+        nonce: u64,
+    ) -> Result<Option<StopResolutionOutcome>, Errno> {
+        let mut channel = self.stop_resolution.lock();
+        let active = channel.active.as_mut().ok_or(Errno::EALREADY)?;
+        if active.nonce != nonce {
+            return Err(Errno::EALREADY);
+        }
+        let StopResolutionWatchPhase::ContinuedClaimed {
+            group_stop,
+            continued,
+            resolution,
+        } = &mut active.phase
+        else {
+            return Err(Errno::EALREADY);
+        };
+        let group_stop = *group_stop;
+        let continued = *continued;
+        if let Some(boundary) = resolution.take() {
+            let delivery = active.delivery.physical_status.ok_or(Errno::EPROTO)?;
+            self.observer()
+                .ok_or(Errno::EPROTO)?
+                .record_stop_resolution_watch_closed(self.generation, delivery);
+            channel.active = None;
+            return Ok(Some(boundary));
+        }
+        active.phase = StopResolutionWatchPhase::ResumeInFlight {
+            group_stop,
+            continued,
+            boundary: None,
+            successor: None,
+        };
+        Ok(None)
+    }
+
+    fn complete_continued_stop_resolution(
+        &self,
+        nonce: u64,
+    ) -> Result<Option<StopResolutionOutcome>, Errno> {
+        let mut channel = self.stop_resolution.lock();
+        let active = channel.active.as_mut().ok_or(Errno::EALREADY)?;
+        if active.nonce != nonce {
+            return Err(Errno::EALREADY);
+        }
+        let StopResolutionWatchPhase::ResumeInFlight { boundary, .. } = &mut active.phase else {
+            return Err(Errno::EALREADY);
+        };
+        let boundary = boundary.take();
+        let delivery = active.delivery.physical_status.ok_or(Errno::EPROTO)?;
+        self.observer()
+            .ok_or(Errno::EPROTO)?
+            .record_stop_resolution_watch_closed(self.generation, delivery);
+        channel.active = None;
+        Ok(boundary)
+    }
+
+    fn fail_continued_stop_resolution(
+        &self,
+        nonce: u64,
+        error: Errno,
+        attempt: PhysicalResumeAttempt,
+    ) -> Result<(), Errno> {
+        let mut channel = self.stop_resolution.lock();
+        let active = channel.active.as_mut().ok_or(Errno::EALREADY)?;
+        if active.nonce != nonce || !matches!(error, Errno::ESRCH | Errno::EIO) {
+            return Err(Errno::EALREADY);
+        }
+        let (group_stop, continued, boundary, successor) = match &mut active.phase {
+            StopResolutionWatchPhase::ResumeInFlight {
+                group_stop,
+                continued,
+                boundary,
+                successor,
+            } => (*group_stop, *continued, boundary.take(), successor.take()),
+            _ => return Err(Errno::EALREADY),
+        };
+        let source = group_stop.physical_status.ok_or(Errno::EPROTO)?;
+        let context = attempt.context();
+        let root = self
+            .continued_authority_provenance
+            .get()
+            .ok_or(Errno::EPROTO)?
+            .root;
+        if context.generation != Some(self.generation)
+            || context.task.tid() != root.as_raw()
+            || context.source_status != Some(source)
+            || context.operation != PhysicalResumeOperation::Continue
+            || context.signal.is_some()
+            || context.owner != PhysicalResumeOwner::TypedStopped
+        {
+            return Err(Errno::EPROTO);
+        }
+        active.phase = StopResolutionWatchPhase::ResumeFailedAwaitingBoundary {
+            group_stop,
+            continued,
+            error,
+            attempt,
+            boundary,
+            successor,
+        };
+        Ok(())
+    }
+
+    fn fail_continued_probe_resolution(&self, nonce: u64, error: Errno) -> Result<(), Errno> {
+        let mut channel = self.stop_resolution.lock();
+        let active = channel.active.as_mut().ok_or(Errno::EALREADY)?;
+        if active.nonce != nonce || !matches!(error, Errno::ESRCH | Errno::EIO) {
+            return Err(Errno::EALREADY);
+        }
+        let (group_stop, continued, boundary) = match &mut active.phase {
+            StopResolutionWatchPhase::ContinuedClaimed {
+                group_stop,
+                continued,
+                resolution,
+            } => (*group_stop, *continued, resolution.take()),
+            _ => return Err(Errno::EALREADY),
+        };
+        active.phase = StopResolutionWatchPhase::ProbeFailedAwaitingBoundary {
+            group_stop,
+            continued,
+            error,
+            boundary,
+        };
+        Ok(())
+    }
+
+    fn poll_continued_stop_resolution(
+        &self,
+        nonce: u64,
+        waker: &Waker,
+    ) -> Poll<Result<StopResolutionResumeResolution, Errno>> {
+        self.stop_resolution_waker.register(waker);
+        let mut channel = self.stop_resolution.lock();
+        let active = match channel.active.as_mut() {
+            Some(active) if active.nonce == nonce => active,
+            _ => return Poll::Ready(Err(Errno::EALREADY)),
+        };
+        let StopResolutionWatchPhase::ResumeFailedAwaitingBoundary {
+            error: retained_error,
+            boundary,
+            successor,
+            group_stop,
+            continued,
+            attempt,
+            ..
+        } = &mut active.phase
+        else {
+            return Poll::Ready(Err(Errno::EINVAL));
+        };
+        if !matches!(*retained_error, Errno::ESRCH | Errno::EIO) {
+            return Poll::Ready(Err(Errno::EPROTO));
+        }
+        let resolution = if let Some(outcome) = boundary.take() {
+            StopResolutionResumeResolution::Boundary(outcome)
+        } else if let Some(successor) = successor.take() {
+            StopResolutionResumeResolution::LaterStatus {
+                delivery: active.delivery,
+                group_stop: *group_stop,
+                continued: *continued,
+                successor,
+                attempt: *attempt,
+            }
+        } else {
+            return Poll::Pending;
+        };
+        if matches!(&resolution, StopResolutionResumeResolution::Boundary(_)) {
+            let Some(delivery) = active.delivery.physical_status else {
+                return Poll::Ready(Err(Errno::EPROTO));
+            };
+            let Some(observer) = self.observer() else {
+                return Poll::Ready(Err(Errno::EPROTO));
+            };
+            observer.record_stop_resolution_watch_closed(self.generation, delivery);
+        }
+        channel.active = None;
+        Poll::Ready(Ok(resolution))
+    }
+
+    fn poll_continued_probe_resolution(
+        &self,
+        nonce: u64,
+        waker: &Waker,
+    ) -> Poll<Result<StopResolutionOutcome, Errno>> {
+        self.stop_resolution_waker.register(waker);
+        let mut channel = self.stop_resolution.lock();
+        let active = match channel.active.as_mut() {
+            Some(active) if active.nonce == nonce => active,
+            _ => return Poll::Ready(Err(Errno::EALREADY)),
+        };
+        let StopResolutionWatchPhase::ProbeFailedAwaitingBoundary {
+            error,
+            boundary,
+            ..
+        } = &mut active.phase
+        else {
+            return Poll::Ready(Err(Errno::EINVAL));
+        };
+        if !matches!(*error, Errno::ESRCH | Errno::EIO) {
+            return Poll::Ready(Err(Errno::EPROTO));
+        }
+        let Some(outcome) = boundary.take() else {
+            return Poll::Pending;
+        };
+        let delivery = active.delivery.physical_status.ok_or(Errno::EPROTO)?;
+        self.observer()
+            .ok_or(Errno::EPROTO)?
+            .record_stop_resolution_watch_closed(self.generation, delivery);
+        channel.active = None;
+        Poll::Ready(Ok(outcome))
+    }
+
+    fn abandon_stop_resolution_watch(&self, nonce: u64) {
+        let mut channel = self.stop_resolution.lock();
+        if !channel
+            .active
+            .as_ref()
+            .is_some_and(|active| active.nonce == nonce)
+        {
+            return;
+        }
+        let terminal_boundary = channel.active.as_ref().and_then(|active| {
+            match &active.phase {
+                StopResolutionWatchPhase::Pending {
+                    first_stopped,
+                    following,
+                    ended_before_first,
+                    ..
+                } => {
+                    if first_stopped.is_some() {
+                        *following
+                    } else {
+                        *ended_before_first
+                    }
+                }
+                StopResolutionWatchPhase::GroupStopAcknowledged { following, .. } => *following,
+                StopResolutionWatchPhase::ContinuedClaimed { resolution, .. } => *resolution,
+                StopResolutionWatchPhase::ResumeInFlight { boundary, .. }
+                | StopResolutionWatchPhase::ResumeFailedAwaitingBoundary { boundary, .. }
+                | StopResolutionWatchPhase::ProbeFailedAwaitingBoundary { boundary, .. } => {
+                    *boundary
+                }
+            }
+            .filter(|outcome| Self::is_exact_stop_resolution_terminal(*outcome))
+        });
+        if let Some(boundary) = terminal_boundary
+            && let Some(stopped) = channel.active.as_ref().and_then(|active| match &active.phase {
+                StopResolutionWatchPhase::Pending { first_stopped, .. } => *first_stopped,
+                _ => None,
+            })
+            && let (Some(status), Some(observer)) = (stopped.physical_status, self.observer())
+        {
+            observer.finish_status(
+                status,
+                if matches!(boundary, StopResolutionOutcome::ExitStop { .. }) {
+                    PhysicalStatusDisposition::KernelSupersededByExitStop
+                } else {
+                    PhysicalStatusDisposition::CancellationCleanup
+                },
+            );
+        }
+        if let Some(delivery) = channel
+            .active
+            .as_ref()
+            .and_then(|active| active.delivery.physical_status)
+            && let Some(observer) = self.observer()
+        {
+            observer.record_stop_resolution_watch_closed(self.generation, delivery);
+        }
+        channel.active = None;
+        if terminal_boundary.is_some() {
+            return;
+        }
+        let changed = self.mark_terminal_error_locked(&mut channel, Errno::EPROTO);
+        drop(channel);
+        if changed {
+            self.stop_resolution_waker.wake();
+        }
+        self.status_changed.notify_all();
+        self.status_waker.wake();
+        self.exit_waiters.wake_all();
+    }
+
+    fn attach_observer(
+        &self,
+        observer: &PhysicalEventObserver,
+    ) -> Result<(), PhysicalObserverAttachError> {
+        if let Some(existing) = self.observer() {
+            return if existing.same_observer(observer) {
+                Ok(())
+            } else {
+                Err(PhysicalObserverAttachError::DifferentObserverAlreadyAttached)
+            };
+        }
+        if !observer.is_open() {
+            return Err(PhysicalObserverAttachError::ObserverClosed);
+        }
+        let _owner = self.wait_owner_lock.lock();
+        if self.wait_owner.load(Ordering::Acquire) != WAIT_OWNER_NONE
+            || self.worker_state.load(Ordering::Acquire) != WORKER_NOT_STARTED
+        {
+            return Err(PhysicalObserverAttachError::WaitAlreadyStarted);
+        }
+        match self.observer.set(observer.clone()) {
+            Ok(()) => {
+                observer.attach_generation(self.generation);
+                Ok(())
+            }
+            Err(_) => {
+                let existing = self
+                    .observer()
+                    .expect("observer OnceLock set failure retains existing observer");
+                if existing.same_observer(observer) {
+                    Ok(())
+                } else {
+                    Err(PhysicalObserverAttachError::DifferentObserverAlreadyAttached)
+                }
+            }
+        }
+    }
+
+    fn take_controller_launch_identity(
+        &self,
+        root: Pid,
+        expected: Option<&OriginalRootLaunchToken>,
+    ) -> Result<OriginalRootPreBarrierIdentity, Errno> {
+        let mut launch = self.controller_launch.lock();
+        let capability = launch.as_mut().ok_or(Errno::EPROTO)?;
+        let token = capability.token.as_ref().ok_or(Errno::EALREADY)?;
+        let expected_valid = expected.is_none_or(|expected| {
+            self.observer().is_some_and(|observer| observer.id() == expected.observer)
+                && expected.generation == self.generation
+                && expected.task == PhysicalTaskIdentity::direct_child(root)
+                && expected.controller_launch == token.launch_id()
+                && Some(expected.link) == capability.physical_link
+        });
+        if token.child() != root
+            || token.controller_tgid().as_raw() <= 0
+            || !expected_valid
+        {
+            return Err(Errno::EPROTO);
+        }
+        let (_launch_id, child, pidfd) = capability
+            .token
+            .take()
+            .ok_or(Errno::EALREADY)?
+            .into_parts();
+        debug_assert_eq!(child, root);
+        Ok(OriginalRootPreBarrierIdentity {
+            pid: root,
+            pidfd,
+            task: PhysicalTaskIdentity::direct_child(root),
+            launch: capability.physical_link,
+        })
+    }
+
+    fn controller_launch_link(&self) -> Option<PhysicalOriginalRootLaunchId> {
+        self.controller_launch
+            .lock()
+            .as_ref()
+            .and_then(|capability| capability.physical_link)
+    }
+
+    fn record_identity(&self, identity: &WorkerIdentity) {
+        let Some(observer) = self.observer() else {
+            return;
+        };
+        if self
+            .identity_recorded
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            observer.bind_identity(self.generation, identity.physical_identity());
+        }
+    }
+
+    fn record_generation_invalidation(
+        &self,
+        bound: &WorkerIdentity,
+        current: &WorkerIdentity,
+        relation: LiveGenerationRelation,
+        registry_mismatch: bool,
+    ) {
+        let Some(observer) = self.observer() else {
+            return;
+        };
+        match relation {
+            LiveGenerationRelation::Same => {
+                unreachable!("same live generation is not an invalidation cause")
+            }
+            LiveGenerationRelation::IdentityMismatch if registry_mismatch => {
+                observer.record_generation_registry_mismatch(
+                    self.generation,
+                    bound.physical_identity(),
+                    current.physical_identity(),
+                );
+            }
+            LiveGenerationRelation::IdentityMismatch => {
+                observer.record_generation_identity_mismatch(
+                    self.generation,
+                    bound.physical_identity(),
+                    current.physical_identity(),
+                );
+            }
+            LiveGenerationRelation::BoundPidfdDead => {
+                observer
+                    .record_generation_bound_pidfd_dead(self.generation, bound.physical_identity());
+            }
+            LiveGenerationRelation::CurrentPidfdDead => {
+                observer.record_generation_current_pidfd_dead(
+                    self.generation,
+                    current.physical_identity(),
+                );
+            }
         }
     }
 
@@ -702,6 +3199,21 @@ impl Event {
                         .compare_exchange(state, replacement, Ordering::AcqRel, Ordering::Acquire)
                         .is_ok()
                     {
+                        if state == EXIT_CAP_AVAILABLE
+                            && let Some(status) = PhysicalStatusId::from_raw(
+                                self.exit_physical_status.load(Ordering::Acquire),
+                            )
+                            && let Some(observer) = self.observer()
+                        {
+                            observer.record_exit_capability(
+                                status,
+                                PhysicalExitCapabilityTransition::Expired,
+                            );
+                            observer.finish_status(
+                                status,
+                                PhysicalStatusDisposition::ExitCapabilityExpired,
+                            );
+                        }
                         return state == EXIT_CAP_PENDING;
                     }
                 }
@@ -727,6 +3239,11 @@ impl Event {
                         )
                         .is_ok()
                     {
+                        if let Some(status) = PhysicalStatusId::from_raw(
+                            self.exit_physical_status.load(Ordering::Acquire),
+                        ) {
+                            self.record_exit_revoked_once(status);
+                        }
                         self.exit_waiters.wake_all();
                         return Ok(());
                     }
@@ -742,6 +3259,15 @@ impl Event {
                         )
                         .is_ok()
                     {
+                        if let Some(status) = PhysicalStatusId::from_raw(
+                            self.exit_physical_status.load(Ordering::Acquire),
+                        ) && let Some(observer) = self.observer()
+                        {
+                            observer.record_exit_capability(
+                                status,
+                                PhysicalExitCapabilityTransition::TransferredToCleanup,
+                            );
+                        }
                         self.exit_waiters.wake_all();
                         return Ok(());
                     }
@@ -754,7 +3280,30 @@ impl Event {
         }
     }
 
-    fn publish_exit_stop(&self, between_status_and_capability: impl FnOnce()) {
+    fn record_exit_revoked_once(&self, status: PhysicalStatusId) {
+        if self
+            .exit_revocation_recorded
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+            && let Some(observer) = self.observer()
+        {
+            observer.record_exit_capability(status, PhysicalExitCapabilityTransition::Revoked);
+        }
+    }
+
+    fn publish_exit_stop(
+        &self,
+        status: ObservedStatus,
+        between_status_and_capability: impl FnOnce(),
+    ) {
+        let status = self.identify_stop(status);
+        let stop_id = status
+            .logical_stop
+            .expect("ptrace exit stop must have a logical identity");
+        // Serialize the exact stopped frontier before exposing the exit
+        // capability. A controller holding an older D can therefore never arm
+        // its watcher after this later exit stop has already become visible.
+        let mut stop_resolution = self.stop_resolution.lock();
         // Publish STOPPED first. A waiter that observes this half-published
         // state is already registered and returns Pending until AVAILABLE is
         // released and wake_all runs below.
@@ -767,10 +3316,31 @@ impl Event {
         );
         debug_assert!(matches!(
             previous,
-            Ok(EXIT_PENDING) | Err(EXIT_STOPPED | EXIT_ECHILD)
+            Ok(EXIT_PENDING) | Err(EXIT_STOPPED | EXIT_ECHILD | EXIT_ERROR)
         ));
-        if previous.is_ok() {
+        let accepted = previous.is_ok();
+        if accepted {
+            self.exit_logical_stop
+                .store(stop_id.get(), Ordering::Release);
+            if let Some(id) = status.physical {
+                self.exit_physical_status.store(id.get(), Ordering::Release);
+                if let Some(observer) = self.observer() {
+                    observer.record_status_published(
+                        self.generation,
+                        id,
+                        PhysicalStatusPublication::ExitCapability,
+                    );
+                }
+            }
             between_status_and_capability();
+            let stop_resolution_changed = self.publish_stop_resolution_outcome_locked(
+                &mut stop_resolution,
+                StopResolutionOutcome::ExitStop {
+                    logical_stop: stop_id,
+                    physical_status: status.physical,
+                },
+            )
+            .0;
             let capability = self.exit_capability.compare_exchange(
                 EXIT_CAP_PENDING,
                 EXIT_CAP_AVAILABLE,
@@ -784,23 +3354,57 @@ impl Event {
                 capability,
                 Ok(EXIT_CAP_PENDING) | Err(EXIT_CAP_EXPIRED)
             ));
+            if let Some(id) = status.physical {
+                if capability.is_ok() {
+                    if let Some(observer) = self.observer() {
+                        observer.record_exit_capability(
+                            id,
+                            PhysicalExitCapabilityTransition::Published,
+                        );
+                    }
+                } else {
+                    self.record_exit_revoked_once(id);
+                }
+            }
+            drop(publication);
+            drop(stop_resolution);
+            if stop_resolution_changed {
+                self.stop_resolution_waker.wake();
+            }
+        } else {
+            drop(publication);
+            drop(stop_resolution);
         }
-        drop(publication);
         self.status_changed.notify_all();
         self.exit_waiters.wake_all();
     }
 
-    fn publish_terminal_exit_state(&self) {
+    fn publish_terminal_exit_state(&self, terminal_exit_state: i32) {
+        debug_assert!(matches!(terminal_exit_state, EXIT_ECHILD | EXIT_ERROR));
         let _publication = self.exit_publication.lock();
-        // Expire an unclaimed capability before terminal status or ECHILD
-        // becomes visible. CLAIMED is already a non-duplicating state.
+        // Expire an unclaimed capability before a terminal result becomes
+        // visible. CLAIMED is already a non-duplicating state.
         let finalizing = self.expire_unclaimed_exit_capability();
-        let _ = self.exit_status.compare_exchange(
-            EXIT_PENDING,
-            EXIT_ECHILD,
-            Ordering::Release,
-            Ordering::Acquire,
-        );
+        if terminal_exit_state == EXIT_ERROR
+            && self.exit_status.load(Ordering::Acquire) == EXIT_STOPPED
+        {
+            // A final wait can fail only after the retained exit stop was
+            // already transferred/resumed. Replace that consumed publication
+            // so held and late ExitFutures retain the causal protocol error
+            // instead of regressing to EALREADY.
+            let capability = self.exit_capability.load(Ordering::Acquire);
+            debug_assert!(matches!(capability, EXIT_CAP_CLAIMED | EXIT_CAP_EXPIRED));
+            if matches!(capability, EXIT_CAP_CLAIMED | EXIT_CAP_EXPIRED) {
+                self.exit_status.store(EXIT_ERROR, Ordering::Release);
+            }
+        } else {
+            let _ = self.exit_status.compare_exchange(
+                EXIT_PENDING,
+                terminal_exit_state,
+                Ordering::Release,
+                Ordering::Acquire,
+            );
+        }
         if finalizing {
             self.exit_capability
                 .compare_exchange(
@@ -813,35 +3417,245 @@ impl Event {
         }
     }
 
-    /// Replaces the status and notifies the notifier of the change. Returns the
-    /// old status if there was one.
-    pub fn update(&self, status: i32) -> Option<i32> {
-        if status == PTRACE_EVENT_EXIT_STOP {
-            self.publish_exit_stop(|| {});
-            return None;
+    /// Resolves a quarantined ESRCH/EIO only from evidence published by this
+    /// Event's kernel-wait path. Logical IDs supplied by cleanup callers never
+    /// enter this method and therefore cannot manufacture causal progress.
+    fn resolve_ambiguous_cleanup(&self, proof: AmbiguousCleanupResolution) {
+        #[cfg(test)]
+        if let Some(pause) = self.ambiguous_resolution_pause.lock().take() {
+            pause.captured.send(()).expect("capture resolution pause");
+            pause.resume.recv().expect("resume resolution pause");
+        }
+        let mut publication = self.exit_publication.lock();
+        let ExitStopCleanupCompletion::Ambiguous {
+            stop_id,
+            diagnostic_status,
+            attempt,
+            error: _,
+        } = publication.cleanup
+        else {
+            return;
+        };
+        let key = CleanupStopKey(stop_id);
+        let exit_state = self.exit_status.load(Ordering::Acquire);
+        if !matches!(exit_state, EXIT_STOPPED | EXIT_ERROR)
+            || LogicalStopId::from_raw(self.exit_logical_stop.load(Ordering::Acquire))
+                != Some(stop_id)
+            || PhysicalStatusId::from_raw(self.exit_physical_status.load(Ordering::Acquire))
+                != diagnostic_status
+            || publication.is_retired(key)
+        {
+            debug_assert!(false, "ambiguous exit cleanup lost its published source");
+            return;
         }
 
-        let terminal = libc::WIFEXITED(status) || libc::WIFSIGNALED(status);
+        let proof_status = match proof {
+            AmbiguousCleanupResolution::LaterStopped(status) => {
+                let Some(later_stop) = status.logical_stop else {
+                    debug_assert!(false, "trusted later stop lacks a logical identity");
+                    return;
+                };
+                if !libc::WIFSTOPPED(status.raw)
+                    || later_stop.get() <= stop_id.get()
+                    || (diagnostic_status.is_some() && status.physical == diagnostic_status)
+                {
+                    debug_assert!(false, "invalid later-stop cleanup proof");
+                    return;
+                }
+                Some((status.physical, false))
+            }
+            AmbiguousCleanupResolution::FinalStatus(status) => {
+                if !libc::WIFEXITED(status.raw) && !libc::WIFSIGNALED(status.raw) {
+                    debug_assert!(false, "nonterminal cleanup final-status proof");
+                    return;
+                }
+                if diagnostic_status.is_some() && status.physical == diagnostic_status {
+                    debug_assert!(false, "final status reused the ambiguous source identity");
+                    return;
+                }
+                Some((status.physical, true))
+            }
+            AmbiguousCleanupResolution::ProvenEchild(_) => None,
+        };
+
+        let observer = self.observer();
+        let observed_shape = match (observer, diagnostic_status, attempt) {
+            (Some(observer), Some(source), Some(attempt)) => Some((observer, source, attempt)),
+            (None, None, None) => None,
+            _ => {
+                debug_assert!(false, "ambiguous cleanup observer evidence is incomplete");
+                return;
+            }
+        };
+        match (proof, proof_status, observed_shape) {
+            (
+                AmbiguousCleanupResolution::LaterStopped(_),
+                Some((Some(successor), false)),
+                Some((_, source, _)),
+            ) if successor != source => {}
+            (
+                AmbiguousCleanupResolution::FinalStatus(_),
+                Some((Some(final_status), true)),
+                Some((_, source, _)),
+            ) if final_status != source => {}
+            (AmbiguousCleanupResolution::ProvenEchild(Some(_)), None, Some(_)) => {}
+            (AmbiguousCleanupResolution::LaterStopped(_), Some((None, false)), None)
+            | (AmbiguousCleanupResolution::FinalStatus(_), Some((None, true)), None)
+            | (AmbiguousCleanupResolution::ProvenEchild(None), None, None) => {}
+            _ => {
+                debug_assert!(false, "cleanup proof and observer provenance disagree");
+                return;
+            }
+        }
+
+        match publication.cleanup_authority {
+            CleanupAuthorityState::Vacant => {}
+            CleanupAuthorityState::Available {
+                key: available,
+                diagnostic_status: available_status,
+            } if available == key && available_status == diagnostic_status => {}
+            CleanupAuthorityState::Leased { key: leased, .. } if leased == key => {}
+            CleanupAuthorityState::Available { key: later, .. }
+            | CleanupAuthorityState::Leased { key: later, .. }
+                if later.0.get() > stop_id.get() && !publication.is_retired(later) => {}
+            CleanupAuthorityState::Available { .. }
+            | CleanupAuthorityState::Leased { .. } => {
+                debug_assert!(false, "ambiguous cleanup has unrelated live authority");
+                return;
+            }
+        }
+
+        // Completion is authoritative before rolled-back authority becomes
+        // vacant. A still-live matching lease keeps its nonce until its owner
+        // observes Finished or drops it; the retired frontier makes that drop
+        // clear the slot instead of reactivating the old stop.
+        publication.cleanup = ExitStopCleanupCompletion::Finished {
+            stop_id,
+            diagnostic_status,
+        };
+        publication.advance_retired_through(key);
+
+        if let Some((observer, _, attempt)) = observed_shape {
+            match proof {
+                AmbiguousCleanupResolution::LaterStopped(status) => {
+                    observer.resolve_ambiguous_resume_with_later_status(
+                        attempt,
+                        status
+                            .physical
+                            .expect("validated observed later-stop proof lacks status"),
+                    );
+                }
+                AmbiguousCleanupResolution::FinalStatus(status) => {
+                    observer.resolve_ambiguous_resume_with_final_status(
+                        attempt,
+                        status
+                            .physical
+                            .expect("validated observed final proof lacks status"),
+                    );
+                }
+                AmbiguousCleanupResolution::ProvenEchild(Some(wait)) => {
+                    observer.resolve_ambiguous_resume_with_proven_echild(
+                        attempt,
+                        wait,
+                    );
+                }
+                AmbiguousCleanupResolution::ProvenEchild(None) => {
+                    unreachable!("validated observed ECHILD proof lacks wait attempt")
+                }
+            }
+        }
+
+        if matches!(
+            publication.cleanup_authority,
+            CleanupAuthorityState::Available { key: available, .. } if available == key
+        ) {
+            publication.cleanup_authority = CleanupAuthorityState::Vacant;
+        }
+    }
+
+    fn update_status_locked(
+        &self,
+        stop_resolution: &mut StopResolutionChannel,
+        status: ObservedStatus,
+    ) -> StatusUpdateResult {
+        debug_assert!(!libc::WIFCONTINUED(status.raw));
+        debug_assert_ne!(status.raw, PTRACE_EVENT_EXIT_STOP);
+        let terminal = libc::WIFEXITED(status.raw) || libc::WIFSIGNALED(status.raw);
+        if is_new_child_stop(status.raw) {
+            self.revoke_continued_authority_locked(stop_resolution);
+        }
         if terminal {
-            self.publish_terminal_exit_state();
+            self.publish_terminal_exit_state(EXIT_ECHILD);
         }
         let mut state = self.status.lock();
-        let previous = if terminal {
+        let (previous, accepted) = if terminal {
             let previous = state.terminal;
-            if previous == INVALID_STATUS || previous == ECHILD_STATUS {
+            if previous.raw == INVALID_STATUS || previous.raw == ECHILD_STATUS {
                 state.terminal = status;
+                (previous, true)
             } else {
-                debug_assert_eq!(previous, status, "terminal publication changed");
+                debug_assert_eq!(previous.raw, status.raw, "terminal publication changed");
+                (previous, false)
             }
-            previous
         } else {
-            let previous = state.pending.back().copied().unwrap_or(INVALID_STATUS);
+            let previous = state
+                .pending
+                .back()
+                .copied()
+                .unwrap_or_else(|| ObservedStatus::unobserved(INVALID_STATUS));
             state.pending.push_back(status);
-            previous
+            (previous, true)
         };
+        let stop_resolution_changed = if accepted {
+            let outcome = if terminal {
+                StopResolutionOutcome::Terminal {
+                    physical_status: status.physical,
+                }
+            } else {
+                StopResolutionOutcome::Stopped {
+                    logical_stop: status
+                        .logical_stop
+                        .expect("regular stopped publication lacks logical identity"),
+                    physical_status: status.physical,
+                }
+            };
+            self.publish_stop_resolution_outcome_locked(stop_resolution, outcome).0
+        } else {
+            false
+        };
+        if accepted && let (Some(observer), Some(id)) = (self.observer(), status.physical) {
+            observer.record_status_published(
+                self.generation,
+                id,
+                if terminal {
+                    PhysicalStatusPublication::RetainedTerminal
+                } else {
+                    PhysicalStatusPublication::RegularFifo
+                },
+            );
+        }
         drop(state);
+        StatusUpdateResult {
+            previous,
+            accepted,
+            terminal,
+            stop_resolution_changed,
+        }
+    }
+
+    fn finish_status_update(&self, status: ObservedStatus, update: StatusUpdateResult) {
+        if update.accepted {
+            if update.terminal {
+                self.resolve_ambiguous_cleanup(AmbiguousCleanupResolution::FinalStatus(status));
+            } else if status.logical_stop.is_some() {
+                self.resolve_ambiguous_cleanup(AmbiguousCleanupResolution::LaterStopped(status));
+            }
+        }
+        if update.stop_resolution_changed {
+            self.stop_resolution_waker.wake();
+        }
         self.status_changed.notify_all();
-        if terminal {
+        if update.terminal {
             // A terminal publication resolves both waiter classes. ExitFuture
             // observes either the retained exit stop or typed ECHILD, while
             // WaitFuture retains the exact final status.
@@ -850,12 +3664,66 @@ impl Event {
         } else {
             self.status_waker.wake();
         }
-
-        (previous != INVALID_STATUS).then_some(previous)
     }
 
-    fn update_sync_status(&self, status: i32) {
-        if status != PTRACE_EVENT_EXIT_STOP {
+    fn update_continued_locked(
+        &self,
+        channel: &mut StopResolutionChannel,
+        status: ObservedStatus,
+    ) -> bool {
+        let (changed, route) = self.publish_stop_resolution_outcome_locked(
+            channel,
+            StopResolutionOutcome::Continued {
+                physical_status: status.physical,
+            },
+        );
+        let route = route
+            .expect("continued stop-resolution publication lacks an exact route")
+            .physical();
+        if let (Some(observer), Some(id)) = (self.observer(), status.physical) {
+            observer.record_status_published(
+                self.generation,
+                id,
+                PhysicalStatusPublication::ContinuedSideChannel { route },
+            );
+            observer.finish_status(
+                id,
+                PhysicalStatusDisposition::ContinuedSideChannel { route },
+            );
+        }
+        changed
+    }
+
+    /// Replaces the status and notifies the notifier of the change. Returns the
+    /// old status if there was one.
+    pub fn update(&self, status: impl Into<ObservedStatus>) -> Option<i32> {
+        let status = self.identify_stop(status.into());
+        if libc::WIFCONTINUED(status.raw) {
+            let changed = {
+                let mut channel = self.stop_resolution.lock();
+                self.update_continued_locked(&mut channel, status)
+            };
+            if changed {
+                self.stop_resolution_waker.wake();
+            }
+            return None;
+        }
+        if status.raw == PTRACE_EVENT_EXIT_STOP {
+            self.publish_exit_stop(status, || {});
+            return None;
+        }
+
+        let mut stop_resolution = self.stop_resolution.lock();
+        let update = self.update_status_locked(&mut stop_resolution, status);
+        drop(stop_resolution);
+        self.finish_status_update(status, update);
+
+        (update.previous.raw != INVALID_STATUS).then_some(update.previous.raw)
+    }
+
+    fn update_sync_status(&self, status: ObservedStatus) {
+        let status = self.identify_stop(status);
+        if status.raw != PTRACE_EVENT_EXIT_STOP {
             self.update(status);
             return;
         }
@@ -863,28 +3731,232 @@ impl Event {
         // A synchronous wait directly returns this stopped capability. Keep
         // the raw stop rollback-safe in the regular FIFO without separately
         // minting an ExitFuture capability for the same consumed status.
+        let mut stop_resolution = self.stop_resolution.lock();
         let mut state = self.status.lock();
         state.pending.push_back(status);
+        let stop_resolution_changed = self.publish_stop_resolution_outcome_locked(
+            &mut stop_resolution,
+            StopResolutionOutcome::Stopped {
+                logical_stop: status
+                    .logical_stop
+                    .expect("synchronous stopped publication lacks logical identity"),
+                physical_status: status.physical,
+            },
+        )
+        .0;
+        if let (Some(observer), Some(id)) = (self.observer(), status.physical) {
+            observer.record_status_published(
+                self.generation,
+                id,
+                PhysicalStatusPublication::SynchronousFifo,
+            );
+        }
         drop(state);
+        drop(stop_resolution);
+        self.resolve_ambiguous_cleanup(AmbiguousCleanupResolution::LaterStopped(status));
+        if stop_resolution_changed {
+            self.stop_resolution_waker.wake();
+        }
         self.status_changed.notify_all();
         self.status_waker.wake();
     }
 
     /// Publishes a terminal `ECHILD` observation to every kind of waiter.
     fn mark_echild(&self) {
-        self.publish_terminal_exit_state();
+        self.mark_echild_with_cause(None);
+    }
+
+    fn mark_echild_with_cause(&self, cause: Option<super::PhysicalWaitAttemptId>) {
+        self.mark_echild_with_cause_and_resolution(cause, None);
+    }
+
+    fn mark_echild_with_cause_and_resolution(
+        &self,
+        cause: Option<super::PhysicalWaitAttemptId>,
+        resolution: Option<AmbiguousCleanupResolution>,
+    ) {
+        let mut stop_resolution = self.stop_resolution.lock();
+        self.publish_terminal_exit_state(EXIT_ECHILD);
         let mut state = self.status.lock();
-        if state.terminal == INVALID_STATUS {
-            state.terminal = ECHILD_STATUS;
+        if state.terminal.raw == INVALID_STATUS {
+            state.terminal = ObservedStatus::unobserved(ECHILD_STATUS);
+        }
+        if let Some(observer) = self.observer() {
+            observer.record_synthetic_echild(self.generation, cause);
         }
         drop(state);
+        let stop_resolution_changed = self.publish_stop_resolution_outcome_locked(
+            &mut stop_resolution,
+            StopResolutionOutcome::GenerationEnded {
+                error: Errno::ECHILD,
+            },
+        )
+        .0;
+        if let Some(resolution) = resolution {
+            // The exact synthetic ECHILD marker is part of the proof and must
+            // precede the causal disposition, while both remain before wakes.
+            self.resolve_ambiguous_cleanup(resolution);
+        }
+        drop(stop_resolution);
+        if stop_resolution_changed {
+            self.stop_resolution_waker.wake();
+        }
         self.status_changed.notify_all();
         self.status_waker.wake();
         self.exit_waiters.wake_all();
     }
 
+    fn mark_terminal_error_locked(
+        &self,
+        stop_resolution: &mut StopResolutionChannel,
+        error: Errno,
+    ) -> bool {
+        // The first retained error is the cross-plane delivery cutoff. Pollers
+        // serialize their final capability claim through this same mutex, so
+        // no new typed status/exit capability can linearize after this store.
+        // Later cleanup errors must never replace the causal failure.
+        let mut terminal_error = self.terminal_error.lock();
+        if terminal_error.is_none() {
+            *terminal_error = Some(error);
+        }
+        drop(terminal_error);
+        self.publish_terminal_exit_state(EXIT_ERROR);
+        let mut state = self.status.lock();
+        if matches!(state.terminal.raw, INVALID_STATUS | ECHILD_STATUS) {
+            state.terminal = ObservedStatus::unobserved(TERMINAL_ERROR_STATUS);
+        } else {
+            debug_assert_eq!(state.terminal.raw, TERMINAL_ERROR_STATUS);
+        }
+        drop(state);
+        self.publish_stop_resolution_outcome_locked(
+            stop_resolution,
+            StopResolutionOutcome::GenerationEnded { error },
+        )
+        .0
+    }
+
+    fn mark_terminal_error(&self, error: Errno) {
+        let mut stop_resolution = self.stop_resolution.lock();
+        let stop_resolution_changed =
+            self.mark_terminal_error_locked(&mut stop_resolution, error);
+        drop(stop_resolution);
+        if stop_resolution_changed {
+            self.stop_resolution_waker.wake();
+        }
+        self.status_changed.notify_all();
+        self.status_waker.wake();
+        self.exit_waiters.wake_all();
+    }
+
+    fn retained_terminal_error(&self) -> Errno {
+        self.terminal_error.lock().unwrap_or(Errno::EIO)
+    }
+
+    fn sticky_terminal_error(&self) -> Option<Errno> {
+        *self.terminal_error.lock()
+    }
+
+    fn install_wait_failure_cleanup_transition(
+        &self,
+        source_status: Option<PhysicalStatusId>,
+        controller_resume_required: bool,
+    ) {
+        self.install_wait_failure_cleanup_transition_inner(
+            None,
+            source_status,
+            controller_resume_required,
+        );
+    }
+
+    fn install_wait_failure_cleanup_stop(&self, stopped: ObservedStatus) {
+        debug_assert!(libc::WIFSTOPPED(stopped.raw));
+        self.install_wait_failure_cleanup_transition_inner(
+            stopped.logical_stop,
+            stopped.physical,
+            true,
+        );
+    }
+
+    fn install_wait_failure_cleanup_transition_inner(
+        &self,
+        source_logical_stop: Option<LogicalStopId>,
+        source_status: Option<PhysicalStatusId>,
+        controller_resume_required: bool,
+    ) {
+        let mut phase = self.wait_failure_cleanup.lock();
+        debug_assert!(matches!(*phase, WaitFailureCleanupPhase::Idle));
+        *phase = if controller_resume_required {
+            WaitFailureCleanupPhase::AwaitingController {
+                source_logical_stop,
+                source_status,
+                tolerated_resume: None,
+            }
+        } else {
+            WaitFailureCleanupPhase::Ready {
+                source_logical_stop,
+                source_status,
+                deferred: source_status.map(|status| DeferredCleanupDisposition { status }),
+                tolerated_resume: None,
+                controller_resume_succeeded: false,
+            }
+        };
+        self.wait_failure_cleanup_changed.notify_all();
+    }
+
+    fn take_wait_failure_cleanup_transition(
+        &self,
+    ) -> (
+        Option<DeferredCleanupDisposition>,
+        Option<(PhysicalResumeAttempt, Errno)>,
+        bool,
+    ) {
+        let mut phase = self.wait_failure_cleanup.lock();
+        loop {
+            match *phase {
+                WaitFailureCleanupPhase::AwaitingController { .. } => {
+                    self.wait_failure_cleanup_changed.wait(&mut phase);
+                }
+                WaitFailureCleanupPhase::Ready {
+                    deferred,
+                    tolerated_resume,
+                    controller_resume_succeeded,
+                    ..
+                } => {
+                    *phase = WaitFailureCleanupPhase::Idle;
+                    return (deferred, tolerated_resume, controller_resume_succeeded);
+                }
+                WaitFailureCleanupPhase::Idle => {
+                    unreachable!("wait-failure cleanup transition was not installed")
+                }
+            }
+        }
+    }
+
     fn is_terminal(&self) -> bool {
-        self.status.lock().terminal != INVALID_STATUS
+        self.status.lock().terminal.raw != INVALID_STATUS
+    }
+
+    fn reserve_status<'a>(
+        &'a self,
+        status: ObservedStatus,
+        state: Option<MutexGuard<'a, StatusState>>,
+    ) -> StatusReservation<'a> {
+        let reservation = match (self.observer(), status.physical) {
+            (Some(observer), Some(physical)) => {
+                let reservation = observer.next_reservation();
+                observer.record_reserved(self.generation, reservation, physical);
+                Some(reservation)
+            }
+            _ => None,
+        };
+        StatusReservation {
+            status,
+            reservation,
+            event: self,
+            state,
+            cleanup_rollback: Cell::new(false),
+            completed: false,
+        }
     }
 
     /// Reserves the next status without removing a fallibly decoded FIFO front.
@@ -892,23 +3964,31 @@ impl Event {
         // Register the waker *before* checking the status to avoid a race condition.
         self.status_waker.register(waker);
 
+        if let Some(error) = self.sticky_terminal_error() {
+            return Poll::Ready(Err(error));
+        }
+
+        #[cfg(test)]
+        if let Some(pause) = self.status_after_error_check_pause.lock().take()
+            && pause.captured.send(()).is_ok()
+        {
+            let _ = pause.resume.recv();
+        }
+
         let state = self.status.lock();
         if let Some(status) = state.pending.front().copied() {
-            return Poll::Ready(Ok(StatusReservation {
-                status,
-                state: Some(state),
-            }));
+            return Poll::Ready(Ok(self.reserve_status(status, Some(state))));
         }
-        match state.terminal {
+        match state.terminal.raw {
             INVALID_STATUS => Poll::Pending,
             ECHILD_STATUS => Poll::Ready(Err(Errno::ECHILD)),
-            status => {
+            TERMINAL_ERROR_STATUS => Poll::Ready(Err(self.retained_terminal_error())),
+            _ => {
                 // Final status is immutable so old state generations retain
                 // the actual exit code or terminating signal after removal.
-                Poll::Ready(Ok(StatusReservation {
-                    status,
-                    state: None,
-                }))
+                let status = state.terminal;
+                drop(state);
+                Poll::Ready(Ok(self.reserve_status(status, None)))
             }
         }
     }
@@ -917,7 +3997,11 @@ impl Event {
     fn poll_status(&self, waker: &Waker) -> Poll<Result<i32, Errno>> {
         match self.poll_status_reservation(waker) {
             Poll::Ready(Ok(reservation)) => {
-                let status = reservation.status;
+                let terminal_error = self.terminal_error.lock();
+                if let Some(error) = *terminal_error {
+                    return Poll::Ready(Err(error));
+                }
+                let status = reservation.raw();
                 reservation.commit();
                 Poll::Ready(Ok(status))
             }
@@ -935,7 +4019,7 @@ impl Event {
             if !state.pending.is_empty() {
                 return Some(state);
             }
-            if state.terminal != INVALID_STATUS {
+            if state.terminal.raw != INVALID_STATUS {
                 return None;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -962,13 +4046,17 @@ impl Event {
     /// commit or restore the prior owner.
     fn begin_status_return(
         &self,
-        status: i32,
+        status: ObservedStatus,
         current_owner: u8,
         returning_owner: u8,
     ) -> ReturnTransactionStart<'_> {
         let _guard = self.wait_owner_lock.lock();
-        if !libc::WIFEXITED(status)
-            && !libc::WIFSIGNALED(status)
+        let terminal_error = self.terminal_error.lock();
+        if let Some(error) = *terminal_error {
+            return ReturnTransactionStart::TerminalError(error);
+        }
+        if !libc::WIFEXITED(status.raw)
+            && !libc::WIFSIGNALED(status.raw)
             && (self.cleanup_cancel_requested.load(Ordering::Acquire)
                 || self.cleanup_claim_waiters.load(Ordering::Acquire) != 0)
         {
@@ -1114,11 +4202,16 @@ impl Event {
         }
     }
 
-    fn decode_status_return<T>(
+    fn decode_status_return<'a, T>(
         &self,
-        reservation: StatusReservation<'_>,
-        decode: impl FnOnce(i32) -> Result<T, Error>,
-    ) -> Result<StatusReturn<T>, Error> {
+        reservation: StatusReservation<'a>,
+        decode: impl FnOnce(
+            i32,
+            Option<PhysicalStatusId>,
+            Option<LogicalStopId>,
+        ) -> Result<T, Error>,
+    ) -> Result<StatusReturn<'a, T>, Error> {
+        reservation.begin_decode(PhysicalDecodeOwner::Notifier);
         let transaction = match self.begin_status_return(
             reservation.status,
             WAIT_OWNER_NOTIFIER,
@@ -1126,10 +4219,27 @@ impl Event {
         ) {
             ReturnTransactionStart::Begun(transaction) => transaction,
             ReturnTransactionStart::Cancelled => {
-                return Ok(StatusReturn::Cancelled(reservation.status));
+                reservation.finish_decode(
+                    PhysicalDecodeOutcome::Cancelled,
+                    PhysicalDecodeOwner::Notifier,
+                );
+                return Ok(StatusReturn::Cancelled(CancelledStatusReservation {
+                    reservation: Some(reservation),
+                }));
+            }
+            ReturnTransactionStart::TerminalError(error) => {
+                reservation.finish_decode(
+                    PhysicalDecodeOutcome::Cancelled,
+                    PhysicalDecodeOwner::Notifier,
+                );
+                return Err(error.into());
             }
         };
-        let decoded = match decode(reservation.status) {
+        let decoded = match decode(
+            reservation.raw(),
+            reservation.physical(),
+            reservation.logical_stop(),
+        ) {
             Ok(decoded) => decoded,
             // "Death under ptrace" race (see `man 2 ptrace`): the tracee died
             // between the notifier's `waitid` latching this ptrace-event stop and
@@ -1147,6 +4257,13 @@ impl Event {
             // is the async-only liveness fix: unlike the synchronous path there
             // is no cleanup claimant to hand the tracee off to.
             Err(error @ Error::Died(_)) => {
+                reservation.finish_decode(
+                    PhysicalDecodeOutcome::DiedConsumed,
+                    PhysicalDecodeOwner::Notifier,
+                );
+                if let (Some(observer), Some(status)) = (self.observer(), reservation.physical()) {
+                    observer.finish_status(status, PhysicalStatusDisposition::DecodeDied);
+                }
                 reservation.commit();
                 transaction.commit(WAIT_OWNER_NOTIFIER);
                 return Err(error);
@@ -1164,8 +4281,18 @@ impl Event {
             // mirrors the synchronous path's rollback-and-wake-cleanup contract;
             // consuming ANY error was over-broad, symmetric to the original
             // blanket-commit bug on the sync path.
-            Err(error) => return Err(error),
+            Err(error) => {
+                reservation.finish_decode(
+                    PhysicalDecodeOutcome::RetryRolledBack,
+                    PhysicalDecodeOwner::Notifier,
+                );
+                return Err(error);
+            }
         };
+        reservation.finish_decode(
+            PhysicalDecodeOutcome::Returned,
+            PhysicalDecodeOwner::Notifier,
+        );
         reservation.commit();
         transaction.commit(WAIT_OWNER_NOTIFIER);
         Ok(StatusReturn::Returned(decoded))
@@ -1174,58 +4301,67 @@ impl Event {
     fn wait_status_reservation_sync(&self) -> Result<StatusReservation<'_>, Errno> {
         let mut state = self.status.lock();
         loop {
-            if let Some(status) = state.pending.front().copied() {
-                return Ok(StatusReservation {
-                    status,
-                    state: Some(state),
-                });
+            if let Some(error) = self.sticky_terminal_error() {
+                return Err(error);
             }
-            match state.terminal {
+            if let Some(status) = state.pending.front().copied() {
+                return Ok(self.reserve_status(status, Some(state)));
+            }
+            match state.terminal.raw {
                 INVALID_STATUS => self.status_changed.wait(&mut state),
                 ECHILD_STATUS => return Err(Errno::ECHILD),
-                status => {
-                    return Ok(StatusReservation {
-                        status,
-                        state: None,
-                    });
+                TERMINAL_ERROR_STATUS => return Err(self.retained_terminal_error()),
+                _ => {
+                    let status = state.terminal;
+                    drop(state);
+                    return Ok(self.reserve_status(status, None));
                 }
             }
         }
     }
 
     fn try_status_reservation_sync(&self) -> Option<Result<StatusReservation<'_>, Errno>> {
+        if let Some(error) = self.sticky_terminal_error() {
+            return Some(Err(error));
+        }
         let state = self.status.lock();
         if let Some(status) = state.pending.front().copied() {
-            return Some(Ok(StatusReservation {
-                status,
-                state: Some(state),
-            }));
+            return Some(Ok(self.reserve_status(status, Some(state))));
         }
-        match state.terminal {
+        match state.terminal.raw {
             INVALID_STATUS => None,
             ECHILD_STATUS => Some(Err(Errno::ECHILD)),
-            status => Some(Ok(StatusReservation {
-                status,
-                state: None,
-            })),
+            TERMINAL_ERROR_STATUS => Some(Err(self.retained_terminal_error())),
+            _ => {
+                let status = state.terminal;
+                drop(state);
+                Some(Ok(self.reserve_status(status, None)))
+            }
         }
     }
 
     fn try_terminal_reservation_sync(&self) -> Option<Result<StatusReservation<'_>, Errno>> {
+        if let Some(error) = self.sticky_terminal_error() {
+            return Some(Err(error));
+        }
         let state = self.status.lock();
-        match state.terminal {
+        match state.terminal.raw {
             INVALID_STATUS => None,
             ECHILD_STATUS => Some(Err(Errno::ECHILD)),
-            status => Some(Ok(StatusReservation {
-                status,
-                state: None,
-            })),
+            TERMINAL_ERROR_STATUS => Some(Err(self.retained_terminal_error())),
+            _ => {
+                let status = state.terminal;
+                drop(state);
+                Some(Ok(self.reserve_status(status, None)))
+            }
         }
     }
 
-    fn finish_sync_terminal(&self) {
+    fn finish_sync_terminal(self: &Arc<Self>, pid: Pid) {
         if self.try_begin_unstarted_completion() {
-            self.mark_worker_done();
+            self.prepare_worker_done();
+            NOTIFIER.remove(pid, self);
+            self.publish_worker_done();
         } else {
             debug_assert_eq!(self.worker_state.load(Ordering::Acquire), WORKER_DONE);
         }
@@ -1332,6 +4468,9 @@ impl Event {
                 Ordering::Acquire,
             )
             .expect("worker start state changed before publication");
+        if let Some(observer) = self.observer() {
+            observer.record_worker_started(self.generation);
+        }
         self.notify_wait_owner_change();
     }
 
@@ -1367,9 +4506,42 @@ impl Event {
         finishing
     }
 
-    fn mark_worker_done(&self) {
-        let previous = self.worker_state.swap(WORKER_DONE, Ordering::AcqRel);
-        debug_assert!(matches!(previous, WORKER_RUNNING | WORKER_FINISHING));
+    fn prepare_worker_done(&self) {
+        match self.worker_state.compare_exchange(
+            WORKER_RUNNING,
+            WORKER_FINISHING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(WORKER_RUNNING) | Err(WORKER_FINISHING) => {}
+            Ok(state) | Err(state) => {
+                panic!("worker completion began from invalid state {state}")
+            }
+        }
+        if let Some(observer) = self.observer() {
+            observer.record_generation_finished(self.generation);
+        }
+        self.notify_wait_owner_change();
+    }
+
+    fn prepare_unstarted_worker_done_after_external_finish(&self) {
+        assert_eq!(
+            self.worker_state.load(Ordering::Acquire),
+            WORKER_FINISHING,
+            "unstarted completion was not preclaimed"
+        );
+        self.notify_wait_owner_change();
+    }
+
+    fn publish_worker_done(&self) {
+        self.worker_state
+            .compare_exchange(
+                WORKER_FINISHING,
+                WORKER_DONE,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .expect("worker completion was not prepared before DONE publication");
         self.worker_done_changed.notify_all();
         self.notify_wait_owner_change();
     }
@@ -1401,6 +4573,10 @@ impl Event {
         self.exit_waiters.register(waiter, waker);
 
         loop {
+            let terminal_error = self.terminal_error.lock();
+            if let Some(error) = *terminal_error {
+                return Poll::Ready(Err(error));
+            }
             match self.exit_status.load(Ordering::Acquire) {
                 EXIT_STOPPED => match self.exit_capability.load(Ordering::Acquire) {
                     EXIT_CAP_AVAILABLE => {
@@ -1414,6 +4590,15 @@ impl Event {
                             )
                             .is_ok()
                         {
+                            if let Some(status) = PhysicalStatusId::from_raw(
+                                self.exit_physical_status.load(Ordering::Acquire),
+                            ) && let Some(observer) = self.observer()
+                            {
+                                observer.record_exit_capability(
+                                    status,
+                                    PhysicalExitCapabilityTransition::Claimed,
+                                );
+                            }
                             return Poll::Ready(Ok(()));
                         }
                     }
@@ -1424,6 +4609,7 @@ impl Event {
                     state => unreachable!("invalid exit capability state {state}"),
                 },
                 EXIT_ECHILD => return Poll::Ready(Err(Errno::ECHILD)),
+                EXIT_ERROR => return Poll::Ready(Err(Errno::EIO)),
                 EXIT_PENDING => match self.exit_capability.load(Ordering::Acquire) {
                     EXIT_CAP_PENDING | EXIT_CAP_FINALIZING => return Poll::Pending,
                     EXIT_CAP_AVAILABLE => {
@@ -1433,7 +4619,7 @@ impl Event {
                         // Pending only for the defensively modeled old order.
                         match self.exit_status.load(Ordering::Acquire) {
                             EXIT_PENDING => return Poll::Pending,
-                            EXIT_STOPPED | EXIT_ECHILD => continue,
+                            EXIT_STOPPED | EXIT_ECHILD | EXIT_ERROR => continue,
                             state => unreachable!("invalid exit publication state {state}"),
                         }
                     }
@@ -1445,6 +4631,7 @@ impl Event {
                         // may predate it.
                         return match self.exit_status.load(Ordering::Acquire) {
                             EXIT_ECHILD => Poll::Ready(Err(Errno::ECHILD)),
+                            EXIT_ERROR => Poll::Ready(Err(Errno::EIO)),
                             EXIT_PENDING | EXIT_STOPPED => Poll::Ready(Err(Errno::EALREADY)),
                             state => unreachable!("invalid exit publication state {state}"),
                         };
@@ -1470,8 +4657,17 @@ pub(super) struct EventHandle(Arc<EventGeneration>);
 
 impl EventHandle {
     pub(super) fn new() -> Self {
+        Self::new_with_event(Event::new())
+    }
+
+    pub(super) fn from_controller_launch(token: ControllerSpawnToken) -> Self {
+        let launch = ControllerLaunchCapability::from_token(token);
+        Self::new_with_event(Event::new_with_controller_launch(Some(launch)))
+    }
+
+    fn new_with_event(event: Event) -> Self {
         Self(Arc::new(EventGeneration {
-            event: Arc::new(Event::new()),
+            event: Arc::new(event),
             identity: OnceLock::new(),
             authoritative: OnceLock::new(),
         }))
@@ -1511,7 +4707,544 @@ impl EventHandle {
     }
 
     fn bind_identity(&self, identity: Arc<WorkerIdentity>) -> Result<(), Arc<WorkerIdentity>> {
-        self.resolved().0.identity.set(identity)
+        let resolved = self.resolved();
+        let result = resolved.0.identity.set(identity);
+        if let Some(identity) = resolved.0.identity.get() {
+            resolved.0.event.record_identity(identity);
+        }
+        result
+    }
+
+    pub(super) fn attach_physical_observer(
+        &self,
+        observer: &PhysicalEventObserver,
+    ) -> Result<(), PhysicalObserverAttachError> {
+        let resolved = self.resolved();
+        resolved.0.event.attach_observer(observer)?;
+        if let Some(identity) = resolved.0.identity.get() {
+            resolved.0.event.record_identity(identity);
+        }
+        Ok(())
+    }
+
+    pub(super) fn attach_original_root_physical_observer(
+        &self,
+        root: Pid,
+        observer: &PhysicalEventObserver,
+    ) -> Result<OriginalRootLaunchToken, PhysicalObserverAttachError> {
+        let resolved = self.resolved();
+        let event = resolved.0.event.as_ref();
+        let mut launch = event.controller_launch.lock();
+        let current_tgid = Pid::from_raw(unsafe { libc::getpid() });
+        let current_tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) as i32 });
+        let capability = launch
+            .as_mut()
+            .filter(|capability| {
+                capability.token.as_ref().is_some_and(|token| {
+                    token.child() == root
+                        && token.child().as_raw() > 0
+                        && token.controller_tgid() == current_tgid
+                        && token.controller_tid() == current_tid
+                })
+                    && capability.physical_link.is_none()
+            })
+            .ok_or(PhysicalObserverAttachError::InvalidOriginalRootLaunch)?;
+        let controller_launch = capability
+            .token
+            .as_ref()
+            .expect("validated controller launch token disappeared")
+            .launch_id();
+        let reservation = observer.reserve_original_root_launch()?;
+        event.attach_observer(observer)?;
+        let token = reservation.commit(
+            PhysicalTaskIdentity::direct_child(root),
+            event.generation,
+            controller_launch,
+        );
+        capability.physical_link = Some(token.link);
+        Ok(token)
+    }
+
+    pub(super) fn physical_observer(&self) -> Option<PhysicalEventObserver> {
+        self.resolved().0.event.observer().cloned()
+    }
+
+    pub(super) fn physical_generation(&self) -> PhysicalEventGenerationId {
+        self.resolved().0.event.generation
+    }
+
+    fn original_root_cleanup_error(
+        &self,
+        root: Pid,
+        cause: Errno,
+        cleanup_error: Option<Errno>,
+    ) -> OriginalRootStartupError {
+        match cleanup_error {
+            None => OriginalRootStartupError::CleanedExactGeneration { cause },
+            Some(cleanup_error) => OriginalRootStartupError::CleanupIncomplete {
+                cause,
+                cleanup_error,
+                authority: OriginalRootCleanupAuthority {
+                    pid: root,
+                    event: self.clone(),
+                    cause,
+                },
+            },
+        }
+    }
+
+    pub(super) fn cleanup_failed_controller_launch(
+        &self,
+        root: Pid,
+        cause: Errno,
+    ) -> Result<(), OriginalRootStartupError> {
+        match self.continue_original_root_cleanup(root, cause) {
+            Ok(()) => Ok(()),
+            Err(cleanup_error) => Err(OriginalRootStartupError::CleanupIncomplete {
+                cause,
+                cleanup_error,
+                authority: OriginalRootCleanupAuthority {
+                    pid: root,
+                    event: self.clone(),
+                    cause,
+                },
+            }),
+        }
+    }
+
+    pub(super) fn prepare_original_root_startup(
+        &self,
+        root: Pid,
+        launch: OriginalRootLaunchToken,
+    ) -> Result<OriginalRootStartup, OriginalRootStartupError> {
+        let event = self.0.event.as_ref();
+        let launch_valid = event.observer().is_some_and(|observer| {
+            observer.id() == launch.observer
+                && launch.generation == event.generation
+                && launch.task == PhysicalTaskIdentity::direct_child(root)
+        });
+        let launch_identity = launch.link;
+        let controller_tgid = launch.controller_launch.controller_tgid();
+        if !launch_valid {
+            return Err(OriginalRootStartupError::BeforeBarrier(Errno::EPROTO));
+        }
+        if self.0.authoritative.get().is_some() {
+            return Err(OriginalRootStartupError::BeforeBarrier(Errno::EALREADY));
+        }
+        if event.observer().is_none()
+            || event.wait_owner.load(Ordering::Acquire) != WAIT_OWNER_NONE
+            || event.worker_state.load(Ordering::Acquire) != WORKER_NOT_STARTED
+        {
+            return Err(OriginalRootStartupError::BeforeBarrier(Errno::EBUSY));
+        }
+        let pre_barrier = event
+            .take_controller_launch_identity(root, Some(&launch))
+            .map_err(OriginalRootStartupError::BeforeBarrier)?;
+        let captured_pidfd = match pre_barrier.pidfd.try_clone() {
+            Ok(pidfd) => pidfd,
+            Err(error) => {
+                let cause = io_errno(error);
+                let cleanup = consume_pre_barrier_generation(event, pre_barrier, cause).err();
+                return Err(self.original_root_cleanup_error(root, cause, cleanup));
+            }
+        };
+        let before = match WorkerIdentity::capture_process_with_pidfd(root, captured_pidfd) {
+            Ok(identity) => Arc::new(identity),
+            Err(cause) => {
+                let cleanup = consume_pre_barrier_generation(event, pre_barrier, cause).err();
+                return Err(self.original_root_cleanup_error(root, cause, cleanup));
+            }
+        };
+        let before_valid = before.pid == root
+            && before.snapshot.tgid == root
+            && before.snapshot.ppid == controller_tgid
+            && before.pidfd_is_live() == Ok(true)
+            && worker_group_is_singleton(root) == Ok(true)
+            && (before.snapshot.tracer_pid.as_raw() == 0
+                || tracer_is_current(before.snapshot.tracer_pid) == Ok(true));
+        if !before_valid {
+            let cause = Errno::EPROTO;
+            let cleanup = consume_pre_barrier_generation(event, pre_barrier, cause).err();
+            return Err(self.original_root_cleanup_error(root, cause, cleanup));
+        }
+
+        let barrier = match peek_original_root_startup_barrier(event, &before) {
+            Ok(barrier) => barrier,
+            Err(error) => {
+                let cleanup = if let Some(barrier) = error.retained {
+                    prepare_startup_barrier_fallback(
+                        event,
+                        root,
+                        launch_identity,
+                        Arc::clone(&before),
+                        barrier,
+                    )
+                    .map_err(OriginalRootStartupError::BeforeBarrier)?;
+                    consume_retained_startup_barrier(event, &before, Some(barrier), true).err()
+                } else {
+                    consume_pre_barrier_generation(event, pre_barrier, error.cause).err()
+                };
+                return Err(self.original_root_cleanup_error(root, error.cause, cleanup));
+            }
+        };
+        prepare_startup_barrier_fallback(
+            event,
+            root,
+            launch_identity,
+            Arc::clone(&before),
+            barrier,
+        )
+        .map_err(OriginalRootStartupError::BeforeBarrier)?;
+        let raw_status = barrier.raw_status.ok_or_else(|| {
+            let cleanup =
+                consume_retained_startup_barrier(event, &before, Some(barrier), true).err();
+            self.original_root_cleanup_error(root, Errno::EPROTO, cleanup)
+        })?;
+        if libc::WIFEXITED(raw_status) || libc::WIFSIGNALED(raw_status) {
+            return match consume_retained_startup_barrier(
+                event,
+                &before,
+                Some(barrier),
+                false,
+            ) {
+                Ok(StartupBarrierConsumeOutcome::Terminal(status)) => {
+                    Ok(OriginalRootStartup::Exited(
+                        root,
+                        event.generation,
+                        status,
+                    ))
+                }
+                Ok(StartupBarrierConsumeOutcome::Cleaned) => Err(
+                    OriginalRootStartupError::CleanedExactGeneration {
+                        cause: Errno::EPROTO,
+                    },
+                ),
+                Err(cleanup) => Err(self.original_root_cleanup_error(
+                    root,
+                    cleanup,
+                    Some(cleanup),
+                )),
+            };
+        }
+        if !libc::WIFSTOPPED(raw_status) {
+            let cleanup =
+                consume_retained_startup_barrier(event, &before, Some(barrier), true).err();
+            return Err(self.original_root_cleanup_error(root, Errno::EPROTO, cleanup));
+        }
+
+        let post_barrier_pidfd = match before.pidfd.try_clone() {
+            Ok(pidfd) => pidfd,
+            Err(error) => {
+                let cause = io_errno(error);
+                let cleanup =
+                    consume_retained_startup_barrier(event, &before, Some(barrier), true).err();
+                return Err(self.original_root_cleanup_error(root, cause, cleanup));
+            }
+        };
+        let identity = match WorkerIdentity::capture_process_with_pidfd(root, post_barrier_pidfd) {
+            Ok(identity)
+                if before.same_generation(&identity)
+                    && identity.pid == root
+                    && identity.snapshot.tgid == root
+                    && identity.snapshot.ppid == controller_tgid
+                    && identity.pidfd_is_live() == Ok(true)
+                    && worker_group_is_singleton(root) == Ok(true)
+                    && tracer_is_current(identity.snapshot.tracer_pid) == Ok(true) =>
+            {
+                Arc::new(identity)
+            }
+            Ok(_) => {
+                let cleanup =
+                    consume_retained_startup_barrier(event, &before, Some(barrier), true).err();
+                return Err(self.original_root_cleanup_error(root, Errno::EPROTO, cleanup));
+            }
+            Err(cause) => {
+                let cleanup =
+                    consume_retained_startup_barrier(event, &before, Some(barrier), true).err();
+                return Err(self.original_root_cleanup_error(root, cause, cleanup));
+            }
+        };
+        if let Err(bound) = self.bind_identity(Arc::clone(&identity))
+            && !bound.same_generation(&identity)
+        {
+            let cleanup =
+                consume_retained_startup_barrier(event, &identity, Some(barrier), true).err();
+            return Err(self.original_root_cleanup_error(root, Errno::EBUSY, cleanup));
+        }
+        let key = (
+            root.as_raw(),
+            identity.snapshot.start_time,
+            identity.proc_inode,
+        );
+        let mut authorities = CONTINUED_AUTHORITY_GENERATIONS.lock();
+        authorities.retain(|_, event| event.strong_count() != 0);
+        if let Some(existing) = authorities.get(&key).and_then(Weak::upgrade)
+            && !Arc::ptr_eq(&existing, &self.0.event)
+        {
+            drop(authorities);
+            let cleanup =
+                consume_retained_startup_barrier(event, &identity, Some(barrier), true).err();
+            return Err(self.original_root_cleanup_error(root, Errno::EBUSY, cleanup));
+        }
+        let proof = match OriginalRootStartupIdentity::duplicate(event.generation, &identity) {
+            Ok(proof) => proof,
+            Err(cause) => {
+                drop(authorities);
+                let cleanup =
+                    consume_retained_startup_barrier(event, &identity, Some(barrier), true).err();
+                return Err(self.original_root_cleanup_error(root, cause, cleanup));
+            }
+        };
+        if let Err(cause) = self
+            .0
+            .event
+            .enable_continued_authority(root, &identity, barrier)
+        {
+            drop(authorities);
+            let cleanup =
+                consume_retained_startup_barrier(event, &identity, Some(barrier), true).err();
+            return Err(self.original_root_cleanup_error(root, cause, cleanup));
+        }
+        authorities.insert(key, Arc::downgrade(&self.0.event));
+        Ok(OriginalRootStartup::Ready(proof))
+    }
+
+    pub(super) fn terminate_unregistered_original_root(
+        &self,
+        root: Pid,
+        cause: Errno,
+    ) -> Result<(), Errno> {
+        let event = self.0.event.as_ref();
+        let (barrier, barrier_consumed) = {
+            let channel = event.stop_resolution.lock();
+            (channel.startup_barrier, channel.startup_barrier_consumed)
+        };
+        if barrier_consumed {
+            return Err(Errno::EALREADY);
+        }
+
+        if let Some(identity) = self.identity() {
+            if identity.pid != root {
+                return Err(Errno::EPROTO);
+            }
+            if event.observer().is_some() {
+                if barrier.is_none() {
+                    let mut retained = event.unstarted_cleanup_identity.lock();
+                    if retained.is_none() {
+                        *retained = Some(OriginalRootPreBarrierIdentity {
+                            pid: identity.pid,
+                            pidfd: identity.pidfd.try_clone().map_err(io_errno)?,
+                            task: identity.physical_identity(),
+                            launch: event.controller_launch_link(),
+                        });
+                    }
+                    drop(retained);
+                    reserve_startup_setup_cleanup(event, cause)?;
+                    return continue_reserved_startup_barrier_cleanup(event).map(drop);
+                }
+                return consume_startup_barrier_with_pidfd(
+                    event,
+                    root,
+                    identity.pidfd.as_raw_fd(),
+                    identity.physical_identity(),
+                    barrier,
+                    true,
+                )
+                .map(drop);
+            }
+            return consume_unobserved_startup_generation(
+                event,
+                root,
+                identity.pidfd.as_raw_fd(),
+            )
+            .map(drop);
+        }
+
+        let mut retained = event.unstarted_cleanup_identity.lock();
+        if retained.is_none() {
+            *retained = Some(event.take_controller_launch_identity(root, None)?);
+        }
+        let identity = retained.as_ref().ok_or(Errno::EPROTO)?;
+        if identity.pid != root {
+            return Err(Errno::EPROTO);
+        }
+        if event.observer().is_some() {
+            if barrier.is_none() {
+                drop(retained);
+                reserve_startup_setup_cleanup(event, cause)?;
+                return continue_reserved_startup_barrier_cleanup(event).map(drop);
+            }
+            let pidfd = identity.pidfd.as_raw_fd();
+            let task = identity.physical_identity();
+            drop(retained);
+            consume_startup_barrier_with_pidfd(
+                event,
+                root,
+                pidfd,
+                task,
+                barrier,
+                true,
+            )
+            .map(drop)
+        } else {
+            consume_unobserved_startup_generation(event, root, identity.pidfd.as_raw_fd())
+                .map(drop)
+        }
+    }
+
+    fn continue_original_root_cleanup(&self, root: Pid, cause: Errno) -> Result<(), Errno> {
+        if self.0.event.startup_barrier_cleanup.lock().is_some() {
+            return continue_startup_barrier_cleanup(&self.0.event).map(drop);
+        }
+        self.terminate_unregistered_original_root(root, cause)
+    }
+
+    pub(super) fn continued_authority_is_live(&self) -> bool {
+        self.resolved().0.event.continued_authority_is_live()
+    }
+
+    pub(super) fn revoke_continued_authority(&self) {
+        self.resolved().0.event.revoke_continued_authority();
+    }
+
+    pub(super) fn allocate_logical_stop(&self) -> LogicalStopId {
+        self.event().allocate_logical_stop()
+    }
+
+    pub(super) fn physical_task_identity(&self, pid: Pid) -> PhysicalTaskIdentity {
+        self.resolved().0.identity.get().map_or_else(
+            || PhysicalTaskIdentity::direct_child(pid),
+            |identity| identity.physical_identity(),
+        )
+    }
+
+    pub(super) fn continue_claimed_exit_stop(
+        &self,
+        pid: Pid,
+        stop_id: LogicalStopId,
+        diagnostic_status: Option<PhysicalStatusId>,
+        signal: Option<nix::sys::signal::Signal>,
+    ) -> Result<(), nix::errno::Errno> {
+        self.continue_claimed_exit_stop_with(
+            pid,
+            stop_id,
+            diagnostic_status,
+            signal,
+            || nix::sys::ptrace::cont(pid.into(), signal),
+        )
+    }
+
+    fn continue_claimed_exit_stop_with(
+        &self,
+        pid: Pid,
+        stop_id: LogicalStopId,
+        diagnostic_status: Option<PhysicalStatusId>,
+        signal: Option<nix::sys::signal::Signal>,
+        transition: impl FnOnce() -> Result<(), nix::errno::Errno>,
+    ) -> Result<(), nix::errno::Errno> {
+        #[cfg(test)]
+        let lock_pause = TYPED_EXIT_LOCK_PAUSES.lock().remove(&pid);
+        #[cfg(test)]
+        if let Some(pause) = lock_pause {
+            pause.captured.wait();
+            pause.resume.wait();
+        }
+        let event = self.event();
+        let mut publication = event.exit_publication.lock();
+        if event.exit_status.load(Ordering::Acquire) != EXIT_STOPPED
+            || event.exit_capability.load(Ordering::Acquire) != EXIT_CAP_CLAIMED
+        {
+            return Err(nix::errno::Errno::EALREADY);
+        }
+        if PhysicalStatusId::from_raw(event.exit_physical_status.load(Ordering::Acquire))
+            != diagnostic_status
+            || LogicalStopId::from_raw(event.exit_logical_stop.load(Ordering::Acquire))
+                != Some(stop_id)
+        {
+            return Err(nix::errno::Errno::EPROTO);
+        }
+        match publication.cleanup {
+            ExitStopCleanupCompletion::NotAttempted => {}
+            ExitStopCleanupCompletion::Ambiguous { .. }
+            | ExitStopCleanupCompletion::Failed { .. }
+            | ExitStopCleanupCompletion::Finished { .. } => {
+                return Err(nix::errno::Errno::EALREADY);
+            }
+        }
+        let key = CleanupStopKey(stop_id);
+        if publication.is_retired(key)
+            || !matches!(publication.cleanup_authority, CleanupAuthorityState::Vacant)
+        {
+            return Err(nix::errno::Errno::EALREADY);
+        }
+
+        let observer = event.observer();
+        let attempt = observer.map(|observer| {
+            observer.begin_resume(PhysicalResumeContext {
+                generation: Some(event.generation),
+                task: self.physical_task_identity(pid),
+                source_status: diagnostic_status,
+                operation: PhysicalResumeOperation::Continue,
+                signal: signal.map(|signal| signal as i32),
+                owner: PhysicalResumeOwner::TypedStopped,
+            })
+        });
+        let result = transition();
+        if let (Some(observer), Some(attempt)) = (observer, attempt) {
+            observer.finish_resume(
+                attempt,
+                match result {
+                    Ok(()) => PhysicalResumeOutcome::Success,
+                    Err(error) => PhysicalResumeOutcome::Error(error as i32),
+                },
+            );
+        }
+        match result {
+            Ok(()) => {
+                // Publish completion before retiring the consumed token's
+                // atomic claim. Cleanup holds this same mutex, so it can never
+                // observe EXPIRED without the authoritative Finished state.
+                publication.cleanup = ExitStopCleanupCompletion::Finished {
+                    stop_id,
+                    diagnostic_status,
+                };
+                publication.retire(key);
+                event
+                    .exit_capability
+                    .compare_exchange(
+                        EXIT_CAP_CLAIMED,
+                        EXIT_CAP_EXPIRED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .expect("successful typed exit transition lost its claimed capability");
+                event.exit_waiters.wake_all();
+            }
+            Err(error @ (nix::errno::Errno::ESRCH | nix::errno::Errno::EIO)) => {
+                event
+                    .prepare_exit_capability_for_cleanup(true)
+                    .expect("failed typed exit transition lost its claimed cleanup transfer");
+                publication.cleanup = ExitStopCleanupCompletion::Ambiguous {
+                    stop_id,
+                    diagnostic_status,
+                    attempt,
+                    error: Errno::new(error as i32),
+                };
+            }
+            Err(error) => {
+                event
+                    .prepare_exit_capability_for_cleanup(true)
+                    .expect("failed typed exit transition lost its claimed cleanup transfer");
+                publication.cleanup = ExitStopCleanupCompletion::Failed {
+                    stop_id,
+                    diagnostic_status,
+                    attempt,
+                    error: Errno::new(error as i32),
+                };
+                publication.retire(key);
+            }
+        }
+        result
     }
 
     fn resolved(&self) -> &Self {
@@ -1548,11 +5281,28 @@ impl EventHandle {
 
         let _adoption = ADOPTION_LOCK.lock();
         let authoritative = authoritative.resolved_handle();
+        if !Arc::ptr_eq(&authoritative.0, &self.0)
+            && (self.0.event.continued_worker_is_authorized()
+                || authoritative.0.event.continued_worker_is_authorized())
+        {
+            return Err(Errno::EBUSY);
+        }
         if authoritative.chain_contains(&self.0) {
             if Arc::ptr_eq(&authoritative.0, &self.0) {
                 return Ok(authoritative);
             }
             return Err(Errno::ELOOP);
+        }
+        if let Some(observer) = self.0.event.observer() {
+            authoritative
+                .0
+                .event
+                .attach_observer(observer)
+                .map_err(|_| Errno::EBUSY)?;
+            if let Some(identity) = authoritative.0.identity.get() {
+                authoritative.0.event.record_identity(identity);
+            }
+            observer.adopt_generation(self.0.event.generation, authoritative.0.event.generation);
         }
         match self.0.authoritative.set(authoritative.clone()) {
             Ok(()) => Ok(authoritative),
@@ -1585,6 +5335,7 @@ impl Hash for EventHandle {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WorkerProcSnapshot {
     tgid: Pid,
+    ppid: Pid,
     tracer_pid: Pid,
     start_time: u64,
 }
@@ -1605,7 +5356,34 @@ struct WorkerIdentity {
     proc_inode: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LiveGenerationRelation {
+    Same,
+    IdentityMismatch,
+    BoundPidfdDead,
+    CurrentPidfdDead,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EchildGenerationRelation {
+    ActiveTracee,
+    PidfdExited { revents: i16 },
+    DetachedFromCurrentTracer { observed_tracer_pid: i32 },
+}
+
 impl WorkerIdentity {
+    fn physical_identity(&self) -> PhysicalTaskIdentity {
+        PhysicalTaskIdentity::captured_with_controller(
+            self.pid,
+            self.snapshot.tgid,
+            self.snapshot.ppid,
+            self.snapshot.tracer_pid,
+            self.snapshot.start_time,
+            self.proc_inode,
+            self.pidfd.as_raw_fd(),
+        )
+    }
+
     fn capture(pid: Pid) -> Result<Self, Errno> {
         #[cfg(test)]
         if let Some(error) = CAPTURE_PERSISTENT_ERRORS.lock().get(&pid).copied() {
@@ -1664,13 +5442,106 @@ impl WorkerIdentity {
         })
     }
 
-    /// Returns true only while this exact procfs generation remains attached
-    /// to a live thread in this tracer process.
+    /// Capture procfs identity while reusing a pidfd already bound before the
+    /// first fallible snapshot.  Startup keeps a separate original pidfd until
+    /// this succeeds, so every failure still has exact cleanup authority.
+    fn capture_process_with_pidfd(pid: Pid, pidfd: OwnedFd) -> Result<Self, Errno> {
+        let before = worker_proc_snapshot(pid).map_err(io_errno)?;
+        let proc_dir = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+            .open(format!("/proc/{pid}"))
+            .map_err(io_errno)?;
+        let proc_inode = proc_dir.metadata().map_err(io_errno)?.ino();
+        let after = worker_proc_snapshot(pid).map_err(io_errno)?;
+        let current_inode = fs::metadata(format!("/proc/{pid}"))
+            .map_err(io_errno)?
+            .ino();
+        if !before.same_process_generation(&after)
+            || current_inode != proc_inode
+            || !pidfd_is_live(&pidfd)?
+        {
+            return Err(Errno::ESRCH);
+        }
+
+        Ok(Self {
+            pid,
+            snapshot: after,
+            pidfd,
+            proc_dir: proc_dir.into(),
+            proc_inode,
+        })
+    }
+
+    /// Returns `Ok(true)` only while this exact procfs generation remains
+    /// attached to a live thread in this tracer process. Procfs uncertainty is
+    /// not evidence that a live generation became terminal.
+    fn active_tracee(&self) -> Result<bool, Errno> {
+        let current = self.checked_process_generation()?;
+        tracer_is_current(current.tracer_pid)
+    }
+
+    #[cfg(test)]
     fn is_active_tracee(&self) -> bool {
+        self.active_tracee() == Ok(true)
+    }
+
+    /// Classify one exact `ECHILD` without projecting procfs failure into a
+    /// terminal result. The caller may publish synthetic ECHILD only for one
+    /// of the two explicit terminal proofs returned here.
+    fn echild_generation_relation(&self) -> Result<EchildGenerationRelation, Errno> {
+        #[cfg(test)]
+        {
+            let mut errors = ECHILD_PROOF_ERRORS.lock();
+            if let Some(error) = errors.get_mut(&self.pid).and_then(VecDeque::pop_front) {
+                if errors.get(&self.pid).is_some_and(VecDeque::is_empty) {
+                    errors.remove(&self.pid);
+                }
+                return Err(error);
+            }
+        }
+
+        if let Some(revents) = pidfd_exit_revents(&self.pidfd)? {
+            return Ok(EchildGenerationRelation::PidfdExited { revents });
+        }
+
+        let before = self.checked_process_generation()?;
+        let attached_before = tracer_is_current(before.tracer_pid)?;
+        let after = self.checked_process_generation()?;
+        let attached_after = tracer_is_current(after.tracer_pid)?;
+        if before != after || attached_before != attached_after {
+            return Err(Errno::EAGAIN);
+        }
+        if attached_after {
+            Ok(EchildGenerationRelation::ActiveTracee)
+        } else {
+            Ok(EchildGenerationRelation::DetachedFromCurrentTracer {
+                observed_tracer_pid: after.tracer_pid.as_raw(),
+            })
+        }
+    }
+
+    fn checked_process_generation(&self) -> Result<WorkerProcSnapshot, Errno> {
+        let current = worker_proc_snapshot(self.pid).map_err(io_errno)?;
+        let bound_inode = fd_inode(&self.proc_dir).map_err(io_errno)?;
+        let current_inode = fs::metadata(format!("/proc/{}", self.pid))
+            .map_err(io_errno)?
+            .ino();
+        if !current.same_process_generation(&self.snapshot)
+            || bound_inode != self.proc_inode
+            || current_inode != self.proc_inode
+        {
+            return Err(Errno::EAGAIN);
+        }
+        Ok(current)
+    }
+
+    fn is_current_ptracer(&self) -> bool {
+        let current_tid = unsafe { libc::syscall(libc::SYS_gettid) as libc::pid_t };
         self.is_same_process_generation()
             && worker_proc_snapshot(self.pid).ok().is_some_and(|current| {
                 current.same_process_generation(&self.snapshot)
-                    && tracer_is_current(current.tracer_pid)
+                    && current.tracer_pid.as_raw() == current_tid
             })
     }
 
@@ -1693,10 +5564,23 @@ impl WorkerIdentity {
     }
 
     fn same_live_generation(&self, other: &Self) -> Result<bool, Errno> {
+        Ok(matches!(
+            self.live_generation_relation(other)?,
+            LiveGenerationRelation::Same
+        ))
+    }
+
+    fn live_generation_relation(&self, other: &Self) -> Result<LiveGenerationRelation, Errno> {
         if !self.same_generation(other) {
-            return Ok(false);
+            return Ok(LiveGenerationRelation::IdentityMismatch);
         }
-        Ok(self.pidfd_is_live()? && other.pidfd_is_live()?)
+        if !self.pidfd_is_live()? {
+            return Ok(LiveGenerationRelation::BoundPidfdDead);
+        }
+        if !other.pidfd_is_live()? {
+            return Ok(LiveGenerationRelation::CurrentPidfdDead);
+        }
+        Ok(LiveGenerationRelation::Same)
     }
 
     fn pidfd_is_live(&self) -> Result<bool, Errno> {
@@ -1755,8 +5639,69 @@ fn pidfd_is_live(pidfd: &OwnedFd) -> Result<bool, Errno> {
     }
 }
 
+fn pidfd_exit_revents(pidfd: &OwnedFd) -> Result<Option<i16>, Errno> {
+    poll_pidfd_exit_revents(pidfd, 0)
+}
+
+fn wait_pidfd_exit_revents(pidfd: &OwnedFd) -> Result<i16, Errno> {
+    loop {
+        match poll_pidfd_exit_revents(pidfd, -1) {
+            Ok(Some(revents)) => return Ok(revents),
+            Ok(None) => continue,
+            Err(Errno::EINTR) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn poll_pidfd_exit_revents(pidfd: &OwnedFd, timeout: i32) -> Result<Option<i16>, Errno> {
+    let mut descriptor = libc::pollfd {
+        fd: pidfd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(std::ptr::from_mut(&mut descriptor), 1, timeout) };
+    if result == -1 {
+        Err(io_errno(io::Error::last_os_error()))
+    } else if result == 1 && descriptor.revents & libc::POLLIN != 0 {
+        Ok(Some(descriptor.revents))
+    } else if result == 0 {
+        Ok(None)
+    } else {
+        Err(Errno::EPROTO)
+    }
+}
+
+fn pidfd_send_signal_exact(pidfd: &OwnedFd, signal: i32) -> Result<(), Errno> {
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            pidfd.as_raw_fd(),
+            signal,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io_errno(io::Error::last_os_error()))
+    }
+}
+
+fn pidfd_exit_evidence_now(pidfd: i32) -> bool {
+    let mut descriptor = libc::pollfd {
+        fd: pidfd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(std::ptr::from_mut(&mut descriptor), 1, 0) };
+    result == 1 && descriptor.revents & libc::POLLIN != 0
+}
+
 struct PendingWorker {
     start: std::sync::mpsc::SyncSender<()>,
+    started: std::sync::mpsc::Receiver<()>,
     _handle: JoinHandle<()>,
 }
 
@@ -1765,6 +5710,9 @@ impl PendingWorker {
         self.start
             .send(())
             .expect("new notifier worker dropped its start gate");
+        self.started
+            .recv()
+            .expect("new notifier worker dropped its started acknowledgment");
     }
 }
 
@@ -1782,10 +5730,18 @@ fn spawn_worker(
         return Err(io::Error::from_raw_os_error(error));
     }
     let (start, wait_for_start) = std::sync::mpsc::sync_channel(1);
+    let (started, wait_for_started) = std::sync::mpsc::sync_channel(0);
     let handle = thread::Builder::new()
         .name(format!("guest-{}", pid))
         .spawn(move || {
             if wait_for_start.recv().is_ok() {
+                #[cfg(test)]
+                if let Some(pause) = WORKER_START_PAUSES.lock().remove(&pid) {
+                    pause.captured.wait();
+                    pause.resume.wait();
+                }
+                event.mark_worker_running();
+                let _ = started.send(());
                 worker_thread(pid, event, identity);
             }
         })?;
@@ -1795,6 +5751,7 @@ fn spawn_worker(
     }
     Ok(PendingWorker {
         start,
+        started: wait_for_started,
         _handle: handle,
     })
 }
@@ -1802,65 +5759,1913 @@ fn spawn_worker(
 /// Waits on one exact kernel task lifetime and returns its lossless raw status.
 /// Returns `None` once that pidfd is no longer waitable. There is deliberately
 /// no numeric-PID fallback after identity capture.
-fn wait_pidfd_status(identity: &WorkerIdentity) -> Option<i32> {
+struct WaitPidfdObservation {
+    status: Option<ObservedStatus>,
+    attempt: Option<PhysicalWaitAttempt>,
+    siginfo: Option<PhysicalWaitSiginfo>,
+}
+
+struct WaitPidfdError {
+    error: Errno,
+    attempt: Option<PhysicalWaitAttempt>,
+    undecodable_status: Option<PhysicalStatusId>,
+    siginfo: Option<PhysicalWaitSiginfo>,
+    conversion_failed: bool,
+}
+
+struct PreStopDrainFailure {
+    error: WaitPidfdError,
+    transaction: Option<PhysicalCleanupTransaction>,
+    deferred_drain_status: Option<DeferredCleanupDisposition>,
+}
+
+fn raw_wait_siginfo(raw: &waitid::WaitPidfdRaw) -> PhysicalWaitSiginfo {
+    PhysicalWaitSiginfo {
+        signo: raw.signo(),
+        errno: raw.errno(),
+        code: raw.code(),
+        pid: raw.pid(),
+        uid: raw.uid(),
+        status: raw.status_value(),
+    }
+}
+
+fn peek_original_root_startup_barrier(
+    event: &Event,
+    identity: &WorkerIdentity,
+) -> Result<RetainedStartupBarrier, RetainedStartupBarrierError> {
+    let observer = event.observer().ok_or(RetainedStartupBarrierError {
+        cause: Errno::EPROTO,
+        retained: None,
+    })?;
+    let flags = WaitPidFlag::from_bits_retain(
+        WaitPidFlag::WEXITED.bits()
+            | WaitPidFlag::WSTOPPED.bits()
+            | WaitPidFlag::WNOWAIT.bits()
+            | libc::__WALL,
+    );
+    loop {
+        let attempt = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(event.generation),
+            task: identity.physical_identity(),
+            producer: PhysicalWaitProducer::PreRegistrationBarrier,
+            flags: flags.bits(),
+        });
+        let raw = match waitid::waitpidfd_raw(identity.pidfd.as_raw_fd(), flags) {
+            Ok(raw) => raw,
+            Err(error) => {
+                observer.finish_wait_error(attempt, error.into_raw());
+                if error == Errno::EINTR {
+                    continue;
+                }
+                return Err(RetainedStartupBarrierError {
+                    cause: error,
+                    retained: None,
+                });
+            }
+        };
+        let siginfo = raw_wait_siginfo(&raw);
+        let (raw_status, conversion_error) = match raw.status() {
+            Ok(Some(status)) => {
+                observer.finish_wait_retained_status(attempt, status, siginfo);
+                (Some(status), None)
+            }
+            Ok(None) => {
+                observer.finish_wait_retained_undecodable_status(
+                    attempt,
+                    siginfo,
+                    Errno::EPROTO.into_raw(),
+                );
+                (None, Some(Errno::EPROTO))
+            }
+            Err(error) => {
+                observer.finish_wait_retained_undecodable_status(
+                    attempt,
+                    siginfo,
+                    error.into_raw(),
+                );
+                (None, Some(error))
+            }
+        };
+        let barrier = RetainedStartupBarrier {
+            attempt,
+            raw_status,
+            siginfo,
+        };
+        let malformed = siginfo.pid != identity.pid.as_raw()
+            || siginfo.code == libc::CLD_CONTINUED
+            || raw_status.is_some_and(libc::WIFCONTINUED);
+        if malformed || conversion_error.is_some() {
+            return Err(RetainedStartupBarrierError {
+                cause: conversion_error.unwrap_or(Errno::EPROTO),
+                retained: Some(barrier),
+            });
+        }
+        return Ok(barrier);
+    }
+}
+
+fn finish_unstarted_barrier_generation(event: &Event, pid: Pid) -> Result<(), Errno> {
+    if !event.try_begin_unstarted_completion() {
+        return Err(Errno::EBUSY);
+    }
+    event.prepare_unstarted_worker_done_after_external_finish();
+    NOTIFIER.remove(pid, event);
+    event.publish_worker_done();
+    Ok(())
+}
+
+fn finish_preclaimed_unstarted_barrier_generation(event: &Event, pid: Pid) {
+    event.prepare_unstarted_worker_done_after_external_finish();
+    NOTIFIER.remove(pid, event);
+    event.publish_worker_done();
+}
+
+fn prepare_startup_barrier_fallback(
+    event: &Event,
+    pid: Pid,
+    launch: PhysicalOriginalRootLaunchId,
+    identity: Arc<WorkerIdentity>,
+    barrier: RetainedStartupBarrier,
+) -> Result<(), Errno> {
+    let observer = event.observer().ok_or(Errno::EPROTO)?;
+    let transaction = observer.prepare_startup_barrier_cleanup_transaction();
+    let _wait_owner = event.wait_owner_lock.lock();
+    let mut channel = event.stop_resolution.lock();
+    let mut fallback = event.startup_barrier_cleanup.lock();
+    if event.wait_owner.load(Ordering::Acquire) != WAIT_OWNER_NONE
+        || event.worker_state.load(Ordering::Acquire) != WORKER_NOT_STARTED
+        || channel.startup_barrier.is_some()
+        || channel.startup_barrier_consumed
+        || fallback.is_some()
+        || identity.pid != pid
+        || barrier.attempt.context().generation != Some(event.generation)
+    {
+        return Err(Errno::EALREADY);
+    }
+    let task = identity.physical_identity();
+    *fallback = Some(StartupBarrierCleanupState::Prepared(
+        StartupBarrierFallbackPrepared {
+            launch,
+            pid,
+            identity,
+            task,
+            barrier,
+            transaction,
+        },
+    ));
+    channel.startup_barrier = Some(barrier);
+    observer.record_startup_barrier_fallback_prepared(
+        launch,
+        event.generation,
+        barrier.attempt,
+        task,
+        transaction,
+    );
+    Ok(())
+}
+
+fn consume_retained_startup_barrier(
+    event: &Event,
+    identity: &WorkerIdentity,
+    barrier: Option<RetainedStartupBarrier>,
+    terminate: bool,
+) -> Result<StartupBarrierConsumeOutcome, Errno> {
+    consume_startup_barrier_with_pidfd(
+        event,
+        identity.pid,
+        identity.pidfd.as_raw_fd(),
+        identity.physical_identity(),
+        barrier,
+        terminate,
+    )
+}
+
+fn consume_pre_barrier_generation(
+    event: &Event,
+    identity: OriginalRootPreBarrierIdentity,
+    cause: Errno,
+) -> Result<(), Errno> {
+    let mut retained = event.unstarted_cleanup_identity.lock();
+    if retained.is_some() {
+        return Err(Errno::EALREADY);
+    }
+    *retained = Some(identity);
+    drop(retained);
+    reserve_startup_setup_cleanup(event, cause)?;
+    continue_reserved_startup_barrier_cleanup(event).map(drop)
+}
+
+fn reserve_startup_setup_cleanup(event: &Event, cause: Errno) -> Result<(), Errno> {
+    let observer = event.observer().ok_or(Errno::EPROTO)?;
+    let transaction = observer.prepare_startup_barrier_cleanup_transaction();
+    let wait_owner = match event.claim_notifier_wait() {
+        NotifierWaitOwnership::Claimed(owner) => owner,
+        NotifierWaitOwnership::Existing => return Err(Errno::EBUSY),
+    };
+    let mut channel = event.stop_resolution.lock();
+    let mut cleanup = event.startup_barrier_cleanup.lock();
+    let mut retained = event.unstarted_cleanup_identity.lock();
+    let identity = retained.take().ok_or(Errno::EPROTO)?;
+    let task = identity.physical_identity();
+    let launch = match identity.launch {
+        Some(launch) => launch,
+        None => {
+            *retained = Some(identity);
+            return Err(Errno::EPROTO);
+        }
+    };
+    let recorded_cause = event.unstarted_cleanup_cause.get().copied();
+    if recorded_cause.is_some_and(|recorded| recorded != cause) {
+        *retained = Some(identity);
+        return Err(Errno::EPROTO);
+    }
+    if channel.startup_barrier.is_some()
+        || channel.startup_barrier_consumed
+        || cleanup.is_some()
+        || event.worker_state.load(Ordering::Acquire) != WORKER_NOT_STARTED
+        || !event.try_begin_unstarted_completion()
+    {
+        *retained = Some(identity);
+        return Err(Errno::EALREADY);
+    }
+    if recorded_cause.is_none() {
+        event
+            .unstarted_cleanup_cause
+            .set(cause)
+            .expect("startup setup cause changed while ownership locks were held");
+        observer.record_pre_registration_barrier_setup_failed(
+            event.generation,
+            task,
+            cause.into_raw(),
+            launch,
+        );
+    }
+    observer.record_startup_setup_cleanup_prepared(
+        event.generation,
+        task,
+        cause.into_raw(),
+        transaction,
+        launch,
+    );
+    *cleanup = Some(StartupBarrierCleanupState::Reserved(
+        StartupBarrierCleanupReservation {
+            pid: identity.pid,
+            identity: StartupCleanupIdentity::PreBarrier(identity),
+            task,
+            kind: StartupCleanupKind::Setup {
+                error: cause,
+                launch,
+            },
+            transaction,
+            wait_failure: None,
+            signaled: false,
+        },
+    ));
+    drop(retained);
+    drop(cleanup);
+    drop(channel);
+    wait_owner.commit();
+    Ok(())
+}
+
+fn consume_startup_barrier_with_pidfd(
+    event: &Event,
+    pid: Pid,
+    pidfd: i32,
+    task: PhysicalTaskIdentity,
+    barrier: Option<RetainedStartupBarrier>,
+    _terminate: bool,
+) -> Result<StartupBarrierConsumeOutcome, Errno> {
+    if let Some(barrier) = barrier {
+        reserve_startup_barrier_cleanup(event, pid, pidfd, task, barrier)?;
+        return continue_reserved_startup_barrier_cleanup(event);
+    }
+    Err(Errno::EPROTO)
+}
+
+fn reserve_startup_barrier_cleanup(
+    event: &Event,
+    pid: Pid,
+    _pidfd: i32,
+    task: PhysicalTaskIdentity,
+    barrier: RetainedStartupBarrier,
+) -> Result<(), Errno> {
+    let wait_owner = match event.claim_notifier_wait() {
+        NotifierWaitOwnership::Claimed(owner) => owner,
+        NotifierWaitOwnership::Existing => return Err(Errno::EBUSY),
+    };
+    let mut channel = event.stop_resolution.lock();
+    let mut cleanup = event.startup_barrier_cleanup.lock();
+    let prepared = match cleanup.take() {
+        Some(StartupBarrierCleanupState::Prepared(prepared))
+            if prepared.pid == pid
+                && prepared.barrier == barrier
+                && prepared.task.tid() == task.tid()
+                && prepared.task.tgid() == task.tgid()
+                && prepared.task.start_time() == task.start_time()
+                && prepared.task.proc_inode() == task.proc_inode() =>
+        {
+            prepared
+        }
+        other => {
+            *cleanup = other;
+            return Err(Errno::EALREADY);
+        }
+    };
+    if channel.startup_barrier != Some(barrier)
+        || channel.startup_barrier_consumed
+        || !event.try_begin_unstarted_completion()
+    {
+        *cleanup = Some(StartupBarrierCleanupState::Prepared(prepared));
+        return Err(Errno::EALREADY);
+    }
+    *cleanup = Some(StartupBarrierCleanupState::Reserved(
+        StartupBarrierCleanupReservation {
+            pid,
+            identity: StartupCleanupIdentity::Bound(prepared.identity),
+            task: prepared.task,
+            kind: StartupCleanupKind::Barrier {
+                launch: prepared.launch,
+                barrier,
+            },
+            transaction: prepared.transaction,
+            wait_failure: None,
+            signaled: false,
+        },
+    ));
+    drop(cleanup);
+    drop(channel);
+    wait_owner.commit();
+    Ok(())
+}
+
+fn activate_startup_barrier_cleanup_locked(
+    event: &Event,
+    cleanup: &mut Option<StartupBarrierCleanupState>,
+    cause_wait: PhysicalWaitAttempt,
+    source_status: PhysicalStatusId,
+    source_siginfo: PhysicalWaitSiginfo,
+    source_raw: Option<i32>,
+) -> Result<Option<StartupBarrierConsumeOutcome>, Errno> {
+    let observer = event.observer().ok_or(Errno::EPROTO)?;
+    let reservation = match cleanup.take() {
+        Some(StartupBarrierCleanupState::Reserved(reservation)) => reservation,
+        other => {
+            *cleanup = other;
+            return Err(Errno::EALREADY);
+        }
+    };
+    let StartupBarrierCleanupReservation {
+        pid,
+        identity,
+        task,
+        kind,
+        transaction,
+        wait_failure,
+        signaled,
+    } = reservation;
+    if wait_failure.is_some() {
+        *cleanup = Some(StartupBarrierCleanupState::Reserved(
+            StartupBarrierCleanupReservation {
+                pid,
+                identity,
+                task,
+                kind,
+                transaction,
+                wait_failure,
+                signaled,
+            },
+        ));
+        return Err(Errno::EALREADY);
+    }
+    let source_terminal = source_raw.is_some_and(|raw| {
+        libc::WIFEXITED(raw) || libc::WIFSIGNALED(raw)
+    });
+    let source_stopped = source_raw.is_some_and(libc::WIFSTOPPED);
+    let (transaction, matched_barrier) = match kind {
+        StartupCleanupKind::Barrier { barrier, .. } => {
+            let matched = source_raw.is_some()
+                && source_raw == barrier.raw_status
+                && source_siginfo == barrier.siginfo;
+            if matched {
+                observer.record_pre_registration_barrier_consumed(
+                    event.generation,
+                    barrier.attempt,
+                    cause_wait,
+                    source_status,
+                );
+            }
+            let transaction = observer.begin_startup_barrier_cleanup_transaction(
+                transaction,
+                event.generation,
+                task,
+                barrier.attempt,
+                cause_wait,
+                PhysicalStartupCleanupOwner::Unstarted,
+            );
+            observer.link_registered_cleanup_status(transaction, source_status);
+            if !matched {
+                observer.record_pre_registration_barrier_failure_linked(
+                    event.generation,
+                    barrier.attempt,
+                    cause_wait,
+                    source_status,
+                    transaction,
+                );
+            }
+            (transaction, matched)
+        }
+        StartupCleanupKind::Setup { error, launch } => {
+            let transaction = observer.begin_startup_setup_cleanup_transaction(
+                transaction,
+                event.generation,
+                task,
+                error.into_raw(),
+                cause_wait,
+                launch,
+            );
+            observer.link_registered_cleanup_status(transaction, source_status);
+            observer.record_startup_setup_cleanup_linked(
+                event.generation,
+                error.into_raw(),
+                cause_wait,
+                source_status,
+                transaction,
+                launch,
+            );
+            (transaction, false)
+        }
+    };
+    let source_destination = if source_terminal {
+        PhysicalStatusPublication::StartupBarrierCleanupTerminal
+    } else if matched_barrier {
+        PhysicalStatusPublication::StartupBarrierCleanupStopped
+    } else {
+        PhysicalStatusPublication::StartupBarrierFailureCleanup
+    };
+    if source_terminal {
+        observer.finish_startup_barrier_cleanup_terminal_status(
+            event.generation,
+            source_status,
+        );
+    } else {
+        observer.record_cleanup_status_published(
+            event.generation,
+            source_status,
+            source_destination,
+        );
+    }
+    let source_phase = if source_terminal {
+        StartupCleanupStatusPhase::Terminal
+    } else if source_stopped {
+        StartupCleanupStatusPhase::ResumePending
+    } else {
+        StartupCleanupStatusPhase::Deferred
+    };
+    let mut slots = [None; STARTUP_CLEANUP_STATUS_CAPACITY];
+    slots[0] = Some(StartupCleanupStatusSlot {
+        attempt: cause_wait,
+        status: source_status,
+        raw: source_raw,
+        siginfo: source_siginfo,
+        phase: source_phase,
+        tolerated_resume: None,
+    });
+    *cleanup = Some(StartupBarrierCleanupState::Active(
+        StartupBarrierCleanupOwner {
+            owner: PhysicalStartupCleanupOwner::Unstarted,
+            pid,
+            identity,
+            task,
+            kind,
+            transaction,
+            cause_wait,
+            source_status,
+            slots,
+            used_slots: 1,
+            pending_slot: source_stopped.then_some(0),
+            phase: StartupBarrierCleanupPhase::SourcePending,
+            termination: if signaled {
+                StartupCleanupTermination::Requested
+            } else {
+                StartupCleanupTermination::NotRequested
+            },
+        },
+    ));
+    if source_terminal {
+        observer.finish_registered_cleanup_transaction(transaction, cause_wait);
+        observer.finish_unregistered_generation(event.generation, cause_wait.id());
+        let Some(StartupBarrierCleanupState::Active(owner)) = cleanup.as_mut() else {
+            unreachable!("claimed startup cleanup owner disappeared")
+        };
+        owner.phase = StartupBarrierCleanupPhase::TerminalObserved;
+        finish_preclaimed_unstarted_barrier_generation(event, pid);
+        owner.phase = StartupBarrierCleanupPhase::Completed;
+        *cleanup = None;
+        return Ok(Some(StartupBarrierConsumeOutcome::Cleaned));
+    }
+    Ok(None)
+}
+
+fn continue_reserved_startup_barrier_cleanup(
+    event: &Event,
+) -> Result<StartupBarrierConsumeOutcome, Errno> {
+    let mut cleanup = event.startup_barrier_cleanup.lock();
+    let (pid, pidfd, task, kind, prior_failure, signaled) = match cleanup.as_ref() {
+        Some(StartupBarrierCleanupState::Reserved(reservation)) => (
+            reservation.pid,
+            reservation.identity.pidfd().as_raw_fd(),
+            reservation.task,
+            reservation.kind,
+            reservation.wait_failure,
+            reservation.signaled,
+        ),
+        _ => return Err(Errno::EALREADY),
+    };
+    if let Some((error, _)) = prior_failure {
+        return Err(error);
+    }
+    if matches!(kind, StartupCleanupKind::Setup { .. }) && !signaled {
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                pidfd,
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        let signal_error = (result == -1)
+            .then(Errno::last)
+            .filter(|error| *error != Errno::ESRCH);
+        let Some(StartupBarrierCleanupState::Reserved(reservation)) = cleanup.as_mut() else {
+            return Err(Errno::EALREADY);
+        };
+        if let Some(error) = signal_error {
+            reservation.wait_failure = Some((error, None));
+            return Err(error);
+        }
+        reservation.signaled = true;
+    }
     let flags = WaitPidFlag::from_bits_retain(
         WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
     );
     loop {
-        let result = waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags);
-
-        return match result {
-            Ok(status) => Some(status.unwrap()),
-            Err(Errno::EINTR) => continue,
-            Err(Errno::ECHILD) => None,
-            Err(err) => {
-                panic!(
-                    "waitid(P_PIDFD, {}) failed unexpectedly: {}",
-                    identity.pid, err
-                )
+        let observation = match wait_pidfd_once_parts(
+            event,
+            pid,
+            pidfd,
+            task,
+            flags,
+            PhysicalWaitProducer::PreRegistrationBarrierCleanup,
+        ) {
+            Ok(observation) => observation,
+            Err(error) if error.error == Errno::EINTR => continue,
+            Err(error) if error.conversion_failed => {
+                let attempt = error.attempt.ok_or(Errno::EPROTO)?;
+                let physical = error.undecodable_status.ok_or(Errno::EPROTO)?;
+                let siginfo = error.siginfo.ok_or(Errno::EPROTO)?;
+                let completed = activate_startup_barrier_cleanup_locked(
+                    event,
+                    &mut cleanup,
+                    attempt,
+                    physical,
+                    siginfo,
+                    None,
+                )?;
+                drop(cleanup);
+                return match completed {
+                    Some(outcome) => Ok(outcome),
+                    None => continue_active_startup_barrier_cleanup(event),
+                };
             }
+            Err(error)
+                if error.error == Errno::ECHILD
+                    && matches!(kind, StartupCleanupKind::Setup { .. }) =>
+            {
+                let terminal_wait = error.attempt.ok_or(Errno::EPROTO)?;
+                let observer = event.observer().ok_or(Errno::EPROTO)?;
+                let reservation = match cleanup.take() {
+                    Some(StartupBarrierCleanupState::Reserved(reservation)) => reservation,
+                    other => {
+                        *cleanup = other;
+                        return Err(Errno::EALREADY);
+                    }
+                };
+                let StartupBarrierCleanupReservation {
+                    pid,
+                    identity,
+                    task,
+                    kind,
+                    transaction,
+                    wait_failure,
+                    signaled: _,
+                } = reservation;
+                let StartupCleanupKind::Setup {
+                    error: setup_error,
+                    launch,
+                } = kind
+                else {
+                    unreachable!("startup setup ECHILD guard accepted a barrier reservation")
+                };
+                if wait_failure.is_some() {
+                    *cleanup = Some(StartupBarrierCleanupState::Reserved(
+                        StartupBarrierCleanupReservation {
+                            pid,
+                            identity,
+                            task,
+                            kind,
+                            transaction,
+                            wait_failure,
+                            signaled: true,
+                        },
+                    ));
+                    return Err(Errno::EALREADY);
+                }
+                let transaction = observer.begin_startup_setup_cleanup_transaction(
+                    transaction,
+                    event.generation,
+                    task,
+                    setup_error.into_raw(),
+                    terminal_wait,
+                    launch,
+                );
+                observer.record_startup_setup_cleanup_no_status_linked(
+                    event.generation,
+                    setup_error.into_raw(),
+                    terminal_wait,
+                    transaction,
+                    launch,
+                );
+                *cleanup = Some(StartupBarrierCleanupState::SetupNoStatus(
+                    StartupSetupNoStatusOwner {
+                        pid,
+                        identity,
+                        task,
+                        error: setup_error,
+                        launch,
+                        transaction,
+                        terminal_wait,
+                    },
+                ));
+                drop(cleanup);
+                return continue_setup_no_status_cleanup(event);
+            }
+            Err(error) => {
+                let Some(StartupBarrierCleanupState::Reserved(reservation)) = cleanup.as_mut()
+                else {
+                    return Err(Errno::EALREADY);
+                };
+                reservation.wait_failure = Some((error.error, error.attempt));
+                return Err(error.error);
+            }
+        };
+        let status = observation.status.ok_or(Errno::EPROTO)?;
+        let attempt = observation.attempt.ok_or(Errno::EPROTO)?;
+        let siginfo = observation.siginfo.ok_or(Errno::EPROTO)?;
+        let physical = status.physical.ok_or(Errno::EPROTO)?;
+        let completed = activate_startup_barrier_cleanup_locked(
+            event,
+            &mut cleanup,
+            attempt,
+            physical,
+            siginfo,
+            Some(status.raw),
+        )?;
+        drop(cleanup);
+        return match completed {
+            Some(outcome) => Ok(outcome),
+            None => continue_active_startup_barrier_cleanup(event),
         };
     }
 }
 
+fn continue_startup_barrier_cleanup(
+    event: &Event,
+) -> Result<StartupBarrierConsumeOutcome, Errno> {
+    let state = match event.startup_barrier_cleanup.lock().as_ref() {
+        Some(StartupBarrierCleanupState::Reserved(_)) => 0,
+        Some(StartupBarrierCleanupState::SetupNoStatus(_)) => 1,
+        _ => 2,
+    };
+    match state {
+        0 => continue_reserved_startup_barrier_cleanup(event),
+        1 => continue_setup_no_status_cleanup(event),
+        _ => continue_active_startup_barrier_cleanup(event),
+    }
+}
+
+fn continue_setup_no_status_cleanup(
+    event: &Event,
+) -> Result<StartupBarrierConsumeOutcome, Errno> {
+    let observer = event.observer().ok_or(Errno::EPROTO)?;
+    let mut cleanup = event.startup_barrier_cleanup.lock();
+    let owner = match cleanup.as_mut() {
+        Some(StartupBarrierCleanupState::SetupNoStatus(owner)) => owner,
+        _ => return Err(Errno::EALREADY),
+    };
+    debug_assert_ne!(owner.error.into_raw(), 0);
+    let revents = wait_raw_pidfd_exit_revents(owner.identity.pidfd().as_raw_fd())?;
+    observer.record_registered_cleanup_pidfd_exited(
+        owner.transaction,
+        owner.terminal_wait,
+        event.generation,
+        owner.task,
+        revents,
+        Some(owner.launch),
+    );
+    observer.finish_registered_cleanup_transaction(owner.transaction, owner.terminal_wait);
+    observer.finish_unregistered_generation(event.generation, owner.terminal_wait.id());
+    let pid = owner.pid;
+    finish_preclaimed_unstarted_barrier_generation(event, pid);
+    *cleanup = None;
+    Ok(StartupBarrierConsumeOutcome::Cleaned)
+}
+
+fn close_startup_cleanup_deferred(
+    observer: &PhysicalEventObserver,
+    owner: &mut StartupBarrierCleanupOwner,
+) -> Result<(), Errno> {
+    for slot in owner.slots.iter_mut().flatten() {
+        if let Some((attempt, error)) = slot.tolerated_resume.take() {
+            observer.tolerate_resume_error(attempt, error.into_raw());
+            observer.link_registered_cleanup_tolerated_resume(owner.transaction, attempt);
+        }
+        match slot.phase {
+            StartupCleanupStatusPhase::Deferred => {
+                observer.finish_status(
+                    slot.status,
+                    PhysicalStatusDisposition::CancellationCleanup,
+                );
+                slot.phase = StartupCleanupStatusPhase::Closed;
+            }
+            StartupCleanupStatusPhase::Closed => {}
+            StartupCleanupStatusPhase::ResumePending
+            | StartupCleanupStatusPhase::ControllerTransferred
+            | StartupCleanupStatusPhase::ResumeAttempted
+            | StartupCleanupStatusPhase::Terminal => return Err(Errno::EPROTO),
+        }
+    }
+    Ok(())
+}
+
+fn continue_active_startup_barrier_cleanup(
+    event: &Event,
+) -> Result<StartupBarrierConsumeOutcome, Errno> {
+    let observer = event.observer().ok_or(Errno::EPROTO)?;
+    let mut cleanup = event.startup_barrier_cleanup.lock();
+    let owner = match cleanup.as_mut() {
+        Some(StartupBarrierCleanupState::Active(owner)) => owner,
+        Some(StartupBarrierCleanupState::Prepared(_)) => return Err(Errno::EBUSY),
+        Some(StartupBarrierCleanupState::Reserved(_)) => return Err(Errno::EALREADY),
+        Some(StartupBarrierCleanupState::SetupNoStatus(_)) => return Err(Errno::EALREADY),
+        None => return Err(Errno::ENOENT),
+    };
+    match owner.kind {
+        StartupCleanupKind::Barrier { launch, barrier } => {
+            debug_assert_ne!(launch.get(), 0);
+            debug_assert_eq!(barrier.attempt.context().generation, Some(event.generation));
+        }
+        StartupCleanupKind::Setup { error, launch } => {
+            debug_assert_ne!(error.into_raw(), 0);
+            debug_assert_ne!(launch.get(), 0);
+        }
+    }
+    debug_assert_eq!(owner.cause_wait.context().generation, Some(event.generation));
+    debug_assert!(owner.source_status.get() != 0);
+    let source_slot = owner.slots[0].expect("startup cleanup source slot is absent");
+    debug_assert_eq!(source_slot.attempt.id(), owner.cause_wait.id());
+    debug_assert_eq!(source_slot.status, owner.source_status);
+    let _source_provenance = (source_slot.raw, source_slot.siginfo);
+    match owner.phase {
+        StartupBarrierCleanupPhase::WaitFailed(error) => return Err(error),
+        StartupBarrierCleanupPhase::TerminalObserved => return Err(Errno::EBUSY),
+        StartupBarrierCleanupPhase::Completed => return Err(Errno::EALREADY),
+        StartupBarrierCleanupPhase::SourcePending | StartupBarrierCleanupPhase::Draining => {}
+    }
+    if source_slot.phase == StartupCleanupStatusPhase::Terminal {
+        owner.slots[0]
+            .as_mut()
+            .expect("startup cleanup terminal source disappeared")
+            .phase = StartupCleanupStatusPhase::Closed;
+        observer.finish_registered_cleanup_transaction(owner.transaction, owner.cause_wait);
+        let completion_owner = owner.owner;
+        let pid = owner.pid;
+        owner.phase = StartupBarrierCleanupPhase::TerminalObserved;
+        if completion_owner == PhysicalStartupCleanupOwner::Unstarted {
+            observer.finish_unregistered_generation(event.generation, owner.cause_wait.id());
+            finish_preclaimed_unstarted_barrier_generation(event, pid);
+        }
+        owner.phase = StartupBarrierCleanupPhase::Completed;
+        *cleanup = None;
+        return Ok(StartupBarrierConsumeOutcome::Cleaned);
+    }
+
+    let flags = WaitPidFlag::from_bits_retain(
+        WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
+    );
+    loop {
+        if let Some(index) = owner.pending_slot.take() {
+            let slot = owner.slots[usize::from(index)]
+                .as_mut()
+                .ok_or(Errno::EPROTO)?;
+            let status = slot.status;
+            match owner.owner {
+                PhysicalStartupCleanupOwner::Unstarted => {
+                    if slot.phase != StartupCleanupStatusPhase::ResumePending {
+                        return Err(Errno::EALREADY);
+                    }
+                    // The physical resume permit is spent before entering
+                    // ptrace and is never restored for any returned result.
+                    slot.phase = StartupCleanupStatusPhase::ResumeAttempted;
+                    let resume = observer.begin_resume(PhysicalResumeContext {
+                        generation: Some(event.generation),
+                        task: owner.task,
+                        source_status: Some(status),
+                        operation: PhysicalResumeOperation::Continue,
+                        signal: Some(libc::SIGKILL),
+                        owner: PhysicalResumeOwner::StartupBarrierCleanup,
+                    });
+                    let result =
+                        nix::sys::ptrace::cont(owner.pid.into(), Some(Signal::SIGKILL));
+                    observer.finish_resume(
+                        resume,
+                        match result {
+                            Ok(()) => PhysicalResumeOutcome::Success,
+                            Err(error) => PhysicalResumeOutcome::Error(error as i32),
+                        },
+                    );
+                    match result {
+                        Ok(()) => {
+                            slot.phase = StartupCleanupStatusPhase::Closed;
+                            owner.termination = StartupCleanupTermination::Requested;
+                        }
+                        Err(error @ (nix::errno::Errno::ESRCH | nix::errno::Errno::EIO)) => {
+                            slot.tolerated_resume =
+                                Some((resume, Errno::new(error as i32)));
+                            slot.phase = StartupCleanupStatusPhase::Deferred;
+                        }
+                        Err(_error) => {
+                            // The raw result is already recorded. This resume
+                            // permit is spent permanently, but the source stop
+                            // remains owned until exact terminal proof.
+                            slot.phase = StartupCleanupStatusPhase::Deferred;
+                        }
+                    }
+                }
+                PhysicalStartupCleanupOwner::AuthorizedWorker => {
+                    if slot.phase == StartupCleanupStatusPhase::ResumePending {
+                        event.install_wait_failure_cleanup_transition(Some(status), true);
+                        slot.phase = StartupCleanupStatusPhase::ControllerTransferred;
+                    } else if slot.phase != StartupCleanupStatusPhase::ControllerTransferred {
+                        return Err(Errno::EALREADY);
+                    }
+                    let (deferred, tolerated_resume, resume_succeeded) =
+                        event.take_wait_failure_cleanup_transition();
+                    if deferred.map(|deferred| deferred.status)
+                        != (!resume_succeeded).then_some(status)
+                    {
+                        owner.phase = StartupBarrierCleanupPhase::WaitFailed(Errno::EPROTO);
+                        return Err(Errno::EPROTO);
+                    }
+                    slot.tolerated_resume = tolerated_resume;
+                    if resume_succeeded {
+                        if slot.tolerated_resume.is_some() {
+                            owner.phase = StartupBarrierCleanupPhase::WaitFailed(Errno::EPROTO);
+                            return Err(Errno::EPROTO);
+                        }
+                        slot.phase = StartupCleanupStatusPhase::Closed;
+                        owner.termination = StartupCleanupTermination::Requested;
+                    } else {
+                        slot.phase = StartupCleanupStatusPhase::Deferred;
+                    }
+                }
+            }
+            owner.phase = StartupBarrierCleanupPhase::Draining;
+        }
+
+        match owner.termination {
+            StartupCleanupTermination::NotRequested => {
+                match pidfd_send_signal_exact(owner.identity.pidfd(), libc::SIGKILL) {
+                    Ok(()) | Err(Errno::ESRCH) => {
+                        owner.termination = StartupCleanupTermination::Requested;
+                    }
+                    Err(error) => {
+                        owner.termination = StartupCleanupTermination::PidfdSignalFailed(error);
+                        owner.phase = StartupBarrierCleanupPhase::Draining;
+                        return Err(error);
+                    }
+                }
+            }
+            StartupCleanupTermination::Requested => {}
+            StartupCleanupTermination::PidfdSignalFailed(error) => {
+                if !pidfd_exit_evidence_now(owner.identity.pidfd().as_raw_fd()) {
+                    return Err(error);
+                }
+            }
+        }
+
+        if usize::from(owner.used_slots) >= owner.slots.len() {
+            owner.phase = StartupBarrierCleanupPhase::WaitFailed(Errno::ENOSPC);
+            return Err(Errno::ENOSPC);
+        }
+
+        let observation = match wait_pidfd_once_parts(
+            event,
+            owner.pid,
+            owner.identity.pidfd().as_raw_fd(),
+            owner.task,
+            flags,
+            match owner.owner {
+                PhysicalStartupCleanupOwner::Unstarted => {
+                    PhysicalWaitProducer::PreRegistrationBarrierCleanup
+                }
+                PhysicalStartupCleanupOwner::AuthorizedWorker => {
+                    PhysicalWaitProducer::RegisteredCleanup
+                }
+            },
+        ) {
+            Ok(observation) => observation,
+            Err(error) if error.error == Errno::EINTR => continue,
+            Err(error) if error.error == Errno::ECHILD && !error.conversion_failed => {
+                let terminal_wait = error.attempt.ok_or(Errno::EPROTO)?;
+                let revents = wait_raw_pidfd_exit_revents(owner.identity.pidfd().as_raw_fd())?;
+                observer.record_registered_cleanup_pidfd_exited(
+                    owner.transaction,
+                    terminal_wait,
+                    event.generation,
+                    owner.task,
+                    revents,
+                    Some(owner.kind.launch()),
+                );
+                close_startup_cleanup_deferred(observer, owner)?;
+                observer.finish_registered_cleanup_transaction(
+                    owner.transaction,
+                    terminal_wait,
+                );
+                let completion_owner = owner.owner;
+                let pid = owner.pid;
+                owner.phase = StartupBarrierCleanupPhase::TerminalObserved;
+                if completion_owner == PhysicalStartupCleanupOwner::Unstarted {
+                    observer.finish_unregistered_generation(
+                        event.generation,
+                        terminal_wait.id(),
+                    );
+                    finish_preclaimed_unstarted_barrier_generation(event, pid);
+                }
+                owner.phase = StartupBarrierCleanupPhase::Completed;
+                *cleanup = None;
+                return Ok(StartupBarrierConsumeOutcome::Cleaned);
+            }
+            Err(error) if error.conversion_failed => {
+                let attempt = error.attempt.ok_or(Errno::EPROTO)?;
+                let status = error.undecodable_status.ok_or(Errno::EPROTO)?;
+                let siginfo = error.siginfo.ok_or(Errno::EPROTO)?;
+                if owner.slots.iter().flatten().any(|slot| {
+                    slot.attempt.id() == attempt.id() || slot.status == status
+                })
+                {
+                    owner.phase = StartupBarrierCleanupPhase::WaitFailed(Errno::EPROTO);
+                    return Err(Errno::EPROTO);
+                }
+                owner.capture_status(
+                    attempt,
+                    status,
+                    None,
+                    siginfo,
+                    StartupCleanupStatusPhase::Deferred,
+                )?;
+                observer.link_registered_cleanup_status(owner.transaction, status);
+                observer.record_cleanup_status_published(
+                    event.generation,
+                    status,
+                    PhysicalStatusPublication::StartupBarrierFailureCleanup,
+                );
+                continue;
+            }
+            Err(error) => {
+                owner.phase = StartupBarrierCleanupPhase::WaitFailed(error.error);
+                return Err(error.error);
+            }
+        };
+        let status = observation.status.ok_or(Errno::EPROTO)?;
+        let terminal_wait = observation.attempt.ok_or(Errno::EPROTO)?;
+        let siginfo = observation.siginfo.ok_or(Errno::EPROTO)?;
+        let physical = status.physical.ok_or(Errno::EPROTO)?;
+        if libc::WIFEXITED(status.raw) || libc::WIFSIGNALED(status.raw) {
+            if owner.slots.iter().flatten().any(|slot| {
+                slot.attempt.id() == terminal_wait.id() || slot.status == physical
+            }) {
+                owner.phase = StartupBarrierCleanupPhase::WaitFailed(Errno::EPROTO);
+                return Err(Errno::EPROTO);
+            }
+            let terminal_slot = owner.capture_status(
+                terminal_wait,
+                physical,
+                Some(status.raw),
+                siginfo,
+                StartupCleanupStatusPhase::Terminal,
+            )?;
+            observer.link_registered_cleanup_status(owner.transaction, physical);
+            match owner.owner {
+                PhysicalStartupCleanupOwner::Unstarted => observer
+                    .finish_startup_barrier_cleanup_terminal_status(
+                        event.generation,
+                        physical,
+                    ),
+                PhysicalStartupCleanupOwner::AuthorizedWorker => observer
+                    .finish_registered_cleanup_terminal_status(event.generation, physical),
+            }
+            owner.slots[usize::from(terminal_slot)]
+                .as_mut()
+                .expect("captured terminal cleanup slot disappeared")
+                .phase = StartupCleanupStatusPhase::Closed;
+            close_startup_cleanup_deferred(observer, owner)?;
+            observer.finish_registered_cleanup_transaction(owner.transaction, terminal_wait);
+            let completion_owner = owner.owner;
+            let pid = owner.pid;
+            owner.phase = StartupBarrierCleanupPhase::TerminalObserved;
+            if completion_owner == PhysicalStartupCleanupOwner::Unstarted {
+                observer.finish_unregistered_generation(event.generation, terminal_wait.id());
+                finish_preclaimed_unstarted_barrier_generation(event, pid);
+            }
+            owner.phase = StartupBarrierCleanupPhase::Completed;
+            *cleanup = None;
+            return Ok(StartupBarrierConsumeOutcome::Cleaned);
+        }
+        if owner.slots.iter().flatten().any(|slot| {
+            slot.attempt.id() == terminal_wait.id() || slot.status == physical
+        }) {
+            owner.phase = StartupBarrierCleanupPhase::WaitFailed(Errno::EPROTO);
+            return Err(Errno::EPROTO);
+        }
+        let stopped = libc::WIFSTOPPED(status.raw);
+        let slot = owner.capture_status(
+            terminal_wait,
+            physical,
+            Some(status.raw),
+            siginfo,
+            if stopped {
+                StartupCleanupStatusPhase::ResumePending
+            } else {
+                StartupCleanupStatusPhase::Deferred
+            },
+        )?;
+        observer.link_registered_cleanup_status(owner.transaction, physical);
+        match (owner.owner, stopped) {
+            (PhysicalStartupCleanupOwner::AuthorizedWorker, true) => {
+                observer.publish_registered_cleanup_stop(event.generation, physical)
+            }
+            (PhysicalStartupCleanupOwner::Unstarted, true) => observer
+                .record_cleanup_status_published(
+                    event.generation,
+                    physical,
+                    PhysicalStatusPublication::StartupBarrierCleanupStopped,
+                ),
+            (_, false) => observer.record_cleanup_status_published(
+                event.generation,
+                physical,
+                PhysicalStatusPublication::StartupBarrierFailureCleanup,
+            ),
+        }
+        if stopped {
+            owner.pending_slot = Some(slot);
+        }
+    }
+}
+
+fn wait_raw_pidfd_exit_revents(pidfd: i32) -> Result<i16, Errno> {
+    loop {
+        let mut descriptor = libc::pollfd {
+            fd: pidfd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(std::ptr::from_mut(&mut descriptor), 1, -1) };
+        if result == -1 {
+            let error = Errno::last();
+            if error == Errno::EINTR {
+                continue;
+            }
+            return Err(error);
+        }
+        if result == 1 && descriptor.revents & libc::POLLIN != 0 {
+            return Ok(descriptor.revents);
+        }
+    }
+}
+
+fn consume_unobserved_startup_generation(
+    event: &Event,
+    pid: Pid,
+    pidfd: i32,
+) -> Result<StartupBarrierConsumeOutcome, Errno> {
+    let signal_result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            pidfd,
+            libc::SIGKILL,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if signal_result == -1 {
+        let error = Errno::last();
+        if error != Errno::ESRCH {
+            return Err(error);
+        }
+    }
+    let flags = WaitPidFlag::from_bits_retain(
+        WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
+    );
+    loop {
+        let raw = match waitid::waitpidfd_raw(pidfd, flags) {
+            Ok(raw) => raw,
+            Err(Errno::EINTR) => continue,
+            Err(error) => return Err(error),
+        };
+        let status = raw.status()?.ok_or(Errno::EPROTO)?;
+        if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+            finish_unstarted_barrier_generation(event, pid)?;
+            return Ok(StartupBarrierConsumeOutcome::Terminal(
+                ExitStatus::from_raw(status),
+            ));
+        }
+        if !libc::WIFSTOPPED(status) {
+            return Err(Errno::EPROTO);
+        }
+        match nix::sys::ptrace::cont(pid.into(), Some(Signal::SIGKILL)) {
+            Ok(()) | Err(nix::errno::Errno::ESRCH | nix::errno::Errno::EIO) => {}
+            Err(error) => return Err(Errno::new(error as i32)),
+        }
+    }
+}
+
+fn wait_pidfd_once(
+    event: &Event,
+    identity: &WorkerIdentity,
+    flags: WaitPidFlag,
+    producer: PhysicalWaitProducer,
+) -> Result<WaitPidfdObservation, WaitPidfdError> {
+    wait_pidfd_once_parts(
+        event,
+        identity.pid,
+        identity.pidfd.as_raw_fd(),
+        identity.physical_identity(),
+        flags,
+        producer,
+    )
+}
+
+fn wait_pidfd_once_parts(
+    event: &Event,
+    pid: Pid,
+    pidfd: i32,
+    task: PhysicalTaskIdentity,
+    flags: WaitPidFlag,
+    producer: PhysicalWaitProducer,
+) -> Result<WaitPidfdObservation, WaitPidfdError> {
+    let observer = event.observer();
+    let attempt = observer.map(|observer| {
+        observer.begin_wait(PhysicalWaitContext {
+            generation: Some(event.generation),
+            task,
+            producer,
+            flags: flags.bits(),
+        })
+    });
+    let result = waitid::waitpidfd_raw(pidfd, flags);
+    match result {
+        Ok(raw) => {
+            #[cfg(test)]
+            let mut raw = raw;
+            #[cfg(test)]
+            if let Some(code) = WAIT_SIGINFO_CODE_OVERRIDES
+                .lock()
+                .get_mut(&pid)
+                .and_then(VecDeque::pop_front)
+            {
+                raw.override_code_for_test(code);
+            }
+            let siginfo = raw_wait_siginfo(&raw);
+            let physical = if raw.pid() == 0 {
+                None
+            } else {
+                observer.map(PhysicalEventObserver::allocate_status)
+            };
+            if let (Some(observer), Some(attempt)) = (observer, attempt) {
+                observer.record_wait_siginfo(attempt, siginfo, physical);
+            }
+            // Conversion intentionally remains after the raw record. Existing
+            // kernel siginfo is retained even when typed conversion refuses an
+            // unexpected code.
+            match raw.status() {
+                Ok(Some(status)) => {
+                    if let (Some(observer), Some(attempt), Some(physical)) =
+                        (observer, attempt, physical)
+                    {
+                        observer.finish_wait_status_with_id(
+                            attempt,
+                            physical,
+                            status,
+                            Some(siginfo),
+                        );
+                    }
+                    Ok(WaitPidfdObservation {
+                        status: Some(event.identify_stop(ObservedStatus::observed(
+                            status, physical,
+                        ))),
+                        attempt,
+                        siginfo: Some(siginfo),
+                    })
+                }
+                Ok(None) => {
+                    if let (Some(observer), Some(attempt)) = (observer, attempt) {
+                        observer.finish_wait_no_status(attempt, Some(siginfo));
+                    }
+                    Ok(WaitPidfdObservation {
+                        status: None,
+                        attempt,
+                        siginfo: Some(siginfo),
+                    })
+                }
+                Err(error) => {
+                    if let (Some(observer), Some(attempt), Some(physical)) =
+                        (observer, attempt, physical)
+                    {
+                        observer.finish_wait_undecodable_status(
+                            attempt,
+                            physical,
+                            siginfo,
+                            error.into_raw(),
+                        );
+                    }
+                    Err(WaitPidfdError {
+                        error,
+                        attempt,
+                        undecodable_status: physical,
+                        siginfo: Some(siginfo),
+                        conversion_failed: true,
+                    })
+                }
+            }
+        }
+        Err(error) => {
+            if let (Some(observer), Some(attempt)) = (observer, attempt) {
+                observer.finish_wait_error(attempt, error.into_raw());
+            }
+            Err(WaitPidfdError {
+                error,
+                attempt,
+                undecodable_status: None,
+                siginfo: None,
+                conversion_failed: false,
+            })
+        }
+    }
+}
+
+fn wait_pidfd_status(
+    event: &Event,
+    identity: &WorkerIdentity,
+) -> Result<WaitPidfdObservation, WaitPidfdError> {
+    let authorized = event.continued_worker_is_authorized();
+    let mut bits = WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL;
+    if authorized {
+        bits |= WaitPidFlag::WCONTINUED.bits();
+    }
+    let flags = WaitPidFlag::from_bits_retain(bits);
+    let producer = if authorized {
+        PhysicalWaitProducer::AuthorizedRootNotifier
+    } else {
+        PhysicalWaitProducer::NotifierWorker
+    };
+    loop {
+        let result = wait_pidfd_once(event, identity, flags, producer);
+
+        return match result {
+            Ok(observation) => {
+                debug_assert!(observation.status.is_some());
+                Ok(observation)
+            }
+            Err(error) if error.error == Errno::EINTR => continue,
+            Err(error) => Err(error),
+        };
+    }
+}
+
+fn drain_pre_stop_continued(
+    event: &Event,
+    identity: &WorkerIdentity,
+    stopped: ObservedStatus,
+) -> Result<DrainedPlainSigstop, WaitPidfdError> {
+    let stopped_identity = StopResolutionStopped {
+        logical_stop: stopped
+            .logical_stop
+            .expect("plain SIGSTOP drain candidate lacks logical identity"),
+        physical_status: stopped.physical,
+    };
+    let Some(before) = stopped.physical else {
+        return Err(WaitPidfdError {
+            error: Errno::EPROTO,
+            attempt: None,
+            undecodable_status: None,
+            siginfo: None,
+            conversion_failed: false,
+        });
+    };
+    let Some(observer) = event.observer() else {
+        return Err(WaitPidfdError {
+            error: Errno::EPROTO,
+            attempt: None,
+            undecodable_status: None,
+            siginfo: None,
+            conversion_failed: false,
+        });
+    };
+    let flags = WaitPidFlag::from_bits_retain(
+        WaitPidFlag::WCONTINUED.bits() | WaitPidFlag::WNOHANG.bits() | libc::__WALL,
+    );
+    loop {
+        match wait_pidfd_once(
+            event,
+            identity,
+            flags,
+            PhysicalWaitProducer::PreStopContinuedDrain,
+        ) {
+            Ok(WaitPidfdObservation {
+                status: Some(status),
+                ..
+            }) if libc::WIFCONTINUED(status.raw) => {
+                let Some(continued) = status.physical else {
+                    return Err(WaitPidfdError {
+                        error: Errno::EPROTO,
+                        attempt: None,
+                        undecodable_status: None,
+                        siginfo: None,
+                        conversion_failed: false,
+                    });
+                };
+                let route = PhysicalContinuedStatusRoute::PreStopDrain { before };
+                observer.record_status_published(
+                    event.generation,
+                    continued,
+                    PhysicalStatusPublication::ContinuedSideChannel { route },
+                );
+                observer.finish_status(
+                    continued,
+                    PhysicalStatusDisposition::ContinuedSideChannel { route },
+                );
+            }
+            Ok(WaitPidfdObservation {
+                status: Some(status),
+                attempt,
+                ..
+            }) => {
+                return Err(WaitPidfdError {
+                    error: Errno::EPROTO,
+                    attempt,
+                    undecodable_status: status.physical,
+                    siginfo: None,
+                    conversion_failed: false,
+                });
+            }
+            Ok(WaitPidfdObservation {
+                status: None,
+                attempt: Some(final_no_status_attempt),
+                ..
+            }) => {
+                observer.record_pre_stop_continued_drain_completed(
+                    event.generation,
+                    before,
+                    final_no_status_attempt,
+                );
+                return Ok(DrainedPlainSigstop {
+                    stopped: stopped_identity,
+                    final_no_status_attempt,
+                });
+            }
+            Ok(WaitPidfdObservation {
+                status: None,
+                attempt: None,
+                ..
+            }) => {
+                return Err(WaitPidfdError {
+                    error: Errno::EPROTO,
+                    attempt: None,
+                    undecodable_status: None,
+                    siginfo: None,
+                    conversion_failed: false,
+                });
+            }
+            Err(error) if error.error == Errno::EINTR => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn publish_worker_status(
+    event: &Event,
+    identity: &WorkerIdentity,
+    status: ObservedStatus,
+    attempt: Option<PhysicalWaitAttempt>,
+    siginfo: Option<PhysicalWaitSiginfo>,
+) -> Result<(), PreStopDrainFailure> {
+    if let Err(error) = event.consume_startup_barrier(status, attempt, siginfo) {
+        let promotion = match (attempt, status.physical, siginfo) {
+            (Some(attempt), Some(physical), Some(siginfo)) => event
+                .promote_prepared_startup_failure(
+                    attempt,
+                    physical,
+                    siginfo,
+                    Some(status.raw),
+                ),
+            _ => StartupBarrierFailurePromotion::ClaimedRejected(Errno::EPROTO),
+        };
+        let (transaction, cleanup_error) = match promotion {
+            StartupBarrierFailurePromotion::Activated { transaction } => {
+                (Some(transaction), error)
+            }
+            StartupBarrierFailurePromotion::ClaimedRejected(error) => (None, error),
+            StartupBarrierFailurePromotion::NotStartup => (None, Errno::EPROTO),
+        };
+        let mut channel = event.stop_resolution.lock();
+        let changed = event.mark_terminal_error_locked(&mut channel, cleanup_error);
+        drop(channel);
+        if changed {
+            event.stop_resolution_waker.wake();
+        }
+        event.status_changed.notify_all();
+        event.status_waker.wake();
+        event.exit_waiters.wake_all();
+        return Err(PreStopDrainFailure {
+            error: WaitPidfdError {
+                error: cleanup_error,
+                attempt,
+                undecodable_status: status.physical,
+                siginfo,
+                conversion_failed: false,
+            },
+            transaction,
+            deferred_drain_status: None,
+        });
+    }
+    if libc::WIFCONTINUED(status.raw) || status.raw == PTRACE_EVENT_EXIT_STOP {
+        event.update(status);
+        return Ok(());
+    }
+
+    let mut channel = event.stop_resolution.lock();
+    let drained = if event.continued_authority_is_live()
+        && channel.active.is_none()
+        && is_plain_sigstop(status.raw)
+    {
+        match drain_pre_stop_continued(event, identity, status) {
+            Ok(drained) => Some(drained),
+            Err(error) => {
+                let transaction = event.observer().and_then(|observer| {
+                    let cause_wait = error.attempt?;
+                    let transaction = observer.begin_registered_cleanup_transaction(cause_wait);
+                    if let Some(physical) = status.physical {
+                        observer.link_registered_cleanup_status(transaction, physical);
+                        observer.record_cleanup_status_published(
+                            event.generation,
+                            physical,
+                            PhysicalStatusPublication::PreStopDrainFailureCleanup,
+                        );
+                        observer.record_pre_stop_continued_drain_failed(
+                            event.generation,
+                            identity.physical_identity(),
+                            physical,
+                            cause_wait,
+                            transaction,
+                        );
+                    }
+                    if let Some(physical) = error.undecodable_status {
+                        observer.link_registered_cleanup_status(transaction, physical);
+                    }
+                    Some(transaction)
+                });
+                event.install_wait_failure_cleanup_stop(status);
+                let changed = event.mark_terminal_error_locked(&mut channel, error.error);
+                drop(channel);
+                if changed {
+                    event.stop_resolution_waker.wake();
+                }
+                event.status_changed.notify_all();
+                event.status_waker.wake();
+                event.exit_waiters.wake_all();
+                return Err(PreStopDrainFailure {
+                    deferred_drain_status: error
+                        .undecodable_status
+                        .map(|status| DeferredCleanupDisposition { status }),
+                    error,
+                    transaction,
+                });
+            }
+        }
+    } else {
+        None
+    };
+
+    let update = event.update_status_locked(&mut channel, status);
+    if let Some(drained) = drained {
+        debug_assert_eq!(drained.stopped.logical_stop, status.logical_stop.unwrap());
+        debug_assert_eq!(drained.stopped.physical_status, status.physical);
+        channel.drained_plain_sigstop = Some(drained);
+    }
+    drop(channel);
+    event.finish_status_update(status, update);
+    Ok(())
+}
+
+fn finish_wait_failure_cleanup(
+    event: &Event,
+    transaction: Option<PhysicalCleanupTransaction>,
+    terminal_wait: Option<PhysicalWaitAttempt>,
+    deferred: &[DeferredCleanupDisposition],
+    tolerated_resumes: &[(PhysicalResumeAttempt, Errno)],
+) -> bool {
+    let Some(observer) = event.observer() else {
+        return true;
+    };
+    let Some(transaction) = transaction else {
+        return false;
+    };
+    let Some(terminal_wait) = terminal_wait else {
+        return false;
+    };
+    for (attempt, error) in tolerated_resumes {
+        observer.tolerate_resume_error(*attempt, error.into_raw());
+        observer.link_registered_cleanup_tolerated_resume(transaction, *attempt);
+    }
+    for disposition in deferred {
+        observer.finish_status(
+            disposition.status,
+            PhysicalStatusDisposition::CancellationCleanup,
+        );
+    }
+    observer.finish_registered_cleanup_transaction(transaction, terminal_wait);
+    true
+}
+
+/// Fails closed after an impossible waitid conversion. Ordinary typed code has
+/// already received the retained protocol error; this exact-pidfd worker keeps
+/// wait ownership until SIGKILL plus a generation-bound RegisteredCleanup drain proves
+/// that the untyped stop can no longer escape.
+fn drain_wait_failure(
+    event: &Event,
+    identity: &WorkerIdentity,
+    transaction: Option<PhysicalCleanupTransaction>,
+    mut deferred: Vec<DeferredCleanupDisposition>,
+    mut tolerated_resumes: Vec<(PhysicalResumeAttempt, Errno)>,
+) -> bool {
+    let flags = WaitPidFlag::from_bits_retain(
+        WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
+    );
+    const MAX_INTERMEDIATE_DRAIN_STATUSES: usize = 8;
+    let mut intermediate_statuses = 0;
+    loop {
+        match wait_pidfd_once(
+            event,
+            identity,
+            flags,
+            PhysicalWaitProducer::RegisteredCleanup,
+        ) {
+            Ok(WaitPidfdObservation {
+                status: Some(status),
+                attempt,
+                ..
+            }) if libc::WIFEXITED(status.raw) || libc::WIFSIGNALED(status.raw) => {
+                if let (Some(observer), Some(transaction), Some(physical)) =
+                    (event.observer(), transaction, status.physical)
+                {
+                    observer.link_registered_cleanup_status(transaction, physical);
+                    observer.finish_registered_cleanup_terminal_status(event.generation, physical);
+                }
+                return finish_wait_failure_cleanup(
+                    event,
+                    transaction,
+                    attempt,
+                    &deferred,
+                    &tolerated_resumes,
+                );
+            }
+            Ok(WaitPidfdObservation {
+                status: Some(status),
+                ..
+            }) => {
+                intermediate_statuses += 1;
+                if intermediate_statuses > MAX_INTERMEDIATE_DRAIN_STATUSES {
+                    return false;
+                }
+                if libc::WIFSTOPPED(status.raw) {
+                    if let (Some(observer), Some(transaction), Some(physical)) =
+                        (event.observer(), transaction, status.physical)
+                    {
+                        observer.link_registered_cleanup_status(transaction, physical);
+                        observer.publish_registered_cleanup_stop(event.generation, physical);
+                    }
+                    event.install_wait_failure_cleanup_transition(status.physical, true);
+                    let (disposition, tolerated_resume, controller_resume_succeeded) =
+                        event.take_wait_failure_cleanup_transition();
+                    if !controller_resume_succeeded
+                        && !matches!(
+                            pidfd_send_signal_exact(&identity.pidfd, libc::SIGKILL),
+                            Ok(()) | Err(Errno::ESRCH)
+                        )
+                    {
+                        return false;
+                    }
+                    if let Some(disposition) = disposition {
+                        deferred.push(disposition);
+                    }
+                    if let Some(tolerated) = tolerated_resume {
+                        tolerated_resumes.push(tolerated);
+                    }
+                } else {
+                    // Registered cleanup has no safe typed transition for a
+                    // continued or otherwise nonterminal/nonstopped result.
+                    return false;
+                }
+            }
+            Ok(WaitPidfdObservation { status: None, .. }) => return false,
+            Err(error) if error.error == Errno::EINTR => {}
+            Err(error) if error.error == Errno::ECHILD && !error.conversion_failed => {
+                // SIGKILL may have been accepted while the exact task is not
+                // yet poll-readable. Preserve this ECHILD attempt as the
+                // transaction's terminal wait and wait on its bound pidfd;
+                // issuing a new wait or abandoning on a zero-time poll would
+                // either change the proof identity or strand worker cleanup.
+                let revents = match wait_pidfd_exit_revents(&identity.pidfd) {
+                    Ok(revents) => revents,
+                    Err(_) => return false,
+                };
+                if let (Some(observer), Some(transaction), Some(terminal_wait)) =
+                    (event.observer(), transaction, error.attempt)
+                {
+                    observer.record_registered_cleanup_pidfd_exited(
+                        transaction,
+                        terminal_wait,
+                        event.generation,
+                        identity.physical_identity(),
+                        revents,
+                        None,
+                    );
+                }
+                return finish_wait_failure_cleanup(
+                    event,
+                    transaction,
+                    error.attempt,
+                    &deferred,
+                    &tolerated_resumes,
+                );
+            }
+            // A second malformed status is a repeated protocol failure. Keep
+            // the worker generation live and invalid instead of manufacturing
+            // a successful completion from an unbounded stream.
+            Err(_) => return false,
+        }
+    }
+}
+
+fn wait_failure_requires_controller(status: Option<PhysicalStatusId>) -> bool {
+    // A returned physical status that is still bound to a live tracer/proc
+    // generation must be handed to the actual ptracer thread. Terminal/reaped
+    // results fail that identity check in the controller helper and are
+    // deferred without issuing a numeric ptrace request.
+    status.is_some()
+}
+
+fn handle_wait_failure(event: &Event, identity: &WorkerIdentity, error: &WaitPidfdError) -> bool {
+    let startup_promotion = if error.conversion_failed {
+        match (error.attempt, error.undecodable_status, error.siginfo) {
+            (Some(attempt), Some(status), Some(siginfo)) => event
+                .promote_prepared_startup_failure(
+                    attempt,
+                    status,
+                    siginfo,
+                    None,
+                ),
+            _ if event.continued_worker_is_authorized() => {
+                StartupBarrierFailurePromotion::ClaimedRejected(Errno::EPROTO)
+            }
+            _ => StartupBarrierFailurePromotion::NotStartup,
+        }
+    } else {
+        StartupBarrierFailurePromotion::NotStartup
+    };
+    match startup_promotion {
+        StartupBarrierFailurePromotion::Activated { .. } => {
+            event.mark_terminal_error(error.error);
+            return continue_active_startup_barrier_cleanup(event).is_ok();
+        }
+        StartupBarrierFailurePromotion::ClaimedRejected(promotion_error) => {
+            event.mark_terminal_error(promotion_error);
+            return false;
+        }
+        StartupBarrierFailurePromotion::NotStartup => {}
+    }
+    if event.continued_worker_is_authorized()
+        && error.attempt.is_some_and(|attempt| {
+            attempt.context().generation == Some(event.generation)
+                && attempt.context().producer == PhysicalWaitProducer::AuthorizedRootNotifier
+        })
+        && matches!(
+            event.startup_barrier_cleanup.lock().as_ref(),
+            Some(StartupBarrierCleanupState::Prepared(_))
+        )
+    {
+        // A statusless first authorized wait failure consumed no retained
+        // barrier result.  Keep Prepared and its exact pidfd/transaction for
+        // explicit continuation; a generic transaction would duplicate it.
+        event.mark_terminal_error(error.error);
+        return false;
+    }
+    let transaction = event.observer().and_then(|observer| {
+        let cause_wait = error.attempt?;
+        let transaction = observer.begin_registered_cleanup_transaction(cause_wait);
+        if let Some(status) = error.undecodable_status {
+            observer.link_registered_cleanup_status(transaction, status);
+        }
+        Some(transaction)
+    });
+    let controller_resume_required = wait_failure_requires_controller(error.undecodable_status);
+    event.install_wait_failure_cleanup_transition(
+        error.undecodable_status,
+        controller_resume_required,
+    );
+    event.mark_terminal_error(error.error);
+    if !controller_resume_required {
+        match pidfd_send_signal_exact(&identity.pidfd, libc::SIGKILL) {
+            Ok(()) | Err(Errno::ESRCH) => {}
+            Err(_) => return false,
+        }
+    }
+    let (initial_deferred, initial_tolerated_resume, controller_resume_succeeded) =
+        event.take_wait_failure_cleanup_transition();
+    if controller_resume_required && !controller_resume_succeeded {
+        match pidfd_send_signal_exact(&identity.pidfd, libc::SIGKILL) {
+            Ok(()) | Err(Errno::ESRCH) => {}
+            Err(_) => return false,
+        }
+    }
+    drain_wait_failure(
+        event,
+        identity,
+        transaction,
+        initial_deferred.into_iter().collect(),
+        initial_tolerated_resume.into_iter().collect(),
+    )
+}
+
+fn finish_pre_stop_drain_failure(
+    event: &Event,
+    identity: &WorkerIdentity,
+    failure: PreStopDrainFailure,
+) -> bool {
+    debug_assert_eq!(event.sticky_terminal_error(), Some(failure.error.error));
+    if failure.transaction.is_some_and(|transaction| {
+        event.startup_cleanup_owner(transaction)
+            == Some(PhysicalStartupCleanupOwner::AuthorizedWorker)
+    }) {
+        return continue_active_startup_barrier_cleanup(event).is_ok();
+    }
+    let (source_disposition, tolerated_resume, controller_resume_succeeded) =
+        event.take_wait_failure_cleanup_transition();
+    if !controller_resume_succeeded
+        && !matches!(
+            pidfd_send_signal_exact(&identity.pidfd, libc::SIGKILL),
+            Ok(()) | Err(Errno::ESRCH)
+        )
+    {
+        return false;
+    }
+    let mut deferred = Vec::with_capacity(2);
+    if let Some(disposition) = source_disposition {
+        deferred.push(disposition);
+    }
+    if let Some(disposition) = failure.deferred_drain_status {
+        deferred.push(disposition);
+    }
+    drain_wait_failure(
+        event,
+        identity,
+        failure.transaction,
+        deferred,
+        tolerated_resume.into_iter().collect(),
+    )
+}
+
+/// Publish synthetic ECHILD only after a fresh, exact-generation terminal
+/// proof. `false` means the generation is still active or the proof boundary
+/// was indeterminate, so the owning waiter must retry without unregistering.
+fn publish_proven_echild(
+    event: &Event,
+    identity: &WorkerIdentity,
+    wait: Option<PhysicalWaitAttempt>,
+) -> bool {
+    let proof = match identity.echild_generation_relation() {
+        Ok(EchildGenerationRelation::ActiveTracee) | Err(_) => return false,
+        Ok(proof) => proof,
+    };
+    if let Some(observer) = event.observer() {
+        let Some(wait) = wait else {
+            return false;
+        };
+        match proof {
+            EchildGenerationRelation::PidfdExited { revents } => {
+                observer.record_echild_pidfd_exited(
+                    wait,
+                    event.generation,
+                    identity.physical_identity(),
+                    revents,
+                );
+            }
+            EchildGenerationRelation::DetachedFromCurrentTracer {
+                observed_tracer_pid,
+            } => {
+                observer.record_echild_tracer_detached(
+                    wait,
+                    event.generation,
+                    identity.physical_identity(),
+                    observed_tracer_pid,
+                );
+            }
+            EchildGenerationRelation::ActiveTracee => unreachable!(),
+        }
+    }
+    event.mark_echild_with_cause_and_resolution(
+        wait.map(PhysicalWaitAttempt::id),
+        Some(AmbiguousCleanupResolution::ProvenEchild(wait)),
+    );
+    true
+}
+
 /// A worker thread that simply wakes a future when a process changes state.
 fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
-    let mut retrying_echild = false;
+    let mut completed = true;
+    let mut retrying_echild = None;
     loop {
         // Revalidate before retrying a transient ECHILD. The pidfd keeps the
         // wait bound to this exact task even if its numeric TID is later reused.
-        if retrying_echild && !identity.is_active_tracee() {
-            event.mark_echild();
+        if retrying_echild.is_some() && publish_proven_echild(&event, &identity, retrying_echild) {
             break;
         }
-        let Some(status) = wait_pidfd_status(&identity) else {
-            if identity.is_active_tracee() {
-                // A newborn auto-attached ptrace child can briefly exist with
-                // this exact procfs generation before its first wait status
-                // becomes visible. ECHILD is transient only in that window.
-                retrying_echild = true;
+        let observation = match wait_pidfd_status(&event, &identity) {
+            Ok(observation) => observation,
+            Err(error) if error.error == Errno::ECHILD && !error.conversion_failed => {
+                if publish_proven_echild(&event, &identity, error.attempt) {
+                    break;
+                }
+                // A newborn auto-attached child can briefly have this exact
+                // generation before its first wait status becomes visible.
+                // Procfs/poll uncertainty follows the same retry path and is
+                // never projected into a terminal result.
+                retrying_echild = error.attempt;
                 thread::sleep(Duration::from_millis(1));
                 continue;
             }
-            // Publish before unregistering so held and newly registered late
-            // waiters both receive a typed terminal result instead of hanging.
-            event.mark_echild();
-            break;
+            Err(error) if error.conversion_failed => {
+                completed = handle_wait_failure(&event, &identity, &error);
+                break;
+            }
+            Err(error) => {
+                completed = handle_wait_failure(&event, &identity, &error);
+                break;
+            }
         };
-        retrying_echild = false;
-        event.update(status);
+        let status = observation
+            .status
+            .expect("blocking pidfd wait returned no status");
+        retrying_echild = None;
+        if let Err(failure) = publish_worker_status(
+            &event,
+            &identity,
+            status,
+            observation.attempt,
+            observation.siginfo,
+        ) {
+            completed = finish_pre_stop_drain_failure(&event, &identity, failure);
+            break;
+        }
 
         // Try to avoid reaching an ECHILD error by terminating the loop on the
         // last event.
-        if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+        if libc::WIFEXITED(status.raw) || libc::WIFSIGNALED(status.raw) {
             break;
         }
     }
-    event.mark_worker_done();
+    if !completed {
+        return;
+    }
+    event.prepare_worker_done();
     // The worker owns terminal registry cleanup. A WaitFuture may be dropped
     // before the final status is polled, and leaving cleanup to that future
     // would retain a stale event if the kernel later reuses this PID.
     NOTIFIER.remove(pid, &event);
+    event.publish_worker_done();
 }
 
 fn try_replay_sync_terminal(pid: Pid, handle: &EventHandle) -> Option<Result<Wait, Error>> {
@@ -1869,26 +7674,107 @@ fn try_replay_sync_terminal(pid: Pid, handle: &EventHandle) -> Option<Result<Wai
     let reservation = event.try_terminal_reservation_sync()?;
     Some(match reservation {
         Err(error) => Err(error.into()),
-        Ok(reservation) => Wait::from_raw_with_token(
-            pid,
-            reservation.status,
-            TraceeToken::from_event(handle.clone()),
-        ),
+        Ok(reservation) => {
+            reservation.begin_decode(PhysicalDecodeOwner::Synchronous);
+            let raw = reservation.raw();
+            let physical = reservation.physical();
+            let decoded = Wait::from_raw_with_token(
+                pid,
+                raw,
+                TraceeToken::from_observed_event(
+                    handle.clone(),
+                    physical,
+                    reservation.logical_stop(),
+                ),
+            );
+            match decoded {
+                Ok(wait) => {
+                    reservation.finish_decode(
+                        PhysicalDecodeOutcome::Returned,
+                        PhysicalDecodeOwner::Synchronous,
+                    );
+                    reservation.replay();
+                    Ok(wait)
+                }
+                Err(error) => {
+                    reservation.finish_decode(
+                        PhysicalDecodeOutcome::RetryRolledBack,
+                        PhysicalDecodeOwner::Synchronous,
+                    );
+                    Err(error)
+                }
+            }
+        }
     })
 }
 
-fn resume_cancelled_sync_status(pid: Pid, status: i32) -> Result<(), Error> {
-    if !libc::WIFSTOPPED(status) {
-        return Ok(());
+fn resume_cancelled_sync_status(
+    pid: Pid,
+    cancelled: CancelledStatusReservation<'_>,
+    handle: &EventHandle,
+) -> Result<(), Error> {
+    let status = cancelled.status();
+    if !libc::WIFSTOPPED(status.raw) {
+        // `wait_sync` requests WEXITED|WSTOPPED, and terminal statuses bypass
+        // cancellation in `begin_status_return`, so a cancelled reservation is
+        // necessarily stopped. Do not manufacture a disposition for an
+        // unreachable continued/terminal shape; dropping the guard rolls the
+        // FIFO reservation back for exact cleanup.
+        return Err(Errno::EPROTO.into());
     }
-    match nix::sys::ptrace::cont(pid.into(), None) {
-        Ok(()) => Ok(()),
+    let observer = handle.physical_observer();
+    let attempt = observer.as_ref().map(|observer| {
+        observer.begin_resume(PhysicalResumeContext {
+            generation: Some(handle.physical_generation()),
+            task: handle.identity().map_or_else(
+                || PhysicalTaskIdentity::direct_child(pid),
+                |identity| identity.physical_identity(),
+            ),
+            source_status: status.physical,
+            operation: PhysicalResumeOperation::Continue,
+            signal: None,
+            owner: PhysicalResumeOwner::SynchronousCancellation,
+        })
+    });
+    let result = nix::sys::ptrace::cont(pid.into(), None);
+    if let (Some(observer), Some(attempt)) = (observer.as_ref(), attempt) {
+        observer.finish_resume(
+            attempt,
+            match result {
+                Ok(()) => PhysicalResumeOutcome::Success,
+                Err(error) => PhysicalResumeOutcome::Error(error as i32),
+            },
+        );
+    }
+    match result {
+        Ok(()) => {
+            cancelled.commit();
+            Ok(())
+        }
         // An untraced job-control stop needs no resume for the already-pending
         // exact-pidfd SIGKILL to terminate it.
         // SIGKILL can advance an exit-stopped task before PTRACE_CONT reaches
         // it; the exact pidfd wait below still observes the terminal status.
-        Err(nix::errno::Errno::ESRCH) => Ok(()),
-        Err(nix::errno::Errno::EIO) if status != PTRACE_EVENT_EXIT_STOP => Ok(()),
+        Err(error @ nix::errno::Errno::ESRCH) => {
+            if let (Some(observer), Some(attempt), Some(physical)) =
+                (observer.as_ref(), attempt, status.physical)
+            {
+                observer.tolerate_resume_error(attempt, error as i32);
+                observer.finish_status(physical, PhysicalStatusDisposition::CancellationCleanup);
+            }
+            cancelled.commit();
+            Ok(())
+        }
+        Err(error @ nix::errno::Errno::EIO) if status.raw != PTRACE_EVENT_EXIT_STOP => {
+            if let (Some(observer), Some(attempt), Some(physical)) =
+                (observer.as_ref(), attempt, status.physical)
+            {
+                observer.tolerate_resume_error(attempt, error as i32);
+                observer.finish_status(physical, PhysicalStatusDisposition::CancellationCleanup);
+            }
+            cancelled.commit();
+            Ok(())
+        }
         Err(error) => Err(Errno::new(error as i32).into()),
     }
 }
@@ -1928,8 +7814,12 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
         match event.claim_sync_wait()? {
             SyncWaitOwnership::Notifier => {
                 let reservation = event.wait_status_reservation_sync()?;
-                match event.decode_status_return(reservation, |status| {
-                    Wait::from_raw_with_token(pid, status, TraceeToken::from_event(handle))
+                match event.decode_status_return(reservation, |status, physical, logical_stop| {
+                    Wait::from_raw_with_token(
+                        pid,
+                        status,
+                        TraceeToken::from_observed_event(handle, physical, logical_stop),
+                    )
                 })? {
                     StatusReturn::Returned(decoded) => return Ok(decoded),
                     StatusReturn::Cancelled(_) => return Err(Errno::ECANCELED.into()),
@@ -1948,16 +7838,24 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                 let mut cancelling = false;
                 if let Some(reservation) = event.try_status_reservation_sync() {
                     let reservation = reservation?;
-                    match owner.decode_status_return(pid, reservation, |status| {
-                        Wait::from_raw_with_token(
-                            pid,
-                            status,
-                            TraceeToken::from_event(handle.clone()),
-                        )
-                    })? {
+                    match owner.decode_status_return(
+                        pid,
+                        reservation,
+                        |status, physical, logical_stop| {
+                            Wait::from_raw_with_token(
+                                pid,
+                                status,
+                                TraceeToken::from_observed_event(
+                                    handle.clone(),
+                                    physical,
+                                    logical_stop,
+                                ),
+                            )
+                        },
+                    )? {
                         StatusReturn::Returned(decoded) => return Ok(decoded),
                         StatusReturn::Cancelled(status) => {
-                            resume_cancelled_sync_status(pid, status)?;
+                            resume_cancelled_sync_status(pid, status, &handle)?;
                             cancelling = true;
                         }
                     }
@@ -1972,20 +7870,112 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                             NOTIFIER.remove(pid, &event);
                             return Err(Errno::ESRCH.into());
                         }
-                        let result = waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags);
+                        let result = wait_pidfd_once(
+                            &event,
+                            identity,
+                            flags,
+                            PhysicalWaitProducer::SynchronousWait,
+                        );
                         match result {
-                            Ok(Some(status)) => break status,
-                            Ok(None) => {
+                            Ok(WaitPidfdObservation {
+                                status: Some(status),
+                                ..
+                            }) => break status,
+                            Ok(WaitPidfdObservation { status: None, .. }) => {
                                 unreachable!("blocking synchronous wait returned no status")
                             }
-                            Err(Errno::EINTR) => {}
+                            Err(error) if error.error == Errno::EINTR => {}
                             Err(error) => {
-                                if error == Errno::ECHILD {
-                                    event.mark_echild();
-                                    event.finish_sync_terminal();
+                                if error.error == Errno::ECHILD && !error.conversion_failed {
+                                    if publish_proven_echild(&event, identity, error.attempt) {
+                                        event.finish_sync_terminal(pid);
+                                    } else {
+                                        thread::sleep(Duration::from_millis(1));
+                                        continue;
+                                    }
+                                } else {
+                                    let transaction = event.observer().and_then(|observer| {
+                                        let cause_wait = error.attempt?;
+                                        let transaction = observer
+                                            .begin_registered_cleanup_transaction(cause_wait);
+                                        if let Some(status) = error.undecodable_status {
+                                            observer.link_registered_cleanup_status(
+                                                transaction,
+                                                status,
+                                            );
+                                        }
+                                        Some(transaction)
+                                    });
+                                    event.install_wait_failure_cleanup_transition(
+                                        error.undecodable_status,
+                                        wait_failure_requires_controller(error.undecodable_status),
+                                    );
+                                    event.mark_terminal_error(error.error);
+                                    let controller_resume_required =
+                                        wait_failure_requires_controller(error.undecodable_status);
+                                    let signal_sent = controller_resume_required
+                                        || matches!(
+                                            pidfd_send_signal_exact(&identity.pidfd, libc::SIGKILL,),
+                                            Ok(()) | Err(Errno::ESRCH)
+                                        );
+                                    let controller_ready = if controller_resume_required {
+                                        let terminal = TerminalCleanup {
+                                            pid,
+                                            event: handle.clone(),
+                                        };
+                                        let mut retained_stop = None;
+                                        match terminal.continue_exit_stop_for_cleanup(
+                                            &mut retained_stop,
+                                            PhysicalResumeOwner::SynchronousCancellation,
+                                        ) {
+                                            Ok(TerminalCleanupContinue::Attempted {
+                                                error: Some(Errno::ESRCH | Errno::EIO),
+                                                ..
+                                            }) => true,
+                                            Ok(TerminalCleanupContinue::Attempted {
+                                                error: Some(_),
+                                                ..
+                                            })
+                                            | Err(_) => false,
+                                            Ok(_) => true,
+                                        }
+                                    } else {
+                                        true
+                                    };
+                                    let (
+                                        initial_deferred,
+                                        initial_tolerated_resume,
+                                        controller_resume_succeeded,
+                                    ) = if controller_ready {
+                                        event.take_wait_failure_cleanup_transition()
+                                    } else {
+                                        (None, None, false)
+                                    };
+                                    let fallback_signal_sent = controller_ready
+                                        && (!controller_resume_required
+                                            || controller_resume_succeeded
+                                            || matches!(
+                                                pidfd_send_signal_exact(
+                                                    &identity.pidfd,
+                                                    libc::SIGKILL,
+                                                ),
+                                                Ok(()) | Err(Errno::ESRCH)
+                                            ));
+                                    let completed = signal_sent
+                                        && controller_ready
+                                        && fallback_signal_sent
+                                        && drain_wait_failure(
+                                            &event,
+                                            identity,
+                                            transaction,
+                                            initial_deferred.into_iter().collect(),
+                                            initial_tolerated_resume.into_iter().collect(),
+                                        );
+                                    if completed {
+                                        event.finish_sync_terminal(pid);
+                                    }
                                 }
-                                NOTIFIER.remove(pid, &event);
-                                return Err(error.into());
+                                return Err(error.error.into());
                             }
                         }
                     };
@@ -1995,15 +7985,18 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                         pause.captured.wait();
                         pause.resume.wait();
                     }
-                    if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
-                        event.finish_sync_terminal();
-                        NOTIFIER.remove(pid, &event);
+                    if libc::WIFEXITED(status.raw) || libc::WIFSIGNALED(status.raw) {
+                        event.finish_sync_terminal(pid);
                         if cancelling {
                             drop(owner);
                             return Wait::from_raw_with_token(
                                 pid,
-                                status,
-                                TraceeToken::from_event(handle),
+                                status.raw,
+                                TraceeToken::from_observed_event(
+                                    handle,
+                                    status.physical,
+                                    status.logical_stop,
+                                ),
                             );
                         }
                     }
@@ -2014,16 +8007,24 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                     let reservation = event
                         .try_status_reservation_sync()
                         .expect("published synchronous status is immediately reservable")?;
-                    match owner.decode_status_return(pid, reservation, |reserved_status| {
-                        Wait::from_raw_with_token(
-                            pid,
-                            reserved_status,
-                            TraceeToken::from_event(handle.clone()),
-                        )
-                    })? {
+                    match owner.decode_status_return(
+                        pid,
+                        reservation,
+                        |reserved_status, physical, logical_stop| {
+                            Wait::from_raw_with_token(
+                                pid,
+                                reserved_status,
+                                TraceeToken::from_observed_event(
+                                    handle.clone(),
+                                    physical,
+                                    logical_stop,
+                                ),
+                            )
+                        },
+                    )? {
                         StatusReturn::Returned(decoded) => return Ok(decoded),
                         StatusReturn::Cancelled(reserved_status) => {
-                            resume_cancelled_sync_status(pid, reserved_status)?;
+                            resume_cancelled_sync_status(pid, reserved_status, &handle)?;
                             cancelling = true;
                         }
                     }
@@ -2066,6 +8067,7 @@ fn worker_proc_snapshot(pid: Pid) -> std::io::Result<WorkerProcSnapshot> {
     let status = fs::read_to_string(format!("/proc/{pid}/status"))?;
     let snapshot = WorkerProcSnapshot {
         tgid: worker_status_pid(&status, "Tgid:")?,
+        ppid: worker_status_pid(&status, "PPid:")?,
         tracer_pid: worker_status_pid(&status, "TracerPid:")?,
         start_time,
     };
@@ -2078,9 +8080,32 @@ fn worker_proc_snapshot(pid: Pid) -> std::io::Result<WorkerProcSnapshot> {
     Ok(snapshot)
 }
 
-fn tracer_is_current(tracer_pid: Pid) -> bool {
-    tracer_pid.as_raw() > 0
-        && std::path::Path::new(&format!("/proc/self/task/{tracer_pid}")).exists()
+fn worker_group_is_singleton(tgid: Pid) -> Result<bool, Errno> {
+    let expected = tgid.as_raw().to_string();
+    let mut entries = fs::read_dir(format!("/proc/{tgid}/task")).map_err(io_errno)?;
+    let Some(entry) = entries.next() else {
+        return Ok(false);
+    };
+    let entry = entry.map_err(io_errno)?;
+    if entry.file_name() != std::ffi::OsString::from(expected) {
+        return Ok(false);
+    }
+    match entries.next() {
+        None => Ok(true),
+        Some(Ok(_)) => Ok(false),
+        Some(Err(error)) => Err(io_errno(error)),
+    }
+}
+
+fn tracer_is_current(tracer_pid: Pid) -> Result<bool, Errno> {
+    if tracer_pid.as_raw() <= 0 {
+        return Ok(false);
+    }
+    match fs::metadata(format!("/proc/self/task/{tracer_pid}")) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io_errno(error)),
+    }
 }
 
 fn fd_inode(fd: &OwnedFd) -> std::io::Result<u64> {
@@ -2207,6 +8232,9 @@ impl Notifier {
     /// Resolves one PID generation to its process-global wait authority before
     /// a synchronous caller can claim or enter the kernel wait.
     fn sync_handle(&self, pid: Pid, requested: &EventHandle) -> Result<EventHandle, Errno> {
+        if requested.event().continued_worker_is_authorized() {
+            return Err(Errno::EINVAL);
+        }
         let mut capture_retries = 0;
         loop {
             let current = match self.capture_identity(pid) {
@@ -2241,10 +8269,15 @@ impl Notifier {
                 drop(pids);
                 continue;
             }
-            if let Some(occupied) = pids.get(&pid)
-                && occupied.identity.same_live_generation(&current)?
-            {
-                return requested.adopt_authoritative(&occupied.handle);
+            let authoritative = match pids.get(&pid) {
+                Some(occupied) if occupied.identity.same_live_generation(&current)? => {
+                    Some(occupied.handle.clone())
+                }
+                _ => None,
+            };
+            if let Some(authoritative) = authoritative {
+                drop(pids);
+                return requested.adopt_authoritative(&authoritative);
             }
             pids.insert(
                 pid,
@@ -2323,13 +8356,14 @@ impl Notifier {
         if event.try_begin_unstarted_completion() {
             // Publish the terminal result before completion becomes visible.
             event.mark_echild();
-            event.mark_worker_done();
+            event.prepare_worker_done();
             if pids
                 .get(&pid)
                 .is_some_and(|current| Arc::ptr_eq(current.handle.event(), &event))
             {
                 pids.remove(&pid);
             }
+            event.publish_worker_done();
         }
         handle
     }
@@ -2440,7 +8474,14 @@ impl Notifier {
         loop {
             let current = match self.capture_identity(pid) {
                 Ok(identity) => identity,
-                Err(Errno::ENOENT | Errno::ESRCH) => {
+                Err(error @ (Errno::ENOENT | Errno::ESRCH)) => {
+                    if let Some(observer) = requested.observer() {
+                        observer.record_generation_capture_failed(
+                            requested.generation,
+                            handle.physical_task_identity(pid),
+                            error.into_raw(),
+                        );
+                    }
                     let resolved = self.resolve_echild(pid, handle);
                     owner.commit();
                     return Ok(EventRegistration::Registered(resolved));
@@ -2455,9 +8496,10 @@ impl Notifier {
                 continue;
             }
             match handle.identity() {
-                Some(bound) => match bound.same_live_generation(&current) {
-                    Ok(true) => {}
-                    Ok(false) => {
+                Some(bound) => match bound.live_generation_relation(&current) {
+                    Ok(LiveGenerationRelation::Same) => {}
+                    Ok(relation) => {
+                        requested.record_generation_invalidation(bound, &current, relation, false);
                         let resolved = self.resolve_echild(pid, handle);
                         owner.commit();
                         return Ok(EventRegistration::Registered(resolved));
@@ -2469,9 +8511,12 @@ impl Notifier {
                 },
                 None => {
                     if let Err(bound) = handle.bind_identity(Arc::clone(&current)) {
-                        match bound.same_live_generation(&current) {
-                            Ok(true) => {}
-                            Ok(false) => {
+                        match bound.live_generation_relation(&current) {
+                            Ok(LiveGenerationRelation::Same) => {}
+                            Ok(relation) => {
+                                requested.record_generation_invalidation(
+                                    &bound, &current, relation, false,
+                                );
                                 let resolved = self.resolve_echild(pid, handle);
                                 owner.commit();
                                 return Ok(EventRegistration::Registered(resolved));
@@ -2484,6 +8529,10 @@ impl Notifier {
                     }
                 }
             }
+            if let Err(error) = requested.validate_continued_authority(&current) {
+                Self::record_registration_error(handle, error);
+                return Err(error);
+            }
             #[cfg(test)]
             if let Some(pause) = EVENT_CAPTURE_PAUSES.lock().remove(&pid) {
                 pause.captured.wait();
@@ -2494,6 +8543,12 @@ impl Notifier {
             match current.pidfd_is_live() {
                 Ok(true) => {}
                 Ok(false) => {
+                    if let Some(observer) = requested.observer() {
+                        observer.record_generation_current_pidfd_dead(
+                            requested.generation,
+                            current.physical_identity(),
+                        );
+                    }
                     drop(pids);
                     let resolved = self.resolve_echild(pid, handle);
                     owner.commit();
@@ -2522,9 +8577,15 @@ impl Notifier {
             let mut worker_identity = None;
             let event_handle = match pids.entry(pid) {
                 Entry::Occupied(occupied) if occupied.get().handle == *handle => {
-                    match occupied.get().identity.same_live_generation(&current) {
-                        Ok(true) => {}
-                        Ok(false) => {
+                    match occupied.get().identity.live_generation_relation(&current) {
+                        Ok(LiveGenerationRelation::Same) => {}
+                        Ok(relation) => {
+                            requested.record_generation_invalidation(
+                                &occupied.get().identity,
+                                &current,
+                                relation,
+                                true,
+                            );
                             drop(pids);
                             let resolved = self.resolve_echild(pid, handle);
                             owner.commit();
@@ -2577,10 +8638,7 @@ impl Notifier {
             };
             let pending_worker = if let Some(identity) = worker_identity {
                 match spawn_worker(pid, Arc::clone(event_handle.event()), Arc::clone(&identity)) {
-                    Ok(worker) => {
-                        requested.mark_worker_running();
-                        Some(worker)
-                    }
+                    Ok(worker) => Some(worker),
                     Err(error) => {
                         requested.rollback_worker_start();
                         if pids.get(&pid).is_some_and(|entry| {
@@ -2596,22 +8654,26 @@ impl Notifier {
             } else {
                 None
             };
-            *requested.registration_error.lock() = None;
-            drop(pids);
             if let Some(worker) = pending_worker {
+                // Keep the registry lock through the worker-side RUNNING
+                // publication. STARTING therefore never escapes as a stable
+                // registration, and a returned handle always has a live wait
+                // owner that crossed its start gate.
                 worker.start();
             }
+            *requested.registration_error.lock() = None;
+            drop(pids);
             owner.commit();
             return Ok(EventRegistration::Registered(event_handle));
         }
     }
 
     /// Removes a completed PID without disturbing a reused PID's event.
-    fn remove(&self, pid: Pid, event: &Arc<Event>) {
+    fn remove(&self, pid: Pid, event: &Event) {
         let mut pids = self.pids.lock();
         if pids
             .get(&pid)
-            .is_some_and(|current| Arc::ptr_eq(current.handle.event(), event))
+            .is_some_and(|current| std::ptr::eq(current.handle.event().as_ref(), event))
         {
             pids.remove(&pid);
         }
@@ -2694,6 +8756,125 @@ impl Drop for Notifier {
     }
 }
 
+/// Opaque metadata transfer for one exact stopped capability and immutable
+/// notifier generation.
+///
+/// This value is deliberately neither `Clone` nor `Copy`. It does not grant a
+/// ptrace transition by itself; consuming it through
+/// [`TerminalCleanup::lease_transferred_stop`] creates the sole cleanup lease.
+#[must_use = "activate this exact transfer after its typed stop is unreachable, or discard it"]
+pub struct CleanupStopTransfer {
+    pid: Pid,
+    event: EventHandle,
+    stop_id: LogicalStopId,
+    diagnostic_status: Option<PhysicalStatusId>,
+    owns_claimed_exit: bool,
+}
+
+/// Atomic disposition of one exact stopped-capability metadata transfer.
+pub enum TransferredStopResolution {
+    /// The still-live stop was activated into the sole cleanup lease.
+    Leased(CleanupStopLease),
+    /// Trusted completion had already retired this exact stop; no transition
+    /// or observer record was emitted while consuming the stale shadow.
+    Finished,
+    /// A nonretryable typed transition had already retired this exact stop.
+    Failed(Errno),
+}
+
+/// Exact terminal result already published for a transferred stop.
+pub enum TransferredStopCompletion {
+    /// Trusted completion retired this exact stop.
+    Finished,
+    /// A nonretryable typed transition retired this exact stop.
+    Failed(Errno),
+}
+
+impl CleanupStopTransfer {
+    pub(super) fn from_stopped(pid: Pid, token: &TraceeToken) -> Self {
+        Self {
+            pid,
+            event: token.event().clone(),
+            stop_id: token
+                .logical_stop
+                .expect("every stopped notifier token has a logical stop identity"),
+            diagnostic_status: token.physical_status,
+            owns_claimed_exit: token.owns_claimed_exit_stop,
+        }
+    }
+
+    /// Returns this transfer's mandatory generation-local stop identity.
+    pub fn logical_stop_id(&self) -> LogicalStopId {
+        self.stop_id
+    }
+
+    /// Returns the optional observer identity carried only for diagnostics.
+    pub fn physical_status_id(&self) -> Option<PhysicalStatusId> {
+        self.diagnostic_status
+    }
+}
+
+/// Opaque, linear authority for one exact logical stop retained by cancellation
+/// cleanup.
+///
+/// This value is deliberately neither `Clone` nor `Copy`. Dropping an active
+/// lease atomically rolls only its matching nonce back into generation-local
+/// recoverable authority. A stale drop therefore cannot clear a newer lease,
+/// erase the retired frontier, or reactivate a permanently retired identity.
+#[must_use = "retain the exact stop for cleanup or dispose it through TerminalCleanup"]
+pub struct CleanupStopLease {
+    pid: Pid,
+    event: EventHandle,
+    stop_id: LogicalStopId,
+    diagnostic_status: Option<PhysicalStatusId>,
+    nonce: CleanupLeaseNonce,
+    active: bool,
+}
+
+impl CleanupStopLease {
+    /// Returns this lease's mandatory generation-local stop identity.
+    pub fn logical_stop_id(&self) -> LogicalStopId {
+        self.stop_id
+    }
+
+    /// Returns the optional observer identity carried only for diagnostics.
+    pub fn physical_status_id(&self) -> Option<PhysicalStatusId> {
+        self.diagnostic_status
+    }
+
+    /// Returns whether the lease still owns an undisposed stop.
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+}
+
+impl Drop for CleanupStopLease {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let event = self.event.event();
+        let mut publication = event.exit_publication.lock();
+        let key = CleanupStopKey(self.stop_id);
+        if publication.cleanup_authority
+            == (CleanupAuthorityState::Leased {
+                key,
+                nonce: self.nonce,
+            })
+        {
+            publication.cleanup_authority = if publication.is_retired(key) {
+                CleanupAuthorityState::Vacant
+            } else {
+                CleanupAuthorityState::Available {
+                    key,
+                    diagnostic_status: self.diagnostic_status,
+                }
+            };
+        }
+        self.active = false;
+    }
+}
+
 /// A synchronous acknowledgment that a PID's notifier worker has observed a
 /// terminal state and removed its registry entry.
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -2702,6 +8883,35 @@ impl Drop for Notifier {
 pub struct TerminalCleanup {
     pid: Pid,
     event: EventHandle,
+}
+
+/// Result of one generation-bound cancellation cleanup continuation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalCleanupContinue {
+    /// No exit stop is fully published, so no ptrace transition was attempted.
+    WaitingForExitStop,
+    /// This exact exit stop was already consumed by an earlier successful attempt.
+    AlreadyFinished {
+        /// Physical identity of the previously consumed exit stop, when observed.
+        source_status: Option<PhysicalStatusId>,
+    },
+    /// The true-ptracer controller completed its wait-failure handoff. The
+    /// exact-pidfd worker may still be sending SIGKILL and draining the terminal
+    /// status, so this does not mean generation cleanup is finished.
+    ControllerHandoffCompleted {
+        /// Physical identity of the untyped stop handed to the controller.
+        source_status: Option<PhysicalStatusId>,
+        /// Whether the controller's raw ptrace transition succeeded. When
+        /// false, the exact-pidfd worker owns the SIGKILL fallback.
+        resume_succeeded: bool,
+    },
+    /// A raw `PTRACE_CONT` was attempted while exit publication was excluded.
+    Attempted {
+        /// Physical identity of the exit stop authorizing the attempt, when observed.
+        source_status: Option<PhysicalStatusId>,
+        /// Raw ptrace errno, or `None` when the kernel accepted the transition.
+        error: Option<Errno>,
+    },
 }
 
 impl TerminalCleanup {
@@ -2714,6 +8924,26 @@ impl TerminalCleanup {
     fn new_unregistered(pid: Pid, token: &TraceeToken) -> Self {
         let event = token.event().clone();
         Self { pid, event }
+    }
+
+    /// Terminates and consumes this exact original-root generation before its
+    /// notifier worker starts.  Cleanup retains its pidfd capability in the
+    /// Event on error, so callers may report failure without reverting to a
+    /// numeric PID.
+    ///
+    /// # Safety
+    ///
+    /// The caller must be the sole pre-registration wait owner.
+    pub unsafe fn terminate_unregistered_original_root(
+        &self,
+        cause: Errno,
+    ) -> Result<(), Errno> {
+        self.event
+            .terminate_unregistered_original_root(self.pid, cause)
+    }
+
+    pub(super) fn matches_stopped(&self, pid: Pid, token: &TraceeToken) -> bool {
+        self.pid == pid && Arc::ptr_eq(self.event.event(), token.event().event())
     }
 
     /// Retries notifier registration and returns the exact capture/open error.
@@ -2734,6 +8964,35 @@ impl TerminalCleanup {
         *self.event.event().registration_error.lock()
     }
 
+    /// Returns a retained terminal wait/protocol error, if one occurred after
+    /// this generation acquired kernel wait ownership.
+    pub fn terminal_error(&self) -> Option<Errno> {
+        *self.event.event().terminal_error.lock()
+    }
+
+    /// Attaches a bounded observer before notifier wait ownership starts.
+    pub fn attach_physical_event_observer(
+        &self,
+        observer: &PhysicalEventObserver,
+    ) -> Result<(), PhysicalObserverAttachError> {
+        self.event.attach_physical_observer(observer)
+    }
+
+    /// Returns the physical observer attached to this cleanup generation.
+    pub fn physical_event_observer(&self) -> Option<PhysicalEventObserver> {
+        self.event.physical_observer()
+    }
+
+    /// Returns this cleanup handle's immutable Event generation.
+    pub fn physical_event_generation(&self) -> PhysicalEventGenerationId {
+        self.event.physical_generation()
+    }
+
+    /// Returns the exact identity available for raw cleanup operations.
+    pub fn physical_task_identity(&self) -> PhysicalTaskIdentity {
+        self.event.physical_task_identity(self.pid)
+    }
+
     #[cfg(test)]
     fn try_claim_unstarted_raw_cleanup(&self) -> Result<RawCleanupClaim, Errno> {
         NOTIFIER.try_claim_unstarted_raw_cleanup(self.pid, &self.event)
@@ -2743,8 +9002,9 @@ impl TerminalCleanup {
     fn finish_unstarted_raw_cleanup(&self) {
         let event = self.event.event();
         event.mark_echild();
-        event.mark_worker_done();
+        event.prepare_worker_done();
         NOTIFIER.remove(self.pid, event);
+        event.publish_worker_done();
     }
 
     /// Returns true when both handles carry the same immutable Event generation.
@@ -2776,11 +9036,22 @@ impl TerminalCleanup {
             .pending
             .front()
             .expect("pending cleanup reservation requires a FIFO front");
+        let event = self.event.event();
+        let reservation = match (event.observer(), status.physical) {
+            (Some(observer), Some(physical)) => {
+                let reservation = observer.next_reservation();
+                observer.record_cleanup_reserved(event.generation, reservation, physical);
+                Some(reservation)
+            }
+            _ => None,
+        };
         Some(PendingStatusReservation {
             pid: self.pid,
             status,
+            reservation,
             event: self.event.resolved(),
             state,
+            completed: false,
         })
     }
 
@@ -2794,54 +9065,1592 @@ impl TerminalCleanup {
         self.event.event().exit_status.load(Ordering::Acquire) == EXIT_STOPPED
     }
 
-    /// Revokes any not-yet-claimed exit-stop capability before cancellation
-    /// cleanup performs a raw ptrace transition.
+    /// Returns the physical status behind the retained exit-stop capability.
     ///
-    /// Returns [`Errno::EALREADY`] rather than advancing behind a capability
-    /// already minted as [`Stopped`].
-    pub fn revoke_unclaimed_exit_stop(&self) -> Result<(), Errno> {
-        self.event
-            .event()
-            .prepare_exit_capability_for_cleanup(false)
-    }
-
-    /// Transfers a previously claimed exit-stop capability to cancellation
-    /// cleanup and revokes all future claims.
-    ///
-    /// # Safety
-    ///
-    /// The caller must prove exclusive ownership of the exact stopped tracee
-    /// generation and that the previously returned [`Stopped`] value has been
-    /// destroyed or transferred to the cleanup path. Revocation cannot make an
-    /// independently retained `Stopped` value safe.
-    pub unsafe fn revoke_owned_exit_stop(&self) -> Result<(), Errno> {
-        self.event.event().prepare_exit_capability_for_cleanup(true)
-    }
-}
-
-/// A rollback-safe reservation of one exact-generation notifier FIFO front.
-#[must_use = "drop rolls the reservation back; call commit after ownership is stored"]
-pub struct PendingStatusReservation<'a> {
-    pid: Pid,
-    status: i32,
-    event: &'a EventHandle,
-    state: MutexGuard<'a, StatusState>,
-}
-
-impl PendingStatusReservation<'_> {
-    /// Decodes the reserved status without removing it from the FIFO.
-    pub fn decode(&self) -> Result<Wait, Error> {
-        Wait::from_raw_with_token(
-            self.pid,
-            self.status,
-            TraceeToken::from_event(self.event.clone()),
+    /// A present value names the exact stop that cancellation cleanup must
+    /// cite before issuing a raw resume. It remains available after capability
+    /// revocation so the physical operation keeps its source identity.
+    pub fn exit_stop_physical_status_id(&self) -> Option<PhysicalStatusId> {
+        PhysicalStatusId::from_raw(
+            self.event
+                .event()
+                .exit_physical_status
+                .load(Ordering::Acquire),
         )
     }
 
+    /// Returns the mandatory logical identity behind the retained exit stop.
+    pub fn exit_stop_logical_stop_id(&self) -> Option<LogicalStopId> {
+        LogicalStopId::from_raw(
+            self.event
+                .event()
+                .exit_logical_stop
+                .load(Ordering::Acquire),
+        )
+    }
+
+    fn lease_cleanup_stop(
+        &self,
+        transfer: &CleanupStopTransfer,
+    ) -> Result<CleanupStopLease, Errno> {
+        if transfer.pid != self.pid
+            || !Arc::ptr_eq(transfer.event.event(), self.event.event())
+        {
+            return Err(Errno::EINVAL);
+        }
+        let event = self.event.event();
+        let mut publication = event.exit_publication.lock();
+        self.lease_cleanup_stop_locked(event, &mut publication, transfer)
+    }
+
+    fn lease_cleanup_stop_locked(
+        &self,
+        event: &Event,
+        publication: &mut ExitPublicationState,
+        transfer: &CleanupStopTransfer,
+    ) -> Result<CleanupStopLease, Errno> {
+        let key = CleanupStopKey(transfer.stop_id);
+        if publication.is_retired(key) {
+            return Err(Errno::EALREADY);
+        }
+        let exit_stop = LogicalStopId::from_raw(event.exit_logical_stop.load(Ordering::Acquire));
+        let exit_status =
+            PhysicalStatusId::from_raw(event.exit_physical_status.load(Ordering::Acquire));
+        if let ExitStopCleanupCompletion::Ambiguous {
+            stop_id,
+            diagnostic_status,
+            ..
+        } = publication.cleanup
+        {
+            // The only external activation accepted while causal resolution is
+            // pending is the original claimed ExitFuture shadow. It preserves
+            // durable ownership but cannot issue a second raw transition.
+            let original_claimed_shadow = transfer.owns_claimed_exit
+                && transfer.stop_id == stop_id
+                && transfer.diagnostic_status == diagnostic_status;
+            let later_independent_stop = transfer.stop_id.get() > stop_id.get();
+            if !original_claimed_shadow && !later_independent_stop {
+                return Err(Errno::EALREADY);
+            }
+        }
+        match publication.cleanup_authority {
+            CleanupAuthorityState::Vacant => {}
+            CleanupAuthorityState::Leased { .. } => return Err(Errno::EALREADY),
+            CleanupAuthorityState::Available {
+                key: available_key,
+                diagnostic_status: available_status,
+            } => {
+                // Rolled-back authority, including an ambiguous ESRCH/EIO
+                // stop, can be recovered only by generation-local cleanup.
+                // A caller-supplied logical ID is metadata, not proof that the
+                // kernel published a later status, so it may neither replace
+                // nor resolve this authority.
+                let _ = (available_key, available_status);
+                return Err(Errno::EALREADY);
+            }
+        }
+        if exit_stop == Some(transfer.stop_id) && exit_status != transfer.diagnostic_status {
+            return Err(Errno::EPROTO);
+        }
+        if transfer.owns_claimed_exit && exit_stop != Some(transfer.stop_id) {
+            return Err(Errno::EPROTO);
+        }
+        event.prepare_exit_capability_for_cleanup(transfer.owns_claimed_exit)?;
+        let nonce = event.allocate_cleanup_lease_nonce();
+        publication.cleanup_authority = CleanupAuthorityState::Leased { key, nonce };
+        Ok(CleanupStopLease {
+            pid: self.pid,
+            event: self.event.clone(),
+            stop_id: transfer.stop_id,
+            diagnostic_status: transfer.diagnostic_status,
+            nonce,
+            active: true,
+        })
+    }
+
+    pub(super) fn lease_stopped_token(
+        pid: Pid,
+        token: TraceeToken,
+    ) -> Result<CleanupStopLease, (Errno, TraceeToken)> {
+        let cleanup = Self::new_unregistered(pid, &token);
+        let mut transfer = Some(CleanupStopTransfer::from_stopped(pid, &token));
+        cleanup
+            .lease_transferred_stop(&mut transfer)
+            .map_err(|error| (error, token))
+    }
+
+    /// Consumes an exact-generation metadata transfer into one linear cleanup
+    /// lease.
+    ///
+    /// The transfer can be created only through the unsafe stopped-capability
+    /// shadowing contract on [`Stopped::transfer_cleanup_stop`]. Consuming it
+    /// here prevents the same opaque value from being activated twice. On
+    /// success the option becomes empty; on error it retains the exact transfer
+    /// so its durable owner can retry or report the protocol failure.
+    pub fn lease_transferred_stop(
+        &self,
+        transfer: &mut Option<CleanupStopTransfer>,
+    ) -> Result<CleanupStopLease, Errno> {
+        let lease = self.lease_cleanup_stop(transfer.as_ref().ok_or(Errno::EALREADY)?)?;
+        drop(
+            transfer
+                .take()
+                .expect("successful cleanup transfer activation lost its token"),
+        );
+        Ok(lease)
+    }
+
+    /// Atomically consumes one durable stopped-capability shadow as a live
+    /// lease or as the exact terminal result already published for that stop.
+    /// Protocol errors preserve the transfer for its current durable owner.
+    pub fn resolve_transferred_stop(
+        &self,
+        transfer: &mut Option<CleanupStopTransfer>,
+    ) -> Result<TransferredStopResolution, Errno> {
+        let transfer_ref = transfer.as_ref().ok_or(Errno::EALREADY)?;
+        if transfer_ref.pid != self.pid
+            || !Arc::ptr_eq(transfer_ref.event.event(), self.event.event())
+        {
+            return Err(Errno::EINVAL);
+        }
+        let event = self.event.event();
+        let mut publication = event.exit_publication.lock();
+        if let Some(completed) =
+            self.transferred_stop_completion_locked(event, &publication, transfer_ref)?
+        {
+            drop(
+                transfer
+                    .take()
+                    .expect("validated completed transfer disappeared"),
+            );
+            return Ok(match completed {
+                TransferredStopCompletion::Finished => TransferredStopResolution::Finished,
+                TransferredStopCompletion::Failed(error) => {
+                    TransferredStopResolution::Failed(error)
+                }
+            });
+        }
+
+        let lease = self.lease_cleanup_stop_locked(event, &mut publication, transfer_ref)?;
+        drop(
+            transfer
+                .take()
+                .expect("successful atomic transfer activation lost its token"),
+        );
+        Ok(TransferredStopResolution::Leased(lease))
+    }
+
+    /// Consumes only a matching result already published for this transfer.
+    /// A live, ambiguous, or unrelated stop is left with its durable owner.
+    pub fn consume_transferred_stop_completion(
+        &self,
+        transfer: &mut Option<CleanupStopTransfer>,
+    ) -> Result<Option<TransferredStopCompletion>, Errno> {
+        self.consume_transferred_stop_completion_inner(transfer, None)
+    }
+
+    /// Consumes a matching completed predecessor only after validating the
+    /// immutable Event provenance of a distinct successor. Protocol errors do
+    /// not consume or otherwise mutate the predecessor transfer.
+    pub fn consume_transferred_stop_completion_for_successor(
+        &self,
+        transfer: &mut Option<CleanupStopTransfer>,
+        successor_stop_id: LogicalStopId,
+        successor_diagnostic_status: Option<PhysicalStatusId>,
+    ) -> Result<Option<TransferredStopCompletion>, Errno> {
+        self.consume_transferred_stop_completion_inner(
+            transfer,
+            Some((successor_stop_id, successor_diagnostic_status)),
+        )
+    }
+
+    fn consume_transferred_stop_completion_inner(
+        &self,
+        transfer: &mut Option<CleanupStopTransfer>,
+        successor: Option<(LogicalStopId, Option<PhysicalStatusId>)>,
+    ) -> Result<Option<TransferredStopCompletion>, Errno> {
+        let transfer_ref = transfer.as_ref().ok_or(Errno::EALREADY)?;
+        if transfer_ref.pid != self.pid
+            || !Arc::ptr_eq(transfer_ref.event.event(), self.event.event())
+        {
+            return Err(Errno::EINVAL);
+        }
+        let event = self.event.event();
+        let publication = event.exit_publication.lock();
+        let completed =
+            self.transferred_stop_completion_locked(event, &publication, transfer_ref)?;
+        if completed.is_some() {
+            if let Some((stop_id, diagnostic_status)) = successor {
+                Self::validate_transferred_stop_successor(
+                    transfer_ref,
+                    stop_id,
+                    diagnostic_status,
+                )?;
+            }
+            drop(
+                transfer
+                    .take()
+                    .expect("validated completed transfer disappeared"),
+            );
+        }
+        Ok(completed)
+    }
+
+    /// Atomically distinguishes a genuinely live transfer that a trusted
+    /// kernel exit-stop publication may supersede from a completed or
+    /// quarantined cleanup state. A completed transfer is consumed; a live
+    /// transfer is preserved for the caller's serialized replacement.
+    pub fn classify_transferred_stop_for_supersession(
+        &self,
+        transfer: &mut Option<CleanupStopTransfer>,
+        successor_stop_id: LogicalStopId,
+        successor_diagnostic_status: Option<PhysicalStatusId>,
+    ) -> Result<Option<TransferredStopCompletion>, Errno> {
+        let transfer_ref = transfer.as_ref().ok_or(Errno::EALREADY)?;
+        if transfer_ref.pid != self.pid
+            || !Arc::ptr_eq(transfer_ref.event.event(), self.event.event())
+        {
+            return Err(Errno::EINVAL);
+        }
+        let event = self.event.event();
+        let publication = event.exit_publication.lock();
+        if let Some(completed) =
+            self.transferred_stop_completion_locked(event, &publication, transfer_ref)?
+        {
+            Self::validate_transferred_stop_successor(
+                transfer_ref,
+                successor_stop_id,
+                successor_diagnostic_status,
+            )?;
+            drop(
+                transfer
+                    .take()
+                    .expect("validated completed transfer disappeared"),
+            );
+            return Ok(Some(completed));
+        }
+
+        if successor_stop_id != transfer_ref.stop_id
+            || successor_diagnostic_status != transfer_ref.diagnostic_status
+        {
+            Self::validate_transferred_stop_successor(
+                transfer_ref,
+                successor_stop_id,
+                successor_diagnostic_status,
+            )?;
+        }
+
+        let key = CleanupStopKey(transfer_ref.stop_id);
+        if publication.is_retired(key)
+            || matches!(publication.cleanup, ExitStopCleanupCompletion::Ambiguous { .. })
+        {
+            return Err(Errno::EALREADY);
+        }
+        if !matches!(publication.cleanup_authority, CleanupAuthorityState::Vacant) {
+            return Err(Errno::EALREADY);
+        }
+        if transfer_ref.owns_claimed_exit {
+            let exit_stop =
+                LogicalStopId::from_raw(event.exit_logical_stop.load(Ordering::Acquire));
+            let exit_status =
+                PhysicalStatusId::from_raw(event.exit_physical_status.load(Ordering::Acquire));
+            if exit_stop != Some(transfer_ref.stop_id)
+                || exit_status != transfer_ref.diagnostic_status
+                || event.exit_capability.load(Ordering::Acquire) != EXIT_CAP_CLAIMED
+            {
+                return Err(Errno::EPROTO);
+            }
+        }
+        Ok(None)
+    }
+
+    fn validate_transferred_stop_successor(
+        transfer: &CleanupStopTransfer,
+        successor_stop_id: LogicalStopId,
+        successor_diagnostic_status: Option<PhysicalStatusId>,
+    ) -> Result<(), Errno> {
+        if successor_stop_id.get() <= transfer.stop_id.get() {
+            return Err(Errno::EPROTO);
+        }
+        match (transfer.diagnostic_status, successor_diagnostic_status) {
+            (None, None) => Ok(()),
+            (Some(old), Some(successor)) if old != successor => Ok(()),
+            (None, Some(_)) | (Some(_), None) | (Some(_), Some(_)) => Err(Errno::EPROTO),
+        }
+    }
+
+    fn transferred_stop_completion_locked(
+        &self,
+        event: &Event,
+        publication: &ExitPublicationState,
+        transfer: &CleanupStopTransfer,
+    ) -> Result<Option<TransferredStopCompletion>, Errno> {
+        let key = CleanupStopKey(transfer.stop_id);
+        let completed = match publication.cleanup {
+            ExitStopCleanupCompletion::Finished {
+                stop_id,
+                diagnostic_status,
+            } if stop_id == transfer.stop_id => {
+                Some((TransferredStopCompletion::Finished, diagnostic_status))
+            }
+            ExitStopCleanupCompletion::Failed {
+                stop_id,
+                diagnostic_status,
+                error,
+                ..
+            } if stop_id == transfer.stop_id => {
+                Some((TransferredStopCompletion::Failed(error), diagnostic_status))
+            }
+            _ => None,
+        };
+        if let Some((completed, diagnostic_status)) = completed {
+            if diagnostic_status != transfer.diagnostic_status
+                || !publication.is_retired(key)
+                || !matches!(
+                    event.exit_status.load(Ordering::Acquire),
+                    EXIT_STOPPED | EXIT_ERROR
+                )
+                || LogicalStopId::from_raw(event.exit_logical_stop.load(Ordering::Acquire))
+                    != Some(transfer.stop_id)
+                || PhysicalStatusId::from_raw(
+                    event.exit_physical_status.load(Ordering::Acquire),
+                ) != diagnostic_status
+            {
+                return Err(Errno::EPROTO);
+            }
+            match publication.cleanup_authority {
+                CleanupAuthorityState::Vacant => {}
+                CleanupAuthorityState::Available { key: later, .. }
+                | CleanupAuthorityState::Leased { key: later, .. }
+                    if later.0.get() > key.0.get() && !publication.is_retired(later) => {}
+                CleanupAuthorityState::Available { .. }
+                | CleanupAuthorityState::Leased { .. } => return Err(Errno::EPROTO),
+            }
+            return Ok(Some(completed));
+        }
+        Ok(None)
+    }
+
+    /// Reacquires an exact stop whose active lease was dropped back into this
+    /// immutable Event generation.
+    ///
+    /// Returns `true` after installing the recovered lease, `false` when no
+    /// rolled-back authority exists, and never accepts caller-supplied IDs.
+    pub fn reclaim_available_cleanup_stop(
+        &self,
+        retained_stop: &mut Option<CleanupStopLease>,
+    ) -> Result<bool, Errno> {
+        let event = self.event.event();
+        let mut publication = event.exit_publication.lock();
+        self.reclaim_available_cleanup_stop_locked(event, &mut publication, retained_stop)
+    }
+
+    fn reclaim_available_cleanup_stop_locked(
+        &self,
+        event: &Event,
+        publication: &mut ExitPublicationState,
+        retained_stop: &mut Option<CleanupStopLease>,
+    ) -> Result<bool, Errno> {
+        if retained_stop.is_some() {
+            return Ok(false);
+        }
+        let CleanupAuthorityState::Available {
+            key,
+            diagnostic_status,
+        } = publication.cleanup_authority
+        else {
+            return match publication.cleanup_authority {
+                CleanupAuthorityState::Vacant => Ok(false),
+                CleanupAuthorityState::Leased { .. } => Err(Errno::EALREADY),
+                CleanupAuthorityState::Available { .. } => unreachable!(),
+            };
+        };
+        if matches!(
+            publication.cleanup,
+            ExitStopCleanupCompletion::Ambiguous {
+                stop_id,
+                diagnostic_status: ambiguous_status,
+                ..
+            } if CleanupStopKey(stop_id) == key && ambiguous_status == diagnostic_status
+        ) {
+            // Ambiguous ESRCH/EIO authority is quarantined until a strictly
+            // later stop or exact final-status proof resolves it. Reacquiring
+            // it must never make a second raw CONT possible.
+            return Ok(false);
+        }
+        if publication.is_retired(key) {
+            return Err(Errno::EPROTO);
+        }
+        let nonce = event.allocate_cleanup_lease_nonce();
+        publication.cleanup_authority = CleanupAuthorityState::Leased { key, nonce };
+        *retained_stop = Some(CleanupStopLease {
+            pid: self.pid,
+            event: self.event.clone(),
+            stop_id: key.0,
+            diagnostic_status,
+            nonce,
+            active: true,
+        });
+        Ok(true)
+    }
+
+    /// Returns the sticky failure for this exact transferred stop, when one
+    /// was already retired by a failed typed transition.
+    pub fn transferred_stop_failure(
+        &self,
+        transfer: &CleanupStopTransfer,
+    ) -> Result<Option<Errno>, Errno> {
+        if transfer.pid != self.pid
+            || !Arc::ptr_eq(transfer.event.event(), self.event.event())
+        {
+            return Err(Errno::EINVAL);
+        }
+        let event = self.event.event();
+        let publication = event.exit_publication.lock();
+        let ExitStopCleanupCompletion::Failed {
+            stop_id,
+            diagnostic_status,
+            error,
+            ..
+        } = publication.cleanup
+        else {
+            return Ok(None);
+        };
+        if stop_id != transfer.stop_id {
+            return Ok(None);
+        }
+        if diagnostic_status != transfer.diagnostic_status
+            || !publication.is_retired(CleanupStopKey(stop_id))
+        {
+            return Err(Errno::EPROTO);
+        }
+        Ok(Some(error))
+    }
+
+    /// Disposes one exact cleanup stop without issuing a ptrace transition.
+    pub fn dispose_cleanup_stop(&self, mut lease: CleanupStopLease) -> Result<(), Errno> {
+        if !lease.active
+            || lease.pid != self.pid
+            || !Arc::ptr_eq(lease.event.event(), self.event.event())
+        {
+            return Err(Errno::EINVAL);
+        }
+        let event = self.event.event();
+        let mut publication = event.exit_publication.lock();
+        let key = CleanupStopKey(lease.stop_id);
+        if publication.cleanup_authority
+            != (CleanupAuthorityState::Leased {
+                key,
+                nonce: lease.nonce,
+            })
+        {
+            return Err(Errno::EALREADY);
+        }
+        let already_resumed = matches!(
+            publication.cleanup,
+            ExitStopCleanupCompletion::Finished { stop_id, .. } if stop_id == lease.stop_id
+        );
+        if !already_resumed
+            && let (Some(observer), Some(status)) =
+                (event.observer(), lease.diagnostic_status)
+        {
+            observer.finish_status(status, PhysicalStatusDisposition::CancellationCleanup);
+        }
+        publication.retire(key);
+        lease.active = false;
+        Ok(())
+    }
+
+    /// Continues a fully published exit stop during whole-session cleanup.
+    ///
+    /// Exit-stop publication, capability revocation, physical source
+    /// selection, observer accounting, and the raw ptrace transition are one
+    /// critical section. If the exit stop has not been published, this method
+    /// does not transition an older retained stop.
+    pub fn continue_exit_stop_for_cleanup(
+        &self,
+        retained_stop: &mut Option<CleanupStopLease>,
+        owner: PhysicalResumeOwner,
+    ) -> Result<TerminalCleanupContinue, Errno> {
+        self.continue_exit_stop_for_cleanup_with(retained_stop, owner, |inject_sigkill| {
+            nix::sys::ptrace::cont(
+                self.pid.into(),
+                inject_sigkill.then_some(nix::sys::signal::Signal::SIGKILL),
+            )
+        })
+    }
+
+    fn terminal_exit_stop_cleanup(
+        &self,
+        retained_stop: &mut Option<CleanupStopLease>,
+    ) -> Result<Option<TerminalCleanupContinue>, Errno> {
+        let event = self.event.event();
+        let mut publication = event.exit_publication.lock();
+        if let Some(error) =
+            Self::ambiguous_exit_stop_cleanup_locked(event, &publication, retained_stop.as_ref())?
+        {
+            return Err(error);
+        }
+        if let Some(error) =
+            Self::failed_exit_stop_cleanup_locked(event, &publication, retained_stop.as_ref())?
+        {
+            return Err(error);
+        }
+        self.reclaim_available_cleanup_stop_locked(event, &mut publication, retained_stop)?;
+        let result = Self::finished_exit_stop_cleanup_locked(
+            event,
+            &publication,
+            retained_stop.as_ref(),
+        )?;
+        if matches!(result, Some(TerminalCleanupContinue::AlreadyFinished { .. }))
+            && let Some(lease) = retained_stop.as_mut()
+        {
+            publication.retire(CleanupStopKey(lease.stop_id));
+            lease.active = false;
+            *retained_stop = None;
+        }
+        if result.is_some() {
+            return Ok(result);
+        }
+        Ok(None)
+    }
+
+    fn ambiguous_exit_stop_cleanup_locked(
+        event: &Event,
+        publication: &ExitPublicationState,
+        retained_stop: Option<&CleanupStopLease>,
+    ) -> Result<Option<Errno>, Errno> {
+        let ExitStopCleanupCompletion::Ambiguous {
+            stop_id,
+            diagnostic_status,
+            error,
+            ..
+        } = publication.cleanup
+        else {
+            return Ok(None);
+        };
+        if !matches!(
+            event.exit_status.load(Ordering::Acquire),
+            EXIT_STOPPED | EXIT_ERROR
+        ) || LogicalStopId::from_raw(event.exit_logical_stop.load(Ordering::Acquire))
+            != Some(stop_id)
+            || PhysicalStatusId::from_raw(event.exit_physical_status.load(Ordering::Acquire))
+                != diagnostic_status
+            || publication.is_retired(CleanupStopKey(stop_id))
+        {
+            return Err(Errno::EPROTO);
+        }
+        if let Some(retained) = retained_stop {
+            if !retained.active
+                || publication.cleanup_authority
+                    != (CleanupAuthorityState::Leased {
+                        key: CleanupStopKey(retained.stop_id),
+                        nonce: retained.nonce,
+                    })
+            {
+                return Err(Errno::EPROTO);
+            }
+            if retained.stop_id == stop_id {
+                if retained.diagnostic_status != diagnostic_status {
+                    return Err(Errno::EPROTO);
+                }
+            } else if retained.stop_id.get() <= stop_id.get()
+                || publication.is_retired(CleanupStopKey(retained.stop_id))
+            {
+                return Err(Errno::EPROTO);
+            }
+        } else {
+            match publication.cleanup_authority {
+                CleanupAuthorityState::Vacant => {}
+                CleanupAuthorityState::Available {
+                    key,
+                    diagnostic_status: available_status,
+                } if key == CleanupStopKey(stop_id) && available_status == diagnostic_status => {}
+                CleanupAuthorityState::Available { key, .. }
+                | CleanupAuthorityState::Leased { key, .. }
+                    if key.0.get() > stop_id.get() && !publication.is_retired(key) => {}
+                CleanupAuthorityState::Available { .. }
+                | CleanupAuthorityState::Leased { .. } => return Err(Errno::EPROTO),
+            }
+        }
+        Ok(Some(error))
+    }
+
+    fn finished_exit_stop_cleanup_locked(
+        event: &Event,
+        publication: &ExitPublicationState,
+        retained_stop: Option<&CleanupStopLease>,
+    ) -> Result<Option<TerminalCleanupContinue>, Errno> {
+        let ExitStopCleanupCompletion::Finished {
+            stop_id,
+            diagnostic_status,
+        } = publication.cleanup
+        else {
+            return Ok(None);
+        };
+        if !matches!(
+            event.exit_status.load(Ordering::Acquire),
+            EXIT_STOPPED | EXIT_ERROR
+        ) {
+            return Err(Errno::EPROTO);
+        }
+        let exit_status =
+            PhysicalStatusId::from_raw(event.exit_physical_status.load(Ordering::Acquire));
+        let exit_stop = LogicalStopId::from_raw(event.exit_logical_stop.load(Ordering::Acquire));
+        if diagnostic_status != exit_status || exit_stop != Some(stop_id) {
+            return Err(Errno::EPROTO);
+        }
+        let finished_key = CleanupStopKey(stop_id);
+        if !publication.is_retired(finished_key) {
+            return Err(Errno::EPROTO);
+        }
+        if let Some(retained) = retained_stop {
+            if !retained.active
+                || publication.cleanup_authority
+                    != (CleanupAuthorityState::Leased {
+                        key: CleanupStopKey(retained.stop_id),
+                        nonce: retained.nonce,
+                    })
+            {
+                return Err(Errno::EALREADY);
+            }
+            if retained.stop_id != stop_id {
+                if retained.stop_id.get() <= stop_id.get()
+                    || publication.is_retired(CleanupStopKey(retained.stop_id))
+                {
+                    return Err(Errno::EPROTO);
+                }
+                return Ok(None);
+            }
+            if retained.diagnostic_status != diagnostic_status {
+                return Err(Errno::EPROTO);
+            }
+        } else {
+            match publication.cleanup_authority {
+                CleanupAuthorityState::Vacant => {}
+                CleanupAuthorityState::Available { key, .. }
+                | CleanupAuthorityState::Leased { key, .. }
+                    if key.0.get() > stop_id.get() && !publication.is_retired(key) => {
+                        return Ok(None);
+                    }
+                CleanupAuthorityState::Available { .. }
+                | CleanupAuthorityState::Leased { .. } => return Err(Errno::EPROTO),
+            }
+        }
+        Ok(Some(TerminalCleanupContinue::AlreadyFinished {
+            source_status: diagnostic_status,
+        }))
+    }
+
+    fn failed_exit_stop_cleanup_locked(
+        event: &Event,
+        publication: &ExitPublicationState,
+        retained_stop: Option<&CleanupStopLease>,
+    ) -> Result<Option<Errno>, Errno> {
+        let ExitStopCleanupCompletion::Failed {
+            stop_id,
+            diagnostic_status,
+            error,
+            ..
+        } = publication.cleanup
+        else {
+            return Ok(None);
+        };
+        if !matches!(
+            event.exit_status.load(Ordering::Acquire),
+            EXIT_STOPPED | EXIT_ERROR
+        ) {
+            return Err(Errno::EPROTO);
+        }
+        let exit_status =
+            PhysicalStatusId::from_raw(event.exit_physical_status.load(Ordering::Acquire));
+        let exit_stop = LogicalStopId::from_raw(event.exit_logical_stop.load(Ordering::Acquire));
+        if diagnostic_status != exit_status || exit_stop != Some(stop_id) {
+            return Err(Errno::EPROTO);
+        }
+        let failed_key = CleanupStopKey(stop_id);
+        if !publication.is_retired(failed_key) {
+            return Err(Errno::EPROTO);
+        }
+        if let Some(retained) = retained_stop {
+            if !retained.active
+                || publication.cleanup_authority
+                    != (CleanupAuthorityState::Leased {
+                        key: CleanupStopKey(retained.stop_id),
+                        nonce: retained.nonce,
+                    })
+            {
+                return Err(Errno::EALREADY);
+            }
+            if retained.stop_id.get() <= stop_id.get()
+                || publication.is_retired(CleanupStopKey(retained.stop_id))
+            {
+                return Err(Errno::EPROTO);
+            }
+        } else {
+            match publication.cleanup_authority {
+                CleanupAuthorityState::Vacant => {}
+                CleanupAuthorityState::Available { key, .. }
+                | CleanupAuthorityState::Leased { key, .. }
+                    if key.0.get() > stop_id.get() && !publication.is_retired(key) => {}
+                CleanupAuthorityState::Available { .. }
+                | CleanupAuthorityState::Leased { .. } => return Err(Errno::EPROTO),
+            }
+        }
+        Ok(Some(error))
+    }
+
+    fn continue_wait_failure_cleanup_with(
+        &self,
+        retained_status: Option<PhysicalStatusId>,
+        owner: PhysicalResumeOwner,
+        transition: impl FnOnce() -> Result<(), nix::errno::Errno>,
+    ) -> Result<Option<TerminalCleanupContinue>, Errno> {
+        let event = self.event.event();
+        let mut phase = event.wait_failure_cleanup.lock();
+        let (source_logical_stop, source_status, tolerated_resume) = match *phase {
+            WaitFailureCleanupPhase::Idle => return Ok(None),
+            WaitFailureCleanupPhase::Ready {
+                source_status,
+                controller_resume_succeeded,
+                ..
+            } => {
+                return Ok(Some(TerminalCleanupContinue::ControllerHandoffCompleted {
+                    source_status,
+                    resume_succeeded: controller_resume_succeeded,
+                }));
+            }
+            WaitFailureCleanupPhase::AwaitingController {
+                source_logical_stop,
+                source_status,
+                tolerated_resume,
+            } => (source_logical_stop, source_status, tolerated_resume),
+        };
+        if retained_status.is_some() && retained_status != source_status {
+            return Err(Errno::EPROTO);
+        }
+
+        let Some(identity) = self.event.identity() else {
+            return Err(Errno::EPROTO);
+        };
+        if identity.pid != self.pid {
+            return Err(Errno::ESRCH);
+        }
+        if !pidfd_is_live(&identity.pidfd)? || !identity.active_tracee()? {
+            *phase = WaitFailureCleanupPhase::Ready {
+                source_logical_stop,
+                source_status,
+                deferred: source_status.map(|status| DeferredCleanupDisposition { status }),
+                tolerated_resume,
+                controller_resume_succeeded: false,
+            };
+            event.wait_failure_cleanup_changed.notify_all();
+            return Ok(Some(TerminalCleanupContinue::WaitingForExitStop));
+        }
+        if !identity.is_current_ptracer() {
+            return Err(Errno::EPERM);
+        }
+
+        let observer = event.observer();
+        let attempt = observer.map(|observer| {
+            observer.begin_resume(PhysicalResumeContext {
+                generation: Some(event.generation),
+                task: identity.physical_identity(),
+                source_status,
+                operation: PhysicalResumeOperation::Continue,
+                signal: Some(libc::SIGKILL),
+                owner,
+            })
+        });
+        let result = transition();
+        if let (Some(observer), Some(attempt)) = (observer, attempt) {
+            observer.finish_resume(
+                attempt,
+                match result {
+                    Ok(()) => PhysicalResumeOutcome::Success,
+                    Err(error) => PhysicalResumeOutcome::Error(error as i32),
+                },
+            );
+        }
+        match result {
+            Ok(()) => {
+                *phase = WaitFailureCleanupPhase::Ready {
+                    source_logical_stop,
+                    source_status,
+                    deferred: None,
+                    tolerated_resume,
+                    controller_resume_succeeded: true,
+                };
+                event.wait_failure_cleanup_changed.notify_all();
+            }
+            Err(error) => {
+                if matches!(error, nix::errno::Errno::ESRCH | nix::errno::Errno::EIO) {
+                    // The fresh TracerPid gate above already excluded an
+                    // off-ptracer caller. Hand the exact source back to the
+                    // pidfd waiter for SIGKILL fallback and accept this raw
+                    // error only after its registered terminal drain.
+                    *phase = WaitFailureCleanupPhase::Ready {
+                        source_logical_stop,
+                        source_status,
+                        deferred: source_status.map(|status| DeferredCleanupDisposition { status }),
+                        tolerated_resume: attempt
+                            .map(|attempt| (attempt, Errno::new(error as i32)))
+                            .or(tolerated_resume),
+                        controller_resume_succeeded: false,
+                    };
+                    event.wait_failure_cleanup_changed.notify_all();
+                } else {
+                    // Any returned ptrace result irreversibly spends this
+                    // physical status's sole resume permit.  A non-tolerated
+                    // error remains exact on this call, while the pidfd owner
+                    // retains only terminal-drain/disposition authority.
+                    *phase = WaitFailureCleanupPhase::Ready {
+                        source_logical_stop,
+                        source_status,
+                        deferred: source_status
+                            .map(|status| DeferredCleanupDisposition { status }),
+                        tolerated_resume,
+                        controller_resume_succeeded: false,
+                    };
+                    event.wait_failure_cleanup_changed.notify_all();
+                }
+            }
+        }
+        Ok(Some(TerminalCleanupContinue::Attempted {
+            source_status,
+            error: result.err().map(|error| Errno::new(error as i32)),
+        }))
+    }
+
+    fn continue_exit_stop_for_cleanup_with(
+        &self,
+        retained_stop: &mut Option<CleanupStopLease>,
+        owner: PhysicalResumeOwner,
+        transition: impl FnOnce(bool) -> Result<(), nix::errno::Errno>,
+    ) -> Result<TerminalCleanupContinue, Errno> {
+        if !matches!(
+            owner,
+            PhysicalResumeOwner::SynchronousCancellation
+                | PhysicalResumeOwner::RootCleanup
+                | PhysicalResumeOwner::DescendantCleanup
+        ) {
+            return Err(Errno::EINVAL);
+        }
+        let mut transition = Some(transition);
+        // Sticky exit completion/failure is authoritative over the independent
+        // wait-failure handoff. In particular, a typed Failed result must be
+        // returned before that path can issue or report any raw transition.
+        if let Some(finished) = self.terminal_exit_stop_cleanup(retained_stop)? {
+            return Ok(finished);
+        }
+        let retained_status = retained_stop
+            .as_ref()
+            .and_then(CleanupStopLease::physical_status_id);
+        if let Some(result) =
+            self.continue_wait_failure_cleanup_with(retained_status, owner, || {
+                transition.take().expect("cleanup transition reused")(true)
+            })?
+        {
+            return Ok(result);
+        }
+        let event = self.event.event();
+        #[cfg(test)]
+        let precheck_pause = EXIT_CLEANUP_PRECHECK_PAUSES.lock().remove(&self.pid);
+        #[cfg(test)]
+        if let Some(pause) = precheck_pause {
+            pause.captured.wait();
+            pause.resume.wait();
+        }
+        if let Some(finished) = self.terminal_exit_stop_cleanup(retained_stop)? {
+            return Ok(finished);
+        }
+        #[cfg(test)]
+        let authority_pause = EXIT_CLEANUP_AUTHORITY_PAUSES.lock().remove(&self.pid);
+        #[cfg(test)]
+        if let Some(pause) = authority_pause {
+            pause.captured.wait();
+            pause.resume.wait();
+        }
+        if let Some(identity) = self.event.identity() {
+            match identity.active_tracee() {
+                Ok(true) => {}
+                Ok(false) => {
+                    if let Some(finished) = self.terminal_exit_stop_cleanup(retained_stop)? {
+                        return Ok(finished);
+                    }
+                    return Ok(TerminalCleanupContinue::WaitingForExitStop);
+                }
+                Err(error) => {
+                    if let Some(finished) = self.terminal_exit_stop_cleanup(retained_stop)? {
+                        return Ok(finished);
+                    }
+                    return Err(error);
+                }
+            }
+            if !identity.is_current_ptracer() {
+                if let Some(finished) = self.terminal_exit_stop_cleanup(retained_stop)? {
+                    return Ok(finished);
+                }
+                return Err(Errno::EPERM);
+            }
+        }
+        #[cfg(test)]
+        let publication_pause = EXIT_CLEANUP_LOCK_PAUSES.lock().remove(&self.pid);
+        #[cfg(test)]
+        if let Some(pause) = publication_pause {
+            pause.captured.wait();
+            pause.resume.wait();
+        }
+        let mut publication = event.exit_publication.lock();
+        #[cfg(test)]
+        let after_lock_pause = EXIT_CLEANUP_AFTER_LOCK_PAUSES.lock().remove(&self.pid);
+        #[cfg(test)]
+        if let Some(pause) = after_lock_pause {
+            pause.captured.wait();
+            pause.resume.wait();
+        }
+        if let Some(error) =
+            Self::ambiguous_exit_stop_cleanup_locked(event, &publication, retained_stop.as_ref())?
+        {
+            return Err(error);
+        }
+        if let Some(error) =
+            Self::failed_exit_stop_cleanup_locked(event, &publication, retained_stop.as_ref())?
+        {
+            return Err(error);
+        }
+        self.reclaim_available_cleanup_stop_locked(event, &mut publication, retained_stop)?;
+        if let Some(finished) =
+            Self::finished_exit_stop_cleanup_locked(event, &publication, retained_stop.as_ref())?
+        {
+            if let Some(lease) = retained_stop.as_mut() {
+                publication.retire(CleanupStopKey(lease.stop_id));
+                lease.active = false;
+                *retained_stop = None;
+            }
+            return Ok(finished);
+        }
+        if event.exit_status.load(Ordering::Acquire) != EXIT_STOPPED {
+            return Ok(TerminalCleanupContinue::WaitingForExitStop);
+        }
+        let exit_stop = LogicalStopId::from_raw(event.exit_logical_stop.load(Ordering::Acquire))
+            .ok_or(Errno::EPROTO)?;
+        let exit_status =
+            PhysicalStatusId::from_raw(event.exit_physical_status.load(Ordering::Acquire));
+
+        // A finished older exit stop is not authority over a later ordinary
+        // stop. Keep that successor lease armed and wait for its own exit stop;
+        // in particular, do not repeat the old raw PTRACE_CONT.
+        if matches!(publication.cleanup, ExitStopCleanupCompletion::Finished { .. }) {
+            return Ok(TerminalCleanupContinue::WaitingForExitStop);
+        }
+        if retained_stop.is_none() {
+            let key = CleanupStopKey(exit_stop);
+            if publication.is_retired(key)
+                || !matches!(publication.cleanup_authority, CleanupAuthorityState::Vacant)
+            {
+                return Err(Errno::EALREADY);
+            }
+            event.prepare_exit_capability_for_cleanup(false)?;
+            let nonce = event.allocate_cleanup_lease_nonce();
+            publication.cleanup_authority = CleanupAuthorityState::Leased { key, nonce };
+            *retained_stop = Some(CleanupStopLease {
+                pid: self.pid,
+                event: self.event.clone(),
+                stop_id: exit_stop,
+                diagnostic_status: exit_status,
+                nonce,
+                active: true,
+            });
+        }
+
+        let lease = retained_stop
+            .as_mut()
+            .expect("exit cleanup installed or retained one lease");
+        if !lease.active
+            || lease.pid != self.pid
+            || !Arc::ptr_eq(lease.event.event(), self.event.event())
+            || publication.cleanup_authority
+                != (CleanupAuthorityState::Leased {
+                    key: CleanupStopKey(lease.stop_id),
+                    nonce: lease.nonce,
+                })
+        {
+            return Err(Errno::EALREADY);
+        }
+
+        if lease.stop_id != exit_stop {
+            if exit_stop.get() <= lease.stop_id.get() {
+                return Err(Errno::EPROTO);
+            }
+            if let Some(retained_status) = lease.diagnostic_status {
+                match publication.superseded_status {
+                    None => {
+                        event.observer().ok_or(Errno::EPROTO)?.finish_status(
+                            retained_status,
+                            PhysicalStatusDisposition::KernelSupersededByExitStop,
+                        );
+                        publication.superseded_status = Some(retained_status);
+                    }
+                    Some(previous) if previous == retained_status => {}
+                    Some(_) => return Err(Errno::EPROTO),
+                }
+            }
+            lease.stop_id = exit_stop;
+            lease.diagnostic_status = exit_status;
+            publication.cleanup_authority = CleanupAuthorityState::Leased {
+                key: CleanupStopKey(exit_stop),
+                nonce: lease.nonce,
+            };
+        } else if lease.diagnostic_status != exit_status {
+            return Err(Errno::EPROTO);
+        }
+
+        match publication.cleanup {
+            ExitStopCleanupCompletion::NotAttempted => {}
+            ExitStopCleanupCompletion::Ambiguous {
+                stop_id,
+                diagnostic_status,
+                error,
+                ..
+            } => {
+                if stop_id != exit_stop || diagnostic_status != exit_status {
+                    return Err(Errno::EPROTO);
+                }
+                // ESRCH/EIO does not prove that the kernel stayed at this stop.
+                // Never issue a second raw CONT. A trusted later-stop or exact
+                // terminal proof resolves this state elsewhere; until then,
+                // surface the original errno unchanged.
+                return Err(error);
+            }
+            ExitStopCleanupCompletion::Failed {
+                stop_id,
+                diagnostic_status,
+                attempt: _,
+                error,
+            } => {
+                if stop_id != exit_stop || diagnostic_status != exit_status {
+                    return Err(Errno::EPROTO);
+                }
+                return Err(error);
+            }
+            ExitStopCleanupCompletion::Finished { .. } => unreachable!(),
+        }
+
+        let observer = event.observer();
+        let attempt = observer.map(|observer| {
+            observer.begin_resume(PhysicalResumeContext {
+                generation: Some(event.generation),
+                task: self.event.physical_task_identity(self.pid),
+                source_status: exit_status,
+                operation: PhysicalResumeOperation::Continue,
+                signal: None,
+                owner,
+            })
+        });
+        let result = transition.take().expect("cleanup transition reused")(false);
+        if let (Some(observer), Some(attempt)) = (observer, attempt) {
+            observer.finish_resume(
+                attempt,
+                match result {
+                    Ok(()) => PhysicalResumeOutcome::Success,
+                    Err(error) => PhysicalResumeOutcome::Error(error as i32),
+                },
+            );
+        }
+        let terminal_failure = match result {
+            Ok(()) => {
+                publication.cleanup = ExitStopCleanupCompletion::Finished {
+                    stop_id: exit_stop,
+                    diagnostic_status: exit_status,
+                };
+                publication.retire(CleanupStopKey(exit_stop));
+                lease.active = false;
+                None
+            }
+            Err(error @ (nix::errno::Errno::ESRCH | nix::errno::Errno::EIO)) => {
+                let error = Errno::new(error as i32);
+                publication.cleanup = ExitStopCleanupCompletion::Ambiguous {
+                    stop_id: exit_stop,
+                    diagnostic_status: exit_status,
+                    attempt,
+                    error,
+                };
+                publication.cleanup_authority = CleanupAuthorityState::Available {
+                    key: CleanupStopKey(exit_stop),
+                    diagnostic_status: exit_status,
+                };
+                lease.active = false;
+                Some(error)
+            }
+            Err(error) => {
+                let error = Errno::new(error as i32);
+                publication.cleanup = ExitStopCleanupCompletion::Failed {
+                    stop_id: exit_stop,
+                    diagnostic_status: exit_status,
+                    attempt,
+                    error,
+                };
+                publication.retire(CleanupStopKey(exit_stop));
+                lease.active = false;
+                Some(error)
+            }
+        };
+        if !lease.active {
+            *retained_stop = None;
+        }
+        if let Some(error) = terminal_failure {
+            return Err(error);
+        }
+        Ok(TerminalCleanupContinue::Attempted {
+            source_status: exit_status,
+            error: result.err().map(|error| Errno::new(error as i32)),
+        })
+    }
+
+}
+
+/// A rollback-safe reservation of one exact-generation notifier FIFO front.
+#[must_use = "drop rolls the reservation back; consume it with decode"]
+pub struct PendingStatusReservation<'a> {
+    pid: Pid,
+    status: ObservedStatus,
+    reservation: Option<PhysicalReservationId>,
+    event: &'a EventHandle,
+    state: MutexGuard<'a, StatusState>,
+    completed: bool,
+}
+
+impl<'a> PendingStatusReservation<'a> {
+    fn record_decode_finished(&self, outcome: PhysicalDecodeOutcome) {
+        if let (Some(observer), Some(reservation), Some(status)) = (
+            self.event.physical_observer(),
+            self.reservation,
+            self.status.physical,
+        ) {
+            observer.record_decode_finished(
+                reservation,
+                status,
+                outcome,
+                PhysicalDecodeOwner::Cleanup,
+            );
+        }
+    }
+
+    /// Consumes the reservation and decodes its status into a guard. A typed
+    /// [`Wait`] cannot leave that guard until [`DecodedPendingStatusReservation::commit`]
+    /// has removed the FIFO front. Dropping the guard destroys the typed state
+    /// before rolling the reservation back.
+    pub fn decode(self) -> Result<DecodedPendingStatusReservation<'a>, Error> {
+        let terminal_error = self.event.event().terminal_error.lock();
+        if let Some(error) = *terminal_error {
+            return Err(error.into());
+        }
+        if let (Some(observer), Some(reservation), Some(status)) = (
+            self.event.physical_observer(),
+            self.reservation,
+            self.status.physical,
+        ) {
+            observer.record_decode_started(reservation, status, PhysicalDecodeOwner::Cleanup);
+        }
+        let decoded = Wait::from_raw_with_token(
+            self.pid,
+            self.status.raw,
+            TraceeToken::from_observed_event(
+                self.event.clone(),
+                self.status.physical,
+                self.status.logical_stop,
+            ),
+        );
+        drop(terminal_error);
+        match decoded {
+            Ok(wait) => Ok(DecodedPendingStatusReservation {
+                reservation: Some(self),
+                wait: Some(wait),
+            }),
+            Err(error) => {
+                self.record_decode_finished(PhysicalDecodeOutcome::RetryRolledBack);
+                Err(error)
+            }
+        }
+    }
+
+    /// Returns the physical status reserved from the notifier FIFO.
+    pub fn physical_status_id(&self) -> Option<PhysicalStatusId> {
+        self.status.physical
+    }
+
     /// Removes the reserved front after all associated ownership is durable.
-    pub fn commit(mut self) {
+    /// Public callers can reach this only through the decoded guard.
+    fn commit(mut self) {
         let committed = self.state.pending.pop_front();
         debug_assert_eq!(committed, Some(self.status));
+        if let (Some(observer), Some(reservation), Some(status)) = (
+            self.event.physical_observer(),
+            self.reservation,
+            self.status.physical,
+        ) {
+            observer.record_cleanup_reservation_committed(reservation, status);
+        }
+        self.completed = true;
+    }
+}
+
+/// A successfully decoded cleanup FIFO reservation whose typed state remains
+/// inseparable from the reservation until commit.
+#[must_use = "commit durable cleanup ownership or drop to destroy the typed state and roll back"]
+pub struct DecodedPendingStatusReservation<'a> {
+    reservation: Option<PendingStatusReservation<'a>>,
+    wait: Option<Wait>,
+}
+
+impl DecodedPendingStatusReservation<'_> {
+    /// Borrows the decoded state while the FIFO reservation remains exclusive.
+    pub fn wait(&self) -> &Wait {
+        self.wait
+            .as_ref()
+            .expect("decoded cleanup reservation lost its typed state")
+    }
+
+    /// Removes the FIFO front before transferring the sole typed state to the
+    /// caller, so rollback can no longer mint a duplicate capability.
+    pub fn commit(mut self) -> Wait {
+        let reservation = self
+            .reservation
+            .take()
+            .expect("decoded cleanup reservation committed twice");
+        reservation.record_decode_finished(PhysicalDecodeOutcome::Returned);
+        reservation.commit();
+        self.wait
+            .take()
+            .expect("decoded cleanup reservation lost its typed state")
+    }
+}
+
+impl Drop for DecodedPendingStatusReservation<'_> {
+    fn drop(&mut self) {
+        // Destroy the typed capability before rollback makes the same FIFO
+        // status reservable again.
+        drop(self.wait.take());
+        if let Some(reservation) = self.reservation.take() {
+            reservation.record_decode_finished(PhysicalDecodeOutcome::Cancelled);
+            drop(reservation);
+        }
+    }
+}
+
+impl Drop for PendingStatusReservation<'_> {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        if let (Some(observer), Some(reservation), Some(status)) = (
+            self.event.physical_observer(),
+            self.reservation,
+            self.status.physical,
+        ) {
+            observer.record_cleanup_reservation_rolled_back(reservation, status);
+        }
+    }
+}
+
+/// One active, generation-bound observer for resolving a delivered job-control
+/// stop without exposing `WCONTINUED` as a typed [`Wait`].
+#[must_use = "dropping the watcher disarms this stop-resolution transaction"]
+pub struct StopResolutionWatcher {
+    pid: Pid,
+    event: EventHandle,
+    delivery: StopResolutionStopped,
+    nonce: u64,
+    group_stop_acknowledged: bool,
+    continued_claimed: bool,
+    resume_in_flight: bool,
+    completed: bool,
+}
+
+impl StopResolutionWatcher {
+    pub(super) fn new(pid: Pid, token: &TraceeToken) -> Result<Self, Errno> {
+        let event = token.event().resolved_handle();
+        let delivery = StopResolutionStopped {
+            logical_stop: token.logical_stop.ok_or(Errno::EPROTO)?,
+            physical_status: token.physical_status,
+        };
+        let nonce = event.event().arm_stop_resolution_watch(delivery)?;
+        Ok(Self {
+            pid,
+            event,
+            delivery,
+            nonce,
+            group_stop_acknowledged: false,
+            continued_claimed: false,
+            resume_in_flight: false,
+            completed: false,
+        })
+    }
+
+    /// Returns the exact logical identity of the SIGSTOP delivery stop from
+    /// which this watcher was armed.
+    pub fn delivery_logical_stop_id(&self) -> LogicalStopId {
+        self.delivery.logical_stop
+    }
+
+    /// Returns the observer identity of the SIGSTOP delivery stop, when the
+    /// generation has a physical observer.
+    pub fn delivery_physical_status_id(&self) -> Option<PhysicalStatusId> {
+        self.delivery.physical_status
+    }
+
+    fn stopped_identity(&self, stopped: &Stopped) -> Result<StopResolutionStopped, Errno> {
+        if stopped.pid() != self.pid
+            || !Arc::ptr_eq(stopped.1.event().event(), self.event.event())
+        {
+            return Err(Errno::EINVAL);
+        }
+        Ok(StopResolutionStopped {
+            logical_stop: stopped.logical_stop_id(),
+            physical_status: stopped.physical_status_id(),
+        })
+    }
+
+    /// Atomically binds the first status seen after delivery to this exact
+    /// group-stop capability. A continued status observed before that stop is
+    /// retained only as negative evidence and cannot satisfy the following
+    /// continuation wait.
+    pub fn acknowledge_group_stop(&mut self, stopped: &Stopped) -> Result<(), Errno> {
+        if self.completed || self.group_stop_acknowledged {
+            return Err(Errno::EALREADY);
+        }
+        let stopped = self.stopped_identity(stopped)?;
+        self.event
+            .event()
+            .acknowledge_stop_resolution_group(self.nonce, stopped)?;
+        self.group_stop_acknowledged = true;
+        Ok(())
+    }
+
+    /// Completes a canceled SIGSTOP delivery with the exact first private
+    /// stopped status. This succeeds only when no continued status preceded
+    /// that stop and no following outcome has already appeared.
+    pub fn complete_cancelled_delivery(&mut self, stopped: &Stopped) -> Result<(), Errno> {
+        if self.completed || self.group_stop_acknowledged {
+            return Err(Errno::EALREADY);
+        }
+        let stopped = self.stopped_identity(stopped)?;
+        self.event
+            .event()
+            .complete_cancelled_stop_resolution(self.nonce, stopped)?;
+        self.completed = true;
+        Ok(())
+    }
+
+    /// Completes a delivery transaction that reached an exact terminal or
+    /// exiting boundary before any first post-delivery stopped candidate.
+    /// This consumes the channel boundary and closes the watcher before timer
+    /// retirement; no resume is retried.
+    pub async fn terminal_before_group_stop(
+        &mut self,
+    ) -> Result<StopResolutionOutcome, Errno> {
+        if self.completed || self.group_stop_acknowledged || self.continued_claimed {
+            return Err(Errno::EINVAL);
+        }
+        let event = self.event.clone();
+        let nonce = self.nonce;
+        let outcome = std::future::poll_fn(|cx| {
+            event
+                .event()
+                .poll_pending_stop_resolution_terminal(nonce, cx.waker())
+        })
+        .await?;
+        self.completed = true;
+        Ok(outcome)
+    }
+
+    /// Completes a terminal race after the first post-D stop was published but
+    /// before GETSIGINFO authenticated it as G. The exact stopped identity is
+    /// retired from terminal evidence without a ptrace retry.
+    pub async fn terminal_before_group_acknowledgement(
+        &mut self,
+        stopped: &Stopped,
+    ) -> Result<StopResolutionOutcome, Errno> {
+        if self.completed || self.group_stop_acknowledged || self.continued_claimed {
+            return Err(Errno::EINVAL);
+        }
+        let stopped = self.stopped_identity(stopped)?;
+        let event = self.event.clone();
+        let nonce = self.nonce;
+        let outcome = std::future::poll_fn(|cx| {
+            event.event().poll_unacknowledged_stop_resolution_terminal(
+                nonce,
+                stopped,
+                cx.waker(),
+            )
+        })
+        .await?;
+        self.completed = true;
+        Ok(outcome)
+    }
+
+    /// Waits for the first continued, terminal, generation-ending, or
+    /// intervening stopped outcome after the acknowledged group stop.
+    pub async fn following_outcome(&mut self) -> Result<StopResolutionOutcome, Errno> {
+        if self.completed || !self.group_stop_acknowledged || self.continued_claimed {
+            return Err(Errno::EINVAL);
+        }
+        let event = self.event.clone();
+        let nonce = self.nonce;
+        let result = std::future::poll_fn(|cx| {
+            event
+                .event()
+                .poll_stop_resolution_following(nonce, cx.waker())
+        })
+        .await;
+        match result {
+            Ok((outcome, true)) => {
+                self.continued_claimed = true;
+                Ok(outcome)
+            }
+            Ok((outcome, false)) => {
+                self.completed = true;
+                Ok(outcome)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Linearizes the sole G continuation attempt before entering ptrace.
+    /// A terminal boundary that raced ahead of the attempt is returned and no
+    /// raw transition may be issued.
+    pub fn begin_continued_resume(
+        &mut self,
+    ) -> Result<Option<StopResolutionOutcome>, Errno> {
+        if self.completed || !self.continued_claimed || self.resume_in_flight {
+            return Err(Errno::EINVAL);
+        }
+        let boundary = self
+            .event
+            .event()
+            .begin_continued_stop_resolution(self.nonce)?;
+        if boundary.is_some() {
+            self.continued_claimed = false;
+            self.completed = true;
+        } else {
+            self.resume_in_flight = true;
+        }
+        Ok(boundary)
+    }
+
+    /// Completes the linear continued claim after the sole G continuation was
+    /// accepted by the kernel. An exact terminal boundary that raced the
+    /// successful syscall is returned instead of being hidden.
+    pub fn complete_continued_resume(
+        &mut self,
+    ) -> Result<Option<StopResolutionOutcome>, Errno> {
+        if self.completed || !self.continued_claimed || !self.resume_in_flight {
+            return Err(Errno::EINVAL);
+        }
+        let boundary = self
+            .event
+            .event()
+            .complete_continued_stop_resolution(self.nonce)?;
+        self.continued_claimed = false;
+        self.resume_in_flight = false;
+        self.completed = true;
+        Ok(boundary)
+    }
+
+    /// Resolves ESRCH/EIO from the sole observed G continuation using either
+    /// an exact terminal boundary or a trusted later regular-FIFO status. The
+    /// raw transition is never retried.
+    pub async fn resolve_continued_resume_error(
+        &mut self,
+        error: Errno,
+        attempt: PhysicalResumeAttempt,
+    ) -> Result<StopResolutionResumeErrorOutcome, Errno> {
+        if self.completed
+            || !self.continued_claimed
+            || !self.resume_in_flight
+            || !matches!(error, Errno::ESRCH | Errno::EIO)
+        {
+            return Err(Errno::EINVAL);
+        }
+        let event = self.event.clone();
+        let nonce = self.nonce;
+        event
+            .event()
+            .fail_continued_stop_resolution(nonce, error, attempt)?;
+        let resolution = std::future::poll_fn(|cx| {
+            event
+                .event()
+                .poll_continued_stop_resolution(nonce, cx.waker())
+        })
+        .await?;
+        self.continued_claimed = false;
+        self.resume_in_flight = false;
+        self.completed = true;
+        Ok(match resolution {
+            StopResolutionResumeResolution::Boundary(outcome) => {
+                StopResolutionResumeErrorOutcome::Boundary(outcome)
+            }
+            StopResolutionResumeResolution::LaterStatus {
+                delivery,
+                group_stop,
+                continued,
+                successor,
+                attempt,
+            } => StopResolutionResumeErrorOutcome::LaterStatus(StopResolutionLaterStatus {
+                pid: self.pid,
+                event,
+                delivery,
+                group_stop,
+                continued,
+                successor,
+                attempt,
+            }),
+        })
+    }
+
+    /// Waits only for exact terminal evidence after a pre-resume G state probe
+    /// returned ESRCH/EIO. No resume attempt exists, so an ordinary successor
+    /// can never resolve this path.
+    pub async fn resolve_continued_probe_error(
+        &mut self,
+        error: Errno,
+    ) -> Result<StopResolutionOutcome, Errno> {
+        if self.completed
+            || !self.continued_claimed
+            || self.resume_in_flight
+            || !matches!(error, Errno::ESRCH | Errno::EIO)
+        {
+            return Err(Errno::EINVAL);
+        }
+        let event = self.event.clone();
+        let nonce = self.nonce;
+        event
+            .event()
+            .fail_continued_probe_resolution(nonce, error)?;
+        let outcome = std::future::poll_fn(|cx| {
+            event
+                .event()
+                .poll_continued_probe_resolution(nonce, cx.waker())
+        })
+        .await?;
+        self.continued_claimed = false;
+        self.completed = true;
+        Ok(outcome)
+    }
+}
+
+impl Drop for StopResolutionWatcher {
+    fn drop(&mut self) {
+        if !self.completed {
+            // A live D/G/C transaction cannot be silently disarmed: G may
+            // still be physically stopped and its cleanup shadow remains the
+            // only transition authority. Publish a sticky fail-closed cutoff
+            // so cancellation hands control to terminal cleanup.
+            self.event
+                .event()
+                .abandon_stop_resolution_watch(self.nonce);
+        }
     }
 }
 
@@ -2871,8 +10680,12 @@ impl Future for WaitFuture {
             Ok(reservation) => reservation,
             Err(errno) => return Poll::Ready(Err(errno.into())),
         };
-        match event.decode_status_return(reservation, |status| {
-            Wait::from_raw_with_token(pid, status, TraceeToken::from_event(event_handle.clone()))
+        match event.decode_status_return(reservation, |status, physical, logical_stop| {
+            Wait::from_raw_with_token(
+                pid,
+                status,
+                TraceeToken::from_observed_event(event_handle.clone(), physical, logical_stop),
+            )
         }) {
             Ok(StatusReturn::Returned(decoded)) => Poll::Ready(Ok(decoded)),
             Ok(StatusReturn::Cancelled(_)) => Poll::Ready(Err(Errno::ECANCELED.into())),
@@ -2890,7 +10703,10 @@ impl Future for WaitFuture {
 /// the stopped-state capability. Duplicate or re-polled futures return
 /// [`Errno::EALREADY`]. An unclaimed capability also expires before terminal
 /// publication or cancellation cleanup advances the tracee; terminal status
-/// remains independently retained for ordinary waiters.
+/// remains independently retained for ordinary waiters. The returned
+/// [`Stopped`] capability may be continued; single-step, syscall-step, and
+/// detach are rejected so they cannot bypass the shared exit-cleanup
+/// completion state.
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-270): Trigger 2: review the public typed-error
 // ExitFuture contract and retained exit-stop generation semantics.
@@ -2921,10 +10737,19 @@ impl Future for ExitFuture {
         };
         let event = event_handle.event();
         match futures::ready!(event.poll_exit(&this.waiter, cx.waker())) {
-            Ok(()) => Poll::Ready(Ok(Stopped::from_token(
-                this.pid,
-                TraceeToken::from_event(event_handle),
-            ))),
+            Ok(()) => {
+                let physical =
+                    PhysicalStatusId::from_raw(event.exit_physical_status.load(Ordering::Acquire));
+                let Some(logical_stop) = LogicalStopId::from_raw(
+                    event.exit_logical_stop.load(Ordering::Acquire),
+                ) else {
+                    return Poll::Ready(Err(Errno::EPROTO.into()));
+                };
+                Poll::Ready(Ok(Stopped::from_token(
+                    this.pid,
+                    TraceeToken::from_claimed_exit_event(event_handle, physical, logical_stop),
+                )))
+            }
             Err(errno) => Poll::Ready(Err(errno.into())),
         }
     }
@@ -2960,6 +10785,8 @@ mod test {
 
     use super::*;
     use crate::Options;
+    use crate::PhysicalEventObserverConfig;
+    use crate::PhysicalEventRecordKind;
 
     #[derive(Default)]
     struct WakeCounter(AtomicUsize);
@@ -2978,6 +10805,26 @@ mod test {
         let mut hasher = DefaultHasher::new();
         handle.hash(&mut hasher);
         hasher.finish()
+    }
+
+    fn retained_exit_stop_id(event: &Event) -> LogicalStopId {
+        LogicalStopId::from_raw(event.exit_logical_stop.load(Ordering::Acquire))
+            .expect("published exit stop has a logical identity")
+    }
+
+    fn synthetic_cleanup_transfer(
+        pid: crate::Pid,
+        event: &EventHandle,
+        stop_id: LogicalStopId,
+        diagnostic_status: Option<PhysicalStatusId>,
+    ) -> CleanupStopTransfer {
+        CleanupStopTransfer {
+            pid,
+            event: event.clone(),
+            stop_id,
+            diagnostic_status,
+            owns_claimed_exit: false,
+        }
     }
 
     const SUBPROCESS_POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -3480,7 +11327,7 @@ mod test {
         PreRegistration,
         NotifierOwned {
             terminal: TerminalCleanup,
-            owns_claimed_exit: bool,
+            claimed_exit_transfer: Option<CleanupStopTransfer>,
             raw_cleanup_claimed: bool,
             raw_cleanup_finishes_event: bool,
             cleanup_signal_sent: bool,
@@ -3519,7 +11366,7 @@ mod test {
                 TraceeCleanupOwnership::PreRegistration => {
                     self.ownership = TraceeCleanupOwnership::NotifierOwned {
                         terminal: candidate,
-                        owns_claimed_exit: false,
+                        claimed_exit_transfer: None,
                         raw_cleanup_claimed: false,
                         raw_cleanup_finishes_event: false,
                         cleanup_signal_sent: false,
@@ -3569,14 +11416,27 @@ mod test {
 
         /// Records transfer of the exact exit-stop capability immediately
         /// after ExitFuture returns it.
-        fn mark_claimed_exit(&mut self) {
+        fn mark_claimed_exit(&mut self, stopped: &Stopped) {
             let TraceeCleanupOwnership::NotifierOwned {
-                owns_claimed_exit, ..
+                terminal,
+                claimed_exit_transfer,
+                ..
             } = &mut self.ownership
             else {
                 panic!("exit capability claimed before notifier ownership transition");
             };
-            *owns_claimed_exit = true;
+            assert!(
+                terminal.matches_stopped(stopped.0, &stopped.1),
+                "claimed exit transfer must match the guard's exact generation"
+            );
+            assert!(
+                claimed_exit_transfer.is_none(),
+                "claimed exit capability transferred more than once"
+            );
+            // SAFETY: this guard is the one cancellation shadow for the typed
+            // exit stop. It activates the transfer only after that typed value
+            // becomes unreachable, or discards it after a successful resume.
+            *claimed_exit_transfer = Some(unsafe { stopped.transfer_cleanup_stop() });
         }
 
         fn disarm(&mut self) {
@@ -3750,9 +11610,34 @@ mod test {
             pid: Pid,
             pidfd: &OwnedFd,
             terminal: &TerminalCleanup,
-            owns_claimed_exit: bool,
+            claimed_exit_transfer: &mut Option<CleanupStopTransfer>,
             signal_sent: &mut bool,
         ) -> io::Result<()> {
+            let mut retained_stop = if claimed_exit_transfer.is_some() {
+                Some(
+                    terminal
+                        .lease_transferred_stop(claimed_exit_transfer)
+                        .map_err(|error| {
+                            io::Error::other(format!("lease claimed exit stop: {error}"))
+                        })?,
+                )
+            } else {
+                None
+            };
+            if !*signal_sent && terminal.terminal_error().is_some() {
+                terminal
+                    .continue_exit_stop_for_cleanup(
+                        &mut retained_stop,
+                        PhysicalResumeOwner::RootCleanup,
+                    )
+                    .map_err(|error| {
+                        io::Error::other(format!("continue terminal wait-failure cleanup: {error}"))
+                    })?;
+                // A successful controller transition injected SIGKILL. If it
+                // failed, the retained waiter performs exact-pidfd fallback
+                // signaling before it starts the registered cleanup drain.
+                *signal_sent = true;
+            }
             if !*signal_sent {
                 match pidfd_send_signal(pidfd, libc::SIGKILL) {
                     Ok(()) => *signal_sent = true,
@@ -3770,27 +11655,32 @@ mod test {
                 }
             }
 
-            if owns_claimed_exit {
-                // SAFETY: `mark_claimed_exit` is called immediately after the
-                // unique Stopped capability is returned, and this guard is its
-                // sole cancellation owner in these exact-lifetime tests.
-                unsafe { terminal.revoke_owned_exit_stop() }
-            } else {
-                terminal.revoke_unclaimed_exit_stop()
-            }
-            .map_err(|error| io::Error::other(format!("revoke exit capability: {error}")))?;
-
             let deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
-            let mut exit_stop_resumed = false;
             loop {
+                if terminal.terminal_error().is_some() {
+                    terminal
+                        .continue_exit_stop_for_cleanup(
+                            &mut retained_stop,
+                            PhysicalResumeOwner::RootCleanup,
+                        )
+                        .map_err(|error| {
+                            io::Error::other(format!(
+                                "continue terminal wait-failure cleanup: {error}"
+                            ))
+                        })?;
+                }
                 if terminal.wait(Duration::ZERO) {
                     return Ok(());
                 }
-                if terminal.exit_stop_observed() && !exit_stop_resumed {
-                    nix::sys::ptrace::cont(pid, None).map_err(|error| {
-                        io::Error::other(format!("resume cleanup exit stop: {error}"))
-                    })?;
-                    exit_stop_resumed = true;
+                if terminal.exit_stop_observed() {
+                    terminal
+                        .continue_exit_stop_for_cleanup(
+                            &mut retained_stop,
+                            PhysicalResumeOwner::RootCleanup,
+                        )
+                        .map_err(|error| {
+                            io::Error::other(format!("resume cleanup exit stop: {error}"))
+                        })?;
                 }
                 if Instant::now() >= deadline {
                     return Err(io::Error::new(
@@ -3907,7 +11797,7 @@ mod test {
                     CleanupWaitOwner::Notifier => {
                         let TraceeCleanupOwnership::NotifierOwned {
                             terminal,
-                            owns_claimed_exit,
+                            claimed_exit_transfer,
                             cleanup_signal_sent,
                             ..
                         } = &mut self.ownership
@@ -3918,7 +11808,7 @@ mod test {
                             self.pid,
                             &self.pidfd,
                             terminal,
-                            *owns_claimed_exit,
+                            claimed_exit_transfer,
                             cleanup_signal_sent,
                         )?;
                         self.armed = false;
@@ -3956,14 +11846,14 @@ mod test {
                     CleanupWaitOwner::Authoritative(authoritative) => {
                         let TraceeCleanupOwnership::NotifierOwned {
                             terminal,
-                            owns_claimed_exit,
+                            claimed_exit_transfer,
                             ..
                         } = &mut self.ownership
                         else {
                             unreachable!()
                         };
                         *terminal = authoritative;
-                        *owns_claimed_exit = false;
+                        *claimed_exit_transfer = None;
                         return self.cleanup();
                     }
                 }
@@ -4086,6 +11976,386 @@ mod test {
         assert_eq!(counter.0.load(Ordering::SeqCst), 1);
         assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(stopped)));
         assert!(!event.status_waker.register(&waker));
+    }
+
+    #[test]
+    fn terminal_error_replaces_a_consumed_exit_stop_for_late_waiters() {
+        let event = Event::new();
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let waker = futures::task::noop_waker();
+
+        let first = Arc::new(ExitWaiter::default());
+        assert_eq!(event.poll_exit(&first, &waker), Poll::Ready(Ok(())));
+        event.mark_terminal_error(Errno::EPROTO);
+
+        let late = Arc::new(ExitWaiter::default());
+        assert_eq!(
+            event.poll_exit(&late, &waker),
+            Poll::Ready(Err(Errno::EPROTO))
+        );
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Err(Errno::EPROTO)));
+        assert_eq!(*event.terminal_error.lock(), Some(Errno::EPROTO));
+        assert_eq!(*event.registration_error.lock(), None);
+    }
+
+    #[test]
+    fn terminal_error_after_initial_poll_check_wins_before_fifo_return() {
+        let event = Arc::new(Event::new());
+        let stopped = (libc::SIGSTOP << 8) | 0x7f;
+        event.update(stopped);
+        event
+            .wait_owner
+            .store(WAIT_OWNER_NOTIFIER, Ordering::Release);
+
+        let (captured_tx, captured_rx) = mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = mpsc::channel();
+        *event.status_after_error_check_pause.lock() = Some(BoundedTestPause {
+            captured: captured_tx,
+            resume: resume_rx,
+        });
+        let decode_called = Arc::new(AtomicBool::new(false));
+
+        thread::scope(|scope| {
+            let polling_event = Arc::clone(&event);
+            let decode_called = Arc::clone(&decode_called);
+            let poller = scope.spawn(move || {
+                let waker = futures::task::noop_waker();
+                let reservation = match polling_event.poll_status_reservation(&waker) {
+                    Poll::Ready(Ok(reservation)) => reservation,
+                    _ => panic!("FIFO status was not reservable after pause"),
+                };
+                polling_event
+                    .decode_status_return(reservation, |raw, _, _| {
+                        decode_called.store(true, Ordering::SeqCst);
+                        Ok(raw)
+                    })
+                    .map(|_| ())
+            });
+
+            captured_rx
+                .recv_timeout(TRACEE_WAIT_TIMEOUT)
+                .expect("status poll did not pass its initial terminal-error check");
+            event.mark_terminal_error(Errno::EPROTO);
+            resume_tx
+                .send(())
+                .expect("release status poll after terminal error publication");
+
+            assert!(matches!(
+                poller.join().expect("join terminal-error status poll"),
+                Err(Error::Errno(Errno::EPROTO))
+            ));
+        });
+
+        assert!(!decode_called.load(Ordering::SeqCst));
+        assert_eq!(
+            event.status.lock().pending.front().copied().map(|s| s.raw),
+            Some(stopped),
+            "terminal error leaked or consumed the FIFO status owned by cleanup"
+        );
+        assert_eq!(
+            event.wait_owner.load(Ordering::Acquire),
+            WAIT_OWNER_NOTIFIER
+        );
+    }
+
+    #[test]
+    fn status_committed_before_terminal_error_remains_valid_but_later_fifo_is_blocked() {
+        let event = Event::new();
+        let first = (libc::SIGSTOP << 8) | 0x7f;
+        let second = (libc::SIGTRAP << 8) | 0x7f;
+        event.update(first);
+        event.update(second);
+        event
+            .wait_owner
+            .store(WAIT_OWNER_NOTIFIER, Ordering::Release);
+        let waker = futures::task::noop_waker();
+
+        let reservation = match event.poll_status_reservation(&waker) {
+            Poll::Ready(Ok(reservation)) => reservation,
+            _ => panic!("first FIFO status was not reservable"),
+        };
+        assert!(matches!(
+            event.decode_status_return(reservation, |raw, _, _| Ok(raw)),
+            Ok(StatusReturn::Returned(raw)) if raw == first
+        ));
+
+        event.mark_terminal_error(Errno::EPROTO);
+        assert!(matches!(
+            event.poll_status_reservation(&waker),
+            Poll::Ready(Err(Errno::EPROTO))
+        ));
+        assert_eq!(
+            event.status.lock().pending.front().copied().map(|s| s.raw),
+            Some(second),
+            "terminal error consumed the next FIFO status"
+        );
+    }
+
+    #[test]
+    fn terminal_error_wins_over_an_existing_synchronous_fifo_reservation() {
+        let event = Arc::new(Event::new());
+        let stopped = (libc::SIGSTOP << 8) | 0x7f;
+        event.update(stopped);
+        let mut owner = match event
+            .claim_sync_wait()
+            .expect("claim synchronous wait owner")
+        {
+            SyncWaitOwnership::Claimed(owner) => owner,
+            SyncWaitOwnership::Notifier => panic!("unexpected notifier owner"),
+        };
+        let reservation = event
+            .try_status_reservation_sync()
+            .expect("synchronous FIFO status is present")
+            .expect("synchronous FIFO reservation succeeds");
+        let decode_called = AtomicBool::new(false);
+
+        thread::scope(|scope| {
+            let error_event = Arc::clone(&event);
+            let publisher = scope.spawn(move || {
+                error_event.mark_terminal_error(Errno::EPROTO);
+            });
+            while event.sticky_terminal_error().is_none() {
+                thread::yield_now();
+            }
+
+            assert!(matches!(
+                owner.decode_status_return(Pid::this().into(), reservation, |raw, _, _| {
+                    decode_called.store(true, Ordering::SeqCst);
+                    Ok(raw)
+                }),
+                Err(Error::Errno(Errno::EPROTO))
+            ));
+            publisher.join().expect("join terminal-error publisher");
+        });
+
+        assert!(!decode_called.load(Ordering::SeqCst));
+        assert_eq!(
+            event.status.lock().pending.front().copied().map(|s| s.raw),
+            Some(stopped),
+            "terminal error consumed the synchronous FIFO status"
+        );
+    }
+
+    #[test]
+    fn synchronous_cancellation_rejects_unreachable_nonstopped_status() {
+        let handle = EventHandle::new();
+        let event = handle.event();
+        let mut owner = match event
+            .claim_sync_wait()
+            .expect("claim synchronous cancellation owner")
+        {
+            SyncWaitOwnership::Claimed(owner) => owner,
+            SyncWaitOwnership::Notifier => panic!("unexpected notifier owner"),
+        };
+        let continued = 0xffff;
+        event.update(continued);
+        event
+            .cleanup_cancel_requested
+            .store(true, Ordering::Release);
+        let reservation = event
+            .try_status_reservation_sync()
+            .expect("continued status is pending")
+            .expect("reserve synthetic continued status");
+        let cancelled = match owner
+            .decode_status_return(Pid::this().into(), reservation, |raw, _, _| Ok(raw))
+            .expect("decode reaches cancellation boundary")
+        {
+            StatusReturn::Cancelled(cancelled) => cancelled,
+            StatusReturn::Returned(_) => panic!("cleanup cancellation was ignored"),
+        };
+
+        assert!(matches!(
+            resume_cancelled_sync_status(Pid::this().into(), cancelled, &handle),
+            Err(Error::Errno(Errno::EPROTO))
+        ));
+        assert_eq!(
+            event.status.lock().pending.front().copied().map(|s| s.raw),
+            Some(continued),
+            "rejected nonstopped cancellation consumed the FIFO"
+        );
+    }
+
+    #[test]
+    fn first_terminal_error_wins_across_status_and_exit_planes() {
+        let event = Event::new();
+        event.mark_terminal_error(Errno::EPROTO);
+        event.mark_terminal_error(Errno::EIO);
+        let waker = futures::task::noop_waker();
+        let exit_waiter = Arc::new(ExitWaiter::default());
+
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Err(Errno::EPROTO)));
+        assert_eq!(
+            event.poll_exit(&exit_waiter, &waker),
+            Poll::Ready(Err(Errno::EPROTO))
+        );
+        assert_eq!(*event.terminal_error.lock(), Some(Errno::EPROTO));
+    }
+
+    #[test]
+    fn wrong_owner_cannot_consume_wait_failure_cleanup_handoff() {
+        let handle = EventHandle::new();
+        handle
+            .event()
+            .install_wait_failure_cleanup_transition(None, true);
+        let terminal = TerminalCleanup {
+            pid: Pid::from_raw(i32::MAX - 40).into(),
+            event: handle.clone(),
+        };
+        let called = AtomicBool::new(false);
+
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut None,
+                PhysicalResumeOwner::TypedStopped,
+                |_| {
+                    called.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+            ),
+            Err(Errno::EINVAL)
+        );
+        assert!(!called.load(Ordering::SeqCst));
+        assert!(matches!(
+            *handle.event().wait_failure_cleanup.lock(),
+            WaitFailureCleanupPhase::AwaitingController {
+                source_status: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn completed_controller_handoff_is_not_reported_as_finished_terminal_cleanup() {
+        let handle = EventHandle::new();
+        *handle.event().wait_failure_cleanup.lock() = WaitFailureCleanupPhase::Ready {
+            source_logical_stop: None,
+            source_status: None,
+            deferred: None,
+            tolerated_resume: None,
+            controller_resume_succeeded: false,
+        };
+        let terminal = TerminalCleanup {
+            pid: Pid::from_raw(i32::MAX - 41).into(),
+            event: handle,
+        };
+
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut None,
+                PhysicalResumeOwner::RootCleanup,
+                |_| -> Result<(), nix::errno::Errno> {
+                    panic!("completed controller handoff attempted ptrace twice")
+                },
+            ),
+            Ok(TerminalCleanupContinue::ControllerHandoffCompleted {
+                source_status: None,
+                resume_succeeded: false,
+            })
+        );
+    }
+
+    #[test]
+    fn true_ptracer_eio_handoff_uses_exact_pidfd_fallback_and_terminal_drain() {
+        let (pid, _stopped, mut cleanup) =
+            spawn_traced_process(None).expect("spawn true-ptracer cleanup tracee");
+        let identity = Arc::new(
+            WorkerIdentity::capture_process(pid.into())
+                .expect("capture true-ptracer cleanup identity"),
+        );
+        assert!(identity.is_active_tracee());
+        assert!(identity.is_current_ptracer());
+
+        let handle = EventHandle::with_identity(Arc::clone(&identity));
+        let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(128, 128))
+            .expect("create true-ptracer cleanup observer");
+        handle
+            .attach_physical_observer(&observer)
+            .expect("attach true-ptracer cleanup observer");
+        let event = Arc::clone(handle.event());
+        assert!(event.try_begin_worker_start());
+        event.mark_worker_running();
+
+        let siginfo = PhysicalWaitSiginfo {
+            signo: libc::SIGCHLD,
+            errno: 0,
+            code: i32::MAX,
+            pid: pid.as_raw(),
+            uid: unsafe { libc::getuid() },
+            status: libc::SIGSTOP,
+        };
+        let attempt = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(event.generation),
+            task: identity.physical_identity(),
+            producer: PhysicalWaitProducer::NotifierWorker,
+            flags: WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
+        });
+        let source = observer.allocate_status();
+        observer.record_wait_siginfo(attempt, siginfo, Some(source));
+        observer.finish_wait_undecodable_status(attempt, source, siginfo, Errno::EPROTO.into_raw());
+        let error = WaitPidfdError {
+            error: Errno::EPROTO,
+            attempt: Some(attempt),
+            undecodable_status: Some(source),
+            siginfo: Some(siginfo),
+            conversion_failed: true,
+        };
+
+        thread::scope(|scope| {
+            let worker_event = Arc::clone(&event);
+            let worker_identity = Arc::clone(&identity);
+            let worker =
+                scope.spawn(move || handle_wait_failure(&worker_event, &worker_identity, &error));
+            let deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
+            loop {
+                if matches!(
+                    *event.wait_failure_cleanup.lock(),
+                    WaitFailureCleanupPhase::AwaitingController {
+                        source_status: Some(observed),
+                        ..
+                    } if observed == source
+                ) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "wait-failure worker did not publish controller handoff"
+                );
+                thread::yield_now();
+            }
+
+            let terminal = TerminalCleanup {
+                pid: pid.into(),
+                event: handle.clone(),
+            };
+            assert_eq!(
+                terminal
+                    .continue_exit_stop_for_cleanup_with(
+                        &mut None,
+                        PhysicalResumeOwner::RootCleanup,
+                        |inject_sigkill| {
+                            assert!(inject_sigkill);
+                            Err(nix::errno::Errno::EIO)
+                        },
+                    )
+                    .expect("true ptracer consumes wait-failure handoff"),
+                TerminalCleanupContinue::Attempted {
+                    source_status: Some(source),
+                    error: Some(Errno::EIO),
+                }
+            );
+            assert!(
+                worker.join().expect("join wait-failure cleanup worker"),
+                "exact-pidfd fallback did not reach terminal drain"
+            );
+        });
+
+        event.prepare_worker_done();
+        event.publish_worker_done();
+        cleanup.disarm();
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        observer.close();
+        let validation = observer.snapshot().validate();
+        assert!(validation.is_valid(), "{validation:#?}");
     }
 
     #[test]
@@ -4361,24 +12631,2234 @@ mod test {
     }
 
     #[test]
-    fn cleanup_requires_exclusive_transfer_of_claimed_exit_stop() {
+    fn unclaimed_cleanup_transfer_cannot_take_claimed_exit_stop() {
         let waker = Waker::from(Arc::new(WakeCounter::default()));
-        let event = Event::new();
+        let pid = crate::Pid::from_raw(i32::MAX - 59);
+        let handle = EventHandle::new();
+        let event = handle.event();
         let waiter = Arc::new(ExitWaiter::default());
 
         event.update(PTRACE_EVENT_EXIT_STOP);
         assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
-        assert_eq!(
-            event.prepare_exit_capability_for_cleanup(false),
+        let stop_id = retained_exit_stop_id(event);
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+        let mut unclaimed = Some(synthetic_cleanup_transfer(pid, &handle, stop_id, None));
+        assert!(matches!(
+            terminal.lease_transferred_stop(&mut unclaimed),
             Err(Errno::EALREADY)
+        ));
+        assert!(unclaimed.is_some());
+        assert_eq!(event.exit_capability.load(Ordering::Acquire), EXIT_CAP_CLAIMED);
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Err(Errno::EALREADY)));
+    }
+
+    #[test]
+    fn claimed_typed_exit_success_finishes_unobserved_cleanup_exactly_once() {
+        let pid = crate::Pid::from_raw(i32::MAX - 60);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let waiter = Arc::new(ExitWaiter::default());
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+        let exit_stop_id = retained_exit_stop_id(event);
+
+        let typed_calls = AtomicUsize::new(0);
+        handle
+            .continue_claimed_exit_stop_with(
+                pid.into(),
+                exit_stop_id,
+                None,
+                None,
+                || {
+                typed_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            )
+            .expect("typed unobserved exit-stop transition");
+        assert_eq!(
+            event.exit_capability.load(Ordering::Acquire),
+            EXIT_CAP_EXPIRED,
+            "typed success left its consumed atomic claim live"
         );
-        event
-            .prepare_exit_capability_for_cleanup(true)
-            .expect("exclusive cleanup transfer rejected claimed exit stop");
+
+        let terminal = TerminalCleanup {
+            pid: pid.into(),
+            event: handle.clone(),
+        };
+        let cleanup_calls = AtomicUsize::new(0);
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(&mut None, PhysicalResumeOwner::RootCleanup, |_| {
+                    cleanup_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .expect("read typed unobserved completion"),
+            TerminalCleanupContinue::AlreadyFinished {
+                source_status: None,
+            }
+        );
+        assert_eq!(typed_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+        let successor_stop_id = event.allocate_logical_stop();
+        assert_ne!(successor_stop_id, exit_stop_id);
+        let mut successor_transfer = Some(synthetic_cleanup_transfer(
+                    pid.into(),
+                    &terminal.event,
+                    successor_stop_id,
+                    None,
+                ));
+        let mut successor_lease = Some(
+            terminal
+                .lease_transferred_stop(&mut successor_transfer)
+                .expect("lease observerless ordinary successor"),
+        );
+        let successor_cleanup_calls = AtomicUsize::new(0);
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut successor_lease,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| {
+                        successor_cleanup_calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+                .expect("observerless successor has its own cleanup identity"),
+            TerminalCleanupContinue::WaitingForExitStop
+        );
+        assert_eq!(successor_cleanup_calls.load(Ordering::SeqCst), 0);
+        terminal
+            .dispose_cleanup_stop(successor_lease.take().expect("successor lease remains active"))
+            .expect("dispose observerless successor exactly once");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn exit_future_typed_resume_finishes_real_tracee_cleanup_exactly_once() {
+        let (pid, stopped, mut tracee_cleanup) =
+            spawn_traced_process(None).expect("spawn real typed-exit tracee");
+        stopped
+            .setoptions(Options::PTRACE_O_TRACEEXIT)
+            .expect("enable real typed exit stop");
+        let terminal = stopped.terminal_cleanup();
+        tracee_cleanup
+            .store_terminal(TerminalCleanup {
+                pid: terminal.pid,
+                event: terminal.event.clone(),
+            })
+            .expect("bind real typed-exit cleanup generation");
+        let running = stopped.resume(None).expect("resume tracee to exit stop");
+        let exit_event = running.exit_event();
+        drop(running);
+        let exit_stopped = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, exit_event)
+            .await
+            .expect("real typed ExitFuture timed out")
+            .expect("claim real typed exit stop");
+        assert_eq!(exit_stopped.pid(), pid.into());
+        assert_eq!(exit_stopped.physical_status_id(), None);
+        let exit_stop_id = exit_stopped.logical_stop_id();
+        // SAFETY: this test deliberately models the one durable HeldRootStop
+        // shadow while the typed ExitFuture capability remains its live owner.
+        let mut stale_shadow = Some(unsafe { exit_stopped.transfer_cleanup_stop() });
+
+        let final_running = exit_stopped
+            .resume(None)
+            .expect("continue real typed exit stop");
+        assert!(matches!(
+            terminal.consume_transferred_stop_completion(&mut stale_shadow),
+            Ok(Some(TransferredStopCompletion::Finished))
+        ));
+        assert!(stale_shadow.is_none());
+        assert_eq!(terminal.exit_stop_logical_stop_id(), Some(exit_stop_id));
+        let cleanup_calls = AtomicUsize::new(0);
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(&mut None, PhysicalResumeOwner::RootCleanup, |_| {
+                    cleanup_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },)
+                .expect("read real typed completion"),
+            TerminalCleanupContinue::AlreadyFinished {
+                source_status: None,
+            }
+        );
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+
+        let exited = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, final_running.next_state())
+            .await
+            .expect("real typed final wait timed out")
+            .expect("wait for real typed tracee terminal status");
+        assert!(matches!(exited, Wait::Exited(waited, _) if waited == pid.into()));
+        tracee_cleanup
+            .cleanup()
+            .expect("finish real typed-exit cleanup guard");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn exit_future_claimed_stop_consumes_into_cleanup_lease_exactly_once() {
+        let (pid, stopped, mut tracee_cleanup) =
+            spawn_traced_process(None).expect("spawn claimed-transfer tracee");
+        stopped
+            .setoptions(Options::PTRACE_O_TRACEEXIT)
+            .expect("enable claimed-transfer exit stop");
+        let terminal = stopped.terminal_cleanup();
+        tracee_cleanup
+            .store_terminal(TerminalCleanup {
+                pid: terminal.pid,
+                event: terminal.event.clone(),
+            })
+            .expect("bind claimed-transfer cleanup generation");
+        let running = stopped.resume(None).expect("resume claimed-transfer tracee");
+        let exit_event = running.exit_event();
+        drop(running);
+        let exit_stopped = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, exit_event)
+            .await
+            .expect("claimed-transfer ExitFuture timed out")
+            .expect("claim exit stop through production ExitFuture");
+        assert!(exit_stopped.1.owns_claimed_exit_stop);
+        let exit_stop_id = exit_stopped.logical_stop_id();
+        assert_eq!(terminal.exit_stop_logical_stop_id(), Some(exit_stop_id));
+
+        let mut cleanup_lease = Some(
+            exit_stopped
+                .into_cleanup_stop_lease()
+                .expect("consume claimed Stopped into cleanup lease"),
+        );
+        assert_eq!(
+            terminal
+                .event
+                .event()
+                .exit_capability
+                .load(Ordering::Acquire),
+            EXIT_CAP_EXPIRED
+        );
+        let raw_calls = AtomicUsize::new(0);
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut cleanup_lease,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| {
+                        raw_calls.fetch_add(1, Ordering::SeqCst);
+                        nix::sys::ptrace::cont(pid, None)
+                    },
+                )
+                .expect("continue production claimed-transfer stop"),
+            TerminalCleanupContinue::Attempted {
+                source_status: None,
+                error: None,
+            }
+        );
+        assert!(cleanup_lease.is_none());
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut cleanup_lease,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| -> Result<(), nix::errno::Errno> {
+                        panic!("claimed-transfer cleanup continued twice")
+                    },
+                )
+                .expect("recognize completed production claimed transfer"),
+            TerminalCleanupContinue::AlreadyFinished {
+                source_status: None,
+            }
+        );
+        assert_eq!(raw_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            terminal.wait(TRACEE_WAIT_TIMEOUT),
+            "claimed-transfer notifier did not publish terminal completion"
+        );
+        tracee_cleanup
+            .cleanup()
+            .expect("finish claimed-transfer cleanup guard");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn real_observerless_exec_successor_preserves_nonce_after_seeded_finished_frontier() {
+        let child = match unsafe { fork() }.expect("fork real exec-successor tracee") {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                crate::traceme_and_stop().expect("TRACEME real exec-successor child");
+                unsafe {
+                    libc::execl(
+                        c"/bin/true".as_ptr(),
+                        c"true".as_ptr(),
+                        std::ptr::null::<libc::c_char>(),
+                    );
+                    libc::_exit(127);
+                }
+            }
+        };
+        let mut tracee_cleanup = TraceeCleanupGuard::new(child)
+            .expect("open real exec-successor tracee pidfd");
+        let stopped = stopped_tracee_bounded(child).unwrap_or_else(|error| {
+            tracee_cleanup
+                .cleanup()
+                .unwrap_or_else(|cleanup_error| panic!("{error}; cleanup: {cleanup_error}"));
+            panic!("wait real exec-successor initial stop: {error}");
+        });
+        stopped
+            .setoptions(Options::PTRACE_O_TRACEEXEC)
+            .expect("enable real exec-stop observation");
+        let terminal = stopped.terminal_cleanup();
+        tracee_cleanup
+            .store_terminal(TerminalCleanup {
+                pid: terminal.pid,
+                event: terminal.event.clone(),
+            })
+            .expect("bind real exec-successor cleanup generation");
+        let old_stop_id = stopped.logical_stop_id();
+        let running = stopped.resume(None).expect("resume tracee into exec");
+        let wait = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, running.next_state())
+            .await
+            .expect("real observerless exec wait timed out")
+            .expect("wait real observerless exec successor");
+        let (exec_stopped, exec_event) = wait.assume_stopped();
+        assert!(matches!(exec_event, crate::Event::Exec(_)));
+        assert_eq!(exec_stopped.physical_status_id(), None);
+        let exec_stop_id = exec_stopped.logical_stop_id();
+        assert!(exec_stop_id.get() > old_stop_id.get());
+
+        let event = terminal.event.event();
+        {
+            let mut publication = event.exit_publication.lock();
+            assert_eq!(publication.cleanup, ExitStopCleanupCompletion::NotAttempted);
+            assert_eq!(publication.cleanup_authority, CleanupAuthorityState::Vacant);
+            assert_eq!(publication.retired_through, None);
+            event
+                .exit_logical_stop
+                .store(old_stop_id.get(), Ordering::Release);
+            event.exit_physical_status.store(0, Ordering::Release);
+            event.exit_status.store(EXIT_STOPPED, Ordering::Release);
+            event
+                .exit_capability
+                .store(EXIT_CAP_EXPIRED, Ordering::Release);
+            publication.cleanup = ExitStopCleanupCompletion::Finished {
+                stop_id: old_stop_id,
+                diagnostic_status: None,
+            };
+            publication.retire(CleanupStopKey(old_stop_id));
+        }
+        let mut exec_lease = Some(
+            exec_stopped
+                .into_cleanup_stop_lease()
+                .expect("lease real observerless Exec successor"),
+        );
+        let exec_nonce = exec_lease
+            .as_ref()
+            .expect("real Exec successor lease remains present")
+            .nonce;
+        let cleanup_calls = AtomicUsize::new(0);
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut exec_lease,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| {
+                        cleanup_calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+                .expect("real Exec successor must not alias old completion"),
+            TerminalCleanupContinue::WaitingForExitStop
+        );
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+        assert!(exec_lease.as_ref().is_some_and(|lease| {
+            lease.logical_stop_id() == exec_stop_id && lease.nonce == exec_nonce
+        }));
+        assert_eq!(
+            event.exit_publication.lock().cleanup_authority,
+            CleanupAuthorityState::Leased {
+                key: CleanupStopKey(exec_stop_id),
+                nonce: exec_nonce,
+            }
+        );
+        terminal
+            .dispose_cleanup_stop(
+                exec_lease
+                    .take()
+                    .expect("dispose real observerless Exec successor"),
+            )
+            .expect("retire real observerless Exec successor");
+
+        nix::sys::ptrace::cont(child, None).expect("resume real Exec fixture after control");
+        assert!(
+            terminal.wait(TRACEE_WAIT_TIMEOUT),
+            "real Exec fixture notifier did not reach terminal state"
+        );
+        tracee_cleanup.disarm();
+    }
+
+    #[test]
+    fn claimed_typed_exit_success_finishes_observed_cleanup_exactly_once() {
+        let pid = crate::Pid::from_raw(i32::MAX - 61);
+        let handle = EventHandle::new();
+        let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(32, 16))
+            .expect("create typed observed-exit observer");
+        handle
+            .attach_physical_observer(&observer)
+            .expect("attach typed observed-exit observer");
+        let wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(handle.physical_generation()),
+            task: PhysicalTaskIdentity::direct_child(pid.into()),
+            producer: PhysicalWaitProducer::NotifierWorker,
+            flags: libc::WEXITED | libc::WSTOPPED | libc::__WALL,
+        });
+        let status = observer.finish_wait_status(wait, PTRACE_EVENT_EXIT_STOP, None);
+        let event = handle.event();
+        event.publish_exit_stop(
+            ObservedStatus {
+                raw: PTRACE_EVENT_EXIT_STOP,
+                physical: Some(status),
+                logical_stop: None,
+            },
+            || {},
+        );
+        let waiter = Arc::new(ExitWaiter::default());
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+        let exit_stop_id = retained_exit_stop_id(event);
+
+        let typed_calls = AtomicUsize::new(0);
+        handle
+            .continue_claimed_exit_stop_with(
+                pid.into(),
+                exit_stop_id,
+                Some(status),
+                None,
+                || {
+                typed_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            )
+            .expect("typed observed exit-stop transition");
+
+        let terminal = TerminalCleanup {
+            pid: pid.into(),
+            event: handle.clone(),
+        };
+        let cleanup_calls = AtomicUsize::new(0);
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut None,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| {
+                        cleanup_calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+                .expect("read typed observed completion"),
+            TerminalCleanupContinue::AlreadyFinished {
+                source_status: Some(status),
+            }
+        );
+        assert_eq!(typed_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+        let successor_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(terminal.physical_event_generation()),
+            task: PhysicalTaskIdentity::direct_child(pid.into()),
+            producer: PhysicalWaitProducer::NotifierWorker,
+            flags: libc::WEXITED | libc::WSTOPPED | libc::__WALL,
+        });
+        let successor_status = observer.finish_wait_status(
+            successor_wait,
+            (Signal::SIGTRAP as i32) << 8 | 0x7f,
+            None,
+        );
+        observer.record_status_published(
+            terminal.physical_event_generation(),
+            successor_status,
+            PhysicalStatusPublication::RegularFifo,
+        );
+        let successor_stop_id = event.allocate_logical_stop();
+        assert_ne!(successor_stop_id, exit_stop_id);
+        assert_ne!(successor_status, status);
+        let mut successor_transfer = Some(synthetic_cleanup_transfer(
+                    pid.into(),
+                    &terminal.event,
+                    successor_stop_id,
+                    Some(successor_status),
+                ));
+        let mut successor_lease = Some(
+            terminal
+                .lease_transferred_stop(&mut successor_transfer)
+                .expect("lease ordinary successor independently of retired exit"),
+        );
+        let successor_cleanup_calls = AtomicUsize::new(0);
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut successor_lease,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| {
+                        successor_cleanup_calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+                .expect("ordinary successor does not alias retired exit completion"),
+            TerminalCleanupContinue::WaitingForExitStop
+        );
+        assert_eq!(successor_cleanup_calls.load(Ordering::SeqCst), 0);
+        terminal
+            .dispose_cleanup_stop(successor_lease.take().expect("successor lease remains active"))
+            .expect("dispose ordinary successor exactly once");
+        let transitions = observer
+            .snapshot()
+            .records()
+            .iter()
+            .filter_map(|record| match record.kind() {
+                PhysicalEventRecordKind::ExitCapability {
+                    status: observed,
+                    transition,
+                } if observed == status => Some(transition),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            transitions,
+            [
+                PhysicalExitCapabilityTransition::Published,
+                PhysicalExitCapabilityTransition::Claimed,
+            ],
+            "successor stop cleanup falsely transferred the consumed exit claim"
+        );
+    }
+
+    #[test]
+    fn claimed_typed_exit_rejects_mismatched_physical_source() {
+        let pid = crate::Pid::from_raw(i32::MAX - 82);
+        let handle = EventHandle::new();
+        let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(32, 16))
+            .expect("create mismatched-source observer");
+        handle
+            .attach_physical_observer(&observer)
+            .expect("attach mismatched-source observer");
+        let wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(handle.physical_generation()),
+            task: PhysicalTaskIdentity::direct_child(pid.into()),
+            producer: PhysicalWaitProducer::NotifierWorker,
+            flags: libc::WEXITED | libc::WSTOPPED | libc::__WALL,
+        });
+        let status = observer.finish_wait_status(wait, PTRACE_EVENT_EXIT_STOP, None);
+        let event = handle.event();
+        event.publish_exit_stop(
+            ObservedStatus {
+                raw: PTRACE_EVENT_EXIT_STOP,
+                physical: Some(status),
+                logical_stop: None,
+            },
+            || {},
+        );
+        let waiter = Arc::new(ExitWaiter::default());
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+
+        let calls = AtomicUsize::new(0);
+        assert_eq!(
+            handle.continue_claimed_exit_stop_with(
+                pid.into(),
+                retained_exit_stop_id(event),
+                None,
+                None,
+                || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            ),
+            Err(nix::errno::Errno::EPROTO)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            event.exit_capability.load(Ordering::Acquire),
+            EXIT_CAP_CLAIMED
+        );
+    }
+
+    #[test]
+    fn typed_exit_transition_wins_cleanup_lock_race_without_raw_duplicate() {
+        let pid = crate::Pid::from_raw(i32::MAX - 62);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let waiter = Arc::new(ExitWaiter::default());
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+
+        let terminal = TerminalCleanup {
+            pid: pid.into(),
+            event: handle.clone(),
+        };
+        let cleanup_calls = Arc::new(AtomicUsize::new(0));
+        let cleanup_calls_thread = Arc::clone(&cleanup_calls);
+        let cleanup_lock_reached = Arc::new(Barrier::new(2));
+        let cleanup_lock_resume = Arc::new(Barrier::new(2));
+        EXIT_CLEANUP_LOCK_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&cleanup_lock_reached),
+                resume: Arc::clone(&cleanup_lock_resume),
+            },
+        );
+        let (cleanup_done_tx, cleanup_done_rx) = mpsc::channel();
+        let cleanup = thread::spawn(move || {
+            let result = terminal.continue_exit_stop_for_cleanup_with(
+                &mut None,
+                PhysicalResumeOwner::RootCleanup,
+                |_| {
+                    cleanup_calls_thread.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            );
+            cleanup_done_tx.send(result).expect("report cleanup result");
+        });
+        cleanup_lock_reached.wait();
+
+        let typed_entered = Arc::new(Barrier::new(2));
+        let typed_release = Arc::new(Barrier::new(2));
+        let typed_calls = Arc::new(AtomicUsize::new(0));
+        let typed_handle = handle.clone();
+        let typed_entered_thread = Arc::clone(&typed_entered);
+        let typed_release_thread = Arc::clone(&typed_release);
+        let typed_calls_thread = Arc::clone(&typed_calls);
+        let typed_stop_id = retained_exit_stop_id(event);
+        let typed = thread::spawn(move || {
+            typed_handle.continue_claimed_exit_stop_with(
+                pid.into(),
+                typed_stop_id,
+                None,
+                None,
+                || {
+                    typed_calls_thread.fetch_add(1, Ordering::SeqCst);
+                    typed_entered_thread.wait();
+                    typed_release_thread.wait();
+                    Ok(())
+                },
+            )
+        });
+        typed_entered.wait();
+        cleanup_lock_resume.wait();
+        assert_eq!(
+            cleanup_done_rx.recv_timeout(Duration::from_millis(20)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "cleanup bypassed the typed transition's exit-publication lock"
+        );
+
+        typed_release.wait();
+        typed
+            .join()
+            .expect("join typed-first transition")
+            .expect("typed-first transition result");
+        assert_eq!(
+            cleanup_done_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("cleanup stayed blocked after typed transition")
+                .expect("cleanup reads typed-first completion"),
+            TerminalCleanupContinue::AlreadyFinished {
+                source_status: None,
+            }
+        );
+        cleanup.join().expect("join typed-first cleanup");
+        assert_eq!(typed_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn cleanup_observation_wins_typed_exit_race_without_raw_duplicate() {
+        let pid = crate::Pid::from_raw(i32::MAX - 63);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let waiter = Arc::new(ExitWaiter::default());
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+
+        let terminal = TerminalCleanup {
+            pid: pid.into(),
+            event: handle.clone(),
+        };
+        let cleanup_terminal = TerminalCleanup {
+            pid: pid.into(),
+            event: handle.clone(),
+        };
+        let cleanup_calls = Arc::new(AtomicUsize::new(0));
+        let cleanup_calls_thread = Arc::clone(&cleanup_calls);
+        let cleanup_lock_reached = Arc::new(Barrier::new(2));
+        let cleanup_lock_resume = Arc::new(Barrier::new(2));
+        EXIT_CLEANUP_AFTER_LOCK_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&cleanup_lock_reached),
+                resume: Arc::clone(&cleanup_lock_resume),
+            },
+        );
+        let (cleanup_done_tx, cleanup_done_rx) = mpsc::channel();
+        let cleanup = thread::spawn(move || {
+            let result = cleanup_terminal.continue_exit_stop_for_cleanup_with(
+                &mut None,
+                PhysicalResumeOwner::RootCleanup,
+                |_| {
+                    cleanup_calls_thread.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            );
+            cleanup_done_tx
+                .send(result)
+                .expect("report cleanup-first result");
+        });
+        cleanup_lock_reached.wait();
+
+        let typed_ready = Arc::new(Barrier::new(2));
+        let typed_release = Arc::new(Barrier::new(2));
+        TYPED_EXIT_LOCK_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&typed_ready),
+                resume: Arc::clone(&typed_release),
+            },
+        );
+        let typed_calls = Arc::new(AtomicUsize::new(0));
+        let typed_handle = handle.clone();
+        let typed_calls_thread = Arc::clone(&typed_calls);
+        let typed_stop_id = retained_exit_stop_id(event);
+        let (typed_done_tx, typed_done_rx) = mpsc::channel();
+        let typed = thread::spawn(move || {
+            let result =
+                typed_handle.continue_claimed_exit_stop_with(
+                    pid.into(),
+                    typed_stop_id,
+                    None,
+                    None,
+                    || {
+                        typed_calls_thread.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                );
+            typed_done_tx.send(result).expect("report typed result");
+        });
+        typed_ready.wait();
+        typed_release.wait();
+        assert_eq!(
+            typed_done_rx.recv_timeout(Duration::from_millis(20)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "typed transition bypassed cleanup's exit-publication lock"
+        );
+
+        cleanup_lock_resume.wait();
+        assert_eq!(
+            cleanup_done_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("cleanup-first result timed out"),
+            Err(Errno::EALREADY),
+            "cleanup advanced a still-owned claimed exit stop"
+        );
+        cleanup.join().expect("join cleanup-first cleanup");
+        typed_done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("typed transition stayed blocked after cleanup")
+            .expect("cleanup-first typed transition result");
+        typed.join().expect("join cleanup-first typed transition");
+        assert_eq!(typed_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut None,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| -> Result<(), nix::errno::Errno> {
+                        panic!("cleanup repeated a completed typed transition")
+                    },
+                )
+                .expect("read cleanup-first typed completion"),
+            TerminalCleanupContinue::AlreadyFinished {
+                source_status: None,
+            }
+        );
+    }
+
+    #[test]
+    fn typed_exit_ambiguous_error_requires_causal_proof_without_retry() {
+        for typed_error in [nix::errno::Errno::ESRCH, nix::errno::Errno::EIO] {
+            let pid = crate::Pid::from_raw(i32::MAX - 64 - typed_error as i32);
+            let handle = EventHandle::new();
+            let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(64, 32))
+                .expect("create typed-error observer");
+            handle
+                .attach_physical_observer(&observer)
+                .expect("attach typed-error observer");
+            let wait = observer.begin_wait(PhysicalWaitContext {
+                generation: Some(handle.physical_generation()),
+                task: PhysicalTaskIdentity::direct_child(pid.into()),
+                producer: PhysicalWaitProducer::NotifierWorker,
+                flags: libc::WEXITED | libc::WSTOPPED | libc::__WALL,
+            });
+            let status = observer.finish_wait_status(wait, PTRACE_EVENT_EXIT_STOP, None);
+            let event = handle.event();
+            event.publish_exit_stop(
+                ObservedStatus {
+                    raw: PTRACE_EVENT_EXIT_STOP,
+                    physical: Some(status),
+                    logical_stop: None,
+                },
+                || {},
+            );
+            let waiter = Arc::new(ExitWaiter::default());
+            let waker = Waker::from(Arc::new(WakeCounter::default()));
+            assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+            let typed_calls = AtomicUsize::new(0);
+
+            assert_eq!(
+                handle.continue_claimed_exit_stop_with(
+                    pid.into(),
+                    retained_exit_stop_id(event),
+                    Some(status),
+                    None,
+                    || {
+                        typed_calls.fetch_add(1, Ordering::SeqCst);
+                        Err(typed_error)
+                    },
+                ),
+                Err(typed_error)
+            );
+            assert_eq!(
+                event.exit_capability.load(Ordering::Acquire),
+                EXIT_CAP_EXPIRED,
+                "typed error did not transfer the claimed exit stop"
+            );
+            match event.exit_publication.lock().cleanup {
+                ExitStopCleanupCompletion::Ambiguous {
+                    stop_id,
+                    diagnostic_status,
+                    attempt: Some(attempt),
+                    error,
+                } => {
+                    assert_eq!(stop_id, retained_exit_stop_id(event));
+                    assert_eq!(diagnostic_status, Some(status));
+                    assert_eq!(attempt.context().owner, PhysicalResumeOwner::TypedStopped);
+                    assert_eq!(error, Errno::new(typed_error as i32));
+                }
+                state => panic!("typed error stored the wrong cleanup state: {state:?}"),
+            }
+
+            let terminal = TerminalCleanup {
+                pid: pid.into(),
+                event: handle.clone(),
+            };
+            let cleanup_calls = AtomicUsize::new(0);
+            let mut cleanup_stop = None;
+            assert_eq!(
+                terminal.continue_exit_stop_for_cleanup_with(
+                    &mut cleanup_stop,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| -> Result<(), nix::errno::Errno> {
+                        cleanup_calls.fetch_add(1, Ordering::SeqCst);
+                        panic!("ambiguous typed exit issued a raw cleanup retry")
+                    },
+                ),
+                Err(Errno::new(typed_error as i32))
+            );
+            if typed_error == nix::errno::Errno::ESRCH {
+                let mut copied_old = Some(synthetic_cleanup_transfer(
+                    pid.into(),
+                    &handle,
+                    retained_exit_stop_id(event),
+                    Some(status),
+                ));
+                assert!(matches!(
+                    terminal.lease_transferred_stop(&mut copied_old),
+                    Err(Errno::EALREADY)
+                ));
+                let forged_stop_id = event.allocate_logical_stop();
+                assert!(forged_stop_id.get() > retained_exit_stop_id(event).get());
+                let mut forged_transfer = Some(synthetic_cleanup_transfer(
+                    pid.into(),
+                    &handle,
+                    forged_stop_id,
+                    None,
+                ));
+                cleanup_stop = Some(
+                    terminal
+                        .lease_transferred_stop(&mut forged_transfer)
+                        .expect("retain forged higher-ID negative control"),
+                );
+                assert_eq!(
+                    terminal.continue_exit_stop_for_cleanup_with(
+                        &mut cleanup_stop,
+                        PhysicalResumeOwner::RootCleanup,
+                        |_| -> Result<(), nix::errno::Errno> {
+                            panic!("forged higher ID resolved or retried ambiguous exit")
+                        },
+                    ),
+                    Err(Errno::ESRCH)
+                );
+                assert!(matches!(
+                    event.exit_publication.lock().cleanup,
+                    ExitStopCleanupCompletion::Ambiguous { .. }
+                ));
+                drop(cleanup_stop.take());
+                event.mark_terminal_error(Errno::EPROTO);
+                assert_eq!(
+                    terminal.continue_exit_stop_for_cleanup_with(
+                        &mut cleanup_stop,
+                        PhysicalResumeOwner::RootCleanup,
+                        |_| -> Result<(), nix::errno::Errno> {
+                            panic!("generic EXIT_ERROR resolved ambiguous typed exit")
+                        },
+                    ),
+                    Err(Errno::ESRCH)
+                );
+            } else {
+                let final_wait = observer.begin_wait(PhysicalWaitContext {
+                    generation: Some(handle.physical_generation()),
+                    task: PhysicalTaskIdentity::direct_child(pid.into()),
+                    producer: PhysicalWaitProducer::NotifierWorker,
+                    flags: libc::WEXITED | libc::WSTOPPED | libc::__WALL,
+                });
+                let final_status = observer.finish_wait_status(final_wait, 0, None);
+                event.update(ObservedStatus {
+                    raw: 0,
+                    physical: Some(final_status),
+                    logical_stop: None,
+                });
+                assert_eq!(
+                    terminal
+                        .continue_exit_stop_for_cleanup_with(
+                            &mut cleanup_stop,
+                            PhysicalResumeOwner::RootCleanup,
+                            |_| -> Result<(), nix::errno::Errno> {
+                                panic!("causally resolved typed exit repeated raw continuation")
+                            },
+                        )
+                        .expect("read causally resolved typed exit completion"),
+                    TerminalCleanupContinue::AlreadyFinished {
+                        source_status: Some(status),
+                    }
+                );
+                let snapshot = observer.snapshot();
+                assert_eq!(
+                    snapshot
+                        .records()
+                        .iter()
+                        .filter(|record| matches!(
+                            record.kind(),
+                            PhysicalEventRecordKind::StatusDisposition {
+                                status: source,
+                                disposition: PhysicalStatusDisposition::AmbiguousResumeCausallyResolved {
+                                    proof: crate::PhysicalAmbiguousResumeProof::FinalStatus(proof),
+                                    ..
+                                },
+                            } if source == status && proof == final_status
+                        ))
+                        .count(),
+                    1
+                );
+                assert!(!snapshot.records().iter().any(|record| matches!(
+                    record.kind(),
+                    PhysicalEventRecordKind::ResumeErrorTolerated { .. }
+                )));
+            }
+            assert_eq!(typed_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
+    fn typed_exit_nonretryable_error_survives_terminal_error_overlay() {
+        let pid = crate::Pid::from_raw(i32::MAX - 80);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let waiter = Arc::new(ExitWaiter::default());
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+        let exit_stop_id = retained_exit_stop_id(event);
+        let mut failed_shadow = Some(CleanupStopTransfer {
+            pid: pid.into(),
+            event: handle.clone(),
+            stop_id: exit_stop_id,
+            diagnostic_status: None,
+            owns_claimed_exit: true,
+        });
+        assert_eq!(
+            handle.continue_claimed_exit_stop_with(
+                pid.into(),
+                exit_stop_id,
+                None,
+                None,
+                || Err(nix::errno::Errno::EPERM),
+            ),
+            Err(nix::errno::Errno::EPERM)
+        );
+        assert_eq!(
+            event.exit_capability.load(Ordering::Acquire),
+            EXIT_CAP_EXPIRED
+        );
+        assert!(matches!(
+            event.exit_publication.lock().cleanup,
+            ExitStopCleanupCompletion::Failed {
+                diagnostic_status: None,
+                attempt: None,
+                error: Errno::EPERM,
+                ..
+            }
+        ));
+        event.mark_terminal_error(Errno::EIO);
+        event.install_wait_failure_cleanup_transition(None, true);
+        assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_ERROR);
+
+        let terminal = TerminalCleanup {
+            pid: pid.into(),
+            event: handle.clone(),
+        };
+        let cleanup_calls = AtomicUsize::new(0);
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut None,
+                PhysicalResumeOwner::RootCleanup,
+                |_| {
+                    cleanup_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            ),
+            Err(Errno::EPERM)
+        );
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+
+        let successor_stop_id = event.allocate_logical_stop();
+        let mut successor_transfer = Some(synthetic_cleanup_transfer(
+            pid.into(),
+            &terminal.event,
+            successor_stop_id,
+            None,
+        ));
+        let mut successor_lease = Some(
+            terminal
+                .lease_transferred_stop(&mut successor_transfer)
+                .expect("lease successor after sticky failed exit"),
+        );
+        let successor_nonce = successor_lease
+            .as_ref()
+            .expect("failed successor lease remains present")
+            .nonce;
+        assert!(matches!(
+            terminal.classify_transferred_stop_for_supersession(
+                &mut failed_shadow,
+                successor_stop_id,
+                None,
+            ),
+            Ok(Some(TransferredStopCompletion::Failed(Errno::EPERM)))
+        ));
+        assert!(failed_shadow.is_none());
+        assert!(successor_lease.as_ref().is_some_and(|lease| {
+            lease.logical_stop_id() == successor_stop_id && lease.nonce == successor_nonce
+        }));
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut successor_lease,
+                PhysicalResumeOwner::RootCleanup,
+                |_| {
+                    cleanup_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            ),
+            Err(Errno::EPERM)
+        );
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+        assert!(successor_lease.as_ref().is_some_and(|lease| {
+            lease.logical_stop_id() == successor_stop_id && lease.nonce == successor_nonce
+        }));
+        let publication = event.exit_publication.lock();
+        assert_eq!(
+            publication.cleanup_authority,
+            CleanupAuthorityState::Leased {
+                key: CleanupStopKey(successor_stop_id),
+                nonce: successor_nonce,
+            }
+        );
+        assert_eq!(publication.retired_through, Some(CleanupStopKey(retained_exit_stop_id(event))));
+        drop(publication);
+        drop(successor_lease.take());
+        assert_eq!(
+            event.exit_publication.lock().cleanup_authority,
+            CleanupAuthorityState::Available {
+                key: CleanupStopKey(successor_stop_id),
+                diagnostic_status: None,
+            }
+        );
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut None,
+                PhysicalResumeOwner::RootCleanup,
+                |_| -> Result<(), nix::errno::Errno> {
+                    panic!("sticky old failure transitioned an available successor")
+                },
+            ),
+            Err(Errno::EPERM)
+        );
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            event.exit_publication.lock().cleanup_authority,
+            CleanupAuthorityState::Available {
+                key: CleanupStopKey(successor_stop_id),
+                diagnostic_status: None,
+            },
+            "sticky old failure mutated available successor authority"
+        );
+        assert_eq!(
+            terminal.reclaim_available_cleanup_stop(&mut successor_lease),
+            Ok(true)
+        );
+        assert!(matches!(
+            *event.wait_failure_cleanup.lock(),
+            WaitFailureCleanupPhase::AwaitingController {
+                source_logical_stop: None,
+                source_status: None,
+                tolerated_resume: None,
+            }
+        ));
+        terminal
+            .dispose_cleanup_stop(
+                successor_lease
+                    .take()
+                    .expect("dispose successor preserved across sticky failure"),
+            )
+            .expect("retire successor preserved across sticky failure");
+    }
+
+    #[test]
+    fn raw_cleanup_nonretryable_error_fails_exact_call_and_stays_sticky() {
+        let pid = crate::Pid::from_raw(i32::MAX - 89);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let stop_id = retained_exit_stop_id(event);
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+        let raw_calls = AtomicUsize::new(0);
+        let mut retained_stop = None;
+
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut retained_stop,
+                PhysicalResumeOwner::RootCleanup,
+                |_| {
+                    raw_calls.fetch_add(1, Ordering::SeqCst);
+                    Err(nix::errno::Errno::EPERM)
+                },
+            ),
+            Err(Errno::EPERM)
+        );
+        assert!(retained_stop.is_none());
+        let publication = event.exit_publication.lock();
+        assert!(matches!(
+            publication.cleanup,
+            ExitStopCleanupCompletion::Failed {
+                stop_id: failed_stop,
+                diagnostic_status: None,
+                error: Errno::EPERM,
+                ..
+            } if failed_stop == stop_id
+        ));
+        assert_eq!(publication.cleanup_authority, CleanupAuthorityState::Vacant);
+        assert_eq!(publication.retired_through, Some(CleanupStopKey(stop_id)));
+        drop(publication);
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut retained_stop,
+                PhysicalResumeOwner::RootCleanup,
+                |_| -> Result<(), nix::errno::Errno> {
+                    panic!("sticky nonretryable cleanup failure issued another raw transition")
+                },
+            ),
+            Err(Errno::EPERM)
+        );
+        assert_eq!(raw_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn ambiguous_cleanup_never_retries_after_tracee_becomes_inactive() {
+        let (pid, stopped, mut tracee_cleanup) =
+            spawn_traced_process(None).expect("spawn repeated-error tracee");
+        let identity = Arc::new(
+            WorkerIdentity::capture_process(pid.into())
+                .expect("capture repeated-error tracee identity"),
+        );
+        assert!(identity.is_active_tracee());
+        let handle = EventHandle::with_identity(Arc::clone(&identity));
+        let event = handle.event();
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let terminal = TerminalCleanup {
+            pid: pid.into(),
+            event: handle.clone(),
+        };
+        let attempts = AtomicUsize::new(0);
+        let mut retained_stop = None;
+
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut retained_stop,
+                PhysicalResumeOwner::RootCleanup,
+                |_| {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    Err(nix::errno::Errno::EIO)
+                },
+            ),
+            Err(Errno::EIO)
+        );
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut retained_stop,
+                PhysicalResumeOwner::RootCleanup,
+                |_| -> Result<(), nix::errno::Errno> {
+                    panic!("ambiguous cleanup issued a second raw transition")
+                },
+            ),
+            Err(Errno::EIO)
+        );
+        assert!(retained_stop.is_none());
+        let publication = event.exit_publication.lock();
+        assert!(matches!(
+            publication.cleanup,
+            ExitStopCleanupCompletion::Ambiguous {
+                diagnostic_status: None,
+                error: Errno::EIO,
+                ..
+            }
+        ));
+        assert_eq!(
+            publication.cleanup_authority,
+            CleanupAuthorityState::Available {
+                key: CleanupStopKey(retained_exit_stop_id(event)),
+                diagnostic_status: None,
+            }
+        );
+        assert_eq!(publication.retired_through, None);
+        drop(publication);
+
+        let running = stopped.detach(None).expect("detach repeated-error tracee");
+        assert_ne!(identity.active_tracee(), Ok(true));
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut retained_stop,
+                PhysicalResumeOwner::RootCleanup,
+                |_| -> Result<(), nix::errno::Errno> {
+                    panic!("sticky failed cleanup attempted a third raw transition")
+                },
+            ),
+            Err(Errno::EIO)
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+        let final_wait = running.wait().expect("reap detached repeated-error tracee");
+        assert!(matches!(final_wait, Wait::Exited(waited, _) if waited == pid.into()));
+        tracee_cleanup.disarm();
+    }
+
+    #[test]
+    fn ambiguous_available_authority_cannot_be_released_for_raw_retry() {
+        let pid = crate::Pid::from_raw(i32::MAX - 84);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let stop_id = retained_exit_stop_id(event);
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+        let raw_calls = AtomicUsize::new(0);
+        let mut retained_stop = None;
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut retained_stop,
+                PhysicalResumeOwner::RootCleanup,
+                |_| {
+                    raw_calls.fetch_add(1, Ordering::SeqCst);
+                    Err(nix::errno::Errno::EIO)
+                },
+            ),
+            Err(Errno::EIO)
+        );
+        assert!(retained_stop.is_none());
+        let publication = event.exit_publication.lock();
+        assert_eq!(
+            publication.cleanup_authority,
+            CleanupAuthorityState::Available {
+                key: CleanupStopKey(stop_id),
+                diagnostic_status: None,
+            }
+        );
+        assert_eq!(publication.retired_through, None);
+        drop(publication);
+
+        assert_eq!(
+            terminal.reclaim_available_cleanup_stop(&mut retained_stop),
+            Ok(false),
+            "ambiguous authority must stay quarantined"
+        );
+        let mut copied_key = Some(synthetic_cleanup_transfer(pid, &handle, stop_id, None));
+        assert!(matches!(
+            terminal.lease_transferred_stop(&mut copied_key),
+            Err(Errno::EALREADY)
+        ));
+        assert!(copied_key.is_some());
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut retained_stop,
+                PhysicalResumeOwner::RootCleanup,
+                |_| -> Result<(), nix::errno::Errno> {
+                    panic!("ambiguous available cleanup issued a later raw retry")
+                },
+            ),
+            Err(Errno::EIO)
+        );
+        assert_eq!(raw_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn observerless_ambiguous_cleanup_resolves_on_real_final_status() {
+        let pid = crate::Pid::from_raw(i32::MAX - 83);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let stop_id = retained_exit_stop_id(event);
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+        let raw_calls = AtomicUsize::new(0);
+        let mut retained_stop = None;
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut retained_stop,
+                PhysicalResumeOwner::RootCleanup,
+                |_| {
+                    raw_calls.fetch_add(1, Ordering::SeqCst);
+                    Err(nix::errno::Errno::ESRCH)
+                },
+            ),
+            Err(Errno::ESRCH)
+        );
+
+        event.update(0);
+        let publication = event.exit_publication.lock();
+        assert_eq!(
+            publication.cleanup,
+            ExitStopCleanupCompletion::Finished {
+                stop_id,
+                diagnostic_status: None,
+            }
+        );
+        assert_eq!(publication.cleanup_authority, CleanupAuthorityState::Vacant);
+        assert_eq!(publication.retired_through, Some(CleanupStopKey(stop_id)));
+        drop(publication);
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut retained_stop,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| -> Result<(), nix::errno::Errno> {
+                        panic!("real final status repeated observerless raw continuation")
+                    },
+                )
+                .expect("read observerless causal completion"),
+            TerminalCleanupContinue::AlreadyFinished {
+                source_status: None,
+            }
+        );
+        assert_eq!(raw_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cleanup_lease_drop_preserves_authority_nonce_and_retired_frontier() {
+        let pid = crate::Pid::from_raw(i32::MAX - 85);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        let first_stop_id = event.allocate_logical_stop();
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+
+        let mut first_transfer = Some(synthetic_cleanup_transfer(
+            pid,
+            &handle,
+            first_stop_id,
+            None,
+        ));
+        let first = terminal
+            .lease_transferred_stop(&mut first_transfer)
+            .expect("acquire first nonce-bound cleanup lease");
+        let first_nonce = first.nonce;
+        assert_eq!(
+            event.exit_publication.lock().cleanup_authority,
+            CleanupAuthorityState::Leased {
+                key: CleanupStopKey(first_stop_id),
+                nonce: first_nonce,
+            }
+        );
+        drop(first);
+        {
+            let publication = event.exit_publication.lock();
+            assert_eq!(
+                publication.cleanup_authority,
+                CleanupAuthorityState::Available {
+                    key: CleanupStopKey(first_stop_id),
+                    diagnostic_status: None,
+                }
+            );
+            assert_eq!(publication.retired_through, None);
+        }
+
+        let mut recovered = None;
+        assert_eq!(
+            terminal.reclaim_available_cleanup_stop(&mut recovered),
+            Ok(true)
+        );
+        let second = recovered
+            .take()
+            .expect("internal cleanup recovered the rolled-back lease");
+        let second_nonce = second.nonce;
+        assert_ne!(first_nonce, second_nonce);
+        drop(CleanupStopLease {
+            pid,
+            event: handle.clone(),
+            stop_id: first_stop_id,
+            diagnostic_status: None,
+            nonce: first_nonce,
+            active: true,
+        });
+        assert_eq!(
+            event.exit_publication.lock().cleanup_authority,
+            CleanupAuthorityState::Leased {
+                key: CleanupStopKey(first_stop_id),
+                nonce: second_nonce,
+            }
+        );
+
+        terminal
+            .dispose_cleanup_stop(second)
+            .expect("retire replacement cleanup lease");
+        drop(CleanupStopLease {
+            pid,
+            event: handle.clone(),
+            stop_id: first_stop_id,
+            diagnostic_status: None,
+            nonce: second_nonce,
+            active: true,
+        });
+        {
+            let publication = event.exit_publication.lock();
+            assert_eq!(publication.cleanup_authority, CleanupAuthorityState::Vacant);
+            assert_eq!(
+                publication.retired_through,
+                Some(CleanupStopKey(first_stop_id))
+            );
+        }
+
+        let second_stop_id = event.allocate_logical_stop();
+        assert!(second_stop_id.get() > first_stop_id.get());
+        let mut later_transfer = Some(synthetic_cleanup_transfer(
+            pid,
+            &handle,
+            second_stop_id,
+            None,
+        ));
+        let later = terminal
+            .lease_transferred_stop(&mut later_transfer)
+            .expect("lease a later stop above the retired frontier");
+        drop(later);
+        {
+            let publication = event.exit_publication.lock();
+            assert_eq!(
+                publication.cleanup_authority,
+                CleanupAuthorityState::Available {
+                    key: CleanupStopKey(second_stop_id),
+                    diagnostic_status: None,
+                }
+            );
+            assert_eq!(
+                publication.retired_through,
+                Some(CleanupStopKey(first_stop_id)),
+                "dropping newer authority must not erase the retired frontier"
+            );
+        }
+        let mut stale_retired = Some(synthetic_cleanup_transfer(
+            pid,
+            &handle,
+            first_stop_id,
+            None,
+        ));
+        assert!(matches!(
+            terminal.lease_transferred_stop(&mut stale_retired),
+            Err(Errno::EALREADY)
+        ));
+        assert!(stale_retired.is_some());
+        let mut later_recovered = None;
+        assert_eq!(
+            terminal.reclaim_available_cleanup_stop(&mut later_recovered),
+            Ok(true)
+        );
+        terminal
+            .dispose_cleanup_stop(
+                later_recovered
+                    .take()
+                    .expect("later rolled-back authority remains recoverable"),
+            )
+            .expect("retire later recovered authority");
+        let publication = event.exit_publication.lock();
+        assert_eq!(publication.cleanup_authority, CleanupAuthorityState::Vacant);
+        assert_eq!(
+            publication.retired_through,
+            Some(CleanupStopKey(second_stop_id))
+        );
+    }
+
+    #[test]
+    fn consuming_cleanup_conversion_returns_exact_stopped_on_conflict() {
+        let pid = crate::Pid::from_raw(i32::MAX - 88);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        let old_stop_id = event.allocate_logical_stop();
+        let returned_stop_id = event.allocate_logical_stop();
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+        let mut old_transfer = Some(synthetic_cleanup_transfer(
+            pid,
+            &handle,
+            old_stop_id,
+            None,
+        ));
+        let old_lease = terminal
+            .lease_transferred_stop(&mut old_transfer)
+            .expect("lease conflict control stop");
+        let stopped = Stopped::from_token(
+            pid,
+            TraceeToken::from_observed_event(handle.clone(), None, Some(returned_stop_id)),
+        );
+
+        let error = match stopped.into_cleanup_stop_lease() {
+            Err(error) => error,
+            Ok(_) => panic!("active older lease accepted a second consuming conversion"),
+        };
+        assert_eq!(error.errno(), Errno::EALREADY);
+        let (error, stopped) = error.into_parts();
+        assert_eq!(error, Errno::EALREADY);
+        assert_eq!(stopped.pid(), pid);
+        assert_eq!(stopped.logical_stop_id(), returned_stop_id);
+        assert_eq!(stopped.physical_status_id(), None);
+
+        terminal
+            .dispose_cleanup_stop(old_lease)
+            .expect("retire conflict control stop");
+        let returned_lease = stopped
+            .into_cleanup_stop_lease()
+            .expect("returned Stopped remains convertible after conflict clears");
+        assert_eq!(returned_lease.logical_stop_id(), returned_stop_id);
+        terminal
+            .dispose_cleanup_stop(returned_lease)
+            .expect("retire returned Stopped lease");
+    }
+
+    #[test]
+    fn malformed_successor_metadata_preserves_completed_transfer_exactly() {
+        let pid = crate::Pid::from_raw(i32::MAX - 91);
+        let handle = EventHandle::new();
+        let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(32, 16))
+            .expect("create completed-transfer provenance observer");
+        handle
+            .attach_physical_observer(&observer)
+            .expect("attach completed-transfer provenance observer");
+        let event = handle.event();
+        let older_stop_id = event.allocate_logical_stop();
+        let exit_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(handle.physical_generation()),
+            task: PhysicalTaskIdentity::direct_child(pid),
+            producer: PhysicalWaitProducer::NotifierWorker,
+            flags: libc::WEXITED | libc::WSTOPPED | libc::__WALL,
+        });
+        let exit_status = observer.finish_wait_status(exit_wait, PTRACE_EVENT_EXIT_STOP, None);
+        event.publish_exit_stop(
+            ObservedStatus {
+                raw: PTRACE_EVENT_EXIT_STOP,
+                physical: Some(exit_status),
+                logical_stop: None,
+            },
+            || {},
+        );
+        let exit_stop_id = retained_exit_stop_id(event);
+        assert!(older_stop_id.get() < exit_stop_id.get());
+        let waiter = Arc::new(ExitWaiter::default());
+        let waker = futures::task::noop_waker();
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+        let mut transfer = Some(CleanupStopTransfer {
+            pid,
+            event: handle.clone(),
+            stop_id: exit_stop_id,
+            diagnostic_status: Some(exit_status),
+            owns_claimed_exit: true,
+        });
+        handle
+            .continue_claimed_exit_stop_with(
+                pid,
+                exit_stop_id,
+                Some(exit_status),
+                None,
+                || Ok(()),
+            )
+            .expect("publish completed observed predecessor");
+        let later_stop_id = event.allocate_logical_stop();
+
+        for (stop_id, status) in [
+            (exit_stop_id, Some(exit_status)),
+            (older_stop_id, Some(exit_status)),
+            (later_stop_id, Some(exit_status)),
+            (later_stop_id, None),
+        ] {
+            assert!(matches!(
+                TerminalCleanup {
+                    pid,
+                    event: handle.clone(),
+                }
+                .consume_transferred_stop_completion_for_successor(
+                    &mut transfer,
+                    stop_id,
+                    status,
+                ),
+                Err(Errno::EPROTO)
+            ));
+            let retained = transfer
+                .as_ref()
+                .expect("malformed observed successor consumed predecessor ownership");
+            assert_eq!(retained.logical_stop_id(), exit_stop_id);
+            assert_eq!(retained.physical_status_id(), Some(exit_status));
+            let publication = event.exit_publication.lock();
+            assert_eq!(
+                publication.cleanup,
+                ExitStopCleanupCompletion::Finished {
+                    stop_id: exit_stop_id,
+                    diagnostic_status: Some(exit_status),
+                }
+            );
+            assert_eq!(publication.cleanup_authority, CleanupAuthorityState::Vacant);
+            assert_eq!(publication.retired_through, Some(CleanupStopKey(exit_stop_id)));
+        }
+
+        let unobserved_pid = crate::Pid::from_raw(i32::MAX - 92);
+        let unobserved_handle = EventHandle::new();
+        let unobserved_event = unobserved_handle.event();
+        unobserved_event.publish_exit_stop(
+            ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP),
+            || {},
+        );
+        let unobserved_stop_id = retained_exit_stop_id(unobserved_event);
+        let unobserved_waiter = Arc::new(ExitWaiter::default());
+        assert_eq!(
+            unobserved_event.poll_exit(&unobserved_waiter, &waker),
+            Poll::Ready(Ok(()))
+        );
+        let mut unobserved_transfer = Some(CleanupStopTransfer {
+            pid: unobserved_pid,
+            event: unobserved_handle.clone(),
+            stop_id: unobserved_stop_id,
+            diagnostic_status: None,
+            owns_claimed_exit: true,
+        });
+        unobserved_handle
+            .continue_claimed_exit_stop_with(
+                unobserved_pid,
+                unobserved_stop_id,
+                None,
+                None,
+                || Ok(()),
+            )
+            .expect("publish completed unobserved predecessor");
+        let unobserved_successor = unobserved_event.allocate_logical_stop();
+        let unobserved_terminal = TerminalCleanup {
+            pid: unobserved_pid,
+            event: unobserved_handle,
+        };
+        assert!(matches!(
+            unobserved_terminal.consume_transferred_stop_completion_for_successor(
+                &mut unobserved_transfer,
+                unobserved_successor,
+                Some(exit_status),
+            ),
+            Err(Errno::EPROTO)
+        ));
+        assert!(unobserved_transfer.as_ref().is_some_and(|retained| {
+            retained.logical_stop_id() == unobserved_stop_id
+                && retained.physical_status_id().is_none()
+        }));
+    }
+
+    #[test]
+    fn supersession_classifier_preserves_live_transfer_on_malformed_successor() {
+        let pid = crate::Pid::from_raw(i32::MAX - 93);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        let older_stop_id = event.allocate_logical_stop();
+        let stop_id = event.allocate_logical_stop();
+        let later_stop_id = event.allocate_logical_stop();
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+        let mut transfer = Some(synthetic_cleanup_transfer(pid, &handle, stop_id, None));
+        assert!(matches!(
+            terminal.classify_transferred_stop_for_supersession(
+                &mut transfer,
+                stop_id,
+                None,
+            ),
+            Ok(None)
+        ));
+        for (candidate, status) in [
+            (older_stop_id, None),
+            (later_stop_id, Some(PhysicalStatusId::from_raw(1).unwrap())),
+        ] {
+            assert!(matches!(
+                terminal.classify_transferred_stop_for_supersession(
+                    &mut transfer,
+                    candidate,
+                    status,
+                ),
+                Err(Errno::EPROTO)
+            ));
+            assert!(transfer.as_ref().is_some_and(|retained| {
+                retained.logical_stop_id() == stop_id && retained.physical_status_id().is_none()
+            }));
+            assert_eq!(event.exit_publication.lock().cleanup_authority, CleanupAuthorityState::Vacant);
+        }
+        assert!(matches!(
+            terminal.classify_transferred_stop_for_supersession(
+                &mut transfer,
+                later_stop_id,
+                None,
+            ),
+            Ok(None)
+        ));
+        assert!(transfer.is_some());
+    }
+
+    #[test]
+    fn supersession_classifier_rejects_ambiguous_and_nonvacant_authority() {
+        let ambiguous_pid = crate::Pid::from_raw(i32::MAX - 94);
+        let ambiguous_handle = EventHandle::new();
+        let ambiguous_event = ambiguous_handle.event();
+        ambiguous_event.publish_exit_stop(
+            ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP),
+            || {},
+        );
+        let ambiguous_stop_id = retained_exit_stop_id(ambiguous_event);
+        let waiter = Arc::new(ExitWaiter::default());
+        let waker = futures::task::noop_waker();
+        assert_eq!(ambiguous_event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+        let mut ambiguous_shadow = Some(CleanupStopTransfer {
+            pid: ambiguous_pid,
+            event: ambiguous_handle.clone(),
+            stop_id: ambiguous_stop_id,
+            diagnostic_status: None,
+            owns_claimed_exit: true,
+        });
+        assert_eq!(
+            ambiguous_handle.continue_claimed_exit_stop_with(
+                ambiguous_pid,
+                ambiguous_stop_id,
+                None,
+                None,
+                || Err(nix::errno::Errno::ESRCH),
+            ),
+            Err(nix::errno::Errno::ESRCH)
+        );
+        let ambiguous_terminal = TerminalCleanup {
+            pid: ambiguous_pid,
+            event: ambiguous_handle.clone(),
+        };
+        assert!(matches!(
+            ambiguous_terminal.classify_transferred_stop_for_supersession(
+                &mut ambiguous_shadow,
+                ambiguous_stop_id,
+                None,
+            ),
+            Err(Errno::EALREADY)
+        ));
+        assert!(ambiguous_shadow.as_ref().is_some_and(|transfer| {
+            transfer.logical_stop_id() == ambiguous_stop_id
+                && transfer.physical_status_id().is_none()
+        }));
+        let ambiguous_publication = ambiguous_event.exit_publication.lock();
+        assert!(matches!(
+            ambiguous_publication.cleanup,
+            ExitStopCleanupCompletion::Ambiguous {
+                stop_id,
+                error: Errno::ESRCH,
+                ..
+            } if stop_id == ambiguous_stop_id
+        ));
+        assert_eq!(ambiguous_publication.cleanup_authority, CleanupAuthorityState::Vacant);
+        drop(ambiguous_publication);
+
+        let leased_pid = crate::Pid::from_raw(i32::MAX - 95);
+        let leased_handle = EventHandle::new();
+        let leased_stop_id = leased_handle.event().allocate_logical_stop();
+        let leased_terminal = TerminalCleanup {
+            pid: leased_pid,
+            event: leased_handle.clone(),
+        };
+        let mut authority_transfer = Some(synthetic_cleanup_transfer(
+            leased_pid,
+            &leased_handle,
+            leased_stop_id,
+            None,
+        ));
+        let authority_lease = leased_terminal
+            .lease_transferred_stop(&mut authority_transfer)
+            .expect("install classifier Leased authority");
+        let authority_nonce = authority_lease.nonce;
+        let mut leased_shadow = Some(synthetic_cleanup_transfer(
+            leased_pid,
+            &leased_handle,
+            leased_stop_id,
+            None,
+        ));
+        assert!(matches!(
+            leased_terminal.classify_transferred_stop_for_supersession(
+                &mut leased_shadow,
+                leased_stop_id,
+                None,
+            ),
+            Err(Errno::EALREADY)
+        ));
+        assert!(leased_shadow.is_some());
+        assert_eq!(
+            leased_handle.event().exit_publication.lock().cleanup_authority,
+            CleanupAuthorityState::Leased {
+                key: CleanupStopKey(leased_stop_id),
+                nonce: authority_nonce,
+            }
+        );
+
+        let available_pid = crate::Pid::from_raw(i32::MAX - 96);
+        let available_handle = EventHandle::new();
+        let available_stop_id = available_handle.event().allocate_logical_stop();
+        let available_terminal = TerminalCleanup {
+            pid: available_pid,
+            event: available_handle.clone(),
+        };
+        let mut available_transfer = Some(synthetic_cleanup_transfer(
+            available_pid,
+            &available_handle,
+            available_stop_id,
+            None,
+        ));
+        let available_lease = available_terminal
+            .lease_transferred_stop(&mut available_transfer)
+            .expect("install classifier Available authority");
+        drop(available_lease);
+        let mut available_shadow = Some(synthetic_cleanup_transfer(
+            available_pid,
+            &available_handle,
+            available_stop_id,
+            None,
+        ));
+        assert!(matches!(
+            available_terminal.classify_transferred_stop_for_supersession(
+                &mut available_shadow,
+                available_stop_id,
+                None,
+            ),
+            Err(Errno::EALREADY)
+        ));
+        assert!(available_shadow.is_some());
+        assert_eq!(
+            available_handle.event().exit_publication.lock().cleanup_authority,
+            CleanupAuthorityState::Available {
+                key: CleanupStopKey(available_stop_id),
+                diagnostic_status: None,
+            }
+        );
+        drop(authority_lease);
+    }
+
+    #[test]
+    fn later_observed_successor_resolves_ambiguous_exit_without_raw_retry() {
+        for drop_before_resolution in [false, true] {
+        let pid = crate::Pid::from_raw(i32::MAX - 86 - drop_before_resolution as i32);
+        let handle = EventHandle::new();
+        let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(64, 32))
+            .expect("create ambiguous-successor observer");
+        handle
+            .attach_physical_observer(&observer)
+            .expect("attach ambiguous-successor observer");
+        let exit_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(handle.physical_generation()),
+            task: PhysicalTaskIdentity::direct_child(pid),
+            producer: PhysicalWaitProducer::NotifierWorker,
+            flags: libc::WEXITED | libc::WSTOPPED | libc::__WALL,
+        });
+        let exit_status = observer.finish_wait_status(exit_wait, PTRACE_EVENT_EXIT_STOP, None);
+        let event = handle.event();
+        event.publish_exit_stop(
+            ObservedStatus {
+                raw: PTRACE_EVENT_EXIT_STOP,
+                physical: Some(exit_status),
+                logical_stop: None,
+            },
+            || {},
+        );
+        let exit_stop_id = retained_exit_stop_id(event);
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+        let raw_calls = AtomicUsize::new(0);
+        let waiter = Arc::new(ExitWaiter::default());
+        let waker = futures::task::noop_waker();
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+        let mut old_shadow = Some(CleanupStopTransfer {
+            pid,
+            event: handle.clone(),
+            stop_id: exit_stop_id,
+            diagnostic_status: Some(exit_status),
+            owns_claimed_exit: true,
+        });
+        assert_eq!(
+            handle.continue_claimed_exit_stop_with(
+                pid,
+                exit_stop_id,
+                Some(exit_status),
+                None,
+                || {
+                    raw_calls.fetch_add(1, Ordering::SeqCst);
+                    Err(nix::errno::Errno::EIO)
+                },
+            ),
+            Err(nix::errno::Errno::EIO)
+        );
+        assert_eq!(
+            event.exit_publication.lock().cleanup_authority,
+            CleanupAuthorityState::Vacant
+        );
+
+        let successor_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(handle.physical_generation()),
+            task: PhysicalTaskIdentity::direct_child(pid),
+            producer: PhysicalWaitProducer::NotifierWorker,
+            flags: libc::WEXITED | libc::WSTOPPED | libc::__WALL,
+        });
+        let successor_status = observer.finish_wait_status(
+            successor_wait,
+            (Signal::SIGTRAP as i32) << 8 | 0x7f,
+            None,
+        );
+        let successor_raw = (Signal::SIGTRAP as i32) << 8 | 0x7f;
+        let (captured_tx, captured_rx) = mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = mpsc::channel();
+        *event.ambiguous_resolution_pause.lock() = Some(BoundedTestPause {
+            captured: captured_tx,
+            resume: resume_rx,
+        });
+        let mut retained_stop = None;
+        let mut successor_stop_id = None;
+        let mut first_successor_nonce = None;
+        thread::scope(|scope| {
+            let publisher = scope.spawn(|| {
+                event.update(ObservedStatus {
+                    raw: successor_raw,
+                    physical: Some(successor_status),
+                    logical_stop: None,
+                });
+            });
+            captured_rx
+                .recv_timeout(TRACEE_WAIT_TIMEOUT)
+                .expect("successor publication did not reach resolution boundary");
+
+            let decoded = terminal
+                .reserve_pending_for_cleanup(Duration::ZERO)
+                .expect("reserve trusted successor FIFO")
+                .decode()
+                .expect("decode trusted successor FIFO");
+            let successor = match decoded.commit() {
+                Wait::Stopped(stopped, _) => stopped,
+                other => panic!("trusted successor decoded as {other:?}"),
+            };
+            assert_eq!(successor.physical_status_id(), Some(successor_status));
+            assert!(successor.logical_stop_id().get() > exit_stop_id.get());
+            retained_stop = Some(
+                successor
+                    .into_cleanup_stop_lease()
+                    .expect("lease committed trusted successor while resolution pauses"),
+            );
+            successor_stop_id = retained_stop.as_ref().map(CleanupStopLease::logical_stop_id);
+            first_successor_nonce = retained_stop.as_ref().map(|lease| lease.nonce);
+            if drop_before_resolution {
+                drop(retained_stop.take());
+            }
+            resume_tx
+                .send(())
+                .expect("release ambiguous resolution boundary");
+            publisher.join().expect("publish trusted successor");
+        });
+        let successor_stop_id = successor_stop_id.expect("capture successor logical ID");
+        let first_successor_nonce = first_successor_nonce.expect("capture successor nonce");
+        if drop_before_resolution {
+            assert_eq!(
+                event.exit_publication.lock().cleanup_authority,
+                CleanupAuthorityState::Available {
+                    key: CleanupStopKey(successor_stop_id),
+                    diagnostic_status: Some(successor_status),
+                }
+            );
+            assert_eq!(
+                terminal.reclaim_available_cleanup_stop(&mut retained_stop),
+                Ok(true)
+            );
+        }
+        let successor_nonce = retained_stop
+            .as_ref()
+            .expect("successor lease remains recoverable")
+            .nonce;
+        if drop_before_resolution {
+            assert_ne!(successor_nonce, first_successor_nonce);
+        } else {
+            assert_eq!(successor_nonce, first_successor_nonce);
+        }
+        assert!(matches!(
+            terminal.classify_transferred_stop_for_supersession(
+                &mut old_shadow,
+                successor_stop_id,
+                Some(successor_status),
+            ),
+            Ok(Some(TransferredStopCompletion::Finished))
+        ));
+        assert!(old_shadow.is_none());
+        assert!(retained_stop.as_ref().is_some_and(|lease| {
+            lease.logical_stop_id() == successor_stop_id && lease.nonce == successor_nonce
+        }));
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut retained_stop,
+                    PhysicalResumeOwner::RootCleanup,
+                    |_| -> Result<(), nix::errno::Errno> {
+                        panic!("later successor retried the old raw exit continuation")
+                    },
+                )
+                .expect("trusted successor makes old stop unreachable"),
+            TerminalCleanupContinue::WaitingForExitStop
+        );
+        assert_eq!(raw_calls.load(Ordering::SeqCst), 1);
+        assert!(retained_stop.as_ref().is_some_and(|lease| {
+            lease.logical_stop_id() == successor_stop_id
+                && lease.physical_status_id() == Some(successor_status)
+                && lease.nonce == successor_nonce
+        }));
+        let publication = event.exit_publication.lock();
+        assert_eq!(
+            publication.cleanup,
+            ExitStopCleanupCompletion::Finished {
+                stop_id: exit_stop_id,
+                diagnostic_status: Some(exit_status),
+            }
+        );
+        assert_eq!(
+            publication.cleanup_authority,
+            CleanupAuthorityState::Leased {
+                key: CleanupStopKey(successor_stop_id),
+                nonce: successor_nonce,
+            }
+        );
+        assert_eq!(
+            publication.retired_through,
+            Some(CleanupStopKey(exit_stop_id))
+        );
+        drop(publication);
+        let snapshot = observer.snapshot();
+        assert_eq!(
+            snapshot
+                .records()
+                .iter()
+                .filter(|record| matches!(
+                    record.kind(),
+                    PhysicalEventRecordKind::ResumeErrorTolerated { .. }
+                ))
+                .count(),
+            0
+        );
+        assert_eq!(
+            snapshot
+                .records()
+                .iter()
+                .filter(|record| matches!(
+                    record.kind(),
+                    PhysicalEventRecordKind::StatusDisposition {
+                        status,
+                        disposition: PhysicalStatusDisposition::AmbiguousResumeCausallyResolved {
+                            proof: crate::PhysicalAmbiguousResumeProof::LaterStatus(proof),
+                            ..
+                        },
+                    } if status == exit_status && proof == successor_status
+                ))
+                .count(),
+            1
+        );
+        terminal
+            .dispose_cleanup_stop(
+                retained_stop
+                    .take()
+                    .expect("dispose later observed successor"),
+            )
+            .expect("retire later observed successor");
+        }
+    }
+
+    #[test]
+    fn caller_logical_ids_cannot_resolve_ambiguous_exit_completion() {
+        let pid = crate::Pid::from_raw(i32::MAX - 87);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        let stale_stop_id = event.allocate_logical_stop();
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let exit_stop_id = retained_exit_stop_id(event);
+        assert!(stale_stop_id.get() < exit_stop_id.get());
+        let terminal = TerminalCleanup {
+            pid,
+            event: handle.clone(),
+        };
+        let raw_calls = AtomicUsize::new(0);
+        let mut retained_stop = None;
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut retained_stop,
+                PhysicalResumeOwner::RootCleanup,
+                |_| {
+                    raw_calls.fetch_add(1, Ordering::SeqCst);
+                    Err(nix::errno::Errno::ESRCH)
+                },
+            ),
+            Err(Errno::ESRCH)
+        );
+        drop(retained_stop.take());
+        assert_eq!(
+            event.exit_publication.lock().cleanup_authority,
+            CleanupAuthorityState::Available {
+                key: CleanupStopKey(exit_stop_id),
+                diagnostic_status: None,
+            }
+        );
+
+        let mut stale_transfer = Some(synthetic_cleanup_transfer(
+            pid,
+            &handle,
+            stale_stop_id,
+            None,
+        ));
+        assert!(matches!(
+            terminal.lease_transferred_stop(&mut stale_transfer),
+            Err(Errno::EALREADY)
+        ));
+        assert!(stale_transfer.is_some());
+        let forged_later_stop_id = event.allocate_logical_stop();
+        assert!(forged_later_stop_id.get() > exit_stop_id.get());
+        let mut forged_later = Some(synthetic_cleanup_transfer(
+            pid,
+            &handle,
+            forged_later_stop_id,
+            None,
+        ));
+        assert!(matches!(
+            terminal.lease_transferred_stop(&mut forged_later),
+            Err(Errno::EALREADY)
+        ));
+        assert!(forged_later.is_some());
+        assert_eq!(raw_calls.load(Ordering::SeqCst), 1);
+        let publication = event.exit_publication.lock();
+        assert!(matches!(
+            publication.cleanup,
+            ExitStopCleanupCompletion::Ambiguous {
+                stop_id,
+                error: Errno::ESRCH,
+                ..
+            } if stop_id == exit_stop_id
+        ));
+        assert_eq!(
+            publication.cleanup_authority,
+            CleanupAuthorityState::Available {
+                key: CleanupStopKey(exit_stop_id),
+                diagnostic_status: None,
+            }
+        );
+        assert_eq!(publication.retired_through, None);
+        drop(publication);
+        assert_eq!(
+            terminal.reclaim_available_cleanup_stop(&mut retained_stop),
+            Ok(false)
+        );
+        assert_eq!(
+            terminal.continue_exit_stop_for_cleanup_with(
+                &mut retained_stop,
+                PhysicalResumeOwner::RootCleanup,
+                |_| -> Result<(), nix::errno::Errno> {
+                    panic!("forged logical stop retried ambiguous raw continuation")
+                },
+            ),
+            Err(Errno::ESRCH)
+        );
+        assert_eq!(raw_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn typed_exit_completion_survives_terminal_error_overlay() {
+        let pid = crate::Pid::from_raw(i32::MAX - 81);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let waiter = Arc::new(ExitWaiter::default());
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+        handle
+            .continue_claimed_exit_stop_with(
+                pid.into(),
+                retained_exit_stop_id(event),
+                None,
+                None,
+                || Ok(()),
+            )
+            .expect("finish typed exit stop before terminal error");
+
+        event.mark_terminal_error(Errno::EPROTO);
+        assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_ERROR);
         assert_eq!(
             event.poll_exit(&waiter, &waker),
-            Poll::Ready(Err(Errno::EALREADY))
+            Poll::Ready(Err(Errno::EPROTO)),
+            "ExitFuture lost the causal terminal error"
         );
+
+        let terminal = TerminalCleanup {
+            pid: pid.into(),
+            event: handle,
+        };
+        let cleanup_calls = AtomicUsize::new(0);
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(&mut None, PhysicalResumeOwner::RootCleanup, |_| {
+                    cleanup_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .expect("typed completion remains authoritative after terminal error"),
+            TerminalCleanupContinue::AlreadyFinished {
+                source_status: None,
+            }
+        );
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -4442,10 +14922,13 @@ mod test {
         let publisher_event = Arc::clone(&event);
 
         let publisher = thread::spawn(move || {
-            publisher_event.publish_exit_stop(|| {
-                paused_tx.send(()).expect("report exit publication gap");
-                resume_rx.recv().expect("resume exit publication");
-            });
+            publisher_event.publish_exit_stop(
+                ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP),
+                || {
+                    paused_tx.send(()).expect("report exit publication gap");
+                    resume_rx.recv().expect("resume exit publication");
+                },
+            );
         });
         paused_rx
             .recv_timeout(Duration::from_secs(1))
@@ -4465,6 +14948,84 @@ mod test {
     }
 
     #[test]
+    fn exit_stop_published_after_pending_revocation_binds_cleanup_capability() {
+        let pid = crate::Pid::from_raw(i32::MAX - 44);
+        let handle = EventHandle::new();
+        let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(32, 16))
+            .expect("create pending-revocation observer");
+        handle
+            .attach_physical_observer(&observer)
+            .expect("attach pending-revocation observer");
+        let generation = handle.physical_generation();
+        let wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task: PhysicalTaskIdentity::direct_child(pid.into()),
+            producer: PhysicalWaitProducer::NotifierWorker,
+            flags: libc::WSTOPPED,
+        });
+        let status = observer.finish_wait_status(wait, PTRACE_EVENT_EXIT_STOP, None);
+        let terminal = TerminalCleanup {
+            pid: pid.into(),
+            event: handle.clone(),
+        };
+
+        let stop_id = handle.event().allocate_logical_stop();
+        let mut cleanup_transfer = Some(synthetic_cleanup_transfer(
+                    pid.into(),
+                    &handle,
+                    stop_id,
+                    Some(status),
+                ));
+        let mut cleanup_stop = Some(
+            terminal
+                .lease_transferred_stop(&mut cleanup_transfer)
+                .expect("lease pending exit capability"),
+        );
+        handle.event().publish_exit_stop(
+            ObservedStatus {
+                raw: PTRACE_EVENT_EXIT_STOP,
+                physical: Some(status),
+                logical_stop: Some(stop_id),
+            },
+            || {},
+        );
+        assert_eq!(
+            terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut cleanup_stop,
+                    PhysicalResumeOwner::RootCleanup,
+                    |inject_sigkill| {
+                        assert!(!inject_sigkill);
+                        Ok(())
+                    },
+                )
+                .expect("consume pre-revoked exit stop"),
+            TerminalCleanupContinue::Attempted {
+                source_status: Some(status),
+                error: None,
+            }
+        );
+
+        let transitions = observer
+            .snapshot()
+            .records()
+            .iter()
+            .filter_map(|record| match record.kind() {
+                PhysicalEventRecordKind::ExitCapability {
+                    status: observed,
+                    transition,
+                } if observed == status => Some(transition),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            transitions,
+            [PhysicalExitCapabilityTransition::Revoked],
+            "pending revocation was not bound exactly once to the later physical exit stop"
+        );
+    }
+
+    #[test]
     fn terminal_finalization_waits_for_exit_capability_publication() {
         let event = Arc::new(Event::new());
         let waiter = Arc::new(ExitWaiter::default());
@@ -4473,10 +15034,13 @@ mod test {
         let (resume_tx, resume_rx) = mpsc::channel();
         let publisher_event = Arc::clone(&event);
         let publisher = thread::spawn(move || {
-            publisher_event.publish_exit_stop(|| {
-                paused_tx.send(()).expect("report exit publication gap");
-                resume_rx.recv().expect("resume exit publication");
-            });
+            publisher_event.publish_exit_stop(
+                ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP),
+                || {
+                    paused_tx.send(()).expect("report exit publication gap");
+                    resume_rx.recv().expect("resume exit publication");
+                },
+            );
         });
         paused_rx
             .recv_timeout(Duration::from_secs(1))
@@ -4516,6 +15080,599 @@ mod test {
             Poll::Ready(Err(Errno::EALREADY))
         );
         assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(42 << 8)));
+    }
+
+    #[test]
+    fn cleanup_continue_waits_for_complete_exit_stop_publication() {
+        let (pid, stopped, mut tracee_cleanup) =
+            spawn_traced_process(None).expect("spawn cleanup-publication tracee");
+        let identity = Arc::new(
+            WorkerIdentity::capture_process(pid.into())
+                .expect("capture cleanup-publication tracee identity"),
+        );
+        assert!(identity.is_active_tracee());
+        assert!(identity.is_current_ptracer());
+        let handle = EventHandle::with_identity(Arc::clone(&identity));
+        let event = Arc::clone(handle.event());
+        let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(64, 32))
+            .expect("create cleanup-publication observer");
+        handle
+            .attach_physical_observer(&observer)
+            .expect("attach cleanup-publication observer");
+        let generation = handle.physical_generation();
+        let wait_flags = WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL;
+        let context = |producer| PhysicalWaitContext {
+            generation: Some(generation),
+            task: identity.physical_identity(),
+            producer,
+            flags: wait_flags,
+        };
+        let retained_wait = observer.begin_wait(context(PhysicalWaitProducer::SynchronousWait));
+        let retained_status = observer.allocate_status();
+        let retained_siginfo = PhysicalWaitSiginfo {
+            signo: libc::SIGCHLD,
+            errno: 0,
+            code: libc::CLD_STOPPED,
+            pid: pid.as_raw(),
+            uid: unsafe { libc::getuid() },
+            status: libc::SIGSTOP,
+        };
+        observer.record_wait_siginfo(retained_wait, retained_siginfo, Some(retained_status));
+        observer.finish_wait_status_with_id(
+            retained_wait,
+            retained_status,
+            (libc::SIGSTOP << 8) | 0x7f,
+            Some(retained_siginfo),
+        );
+        observer.record_status_published(
+            generation,
+            retained_status,
+            PhysicalStatusPublication::RegularFifo,
+        );
+        let retained_reservation = observer.next_reservation();
+        observer.record_reserved(generation, retained_reservation, retained_status);
+        observer.record_decode_started(
+            retained_reservation,
+            retained_status,
+            PhysicalDecodeOwner::Synchronous,
+        );
+        observer.record_decode_finished(
+            retained_reservation,
+            retained_status,
+            PhysicalDecodeOutcome::Returned,
+            PhysicalDecodeOwner::Synchronous,
+        );
+        observer.record_reservation_committed(retained_reservation, retained_status);
+
+        let terminal = TerminalCleanup {
+            pid: pid.into(),
+            event: handle.clone(),
+        };
+        let retry_terminal = TerminalCleanup {
+            pid: terminal.pid,
+            event: terminal.event.clone(),
+        };
+        let retained_stop_id = event.allocate_logical_stop();
+        let mut retained_transfer = Some(synthetic_cleanup_transfer(
+            pid.into(),
+            &handle,
+            retained_stop_id,
+            Some(retained_status),
+        ));
+        let mut retained_stop = Some(
+            terminal
+                .lease_transferred_stop(&mut retained_transfer)
+                .expect("lease retained publication-race stop"),
+        );
+
+        observer.record_worker_started(generation);
+        let exit_wait = observer.begin_wait(context(PhysicalWaitProducer::NotifierWorker));
+        let exit_status = observer.allocate_status();
+        let exit_siginfo = PhysicalWaitSiginfo {
+            signo: libc::SIGCHLD,
+            errno: 0,
+            code: libc::CLD_TRAPPED,
+            pid: pid.as_raw(),
+            uid: unsafe { libc::getuid() },
+            status: ((libc::PTRACE_EVENT_EXIT as i32) << 8) | libc::SIGTRAP,
+        };
+        observer.record_wait_siginfo(exit_wait, exit_siginfo, Some(exit_status));
+        observer.finish_wait_status_with_id(
+            exit_wait,
+            exit_status,
+            PTRACE_EVENT_EXIT_STOP,
+            Some(exit_siginfo),
+        );
+
+        let (paused_tx, paused_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let publisher_event = Arc::clone(&event);
+        let publisher = thread::spawn(move || {
+            publisher_event.publish_exit_stop(
+                ObservedStatus {
+                    raw: PTRACE_EVENT_EXIT_STOP,
+                    physical: Some(exit_status),
+                    logical_stop: None,
+                },
+                || {
+                    paused_tx.send(()).expect("report exit-publication gap");
+                    release_rx.recv().expect("release exit publication");
+                },
+            );
+        });
+        paused_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("publisher did not enter exit-publication gap");
+
+        let lock_reached = Arc::new(Barrier::new(2));
+        let lock_resume = Arc::new(Barrier::new(2));
+        EXIT_CLEANUP_PRECHECK_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&lock_reached),
+                resume: Arc::clone(&lock_resume),
+            },
+        );
+        let transition_called = Arc::new(AtomicBool::new(false));
+        let releaser_transition = Arc::clone(&transition_called);
+        let releaser = thread::spawn(move || {
+            lock_reached.wait();
+            lock_resume.wait();
+            thread::sleep(Duration::from_millis(20));
+            assert!(
+                !releaser_transition.load(Ordering::Acquire),
+                "cleanup transition crossed a half-published exit stop"
+            );
+            release_tx.send(()).expect("release exit publisher");
+        });
+        let outcome = terminal.continue_exit_stop_for_cleanup_with(
+                &mut retained_stop,
+                PhysicalResumeOwner::DescendantCleanup,
+                |_| {
+                    transition_called.store(true, Ordering::Release);
+                    Err(nix::errno::Errno::ESRCH)
+                },
+            );
+        publisher.join().expect("join exit publisher");
+        releaser.join().expect("join exit-publication releaser");
+        assert!(transition_called.load(Ordering::Acquire));
+        assert_eq!(outcome, Err(Errno::ESRCH));
+        assert_eq!(
+            retry_terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut retained_stop,
+                    PhysicalResumeOwner::DescendantCleanup,
+                    |_| -> Result<(), nix::errno::Errno> {
+                        panic!("publication-race cleanup repeated ambiguous CONT")
+                    },
+                ),
+            Err(Errno::ESRCH)
+        );
+
+        drop(stopped);
+        tracee_cleanup
+            .cleanup()
+            .expect("clean up publication tracee on true ptracer thread");
+        let terminal_wait = observer.begin_wait(context(PhysicalWaitProducer::NotifierWorker));
+        observer.finish_wait_error(terminal_wait, libc::ECHILD);
+        observer.record_echild_pidfd_exited(
+            terminal_wait,
+            generation,
+            identity.physical_identity(),
+            libc::POLLIN,
+        );
+        observer.record_synthetic_echild(generation, Some(terminal_wait.id()));
+        event.resolve_ambiguous_cleanup(AmbiguousCleanupResolution::ProvenEchild(Some(
+            terminal_wait,
+        )));
+        assert_eq!(
+            retry_terminal
+                .continue_exit_stop_for_cleanup_with(
+                    &mut retained_stop,
+                    PhysicalResumeOwner::DescendantCleanup,
+                    |_| -> Result<(), nix::errno::Errno> {
+                        panic!("causally resolved publication-race cleanup repeated CONT")
+                    },
+                )
+                .expect("read publication-race causal completion"),
+            TerminalCleanupContinue::AlreadyFinished {
+                source_status: Some(exit_status),
+            }
+        );
+        observer.record_generation_finished(generation);
+        observer.close();
+        let snapshot = observer.snapshot();
+        let validation = snapshot.validate();
+        assert_eq!(validation.physical_statuses, 2);
+        assert_eq!(validation.successful_resumes, 0);
+        assert_eq!(validation.explicit_dispositions, 2);
+        assert!(validation.is_valid(), "{validation:#?}");
+        let dispositions = snapshot
+            .records()
+            .iter()
+            .filter_map(|record| match record.kind() {
+                PhysicalEventRecordKind::StatusDisposition {
+                    status,
+                    disposition,
+                } => Some((status, disposition)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(dispositions.contains(&(
+            retained_status,
+            PhysicalStatusDisposition::KernelSupersededByExitStop,
+        )));
+        assert!(dispositions.iter().any(|(status, disposition)| {
+            *status == exit_status
+                && matches!(
+                    disposition,
+                    PhysicalStatusDisposition::AmbiguousResumeCausallyResolved {
+                        proof: crate::PhysicalAmbiguousResumeProof::ProvenEchild(wait),
+                        ..
+                    } if *wait == terminal_wait.id()
+                )
+        }));
+    }
+
+    #[test]
+    fn duplicate_cleanup_handles_share_unobserved_exit_stop_completion() {
+        let pid = crate::Pid::from_raw(i32::MAX - 31);
+        let handle = EventHandle::new();
+        handle
+            .event()
+            .publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let first_handle = TerminalCleanup {
+            pid: pid.into(),
+            event: handle.clone(),
+        };
+        let second_handle = TerminalCleanup {
+            pid: pid.into(),
+            event: handle,
+        };
+        let attempts = AtomicUsize::new(0);
+
+        let first = first_handle.continue_exit_stop_for_cleanup_with(
+            &mut None,
+            PhysicalResumeOwner::RootCleanup,
+            |_| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Err(nix::errno::Errno::EIO)
+            },
+        );
+        assert_eq!(first, Err(Errno::EIO));
+
+        let second = second_handle.continue_exit_stop_for_cleanup_with(
+            &mut None,
+            PhysicalResumeOwner::RootCleanup,
+            |_| -> Result<(), nix::errno::Errno> {
+                panic!("duplicate unobserved handle repeated ambiguous CONT")
+            },
+        );
+        assert_eq!(second, Err(Errno::EIO));
+        first_handle.event.event().update(0);
+
+        let third = first_handle
+            .continue_exit_stop_for_cleanup_with(
+                &mut None,
+                PhysicalResumeOwner::RootCleanup,
+                |_| -> Result<(), nix::errno::Errno> {
+                    panic!("a second handle repeated the completed exit-stop transition")
+                },
+            )
+            .expect("recognize finished unobserved cleanup stop");
+        assert_eq!(
+            third,
+            TerminalCleanupContinue::AlreadyFinished {
+                source_status: None,
+            }
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn finished_cleanup_wins_off_ptracer_authority_race() {
+        let (pid, stopped, mut tracee_cleanup) =
+            spawn_traced_process(None).expect("spawn cleanup-authority race tracee");
+        let identity = Arc::new(
+            WorkerIdentity::capture_process(pid.into())
+                .expect("capture cleanup-authority race identity"),
+        );
+        assert!(identity.is_active_tracee());
+        assert!(identity.is_current_ptracer());
+
+        let unfinished_handle = EventHandle::with_identity(Arc::clone(&identity));
+        unfinished_handle
+            .event()
+            .publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let unfinished_terminal = TerminalCleanup {
+            pid: pid.into(),
+            event: unfinished_handle,
+        };
+        let unfinished_transition_called = Arc::new(AtomicBool::new(false));
+        let wrong_thread_called = Arc::clone(&unfinished_transition_called);
+        let unfinished_result = thread::spawn(move || {
+            unfinished_terminal.continue_exit_stop_for_cleanup_with(
+                &mut None,
+                PhysicalResumeOwner::DescendantCleanup,
+                |_| {
+                    wrong_thread_called.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+        })
+        .join()
+        .expect("join unfinished off-ptracer cleanup attempt");
+        assert_eq!(unfinished_result, Err(Errno::EPERM));
+        assert!(!unfinished_transition_called.load(Ordering::SeqCst));
+
+        let handle = EventHandle::with_identity(identity);
+        handle
+            .event()
+            .publish_exit_stop(ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP), || {});
+        let true_ptracer = TerminalCleanup {
+            pid: pid.into(),
+            event: handle.clone(),
+        };
+        let racing_off_ptracer = TerminalCleanup {
+            pid: pid.into(),
+            event: handle,
+        };
+        let authority_reached = Arc::new(Barrier::new(2));
+        let authority_resume = Arc::new(Barrier::new(2));
+        EXIT_CLEANUP_AUTHORITY_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&authority_reached),
+                resume: Arc::clone(&authority_resume),
+            },
+        );
+        let racing_transition_called = Arc::new(AtomicBool::new(false));
+        let wrong_thread_called = Arc::clone(&racing_transition_called);
+        let racing = thread::spawn(move || {
+            racing_off_ptracer.continue_exit_stop_for_cleanup_with(
+                &mut None,
+                PhysicalResumeOwner::DescendantCleanup,
+                |_| {
+                    wrong_thread_called.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+        });
+        authority_reached.wait();
+
+        let true_ptracer_attempts = AtomicUsize::new(0);
+        assert_eq!(
+            true_ptracer
+                .continue_exit_stop_for_cleanup_with(
+                    &mut None,
+                    PhysicalResumeOwner::DescendantCleanup,
+                    |_| {
+                        true_ptracer_attempts.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+                .expect("true ptracer completes exit-stop cleanup"),
+            TerminalCleanupContinue::Attempted {
+                source_status: None,
+                error: None,
+            }
+        );
+        authority_resume.wait();
+        assert_eq!(
+            racing.join().expect("join completed off-ptracer cleanup"),
+            Ok(TerminalCleanupContinue::AlreadyFinished {
+                source_status: None,
+            })
+        );
+        assert_eq!(true_ptracer_attempts.load(Ordering::SeqCst), 1);
+        assert!(!racing_transition_called.load(Ordering::SeqCst));
+
+        drop(stopped);
+        tracee_cleanup
+            .cleanup()
+            .expect("clean up cleanup-authority race tracee");
+    }
+
+    #[test]
+    fn observed_duplicate_cleanup_handles_wait_for_one_causal_resolution() {
+        let (pid, stopped, mut tracee_cleanup) =
+            spawn_traced_process(None).expect("spawn duplicate-cleanup tracee");
+        let identity = Arc::new(
+            WorkerIdentity::capture_process(pid.into())
+                .expect("capture duplicate-cleanup tracee identity"),
+        );
+        assert!(identity.is_active_tracee());
+        assert!(identity.is_current_ptracer());
+        let handle = EventHandle::with_identity(Arc::clone(&identity));
+        let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(64, 32))
+            .expect("create duplicate-cleanup observer");
+        handle
+            .attach_physical_observer(&observer)
+            .expect("attach duplicate-cleanup observer");
+        let generation = handle.physical_generation();
+        let wait_flags = WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL;
+        let context = |producer| PhysicalWaitContext {
+            generation: Some(generation),
+            task: identity.physical_identity(),
+            producer,
+            flags: wait_flags,
+        };
+        let retained_wait = observer.begin_wait(context(PhysicalWaitProducer::SynchronousWait));
+        let retained_status = observer.allocate_status();
+        let retained_siginfo = PhysicalWaitSiginfo {
+            signo: libc::SIGCHLD,
+            errno: 0,
+            code: libc::CLD_STOPPED,
+            pid: pid.as_raw(),
+            uid: unsafe { libc::getuid() },
+            status: libc::SIGSTOP,
+        };
+        observer.record_wait_siginfo(retained_wait, retained_siginfo, Some(retained_status));
+        observer.finish_wait_status_with_id(
+            retained_wait,
+            retained_status,
+            (libc::SIGSTOP << 8) | 0x7f,
+            Some(retained_siginfo),
+        );
+        observer.record_status_published(
+            generation,
+            retained_status,
+            PhysicalStatusPublication::RegularFifo,
+        );
+        let retained_reservation = observer.next_reservation();
+        observer.record_reserved(generation, retained_reservation, retained_status);
+        observer.record_decode_started(
+            retained_reservation,
+            retained_status,
+            PhysicalDecodeOwner::Synchronous,
+        );
+        observer.record_decode_finished(
+            retained_reservation,
+            retained_status,
+            PhysicalDecodeOutcome::Returned,
+            PhysicalDecodeOwner::Synchronous,
+        );
+        observer.record_reservation_committed(retained_reservation, retained_status);
+
+        let first_handle = TerminalCleanup {
+            pid: pid.into(),
+            event: handle.clone(),
+        };
+        let second_handle = TerminalCleanup {
+            pid: pid.into(),
+            event: handle.clone(),
+        };
+        let retained_stop_id = handle.event().allocate_logical_stop();
+        let mut retained_transfer = Some(synthetic_cleanup_transfer(
+            pid.into(),
+            &handle,
+            retained_stop_id,
+            Some(retained_status),
+        ));
+        let mut retained_stop = Some(
+            first_handle
+                .lease_transferred_stop(&mut retained_transfer)
+                .expect("lease retained duplicate-cleanup stop"),
+        );
+
+        observer.record_worker_started(generation);
+        let exit_wait = observer.begin_wait(context(PhysicalWaitProducer::NotifierWorker));
+        let exit_status = observer.allocate_status();
+        let exit_siginfo = PhysicalWaitSiginfo {
+            signo: libc::SIGCHLD,
+            errno: 0,
+            code: libc::CLD_TRAPPED,
+            pid: pid.as_raw(),
+            uid: unsafe { libc::getuid() },
+            status: ((libc::PTRACE_EVENT_EXIT as i32) << 8) | libc::SIGTRAP,
+        };
+        observer.record_wait_siginfo(exit_wait, exit_siginfo, Some(exit_status));
+        observer.finish_wait_status_with_id(
+            exit_wait,
+            exit_status,
+            PTRACE_EVENT_EXIT_STOP,
+            Some(exit_siginfo),
+        );
+        handle.event().publish_exit_stop(
+            ObservedStatus {
+                raw: PTRACE_EVENT_EXIT_STOP,
+                physical: Some(exit_status),
+                logical_stop: None,
+            },
+            || {},
+        );
+
+        let attempts = AtomicUsize::new(0);
+        assert_eq!(
+            first_handle
+                .continue_exit_stop_for_cleanup_with(
+                    &mut retained_stop,
+                    PhysicalResumeOwner::DescendantCleanup,
+                    |_| {
+                        attempts.fetch_add(1, Ordering::SeqCst);
+                        Err(nix::errno::Errno::EIO)
+                    },
+                ),
+            Err(Errno::EIO)
+        );
+        assert_eq!(
+            second_handle
+                .continue_exit_stop_for_cleanup_with(
+                    &mut retained_stop,
+                    PhysicalResumeOwner::DescendantCleanup,
+                    |_| -> Result<(), nix::errno::Errno> {
+                        panic!("duplicate observed handle repeated ambiguous CONT")
+                    },
+                ),
+            Err(Errno::EIO)
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+        drop(stopped);
+        tracee_cleanup
+            .cleanup()
+            .expect("clean up duplicate tracee on true ptracer thread");
+        let terminal_wait = observer.begin_wait(context(PhysicalWaitProducer::NotifierWorker));
+        observer.finish_wait_error(terminal_wait, libc::ECHILD);
+        observer.record_echild_pidfd_exited(
+            terminal_wait,
+            generation,
+            identity.physical_identity(),
+            libc::POLLIN,
+        );
+        observer.record_synthetic_echild(generation, Some(terminal_wait.id()));
+        handle
+            .event()
+            .resolve_ambiguous_cleanup(AmbiguousCleanupResolution::ProvenEchild(Some(
+                terminal_wait,
+            )));
+        assert_eq!(
+            first_handle
+                .continue_exit_stop_for_cleanup_with(
+                    &mut retained_stop,
+                    PhysicalResumeOwner::DescendantCleanup,
+                    |_| -> Result<(), nix::errno::Errno> {
+                        panic!("causally resolved observed exit repeated CONT")
+                    },
+                )
+                .expect("recognize shared causal completion"),
+            TerminalCleanupContinue::AlreadyFinished {
+                source_status: Some(exit_status),
+            }
+        );
+        observer.record_generation_finished(generation);
+        observer.close();
+        let snapshot = observer.snapshot();
+        let validation = snapshot.validate();
+        assert_eq!(validation.physical_statuses, 2);
+        assert_eq!(validation.successful_resumes, 0);
+        assert_eq!(validation.explicit_dispositions, 2);
+        assert!(validation.is_valid(), "{validation:#?}");
+        let dispositions = snapshot
+            .records()
+            .iter()
+            .filter_map(|record| match record.kind() {
+                PhysicalEventRecordKind::StatusDisposition {
+                    status,
+                    disposition,
+                } => Some((status, disposition)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(dispositions.contains(&(
+            retained_status,
+            PhysicalStatusDisposition::KernelSupersededByExitStop,
+        )));
+        assert!(dispositions.iter().any(|(status, disposition)| {
+            *status == exit_status
+                && matches!(
+                    disposition,
+                    PhysicalStatusDisposition::AmbiguousResumeCausallyResolved {
+                        proof: crate::PhysicalAmbiguousResumeProof::ProvenEchild(wait),
+                        ..
+                    } if *wait == terminal_wait.id()
+                )
+        }));
     }
 
     #[test]
@@ -4577,7 +15734,7 @@ mod test {
 
     #[test]
     fn failed_cleanup_decode_preserves_fifo_front_for_retry() {
-        let pid = Pid::from_raw(i32::MAX - 31);
+        let pid = crate::Pid::from_raw(i32::MAX - 31);
         let handle = EventHandle::new();
         let child_event = (libc::PTRACE_EVENT_FORK << 16) | (libc::SIGTRAP << 8) | 0x7f;
         handle.event().update(child_event);
@@ -4590,22 +15747,153 @@ mod test {
             .reserve_pending_for_cleanup(Duration::ZERO)
             .expect("reserve child-event FIFO front");
         assert!(reservation.decode().is_err(), "fake child event decoded");
-        drop(reservation);
         let retry = cleanup
             .reserve_pending_for_cleanup(Duration::ZERO)
             .expect("decode failure removed FIFO front");
-        assert_eq!(retry.status, child_event);
+        assert_eq!(retry.status.raw, child_event);
+    }
+
+    #[test]
+    fn terminal_error_after_cleanup_reservation_blocks_typed_decode() {
+        let pid = crate::Pid::from_raw(i32::MAX - 42);
+        let handle = EventHandle::new();
+        let stopped = (Signal::SIGSTOP as i32) << 8 | 0x7f;
+        handle.event().update(stopped);
+        let cleanup = TerminalCleanup {
+            pid: pid.into(),
+            event: handle.clone(),
+        };
+        let reservation = cleanup
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("reserve cleanup FIFO before terminal error");
+
+        thread::scope(|scope| {
+            let error_event = Arc::clone(handle.event());
+            let publisher = scope.spawn(move || {
+                error_event.mark_terminal_error(Errno::EPROTO);
+            });
+            while handle.event().sticky_terminal_error().is_none() {
+                thread::yield_now();
+            }
+            assert!(matches!(
+                reservation.decode(),
+                Err(Error::Errno(Errno::EPROTO))
+            ));
+            publisher.join().expect("join terminal-error publisher");
+        });
+
+        assert_eq!(
+            handle
+                .event()
+                .status
+                .lock()
+                .pending
+                .front()
+                .copied()
+                .map(|status| status.raw),
+            Some(stopped),
+            "terminal-error cutoff consumed the cleanup FIFO front"
+        );
+    }
+
+    #[test]
+    fn dropping_decoded_cleanup_guard_destroys_state_before_fifo_rollback() {
+        let pid = crate::Pid::from_raw(i32::MAX - 43);
+        let handle = EventHandle::new();
+        let stopped = (Signal::SIGSTOP as i32) << 8 | 0x7f;
+        handle.event().update(stopped);
+        let cleanup = TerminalCleanup {
+            pid: pid.into(),
+            event: handle,
+        };
+
+        let decoded = cleanup
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("reserve first cleanup FIFO guard")
+            .decode()
+            .expect("decode first cleanup FIFO guard");
+        assert!(matches!(
+            decoded.wait(),
+            Wait::Stopped(_, crate::Event::Signal(Signal::SIGSTOP))
+        ));
+        drop(decoded);
+
+        let retried = cleanup
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("decoded guard drop did not restore FIFO front")
+            .decode()
+            .expect("decode retried cleanup FIFO guard");
+        assert!(matches!(
+            retried.wait(),
+            Wait::Stopped(_, crate::Event::Signal(Signal::SIGSTOP))
+        ));
+        drop(retried.commit());
+        assert!(cleanup.pending_is_empty());
+    }
+
+    #[test]
+    fn ordinary_rollback_overflow_preserves_full_cleanup_transaction() {
+        let pid = crate::Pid::from_raw(i32::MAX - 33);
+        let handle = EventHandle::new();
+        let observer = PhysicalEventObserver::new(crate::PhysicalEventObserverConfig::new(3, 5))
+            .expect("create rollback classification observer");
+        handle
+            .attach_physical_observer(&observer)
+            .expect("attach rollback classification observer");
+        let event = handle.event();
+        let status = PhysicalStatusId::from_raw(19).expect("nonzero physical status");
+        let stopped = (Signal::SIGSTOP as i32) << 8 | 0x7f;
+        event.update(ObservedStatus {
+            raw: stopped,
+            physical: Some(status),
+            logical_stop: None,
+        });
+
+        let ordinary = event
+            .try_status_reservation_sync()
+            .expect("ordinary status is reservable")
+            .expect("ordinary reservation succeeds");
+        drop(ordinary);
+
+        let cleanup = TerminalCleanup {
+            pid: pid.into(),
+            event: handle,
+        };
+        let reservation = cleanup
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("cleanup reserves rolled-back ordinary status");
+        let decoded = reservation.decode().expect("decode cleanup stop");
+        assert!(matches!(
+            decoded.wait(),
+            Wait::Stopped(_, crate::Event::Signal(Signal::SIGSTOP))
+        ));
+        drop(decoded.commit());
+        observer.close();
+
+        let snapshot = observer.snapshot();
+        assert_eq!(snapshot.ordinary_lost(), 1);
+        assert_eq!(snapshot.cleanup_lost(), 0);
+        assert!(snapshot.records().iter().any(|record| matches!(
+            record.kind(),
+            crate::PhysicalEventRecordKind::ReservationCommitted { status: observed, .. }
+                if observed == status
+        )));
+        assert!(snapshot.records().iter().any(|record| matches!(
+            record.kind(),
+            crate::PhysicalEventRecordKind::ObserverClosed
+        )));
     }
 
     #[test]
     fn worker_completion_does_not_hide_pending_cleanup_status() {
-        let pid = Pid::from_raw(i32::MAX - 32);
+        let pid = crate::Pid::from_raw(i32::MAX - 32);
         let handle = EventHandle::new();
         let stopped = (Signal::SIGSTOP as i32) << 8 | 0x7f;
         handle.event().update(stopped);
         assert!(handle.event().try_begin_worker_start());
         handle.event().mark_worker_running();
-        handle.event().mark_worker_done();
+        handle.event().prepare_worker_done();
+        handle.event().publish_worker_done();
         let cleanup = TerminalCleanup {
             pid: pid.into(),
             event: handle,
@@ -4662,7 +15950,7 @@ mod test {
 
     #[test]
     fn terminal_cleanup_removes_stale_pid_registration() {
-        let pid = Pid::from_raw(i32::MAX - 17);
+        let pid = crate::Pid::from_raw(i32::MAX - 17);
         let running = Running::new(pid.into());
         let cleanup = running.terminal_cleanup();
         let old_event = cleanup.event.clone();
@@ -4708,6 +15996,53 @@ mod test {
         assert!(cleanup.wait(Duration::from_secs(1)));
         child_cleanup.disarm();
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    }
+
+    #[test]
+    fn blocking_pidfd_exit_proof_waits_for_exact_generation() {
+        let child = match unsafe { fork() }.expect("fork blocking-pidfd proof child") {
+            ForkResult::Child => loop {
+                unsafe { libc::pause() };
+            },
+            ForkResult::Parent { child, .. } => child,
+        };
+        let pidfd = pidfd_open(child.as_raw()).expect("open blocking-pidfd proof child");
+        assert_eq!(
+            pidfd_exit_revents(&pidfd),
+            Ok(None),
+            "live exact generation was already poll-readable"
+        );
+
+        let waiter_pidfd = pidfd
+            .try_clone()
+            .expect("duplicate exact pidfd for blocking proof");
+        let (entered_tx, entered_rx) = mpsc::sync_channel(0);
+        let waiter = thread::spawn(move || {
+            entered_tx.send(()).expect("announce blocking pidfd wait");
+            wait_pidfd_exit_revents(&waiter_pidfd)
+        });
+        entered_rx.recv().expect("observe blocking pidfd waiter");
+        thread::sleep(Duration::from_millis(20));
+        assert!(
+            !waiter.is_finished(),
+            "blocking pidfd proof completed while the exact generation was live"
+        );
+
+        pidfd_send_signal(&pidfd, libc::SIGKILL)
+            .expect("kill blocking-pidfd proof child through exact pidfd");
+        let revents = waiter
+            .join()
+            .expect("join blocking pidfd waiter")
+            .expect("wait for exact pidfd exit readiness");
+        assert_ne!(
+            revents & libc::POLLIN,
+            0,
+            "exact pidfd exit proof omitted POLLIN"
+        );
+        assert_eq!(
+            nix::sys::wait::waitpid(child, None),
+            Ok(WaitStatus::Signaled(child, Signal::SIGKILL, false))
+        );
     }
 
     #[test]
@@ -5181,8 +16516,11 @@ mod test {
                     .try_status_reservation_sync()
                     .expect("rollback status is present")
                     .expect("rollback status is valid");
-                let result: Result<StatusReturn<()>, Error> =
-                    owner.decode_status_return(pid, reservation, |_| Err(Errno::EIO.into()));
+                let result = owner
+                    .decode_status_return(pid, reservation, |_, _, _| {
+                        Err::<(), Error>(Errno::EIO.into())
+                    })
+                    .map(|_| ());
                 decoded_tx
                     .send(result)
                     .expect("report decode-error rollback");
@@ -5240,7 +16578,13 @@ mod test {
         });
         assert_eq!(event.wait_owner.load(Ordering::Acquire), WAIT_OWNER_NONE);
         assert_eq!(
-            event.status.lock().pending.front().copied(),
+            event
+                .status
+                .lock()
+                .pending
+                .front()
+                .copied()
+                .map(|status| status.raw),
             Some((libc::SIGSTOP << 8) | 0x7f),
             "decode error consumed the rollback-safe FIFO reservation"
         );
@@ -5254,12 +16598,15 @@ mod test {
             .store(WAIT_OWNER_NOTIFIER, Ordering::Release);
         let stopped = (libc::SIGSTOP << 8) | 0x7f;
         let transaction = match event.begin_status_return(
-            stopped,
+            stopped.into(),
             WAIT_OWNER_NOTIFIER,
             WAIT_OWNER_NOTIFIER_RETURNING,
         ) {
             ReturnTransactionStart::Begun(transaction) => transaction,
             ReturnTransactionStart::Cancelled => panic!("first return was unexpectedly cancelled"),
+            ReturnTransactionStart::TerminalError(error) => {
+                panic!("first return saw unexpected terminal error {error}")
+            }
         };
 
         let (observed_tx, observed_rx) = mpsc::channel();
@@ -5286,7 +16633,7 @@ mod test {
         for _ in 0..64 {
             assert!(matches!(
                 event.begin_status_return(
-                    stopped,
+                    stopped.into(),
                     WAIT_OWNER_NOTIFIER,
                     WAIT_OWNER_NOTIFIER_RETURNING,
                 ),
@@ -5317,20 +16664,26 @@ mod test {
             .store(WAIT_OWNER_SYNC, Ordering::Release);
         let stopped = (libc::SIGSTOP << 8) | 0x7f;
         let first_return = match first.event().begin_status_return(
-            stopped,
+            stopped.into(),
             WAIT_OWNER_SYNC,
             WAIT_OWNER_SYNC_RETURNING,
         ) {
             ReturnTransactionStart::Begun(transaction) => transaction,
             ReturnTransactionStart::Cancelled => panic!("first chained return was cancelled"),
+            ReturnTransactionStart::TerminalError(error) => {
+                panic!("first chained return saw unexpected terminal error {error}")
+            }
         };
         let second_return = match second.event().begin_status_return(
-            stopped,
+            stopped.into(),
             WAIT_OWNER_SYNC,
             WAIT_OWNER_SYNC_RETURNING,
         ) {
             ReturnTransactionStart::Begun(transaction) => transaction,
             ReturnTransactionStart::Cancelled => panic!("second chained return was cancelled"),
+            ReturnTransactionStart::TerminalError(error) => {
+                panic!("second chained return saw unexpected terminal error {error}")
+            }
         };
 
         let deadline = Instant::now() + Duration::from_millis(150);
@@ -5422,7 +16775,7 @@ mod test {
     }
 
     #[test]
-    fn cleanup_cancellation_retains_pending_regular_stop_until_terminal() {
+    fn cleanup_cancellation_consumes_transferred_regular_stop_before_terminal() {
         let (pid, mut cleanup) =
             spawn_stopped_process(None).expect("spawn pending-stop cancellation child");
         let running = Running::new(pid.into());
@@ -5469,11 +16822,17 @@ mod test {
         ));
         let (result, cleanup) = cleaning.join().expect("join pending-stop cleanup");
         result.expect("pending-stop cleanup reaches terminal state");
-        assert_eq!(
-            retained.event().status.lock().pending.front().copied(),
-            Some(stopped),
-            "cancellation consumed the pending regular stop instead of transferring it"
+        assert!(
+            retained.event().status.lock().pending.is_empty(),
+            "successful cancellation left the physically resumed stop at the FIFO front"
         );
+        let waker = futures::task::noop_waker();
+        let terminal = match retained.event().poll_status(&waker) {
+            Poll::Ready(Ok(status)) => status,
+            other => panic!("retained terminal status was not replayable: {other:?}"),
+        };
+        assert!(libc::WIFSIGNALED(terminal));
+        assert_eq!(libc::WTERMSIG(terminal), libc::SIGKILL);
         assert!(matches!(
             cleanup.ownership,
             TraceeCleanupOwnership::NotifierOwned {
@@ -5539,7 +16898,14 @@ mod test {
         let (result, _cleanup) = coordinator.join().expect("join exit-stop coordinator");
         result.expect("exit-stop cancellation reaches terminal state");
         assert_eq!(
-            retained.event().status.lock().pending.front().copied(),
+            retained
+                .event()
+                .status
+                .lock()
+                .pending
+                .front()
+                .copied()
+                .map(|status| status.raw),
             Some(PTRACE_EVENT_EXIT_STOP),
             "cancellation consumed or duplicated the retained exit stop"
         );
@@ -5929,6 +17295,58 @@ mod test {
     }
 
     #[test]
+    fn registration_waits_for_worker_started_acknowledgment() {
+        let (pid, mut cleanup) =
+            spawn_stopped_process(None).expect("spawn worker-start acknowledgment child");
+        let running = Running::new(pid.into());
+        cleanup
+            .store_terminal(TerminalCleanup::new_unregistered(pid.into(), &running.1))
+            .expect("store worker-start acknowledgment terminal");
+        let terminal = TerminalCleanup::new_unregistered(pid.into(), &running.1);
+        let worker_captured = Arc::new(Barrier::new(2));
+        let worker_resume = Arc::new(Barrier::new(2));
+        WORKER_START_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&worker_captured),
+                resume: Arc::clone(&worker_resume),
+            },
+        );
+        let event = Arc::clone(running.1.event().event());
+        let (done_tx, done_rx) = mpsc::channel();
+        let registering = thread::spawn(move || {
+            let result = terminal.ensure_registered();
+            done_tx.send(result).expect("report worker registration");
+        });
+
+        worker_captured.wait();
+        assert_eq!(
+            event.worker_state.load(Ordering::Acquire),
+            WORKER_STARTING,
+            "worker became registered before crossing its start gate"
+        );
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_millis(20)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "registration returned before the worker published its started acknowledgment"
+        );
+
+        worker_resume.wait();
+        done_rx
+            .recv_timeout(TRACEE_WAIT_TIMEOUT)
+            .expect("worker registration did not return after acknowledgment")
+            .expect("worker registration failed after acknowledgment");
+        registering.join().expect("join worker registration");
+        assert!(matches!(
+            event.worker_state.load(Ordering::Acquire),
+            WORKER_RUNNING | WORKER_FINISHING | WORKER_DONE
+        ));
+        cleanup
+            .cleanup()
+            .expect("clean worker-start acknowledgment child");
+    }
+
+    #[test]
     fn echild_resolver_waits_for_starting_spawn_rollback() {
         let (pid, cleanup) = spawn_stopped_process(None).expect("spawn STARTING rollback child");
         let running = Running::new(pid.into());
@@ -6028,9 +17446,10 @@ mod test {
                 .load(Ordering::Acquire),
             WORKER_RUNNING
         );
-        NOTIFIER.pids.lock().remove(&old_pid.into());
         replacement_handle.event().mark_echild();
-        replacement_handle.event().mark_worker_done();
+        replacement_handle.event().prepare_worker_done();
+        NOTIFIER.remove(old_pid.into(), replacement_handle.event());
+        replacement_handle.event().publish_worker_done();
         reap_stopped_process(replacement_cleanup);
     }
 
@@ -6276,7 +17695,7 @@ mod test {
         reap_stopped_process(child_cleanup);
 
         assert_eq!(
-            terminal, INVALID_STATUS,
+            terminal.raw, INVALID_STATUS,
             "registry replacement terminalized an Event with its own active worker"
         );
     }
@@ -6359,7 +17778,7 @@ mod test {
             spawn_traced_process(None).expect("spawn pre-TRACEME snapshot tracee");
         let mut identity =
             WorkerIdentity::capture_process(pid.into()).expect("capture live traced generation");
-        assert!(tracer_is_current(identity.snapshot.tracer_pid));
+        assert!(tracer_is_current(identity.snapshot.tracer_pid).unwrap());
         identity.snapshot.tracer_pid = crate::Pid::from_raw(0);
         assert!(
             identity.is_active_tracee(),
@@ -6382,6 +17801,55 @@ mod test {
             .expect("live generation became synthetic ECHILD");
         assert_eq!(exited.assume_exited().1, crate::ExitStatus::Exited(42));
         cleanup.disarm();
+    }
+
+    #[test]
+    fn indeterminate_echild_proof_cannot_terminalize_a_live_generation() {
+        let (pid, _stopped, mut cleanup) =
+            spawn_traced_process(None).expect("spawn live ECHILD proof tracee");
+        let identity = Arc::new(
+            WorkerIdentity::capture_process(pid.into())
+                .expect("capture live ECHILD proof generation"),
+        );
+        let handle = EventHandle::with_identity(Arc::clone(&identity));
+        ECHILD_PROOF_ERRORS
+            .lock()
+            .entry(pid.into())
+            .or_default()
+            .push_back(Errno::EIO);
+
+        assert!(!publish_proven_echild(handle.event(), &identity, None));
+        assert_eq!(
+            handle.event().status.lock().terminal.raw,
+            INVALID_STATUS,
+            "procfs uncertainty manufactured synthetic ECHILD"
+        );
+        assert_eq!(
+            identity.echild_generation_relation(),
+            Ok(EchildGenerationRelation::ActiveTracee)
+        );
+        cleanup.cleanup().expect("cleanup live ECHILD proof tracee");
+    }
+
+    #[test]
+    fn same_generation_detach_is_explicit_terminal_echild_proof() {
+        let (pid, cleanup) =
+            spawn_stopped_process(None).expect("spawn detached ECHILD proof child");
+        let identity = Arc::new(
+            WorkerIdentity::capture_process(pid.into())
+                .expect("capture detached ECHILD proof generation"),
+        );
+        let handle = EventHandle::with_identity(Arc::clone(&identity));
+
+        assert_eq!(
+            identity.echild_generation_relation(),
+            Ok(EchildGenerationRelation::DetachedFromCurrentTracer {
+                observed_tracer_pid: 0,
+            })
+        );
+        assert!(publish_proven_echild(handle.event(), &identity, None));
+        assert_eq!(handle.event().status.lock().terminal.raw, ECHILD_STATUS);
+        reap_stopped_process(cleanup);
     }
 
     #[test]
@@ -6408,7 +17876,7 @@ mod test {
             .expect("join capture-transition thread")
             .expect("TracerPid transition changed process generation");
         assert!(
-            tracer_is_current(identity.snapshot.tracer_pid),
+            tracer_is_current(identity.snapshot.tracer_pid).unwrap(),
             "capture did not normalize to the post-attachment TracerPid"
         );
         cleanup.cleanup().expect("cleanup capture-transition child");
@@ -7409,8 +18877,9 @@ mod test {
         Ok(())
     }
 
-    fn spawn_traced_process(
+    fn spawn_traced_process_with_post_stop(
         requested_pid: Option<i32>,
+        post_stop: bool,
     ) -> Option<(Pid, Stopped, TraceeCleanupGuard)> {
         let child = if let Some(requested_pid) = requested_pid {
             #[repr(C)]
@@ -7448,6 +18917,9 @@ mod test {
             }
             if result == 0 {
                 crate::traceme_and_stop().expect("TRACEME requested-PID child");
+                if post_stop {
+                    unsafe { libc::raise(libc::SIGSTOP) };
+                }
                 unsafe { libc::_exit(42) };
             }
             Pid::from_raw(result as i32)
@@ -7456,6 +18928,9 @@ mod test {
                 ForkResult::Parent { child } => child,
                 ForkResult::Child => {
                     crate::traceme_and_stop().expect("TRACEME duplicate-exit child");
+                    if post_stop {
+                        unsafe { libc::raise(libc::SIGSTOP) };
+                    }
                     unsafe { libc::_exit(42) };
                 }
             }
@@ -7473,6 +18948,299 @@ mod test {
             panic!("wait duplicate-exit initial stop: {error}");
         });
         Some((child, stopped, cleanup))
+    }
+
+    fn spawn_traced_process(
+        requested_pid: Option<i32>,
+    ) -> Option<(Pid, Stopped, TraceeCleanupGuard)> {
+        spawn_traced_process_with_post_stop(requested_pid, false)
+    }
+
+    fn spawn_gated_tracee(post_stop: bool) -> (Pid, Stopped, TraceeCleanupGuard, OwnedFd) {
+        let mut pipe = [-1; 2];
+        assert_eq!(
+            unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) },
+            0,
+            "create gated tracee pipe: {}",
+            io::Error::last_os_error()
+        );
+        let read_end = unsafe { OwnedFd::from_raw_fd(pipe[0]) };
+        let write_end = unsafe { OwnedFd::from_raw_fd(pipe[1]) };
+
+        let child = match unsafe { fork() }.expect("fork gated conversion tracee") {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                drop(write_end);
+                crate::traceme_and_stop().expect("TRACEME gated conversion child");
+                let mut byte = 0u8;
+                loop {
+                    let read = unsafe {
+                        libc::read(
+                            read_end.as_raw_fd(),
+                            std::ptr::from_mut(&mut byte).cast(),
+                            1,
+                        )
+                    };
+                    if read == 1 {
+                        break;
+                    }
+                    if read == -1 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+                    {
+                        continue;
+                    }
+                    unsafe { libc::_exit(126) };
+                }
+                if post_stop {
+                    unsafe { libc::raise(libc::SIGSTOP) };
+                }
+                unsafe { libc::_exit(42) };
+            }
+        };
+        drop(read_end);
+
+        let mut cleanup = TraceeCleanupGuard::new(child).unwrap_or_else(|error| {
+            let _ = unsafe { libc::kill(child.as_raw(), libc::SIGKILL) };
+            let _ = reap_tracee_bounded(child);
+            panic!("open gated conversion tracee pidfd: {error}");
+        });
+        let stopped = stopped_tracee_bounded(child).unwrap_or_else(|error| {
+            cleanup
+                .cleanup()
+                .unwrap_or_else(|cleanup_error| panic!("{error}; cleanup: {cleanup_error}"));
+            panic!("wait gated conversion initial stop: {error}");
+        });
+        (child, stopped, cleanup, write_end)
+    }
+
+    #[test]
+    fn synchronous_malformed_waitid_status_drains_exact_generation() {
+        let (pid, stopped, mut cleanup, release) = spawn_gated_tracee(true);
+        let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(256, 256))
+            .expect("create synchronous malformed-wait observer");
+        stopped
+            .attach_physical_event_observer(&observer)
+            .expect("attach observer before synchronous wait ownership");
+        cleanup
+            .store_terminal(TerminalCleanup::new_unregistered(stopped.0, &stopped.1))
+            .expect("retain synchronous malformed-wait generation for cleanup");
+
+        let running = stopped
+            .resume(None)
+            .expect("resume gated synchronous tracee");
+        WAIT_SIGINFO_CODE_OVERRIDES
+            .lock()
+            .entry(pid.into())
+            .or_default()
+            .push_back(i32::MAX);
+        let mut release = std::fs::File::from(release);
+        release
+            .write_all(&[1])
+            .expect("release synchronous tracee into malformed stop");
+        drop(release);
+
+        assert_eq!(running.wait(), Err(Error::Errno(Errno::EPROTO)));
+        let terminal = cleanup
+            .terminal()
+            .expect("synchronous cleanup retains exact generation");
+        assert_eq!(terminal.terminal_error(), Some(Errno::EPROTO));
+        assert!(terminal.wait(Duration::ZERO));
+        assert_eq!(
+            terminal.event.event().worker_state.load(Ordering::Acquire),
+            WORKER_DONE
+        );
+        assert!(!NOTIFIER.pids.lock().contains_key(&pid.into()));
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        cleanup.disarm();
+
+        observer.close();
+        let validation = observer.snapshot().validate();
+        assert!(validation.is_valid(), "{validation:#?}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn malformed_waitid_status_wakes_both_waiters_and_drains_exact_generation() {
+        let (pid, stopped, mut cleanup, release) = spawn_gated_tracee(true);
+        let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(256, 256))
+            .expect("create wait-conversion observer");
+        stopped
+            .attach_physical_event_observer(&observer)
+            .expect("attach observer before notifier wait ownership");
+
+        let mut exit = Box::pin(
+            cleanup
+                .exit_event(&stopped)
+                .expect("bind exact cleanup generation before ExitFuture poll"),
+        );
+        let waker = futures::task::noop_waker();
+        let mut context = Context::from_waker(&waker);
+        assert_eq!(exit.as_mut().poll(&mut context), Poll::Pending);
+
+        let running = stopped
+            .resume(None)
+            .expect("resume gated conversion tracee");
+        let mut wait = Box::pin(running.next_state());
+        assert_eq!(wait.as_mut().poll(&mut context), Poll::Pending);
+
+        WAIT_SIGINFO_CODE_OVERRIDES
+            .lock()
+            .entry(pid.into())
+            .or_default()
+            .push_back(i32::MAX);
+        let mut release = std::fs::File::from(release);
+        release
+            .write_all(&[1])
+            .expect("release gated tracee into malformed wait status");
+        drop(release);
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), &mut wait)
+                .await
+                .expect("WaitFuture hung after malformed wait status"),
+            Err(Error::Errno(Errno::EPROTO))
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), &mut exit)
+                .await
+                .expect("ExitFuture hung after malformed wait status"),
+            Err(Error::Errno(Errno::EPROTO))
+        );
+
+        let terminal = cleanup
+            .terminal()
+            .expect("cleanup retained notifier generation");
+        assert_eq!(terminal.terminal_error(), Some(Errno::EPROTO));
+        assert_eq!(terminal.registration_error(), None);
+        let wrong_thread = TerminalCleanup {
+            pid: terminal.pid,
+            event: terminal.event.clone(),
+        };
+        let wrong_result = thread::spawn(move || {
+            wrong_thread.continue_exit_stop_for_cleanup(
+                &mut None,
+                PhysicalResumeOwner::RootCleanup,
+            )
+        })
+        .join()
+        .expect("join off-ptracer cleanup attempt");
+        assert_eq!(wrong_result, Err(Errno::EPERM));
+        assert!(matches!(
+            *terminal.event.event().wait_failure_cleanup.lock(),
+            WaitFailureCleanupPhase::AwaitingController { .. }
+        ));
+        cleanup
+            .cleanup()
+            .expect("controller handoff and registered cleanup drain");
+        let terminal = cleanup
+            .terminal()
+            .expect("completed cleanup retains exact generation handle");
+        assert!(terminal.wait(Duration::ZERO));
+        assert_eq!(
+            terminal.event.event().worker_state.load(Ordering::Acquire),
+            WORKER_DONE
+        );
+        assert!(!NOTIFIER.pids.lock().contains_key(&pid.into()));
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+
+        let typed_pid: crate::Pid = pid.into();
+        let worker_count_before_late_poll = SPAWN_WORKER_COUNTS.lock().get(&typed_pid).copied();
+        let late_token = TraceeToken::from_event(terminal.event.clone());
+        let mut late_wait = Box::pin(WaitFuture::new(Running::from_token(
+            typed_pid,
+            late_token.clone(),
+        )));
+        let mut late_exit = Box::pin(ExitFuture::new(typed_pid, &late_token));
+        assert_eq!(
+            late_wait.as_mut().poll(&mut context),
+            Poll::Ready(Err(Error::Errno(Errno::EPROTO)))
+        );
+        assert_eq!(
+            late_exit.as_mut().poll(&mut context),
+            Poll::Ready(Err(Error::Errno(Errno::EPROTO)))
+        );
+        assert!(!NOTIFIER.pids.lock().contains_key(&typed_pid));
+        assert_eq!(
+            SPAWN_WORKER_COUNTS.lock().get(&typed_pid).copied(),
+            worker_count_before_late_poll,
+            "late terminal-error futures started a replacement wait worker"
+        );
+
+        observer.close();
+        let validation = observer.snapshot().validate();
+        assert!(validation.is_valid(), "{validation:#?}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn malformed_terminal_wait_never_resumes_a_reusable_numeric_pid() {
+        let (pid, stopped, mut cleanup, release) = spawn_gated_tracee(false);
+        let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(256, 256))
+            .expect("create terminal-conversion observer");
+        stopped
+            .attach_physical_event_observer(&observer)
+            .expect("attach terminal-conversion observer");
+
+        let mut exit = Box::pin(
+            cleanup
+                .exit_event(&stopped)
+                .expect("bind terminal-conversion cleanup generation"),
+        );
+        let waker = futures::task::noop_waker();
+        let mut context = Context::from_waker(&waker);
+        assert_eq!(exit.as_mut().poll(&mut context), Poll::Pending);
+        let running = stopped.resume(None).expect("resume gated terminal tracee");
+        let mut wait = Box::pin(running.next_state());
+        assert_eq!(wait.as_mut().poll(&mut context), Poll::Pending);
+
+        WAIT_SIGINFO_CODE_OVERRIDES
+            .lock()
+            .entry(pid.into())
+            .or_default()
+            .push_back(i32::MAX);
+        let mut release = std::fs::File::from(release);
+        release
+            .write_all(&[1])
+            .expect("release gated tracee into malformed terminal status");
+        drop(release);
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), &mut wait)
+                .await
+                .expect("terminal WaitFuture hung"),
+            Err(Error::Errno(Errno::EPROTO))
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), &mut exit)
+                .await
+                .expect("terminal ExitFuture hung"),
+            Err(Error::Errno(Errno::EPROTO))
+        );
+        cleanup
+            .cleanup()
+            .expect("drain malformed already-terminal wait");
+        assert!(!NOTIFIER.pids.lock().contains_key(&pid.into()));
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+
+        observer.close();
+        let snapshot = observer.snapshot();
+        let undecodable = snapshot
+            .records()
+            .iter()
+            .find_map(|record| match record.kind() {
+                PhysicalEventRecordKind::WaitResult {
+                    outcome: crate::PhysicalWaitOutcome::UndecodableStatus { id, .. },
+                    ..
+                } => Some(id),
+                _ => None,
+            })
+            .expect("observer retained malformed terminal physical status");
+        assert!(snapshot.records().iter().all(|record| {
+            !matches!(
+                record.kind(),
+                PhysicalEventRecordKind::ResumeAttempt { context, .. }
+                    if context.source_status == Some(undecodable)
+            )
+        }));
+        let validation = snapshot.validate();
+        assert!(validation.is_valid(), "{validation:#?}");
     }
 
     async fn duplicate_exit_waiter_rejects_replacement(requested_pid: Option<i32>) -> bool {
@@ -7512,7 +19280,7 @@ mod test {
             .await
             .expect("old exit-stop winner timed out")
             .expect("claim old exit-stop capability");
-        old_cleanup.mark_claimed_exit();
+        old_cleanup.mark_claimed_exit(&exit_stopped);
         assert_eq!(
             tokio::time::timeout(TRACEE_WAIT_TIMEOUT, duplicate)
                 .await
@@ -7603,10 +19371,16 @@ mod test {
             );
             thread::yield_now();
         }
-        terminal
-            .revoke_unclaimed_exit_stop()
-            .expect("cleanup failed to expire unclaimed exit stop");
-        nix::sys::ptrace::cont(old_pid, None).expect("raw cleanup resume old exit stop");
+        let mut cleanup_stop = None;
+        assert!(matches!(
+            terminal
+                .continue_exit_stop_for_cleanup(
+                    &mut cleanup_stop,
+                    PhysicalResumeOwner::RootCleanup,
+                )
+                .expect("cleanup failed to continue unclaimed exit stop"),
+            TerminalCleanupContinue::Attempted { error: None, .. }
+        ));
         assert!(
             terminal.wait(Duration::from_secs(1)),
             "cleanup notifier did not publish old final status"
@@ -7843,7 +19617,9 @@ mod test {
             );
             assert!(old_handle.event().try_begin_unstarted_completion());
             old_handle.event().mark_echild();
-            old_handle.event().mark_worker_done();
+            old_handle.event().prepare_worker_done();
+            NOTIFIER.remove(old_pid.into(), old_handle.event());
+            old_handle.event().publish_worker_done();
             reap_stopped_process(old_cleanup);
             thread::sleep(Duration::from_millis(20));
 
@@ -7897,9 +19673,6 @@ mod test {
         old_identity.pid = new_pid.into();
         let old_identity = Arc::new(old_identity);
         let old_handle = EventHandle::with_identity(Arc::clone(&old_identity));
-        assert!(old_handle.event().try_begin_unstarted_completion());
-        old_handle.event().mark_echild();
-        old_handle.event().mark_worker_done();
         NOTIFIER.pids.lock().insert(
             new_pid.into(),
             NotifierEntry {
@@ -7907,6 +19680,11 @@ mod test {
                 identity: old_identity,
             },
         );
+        assert!(old_handle.event().try_begin_unstarted_completion());
+        old_handle.event().mark_echild();
+        old_handle.event().prepare_worker_done();
+        NOTIFIER.remove(new_pid.into(), old_handle.event());
+        old_handle.event().publish_worker_done();
 
         let selected = EventHandle::current_or_new(new_pid.into())
             .expect("select projected replacement registry generation");
