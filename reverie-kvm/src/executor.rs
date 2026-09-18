@@ -267,6 +267,20 @@ pub(crate) struct PendingSignal {
     pub(crate) domain: PendingSignalDomain,
 }
 
+/// State survives the borrowed Tool future until selected delivery or terminal cleanup.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParkedSignalState {
+    pub(crate) site: reverie::CallbackSignalSite,
+    pub(crate) observations: Vec<reverie::ParkedObservationLease>,
+    pub(crate) context: Box<reverie::ParkedSignalFailureContext>,
+    pub(crate) effects: Vec<reverie::SignalDequeue>,
+    pub(crate) acknowledged: u64,
+    pub(crate) publications: Vec<reverie::ProcessAlarmSignalOutcome>,
+    pub(crate) prepared: Option<(reverie::PreparedSignalToken, PendingSignal, bool)>,
+}
+
+const MAX_PARKED_SIGNAL_EFFECTS: usize = 4096;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessExit {
     pub status: ExitStatus,
@@ -1080,6 +1094,10 @@ pub(crate) struct ElfExecutor {
     exit_status: Option<ExitStatus>,
     exit_group: bool,
     clear_child_tid: Option<u64>,
+    signal_callback_nonce: u64,
+    parked_signals: Option<ParkedSignalState>,
+    completed_signal_effects: Vec<reverie::SignalDequeue>,
+    signal_effect_raw_result: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1773,6 +1791,10 @@ impl ElfExecutor {
             state,
             task_generation,
             process_generation,
+            signal_callback_nonce: 0,
+            parked_signals: None,
+            completed_signal_effects: Vec::new(),
+            signal_effect_raw_result: None,
             address_space,
             file_table,
             output: capture_output.then(CapturedOutput::default),
@@ -2181,6 +2203,10 @@ impl ElfExecutor {
             state,
             task_generation,
             process_generation,
+            signal_callback_nonce: 0,
+            parked_signals: None,
+            completed_signal_effects: Vec::new(),
+            signal_effect_raw_result: None,
             address_space,
             file_table,
             output: self.output.clone(),
@@ -2262,6 +2288,10 @@ impl ElfExecutor {
             state,
             task_generation,
             process_generation,
+            signal_callback_nonce: 0,
+            parked_signals: None,
+            completed_signal_effects: Vec::new(),
+            signal_effect_raw_result: None,
             address_space: self.address_space.clone(),
             file_table: self.file_table.clone(),
             output: self.output.clone(),
@@ -3287,28 +3317,491 @@ impl ElfExecutor {
 
     /// Removes the next eligible event, preferring the caller's thread queue
     /// over the process-shared queue as Linux does.
+    #[cfg(test)]
     pub(crate) fn take_pending_signal(&mut self) -> Option<PendingSignal> {
-        let mut process_signals = self
+        take_signal_event(&mut self.state, SignalSelection::Delivery)
+            .expect("test pending selection failed")
+    }
+
+    pub(crate) fn begin_signal_callback(&mut self) -> Option<reverie::CallbackSignalSite> {
+        let identity = self.signal_task_identity()?;
+        self.signal_callback_nonce = self.signal_callback_nonce.checked_add(1)?;
+        Some(reverie::CallbackSignalSite {
+            process: identity.process,
+            tid: identity.tid,
+            task_generation: identity.task_generation,
+            callback_nonce: self.signal_callback_nonce,
+            boundary_nonce: self.signal_callback_nonce,
+        })
+    }
+
+    pub(crate) fn signal_dequeues_enabled(&self) -> bool {
+        self.state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .dequeue_enabled
+    }
+
+    pub(crate) fn retain_parked_effects(
+        &mut self,
+        site: reverie::CallbackSignalSite,
+    ) -> Result<(), reverie::syscalls::Errno> {
+        use reverie::syscalls::Errno;
+        if !self.signal_site_is_current(site)
+            || self
+                .parked_signals
+                .as_ref()
+                .is_some_and(|state| state.site != site)
+        {
+            return Err(Errno::EINVAL);
+        }
+        if self.parked_signals.is_none() {
+            let mut effects = Vec::new();
+            effects
+                .try_reserve(self.completed_signal_effects.len() + 64)
+                .map_err(|_| Errno::ENOMEM)?;
+            effects.extend_from_slice(&self.completed_signal_effects);
+            let acknowledged = self
+                .state
+                .process_signals
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .dequeue_acknowledged
+                .map_or(0, |effect| effect.sequence);
+            self.parked_signals = Some(ParkedSignalState {
+                site,
+                observations: Vec::new(),
+                context: Box::new(reverie::ParkedSignalFailureContext {
+                    site,
+                    ledger_nonce: site.boundary_nonce,
+                }),
+                effects,
+                acknowledged,
+                publications: Vec::new(),
+                prepared: None,
+            });
+        }
+        self.reserve_signal_effects(64)
+    }
+
+    pub(crate) fn reserve_signal_effects(
+        &mut self,
+        count: usize,
+    ) -> Result<(), reverie::syscalls::Errno> {
+        use reverie::syscalls::Errno;
+        if self.signal_dequeues_enabled() {
+            self.completed_signal_effects
+                .try_reserve(count)
+                .map_err(|_| Errno::ENOMEM)?;
+        }
+        if let Some(state) = &mut self.parked_signals {
+            if state.effects.len().saturating_add(count) > MAX_PARKED_SIGNAL_EFFECTS
+                || state.publications.len() >= MAX_PARKED_SIGNAL_EFFECTS
+            {
+                return Err(Errno::EOVERFLOW);
+            }
+            state
+                .effects
+                .try_reserve(count)
+                .map_err(|_| Errno::ENOMEM)?;
+            state
+                .publications
+                .try_reserve(1)
+                .map_err(|_| Errno::ENOMEM)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn retain_signal_dequeue(&mut self, effect: reverie::SignalDequeue) {
+        if self.completed_signal_effects.last() != Some(&effect) {
+            self.completed_signal_effects.push(effect);
+        }
+        if let Some(state) = &mut self.parked_signals
+            && state
+                .effects
+                .last()
+                .is_none_or(|last| last.sequence < effect.sequence)
+        {
+            state.effects.push(effect);
+        }
+    }
+
+    pub(crate) fn retain_signal_publication(
+        &mut self,
+        receipt: reverie::ProcessAlarmSignalOutcome,
+    ) {
+        if let Some(state) = &mut self.parked_signals {
+            state.publications.push(receipt);
+        }
+    }
+
+    pub(crate) fn mark_signal_dequeue_acknowledged(&mut self, sequence: u64) {
+        if let Some(state) = &mut self.parked_signals {
+            state.acknowledged = sequence;
+        }
+    }
+
+    pub(crate) fn signal_failure_context(&self) -> Option<reverie::ParkedSignalFailureContext> {
+        self.parked_signals.as_ref().map(|state| *state.context)
+    }
+
+    fn signal_site_is_current(&self, site: reverie::CallbackSignalSite) -> bool {
+        site.callback_nonce == self.signal_callback_nonce
+            && site.boundary_nonce == site.callback_nonce
+            && self.signal_task_identity().is_some_and(|identity| {
+                identity.process == site.process
+                    && identity.tid == site.tid
+                    && identity.task_generation == site.task_generation
+            })
+    }
+
+    pub(crate) fn signal_failure_context_is_current(
+        &self,
+        context: reverie::ParkedSignalFailureContext,
+    ) -> bool {
+        self.signal_failure_context() == Some(context) && self.signal_site_is_current(context.site)
+    }
+
+    pub(crate) fn admit_signal_observation(
+        &mut self,
+        site: reverie::CallbackSignalSite,
+        lease: reverie::ParkedObservationLease,
+    ) -> Result<(), reverie::syscalls::Errno> {
+        use reverie::syscalls::Errno;
+        if !self.signal_site_is_current(site)
+            || self.parked_signals.as_ref().is_some_and(|state| {
+                state.site != site
+                    || state.prepared.is_some()
+                    || state.observations.contains(&lease)
+            })
+        {
+            return Err(Errno::EINVAL);
+        }
+        self.retain_parked_effects(site)?;
+        let state = self
+            .parked_signals
+            .as_mut()
+            .expect("retained observation ledger");
+        if state.observations.len() == MAX_PARKED_SIGNAL_EFFECTS {
+            return Err(Errno::EOVERFLOW);
+        }
+        state
+            .observations
+            .try_reserve(1)
+            .map_err(|_| Errno::ENOMEM)?;
+        state.observations.push(lease);
+        Ok(())
+    }
+
+    pub(crate) fn reserve_signal_delivery(
+        &mut self,
+        pending: PendingSignal,
+        id: reverie::DequeueId,
+        fatal: bool,
+    ) -> Result<reverie::PreparedSignalToken, reverie::syscalls::Errno> {
+        let site = self
+            .parked_signals
+            .as_ref()
+            .ok_or(reverie::syscalls::Errno::EINVAL)?
+            .site;
+        if !self.signal_site_is_current(site) || site.process != id.process {
+            return Err(reverie::syscalls::Errno::EINVAL);
+        }
+        let state = self
+            .parked_signals
+            .as_mut()
+            .expect("validated selection ledger");
+        if state.prepared.is_some() {
+            return Err(reverie::syscalls::Errno::EBUSY);
+        }
+        let token = reverie::PreparedSignalToken {
+            site: state.site,
+            selection_nonce: id.sequence,
+        };
+        state.prepared = Some((token, pending, fatal));
+        Ok(token)
+    }
+
+    pub(crate) fn prepared_signal_is_fatal(&self, token: reverie::PreparedSignalToken) -> bool {
+        self.signal_site_is_current(token.site)
+            && self
+                .parked_signals
+                .as_ref()
+                .and_then(|state| state.prepared)
+                .is_some_and(|(current, _, fatal)| current == token && fatal)
+    }
+
+    pub(crate) fn take_prepared_signal(
+        &mut self,
+    ) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
+        let Some((token, _, _)) = self
+            .parked_signals
+            .as_ref()
+            .and_then(|state| state.prepared)
+        else {
+            return Ok(None);
+        };
+        if !self.signal_site_is_current(token.site) {
+            return Err(reverie::syscalls::Errno::EINVAL);
+        }
+        Ok(self
+            .parked_signals
+            .as_mut()
+            .expect("validated selection ledger")
+            .prepared
+            .take()
+            .map(|(_, pending, _)| pending))
+    }
+
+    pub(crate) fn prepared_signal_number(&self) -> Option<i32> {
+        self.parked_signals
+            .as_ref()?
+            .prepared
+            .map(|(_, pending, _)| pending.event.signal())
+    }
+
+    pub(crate) fn retain_signal_effect_result(&mut self, raw: Option<i64>) {
+        self.signal_effect_raw_result = raw;
+    }
+
+    pub(crate) fn finish_parked_delivery(&mut self) {
+        self.parked_signals = None;
+        self.completed_signal_effects.clear();
+        self.signal_effect_raw_result = None;
+    }
+
+    /// Transfer this owner's irreversible effects, stopping the shared stream
+    /// only when a ledger is transferred. An error without local effects is
+    /// unchanged; run-wide termination is published by the failure owner.
+    pub(crate) fn with_signal_effects(
+        &mut self,
+        cause: crate::Error,
+        raw_result: Option<i64>,
+    ) -> crate::Error {
+        let owner = self.admitted_signal_identity();
+        let mut process = self
             .state
             .process_signals
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let generations = process_signals.pending_generations;
-        let mut thread_signals = self.state.thread_signals.lock();
-        let blocked = thread_signals.blocked;
-        if let Some(event) = thread_signals.pending.take_eligible(blocked, &generations) {
-            return Some(PendingSignal {
-                event,
-                domain: PendingSignalDomain::Thread,
-            });
+            .unwrap_or_else(|p| p.into_inner());
+        let acknowledged = process
+            .dequeue_acknowledged
+            .map_or(0, |effect| effect.sequence);
+        let has_pending = process
+            .dequeue_journal
+            .iter()
+            .any(|entry| entry.owner == owner);
+        let raw_result = raw_result.or(self.signal_effect_raw_result.take());
+        let state = self.parked_signals.take();
+        let completed = std::mem::take(&mut self.completed_signal_effects);
+        if !has_pending && state.is_none() && completed.is_empty() {
+            return cause;
         }
-        let event = process_signals
-            .shared_pending
-            .take_eligible(blocked, &generations)?;
-        Some(PendingSignal {
-            event,
-            domain: PendingSignalDomain::Process,
-        })
+        // Terminal ownership transfer does not acknowledge or roll back any
+        // removal. Stop later notification and wake all queued owners into
+        // their own consuming cleanup; never steal a sibling's journal.
+        process.dequeue_failed = true;
+        for entry in &process.dequeue_journal {
+            entry.wake.0.wake();
+        }
+
+        // Move the pre-reserved buffer. Error reporting must not need a fresh
+        // dequeue allocation after the irreversible removal it describes.
+        let (mut dequeues, acknowledged_through, publications, context) = match state {
+            Some(state) => (
+                state.effects,
+                state.acknowledged,
+                state.publications,
+                Some(state.context),
+            ),
+            None => (completed, acknowledged, Vec::new(), None),
+        };
+        process.dequeue_journal.retain(|entry| {
+            if entry.owner != owner {
+                return true;
+            }
+            if !dequeues.iter().any(|old| old.id() == entry.effect.id()) {
+                dequeues.push(entry.effect);
+            }
+            false
+        });
+        drop(process);
+        crate::Error::SignalEffects {
+            cause: Arc::new(cause),
+            dequeues,
+            acknowledged_through,
+            publications,
+            raw_result,
+            context,
+        }
+    }
+
+    pub(crate) fn has_prepared_signal(&self) -> bool {
+        self.parked_signals
+            .as_ref()
+            .is_some_and(|state| state.prepared.is_some())
+    }
+
+    pub(crate) fn enable_signal_dequeues(&self) {
+        let mut process = self
+            .state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut thread = self.state.thread_signals.lock();
+        thread.dequeue_identity = Some(reverie::SignalTaskIdentity {
+            process: reverie::SignalProcessId {
+                tgid: reverie::Pid::from_raw(self.state.pid),
+                generation: self.process_generation,
+            },
+            tid: reverie::Pid::from_raw(self.state.tid),
+            task_generation: self.task_generation,
+        });
+        process.dequeue_enabled = true;
+    }
+
+    pub(crate) fn signal_task_identity(&self) -> Option<reverie::SignalTaskIdentity> {
+        let lifecycle = self
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let task = lifecycle.get(self.state.tid)?;
+        (task.generation == self.task_generation
+            && task.process_generation == self.process_generation
+            && task.tgid == self.state.pid)
+            .then_some(reverie::SignalTaskIdentity {
+                process: reverie::SignalProcessId {
+                    tgid: reverie::Pid::from_raw(task.tgid),
+                    generation: task.process_generation,
+                },
+                tid: reverie::Pid::from_raw(self.state.tid),
+                task_generation: task.generation,
+            })
+    }
+
+    pub(crate) fn sole_signal_receiver(&self) -> bool {
+        let lifecycle = self
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        self.is_thread_group_leader()
+            && !lifecycle.has_live_sibling(self.state.tid, self.state.pid)
+            && lifecycle.get(self.state.tid).is_some_and(|task| {
+                task.generation == self.task_generation
+                    && task.process_generation == self.process_generation
+                    && task.tgid == self.state.pid
+            })
+            && !self.has_pending_exit()
+            && self.process_action.is_none()
+    }
+
+    fn admitted_signal_identity(&self) -> reverie::SignalTaskIdentity {
+        reverie::SignalTaskIdentity {
+            process: reverie::SignalProcessId {
+                tgid: reverie::Pid::from_raw(self.state.pid),
+                generation: self.process_generation,
+            },
+            tid: reverie::Pid::from_raw(self.state.tid),
+            task_generation: self.task_generation,
+        }
+    }
+
+    /// First removal owned by this executor, even when a predecessor must ack.
+    pub(crate) fn signal_dequeue_front(&self) -> Option<reverie::SignalDequeue> {
+        let owner = self.admitted_signal_identity();
+        self.state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .dequeue_journal
+            .iter()
+            .find(|entry| entry.owner == owner)
+            .map(|entry| entry.effect)
+    }
+
+    /// A refusal by the observation bookkeeping, never a guest syscall errno.
+    pub(crate) fn signal_dequeue_failure(&self) -> Option<reverie::syscalls::Errno> {
+        self.state.signal_dequeue_failure
+    }
+
+    pub(crate) fn poll_signal_dequeue(
+        &self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<crate::Result<Option<reverie::SignalDequeue>>> {
+        use std::task::Poll;
+        if let Some(errno) = self.signal_dequeue_failure() {
+            return Poll::Ready(Err(crate::Error::Reverie(errno.into())));
+        }
+        let owner = self.admitted_signal_identity();
+        let process = self
+            .state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if process.dequeue_failed {
+            return Poll::Ready(Err(crate::Error::RunAborted));
+        }
+        let Some(entry) = process
+            .dequeue_journal
+            .iter()
+            .find(|entry| entry.owner == owner)
+        else {
+            return Poll::Ready(Ok(None));
+        };
+        if process
+            .dequeue_journal
+            .front()
+            .is_some_and(|front| front.owner == owner)
+        {
+            Poll::Ready(Ok(Some(entry.effect)))
+        } else {
+            // Registration and the predicate share the journal lock, avoiding a
+            // lost ack wakeup. No lock survives the pending return or Tool await.
+            entry.wake.0.register(cx.waker());
+            Poll::Pending
+        }
+    }
+
+    pub(crate) fn acknowledge_signal_dequeue(
+        &self,
+        effect: reverie::SignalDequeue,
+    ) -> Result<(), reverie::syscalls::Errno> {
+        let owner = self.admitted_signal_identity();
+        let mut process = self
+            .state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if process.dequeue_failed {
+            return Err(reverie::syscalls::Errno::EINVAL);
+        }
+        if process.dequeue_acknowledged == Some(effect)
+            && process.dequeue_acknowledged_owner == Some(owner)
+        {
+            return Ok(());
+        }
+        if !process
+            .dequeue_journal
+            .front()
+            .is_some_and(|entry| entry.owner == owner && entry.effect == effect)
+        {
+            return Err(reverie::syscalls::Errno::EINVAL);
+        }
+        process.dequeue_journal.pop_front();
+        process.dequeue_acknowledged = Some(effect);
+        process.dequeue_acknowledged_owner = Some(owner);
+        let wake = process
+            .dequeue_journal
+            .front()
+            .map(|entry| entry.wake.clone());
+        drop(process);
+        if let Some(wake) = wake {
+            wake.0.wake();
+        }
+        Ok(())
     }
 
     /// Selects one event for a return-to-user delivery boundary and updates
@@ -3317,7 +3810,8 @@ impl ElfExecutor {
     pub(crate) fn take_pending_signal_for_delivery(
         &mut self,
     ) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
-        let pending = self.take_pending_signal();
+        self.reserve_signal_effects(1)?;
+        let pending = take_signal_event(&mut self.state, SignalSelection::Delivery)?;
         self.refresh_signalfd_readiness()?;
         Ok(pending)
     }
@@ -7248,6 +7742,13 @@ fn encode_signalfd_siginfo(event: reverie::SignalEvent) -> [u8; SIGNALFD_RECORD_
 }
 
 fn refresh_all_signalfd_readiness(state: &LoadedStaticElf) -> Result<(), i64> {
+    refresh_signalfd_readiness_for_signal(state, None)
+}
+
+fn refresh_signalfd_readiness_for_signal(
+    state: &LoadedStaticElf,
+    signal: Option<i32>,
+) -> Result<(), i64> {
     let readiness = {
         let process_signals = state
             .process_signals
@@ -7256,6 +7757,7 @@ fn refresh_all_signalfd_readiness(state: &LoadedStaticElf) -> Result<(), i64> {
         process_signals
             .signalfd_masks
             .iter()
+            .filter(|(_, mask)| signal.is_none_or(|signal| mask.contains(signal)))
             .map(|(&fd, mask)| {
                 (
                     fd,
@@ -7279,29 +7781,135 @@ fn refresh_all_signalfd_readiness(state: &LoadedStaticElf) -> Result<(), i64> {
     Ok(())
 }
 
+/// Each real consumer selects under the same lifecycle -> process -> thread locks.
+/// Reserve the journal slot and sequence before mutating either pending set.
+enum SignalSelection {
+    Delivery,
+    SignalFd(KernelSigset),
+    TimedWait(KernelSigset),
+}
+
+fn take_signal_event(
+    state: &mut LoadedStaticElf,
+    selection: SignalSelection,
+) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
+    use reverie::syscalls::Errno;
+    if let Some(errno) = state.signal_dequeue_failure {
+        return Err(errno);
+    }
+    let lifecycle = state
+        .task_lifecycle
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let mut process = state
+        .process_signals
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let mut thread = state.thread_signals.lock();
+    let generations = process.pending_generations;
+    let blocked = thread.blocked;
+    let eligible = |pending: &crate::signal::StandardPendingSignals| match selection {
+        SignalSelection::Delivery => pending.any_eligible(blocked, &generations),
+        SignalSelection::SignalFd(mask) | SignalSelection::TimedWait(mask) => {
+            pending.any_matching(mask, &generations)
+        }
+    };
+    if !eligible(&thread.pending) && !eligible(&process.shared_pending) {
+        return Ok(None);
+    }
+    let identity = if process.dequeue_enabled {
+        let admission = (|| {
+            let admitted = thread.dequeue_identity.ok_or(Errno::ESRCH)?;
+            let task = lifecycle.get(state.tid).ok_or(Errno::ESRCH)?;
+            if task.tgid != state.pid
+                || admitted.tid.as_raw() != state.tid
+                || admitted.process.tgid.as_raw() != state.pid
+                || task.generation != admitted.task_generation
+                || task.process_generation != admitted.process.generation
+            {
+                return Err(Errno::ESRCH);
+            }
+            if process.dequeue_journal.len() == 64 {
+                return Err(Errno::EOVERFLOW);
+            }
+            process
+                .dequeue_sequence
+                .checked_add(1)
+                .ok_or(Errno::EOVERFLOW)?;
+            process
+                .dequeue_journal
+                .try_reserve(1)
+                .map_err(|_| Errno::ENOMEM)?;
+            Ok(admitted)
+        })();
+        match admission {
+            Ok(admitted) => Some(admitted),
+            Err(errno) => {
+                // Raw syscall helpers have an i64 interface. Keep the actual
+                // internal refusal separately: both injected and unsubscribed
+                // execution must flush this typed failure before resuming any
+                // Tool or guest with the intermediate raw result. In particular,
+                // a partial signalfd read cannot hide a later bookkeeping fault.
+                state.signal_dequeue_failure = Some(errno);
+                return Err(errno);
+            }
+        }
+    } else {
+        None
+    };
+    let take = |pending: &mut crate::signal::StandardPendingSignals| match selection {
+        SignalSelection::Delivery => pending.take_eligible(blocked, &generations),
+        SignalSelection::SignalFd(mask) => pending.take_signalfd_matching(mask, &generations),
+        SignalSelection::TimedWait(mask) => pending.take_matching(mask, &generations),
+    };
+    let pending = if let Some(event) = take(&mut thread.pending) {
+        PendingSignal {
+            event,
+            domain: PendingSignalDomain::Thread,
+        }
+    } else if let Some(event) = take(&mut process.shared_pending) {
+        PendingSignal {
+            event,
+            domain: PendingSignalDomain::Process,
+        }
+    } else {
+        return Ok(None);
+    };
+    if let Some(identity) = identity {
+        process.dequeue_sequence += 1;
+        let sequence = process.dequeue_sequence;
+        process
+            .dequeue_journal
+            .push_back(crate::signal::OwnedSignalDequeue {
+                owner: identity,
+                wake: thread.dequeue_wake.clone(),
+                effect: reverie::SignalDequeue {
+                    process: identity.process,
+                    sequence,
+                    consumer: match selection {
+                        SignalSelection::Delivery => reverie::SignalConsumer::ReturnToUser,
+                        SignalSelection::SignalFd(_) => reverie::SignalConsumer::SignalFd,
+                        SignalSelection::TimedWait(_) => reverie::SignalConsumer::SignalTimedWait,
+                    },
+                    domain: match pending.domain {
+                        PendingSignalDomain::Thread => reverie::PendingDomain::Thread,
+                        PendingSignalDomain::Process => reverie::PendingDomain::Process,
+                    },
+                    event: pending.event,
+                },
+            });
+    }
+    Ok(Some(pending))
+}
+
 fn take_signalfd_event(
     state: &mut LoadedStaticElf,
     mask: KernelSigset,
 ) -> Result<Option<reverie::SignalEvent>, i64> {
-    let event = {
-        let mut process_signals = state
-            .process_signals
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let generations = process_signals.pending_generations;
-        state
-            .thread_signals
-            .lock()
-            .pending
-            .take_signalfd_matching(mask, &generations)
-            .or_else(|| {
-                process_signals
-                    .shared_pending
-                    .take_signalfd_matching(mask, &generations)
-            })
-    };
+    let pending = take_signal_event(state, SignalSelection::SignalFd(mask))
+        .map_err(|errno| -(i64::from(errno.into_raw())))?;
     refresh_all_signalfd_readiness(state)?;
-    Ok(event)
+    Ok(pending.map(|pending| pending.event))
 }
 
 fn signalfd_read_stream(
@@ -13822,58 +14430,16 @@ fn rt_sigtimedwait(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: 
         Err(error) => return error,
     };
     set.clear_unmaskable();
-    // Dequeue the lowest matching pending signal under the lock, then recompute
-    // the readiness of any signalfd whose mask also selected it, mirroring
-    // `signalfd_read` (both consume from the same shared pending set).
-    let (event, readiness) = {
-        let mut process_signals = state
-            .process_signals
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let generations = process_signals.pending_generations;
-        let event = state
-            .thread_signals
-            .lock()
-            .pending
-            .take_matching(set, &generations)
-            .or_else(|| {
-                process_signals
-                    .shared_pending
-                    .take_matching(set, &generations)
-            });
-        let mut readiness = Vec::new();
-        if let Some(event) = event {
-            let signal = event.signal();
-            let affected = process_signals
-                .signalfd_masks
-                .iter()
-                .filter_map(|(&fd, mask)| mask.contains(signal).then_some(fd))
-                .collect::<Vec<_>>();
-            for fd in affected {
-                let mask = *process_signals.signalfd_masks[&fd];
-                let still_ready = state
-                    .thread_signals
-                    .lock()
-                    .pending
-                    .any_matching(mask, &generations)
-                    || process_signals
-                        .shared_pending
-                        .any_matching(mask, &generations);
-                readiness.push((fd, still_ready));
-            }
-        }
-        (event, readiness)
+    let event = match take_signal_event(state, SignalSelection::TimedWait(set)) {
+        Ok(pending) => pending.map(|pending| pending.event),
+        Err(errno) => return -(i64::from(errno.into_raw())),
     };
-    for (fd, ready) in readiness {
-        if let Some(file) = state.files.get(&fd)
-            && let Err(error) = set_signalfd_ready(file, ready)
-        {
-            return error;
-        }
-    }
     let Some(event) = event else {
         return negative_errno(libc::EAGAIN);
     };
+    if let Err(error) = refresh_signalfd_readiness_for_signal(state, Some(event.signal())) {
+        return error;
+    }
     // Preserve all event metadata rather than synthesizing a second siginfo.
     if args[1] != 0 {
         if !range_is_valid(memory, args[1], reverie::SIGNAL_INFO_SIZE as u64) {
@@ -14318,6 +14884,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         ioprio: 0,
         process_signals: Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
         thread_signals: SharedThreadSignalState::default(),
+        signal_dequeue_failure: None,
         task_lifecycle: Arc::new(std::sync::Mutex::new(
             crate::elf::TaskLifecycleTable::with_root(1, 1, 1, true),
         )),
@@ -14371,6 +14938,7 @@ mod tests {
     include!("pipe_fionread_tests.rs");
     include!("child_exit_signal_tests.rs");
     include!("process_alarm_signal_tests.rs");
+    include!("signal_dequeue_tests.rs");
 
     #[test]
     fn proc_root_identity_requires_qualified_mount_and_directory() {

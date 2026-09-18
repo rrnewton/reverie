@@ -18,6 +18,25 @@ pub enum Error {
     #[error("KVM execution stopped after a fatal run failure")]
     RunAborted,
 
+    /// Terminal failure with irreversible pending-state effects retained intact.
+    #[error("{cause}; committed signal effects: {} removals, {} publication receipts", dequeues.len(), publications.len())]
+    SignalEffects {
+        /// Original failure, never replaced by a cancellation fiction.
+        #[source]
+        cause: Arc<Error>,
+        /// Complete actual removals, including an unacknowledged prefix.
+        dequeues: Vec<reverie::SignalDequeue>,
+        /// Process-wide contiguous acknowledgment watermark captured in this
+        /// retained ledger; it can include another owner's acknowledgment.
+        acknowledged_through: u64,
+        /// Actual typed publication outcomes, including post-publication failure.
+        publications: Vec<reverie::ProcessAlarmSignalOutcome>,
+        /// Original injected syscall result, including an errno after removal.
+        raw_result: Option<i64>,
+        /// Original callback ledger, retained after the handler future is dropped.
+        context: Option<Box<reverie::ParkedSignalFailureContext>>,
+    },
+
     /// A guest worker panicked. Caught paths publish this before physical join;
     /// the ordinary join fallback also uses this cause for an unreported panic.
     #[error("guest thread panicked during teardown")]
@@ -161,6 +180,10 @@ pub enum Error {
     #[error("KVM guest thread limit exceeded by tid {0}")]
     GuestThreadLimitExceeded(i32),
 
+    /// Full-owner dequeue observation cannot cover deliberately uninstrumented workers.
+    #[error("KVM signal dequeue observation requires Tool-owned threads")]
+    SignalObservationRequiresToolThreads,
+
     /// Replacing the process image from a guest thread is not implemented.
     #[error("KVM guest threads cannot replace the process image")]
     GuestThreadExecUnsupported,
@@ -208,7 +231,8 @@ impl Error {
     /// Original typed cause beneath shared ownership and cleanup aggregation.
     pub fn primary(&self) -> &Self {
         match self {
-            Self::SharedFailure(error)
+            Self::SignalEffects { cause: error, .. }
+            | Self::SharedFailure(error)
             | Self::WorkerFailure { error, .. }
             | Self::WithCleanup { primary: error, .. }
             | Self::Cleanup { error, .. } => error.primary(),
@@ -219,7 +243,8 @@ impl Error {
 
     pub(crate) fn retains_primary(&self, primary: &std::sync::Arc<Error>) -> bool {
         match self {
-            Self::SharedFailure(error)
+            Self::SignalEffects { cause: error, .. }
+            | Self::SharedFailure(error)
             | Self::WorkerFailure { error, .. }
             | Self::WithCleanup { primary: error, .. }
             | Self::Cleanup { error, .. } => {
@@ -234,7 +259,8 @@ impl Error {
     pub(crate) fn worker_tid(&self) -> Option<i32> {
         match self {
             Self::WorkerFailure { tid, .. } => Some(*tid),
-            Self::SharedFailure(error)
+            Self::SignalEffects { cause: error, .. }
+            | Self::SharedFailure(error)
             | Self::WithCleanup { primary: error, .. }
             | Self::Cleanup { error, .. } => error.worker_tid(),
             Self::ExecWorkerTeardown(error) => error.worker_tid(),
@@ -397,6 +423,54 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[test]
+    fn signal_effects_preserve_first_failure_and_cancellation_evidence() {
+        let first = Arc::new(Error::GuestClock("original".to_owned()));
+        let context = reverie::ParkedSignalFailureContext {
+            site: reverie::CallbackSignalSite {
+                process: reverie::SignalProcessId {
+                    tgid: reverie::Pid::from_raw(1),
+                    generation: 2,
+                },
+                tid: reverie::Pid::from_raw(1),
+                task_generation: 3,
+                callback_nonce: 7,
+                boundary_nonce: 8,
+            },
+            ledger_nonce: 8,
+        };
+        let ledger = |cause| Error::SignalEffects {
+            cause: Arc::new(cause),
+            dequeues: Vec::new(),
+            acknowledged_through: 17,
+            publications: Vec::new(),
+            raw_result: Some(-14),
+            context: Some(Box::new(context)),
+        };
+        let worker = ledger(Error::WorkerFailure {
+            tid: 3,
+            error: first.clone(),
+        });
+        assert!(worker.retains_primary(&first));
+        assert_eq!(worker.worker_tid(), Some(3));
+        assert!(matches!(worker.primary(), Error::GuestClock(message) if message == "original"));
+        let cancelled = ledger(Error::RunAborted);
+        assert!(matches!(cancelled.primary(), Error::RunAborted));
+        let completed = cancelled.complete_after_failure(first.clone(), 3);
+        assert!(completed.retains_primary(&first));
+        assert!(matches!(completed.primary(), Error::GuestClock(message) if message == "original"));
+        let Error::WithCleanup { cleanup, .. } = completed else {
+            panic!("ledger lost")
+        };
+        assert_eq!(cleanup.len(), 1);
+        let Error::SharedFailure(retained) = cleanup[0].as_ref() else {
+            panic!("ledger not retained")
+        };
+        assert!(matches!(retained.as_ref(), Error::SignalEffects {
+            acknowledged_through: 17, raw_result: Some(-14), context: Some(actual), ..
+        } if **actual == context));
+    }
 
     #[test]
     fn worker_diagnostic_and_primary_survive_exec_and_cleanup_wrappers() {

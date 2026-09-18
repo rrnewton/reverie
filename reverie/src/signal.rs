@@ -8,6 +8,9 @@
 
 //! Backend-neutral signal delivery metadata.
 
+use serde::Deserialize;
+use serde::Serialize;
+
 use crate::Pid;
 use crate::Tid;
 use crate::error::Errno;
@@ -16,7 +19,7 @@ use crate::error::Errno;
 pub const SIGNAL_INFO_SIZE: usize = 128;
 
 /// Receiver state after accepting one process-directed child-exit event.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ChildExitSignalDisposition {
     /// Explicit `SIG_IGN` suppressed generation; no event was inserted.
     Ignored,
@@ -30,7 +33,7 @@ pub enum ChildExitSignalDisposition {
 }
 
 /// Why a child-exit event was refused before changing backend state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ChildExitSignalErrorKind {
     /// This backend, execution context, or producer class is unsupported.
     Unsupported,
@@ -47,7 +50,7 @@ pub enum ChildExitSignalErrorKind {
 /// or report a delivery that never reached the receiver. Neither failure is an
 /// ordinary guest syscall result. These generations identify the signal's
 /// disposition generation, not a scheduler operation or delivery identifier.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ChildExitSignalOutcome {
     /// The bounded receiver operation completed successfully.
     Accepted {
@@ -75,7 +78,7 @@ pub enum ChildExitSignalOutcome {
 }
 
 /// Current disposition of a process-pending alarm, before Tool filtering.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ProcessAlarmSignalDisposition {
     /// The Tool may observe the signal, but this disposition runs no handler.
     Ignored,
@@ -90,7 +93,7 @@ pub enum ProcessAlarmSignalDisposition {
 /// This is a publication receipt, not a dequeue identity, timer rearm, Tool
 /// observation, handler execution, or authorization to return `EINTR`. A later
 /// mask or disposition change may invalidate this eligibility snapshot.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProcessAlarmSignalReceipt {
     /// Whether the sole receiver currently blocks SIGALRM.
     pub blocked: bool,
@@ -103,7 +106,7 @@ pub struct ProcessAlarmSignalReceipt {
 }
 
 /// Why a process-alarm operation was refused without changing backend state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ProcessAlarmSignalErrorKind {
     /// This backend, callback, receiver configuration or producer is unsupported.
     Unsupported,
@@ -118,7 +121,7 @@ pub enum ProcessAlarmSignalErrorKind {
 /// Accepted alarms always belong to the shared process pending set, including
 /// blocked or ignored alarms. A Tool still observes eligible ignored signals.
 /// Retrying a failure after publication as if it were a refusal is incorrect.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ProcessAlarmSignalOutcome {
     /// Shared pending state and its signalfd readiness were published.
     Accepted(ProcessAlarmSignalReceipt),
@@ -140,7 +143,7 @@ pub enum ProcessAlarmSignalOutcome {
 
 /// Identifies both the selected guest task and whether a signal was originally
 /// process-directed or thread-directed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SignalTarget {
     /// A process-directed signal. The backend or determinizing tool selected a
     /// concrete thread in `pid` before deferring the event to that guest.
@@ -164,11 +167,37 @@ pub enum SignalTarget {
 /// process-versus-thread provenance needed by an out-of-process backend. It is
 /// intentionally an event selected by the caller, not a request for a backend
 /// to perform process-wide target selection.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "SignalEventWire", into = "SignalEventWire")]
 pub struct SignalEvent {
     signal: u8,
     siginfo: [u8; SIGNAL_INFO_SIZE],
     target: SignalTarget,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SignalEventWire {
+    signal: i32,
+    siginfo: Vec<u8>,
+    target: SignalTarget,
+}
+
+impl From<SignalEvent> for SignalEventWire {
+    fn from(event: SignalEvent) -> Self {
+        Self {
+            signal: event.signal(),
+            siginfo: event.siginfo().to_vec(),
+            target: event.target(),
+        }
+    }
+}
+
+impl TryFrom<SignalEventWire> for SignalEvent {
+    type Error = Errno;
+    fn try_from(wire: SignalEventWire) -> Result<Self, Self::Error> {
+        let info = wire.siginfo.try_into().map_err(|_| Errno::EINVAL)?;
+        Self::new(wire.signal, info, wire.target)
+    }
 }
 
 impl SignalEvent {

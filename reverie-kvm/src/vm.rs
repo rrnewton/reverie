@@ -342,10 +342,10 @@ pub(crate) fn finish_caught_worker_panic(
     failure: Option<&crate::failure::FailureContext>,
     group: &GuestThreadGroup,
     tid: i32,
+    error: Error,
     payload: Box<dyn std::any::Any + Send>,
     retire: impl FnOnce(),
 ) -> ! {
-    let error = Error::GuestWorkerPanic;
     let error = match failure {
         Some(failure) => failure
             .for_thread(Pid::from_raw(tid))
@@ -3328,7 +3328,10 @@ impl KvmBackend {
         // resources and transferring independent forks to the process owner.
         let failure = self.tool_failure.clone();
         let group = self.thread_group.clone();
-        finish_caught_worker_panic(failure.as_ref(), &group, tid, payload, || {
+        // No consuming Tool hook survives unwind. Transfer only this exact
+        // executor's journal/ledger, retaining the panic as the primary cause.
+        let error = executor.with_signal_effects(Error::GuestWorkerPanic, None);
+        finish_caught_worker_panic(failure.as_ref(), &group, tid, error, payload, || {
             executor.retire_failed_thread();
             self.clear_registered_worker_tid_before_exit(executor);
             executor.release_files_on_exit();
