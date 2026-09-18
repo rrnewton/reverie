@@ -20,7 +20,7 @@ use crate::validate_run_handle;
 use chrono::{Local, TimeZone};
 use clap::{Args, Subcommand, ValueEnum};
 use fs2::FileExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::cell::RefCell;
 #[cfg(test)]
@@ -29,6 +29,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -125,6 +126,8 @@ const OWNER_WATCH_VERIFIER_RELATIVE: &str = "scripts/owner-checkout-validate-wat
 /// A failed or timed-out fetch refuses freshness; it must not turn a stale-head
 /// optimization into an unbounded box-global anchor hold.
 const CURRENT_MAIN_FETCH_TIMEOUT_SECONDS: u64 = 30;
+/// Admission evidence is small, fixed-schema metadata, never an unbounded log.
+const ADMISSION_FLOOR_MAX_BYTES: u64 = 16 * 1024;
 /// Admission-owned source-branch provenance forwarded to the ledger adapter.
 /// The child must not inherit an ambient value when an older or detached run
 /// handle carries no branch.
@@ -1026,6 +1029,88 @@ struct AuthorityHolder {
     expires_at: i64,
 }
 
+/// The policy floor of one admitted run, not a claim about current main now.
+/// Frozen evidence has its own kind and must never become canonical currency.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum AdmissionFloorKind {
+    CurrentMain,
+    FrozenTarget,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AdmissionFloor {
+    kind: AdmissionFloorKind,
+    sha: String,
+    tree: String,
+    observed_main_sha: String,
+}
+
+/// An extension of the canonical slot's authority, not a second lock. Keep it
+/// out of the legacy holder/owner text: older readers reject extra fields.
+/// Lease timestamps change on renewal; the supervisor's kernel identity is
+/// the stable invocation generation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AdmissionFloorRecord {
+    schema_version: u32,
+    lock_path: PathBuf,
+    agent: String,
+    kind: String,
+    target: String,
+    host: String,
+    owner_boot_id: String,
+    owner_pid: u32,
+    owner_start_ticks: u64,
+    floor: AdmissionFloor,
+}
+
+impl AdmissionFloor {
+    fn matches_policy(&self, kind: &str, target: &str) -> bool {
+        if ![
+            self.sha.as_str(),
+            self.tree.as_str(),
+            self.observed_main_sha.as_str(),
+            target,
+        ]
+        .into_iter()
+        .all(is_full_sha)
+        {
+            return false;
+        }
+        match (self.kind, Kind::parse(kind)) {
+            (AdmissionFloorKind::CurrentMain, Ok(Kind::Validate | Kind::ReverieValidate)) => {
+                self.sha == self.observed_main_sha
+            }
+            (AdmissionFloorKind::FrozenTarget, Ok(Kind::FrozenValidate)) => {
+                self.sha == target && self.observed_main_sha != target
+            }
+            _ => false,
+        }
+    }
+}
+
+impl AdmissionFloorRecord {
+    fn matches_generation(
+        &self,
+        paths: &LockPaths,
+        holder: &ValidateLockState,
+        owner: &ProcessOwner,
+    ) -> bool {
+        self.schema_version == 1
+            && self.lock_path == paths.lock
+            && self.agent == holder.agent
+            && self.kind == holder.kind
+            && self.target == holder.target
+            && self.host == holder.host
+            && self.host == owner.host
+            && self.owner_boot_id == owner.boot_id
+            && self.owner_pid == owner.pid
+            && self.owner_start_ticks == owner.start_ticks
+    }
+}
+
 impl From<&ValidateLockState> for AuthorityHolder {
     fn from(holder: &ValidateLockState) -> Self {
         Self {
@@ -1075,6 +1160,10 @@ struct AuthorityStatus {
     owner: Option<AuthorityOwner>,
     canonical_anchor_held: bool,
     cleanup_state: AuthorityCleanupState,
+    /// Available only with the SAME live, guarded authority above. Older
+    /// acquisitions remain readable without acquiring invented floor evidence.
+    admission_floor: Option<AdmissionFloor>,
+    admission_floor_reason: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1193,6 +1282,8 @@ impl AuthorityStatus {
             owner,
             canonical_anchor_held,
             cleanup_state,
+            admission_floor: None,
+            admission_floor_reason: Some("canonical-authority-unavailable".into()),
         }
     }
 
@@ -1211,6 +1302,8 @@ impl AuthorityStatus {
             owner: Some(owner),
             canonical_anchor_held: true,
             cleanup_state,
+            admission_floor: None,
+            admission_floor_reason: Some("not-recorded".into()),
         }
     }
 
@@ -1230,6 +1323,8 @@ impl AuthorityStatus {
             owner: Some(owner),
             canonical_anchor_held: true,
             cleanup_state,
+            admission_floor: None,
+            admission_floor_reason: Some("not-recorded".into()),
         }
     }
 }
@@ -1308,6 +1403,7 @@ struct LockPaths {
     guard: PathBuf,
     queue: PathBuf,
     owner: PathBuf,
+    admission_floor: PathBuf,
     cleanup: PathBuf,
     /// Durable record of the most recent transition from held to free. Unlike
     /// `.validate-lock.queue` mtime, this is an explicit admission contract.
@@ -1374,6 +1470,7 @@ impl LockPaths {
             guard: suffix(&lock, ".guard"),
             queue: suffix(&lock, ".queue"),
             owner: suffix(&lock, ".owner"),
+            admission_floor: suffix(&lock, ".admission-floor.json"),
             cleanup: suffix(&lock, ".cleanup-required"),
             released: suffix(&lock, ".released"),
             owner_watch_verifier: None,
@@ -1395,6 +1492,7 @@ impl LockPaths {
             guard: suffix(&lock, ".guard"),
             queue: suffix(&lock, ".queue"),
             owner: suffix(&lock, ".owner"),
+            admission_floor: suffix(&lock, ".admission-floor.json"),
             cleanup: suffix(&lock, ".cleanup-required"),
             // The owner-watch boundary is global: either validate release must
             // give it the same opportunity to run.
@@ -2478,7 +2576,7 @@ pub fn execute(
                 match if args.target_was_fetched_main {
                     Ok(())
                 } else {
-                    current_main_freshness_check(state_root, &args.target, args.kind)
+                    current_main_freshness_check(state_root, &args.target, args.kind).map(|_| ())
                 } {
                     Ok(()) => lock.immediate_admission_status(&args)?,
                     Err(error) => ImmediateAdmissionStatus::not_admissible(
@@ -2749,9 +2847,9 @@ fn current_main_freshness_check(
     root: &Path,
     target: &str,
     kind: Kind,
-) -> Result<(), ValidateLockError> {
+) -> Result<Option<AdmissionFloor>, ValidateLockError> {
     let Some(repository) = validation_repository(root, kind)? else {
-        return Ok(());
+        return Ok(None);
     };
 
     // Existing lock-only tests inject the immutable-floor command and do not
@@ -2760,7 +2858,7 @@ fn current_main_freshness_check(
     // brackets below exercise real repositories and real fetches.
     #[cfg(test)]
     if test_only_override(ADMIT_PREFLIGHT_CMD_ENV).is_some() && !repository.join(".git").exists() {
-        return Ok(());
+        return Ok(None);
     }
 
     // A frozen checkout deliberately rewrites its private origin/main to the
@@ -2819,8 +2917,6 @@ fn current_main_freshness_check(
                 repository.display()
             ))
         })?;
-    FileExt::unlock(&git_lock)
-        .map_err(|source| io_error("unlock shared Git metadata", &git_lock_path, source))?;
     if !output.status.success() {
         return Err(ValidateLockError::StaleBase(format!(
             "validate-lock: current origin/main fetch failed in {} (git exit {:?}: {}); freshness for {target} is UNRESOLVED.",
@@ -2830,15 +2926,21 @@ fn current_main_freshness_check(
         )));
     }
 
+    // Capture the actual fetched object BEFORE releasing the shared Git lock.
+    // A later fetch may advance origin/main while this run is active; neither
+    // this ancestry decision nor its eventual pin floor may follow that ref.
+    let main = validation_object(&repository, "refs/remotes/origin/main^{commit}")?;
+    let main_tree = validation_object(&repository, &format!("{main}^{{tree}}"))?;
+    FileExt::unlock(&git_lock)
+        .map_err(|source| io_error("unlock shared Git metadata", &git_lock_path, source))?;
+    run_current_main_after_capture_hook();
+
     let output = Command::new("git")
+        .arg("--no-replace-objects")
+        .env("GIT_GRAFT_FILE", "/dev/null")
         .arg("-C")
         .arg(&repository)
-        .args([
-            "merge-base",
-            "--is-ancestor",
-            "refs/remotes/origin/main",
-            target,
-        ])
+        .args(["merge-base", "--is-ancestor", &main, target])
         .bounded_output()
         .map_err(|error| {
             ValidateLockError::StaleBase(format!(
@@ -2904,12 +3006,22 @@ fn current_main_freshness_check(
                     observed
                 )));
             }
-            Ok(())
+            Ok(Some(AdmissionFloor {
+                kind: AdmissionFloorKind::FrozenTarget,
+                sha: target.into(),
+                tree: validation_object(&repository, &format!("{target}^{{tree}}"))?,
+                observed_main_sha: main,
+            }))
         }
         (Kind::FrozenValidate, Some(0)) => Err(ValidateLockError::StaleBase(format!(
             "REFUSE: frozen validation target {target} still contains freshly fetched origin/main. Use ordinary validate for a current target."
         ))),
-        (_, Some(0)) => Ok(()),
+        (_, Some(0)) => Ok(Some(AdmissionFloor {
+            kind: AdmissionFloorKind::CurrentMain,
+            sha: main.clone(),
+            tree: main_tree,
+            observed_main_sha: main,
+        })),
         (_, Some(1)) => Err(ValidateLockError::StaleBase(format!(
             "REFUSE: validation target {target} does not contain freshly fetched origin/main. Rebase before validating."
         ))),
@@ -2919,6 +3031,31 @@ fn current_main_freshness_check(
             String::from_utf8_lossy(&output.stderr).trim()
         ))),
     }
+}
+
+fn validation_object(repository: &Path, revision: &str) -> Result<String, ValidateLockError> {
+    let output = Command::new("git")
+        .arg("--no-replace-objects")
+        .env("GIT_GRAFT_FILE", "/dev/null")
+        .arg("-C")
+        .arg(repository)
+        .args(["rev-parse", "--verify", revision])
+        .bounded_output()
+        .map_err(|error| {
+            ValidateLockError::StaleBase(format!(
+                "validate-lock: admission object {revision} is UNRESOLVED in {} ({error})",
+                repository.display()
+            ))
+        })?;
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || !is_full_sha(&sha) {
+        return Err(ValidateLockError::StaleBase(format!(
+            "validate-lock: admission object {revision} is UNRESOLVED in {} (git exit {:?})",
+            repository.display(),
+            output.status.code()
+        )));
+    }
+    Ok(sha)
 }
 
 fn stale_base_refusal(error: ValidateLockError) -> Result<i32, ValidateLockError> {
@@ -2935,7 +3072,25 @@ fn stale_base_refusal(error: ValidateLockError) -> Result<i32, ValidateLockError
 thread_local! {
     static CURRENT_MAIN_BETWEEN_CHECKS_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
         RefCell::new(None);
+    static CURRENT_MAIN_AFTER_CAPTURE_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
+        RefCell::new(None);
+    static ADMISSION_BOUNDARY_AFTER_LOCAL_YIELD_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
+        RefCell::new(None);
+    static ADMISSION_FLOOR_AFTER_LOCAL_ACQUIRE_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
+        RefCell::new(None);
 }
+
+#[cfg(test)]
+fn run_current_main_after_capture_hook() {
+    CURRENT_MAIN_AFTER_CAPTURE_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_current_main_after_capture_hook() {}
 
 #[cfg(test)]
 fn run_current_main_between_checks_hook() {
@@ -3967,6 +4122,8 @@ impl ValidateLock {
             let token = self.with_guard(|| {
                 self.try_acquire_ordered(agent, kind, target, hold, honor_repository_fifo)
             })?;
+            #[cfg(test)]
+            let observed_local_yield = matches!(&token, AcquireToken::Yield { .. });
             match token {
                 AcquireToken::Acquired => {
                     eprintln!(
@@ -4041,6 +4198,14 @@ impl ValidateLock {
             // No payload Child exists until this acquisition succeeds.
             reap_exited_children();
             thread::sleep(Duration::from_secs(POLL_SECONDS));
+            #[cfg(test)]
+            if observed_local_yield {
+                ADMISSION_BOUNDARY_AFTER_LOCAL_YIELD_HOOK.with(|slot| {
+                    if let Some(hook) = slot.borrow_mut().take() {
+                        hook();
+                    }
+                });
+            }
         }
     }
 
@@ -4169,6 +4334,10 @@ impl ValidateLock {
             }
             _ => holder.agent,
         });
+        // A legacy/manual acquisition has no new producer evidence. Clear the
+        // previous extension at this already-authorized ownership boundary so
+        // even a same-process reacquisition cannot borrow a previous floor.
+        remove_if_exists(&self.paths.admission_floor)?;
         self.write_holder(&new_holder(agent, kind, target, hold, reclaimed.clone())?)?;
         remove_if_exists(&self.paths.owner)?;
         queue.retain(|entry| entry.agent != agent);
@@ -4222,6 +4391,7 @@ impl ValidateLock {
             // guard. If this write fails, the lock stays held: UNKNOWN never
             // becomes a silently free/admissible boundary.
             self.write_release_record(&holder.agent, &holder.kind, &holder.target, None)?;
+            self.remove_matching_admission_floor(&holder)?;
             remove_if_exists(&self.paths.lock)?;
             remove_if_exists(&self.paths.owner)?;
             self.remove_from_queue(agent)?;
@@ -4958,6 +5128,12 @@ impl ValidateLock {
             }
         };
 
+        let floor_evidence = match (&holder_record, &owner_record) {
+            (AuthorityRecord::Present(holder), AuthorityRecord::Present(owner)) => {
+                self.bound_admission_floor(holder, owner)
+            }
+            _ => Err("canonical-authority-unavailable"),
+        };
         let anchor_after = canonical_anchor_held(&self.paths.anchor)?;
         let canonical_anchor_held = anchor_before && anchor_after;
         let holder = holder_ref.map(AuthorityHolder::from);
@@ -5100,15 +5276,27 @@ impl ValidateLock {
                 "authority owner disappeared after canonical classification".into(),
             )
         })?;
-        if holder_kind == Some(Kind::FrozenValidate) {
-            return Ok(AuthorityStatus::admitted_noncanonical(
+        let mut status = if holder_kind == Some(Kind::FrozenValidate) {
+            AuthorityStatus::admitted_noncanonical(
                 "canonical-holder-kind-not-validate",
                 holder,
                 owner,
                 cleanup_state,
-            ));
+            )
+        } else {
+            AuthorityStatus::admitted(holder, owner, cleanup_state)
+        };
+        // Expose only after the existing authority is established, and from the
+        // same guarded slot and owner. An unavailable extension does not rewrite
+        // the legacy admission verdict; it supplies no pin-floor permission.
+        match floor_evidence {
+            Ok(floor) => {
+                status.admission_floor = Some(floor);
+                status.admission_floor_reason = None;
+            }
+            Err(reason) => status.admission_floor_reason = Some(reason.into()),
         }
-        Ok(AuthorityStatus::admitted(holder, owner, cleanup_state))
+        Ok(status)
     }
 
     fn status(&self, tool_root: &Path) -> Result<(), ValidateLockError> {
@@ -5322,6 +5510,7 @@ impl ValidateLock {
                         &holder.target,
                         attestation.as_ref(),
                     )?;
+                    self.remove_matching_admission_floor(&holder)?;
                     remove_if_exists(&self.paths.lock)?;
                     remove_if_exists(&self.paths.owner)?;
                     remove_cleanup_record_and_claim(
@@ -5708,17 +5897,17 @@ impl ValidateLock {
             match boundary.state {
                 YieldState::Allow => {
                     // `origin/main` may have advanced during the queue wait.
-                    // Re-fetch at the last boundary before this waiter is
-                    // removed and the repository lease is acquired. The
-                    // product driver's local-ref check remains a defensive
-                    // assertion against any later race.
+                    // Re-fetch before removing this waiter. Local acquisition
+                    // can still yield after another slot releases, so this is
+                    // an eviction check, not the final admission floor.
                     run_current_main_between_checks_hook();
-                    if let Err(error) =
-                        current_main_freshness_check(state_root, &args.target, args.kind)
-                    {
-                        drop(box_anchors);
-                        self.remove_own_global_waiter(&args, &owner)?;
-                        return stale_base_refusal_with_record(tool_root, &attribution, error);
+                    match current_main_freshness_check(state_root, &args.target, args.kind) {
+                        Ok(_) => {}
+                        Err(error) => {
+                            drop(box_anchors);
+                            self.remove_own_global_waiter(&args, &owner)?;
+                            return stale_base_refusal_with_record(tool_root, &attribution, error);
+                        }
                     }
                     self.remove_own_global_waiter(&args, &owner)?;
                     break;
@@ -5873,7 +6062,30 @@ impl ValidateLock {
             }
         }
 
-        if let Err(error) = active.with_guard(|| active.write_current_process_owner()) {
+        #[cfg(test)]
+        ADMISSION_FLOOR_AFTER_LOCAL_ACQUIRE_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
+
+        // The local acquisition above may have slept after our queue-boundary
+        // fetch. Capture authority only now, before any owner/floor/admission
+        // publication or child. A stale or unresolved final check releases the
+        // unused lease normally; a release failure must remain a real error.
+        let admission_floor =
+            match current_main_freshness_check(state_root, &args.target, args.kind) {
+                Ok(floor) => floor,
+                Err(error) => {
+                    active.release(&args.agent, true)?;
+                    return stale_base_refusal_with_record(tool_root, &attribution, error);
+                }
+            };
+
+        if let Err(error) = active.with_guard(|| {
+            active.write_current_process_owner()?;
+            active.write_admission_floor(admission_floor.as_ref())
+        }) {
             let _ = active.release(&args.agent, true);
             return Err(error);
         }
@@ -6217,6 +6429,128 @@ impl ValidateLock {
     fn write_current_process_owner(&self) -> Result<(), ValidateLockError> {
         let owner = current_process_owner()?;
         write_truncated(&self.paths.owner, owner.render().as_bytes())
+    }
+
+    fn read_admission_floor_record(&self) -> Result<AdmissionFloorRecord, &'static str> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&self.paths.admission_floor)
+            .map_err(|error| match error.kind() {
+                io::ErrorKind::NotFound => "not-recorded",
+                _ => "unreadable",
+            })?;
+        if !file.metadata().map_err(|_| "unreadable")?.is_file() {
+            return Err("not-regular-file");
+        }
+        let mut bytes = Vec::new();
+        file.take(ADMISSION_FLOOR_MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "unreadable")?;
+        if bytes.len() as u64 > ADMISSION_FLOOR_MAX_BYTES {
+            return Err("oversized");
+        }
+        serde_json::from_slice(&bytes).map_err(|_| "malformed")
+    }
+
+    fn bound_admission_floor(
+        &self,
+        holder: &ValidateLockState,
+        owner: &ProcessOwner,
+    ) -> Result<AdmissionFloor, &'static str> {
+        let record = self.read_admission_floor_record()?;
+        if !record.matches_generation(&self.paths, holder, owner) {
+            return Err("generation-mismatch");
+        }
+        if !record.floor.matches_policy(&holder.kind, &holder.target) {
+            return Err("policy-mismatch");
+        }
+        Ok(record.floor)
+    }
+
+    /// Called under the canonical guard after the real supervised acquisition.
+    /// A missing floor (bench or old test-only lock fixture) is not fabricated.
+    fn write_admission_floor(
+        &self,
+        floor: Option<&AdmissionFloor>,
+    ) -> Result<(), ValidateLockError> {
+        let Some(floor) = floor else { return Ok(()) };
+        let holder = self.read_holder()?.ok_or_else(|| {
+            ValidateLockError::InvalidState("admission floor has no current holder".into())
+        })?;
+        let owner = self.read_process_owner()?.ok_or_else(|| {
+            ValidateLockError::InvalidState("admission floor has no current owner".into())
+        })?;
+        self.assert_current_process_owner("publish admission floor")?;
+        if holder.host != owner.host || !floor.matches_policy(&holder.kind, &holder.target) {
+            return Err(ValidateLockError::InvalidState(
+                "admission floor does not match the current holder's policy".into(),
+            ));
+        }
+        let record = AdmissionFloorRecord {
+            schema_version: 1,
+            lock_path: self.paths.lock.clone(),
+            agent: holder.agent,
+            kind: holder.kind,
+            target: holder.target,
+            host: holder.host,
+            owner_boot_id: owner.boot_id,
+            owner_pid: owner.pid,
+            owner_start_ticks: owner.start_ticks,
+            floor: floor.clone(),
+        };
+        let bytes = serde_json::to_vec(&record).map_err(|error| {
+            ValidateLockError::InvalidState(format!("cannot serialize admission floor: {error}"))
+        })?;
+        if bytes.len() as u64 > ADMISSION_FLOOR_MAX_BYTES {
+            return Err(ValidateLockError::InvalidState(
+                "admission floor is oversized".into(),
+            ));
+        }
+        let temporary = suffix(
+            &self.paths.admission_floor,
+            &format!(".tmp-{}-{}", owner.pid, owner.start_ticks),
+        );
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|source| io_error("create admission floor", &temporary, source))?;
+        let result = (|| {
+            file.write_all(&bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|source| io_error("write admission floor", &temporary, source))?;
+            fs::rename(&temporary, &self.paths.admission_floor).map_err(|source| {
+                io_error(
+                    "publish admission floor",
+                    &self.paths.admission_floor,
+                    source,
+                )
+            })
+        })();
+        drop(file);
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
+    }
+
+    /// Release/recovery may discard only the extension belonging to the exact
+    /// holder and recorded supervisor they are already authorized to retire.
+    fn remove_matching_admission_floor(
+        &self,
+        holder: &ValidateLockState,
+    ) -> Result<(), ValidateLockError> {
+        let Some(owner) = self.read_process_owner()? else {
+            return Ok(());
+        };
+        if self
+            .read_admission_floor_record()
+            .is_ok_and(|record| record.matches_generation(&self.paths, holder, &owner))
+        {
+            remove_if_exists(&self.paths.admission_floor)?;
+        }
+        Ok(())
     }
 
     fn owner_liveness(&self) -> Result<OwnerLiveness, ValidateLockError> {
@@ -7230,6 +7564,7 @@ mod tests {
             guard: suffix(&lock, ".guard"),
             queue: suffix(&lock, ".queue"),
             owner: suffix(&lock, ".owner"),
+            admission_floor: suffix(&lock, ".admission-floor.json"),
             cleanup: suffix(&lock, ".cleanup-required"),
             released: suffix(&lock, ".released"),
             owner_watch_verifier: Some(owner_watch_verifier),
@@ -7673,6 +8008,272 @@ mod tests {
             .unwrap()
             .expect("per-test canonical anchor must be available");
         (lock, anchor)
+    }
+
+    fn test_admission_floor() -> AdmissionFloor {
+        AdmissionFloor {
+            kind: AdmissionFloorKind::CurrentMain,
+            sha: HEX_SHA.into(),
+            tree: "1111111111111111111111111111111111111111".into(),
+            observed_main_sha: HEX_SHA.into(),
+        }
+    }
+
+    #[test]
+    fn admission_floor_is_optional_without_changing_legacy_authority_bytes() {
+        let paths = temp_paths("floor-legacy");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let (lock, _anchor) = planted_live_authority(&paths);
+        let holder_bytes = fs::read(&paths.lock).unwrap();
+        let owner_bytes = fs::read(&paths.owner).unwrap();
+        let status = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+        assert!(status.admissible);
+        assert_eq!(status.admission_floor, None);
+        assert_eq!(
+            status.admission_floor_reason.as_deref(),
+            Some("not-recorded")
+        );
+
+        let floor = test_admission_floor();
+        lock.with_guard(|| lock.write_admission_floor(Some(&floor)))
+            .unwrap();
+        let status = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+        assert!(status.admissible);
+        assert_eq!(status.admission_floor, Some(floor));
+        assert_eq!(status.admission_floor_reason, None);
+        assert_eq!(fs::read(&paths.lock).unwrap(), holder_bytes);
+        assert_eq!(fs::read(&paths.owner).unwrap(), owner_bytes);
+        ValidateLockState::parse(std::str::from_utf8(&holder_bytes).unwrap()).unwrap();
+        ProcessOwner::parse(std::str::from_utf8(&owner_bytes).unwrap()).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn admission_floor_refuses_mismatched_generation_and_invalid_policy() {
+        let paths = temp_paths("floor-binding");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let (lock, _anchor) = planted_live_authority(&paths);
+        lock.with_guard(|| lock.write_admission_floor(Some(&test_admission_floor())))
+            .unwrap();
+        let authentic = fs::read(&paths.admission_floor).unwrap();
+        let original: serde_json::Value = serde_json::from_slice(&authentic).unwrap();
+        for (key, bad_value) in [
+            ("schema_version", serde_json::json!(2)),
+            ("lock_path", serde_json::json!(paths.for_slot(1).lock)),
+            ("agent", serde_json::json!("another-agent")),
+            ("kind", serde_json::json!("frozen-validate")),
+            (
+                "target",
+                serde_json::json!("2222222222222222222222222222222222222222"),
+            ),
+            ("host", serde_json::json!("another-host")),
+            ("owner_boot_id", serde_json::json!("older-boot")),
+            ("owner_pid", serde_json::json!(std::process::id() + 1)),
+            (
+                "owner_start_ticks",
+                serde_json::json!(current_process_owner().unwrap().start_ticks + 1),
+            ),
+        ] {
+            let mut record = original.clone();
+            record[key] = bad_value;
+            fs::write(&paths.admission_floor, serde_json::to_vec(&record).unwrap()).unwrap();
+            let status = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+            assert!(status.admissible, "legacy authority is unchanged for {key}");
+            assert_eq!(status.admission_floor, None, "must reject {key}");
+            assert_eq!(
+                status.admission_floor_reason.as_deref(),
+                Some("generation-mismatch")
+            );
+        }
+        for (key, bad_value) in [
+            ("kind", serde_json::json!("frozen-target")),
+            ("sha", serde_json::json!("not-a-full-sha")),
+            ("tree", serde_json::json!("")),
+            (
+                "observed_main_sha",
+                serde_json::json!("2222222222222222222222222222222222222222"),
+            ),
+        ] {
+            let mut record = original.clone();
+            record["floor"][key] = bad_value;
+            fs::write(&paths.admission_floor, serde_json::to_vec(&record).unwrap()).unwrap();
+            let status = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+            assert!(status.admissible);
+            assert_eq!(status.admission_floor, None, "must reject floor.{key}");
+            assert_eq!(
+                status.admission_floor_reason.as_deref(),
+                Some("policy-mismatch")
+            );
+        }
+        fs::write(&paths.admission_floor, authentic).unwrap();
+        assert_eq!(
+            lock.with_guard(|| lock.authority_status_guarded())
+                .unwrap()
+                .admission_floor,
+            Some(test_admission_floor())
+        );
+        // A valid extension cannot rescue an invalid primary owner record.
+        let mut owner = current_process_owner().unwrap();
+        owner.start_ticks += 1;
+        fs::write(&paths.owner, owner.render()).unwrap();
+        let status = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+        assert!(!status.admissible);
+        assert_eq!(status.admission_floor, None);
+        assert_eq!(
+            status.admission_floor_reason.as_deref(),
+            Some("canonical-authority-unavailable")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn admission_floor_refuses_malformed_duplicate_unknown_and_unbounded_records() {
+        let paths = temp_paths("floor-invalid-record");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let (lock, _anchor) = planted_live_authority(&paths);
+        lock.with_guard(|| lock.write_admission_floor(Some(&test_admission_floor())))
+            .unwrap();
+        let authentic = fs::read_to_string(&paths.admission_floor).unwrap();
+        for bytes in [
+            "null".into(),
+            "{".into(),
+            authentic.replacen("{", "{\"unknown\":true,", 1),
+            authentic.replacen("{", "{\"schema_version\":1,", 1),
+            authentic.replace("\"floor\":{", "\"floor\":{\"unknown\":true,"),
+        ] {
+            fs::write(&paths.admission_floor, bytes).unwrap();
+            let status = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+            assert!(status.admissible);
+            assert_eq!(status.admission_floor, None);
+            assert_eq!(status.admission_floor_reason.as_deref(), Some("malformed"));
+        }
+        fs::write(
+            &paths.admission_floor,
+            vec![b' '; ADMISSION_FLOOR_MAX_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert_eq!(lock.read_admission_floor_record(), Err("oversized"));
+        fs::remove_file(&paths.admission_floor).unwrap();
+        let outside = root.join("outside-evidence");
+        fs::write(&outside, authentic.as_bytes()).unwrap();
+        std::os::unix::fs::symlink(&outside, &paths.admission_floor).unwrap();
+        assert_eq!(lock.read_admission_floor_record(), Err("unreadable"));
+        assert_eq!(fs::read_to_string(&outside).unwrap(), authentic);
+        fs::remove_file(&paths.admission_floor).unwrap();
+        let fifo = std::ffi::CString::new(paths.admission_floor.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert_eq!(lock.read_admission_floor_record(), Err("not-regular-file"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn admission_floor_survives_renewal_but_not_release_or_new_acquisition() {
+        let paths = temp_paths("floor-renew-release");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let (lock, _anchor) = planted_live_authority(&paths);
+        lock.with_guard(|| lock.write_admission_floor(Some(&test_admission_floor())))
+            .unwrap();
+        let authentic = fs::read(&paths.admission_floor).unwrap();
+        let before = lock.read_holder().unwrap().unwrap();
+        lock.renew("authority-test", 120, false).unwrap();
+        assert!(lock.read_holder().unwrap().unwrap().expires_at > before.expires_at);
+        assert_eq!(fs::read(&paths.admission_floor).unwrap(), authentic);
+        assert_eq!(
+            lock.with_guard(|| lock.authority_status_guarded())
+                .unwrap()
+                .admission_floor,
+            Some(test_admission_floor())
+        );
+        lock.release("authority-test", false).unwrap();
+        assert!(!paths.admission_floor.exists());
+        // Model an old leftover extension, then acquire without a new producer.
+        fs::write(&paths.admission_floor, &authentic).unwrap();
+        assert!(matches!(
+            lock.with_guard(|| lock.try_acquire("authority-test", Kind::Validate, HEX_SHA, 60))
+                .unwrap(),
+            AcquireToken::Yield { .. }
+        ));
+        assert_eq!(fs::read(&paths.admission_floor).unwrap(), authentic);
+        // The owner's ordinary post-release opportunity is still mandatory.
+        seed_watch_after_latest_release(&lock);
+        assert_eq!(
+            lock.yield_status_guarded(epoch_seconds().unwrap()).state,
+            YieldState::Allow
+        );
+        assert!(matches!(
+            lock.with_guard(|| lock.try_acquire("authority-test", Kind::Validate, HEX_SHA, 60))
+                .unwrap(),
+            AcquireToken::Acquired
+        ));
+        lock.with_guard(|| lock.write_current_process_owner())
+            .unwrap();
+        assert!(!paths.admission_floor.exists());
+        let status = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+        assert!(status.admissible);
+        assert_eq!(status.admission_floor, None);
+        assert_eq!(
+            status.admission_floor_reason.as_deref(),
+            Some("not-recorded")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn admission_floor_release_does_not_delete_another_generations_record() {
+        let paths = temp_paths("floor-release-foreign");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let (lock, _anchor) = planted_live_authority(&paths);
+        lock.with_guard(|| lock.write_admission_floor(Some(&test_admission_floor())))
+            .unwrap();
+        let mut record = lock.read_admission_floor_record().unwrap();
+        record.owner_start_ticks += 1;
+        let stale = serde_json::to_vec(&record).unwrap();
+        fs::write(&paths.admission_floor, &stale).unwrap();
+        lock.release("authority-test", false).unwrap();
+        assert_eq!(fs::read(&paths.admission_floor).unwrap(), stale);
+        let status = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+        assert!(!status.admissible);
+        assert_eq!(status.admission_floor, None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn admission_floor_keeps_frozen_authority_noncanonical_and_bench_unqualified() {
+        let paths = temp_paths("floor-frozen");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let (lock, _anchor) = planted_live_authority(&paths);
+        let mut holder = lock.read_holder().unwrap().unwrap();
+        holder.kind = Kind::FrozenValidate.as_str().into();
+        lock.write_holder(&holder).unwrap();
+        assert!(lock
+            .with_guard(|| lock.write_admission_floor(Some(&test_admission_floor())))
+            .is_err());
+        let frozen = AdmissionFloor {
+            kind: AdmissionFloorKind::FrozenTarget,
+            observed_main_sha: "2222222222222222222222222222222222222222".into(),
+            ..test_admission_floor()
+        };
+        lock.with_guard(|| lock.write_admission_floor(Some(&frozen)))
+            .unwrap();
+        let status = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+        assert!(status.lock_admissible);
+        assert!(!status.admissible);
+        assert_eq!(status.admission_floor, Some(frozen));
+        holder.kind = Kind::Bench.as_str().into();
+        lock.write_holder(&holder).unwrap();
+        lock.with_guard(|| lock.write_admission_floor(None))
+            .unwrap();
+        assert!(lock
+            .with_guard(|| lock.write_admission_floor(Some(&test_admission_floor())))
+            .is_err());
+        let status = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+        assert!(!status.admissible);
+        assert_eq!(status.admission_floor, None);
+        assert_eq!(
+            current_main_freshness_check(&root, "bench:example", Kind::Bench).unwrap(),
+            None
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -11277,6 +11878,828 @@ exit 0
         git_success(Some(&seed), &["add", "advanced"]);
         git_success(Some(&seed), &["commit", "--quiet", "-m", "main advances"]);
         (paths, root, seed, target)
+    }
+
+    #[test]
+    fn admission_floor_git_grafts_cannot_forge_current_main_ancestry() {
+        let (paths, root, seed, target) = current_main_fixture("floor-graft-ancestry", "hermit");
+        let checkout = root.join("hermit");
+        let original = current_main_freshness_check(&root, &target, Kind::Validate)
+            .unwrap()
+            .unwrap();
+        git_success(Some(&seed), &["push", "--quiet", "origin", "main"]);
+        let advanced = git_success(Some(&seed), &["rev-parse", "HEAD"]);
+        assert_ne!(original.sha, advanced);
+        assert!(matches!(
+            current_main_freshness_check(&root, &target, Kind::Validate),
+            Err(ValidateLockError::StaleBase(message)) if message.contains("does not contain")
+        ));
+        fs::write(
+            checkout.join(".git/info/grafts"),
+            format!("{target} {advanced}\n"),
+        )
+        .unwrap();
+        git_success(
+            Some(&checkout),
+            &["merge-base", "--is-ancestor", &advanced, &target],
+        );
+        eprintln!(
+            "real graft forges ancestry: target={target} main={advanced} original={}",
+            original.sha
+        );
+        assert!(
+            matches!(
+                current_main_freshness_check(&root, &target, Kind::Validate),
+                Err(ValidateLockError::StaleBase(message)) if message.contains("does not contain")
+            ),
+            "legacy graft must not admit a target that lacks fetched main"
+        );
+        let current = current_main_freshness_check(&root, &advanced, Kind::Validate)
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.sha, advanced);
+        assert_eq!(current.kind, AdmissionFloorKind::CurrentMain);
+        assert!(
+            !paths.admission_floor.exists(),
+            "freshness alone is not authority"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn admission_floor_git_grafts_cannot_reinterpret_object_parent() {
+        let (_paths, root, seed, target) = current_main_fixture("floor-graft-object", "hermit");
+        let checkout = root.join("hermit");
+        let parent = git_success(Some(&checkout), &["rev-parse", &format!("{target}^")]);
+        let advanced = git_success(Some(&seed), &["rev-parse", "HEAD"]);
+        git_success(
+            Some(&checkout),
+            &["fetch", "--quiet", seed.to_str().unwrap(), "main"],
+        );
+        assert_eq!(
+            validation_object(&checkout, &format!("{target}^")).unwrap(),
+            parent
+        );
+        fs::write(
+            checkout.join(".git/info/grafts"),
+            format!("{target} {advanced}\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            git_success(Some(&checkout), &["rev-parse", &format!("{target}^")]),
+            advanced
+        );
+        eprintln!("real graft reinterprets parent: target={target} false_parent={advanced} actual_parent={parent}");
+        assert_eq!(
+            validation_object(&checkout, &format!("{target}^")).unwrap(),
+            parent,
+            "admission object proof must use the stored commit parent"
+        );
+        assert_eq!(
+            validation_object(&checkout, &format!("{target}^{{commit}}")).unwrap(),
+            target
+        );
+        assert!(validation_object(&checkout, "refs/heads/missing-floor").is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn admission_floor_git_replacements_cannot_forge_current_main_ancestry() {
+        let (paths, root, seed, target) = current_main_fixture("floor-replace-ancestry", "hermit");
+        let checkout = root.join("hermit");
+        let original = current_main_freshness_check(&root, &target, Kind::Validate)
+            .unwrap()
+            .unwrap();
+        git_success(Some(&seed), &["push", "--quiet", "origin", "main"]);
+        let advanced = git_success(Some(&seed), &["rev-parse", "HEAD"]);
+        assert_ne!(original.sha, advanced);
+        assert!(matches!(
+            current_main_freshness_check(&root, &target, Kind::Validate),
+            Err(ValidateLockError::StaleBase(message)) if message.contains("does not contain")
+        ));
+        git_success(Some(&checkout), &["replace", "--graft", &target, &advanced]);
+        git_success(
+            Some(&checkout),
+            &["merge-base", "--is-ancestor", &advanced, &target],
+        );
+        eprintln!(
+            "real replacement forges ancestry: target={target} main={advanced} original={}",
+            original.sha
+        );
+        assert!(
+            matches!(
+                current_main_freshness_check(&root, &target, Kind::Validate),
+                Err(ValidateLockError::StaleBase(message)) if message.contains("does not contain")
+            ),
+            "replacement ref must not admit a target that lacks fetched main"
+        );
+        let current = current_main_freshness_check(&root, &advanced, Kind::Validate)
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.sha, advanced);
+        assert_eq!(current.kind, AdmissionFloorKind::CurrentMain);
+        assert!(
+            !paths.admission_floor.exists(),
+            "freshness alone is not authority"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn admission_floor_git_replacements_cannot_reinterpret_object_tree() {
+        let (_paths, root, seed, target) = current_main_fixture("floor-replace-object", "hermit");
+        let checkout = root.join("hermit");
+        let tree = git_success(
+            Some(&checkout),
+            &["rev-parse", &format!("{target}^{{tree}}")],
+        );
+        let advanced = git_success(Some(&seed), &["rev-parse", "HEAD"]);
+        let advanced_tree = git_success(Some(&seed), &["rev-parse", "HEAD^{tree}"]);
+        git_success(
+            Some(&checkout),
+            &["fetch", "--quiet", seed.to_str().unwrap(), "main"],
+        );
+        assert_ne!(tree, advanced_tree);
+        assert_eq!(
+            validation_object(&checkout, &format!("{target}^{{tree}}")).unwrap(),
+            tree
+        );
+        git_success(Some(&checkout), &["replace", &target, &advanced]);
+        assert_eq!(
+            git_success(
+                Some(&checkout),
+                &["rev-parse", &format!("{target}^{{tree}}")]
+            ),
+            advanced_tree
+        );
+        eprintln!("real replacement reinterprets tree: target={target} false_tree={advanced_tree} actual_tree={tree}");
+        assert_eq!(
+            validation_object(&checkout, &format!("{target}^{{tree}}")).unwrap(),
+            tree,
+            "admission object proof must use the stored commit tree"
+        );
+        assert_eq!(
+            validation_object(&checkout, &format!("{target}^{{commit}}")).unwrap(),
+            target
+        );
+        assert!(validation_object(&checkout, "refs/heads/missing-floor").is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn admission_floor_ancestry_uses_the_object_captured_before_git_unlock() {
+        let (paths, root, seed, target) = current_main_fixture("floor-ref-race", "hermit");
+        let checkout = root.join("hermit");
+        let original_main = git_success(Some(&checkout), &["rev-parse", "origin/main"]);
+        let advanced_main = git_success(Some(&seed), &["rev-parse", "HEAD"]);
+        git_success(
+            Some(&checkout),
+            &["fetch", "--quiet", seed.to_str().unwrap(), "main"],
+        );
+        let hook_checkout = checkout.clone();
+        let hook_main = advanced_main.clone();
+        CURRENT_MAIN_AFTER_CAPTURE_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                git_success(
+                    Some(&hook_checkout),
+                    &["update-ref", "refs/remotes/origin/main", &hook_main],
+                );
+            }));
+        });
+        let floor = current_main_freshness_check(&root, &target, Kind::Validate)
+            .unwrap()
+            .unwrap();
+        assert_eq!(floor.kind, AdmissionFloorKind::CurrentMain);
+        assert_eq!(floor.sha, original_main);
+        assert_eq!(floor.observed_main_sha, original_main);
+        assert_eq!(
+            floor.tree,
+            git_success(
+                Some(&checkout),
+                &["rev-parse", &format!("{original_main}^{{tree}}")]
+            )
+        );
+        assert_eq!(
+            git_success(Some(&checkout), &["rev-parse", "origin/main"]),
+            advanced_main
+        );
+
+        // Conversely, moving the ref backwards after capture cannot excuse a
+        // target that genuinely lacks the freshly fetched main commit.
+        git_success(Some(&seed), &["push", "--quiet", "origin", "main"]);
+        let hook_checkout = checkout.clone();
+        CURRENT_MAIN_AFTER_CAPTURE_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                git_success(
+                    Some(&hook_checkout),
+                    &["update-ref", "refs/remotes/origin/main", &original_main],
+                );
+            }));
+        });
+        assert!(
+            matches!(current_main_freshness_check(&root, &target, Kind::Validate),
+            Err(ValidateLockError::StaleBase(message)) if message.contains("does not contain"))
+        );
+        let frozen = current_main_freshness_check(&root, &target, Kind::FrozenValidate)
+            .unwrap()
+            .unwrap();
+        assert_eq!(frozen.kind, AdmissionFloorKind::FrozenTarget);
+        assert_eq!(frozen.sha, target);
+        assert_eq!(frozen.observed_main_sha, advanced_main);
+        assert_eq!(
+            frozen.tree,
+            git_success(
+                Some(&checkout),
+                &["rev-parse", &format!("{target}^{{tree}}")]
+            )
+        );
+        assert!(
+            !paths.admission_floor.exists(),
+            "a freshness query alone is not authority"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    const ADMISSION_BOUNDARY_ROOT_ENV: &str = "CI_HUB_TEST_ADMISSION_BOUNDARY_ROOT";
+
+    fn admission_boundary_paths(root: &Path) -> LockPaths {
+        // Reconstruct the existing fixture domain without rewriting its release
+        // witness or owner-watch cursor while another supervisor is using it.
+        let mut paths = LockPaths::at(root.join(".validate-lock"));
+        paths.anchor = root.join(".validate-lock.box-anchor");
+        paths.global_anchor = paths.anchor.clone();
+        paths.meminfo = root.join("meminfo");
+        paths.owner_watch_state_dir = Some(root.join("owner-watch-state"));
+        paths.owner_watch_verifier = Some(
+            Path::new(file!())
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join(OWNER_WATCH_VERIFIER_RELATIVE),
+        );
+        paths
+    }
+
+    fn admission_boundary_wait(path: &Path) {
+        let started = Instant::now();
+        while !path.is_file() {
+            assert!(
+                started.elapsed() < Duration::from_secs(45),
+                "waiting for {}",
+                path.display()
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn admission_boundary_args(agent: &str, target: String, child: Vec<OsString>) -> RunArgs {
+        RunArgs {
+            agent: agent.into(),
+            kind: Kind::Validate,
+            target,
+            child,
+            run_record: None,
+            no_wait: false,
+            skip_if_recorded: false,
+            wait: 30,
+            hold: 60,
+            child_deadline: 60,
+            max: VALIDATE_CONCURRENT_CAP,
+            skip_base_check: false,
+        }
+    }
+
+    fn admission_boundary_assert_released(paths: &LockPaths) {
+        for slot in 0..VALIDATE_SLOT_COUNT {
+            let lock = ValidateLock {
+                paths: paths.for_slot(slot),
+            };
+            assert!(lock.read_holder().unwrap().is_none());
+            assert!(lock.read_process_owner().unwrap().is_none());
+            assert!(!lock.paths.admission_floor.exists());
+            assert!(!lock.paths.cleanup.exists());
+            assert!(matches!(
+                BoxExclusionAnchor::observe(&paths.slot_anchor(slot)),
+                BoxAnchorObservation::Free
+            ));
+        }
+    }
+
+    #[test]
+    fn admission_boundary_background_supervisor_helper() {
+        let Some(root) = env::var_os(ADMISSION_BOUNDARY_ROOT_ENV).map(PathBuf::from) else {
+            return;
+        };
+        let lock = ValidateLock {
+            paths: admission_boundary_paths(&root),
+        };
+        let target = fs::read_to_string(root.join("target-sha")).unwrap();
+        // A real supervised validate owns slot zero until the foreground's
+        // post-capture hook lets its payload finish normally.
+        let result = lock
+            .run(
+                admission_boundary_args(
+                    "boundary-background",
+                    target,
+                    vec![
+                        "sh".into(),
+                        "-c".into(),
+                        "printf ready > \"$1\"; while [ ! -f \"$2\" ]; do sleep 0.05; done".into(),
+                        "background".into(),
+                        root.join("background-ready").into_os_string(),
+                        root.join("release-background").into_os_string(),
+                    ],
+                ),
+                &root,
+            )
+            .unwrap();
+        assert_eq!(result, 0);
+        assert!(lock.read_holder().unwrap().is_none());
+        fs::write(root.join("background-released"), "normal release\n").unwrap();
+
+        // Do not fake a cursor or expire the yield window. A real owner-watch
+        // run occupies the now-free slot and publishes its ordinary release.
+        admission_boundary_wait(&root.join("request-watch"));
+        let target = fs::read_to_string(root.join("watch-target")).unwrap();
+        let result = lock
+            .run(
+                admission_boundary_args(
+                    OWNER_WATCH_AGENT,
+                    target,
+                    vec!["sh".into(), "-c".into(), "exit 0".into()],
+                ),
+                &root,
+            )
+            .unwrap();
+        assert_eq!(result, 0);
+        assert_eq!(
+            lock.read_release_record().unwrap().unwrap().released_by,
+            OWNER_WATCH_AGENT
+        );
+        fs::write(root.join("watch-released"), "normal owner-watch release\n").unwrap();
+        // Remain a live foreign child until the foreground supervisor finishes;
+        // its ordinary waitpid(-1) must not consume this test driver's handle.
+        admission_boundary_wait(&root.join("foreground-finished"));
+    }
+
+    #[test]
+    fn admission_boundary_foreground_payload_helper() {
+        let Some(root) = env::var_os(ADMISSION_BOUNDARY_ROOT_ENV).map(PathBuf::from) else {
+            return;
+        };
+        let lock = ValidateLock {
+            paths: admission_boundary_paths(&root).for_slot(1),
+        };
+        let status = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+        assert!(status.admissible, "{status:?}");
+        assert_eq!(status.cleanup_state, AuthorityCleanupState::ActiveBound);
+        assert_eq!(status.holder.as_ref().unwrap().agent, "boundary-foreground");
+        assert_eq!(
+            status.admission_floor.as_ref().unwrap().sha,
+            fs::read_to_string(root.join("captured-main")).unwrap()
+        );
+        fs::write(
+            root.join("foreground-child-authority.json"),
+            serde_json::to_vec_pretty(&status).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("main-at-final-admission.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "local_main": git_success(Some(&root.join("hermit")), &["rev-parse", "origin/main"]),
+                "remote_main": git_success(Some(&root.join("hermit")), &["ls-remote", "origin", "refs/heads/main"]),
+            })).unwrap(),
+        ).unwrap();
+        eprintln!(
+            "BOUNDARY CHILD actually ran with authority: {}",
+            root.display()
+        );
+    }
+
+    fn admission_boundary_post_capture_control(advance: bool) {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let stub = write_stub("boundary-admit", "#!/bin/sh\necho OK\nexit 0\n");
+        env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
+        let (paths, root, seed, target) = current_main_fixture(
+            if advance {
+                "boundary-stale"
+            } else {
+                "boundary-positive"
+            },
+            "hermit",
+        );
+        let checkout = root.join("hermit");
+        let captured = git_success(Some(&checkout), &["rev-parse", "origin/main"]);
+        fs::write(root.join("captured-main"), &captured).unwrap();
+        fs::write(
+            root.join("remote-main-before"),
+            git_success(Some(&checkout), &["ls-remote", "origin", "refs/heads/main"]),
+        )
+        .unwrap();
+        fs::write(root.join("target-sha"), &target).unwrap();
+        env::set_var(ADMISSION_BOUNDARY_ROOT_ENV, &root);
+        eprintln!("BOUNDARY BODY advance={advance} fixture={}", root.display());
+        let log = File::create(root.join("background-supervisor.log")).unwrap();
+        let mut background = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "validate_lock::tests::admission_boundary_background_supervisor_helper",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn()
+            .unwrap();
+        admission_boundary_wait(&root.join("background-ready"));
+        let other = ValidateLock {
+            paths: paths.clone(),
+        };
+        let background_status = other
+            .with_guard(|| other.authority_status_guarded())
+            .unwrap();
+        assert!(background_status.admissible);
+        assert_eq!(
+            background_status.cleanup_state,
+            AuthorityCleanupState::ActiveBound
+        );
+        assert_eq!(
+            background_status.holder.unwrap().agent,
+            "boundary-background"
+        );
+        fs::write(
+            root.join("background-admitted.json"),
+            serde_json::to_vec_pretty(
+                &other
+                    .with_guard(|| other.authority_status_guarded())
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let hook_root = root.clone();
+        CURRENT_MAIN_BETWEEN_CHECKS_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                CURRENT_MAIN_AFTER_CAPTURE_HOOK.with(|after| {
+                    *after.borrow_mut() = Some(Box::new(move || {
+                        fs::write(
+                            hook_root.join("main-at-capture"),
+                            git_success(
+                                Some(&hook_root.join("hermit")),
+                                &["rev-parse", "origin/main"],
+                            ),
+                        )
+                        .unwrap();
+                        fs::write(
+                            hook_root.join("release-background"),
+                            "after final Git capture\n",
+                        )
+                        .unwrap();
+                        admission_boundary_wait(&hook_root.join("background-released"));
+                        let background = ValidateLock {
+                            paths: admission_boundary_paths(&hook_root),
+                        };
+                        assert!(background.read_holder().unwrap().is_none());
+                        assert_eq!(
+                            background
+                                .read_release_record()
+                                .unwrap()
+                                .unwrap()
+                                .released_by,
+                            "boundary-background"
+                        );
+                        assert_eq!(
+                            background
+                                .yield_status_guarded(epoch_seconds().unwrap())
+                                .state,
+                            YieldState::Yield
+                        );
+                        fs::write(
+                            hook_root.join("release-after-capture"),
+                            "real supervised release caused Yield\n",
+                        )
+                        .unwrap();
+                    }));
+                });
+            }));
+        });
+        let hook_root = root.clone();
+        let hook_target = target.clone();
+        let start = Instant::now();
+        ADMISSION_BOUNDARY_AFTER_LOCAL_YIELD_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                // This hook is reached only after the real local acquisition
+                // returned Yield and completed its unchanged polling sleep.
+                assert!(start.elapsed() >= Duration::from_secs(POLL_SECONDS));
+                let pending = ValidateLock { paths: admission_boundary_paths(&hook_root).for_slot(1) };
+                assert!(pending.read_holder().unwrap().is_none());
+                assert!(!pending.paths.admission_floor.exists());
+                if advance {
+                    git_success(Some(&seed), &["push", "--quiet", "origin", "main"]);
+                }
+                let freshness = current_main_freshness_check(&hook_root, &hook_target, Kind::Validate);
+                assert_eq!(freshness.is_err(), advance, "real Git must discriminate the controls");
+                let observed = git_success(Some(&hook_root.join("hermit")), &["rev-parse", "origin/main"]);
+                fs::write(hook_root.join("observed-local-wait.json"), serde_json::to_vec_pretty(&serde_json::json!({
+                    "advance": advance, "elapsed_seconds": start.elapsed().as_secs_f64(),
+                    "poll_seconds": POLL_SECONDS, "target": hook_target, "main_after_wait": observed,
+                    "freshness": format!("{freshness:?}"), "holder_absent_before_admission": true,
+                    "floor_absent_before_admission": true
+                })).unwrap()).unwrap();
+                fs::write(hook_root.join("watch-target"), &observed).unwrap();
+                fs::write(hook_root.join("request-watch"), "normal owner-watch run\n").unwrap();
+                admission_boundary_wait(&hook_root.join("watch-released"));
+            }));
+        });
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let result = lock.run(
+            admission_boundary_args(
+                "boundary-foreground",
+                target,
+                vec![
+                    env::current_exe().unwrap().into_os_string(),
+                    "--exact".into(),
+                    "validate_lock::tests::admission_boundary_foreground_payload_helper".into(),
+                    "--nocapture".into(),
+                    "--test-threads=1".into(),
+                ],
+            ),
+            &root,
+        );
+        fs::write(root.join("foreground-finished"), "driver returned\n").unwrap();
+        let background_exit = background.wait().unwrap();
+        admission_boundary_assert_released(&paths);
+        let released = ValidateLock {
+            paths: paths.for_slot(1),
+        };
+        let released_status = released
+            .with_guard(|| released.authority_status_guarded())
+            .unwrap();
+        assert!(!released_status.admissible);
+        fs::write(
+            root.join("after-return-authority.json"),
+            serde_json::to_vec_pretty(&released_status).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("RESULT.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "advance": advance, "actual_run_result": format!("{result:?}"),
+                "background_exit": background_exit.code(),
+                "child_ran": root.join("foreground-child-authority.json").is_file(),
+                "expected_exit": if advance { STALE_BASE_EXIT_CODE } else { 0 },
+                "holder_owner_floor_cleanup_and_anchors_released": true,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        env::remove_var(ADMISSION_BOUNDARY_ROOT_ENV);
+        env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
+        assert!(
+            background_exit.success(),
+            "see {}",
+            root.join("background-supervisor.log").display()
+        );
+        assert!(
+            root.join("observed-local-wait.json").is_file(),
+            "must execute actual local wait body"
+        );
+        assert_eq!(result.unwrap(), if advance { STALE_BASE_EXIT_CODE } else { 0 },
+            "must not admit a target that became stale during the observed post-capture acquisition wait; retained {}", root.display());
+        assert_eq!(
+            root.join("foreground-child-authority.json").is_file(),
+            !advance
+        );
+    }
+
+    #[test]
+    fn admission_boundary_post_capture_no_advance_admits() {
+        admission_boundary_post_capture_control(false);
+    }
+
+    #[test]
+    fn admission_boundary_post_capture_main_advance_refuses() {
+        admission_boundary_post_capture_control(true);
+    }
+
+    #[test]
+    fn admission_floor_final_fetch_failure_releases_unused_lease() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let stub = write_stub("final-fetch-admit", "#!/bin/sh\necho OK\nexit 0\n");
+        env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
+        let (paths, root, _seed, target) =
+            current_main_fixture("final-fetch-unavailable", "hermit");
+        let hook_root = root.clone();
+        let hook_paths = paths.clone();
+        ADMISSION_FLOOR_AFTER_LOCAL_ACQUIRE_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                let acquired = ValidateLock { paths: hook_paths };
+                assert!(acquired.read_holder().unwrap().is_some());
+                assert!(acquired.read_process_owner().unwrap().is_none());
+                assert!(!acquired.paths.admission_floor.exists());
+                assert!(!acquired.paths.cleanup.exists());
+                let missing = hook_root.join("missing-remote.git");
+                assert!(!missing.exists());
+                git_success(
+                    Some(&hook_root.join("hermit")),
+                    &["remote", "set-url", "origin", missing.to_str().unwrap()],
+                );
+                fs::write(
+                    hook_root.join("final-fetch-entered"),
+                    "lease acquired; real origin now unavailable\n",
+                )
+                .unwrap();
+            }));
+        });
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let sentinel = root.join("unexpected-child");
+        let result = lock.run(
+            admission_boundary_args(
+                "final-fetch-failure",
+                target,
+                vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "printf unexpected > \"$1\"".into(),
+                    "child".into(),
+                    sentinel.clone().into_os_string(),
+                ],
+            ),
+            &root,
+        );
+        env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
+        assert_eq!(result.unwrap(), STALE_BASE_EXIT_CODE);
+        assert!(
+            root.join("final-fetch-entered").is_file(),
+            "final-acquisition body must execute"
+        );
+        assert!(
+            !sentinel.exists(),
+            "unresolved final fetch must not run a child"
+        );
+        admission_boundary_assert_released(&paths);
+        let status = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+        assert!(!status.admissible);
+        fs::write(
+            root.join("after-refusal-authority.json"),
+            serde_json::to_vec_pretty(&status).unwrap(),
+        )
+        .unwrap();
+        eprintln!(
+            "FINAL FETCH REFUSAL body executed and released: {}",
+            root.display()
+        );
+    }
+
+    const ADMISSION_FLOOR_CHILD_ROOT_ENV: &str = "CI_HUB_TEST_ADMISSION_FLOOR_CHILD_ROOT";
+
+    #[test]
+    fn admission_floor_supervised_child_helper() {
+        let Some(root) = env::var_os(ADMISSION_FLOOR_CHILD_ROOT_ENV).map(PathBuf::from) else {
+            return;
+        };
+        let expected: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("expected-floor.json")).unwrap()).unwrap();
+        let lock = ValidateLock {
+            paths: paths_at(&root),
+        };
+        let first = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+        assert!(first.admissible, "{first:?}");
+        assert_eq!(first.cleanup_state, AuthorityCleanupState::ActiveBound);
+        assert_eq!(
+            first.holder.as_ref().unwrap().target,
+            expected["target"].as_str().unwrap()
+        );
+        let floor = first
+            .admission_floor
+            .as_ref()
+            .expect("real admitted child must receive a floor");
+        assert_eq!(floor.kind, AdmissionFloorKind::CurrentMain);
+        assert_eq!(floor.sha, expected["sha"].as_str().unwrap());
+        assert_eq!(floor.tree, expected["tree"].as_str().unwrap());
+
+        let seed = root.join("seed");
+        fs::write(seed.join("during-run"), "main advanced after admission\n").unwrap();
+        git_success(Some(&seed), &["add", "during-run"]);
+        git_success(
+            Some(&seed),
+            &["commit", "--quiet", "-m", "advance during admitted run"],
+        );
+        git_success(Some(&seed), &["push", "--quiet", "origin", "main"]);
+        git_success(
+            Some(&root.join("hermit")),
+            &["fetch", "--quiet", "origin", "main"],
+        );
+        let second = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+        assert!(second.admissible);
+        assert_eq!(first.admission_floor, second.admission_floor);
+        assert_eq!(first.holder, second.holder);
+        assert_eq!(first.owner, second.owner);
+        assert_ne!(
+            git_success(Some(&root.join("hermit")), &["rev-parse", "origin/main"]),
+            floor.sha
+        );
+        assert!(
+            matches!(current_main_freshness_check(&root, expected["target"].as_str().unwrap(), Kind::Validate),
+            Err(ValidateLockError::StaleBase(message)) if message.contains("does not contain"))
+        );
+        fs::write(
+            root.join("child-verified-floor"),
+            serde_json::to_vec(&second).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn admission_floor_real_run_publishes_final_boundary_and_survives_main_advance() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let stub = write_stub("floor-live-admit", "#!/bin/sh\necho OK\nexit 0\n");
+        env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
+        let (paths, root, seed, _) = current_main_fixture("floor-live-child", "hermit");
+        let checkout = root.join("hermit");
+        let main = git_success(Some(&seed), &["rev-parse", "HEAD"]);
+        let tree = git_success(Some(&seed), &["rev-parse", "HEAD^{tree}"]);
+        git_success(
+            Some(&checkout),
+            &["fetch", "--quiet", seed.to_str().unwrap(), "main"],
+        );
+        git_success(
+            Some(&checkout),
+            &["merge", "--quiet", "--no-edit", "FETCH_HEAD"],
+        );
+        let target = git_success(Some(&checkout), &["rev-parse", "HEAD"]);
+        fs::write(
+            root.join("expected-floor.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "sha": main, "tree": tree, "target": target,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        CURRENT_MAIN_BETWEEN_CHECKS_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                git_success(Some(&seed), &["push", "--quiet", "origin", "main"]);
+            }));
+        });
+        env::set_var(ADMISSION_FLOOR_CHILD_ROOT_ENV, &root);
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let result = lock.run(
+            RunArgs {
+                agent: "floor-live-child".into(),
+                kind: Kind::Validate,
+                target,
+                run_record: None,
+                no_wait: false,
+                skip_if_recorded: false,
+                wait: 0,
+                hold: 60,
+                child_deadline: 60,
+                max: 1,
+                skip_base_check: false,
+                child: vec![
+                    env::current_exe().unwrap().into_os_string(),
+                    "--exact".into(),
+                    "validate_lock::tests::admission_floor_supervised_child_helper".into(),
+                    "--nocapture".into(),
+                    "--test-threads=1".into(),
+                ],
+            },
+            &root,
+        );
+        env::remove_var(ADMISSION_FLOOR_CHILD_ROOT_ENV);
+        env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
+        CURRENT_MAIN_BETWEEN_CHECKS_HOOK.with(|slot| *slot.borrow_mut() = None);
+        let _ = fs::remove_file(stub);
+        assert_eq!(result.unwrap(), 0);
+        assert!(
+            root.join("child-verified-floor").is_file(),
+            "the positive child assertions must run"
+        );
+        assert!(lock.read_holder().unwrap().is_none());
+        assert!(
+            !paths.admission_floor.exists(),
+            "normal supervised release removes its floor"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
