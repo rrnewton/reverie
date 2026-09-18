@@ -16,11 +16,13 @@
 mod memory;
 #[cfg(feature = "notifier")]
 mod notifier;
+mod physical_observer;
 mod regs;
 mod waitid;
 
 use core::mem::MaybeUninit;
 use std::fmt;
+use std::num::NonZeroU64;
 
 use nix::sys::ptrace;
 // Re-exports so that nothing else needs to depend on `nix`.
@@ -30,21 +32,107 @@ use nix::sys::wait::WaitPidFlag;
 use nix::sys::wait::WaitStatus;
 pub use reverie_process::ExitStatus;
 pub use reverie_process::Pid;
+#[cfg(feature = "notifier")]
+pub use reverie_process::ControllerSpawnToken;
 pub use syscalls::Errno;
 use syscalls::Sysno;
 use thiserror::Error;
 
 #[cfg(feature = "notifier")]
+pub use crate::notifier::CleanupStopLease;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::CleanupStopTransfer;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::OriginalRootStartup;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::OriginalRootCleanupAuthority;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::OriginalRootStartupError;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::OriginalRootStartupIdentity;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::StopResolutionOutcome;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::StopResolutionLaterStatus;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::StopResolutionResumeErrorOutcome;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::StopResolutionWatcher;
+#[cfg(feature = "notifier")]
 pub use crate::notifier::TerminalCleanup;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::TerminalCleanupContinue;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::TransferredStopCompletion;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::TransferredStopResolution;
+pub use crate::physical_observer::*;
 pub use crate::regs::*;
 use crate::waitid::IdType;
 use crate::waitid::waitid;
+
+/// Event-generation-local identity assigned to one decoded ptrace stop.
+///
+/// Unlike [`PhysicalStatusId`], this identity is always present even when no
+/// physical-event observer is attached. Its numeric value is meaningful only
+/// together with the immutable notifier generation carried by the same typed
+/// tracee state.
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
+pub struct LogicalStopId(NonZeroU64);
+
+impl LogicalStopId {
+    pub(crate) fn from_raw(raw: u64) -> Option<Self> {
+        NonZeroU64::new(raw).map(Self)
+    }
+
+    pub(crate) const fn get(self) -> u64 {
+        self.0.get()
+    }
+
+    /// Returns whether this stop was allocated strictly after `predecessor`.
+    ///
+    /// The ordering is meaningful only after the caller has proved that both
+    /// IDs belong to the same immutable notifier Event generation.
+    pub const fn is_strictly_after(self, predecessor: Self) -> bool {
+        self.0.get() > predecessor.0.get()
+    }
+}
+
+/// Raw result of a specialized observed ptrace continuation.
+///
+/// Unlike [`Error`], this preserves ESRCH as its exact kernel errno and keeps
+/// the observer attempt needed for causal successor resolution.
+#[derive(Debug)]
+pub struct PhysicalResumeFailure {
+    error: Errno,
+    attempt: Option<PhysicalResumeAttempt>,
+}
+
+impl PhysicalResumeFailure {
+    /// Returns the exact ptrace errno without zombie reinterpretation.
+    pub fn error(&self) -> Errno {
+        self.error
+    }
+
+    /// Returns the exact physical resume attempt, when an observer was bound.
+    pub fn attempt(&self) -> Option<PhysicalResumeAttempt> {
+        self.attempt
+    }
+}
 
 /// Immutable generation token carried through every typed tracee state.
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 struct TraceeToken {
     #[cfg(feature = "notifier")]
     event: notifier::EventHandle,
+    #[cfg(feature = "notifier")]
+    physical_status: Option<PhysicalStatusId>,
+    #[cfg(feature = "notifier")]
+    logical_stop: Option<LogicalStopId>,
+    #[cfg(feature = "notifier")]
+    owns_claimed_exit_stop: bool,
+    #[cfg(feature = "notifier")]
+    failed_resume_disposition_retained_for_cleanup: Option<PhysicalStatusId>,
 }
 
 impl TraceeToken {
@@ -52,6 +140,25 @@ impl TraceeToken {
         Self {
             #[cfg(feature = "notifier")]
             event: notifier::EventHandle::new(),
+            #[cfg(feature = "notifier")]
+            physical_status: None,
+            #[cfg(feature = "notifier")]
+            logical_stop: None,
+            #[cfg(feature = "notifier")]
+            owns_claimed_exit_stop: false,
+            #[cfg(feature = "notifier")]
+            failed_resume_disposition_retained_for_cleanup: None,
+        }
+    }
+
+    #[cfg(feature = "notifier")]
+    fn from_controller_launch(token: ControllerSpawnToken) -> Self {
+        Self {
+            event: notifier::EventHandle::from_controller_launch(token),
+            physical_status: None,
+            logical_stop: None,
+            owns_claimed_exit_stop: false,
+            failed_resume_disposition_retained_for_cleanup: None,
         }
     }
 
@@ -61,6 +168,14 @@ impl TraceeToken {
         Ok(Self {
             #[cfg(feature = "notifier")]
             event: notifier::EventHandle::current_or_new(pid)?,
+            #[cfg(feature = "notifier")]
+            physical_status: None,
+            #[cfg(feature = "notifier")]
+            logical_stop: None,
+            #[cfg(feature = "notifier")]
+            owns_claimed_exit_stop: false,
+            #[cfg(feature = "notifier")]
+            failed_resume_disposition_retained_for_cleanup: None,
         })
     }
 
@@ -70,17 +185,90 @@ impl TraceeToken {
         Self {
             #[cfg(feature = "notifier")]
             event: notifier::EventHandle::current_or_error(pid),
+            #[cfg(feature = "notifier")]
+            physical_status: None,
+            #[cfg(feature = "notifier")]
+            logical_stop: None,
+            #[cfg(feature = "notifier")]
+            owns_claimed_exit_stop: false,
+            #[cfg(feature = "notifier")]
+            failed_resume_disposition_retained_for_cleanup: None,
         }
     }
 
     #[cfg(feature = "notifier")]
     fn from_event(event: notifier::EventHandle) -> Self {
-        Self { event }
+        Self {
+            event,
+            physical_status: None,
+            logical_stop: None,
+            owns_claimed_exit_stop: false,
+            failed_resume_disposition_retained_for_cleanup: None,
+        }
+    }
+
+    #[cfg(feature = "notifier")]
+    fn from_observed_event(
+        event: notifier::EventHandle,
+        physical_status: Option<PhysicalStatusId>,
+        logical_stop: Option<LogicalStopId>,
+    ) -> Self {
+        Self {
+            event,
+            physical_status,
+            logical_stop,
+            owns_claimed_exit_stop: false,
+            failed_resume_disposition_retained_for_cleanup: None,
+        }
+    }
+
+    #[cfg(feature = "notifier")]
+    fn from_claimed_exit_event(
+        event: notifier::EventHandle,
+        physical_status: Option<PhysicalStatusId>,
+        logical_stop: LogicalStopId,
+    ) -> Self {
+        Self {
+            event,
+            physical_status,
+            logical_stop: Some(logical_stop),
+            owns_claimed_exit_stop: true,
+            failed_resume_disposition_retained_for_cleanup: None,
+        }
     }
 
     #[cfg(feature = "notifier")]
     fn event(&self) -> &notifier::EventHandle {
         &self.event
+    }
+
+    #[cfg(feature = "notifier")]
+    fn into_running(mut self) -> Self {
+        self.physical_status = None;
+        self.logical_stop = None;
+        self.owns_claimed_exit_stop = false;
+        self.failed_resume_disposition_retained_for_cleanup = None;
+        self
+    }
+
+    #[cfg(feature = "notifier")]
+    fn into_observed_stopped(mut self, physical_status: PhysicalStatusId) -> Self {
+        self.physical_status = Some(physical_status);
+        self.owns_claimed_exit_stop = false;
+        self
+    }
+
+    #[cfg(feature = "notifier")]
+    fn into_stopped(mut self) -> Self {
+        if self.logical_stop.is_none() {
+            self.logical_stop = Some(self.event.allocate_logical_stop());
+        }
+        self
+    }
+
+    #[cfg(not(feature = "notifier"))]
+    fn into_running(self) -> Self {
+        self
     }
 }
 
@@ -160,7 +348,9 @@ pub enum Event {
     /// exit caused by `execve(2)` in a multithreaded process.
     /// `PTRACE_GETEVENTMSG` returns the exit status. Registers can be examined
     /// (unlike when "real" exit happens). The tracee is still alive; it needs to
-    /// be `PTRACE_CONT`ed or `PTRACE_DETACH`ed to finish exiting.
+    /// be `PTRACE_CONT`ed or `PTRACE_DETACH`ed to finish exiting. A stop claimed
+    /// asynchronously through `ExitFuture` is narrower: it must be continued,
+    /// because its exact-once continuation is shared with terminal cleanup.
     Exit,
 
     /// Stop triggered by a `seccomp(2)` rule on tracee syscall entry when
@@ -183,6 +373,17 @@ pub enum Event {
 }
 
 impl Event {
+    fn new_child(task: &Stopped, child_pid: Pid) -> Result<Running, Error> {
+        let child = Running::from_current_or_new(child_pid)?;
+        #[cfg(feature = "notifier")]
+        if let Some(observer) = task.physical_event_observer() {
+            child
+                .attach_physical_event_observer(&observer)
+                .map_err(|_| Errno::EPROTO)?;
+        }
+        Ok(child)
+    }
+
     /// Converts a raw i32 to a ptrace event and gets any associated data.
     fn from_ptrace_event(task: &Stopped, event: i32) -> Result<Self, Error> {
         // Note that there is no danger in calling ptrace here because the
@@ -197,7 +398,7 @@ impl Event {
                 notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid)?;
                 Ok(Self::NewChild(
                     ChildOp::Fork,
-                    Running::from_current_or_new(child_pid)?,
+                    Self::new_child(task, child_pid)?,
                 ))
             }
             libc::PTRACE_EVENT_VFORK => {
@@ -208,7 +409,7 @@ impl Event {
                 notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid)?;
                 Ok(Self::NewChild(
                     ChildOp::Vfork,
-                    Running::from_current_or_new(child_pid)?,
+                    Self::new_child(task, child_pid)?,
                 ))
             }
             libc::PTRACE_EVENT_CLONE => {
@@ -219,7 +420,7 @@ impl Event {
                 notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid)?;
                 Ok(Self::NewChild(
                     ChildOp::Clone,
-                    Running::from_current_or_new(child_pid)?,
+                    Self::new_child(task, child_pid)?,
                 ))
             }
             libc::PTRACE_EVENT_EXEC => {
@@ -374,6 +575,18 @@ impl Wait {
         }
     }
 
+    /// Returns the physical status identity retained by a stopped result.
+    ///
+    /// Final exit identities remain in the observer's retained terminal
+    /// records because the legacy `Wait::Exited` variant carries no token.
+    #[cfg(feature = "notifier")]
+    pub fn physical_status_id(&self) -> Option<PhysicalStatusId> {
+        match self {
+            Self::Stopped(stopped, _) => stopped.physical_status_id(),
+            Self::Exited(_, _) => None,
+        }
+    }
+
     /// Assumes the process is in a stopped state. Panics if it isn't.
     pub fn assume_stopped(self) -> (Stopped, Event) {
         match self {
@@ -509,6 +722,58 @@ struct ptrace_peeksiginfo_args {
     nr: u32,
 }
 
+/// Exact byte length of Linux's kernel signal-set ABI.
+///
+/// On safeptrace's x86-64 and AArch64 targets, Linux exposes 64 signals, so the
+/// kernel `sigset_t` copied by `PTRACE_GETSIGMASK` and `PTRACE_SETSIGMASK` is
+/// exactly eight bytes. This is deliberately independent of `libc::sigset_t`,
+/// whose size and unused storage belong to the C library ABI instead.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub const LINUX_KERNEL_SIGSET_SIZE: usize = 64 / u8::BITS as usize;
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+compile_error!("the Linux kernel sigset ABI size needs auditing for this target architecture");
+
+// Keep a compile-time witness for the byte count passed in ptrace's `addr`
+// argument. If the signal-count expression above changes, this must be
+// reviewed against the Linux ptrace ABI rather than silently changing calls.
+const _: [(); 8] = [(); LINUX_KERNEL_SIGSET_SIZE];
+
+/// Opaque bytes for Linux `PTRACE_GETSIGMASK` and `PTRACE_SETSIGMASK`.
+///
+/// The bytes use the tracee's native Linux kernel ABI representation. They are
+/// intentionally not converted through `libc::sigset_t`: callers can preserve
+/// and restore the exact bytes returned by [`Stopped::getsigmask`], or provide
+/// exactly eight bytes obtained from the same ABI.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PtraceSigmask([u8; LINUX_KERNEL_SIGSET_SIZE]);
+
+impl PtraceSigmask {
+    /// Creates a ptrace signal mask from its exact kernel-ABI bytes.
+    pub const fn from_bytes(bytes: [u8; LINUX_KERNEL_SIGSET_SIZE]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns the exact kernel-ABI bytes without changing them.
+    pub const fn as_bytes(&self) -> &[u8; LINUX_KERNEL_SIGSET_SIZE] {
+        &self.0
+    }
+
+    /// Consumes the mask and returns its exact kernel-ABI bytes.
+    pub const fn into_bytes(self) -> [u8; LINUX_KERNEL_SIGSET_SIZE] {
+        self.0
+    }
+}
+
+impl TryFrom<&[u8]> for PtraceSigmask {
+    type Error = std::array::TryFromSliceError;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        <[u8; LINUX_KERNEL_SIGSET_SIZE]>::try_from(bytes).map(Self::from_bytes)
+    }
+}
+
 bitflags::bitflags! {
     /// Flags for ptrace peeksiginfo
     #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone, Copy)]
@@ -524,6 +789,90 @@ bitflags::bitflags! {
 /// performed.
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct Stopped(Pid, TraceeToken);
+
+/// Failed conversion of a typed stopped capability into cleanup authority.
+///
+/// The original [`Stopped`] is retained so callers never lose the only typed
+/// transition owner when cleanup-state preflight refuses the lease.
+#[cfg(feature = "notifier")]
+#[derive(Debug)]
+pub struct CleanupStopLeaseError {
+    error: Errno,
+    stopped: Stopped,
+}
+
+#[cfg(feature = "notifier")]
+impl CleanupStopLeaseError {
+    /// Returns the exact cleanup protocol error.
+    pub fn errno(&self) -> Errno {
+        self.error
+    }
+
+    /// Recovers the original typed stopped capability.
+    pub fn into_stopped(self) -> Stopped {
+        self.stopped
+    }
+
+    /// Recovers both the exact error and the original stopped capability.
+    pub fn into_parts(self) -> (Errno, Stopped) {
+        (self.error, self.stopped)
+    }
+}
+
+#[cfg(feature = "notifier")]
+impl fmt::Display for CleanupStopLeaseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "cleanup stop lease preflight failed: {}", self.error)
+    }
+}
+
+#[cfg(feature = "notifier")]
+impl std::error::Error for CleanupStopLeaseError {}
+
+/// A non-resuming memory handle derived from an observed stopped state.
+///
+/// This handle deliberately exposes only [`reverie_memory::MemoryAccess`]. It
+/// cannot perform a ptrace state transition or create a second resume owner.
+#[cfg(feature = "memory")]
+#[derive(Debug)]
+pub struct StoppedMemory(Stopped);
+
+#[cfg(feature = "memory")]
+impl reverie_memory::MemoryAccess for StoppedMemory {
+    fn read_vectored(
+        &self,
+        remote: &[std::io::IoSlice],
+        local: &mut [std::io::IoSliceMut],
+    ) -> Result<usize, Errno> {
+        reverie_memory::MemoryAccess::read_vectored(&self.0, remote, local)
+    }
+
+    fn write_vectored(
+        &mut self,
+        local: &[std::io::IoSlice],
+        remote: &mut [std::io::IoSliceMut],
+    ) -> Result<usize, Errno> {
+        reverie_memory::MemoryAccess::write_vectored(&mut self.0, local, remote)
+    }
+
+    fn read<'a, A>(&self, addr: A, buf: &mut [u8]) -> Result<usize, Errno>
+    where
+        A: Into<reverie_memory::Addr<'a, u8>>,
+    {
+        reverie_memory::MemoryAccess::read(&self.0, addr, buf)
+    }
+
+    fn read_exact_with_user_access<'a, A>(&self, addr: A, buf: &mut [u8]) -> Result<(), Errno>
+    where
+        A: Into<reverie_memory::Addr<'a, u8>>,
+    {
+        reverie_memory::MemoryAccess::read_exact_with_user_access(&self.0, addr, buf)
+    }
+
+    fn write(&mut self, addr: reverie_memory::AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
+        reverie_memory::MemoryAccess::write(&mut self.0, addr, buf)
+    }
+}
 
 impl Stopped {
     /// Helper for converting from the Errno type.
@@ -573,6 +922,17 @@ impl Stopped {
         notifier::ExitFuture::new(self.0, &self.1)
     }
 
+    /// Arms the one generation-bound side channel used to distinguish a
+    /// canceled SIGSTOP delivery from a genuine group stop and its later
+    /// `WCONTINUED` status.
+    ///
+    /// The watcher must be created before resuming this stopped capability
+    /// with SIGSTOP. Continued statuses are never returned through [`Wait`].
+    #[cfg(feature = "notifier")]
+    pub fn watch_stop_resolution(&self) -> Result<StopResolutionWatcher, Errno> {
+        StopResolutionWatcher::new(self.0, &self.1)
+    }
+
     /// Returns a generation-bound terminal cleanup acknowledgment.
     ///
     /// This is primarily useful with [`Stopped::new_unchecked`] during
@@ -593,6 +953,32 @@ impl Stopped {
         Self::from_token(pid, TraceeToken::current_or_error(pid))
     }
 
+    /// Creates an unchecked stopped state carrying an externally observed
+    /// physical status.
+    ///
+    /// This is the pre-notifier counterpart of [`Stopped::new_unchecked`]. The
+    /// caller must prove that `status` was returned for this exact unreaped
+    /// child and that no other stopped capability exists. The new Event is not
+    /// registered until the returned state is resumed and waited again.
+    #[cfg(feature = "notifier")]
+    pub fn new_observed_unchecked(
+        pid: Pid,
+        observer: &PhysicalEventObserver,
+        status: PhysicalStatusId,
+    ) -> Result<Self, PhysicalObserverAttachError> {
+        let mut token = TraceeToken::new();
+        token.event().attach_physical_observer(observer)?;
+        token.physical_status = Some(status);
+        let generation = token.event().physical_generation();
+        observer.link_pre_registration_task(PhysicalTaskIdentity::direct_child(pid), generation);
+        observer.record_status_published(
+            generation,
+            status,
+            PhysicalStatusPublication::DirectStopped,
+        );
+        Ok(Self::from_token(pid, token))
+    }
+
     /// Creates an unchecked stopped state joined to the currently registered
     /// proc generation for `pid`.
     ///
@@ -606,12 +992,196 @@ impl Stopped {
     }
 
     fn from_token(pid: Pid, token: TraceeToken) -> Self {
+        #[cfg(feature = "notifier")]
+        let token = token.into_stopped();
         Self(pid, token)
     }
 
     /// Returns the process ID of the tracee.
     pub fn pid(&self) -> Pid {
         self.0
+    }
+
+    /// Attaches a bounded physical-event observer before this generation's
+    /// first kernel wait owner starts.
+    #[cfg(feature = "notifier")]
+    pub fn attach_physical_event_observer(
+        &self,
+        observer: &PhysicalEventObserver,
+    ) -> Result<(), PhysicalObserverAttachError> {
+        self.1.event().attach_physical_observer(observer)
+    }
+
+    /// Returns the observer attached to this immutable tracee generation.
+    #[cfg(feature = "notifier")]
+    pub fn physical_event_observer(&self) -> Option<PhysicalEventObserver> {
+        self.1.event().physical_observer()
+    }
+
+    /// Returns this immutable notifier generation's diagnostic identity.
+    #[cfg(feature = "notifier")]
+    pub fn physical_event_generation(&self) -> PhysicalEventGenerationId {
+        self.1.event().physical_generation()
+    }
+
+    /// Returns whether this exact notifier generation still owns the original
+    /// root's process-wide continued-status authority.
+    #[cfg(feature = "notifier")]
+    pub fn continued_status_authority_is_live(&self) -> bool {
+        self.1.event().continued_authority_is_live()
+    }
+
+    /// Permanently revokes this generation's ability to arm another
+    /// stop-resolution watch. Existing worker wait flags remain immutable.
+    #[cfg(feature = "notifier")]
+    pub fn revoke_continued_status_authority(&self) {
+        self.1.event().revoke_continued_authority();
+    }
+
+    /// Returns the physical status that produced this stopped capability.
+    #[cfg(feature = "notifier")]
+    pub fn physical_status_id(&self) -> Option<PhysicalStatusId> {
+        self.1.physical_status
+    }
+
+    /// Returns the mandatory identity of this exact logical stopped state.
+    ///
+    /// The identity is local to this value's immutable notifier generation;
+    /// compare it only while also comparing [`TerminalCleanup::same_generation`].
+    #[cfg(feature = "notifier")]
+    pub fn logical_stop_id(&self) -> LogicalStopId {
+        self.1
+            .logical_stop
+            .expect("every stopped notifier token has a logical stop identity")
+    }
+
+    /// Consumes this exact stopped capability into cancellation-cleanup
+    /// authority for the same immutable notifier generation.
+    ///
+    /// This is the normal way to retain a decoded stop after cancellation. The
+    /// consumed [`Stopped`] can no longer independently issue a ptrace
+    /// transition, so the returned lease remains the only transition owner.
+    #[cfg(feature = "notifier")]
+    pub fn into_cleanup_stop_lease(self) -> Result<CleanupStopLease, CleanupStopLeaseError> {
+        let Self(pid, token) = self;
+        TerminalCleanup::lease_stopped_token(pid, token).map_err(|(error, token)| {
+            CleanupStopLeaseError {
+                error,
+                stopped: Self(pid, token),
+            }
+        })
+    }
+
+    /// Copies this stopped capability into an opaque, generation-bound
+    /// cleanup transfer without granting ptrace transition authority.
+    ///
+    /// This escape hatch is for cancellation shadows that must outlive the
+    /// future currently holding the typed stop. Prefer
+    /// [`Stopped::into_cleanup_stop_lease`] whenever the stopped value can be
+    /// consumed directly.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the returned transfer is either discarded
+    /// when this stopped capability transitions successfully, or activated
+    /// only after this stopped capability and every equivalent transition
+    /// owner have become unreachable. Creating more than one transfer for the
+    /// same stopped capability is invalid.
+    #[cfg(feature = "notifier")]
+    pub unsafe fn transfer_cleanup_stop(&self) -> CleanupStopTransfer {
+        CleanupStopTransfer::from_stopped(self.0, &self.1)
+    }
+
+    /// Assigns any failed transition disposition to matching cancellation
+    /// cleanup ownership for this exact stopped state and physical status.
+    ///
+    /// The policy persists in this value when it is consumed by `resume`,
+    /// `step`, `syscall`, or `detach`. A failed transition then leaves the
+    /// physical status undisposed so the supplied cleanup generation can cite
+    /// it as [`PhysicalStatusDisposition::CancellationCleanup`].
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain independent, durable ownership of `cleanup` and
+    /// `status` until a failed transition is made unreachable and recorded as
+    /// [`PhysicalStatusDisposition::CancellationCleanup`]. The borrowed handle
+    /// alone does not establish that lifetime or disposition.
+    #[cfg(feature = "notifier")]
+    pub unsafe fn retain_failed_resume_disposition_for_cleanup(
+        &mut self,
+        cleanup: &TerminalCleanup,
+        status: PhysicalStatusId,
+    ) -> Result<(), Errno> {
+        if !cleanup.matches_stopped(self.0, &self.1) || self.1.physical_status != Some(status) {
+            return Err(Errno::EINVAL);
+        }
+        self.1.failed_resume_disposition_retained_for_cleanup = Some(status);
+        Ok(())
+    }
+
+    /// Returns memory access bound to this stopped generation without exposing
+    /// another ptrace transition capability.
+    #[cfg(feature = "memory")]
+    pub fn memory(&self) -> StoppedMemory {
+        StoppedMemory(Self::from_token(self.0, self.1.clone()))
+    }
+
+    #[cfg(feature = "notifier")]
+    fn begin_physical_resume(
+        &self,
+        operation: PhysicalResumeOperation,
+        signal: Option<Signal>,
+    ) -> Option<(PhysicalEventObserver, PhysicalResumeAttempt)> {
+        let observer = self.1.event().physical_observer()?;
+        let attempt = observer.begin_resume(PhysicalResumeContext {
+            generation: Some(self.1.event().physical_generation()),
+            task: self.1.event().physical_task_identity(self.0),
+            source_status: self.1.physical_status,
+            operation,
+            signal: signal.map(|signal| signal as i32),
+            owner: PhysicalResumeOwner::TypedStopped,
+        });
+        Some((observer, attempt))
+    }
+
+    #[cfg(not(feature = "notifier"))]
+    fn begin_physical_resume(
+        &self,
+        _operation: PhysicalResumeOperation,
+        _signal: Option<Signal>,
+    ) -> Option<(PhysicalEventObserver, PhysicalResumeAttempt)> {
+        None
+    }
+
+    #[cfg(feature = "notifier")]
+    fn finish_physical_resume(
+        &self,
+        observed: Option<(PhysicalEventObserver, PhysicalResumeAttempt)>,
+        result: &Result<(), nix::errno::Errno>,
+    ) {
+        if let Some((observer, attempt)) = observed {
+            observer.finish_resume(
+                attempt,
+                match result {
+                    Ok(()) => PhysicalResumeOutcome::Success,
+                    Err(error) => PhysicalResumeOutcome::Error(*error as i32),
+                },
+            );
+            if matches!(result, Err(nix::errno::Errno::ESRCH))
+                && let Some(status) = self.1.physical_status
+                && self.1.failed_resume_disposition_retained_for_cleanup != Some(status)
+            {
+                observer.finish_status(status, PhysicalStatusDisposition::OrdinaryHandled);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "notifier"))]
+    fn finish_physical_resume(
+        &self,
+        _observed: Option<(PhysicalEventObserver, PhysicalResumeAttempt)>,
+        _result: &Result<(), nix::errno::Errno>,
+    ) {
     }
 
     /// Sets the ptracer options.
@@ -751,22 +1321,92 @@ impl Stopped {
 
     /// Resumes the process and transitions it back to a running state.
     pub fn resume<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::cont(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        let signal = sig.into();
+        #[cfg(feature = "notifier")]
+        if self.1.owns_claimed_exit_stop {
+            let result =
+                self.1
+                    .event()
+                    .continue_claimed_exit_stop(
+                        self.0,
+                        self.logical_stop_id(),
+                        self.1.physical_status,
+                        signal,
+                    );
+            result.map_err(|err| self.map_nix_err(err))?;
+            return Ok(Running::from_token(self.0, self.1.into_running()));
+        }
+        let observed = self.begin_physical_resume(PhysicalResumeOperation::Continue, signal);
+        let result = ptrace::cont(self.0.into(), signal);
+        self.finish_physical_resume(observed, &result);
+        result.map_err(|err| self.map_nix_err(err))?;
+        Ok(Running::from_token(self.0, self.1.into_running()))
+    }
+
+    /// Performs one ordinary continuation while preserving its exact observer
+    /// attempt and raw errno for generation-bound stop-resolution logic.
+    ///
+    /// This rejects claimed exit stops; their continuation protocol remains
+    /// exclusively owned by [`Stopped::resume`].
+    #[cfg(feature = "notifier")]
+    pub fn resume_with_physical_attempt<T: Into<Option<Signal>>>(
+        self,
+        sig: T,
+    ) -> Result<(Running, PhysicalResumeAttempt), PhysicalResumeFailure> {
+        if self.1.owns_claimed_exit_stop {
+            return Err(PhysicalResumeFailure {
+                error: Errno::EINVAL,
+                attempt: None,
+            });
+        }
+        let signal = sig.into();
+        let Some(observed) = self.begin_physical_resume(PhysicalResumeOperation::Continue, signal)
+        else {
+            return Err(PhysicalResumeFailure {
+                error: Errno::EPROTO,
+                attempt: None,
+            });
+        };
+        let attempt = observed.1;
+        let result = ptrace::cont(self.0.into(), signal);
+        self.finish_physical_resume(Some(observed), &result);
+        match result {
+            Ok(()) => Ok((Running::from_token(self.0, self.1.into_running()), attempt)),
+            Err(error) => Err(PhysicalResumeFailure {
+                error: Errno::new(error as i32),
+                attempt: Some(attempt),
+            }),
+        }
     }
 
     /// Advances the execution of the process by a single step optionally
     /// delivering a signal specified by `sig`.
     pub fn step<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::step(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        #[cfg(feature = "notifier")]
+        if self.1.owns_claimed_exit_stop {
+            return Err(Error::Errno(Errno::EINVAL));
+        }
+        let signal = sig.into();
+        let observed = self.begin_physical_resume(PhysicalResumeOperation::SingleStep, signal);
+        let result = ptrace::step(self.0.into(), signal);
+        self.finish_physical_resume(observed, &result);
+        result.map_err(|err| self.map_nix_err(err))?;
+        Ok(Running::from_token(self.0, self.1.into_running()))
     }
 
     /// Like `step`, but arranges for the tracee to be stopped at the next
     /// entry to or exit from a system call.
     pub fn syscall<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::syscall(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        #[cfg(feature = "notifier")]
+        if self.1.owns_claimed_exit_stop {
+            return Err(Error::Errno(Errno::EINVAL));
+        }
+        let signal = sig.into();
+        let observed = self.begin_physical_resume(PhysicalResumeOperation::Syscall, signal);
+        let result = ptrace::syscall(self.0.into(), signal);
+        self.finish_physical_resume(observed, &result);
+        result.map_err(|err| self.map_nix_err(err))?;
+        Ok(Running::from_token(self.0, self.1.into_running()))
     }
 
     /// Sets the syscall to be executed. Only available on `aarch64`.
@@ -794,6 +1434,47 @@ impl Stopped {
     /// Sets info about the singal that caused the process to be stopped.
     pub fn setsiginfo(&self, siginfo: &libc::siginfo_t) -> Result<(), Error> {
         ptrace::setsiginfo(self.0.into(), siginfo).map_err(|err| self.map_nix_err(err))
+    }
+
+    /// Gets the tracee's exact Linux kernel signal-mask bytes.
+    ///
+    /// This borrows the current typed stop: it neither resumes the tracee nor
+    /// creates another owner of the stopped state.
+    pub fn getsigmask(&self) -> Result<PtraceSigmask, Error> {
+        let mut bytes = MaybeUninit::<[u8; LINUX_KERNEL_SIGSET_SIZE]>::uninit();
+        unsafe {
+            syscalls::syscall!(
+                Sysno::ptrace,
+                libc::PTRACE_GETSIGMASK,
+                self.0.as_raw(),
+                LINUX_KERNEL_SIGSET_SIZE,
+                bytes.as_mut_ptr()
+            )
+        }
+        .map_err(|err| self.map_err(err))?;
+
+        Ok(PtraceSigmask::from_bytes(unsafe { bytes.assume_init() }))
+    }
+
+    /// Sets the tracee's exact Linux kernel signal-mask bytes.
+    ///
+    /// This borrows the current typed stop and does not resume the tracee.
+    /// `PTRACE_SETSIGMASK` reports only whether the write succeeded; callers
+    /// that require verified installation must call [`Stopped::getsigmask`]
+    /// on this same still-stopped value and compare the returned mask.
+    pub fn setsigmask(&self, mask: &PtraceSigmask) -> Result<(), Error> {
+        unsafe {
+            syscalls::syscall!(
+                Sysno::ptrace,
+                libc::PTRACE_SETSIGMASK,
+                self.0.as_raw(),
+                LINUX_KERNEL_SIGSET_SIZE,
+                mask.as_bytes().as_ptr()
+            )
+        }
+        .map_err(|err| self.map_err(err))?;
+
+        Ok(())
     }
 
     /// Like `getsiginfo`, but do not remove the signal info from an internal
@@ -831,8 +1512,16 @@ impl Stopped {
 
     /// Detaches from and then resumes the stopped tracee.
     pub fn detach<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::detach(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        #[cfg(feature = "notifier")]
+        if self.1.owns_claimed_exit_stop {
+            return Err(Error::Errno(Errno::EINVAL));
+        }
+        let signal = sig.into();
+        let observed = self.begin_physical_resume(PhysicalResumeOperation::Detach, signal);
+        let result = ptrace::detach(self.0.into(), signal);
+        self.finish_physical_resume(observed, &result);
+        result.map_err(|err| self.map_nix_err(err))?;
+        Ok(Running::from_token(self.0, self.1.into_running()))
     }
 }
 
@@ -965,6 +1654,20 @@ impl Running {
         Self::from_token(pid, TraceeToken::new())
     }
 
+    /// Creates the original controller-spawned tracee from its one-shot
+    /// atomic pidfd launch capability.
+    ///
+    /// Generic, adopted, forked, and `CLONE_PARENT` tracees cannot construct
+    /// this value because they do not own a [`ControllerSpawnToken`].
+    #[cfg(feature = "notifier")]
+    pub fn from_controller_launch(token: ControllerSpawnToken) -> Self {
+        let pid = token.child();
+        Self::from_token(
+            pid,
+            TraceeToken::from_controller_launch(token),
+        )
+    }
+
     fn from_token(pid: Pid, token: TraceeToken) -> Self {
         Self(pid, token)
     }
@@ -1021,6 +1724,122 @@ impl Running {
     /// Returns the pid of the running process.
     pub fn pid(&self) -> Pid {
         self.0
+    }
+
+    /// Attaches a bounded observer before this generation's first wait owner.
+    #[cfg(feature = "notifier")]
+    pub fn attach_physical_event_observer(
+        &self,
+        observer: &PhysicalEventObserver,
+    ) -> Result<(), PhysicalObserverAttachError> {
+        self.1.event().attach_physical_observer(observer)
+    }
+
+    /// Attaches an observer and consumes this generation's exact
+    /// controller-spawn capability to mint the sole original-root launch
+    /// proof.
+    #[cfg(feature = "notifier")]
+    pub fn attach_original_root_physical_observer(
+        &self,
+        observer: &PhysicalEventObserver,
+    ) -> Result<OriginalRootLaunchToken, PhysicalObserverAttachError> {
+        self.1
+            .event()
+            .attach_original_root_physical_observer(self.0, observer)
+    }
+
+    /// Returns the physical observer attached to this tracee generation.
+    #[cfg(feature = "notifier")]
+    pub fn physical_event_observer(&self) -> Option<PhysicalEventObserver> {
+        self.1.event().physical_observer()
+    }
+
+    /// Returns this immutable notifier generation's diagnostic identity.
+    #[cfg(feature = "notifier")]
+    pub fn physical_event_generation(&self) -> PhysicalEventGenerationId {
+        self.1.event().physical_generation()
+    }
+
+    /// Grants this pre-registration generation sole authority to consume the
+    /// controller-launched root thread group's `WCONTINUED` state.
+    ///
+    #[cfg(feature = "notifier")]
+    pub fn prepare_original_root_continued_status_authority(
+        &self,
+        launch: OriginalRootLaunchToken,
+    ) -> Result<OriginalRootStartup, OriginalRootStartupError> {
+        self.1
+            .event()
+            .prepare_original_root_startup(self.0, launch)
+    }
+
+    /// Exact-pidfd cleanup for a controller launch which failed after clone
+    /// but before startup authority preparation.
+    ///
+    /// A cleanup failure returns a typed non-Clone continuation retaining the
+    /// same Event and pidfd; this method never retries or reopens the PID.
+    #[cfg(feature = "notifier")]
+    pub fn cleanup_failed_controller_launch(
+        &self,
+        cause: Errno,
+    ) -> Result<(), OriginalRootStartupError> {
+        self.1
+            .event()
+            .cleanup_failed_controller_launch(self.0, cause)
+    }
+
+    /// Terminates and reaps this unregistered original-root generation using
+    /// one exact pidfd. No reusable numeric-PID kill or polling wait is used.
+    ///
+    /// # Safety
+    ///
+    /// The caller must still own the controller-spawned child before notifier
+    /// registration and must not race another waiter or cleanup owner.
+    #[cfg(feature = "notifier")]
+    pub unsafe fn terminate_unregistered_original_root(
+        &self,
+        cause: Errno,
+    ) -> Result<(), Errno> {
+        self.1
+            .event()
+            .terminate_unregistered_original_root(self.0, cause)
+    }
+
+    /// Returns an unregistered cleanup handle for the exact Event generation.
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain sole pre-registration wait ownership until this
+    /// handle is either registered or used for unstarted cleanup.
+    #[cfg(feature = "notifier")]
+    pub unsafe fn unregistered_terminal_cleanup(&self) -> TerminalCleanup {
+        TerminalCleanup::new_unregistered(self.0, &self.1)
+    }
+
+    /// Converts an externally observed stop into the stopped capability for
+    /// this exact generation.
+    ///
+    /// The caller must prove that `status` came from a successful kernel wait
+    /// for this unreaped child and that this [`Running`] value is the sole
+    /// typed capability for it. The observer must already have been attached
+    /// before that wait was attempted.
+    #[cfg(feature = "notifier")]
+    pub fn into_observed_stopped_unchecked(
+        self,
+        observer: &PhysicalEventObserver,
+        status: PhysicalStatusId,
+    ) -> Result<Stopped, PhysicalObserverAttachError> {
+        self.1.event().attach_physical_observer(observer)?;
+        let generation = self.1.event().physical_generation();
+        observer.record_status_published(
+            generation,
+            status,
+            PhysicalStatusPublication::DirectStopped,
+        );
+        Ok(Stopped::from_token(
+            self.0,
+            self.1.into_observed_stopped(status),
+        ))
     }
 
     /// Blocks until a state change occurs. This may transition the process to
@@ -1167,10 +1986,21 @@ impl fmt::Display for Zombie {
 
 /// Sets up this process to be traced by its parent and raises a SIGSTOP.
 pub fn traceme_and_stop() -> Result<(), Errno> {
-    ptrace::traceme()
-        .and_then(|()| nix::sys::signal::raise(Signal::SIGSTOP))
-        .map_err(|e| Errno::new(e as i32))?;
+    traceme()?;
+    stop_for_tracer()?;
     Ok(())
+}
+
+/// Establishes `PTRACE_TRACEME` ownership without stopping the child yet.
+pub fn traceme() -> Result<(), Errno> {
+    ptrace::traceme().map_err(|error| Errno::new(error as i32))
+}
+
+/// Raises the initial SIGSTOP after spawn's error pipe has been closed.
+///
+/// Call this only after a successful [`traceme`] in the same pre-exec child.
+pub fn stop_for_tracer() -> Result<(), Errno> {
+    nix::sys::signal::raise(Signal::SIGSTOP).map_err(|error| Errno::new(error as i32))
 }
 
 /// These tests are meant to test this API but also to show how ptrace works.
@@ -1188,6 +2018,129 @@ mod test {
     use tokio as _;
 
     use super::*;
+
+    #[test]
+    fn ptrace_sigmask_preserves_exact_kernel_bytes() {
+        let bytes = [0x00, 0x01, 0x7f, 0x80, 0xaa, 0x55, 0xfe, 0xff];
+        let mask = PtraceSigmask::from_bytes(bytes);
+
+        assert_eq!(LINUX_KERNEL_SIGSET_SIZE, 8);
+        assert_eq!(core::mem::size_of::<PtraceSigmask>(), 8);
+        assert_eq!(mask.as_bytes(), &bytes);
+        assert_eq!(mask.into_bytes(), bytes);
+    }
+
+    #[test]
+    fn ptrace_sigmask_rejects_non_kernel_lengths() {
+        assert!(PtraceSigmask::try_from(&[0_u8; 7][..]).is_err());
+        assert!(PtraceSigmask::try_from(&[0_u8; 9][..]).is_err());
+        let exact = PtraceSigmask::try_from(&[0x5a_u8; LINUX_KERNEL_SIGSET_SIZE][..])
+            .expect("exact kernel sigset length");
+        assert_eq!(
+            exact,
+            PtraceSigmask::from_bytes([0x5a; LINUX_KERNEL_SIGSET_SIZE])
+        );
+    }
+
+    #[test]
+    fn ptrace_sigmask_propagates_stopped_errors() {
+        // Linux's pid_max is lower than i32::MAX, so no live tracee can own
+        // this TID. This exercises the real ptrace error path without a guest.
+        let pid = Pid::from_raw(i32::MAX);
+        let stopped = Stopped::new_unchecked(pid);
+        assert!(matches!(
+            stopped.getsigmask(),
+            Err(Error::Died(zombie)) if zombie.pid() == pid
+        ));
+
+        let mask = PtraceSigmask::from_bytes([0; LINUX_KERNEL_SIGSET_SIZE]);
+        assert!(matches!(
+            stopped.setsigmask(&mask),
+            Err(Error::Died(zombie)) if zombie.pid() == pid
+        ));
+    }
+
+    #[test]
+    fn ptrace_sigmask_live_roundtrip_restores_exact_kernel_bytes() {
+        let (_pid, stopped) = trace(|| 0, Options::empty()).expect("spawn stopped sigmask child");
+        let roundtrip = (|| -> Result<_, Error> {
+            let original = stopped.getsigmask()?;
+            let sigusr1_bit = 1_u64 << (Signal::SIGUSR1 as u32 - 1);
+            let changed = PtraceSigmask::from_bytes(
+                (u64::from_ne_bytes(original.into_bytes()) ^ sigusr1_bit).to_ne_bytes(),
+            );
+            stopped.setsigmask(&changed)?;
+            let installed = stopped.getsigmask()?;
+            stopped.setsigmask(&original)?;
+            let restored = stopped.getsigmask()?;
+            Ok((original, changed, installed, restored))
+        })();
+        let final_wait = stopped.resume(None).and_then(Running::wait);
+
+        let (original, changed, installed, restored) =
+            roundtrip.expect("round-trip live ptrace signal mask");
+        assert_ne!(changed, original);
+        assert_eq!(
+            installed, changed,
+            "kernel did not install exact mask bytes"
+        );
+        assert_eq!(
+            restored, original,
+            "kernel did not restore exact mask bytes"
+        );
+        assert_eq!(
+            final_wait.expect("reap sigmask child").assume_exited().1,
+            ExitStatus::Exited(0)
+        );
+    }
+
+    #[cfg(feature = "notifier")]
+    #[test]
+    fn claimed_exit_marker_is_cleared_from_successor_tokens() {
+        let event = notifier::EventHandle::new();
+        let exit_stop = event.allocate_logical_stop();
+        let successor_stop = event.allocate_logical_stop();
+        assert!(successor_stop.is_strictly_after(exit_stop));
+        assert!(!exit_stop.is_strictly_after(successor_stop));
+        assert!(!exit_stop.is_strictly_after(exit_stop));
+        let claimed =
+            TraceeToken::from_claimed_exit_event(event.clone(), None, exit_stop);
+        assert!(claimed.owns_claimed_exit_stop);
+        assert!(!claimed.into_running().owns_claimed_exit_stop);
+        assert!(!TraceeToken::from_event(event.clone()).owns_claimed_exit_stop);
+        assert!(
+            !TraceeToken::from_observed_event(event, None, Some(successor_stop))
+                .owns_claimed_exit_stop,
+            "ordinary successor stop inherited claimed exit ownership"
+        );
+    }
+
+    #[cfg(feature = "notifier")]
+    #[test]
+    fn claimed_exit_stop_rejects_non_continue_transitions() {
+        let pid = Pid::from_raw(i32::MAX);
+        let claimed = || {
+            let event = notifier::EventHandle::new();
+            let stop_id = event.allocate_logical_stop();
+            Stopped::from_token(
+                pid,
+                TraceeToken::from_claimed_exit_event(event, None, stop_id),
+            )
+        };
+
+        assert!(matches!(
+            claimed().step(None),
+            Err(Error::Errno(Errno::EINVAL))
+        ));
+        assert!(matches!(
+            claimed().syscall(None),
+            Err(Error::Errno(Errno::EINVAL))
+        ));
+        assert!(matches!(
+            claimed().detach(None),
+            Err(Error::Errno(Errno::EINVAL))
+        ));
+    }
 
     // Traces a closure in a forked process. The forked process starts in a
     // stopped state so that ptrace options may be set.
@@ -1242,6 +2195,44 @@ mod test {
                 unsafe { ::libc::_exit(exit_code) };
             }
         }
+    }
+
+    #[cfg(feature = "notifier")]
+    fn stopped_with_observer(
+        observer: &PhysicalEventObserver,
+        pid: Pid,
+        status: PhysicalStatusId,
+    ) -> Stopped {
+        let mut token = TraceeToken::new();
+        token
+            .event()
+            .attach_physical_observer(observer)
+            .expect("attach resume disposition observer");
+        token.physical_status = Some(status);
+        Stopped::from_token(pid, token)
+    }
+
+    #[cfg(feature = "notifier")]
+    #[test]
+    fn direct_failed_resume_keeps_ordinary_disposition() {
+        let pid = Pid::from_raw(i32::MAX - 43);
+        let status = PhysicalStatusId::from_raw(19).expect("nonzero physical status");
+
+        let ordinary = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(8, 4))
+            .expect("create ordinary failed-resume observer");
+        let stopped = stopped_with_observer(&ordinary, pid, status);
+        let attempt = stopped
+            .begin_physical_resume(PhysicalResumeOperation::Continue, None)
+            .expect("attached observer produces a resume attempt");
+        stopped.finish_physical_resume(attempt.into(), &Err(nix::errno::Errno::ESRCH));
+        ordinary.close();
+        assert!(ordinary.snapshot().records().iter().any(|record| matches!(
+            record.kind(),
+            PhysicalEventRecordKind::StatusDisposition {
+                status: observed,
+                disposition: PhysicalStatusDisposition::OrdinaryHandled,
+            } if observed == status
+        )));
     }
 
     #[test]

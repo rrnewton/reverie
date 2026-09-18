@@ -168,12 +168,13 @@ impl Drop for PendingDispatchPage {
 ///
 /// `frame` must point to the writable e9tool `state` frame for the duration of
 /// this call. The AOT trampoline is the intended caller.
-unsafe extern "C" fn reverie_e9patch_dispatch_aot(
+unsafe fn dispatch_aot_frame_with(
     frame: *mut InjectedSyscallFrame,
     trap_rflags: u64,
+    dispatch: impl FnOnce(i64, [u64; 6], u64) -> i64,
 ) -> u64 {
-    let number = unsafe { (&*frame).syscall_number() };
-    if number == reverie::syscalls::Sysno::rt_sigreturn {
+    let raw_number = unsafe { (&*frame).raw_syscall_number() };
+    if raw_number == libc::SYS_rt_sigreturn as u64 {
         return 2;
     }
     let (args, instruction_pointer) = {
@@ -187,12 +188,18 @@ unsafe extern "C" fn reverie_e9patch_dispatch_aot(
         (args, instruction_pointer)
     };
     let _scope = CurrentFrameScope::enter(frame, trap_rflags);
-    let result =
-        reverie_preload::trap::dispatch_direct(number.id() as i64, args, instruction_pointer);
+    let result = dispatch(raw_number as i64, args, instruction_pointer);
     // SAFETY: dispatch has returned and no Tool borrow of the current frame is
     // live; the trampoline still owns the same unique frame.
     unsafe { (&mut *frame).set_result(result) };
     1
+}
+
+unsafe extern "C" fn reverie_e9patch_dispatch_aot(
+    frame: *mut InjectedSyscallFrame,
+    trap_rflags: u64,
+) -> u64 {
+    unsafe { dispatch_aot_frame_with(frame, trap_rflags, reverie_preload::trap::dispatch_direct) }
 }
 
 #[cfg(test)]
@@ -267,5 +274,45 @@ mod tests {
         }
 
         assert_eq!(words, original);
+    }
+
+    #[test]
+    fn noncanonical_and_x32_direct_frames_fail_without_truncation_or_panic() {
+        let mixed_high = [
+            libc::SYS_rt_sigreturn,
+            libc::SYS_execve,
+            libc::SYS_rt_sigaction,
+            libc::SYS_mmap,
+        ]
+        .map(|number| (1_u64 << 32) | number as u64);
+        let x32 = [512_u64, 513_u64, libc::SYS_getpid as u64].map(|number| number | 0x4000_0000);
+        for raw_number in mixed_high.into_iter().chain(x32) {
+            let mut words = [0_u64; 18];
+            words[15] = raw_number;
+            words[17] = 0x401000;
+
+            let mut observed = None;
+            let dispatch = |number, args, instruction_pointer| {
+                observed = Some((number, args, instruction_pointer));
+                -i64::from(libc::ENOSYS)
+            };
+
+            unsafe {
+                assert_eq!(
+                    dispatch_aot_frame_with(words.as_mut_ptr().cast(), 0x202, dispatch),
+                    1
+                );
+            }
+            assert_eq!(observed, Some((raw_number as i64, [0; 6], 0x401000)));
+            assert_eq!(words[15] as i64, -i64::from(libc::ENOSYS));
+
+            assert!(reverie_preload::dispatch::syscall_number_requires_enosys(
+                raw_number as i64
+            ));
+            assert_eq!(
+                reverie_preload::trap::dispatch_direct(raw_number as i64, [0; 6], 0x401000),
+                -i64::from(libc::ENOSYS)
+            );
+        }
     }
 }

@@ -1,0 +1,47 @@
+
+running 1 test
+
+thread 'constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks' (1998286) panicked at reverie-liteinst/tests/after_loader.rs:971:27:
+after-loader runner failed: LiteInst after-loader call failed for tracee 1998593: private mmap length or offset is outside bounds; 594 retained observations; showing [562..594]
+562: operation="private syscall stop" raw_clock=Some(19793) detail_bytes=118 detail_prefix="Stopped(tid=1998593 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(240)) event=Seccomp)"
+563: operation="private held stop registers" raw_clock=Some(19793) detail_bytes=221 detail_prefix="tid=1998593 event=Seccomp regs=[0, 0, 140737488350368, 4198592, 0, 0, 775, 0, 0, 0, 18446744073709551578, 1895825410, 5, 4096, 140737353842688, 10, 1895825410, 51, 519, 140737353805824, 43, 140737353811776, 0, 0, 0, 0, 0]"
+564: operation="private syscall permit consumed" raw_clock=Some(19793) detail_bytes=205 detail_prefix="tid=1998593 generation=1 origin_status=Some(PhysicalStatusId(239)) admission_status=Some(PhysicalStatusId(240)) purpose=PrivateSetup nr=10 args=[140737353842688, 4096, 5, 0, 0, 0] rip=0x71000000 outputs=[]"
+565: operation="private syscall completion" raw_clock=Some(19793) detail_bytes=118 detail_prefix="Stopped(tid=1998593 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(241)) event=Syscall)"
+566: operation="private held stop registers" raw_clock=Some(19793) detail_bytes=202 detail_prefix="tid=1998593 event=Syscall regs=[0, 0, 140737488350368, 4198592, 0, 0, 775, 0, 0, 0, 0, 1895825410, 5, 4096, 140737353842688, 10, 1895825410, 51, 519, 140737353805824, 43, 140737353811776, 0, 0, 0, 0, 0]"
+567: operation="private syscall result" raw_clock=Some(19793) detail_bytes=60 detail_prefix="mprotect args=[140737353842688, 4096, 5, 0, 0, 0] result=0x0"
+568: operation="before dlopen" raw_clock=Some(19793) detail_bytes=22 detail_prefix="address=0x7ffff7c87ab0"
+569: operation="private function stop" raw_clock=Some(19793) detail_bytes=118 detail_prefix="Stopped(tid=1998593 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(242)) event=Seccomp)"
+570: operation="private held stop registers" raw_clock=Some(19793) detail_bytes=288 detail_prefix="tid=1998593 event=Seccomp regs=[140737353803392, 4219568, 140737353803392, 0, 140737353803264, 140737353803375, 647, 0, 4219568, 524288, 18446744073709551578, 140737354045144, 524288, 4219568, 4294967196, 257, 140737354045144, 51, 647, 140737353803160, 43,"
+571: operation="private loader syscall" raw_clock=Some(19793) detail_bytes=62 detail_prefix="ip=0x7ffff7fe96d6 nr=257 image=/usr/lib64/ld-linux-x86-64.so.2"
+572: operation="private syscall permit consumed" raw_clock=Some(19793) detail_bytes=224 detail_prefix="tid=1998593 generation=1 origin_status=Some(PhysicalStatusId(241)) admission_status=Some(PhysicalStatusId(242)) purpose=PrivateSetup nr=257 args=[4294967196, 4219568, 524288, 0, 524288, 4219568] rip=0x7ffff7fe96d6 outputs=[]"
+573: operation="private loader syscall exit" raw_clock=Some(19793) detail_bytes=118 detail_prefix="Stopped(tid=1998593 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(243)) event=Syscall)"
+574: operation="private held stop registers" raw_clock=Some(19793) detail_bytes=269 detail_prefix="tid=1998593 event=Syscall regs=[140737353803392, 4219568, 140737353803392, 0, 140737353803264, 140737353803375, 647, 0, 4219568, 524288, 4, 140737354045144, 524288, 4219568, 4294967196, 257, 140737354045144, 51, 647, 140737353803160, 43, 140737353811776, 0"
+575: operation="private loader syscall result" raw_clock=Some(19793) detail_bytes=83 detail_prefix="nr=257 args=[4294967196, 4219568, 524288, 0, 524288, 4219568] result=0x4 outputs=[]"
+576: operation="private function stop" raw_clock=Some(19793) detail_bytes=118 detail_prefix="Stopped(tid=1998593 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(244)) event=Seccomp)"
+577: operation="private held stop registers" raw_clock=Some(19793) detail_bytes=270 detail_prefix="tid=1998593 event=Seccomp regs=[4, 4219568, 140737353803392, 832, 140737353803264, 140737353803375, 582, 0, 4219568, 524288, 18446744073709551578, 140737354045224, 832, 140737353803400, 4, 0, 140737354045224, 51, 582, 140737353803160, 43, 140737353811776, "
+578: operation="private loader syscall" raw_clock=Some(19793) detail_bytes=60 detail_prefix="ip=0x7ffff7fe9726 nr=0 image=/usr/lib64/ld-linux-x86-64.so.2"
+579: operation="private syscall permit consumed" raw_clock=Some(19793) detail_bytes=252 detail_prefix="tid=1998593 generation=1 origin_status=Some(PhysicalStatusId(241)) admission_status=Some(PhysicalStatusId(244)) purpose=PrivateSetup nr=0 args=[4, 140737353803400, 832, 0, 524288, 4219568] rip=0x7ffff7fe9726 outputs=[(140737353803400, 140737353804232)]"
+580: operation="private loader syscall exit" raw_clock=Some(19793) detail_bytes=118 detail_prefix="Stopped(tid=1998593 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(245)) event=Syscall)"
+581: operation="private held stop registers" raw_clock=Some(19793) detail_bytes=253 detail_prefix="tid=1998593 event=Syscall regs=[4, 4219568, 140737353803392, 832, 140737353803264, 140737353803375, 582, 0, 4219568, 524288, 832, 140737354045224, 832, 140737353803400, 4, 0, 140737354045224, 51, 582, 140737353803160, 43, 140737353811776, 0, 0, 0, 0, 0]"
+582: operation="private loader syscall result" raw_clock=Some(19793) detail_bytes=113 detail_prefix="nr=0 args=[4, 140737353803400, 832, 0, 524288, 4219568] result=0x340 outputs=[(140737353803400, 140737353804232)]"
+583: operation="private function stop" raw_clock=Some(19793) detail_bytes=118 detail_prefix="Stopped(tid=1998593 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(246)) event=Seccomp)"
+584: operation="private held stop registers" raw_clock=Some(19793) detail_bytes=294 detail_prefix="tid=1998593 event=Seccomp regs=[140737353803392, 140737354125312, 140737353803392, 0, 140737353803232, 2415919106, 582, 24011439870050305, 0, 4219568, 18446744073709551578, 140737354044491, 4, 140737353803040, 4, 5, 140737354044491, 51, 582, 14073735380288"
+585: operation="private loader syscall" raw_clock=Some(19793) detail_bytes=60 detail_prefix="ip=0x7ffff7fe9449 nr=5 image=/usr/lib64/ld-linux-x86-64.so.2"
+586: operation="private syscall permit consumed" raw_clock=Some(19793) detail_bytes=261 detail_prefix="tid=1998593 generation=1 origin_status=Some(PhysicalStatusId(241)) admission_status=Some(PhysicalStatusId(246)) purpose=PrivateSetup nr=5 args=[4, 140737353803040, 4, 24011439870050305, 4219568, 0] rip=0x7ffff7fe9449 outputs=[(140737353803040, 140737353803"
+587: operation="private loader syscall exit" raw_clock=Some(19793) detail_bytes=118 detail_prefix="Stopped(tid=1998593 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(247)) event=Syscall)"
+588: operation="private held stop registers" raw_clock=Some(19793) detail_bytes=275 detail_prefix="tid=1998593 event=Syscall regs=[140737353803392, 140737354125312, 140737353803392, 0, 140737353803232, 2415919106, 582, 24011439870050305, 0, 4219568, 0, 140737354044491, 4, 140737353803040, 4, 5, 140737354044491, 51, 582, 140737353802888, 43, 140737353811"
+589: operation="private loader syscall result" raw_clock=Some(19793) detail_bytes=120 detail_prefix="nr=5 args=[4, 140737353803040, 4, 24011439870050305, 4219568, 0] result=0x0 outputs=[(140737353803040, 140737353803184)]"
+590: operation="private function stop" raw_clock=Some(19793) detail_bytes=118 detail_prefix="Stopped(tid=1998593 generation=PhysicalEventGenerationId(1) physical_status=Some(PhysicalStatusId(248)) event=Seccomp)"
+591: operation="private held stop registers" raw_clock=Some(19793) detail_bytes=230 detail_prefix="tid=1998593 event=Seccomp regs=[4219600, 0, 140737353803392, 4095, 0, 2050, 582, 2050, 0, 4, 18446744073709551578, 140737354045574, 1, 131528450, 0, 9, 140737354045574, 51, 582, 140737353802344, 43, 140737353811776, 0, 0, 0, 0, 0]"
+592: operation="private loader syscall" raw_clock=Some(19793) detail_bytes=60 detail_prefix="ip=0x7ffff7fe9884 nr=9 image=/usr/lib64/ld-linux-x86-64.so.2"
+593: operation="physical event partition validated" raw_clock=None detail_bytes=171 detail_prefix="observer=PhysicalObserverId(1) records=2496 physical_statuses=250 successful_resumes=248 explicit_dispositions=2 ordinary_lost=0 cleanup_lost=0 after_close=0 violations=[]"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks ... FAILED
+
+failures:
+
+failures:
+    constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.13s
+

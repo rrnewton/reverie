@@ -86,11 +86,16 @@ impl LifecycleController for InProcessSeccomp {
 /// Kept separate from [`install_in_process_trap`] so the buildable precondition
 /// is unit-testable without installing irreversible process-global state.
 fn build_trap_filter() -> io::Result<SeccompFilter> {
-    SeccompFilter::for_trusted_gates(trap::trusted_gate(), trap::guest_syscall_gate())
+    SeccompFilter::for_trusted_gates(
+        trap::trusted_gate(),
+        trap::guest_syscall_gate(),
+        trap::rt_sigreturn_gate(),
+    )
 }
 
 /// Install the shared **guest-half** in-process syscall trap: the `SIGSYS`
-/// handler first, then the trusted-gate seccomp filter that whitelists it.
+/// handler first, then the trusted-gate seccomp filter. The handler's raw
+/// `SA_RESTORER` action names the same exact `rt_sigreturn` gate as the filter.
 ///
 /// This is the exact guest-half mechanism both [`InProcessSeccomp`] and
 /// [`HybridPtrace`] put on the syscall path; neither type encodes a launcher.
@@ -103,7 +108,7 @@ fn build_trap_filter() -> io::Result<SeccompFilter> {
 /// Installs process-global, largely irreversible state (signal handler, seccomp
 /// filter). Call exactly once, after the dispatcher is registered. Ordering is
 /// load-bearing: the handler must be in place before the filter starts trapping,
-/// and the filter must whitelist the trusted gate.
+/// and the filter must whitelist the ordinary gates and exact restorer gate.
 unsafe fn install_in_process_trap(config: &RuntimeConfig) -> io::Result<()> {
     unsafe { trap::install_handler(config.use_alt_stack)? };
     let mut filter = build_trap_filter()?;

@@ -1,0 +1,130 @@
+   Compiling safeptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/safeptrace)
+error[E0308]: mismatched types
+    --> safeptrace/src/notifier.rs:6280:44
+     |
+6280 |                 owner.decode_status_return(Pid::this(), reservation, |raw, _| {
+     |                       -------------------- ^^^^^^^^^^^ expected `reverie_process::Pid`, found `nix::unistd::Pid`
+     |                       |
+     |                       arguments to this method are incorrect
+     |
+     = note: `nix::unistd::Pid` and `reverie_process::Pid` have similar names, but are actually distinct types
+note: `nix::unistd::Pid` is defined in crate `nix`
+    --> /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nix-0.30.1/src/unistd.rs:165:1
+     |
+ 165 | pub struct Pid(pid_t);
+     | ^^^^^^^^^^^^^^
+note: `reverie_process::Pid` is defined in crate `reverie_process`
+    --> reverie-process/src/pid.rs:28:1
+     |
+  28 | pub struct Pid(libc::pid_t);
+     | ^^^^^^^^^^^^^^
+note: method defined here
+    --> safeptrace/src/notifier.rs:725:8
+     |
+ 725 |     fn decode_status_return<'a, T>(
+     |        ^^^^^^^^^^^^^^^^^^^^
+ 726 |         &mut self,
+ 727 |         _pid: Pid,
+     |         ---------
+help: call `Into::into` on this expression to convert `nix::unistd::Pid` into `reverie_process::Pid`
+     |
+6280 |                 owner.decode_status_return(Pid::this().into(), reservation, |raw, _| {
+     |                                                       +++++++
+
+error[E0308]: mismatched types
+    --> safeptrace/src/notifier.rs:6318:35
+     |
+6318 |             .decode_status_return(Pid::this(), reservation, |raw, _| Ok(raw))
+     |              -------------------- ^^^^^^^^^^^ expected `reverie_process::Pid`, found `nix::unistd::Pid`
+     |              |
+     |              arguments to this method are incorrect
+     |
+     = note: `nix::unistd::Pid` and `reverie_process::Pid` have similar names, but are actually distinct types
+note: `nix::unistd::Pid` is defined in crate `nix`
+    --> /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nix-0.30.1/src/unistd.rs:165:1
+     |
+ 165 | pub struct Pid(pid_t);
+     | ^^^^^^^^^^^^^^
+note: `reverie_process::Pid` is defined in crate `reverie_process`
+    --> reverie-process/src/pid.rs:28:1
+     |
+  28 | pub struct Pid(libc::pid_t);
+     | ^^^^^^^^^^^^^^
+note: method defined here
+    --> safeptrace/src/notifier.rs:725:8
+     |
+ 725 |     fn decode_status_return<'a, T>(
+     |        ^^^^^^^^^^^^^^^^^^^^
+ 726 |         &mut self,
+ 727 |         _pid: Pid,
+     |         ---------
+help: call `Into::into` on this expression to convert `nix::unistd::Pid` into `reverie_process::Pid`
+     |
+6318 |             .decode_status_return(Pid::this().into(), reservation, |raw, _| Ok(raw))
+     |                                              +++++++
+
+error[E0308]: mismatched types
+    --> safeptrace/src/notifier.rs:6326:42
+     |
+6326 |             resume_cancelled_sync_status(Pid::this(), cancelled, &handle),
+     |             ---------------------------- ^^^^^^^^^^^ expected `reverie_process::Pid`, found `nix::unistd::Pid`
+     |             |
+     |             arguments to this function are incorrect
+     |
+     = note: `nix::unistd::Pid` and `reverie_process::Pid` have similar names, but are actually distinct types
+note: `nix::unistd::Pid` is defined in crate `nix`
+    --> /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nix-0.30.1/src/unistd.rs:165:1
+     |
+ 165 | pub struct Pid(pid_t);
+     | ^^^^^^^^^^^^^^
+note: `reverie_process::Pid` is defined in crate `reverie_process`
+    --> reverie-process/src/pid.rs:28:1
+     |
+  28 | pub struct Pid(libc::pid_t);
+     | ^^^^^^^^^^^^^^
+note: function defined here
+    --> safeptrace/src/notifier.rs:3188:4
+     |
+3188 | fn resume_cancelled_sync_status(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+3189 |     pid: Pid,
+     |     --------
+help: call `Into::into` on this expression to convert `nix::unistd::Pid` into `reverie_process::Pid`
+     |
+6326 |             resume_cancelled_sync_status(Pid::this().into(), cancelled, &handle),
+     |                                                     +++++++
+
+error[E0515]: cannot return value referencing local data `polling_event`
+    --> safeptrace/src/notifier.rs:6187:17
+     |
+6183 |                   let reservation = match polling_event.poll_status_reservation(&waker) {
+     |                                           ------------- `polling_event` is borrowed here
+...
+6187 | /                 polling_event.decode_status_return(reservation, |raw, _| {
+6188 | |                     decode_called.store(true, Ordering::SeqCst);
+6189 | |                     Ok(raw)
+6190 | |                 })
+     | |__________________^ returns a value referencing data owned by the current function
+
+error[E0597]: `decoding_event` does not live long enough
+    --> safeptrace/src/notifier.rs:8413:35
+     |
+8399 |           let (decoded_tx, decoded_rx) = mpsc::channel();
+     |                ---------- lifetime `'1` appears in the type of `decoded_tx`
+...
+8402 |               let decoding_event = Arc::clone(&event);
+     |                   -------------- binding `decoding_event` declared here
+...
+8413 |                   let reservation = decoding_event
+     |                                     ^^^^^^^^^^^^^^ borrowed value does not live long enough
+...
+8419 | /                 decoded_tx
+8420 | |                     .send(result)
+     | |_________________________________- argument requires that `decoding_event` is borrowed for `'1`
+...
+8425 |               });
+     |               - `decoding_event` dropped here while still borrowed
+
+Some errors have detailed explanations: E0308, E0515, E0597.
+For more information about an error, try `rustc --explain E0308`.
+error: could not compile `safeptrace` (lib test) due to 5 previous errors

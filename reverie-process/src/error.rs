@@ -76,6 +76,35 @@ impl Context {
             Self::Exec => "execvp failed",
         }
     }
+
+    /// Returns the stable controller-startup protocol discriminant.
+    pub(crate) const fn wire_value(self) -> u32 {
+        self as u32
+    }
+
+    /// Decodes only a currently defined controller-startup discriminant.
+    pub(crate) const fn try_from_wire(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Unknown),
+            1 => Some(Self::Affinity),
+            2 => Some(Self::Clone),
+            3 => Some(Self::Tty),
+            4 => Some(Self::Stdio),
+            5 => Some(Self::ResetSignals),
+            6 => Some(Self::MapUid),
+            7 => Some(Self::MapGid),
+            8 => Some(Self::Hostname),
+            9 => Some(Self::Domainname),
+            10 => Some(Self::Chroot),
+            11 => Some(Self::Chdir),
+            12 => Some(Self::Mount),
+            13 => Some(Self::Network),
+            14 => Some(Self::PreExec),
+            15 => Some(Self::Seccomp),
+            16 => Some(Self::Exec),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for Context {

@@ -93,12 +93,16 @@ where
 /// This has the same process-global effects as [`install_tool`], but skips the
 /// concurrent instruction-tearing and straddler protocol when publishing a new
 /// site. The caller must keep every other application thread from fetching
-/// guest text for the full lifetime of the installed tool.
+/// guest text and must exclude nested signal-handler execution for the full
+/// lifetime of the installed tool.
 ///
 /// # Safety
 ///
 /// In addition to [`install_tool`]'s requirements, the caller asserts that no
-/// other application thread can execute while a syscall site is installed.
+/// other application thread or nested signal handler can execute while a
+/// syscall site is installed. This exclusion covers allocator reentry as well
+/// as guest-text execution because quiescent installation uses a process-wide,
+/// non-TLS patch-allocation scope.
 pub unsafe fn install_tool_quiescent<T>(coordinator: impl AsRef<Path>) -> io::Result<()>
 where
     T: Tool + 'static,
@@ -324,6 +328,7 @@ where
             // This is the original unsubscribed guest operation. Private
             // inject/tail_inject below deliberately keep caller rights.
             event.result = unsafe { event.forward() };
+            runtime::observe_injected_mapping_result(number, args, event.result);
             return;
         }
         let args = guest.event.args.map(|arg| arg as usize);
@@ -725,29 +730,7 @@ fn forward_plain_fork(number: i64, args: [u64; 6], guest_pkru: Option<&mut Optio
     }
     let result = physical.result;
     if number == libc::SYS_vfork && result > 0 {
-        let mut info = core::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
-        loop {
-            let waited = unsafe {
-                raw_syscall6(
-                    libc::SYS_waitid,
-                    [
-                        libc::P_PID as u64,
-                        result as u64,
-                        info.as_mut_ptr() as u64,
-                        (libc::WEXITED | libc::WNOWAIT) as u64,
-                        0,
-                        0,
-                    ],
-                )
-            };
-            if waited == -i64::from(libc::EINTR) {
-                continue;
-            }
-            if waited < 0 {
-                return waited;
-            }
-            break;
-        }
+        return unsafe { runtime::wait_for_translated_vfork_child(result) };
     }
     result
 }
@@ -763,7 +746,9 @@ fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
     let protected_signal =
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-133): Review fail-closed guest signal-handler policy.
-        !runtime::signal_action_supported(number, args)
+        number == libc::SYS_rt_sigreturn
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        || !runtime::signal_action_supported(number, args)
         // AUTONOMOUS-BOT-IMPLEMENTED
         || (number == libc::SYS_sigaltstack && args[0] != 0)
         // AUTONOMOUS-BOT-IMPLEMENTED
@@ -773,6 +758,8 @@ fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
         Some(Errno::EOPNOTSUPP)
     } else if protected_signal {
         Some(Errno::EPERM)
+    } else if let Some(error) = runtime::injected_mapping_control_error(number, args) {
+        Some(error)
     } else {
         None
     }
@@ -942,6 +929,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         }
 
         let result = unsafe { raw_syscall6(number, raw_args) };
+        runtime::observe_injected_mapping_result(number, raw_args, result);
         Errno::from_ret(result as usize).map(|value| value as i64)
     }
 
@@ -977,6 +965,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
             self.tail.set_exit(number, args);
         } else {
             let value = unsafe { raw_syscall6(number, args) };
+            runtime::observe_injected_mapping_result(number, args, value);
             self.tail.set_result(value);
         }
         std::future::pending().await
@@ -1094,5 +1083,86 @@ fn fatal(status: i32) -> ! {
     }
     loop {
         core::hint::spin_loop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct KernelSigaction {
+        handler: u64,
+        flags: u64,
+        restorer: u64,
+        mask: u64,
+    }
+
+    #[test]
+    fn injected_rt_sigreturn_cannot_consume_runtime_frame() {
+        assert_eq!(
+            injected_syscall_guard(libc::SYS_rt_sigreturn, [0; 6]),
+            Some(Errno::EPERM),
+        );
+    }
+
+    #[test]
+    fn toolhost_vfork_accepts_auto_reaped_sigchld_ignored_child() {
+        let outer = unsafe { raw_syscall6(libc::SYS_fork, [0; 6]) };
+        assert!(outer >= 0, "fork isolated ToolHost SIGCHLD=SIG_IGN test");
+        if outer == 0 {
+            let ignored = KernelSigaction {
+                handler: libc::SIG_IGN as u64,
+                ..KernelSigaction::default()
+            };
+            let installed = unsafe {
+                raw_syscall6(
+                    libc::SYS_rt_sigaction,
+                    [
+                        libc::SIGCHLD as u64,
+                        (&raw const ignored) as u64,
+                        0,
+                        core::mem::size_of::<u64>() as u64,
+                        0,
+                        0,
+                    ],
+                )
+            };
+            if installed != 0 {
+                unsafe { raw_syscall6(libc::SYS_exit_group, [81, 0, 0, 0, 0, 0]) };
+                unreachable!();
+            }
+
+            let result = forward_plain_fork(libc::SYS_vfork, [0; 6], None);
+            let code = if result == 0 {
+                // Translated COW child: finish the supported vfork boundary.
+                0
+            } else if result > 0 {
+                // Translated parent: the shared exact-child wait accepted the
+                // auto-reaped ECHILD proof and retained the child PID result.
+                0
+            } else {
+                82
+            };
+            unsafe { raw_syscall6(libc::SYS_exit_group, [code, 0, 0, 0, 0, 0]) };
+            unreachable!();
+        }
+
+        let mut status = 0_i32;
+        loop {
+            let waited = unsafe {
+                raw_syscall6(
+                    libc::SYS_wait4,
+                    [outer as u64, (&raw mut status) as u64, 0, 0, 0, 0],
+                )
+            };
+            if waited == -i64::from(libc::EINTR) {
+                continue;
+            }
+            assert_eq!(waited, outer);
+            break;
+        }
+        assert_eq!(status, 0, "ToolHost vfork SIGCHLD=SIG_IGN regression");
     }
 }

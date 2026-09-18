@@ -1,0 +1,1 @@
+CARGO_TARGET_DIR=<candidate-05>/run/target CARGO_NET_OFFLINE=true cargo test --offline --locked --release -p reverie-liteinst --test after_loader --no-run --no-default-features --features liteinst-after-loader-experiment --message-format=json-render-diagnostics

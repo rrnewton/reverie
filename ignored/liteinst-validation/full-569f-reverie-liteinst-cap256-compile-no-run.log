@@ -1,0 +1,3 @@
+   Compiling reverie-liteinst v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-15-liteinst-bootstrap-rdtsc-01a0a13c/reverie-liteinst)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.00s
+  Executable unittests src/lib.rs (target/debug/deps/reverie_liteinst-de74cf6b08fac3a1)
