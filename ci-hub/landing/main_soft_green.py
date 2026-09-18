@@ -136,7 +136,7 @@ def canonical_state(root: Path, sha: str) -> tuple[str, str]:
     # the very package lock operational status is meant to diagnose. Read the
     # canonical union and call its one Python predicate directly instead.
     rows = _run(
-        (sys.executable, str(root / "ci-hub/ledger/validate_rows.py"), "rows"),
+        (sys.executable, str(root / "ci-hub/ledger/validate_rows.py"), "rows", "--preserve-admission"),
         cwd=root,
     )
     if rows.returncode != 0:
@@ -145,7 +145,7 @@ def canonical_state(root: Path, sha: str) -> tuple[str, str]:
     candidates = []
     for line in rows.stdout.splitlines():
         try:
-            row = json.loads(line)
+            row = json.loads(line, object_pairs_hook=qualifying_receipt.AdmissionJsonObject)
         except json.JSONDecodeError:
             continue
         if not isinstance(row, dict) or row.get("commit") != sha:

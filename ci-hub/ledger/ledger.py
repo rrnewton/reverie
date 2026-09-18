@@ -133,10 +133,10 @@ def _shard_team(path: Any) -> str | None:
 # --------------------------------------------------------------------- parse
 
 
-def parse_line(text: str) -> dict:
+def parse_line(text: str, *, object_pairs_hook=None) -> dict:
     """Parse one JSONL line into an event, or raise `MalformedEvent`."""
     try:
-        event = json.loads(text)
+        event = json.loads(text, object_pairs_hook=object_pairs_hook)
     except (json.JSONDecodeError, ValueError) as exc:
         raise MalformedEvent(f"line is not valid JSON: {exc}") from exc
     if not isinstance(event, dict):
@@ -144,7 +144,7 @@ def parse_line(text: str) -> dict:
     return event
 
 
-def read_shard(path: Any) -> list[dict]:
+def read_shard(path: Any, *, object_pairs_hook=None) -> list[dict]:
     """Read one shard. A final line without its newline is TRUNCATED.
 
     A writer that died mid-append leaves a partial object; JSON would often
@@ -158,10 +158,11 @@ def read_shard(path: Any) -> list[dict]:
             f"{path}: final line has no newline terminator — the shard is "
             f"truncated (a writer died mid-append); refusing to parse it as whole"
         )
-    return [parse_line(line) for line in text.splitlines() if line.strip()]
+    return [parse_line(line, object_pairs_hook=object_pairs_hook)
+            for line in text.splitlines() if line.strip()]
 
 
-def _shared_type_codes(events: Sequence[dict]) -> list[list[str]]:
+def _shared_type_codes(events: Sequence[dict], *, serializer=None) -> list[list[str]]:
     """Check envelope shape and closed values with the producer-owned type."""
     if not events:
         return []
@@ -177,7 +178,8 @@ def _shared_type_codes(events: Sequence[dict]) -> list[list[str]]:
         result = subprocess.run(
             [str(checker)],
             input="".join(
-                json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n"
+                (serializer(event) if serializer is not None else
+                 json.dumps(event, sort_keys=True, separators=(",", ":"))) + "\n"
                 for event in events
             ),
             capture_output=True,
@@ -228,12 +230,13 @@ def _event_key(event: dict) -> tuple[str, str]:
     return (str(event.get("emitted_at", "")), str(event.get("event_id", "")))
 
 
-def union_events(events: Iterable[dict]) -> list[dict]:
+def union_events(events: Iterable[dict], *, canonical=None) -> list[dict]:
     """Deterministically merge already-parsed events (§5).
 
     Order-independent by construction: the result is sorted by the total order,
     so shard order, file order and line order cannot influence the output.
     """
+    canonical = canonical or _canonical
     by_id: dict[str, dict] = {}
     for event in events:
         event_id = str(event.get("event_id", ""))
@@ -241,7 +244,7 @@ def union_events(events: Iterable[dict]) -> list[dict]:
         if seen is None:
             by_id[event_id] = event
             continue
-        if _canonical(seen) != _canonical(event):
+        if canonical(seen) != canonical(event):
             raise ConflictingEventId(
                 f"event_id {event_id!r} appears twice with different bodies; "
                 f"refusing last-writer-wins (§5.2)"
@@ -453,7 +456,7 @@ def _contextual_event_codes(
     return codes
 
 
-def validate_events(events: Sequence[dict], shard: Any = None) -> list[list[str]]:
+def validate_events(events: Sequence[dict], shard: Any = None, *, serializer=None) -> list[list[str]]:
     """Return every intrinsic and storage-context violation per event.
 
     The producer-owned Rust type owns the complete envelope, event-type,
@@ -462,7 +465,7 @@ def validate_events(events: Sequence[dict], shard: Any = None) -> list[list[str]
     prevents a Python key list from becoming a second envelope definition.
     """
     items = list(events)
-    shared_codes = _shared_type_codes(items)
+    shared_codes = _shared_type_codes(items, serializer=serializer)
     codes: list[list[str]] = []
     for index, event in enumerate(items):
         codes.append(_contextual_event_codes(event, shard) + shared_codes[index])

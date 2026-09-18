@@ -101,6 +101,7 @@ GENERATOR_PATHS = (
     "ci-hub/validate/qualifying-receipt.json",
 )
 STAGE_1_READER_PATHS = (
+    "ci-hub/admission_paths.py",
     "ci-hub/ci-hub",
     "ci-hub/ci-hub.rs",
     "ci-hub/compatibility-website/export_inputs.py",
@@ -288,6 +289,7 @@ def _captured_reader_modules(
         "gate_completeness",
         "green_class",
         "qualifying_receipt",
+        "admission_paths",
         "publisher",
         "validate_rows",
     )
@@ -327,6 +329,7 @@ def _captured_reader_modules(
         captured_policy = json.loads(_json_bytes(qualifying.active()))
         qualifying.active = lambda: captured_policy
         sys.modules["qualifying_receipt"] = qualifying
+        admission_paths = load("admission_paths", "ci-hub/admission_paths.py")
         publisher = load("publisher", "ci-hub/ledger/publisher.py")
         publisher._series_store = lambda: series
         validate_rows = load("validate_rows", "ci-hub/ledger/validate_rows.py")
@@ -339,6 +342,7 @@ def _captured_reader_modules(
             "ledger": ledger,
             "publisher": publisher,
             "qualifying_receipt": qualifying,
+            "admission_paths": admission_paths,
             "series": series,
             "validate_rows": validate_rows,
         }
@@ -910,7 +914,9 @@ def _is_run_artifact_path(path: str) -> bool:
     )
 
 
-def _cell_continuation_artifact_paths(counts: Mapping[str, Any]) -> set[str]:
+def _cell_continuation_artifact_paths(
+    counts: Mapping[str, Any], *, actual_artifact_count: int
+) -> set[str]:
     page_size = _integer(
         _modules().renderer.LIST_PAGE_SIZE,
         "renderer cell-list page size",
@@ -932,6 +938,12 @@ def _cell_continuation_artifact_paths(counts: Mapping[str, Any]) -> set[str]:
             ),
         ),
     )
+    continuation_count = sum(
+        max(0, (population + page_size - 1) // page_size - 1)
+        for _, population in populations
+    )
+    if continuation_count > actual_artifact_count:
+        raise WebsiteRefused("website artifact inventory is not exact")
     return {
         f"cells/{name}-{page}.html"
         for name, population in populations
@@ -944,7 +956,9 @@ def _require_exact_artifact_inventory(
 ) -> None:
     counts = _object(counts_value, "website counts")
     artifact_paths = set(paths)
-    continuation_paths = _cell_continuation_artifact_paths(counts)
+    continuation_paths = _cell_continuation_artifact_paths(
+        counts, actual_artifact_count=len(artifact_paths)
+    )
     expected_fixed_paths = FIXED_SITE_ARTIFACT_PATHS | continuation_paths
     run_paths = artifact_paths - expected_fixed_paths
     expected_runs = _integer(

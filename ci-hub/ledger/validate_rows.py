@@ -31,6 +31,7 @@ from publisher import retained, spool, spooled
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import qualifying_receipt  # noqa: E402
+from admission_paths import AdmissionPaths, read_admission_log  # noqa: E402
 
 WORKSPACE_TOKEN = "{{WORKSPACE_ROOT}}"
 HOME_TOKEN = "{{HOME}}"
@@ -366,6 +367,10 @@ def live_spool_dir(root: Path) -> Path:
 def _replace(value, old: str, new: str):
     if isinstance(value, str):
         return value.replace(old, new)
+    if isinstance(value, qualifying_receipt.AdmissionJsonObject):
+        return qualifying_receipt.AdmissionJsonObject(
+            (key, _replace(item, old, new)) for key, item in value.pairs
+        )
     if isinstance(value, dict):
         return {key: _replace(item, old, new) for key, item in value.items()}
     if isinstance(value, list):
@@ -717,6 +722,13 @@ def _enrich_failure_classification(
     readable_log = (
         isinstance(log_file, str) and bool(log_file) and Path(log_file).is_file()
     )
+    portable_log_text = None
+    if qualifying_receipt.admission_is_v2(row):
+        try:
+            portable_log_text = read_admission_log(row, root).decode("utf-8", errors="replace")
+            readable_log = True
+        except (OSError, ValueError):
+            readable_log = False
     if (
         not isinstance(dag_jobs, int)
         or isinstance(dag_jobs, bool)
@@ -731,15 +743,18 @@ def _enrich_failure_classification(
     try:
         log_text = ""
         if readable_log:
-            assert isinstance(log_file, str)
-            log_text = Path(log_file).read_text(errors="replace")
+            if portable_log_text is not None:
+                log_text = portable_log_text
+            else:
+                assert isinstance(log_file, str)
+                log_text = Path(log_file).read_text(errors="replace")
         evidence = failure_evidence.build_evidence(
             log_text=log_text,
             registry=failure_evidence.flaky_cells(
                 failure_evidence.DEFAULT_REGISTRY,
                 str(row.get("commit") or ""),
             ),
-            prior=rows(root=root),
+            prior=rows(root=root, preserve_admission=True),
             commit=str(row.get("commit") or ""),
             dag_jobs=dag_jobs,
             concurrent_validates=concurrent,
@@ -751,6 +766,7 @@ def _enrich_failure_classification(
             ),
             failure_classes=typed_failure_classes,
             comparison_observations=comparison_observations,
+            state_root=root,
         )
     except (OSError, ValueError, json.JSONDecodeError):
         return
@@ -796,12 +812,18 @@ def _enrich_failure_classification(
 
 
 def _event_for_row(row: dict, root: Path) -> dict:
+    v2 = qualifying_receipt.admission_is_v2(row)
+    immutable = None
+    if v2:
+        immutable = qualifying_receipt.admission_transport_identity(row)
+        with AdmissionPaths(root) as paths:
+            paths.require_log(row["admission_floor_evidence"]["context"], row.get("log_file"))
     record_id = str(row.get("record_id") or "")
     if not record_id:
         body = json.dumps(row, sort_keys=True, separators=(",", ":")).encode()
         record_id = "legacy-row-" + hashlib.sha256(body).hexdigest()
     schema = row.get("schema_version")
-    if isinstance(schema, int) and not isinstance(schema, bool) and schema >= 6:
+    if v2 or (isinstance(schema, int) and not isinstance(schema, bool) and schema >= 6):
         run_id = row.get("run_id")
         if not isinstance(run_id, str) or not run_id.strip():
             raise ValueError("schema-6 validation row has no stable run_id")
@@ -817,7 +839,7 @@ def _event_for_row(row: dict, root: Path) -> dict:
     outcome = str(row.get("result") or "no_result")
     if outcome not in {"pass", "fail", "timeout", "incomplete", "killed", "no_result"}:
         outcome = "no_result"
-    workspace_root = _workspace_root_for_row(row, root)
+    workspace_root = str(root) if v2 else _workspace_root_for_row(row, root)
     portable = _replace(row, workspace_root, WORKSPACE_TOKEN)
     # Failure text can mention cargo/git checkouts outside the dev-hermit tree.
     # Keep the diagnostic shape while stripping the machine owner's identity;
@@ -825,6 +847,8 @@ def _event_for_row(row: dict, root: Path) -> dict:
     owner_home = _owner_home_for_workspace(workspace_root)
     if owner_home:
         portable = _replace(portable, owner_home, HOME_TOKEN)
+    if v2 and qualifying_receipt.admission_transport_identity(portable) != immutable:
+        raise ValueError("ledger path rendering changed immutable v2 admission evidence")
     event = {
         "schema": "validate-ledger/v1",
         "event_id": record_id,
@@ -853,11 +877,27 @@ def _event_for_row(row: dict, root: Path) -> dict:
     return event
 
 
+def _record_admission_identity(row: dict):
+    if "admission_floor_evidence" not in row:
+        return None
+    evidence = row["admission_floor_evidence"]
+    encoded = qualifying_receipt.validate_admission_floor_evidence(evidence, row)
+    log_key = "log_identity" if qualifying_receipt.admission_is_v2(row) else "log_file"
+    return encoded, copy.deepcopy(evidence["artifact"]), copy.deepcopy(row[log_key])
+
+
 def record(row: dict, *, root: Path | None = None) -> dict:
     """Append one observed row before any Git operation can block or tear it."""
     production_root = repository_root().resolve()
     root = (root or production_root).resolve()
-    row = copy.deepcopy(row)
+    # Inspect original pairs before display normalization or enrichment can
+    # discard an ambiguous claim. The ordinary writer view is safe only after
+    # that present claim has passed the shared verifier; absence stays legacy.
+    admitted_identity = _record_admission_identity(row)
+    if isinstance(row, qualifying_receipt.AdmissionJsonObject):
+        row = json.loads(json.dumps(row))
+    else:
+        row = copy.deepcopy(row)
     existing_run_number = row.get("run_number")
     if existing_run_number is not None and (
         not isinstance(existing_run_number, int)
@@ -922,6 +962,8 @@ def record(row: dict, *, root: Path | None = None) -> dict:
     else:
         _enrich_failure_classification(row, root, comparison_observations=comparison_observations)
     _require_gate_failure_bindings(row)
+    if _record_admission_identity(row) != admitted_identity:
+        raise ValueError("writer normalization changed admitted evidence identity")
     event = _event_for_row(row, root)
     target = spool(live_spool_dir(root), event["team"], event["host"], [event])
     return {
@@ -953,7 +995,7 @@ def _read_rows(path: Path) -> list[dict]:
     return out
 
 
-def events(*, root: Path | None = None) -> list[dict]:
+def events(*, root: Path | None = None, preserve_admission: bool = False) -> list[dict]:
     """Canonical validation events, excluding acceptance-test data.
 
     Fixture bytes remain in their append-only shard or isolated test store.
@@ -961,10 +1003,13 @@ def events(*, root: Path | None = None) -> list[dict]:
     cannot make an acceptance probe indistinguishable from a validation run.
     """
     root = (root or repository_root()).resolve()
+    read_options = ({"object_pairs_hook": qualifying_receipt.AdmissionJsonObject}
+                    if preserve_admission else {})
+    union_options = ({"canonical": _admission_event_identity} if preserve_admission else {})
     gathered: list[dict] = []
     for path in shard_paths(root):
-        gathered.extend(read_shard(path))
-    for pending in spooled(live_spool_dir(root)).values():
+        gathered.extend(read_shard(path, **read_options))
+    for pending in spooled(live_spool_dir(root), **read_options, **union_options).values():
         gathered.extend(pending)
     # Retained batches are PUBLISHED but not yet durable in THIS checkout. A
     # reader that skipped them would blink: publication writes through a
@@ -973,13 +1018,17 @@ def events(*, root: Path | None = None) -> list[dict]:
     # 2026-08-11 -- a producer answered NOT-VALIDATED with 0 records for a
     # receipt it had published seconds earlier. Unioning them closes that gap;
     # event_id dedup makes the overlap with tracked shards free.
-    for published in retained(live_spool_dir(root)).values():
+    for published in retained(live_spool_dir(root), **read_options, **union_options).values():
         gathered.extend(published)
     return [
         event
-        for event in union_events(gathered)
+        for event in union_events(gathered, **union_options)
         if not _is_acceptance_fixture_event(event)
     ]
+
+
+def _admission_event_identity(value):
+    return qualifying_receipt.admission_json_dumps(value, sort_keys=True)
 
 
 def _legacy_row_corrections(
@@ -1120,11 +1169,14 @@ def current_validation_run_rows(items: Iterable[dict]) -> list[dict]:
     return [row for index, row in enumerate(rows) if index not in superseded]
 
 
-def _validated_events(*, root: Path) -> tuple[list[dict], frozenset[str]]:
+def _validated_events(*, root: Path, preserve_admission: bool = False) -> tuple[list[dict], frozenset[str]]:
     """Read the event union once and refuse every malformed member."""
-    items = events(root=root)
+    items = events(root=root, preserve_admission=preserve_admission)
     historical_source_digests = _historical_repository_mismatch_source_digests(root)
-    for index, codes in enumerate(validate_events(items), 1):
+    # Preserve the original envelope too: normalizing a duplicate legacy_row
+    # could erase an earlier admission claim before Rust judges its shape.
+    validation_options = ({"serializer": _admission_event_identity} if preserve_admission else {})
+    for index, codes in enumerate(validate_events(items, **validation_options), 1):
         event = items[index - 1]
         if codes:
             if event.get("event_type") == "run.correct":
@@ -1172,7 +1224,19 @@ def _rows_from_events(items: list[dict], *, root: Path) -> list[dict]:
                 followed.add(current)
                 current, row = replacements[current]
             restored = _replace(row, WORKSPACE_TOKEN, str(root))
-            identity = json.dumps(restored, sort_keys=True, separators=(",", ":"))
+            if qualifying_receipt.admission_is_v2(row):
+                try:
+                    if (qualifying_receipt.admission_transport_identity(row)
+                            != qualifying_receipt.admission_transport_identity(restored)):
+                        raise ValueError("ledger expansion changed v2 admission evidence")
+                    with AdmissionPaths(root) as paths:
+                        if restored.get("log_file") != str(paths.path(restored["log_identity"])):
+                            raise ValueError("rendered log path differs from v2 identity")
+                except (OSError, ValueError):
+                    # Retain the original bad row for its per-row refusal.
+                    # Do not repair/re-hash it or poison another selected row.
+                    restored = row
+            identity = _admission_event_identity(restored)
             if identity not in seen:
                 seen.add(identity)
                 out.append(restored)
@@ -1243,10 +1307,10 @@ def _record_identities(
     return records
 
 
-def status_input(*, root: Path | None = None) -> dict:
+def status_input(*, root: Path | None = None, preserve_admission: bool = False) -> dict:
     """One-read input for status: projected rows plus every raw record identity."""
     root = (root or repository_root()).resolve()
-    items, historical_source_digests = _validated_events(root=root)
+    items, historical_source_digests = _validated_events(root=root, preserve_admission=preserve_admission)
     projected = _rows_from_events(items, root=root)
     return {
         "schema_version": 1,
@@ -1258,10 +1322,10 @@ def status_input(*, root: Path | None = None) -> dict:
     }
 
 
-def rows(*, root: Path | None = None) -> list[dict]:
+def rows(*, root: Path | None = None, preserve_admission: bool = False) -> list[dict]:
     """HistoryRow compatibility view of the one canonical event union."""
     root = (root or repository_root()).resolve()
-    items, _historical_source_digests = _validated_events(root=root)
+    items, _historical_source_digests = _validated_events(root=root, preserve_admission=preserve_admission)
     return _rows_from_events(items, root=root)
 
 
@@ -1377,12 +1441,15 @@ def latest_row(repo: str, commit: str | None, profile: str | None) -> dict | Non
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("rows", description="emit the canonical HistoryRow compatibility view", help="emit the canonical HistoryRow compatibility view")
-    commands.add_parser(
+    row_command = commands.add_parser("rows", description="emit the canonical HistoryRow compatibility view", help="emit the canonical HistoryRow compatibility view")
+    status_command = commands.add_parser(
         "status-input",
         description="emit projected rows and raw record identities from one event-union read",
         help="emit one-read input for validation status",
     )
+    for command in (row_command, status_command):
+        command.add_argument("--preserve-admission", action="store_true",
+                             help="preserve original JSON fields for admission-aware receipt readers")
     commands.add_parser("events", description="emit the canonical event union", help="emit the canonical event union")
     commands.add_parser("record", description="read one HistoryRow JSON object from stdin and journal it", help="read one HistoryRow JSON object from stdin and journal it")
     summary = commands.add_parser(
@@ -1416,7 +1483,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "record":
         try:
-            value = json.load(sys.stdin)
+            value = json.load(sys.stdin, object_pairs_hook=qualifying_receipt.AdmissionJsonObject)
             if not isinstance(value, dict):
                 raise ValueError("input is not a JSON object")
             print(json.dumps(record(value), sort_keys=True))
@@ -1425,7 +1492,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"validate-ledger: REFUSED: {error}", file=sys.stderr)
             return 2
     if args.command == "status-input":
-        print(json.dumps(status_input(), sort_keys=True, separators=(",", ":")))
+        value = status_input(preserve_admission=args.preserve_admission)
+        if args.preserve_admission:
+            print(qualifying_receipt.admission_json_dumps(value, sort_keys=True))
+        else:
+            print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+        return 0
+    if args.command == "rows" and args.preserve_admission:
+        for row in rows(preserve_admission=True):
+            print(qualifying_receipt.admission_json_dumps(row, sort_keys=True))
         return 0
     emit_jsonl(events() if args.command == "events" else rows())
     return 0

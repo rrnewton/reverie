@@ -36,6 +36,7 @@ CAPTURED_READER_ALIASES = (
     "gate_completeness",
     "green_class",
     "qualifying_receipt",
+    "admission_paths",
     "publisher",
     "validate_rows",
 )
@@ -492,6 +493,28 @@ def test_artifact_inventory_accepts_only_exact_cell_continuation_pages() -> None
     with pytest.raises(website.WebsiteRefused, match="artifact inventory"):
         website._require_exact_artifact_inventory(
             paths - {"cells/never-measured-3.html"}, counts
+        )
+
+
+@pytest.mark.parametrize("population", ["green_cell_count", "never_measured_cell_count"])
+def test_artifact_inventory_refuses_unbounded_continuation_counts_before_enumeration(
+    monkeypatch: pytest.MonkeyPatch, population: str
+) -> None:
+    counts = {
+        "green_cell_count": 0,
+        "red_cell_count": 0,
+        "never_measured_cell_count": 0,
+        "validation_history_row_count": 0,
+    }
+    counts[population] = 10**18
+
+    def refuse_enumeration(*_args: int) -> range:
+        pytest.fail("impossible continuation inventory reached page enumeration")
+
+    monkeypatch.setattr(website, "range", refuse_enumeration, raising=False)
+    with pytest.raises(website.WebsiteRefused, match="artifact inventory"):
+        website._require_exact_artifact_inventory(
+            website.FIXED_SITE_ARTIFACT_PATHS, counts
         )
 
 
@@ -998,6 +1021,8 @@ def test_captured_stage1_reader_chain_uses_the_real_captured_modules() -> None:
         readers["gate_completeness"].gate_counts is readers["flake_class"].gate_counts
     )
     qualifying = readers["qualifying_receipt"]
+    assert readers["admission_paths"].qualifying_receipt is qualifying
+    assert readers["validate_rows"].AdmissionPaths is readers["admission_paths"].AdmissionPaths
     assert qualifying.CellResultsVerdict.SATISFIED.value == "satisfied"
     assert callable(qualifying.row_qualification)
     assert sys.path == before_path

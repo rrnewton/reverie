@@ -988,3 +988,36 @@ def test_a_real_compile_error_still_outranks_the_harness_verdict():
     assert "E0308" in rec["first_error_line"], (
         f"a real compile error must still win; got {rec['first_error_line']!r}"
     )
+
+
+def test_v2_solo_confirmation_reads_log_identity_not_display(tmp_path):
+    from test_admission_floor_receipt import portable_fixture, repositories
+    from failure_evidence import observed_failed_substeps
+    setup = repositories.__wrapped__(tmp_path)
+    row, _artifact, _raw = portable_fixture(setup, tmp_path)
+    bound_log = tmp_path / row["log_identity"]["path"]
+    actual = _fail("test.actual", "error: original run")
+    bound_log.write_text(actual)
+    decoy = tmp_path / "display.log"
+    decoy.write_text(_fail("test.decoy", "error: different run"))
+    row.update(log_file=str(decoy), gates=[], result="fail", dag_jobs=8, concurrent_validates=1)
+    assert observed_failed_substeps(row, state_root=tmp_path) == {"test.actual"}
+    assert observed_failed_substeps(row) == set()
+    def classify():
+        return build_evidence(log_text=actual, registry=set(), prior=[row],
+            commit=row["commit"], dag_jobs=4, concurrent_validates=0, state_root=tmp_path)
+    assert classify()["solo_rerun_confirmation"] is True
+    bound_log.unlink()
+    assert observed_failed_substeps(row, state_root=tmp_path) == set()
+    assert classify()["solo_rerun_confirmation"] is False
+    # A readable decoy cannot replace missing bound evidence.
+    assert decoy.is_file()
+
+
+def test_v2_bad_claim_cannot_supply_existing_failure_binding(tmp_path):
+    from test_admission_floor_receipt import portable_fixture, repositories
+    from failure_evidence import observed_failed_substeps
+    row, _artifact, _raw = portable_fixture(repositories.__wrapped__(tmp_path), tmp_path)
+    row.update(failed_substeps=["test.actual"], failure_origin="lane_substep")
+    row["admission_floor_evidence"]["artifact"]["sha256"] = "0" * 64
+    assert observed_failed_substeps(row, state_root=tmp_path) == set()

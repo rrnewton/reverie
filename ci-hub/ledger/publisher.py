@@ -160,6 +160,7 @@ def spool(spool_dir: str | os.PathLike[str], team: str, host: str, events: Seque
 
 def _spool_snapshot(
     spool_dir: str | os.PathLike[str],
+    *, object_pairs_hook=None, canonical=None,
 ) -> tuple[dict[tuple[str, str, str], list[dict]], list[Path]]:
     """One immutable batch snapshot and the exact files that comprise it."""
     pending: dict[tuple[str, str, str], list[dict]] = {}
@@ -172,9 +173,10 @@ def _spool_snapshot(
         if len(parts) not in {3, 4}:
             raise PublishRefused(f"unrecognised spool batch name: {path.name}")
         team, host, month = parts[:3]
-        pending.setdefault((team, host, month), []).extend(read_shard(path))
+        options = {} if object_pairs_hook is None else {"object_pairs_hook": object_pairs_hook}
+        pending.setdefault((team, host, month), []).extend(read_shard(path, **options))
         files.append(path)
-    return ({key: union_events(value) for key, value in pending.items()}, files)
+    return ({key: union_events(value, canonical=canonical) for key, value in pending.items()}, files)
 
 
 def _series_spool_snapshot(
@@ -276,12 +278,15 @@ def retained_dir(spool_dir: str | os.PathLike[str]) -> Path:
     return Path(spool_dir) / RETAINED_SUBDIR
 
 
-def retained(spool_dir: str | os.PathLike[str]) -> dict[tuple[str, str, str], list[dict]]:
+def retained(spool_dir: str | os.PathLike[str], *, object_pairs_hook=None,
+             canonical=None) -> dict[tuple[str, str, str], list[dict]]:
     """Published-but-not-yet-durable batches, keyed like ``spooled``."""
-    return _spool_snapshot(retained_dir(spool_dir))[0]
+    return _spool_snapshot(retained_dir(spool_dir), object_pairs_hook=object_pairs_hook,
+                           canonical=canonical)[0]
 
 
-def spooled(spool_dir: str | os.PathLike[str]) -> dict[tuple[str, str, str], list[dict]]:
+def spooled(spool_dir: str | os.PathLike[str], *, object_pairs_hook=None,
+            canonical=None) -> dict[tuple[str, str, str], list[dict]]:
     """Every PENDING event, keyed by (team, host, month).
 
     Pending means not yet published. Retained batches are excluded here on
@@ -289,7 +294,8 @@ def spooled(spool_dir: str | os.PathLike[str]) -> dict[tuple[str, str, str], lis
     republished. The READER's view is `validate_rows.events`, which unions this
     with `retained` so a producer keeps seeing its own receipt.
     """
-    return _spool_snapshot(spool_dir)[0]
+    return _spool_snapshot(spool_dir, object_pairs_hook=object_pairs_hook,
+                           canonical=canonical)[0]
 
 
 def stage_tracked(

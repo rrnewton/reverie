@@ -1,0 +1,38 @@
+{
+  "old_executable": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/structured-results-obligation-audit-20260917/goal-continuation-20260918-0333/admission-floor-receipt-parent-implementation-1/runtime/xdg-cache/rust-script/binaries/release/ci-hub_9e7cac8ea9e68a7371635873",
+  "old_executable_sha256": "4d6937829b65174d45fcaf91886cce9f16a20d4cdd3671e4119eb11da155352c",
+  "depfile_sha256": "77849cf036b8eaa5cfc08808a46cad3e0f6993b3b29ac400fe076fe5a595aa45",
+  "commands": [
+    {
+      "argv": [
+        "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/structured-results-obligation-audit-20260917/goal-continuation-20260918-0333/admission-floor-receipt-parent-implementation-1/runtime/xdg-cache/rust-script/binaries/release/ci-hub_9e7cac8ea9e68a7371635873",
+        "receipt-digest",
+        "--sha",
+        "4b0ac3178b4dedd0adf4366b0c76bd9f24027a8f",
+        "--canonical-row"
+      ],
+      "returncode": 0,
+      "stdout_sha256": "1d8dd108fd8dd2a78865ffbc5dc17670882b92166415375d4c8484daacf539f7",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/structured-results-obligation-audit-20260917/goal-continuation-20260918-0333/admission-floor-receipt-parent-implementation-1/runtime/xdg-cache/rust-script/binaries/release/ci-hub_9e7cac8ea9e68a7371635873",
+        "receipt-digest",
+        "--sha",
+        "4b0ac3178b4dedd0adf4366b0c76bd9f24027a8f",
+        "--canonical-row"
+      ],
+      "returncode": 0,
+      "stdout_sha256": "03ce9d444b5a4a735beda68a4d0f35534b61fbc440884af801d141b5600345c2",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "retained_phase07_good_digest_verified": "1d8dd108fd8dd2a78865ffbc5dc17670882b92166415375d4c8484daacf539f7",
+  "invalid_original_row_digest": "03ce9d444b5a4a735beda68a4d0f35534b61fbc440884af801d141b5600345c2",
+  "scope": "Reference-only invocation of retained source4-era production executable. Good result matches the actual phase07 finalized_from digest; bad context remains invalid. No new-source qualification or source/build/cache override.",
+  "fixture": "source4-mismatched-row.json",
+  "fixture_bytes": 3117,
+  "fixture_sha256": "03ce9d444b5a4a735beda68a4d0f35534b61fbc440884af801d141b5600345c2",
+  "origin": "Actual phase07 test_scan_binds_original_same_sha_row_and_preserves_context second row, then source4-era production canonical output. Synthetic test evidence, never an admitted production run. Embedded paths are data and must not be executed or opened by the regression."
+}

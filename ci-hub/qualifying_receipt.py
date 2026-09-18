@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -1587,6 +1588,302 @@ class AdmissionVerdict(Enum):
     OWNER_ANCESTRY_UNPROVEN = "owner-ancestry-unproven"
     POLICY_UNAVAILABLE = "policy-unavailable"
 
+    ADMISSION_FLOOR_INVALID = "admission-floor-invalid"
+
+
+ADMISSION_CONTEXT_CONTRACT = "ci-hub-admission-floor/v1"
+ADMISSION_CONTEXT_V2 = "ci-hub-admission-floor/v2"
+# A bounded reader capacity, not an alternative source of admission authority.
+ADMISSION_CONTEXT_MAX_BYTES = 1024 * 1024
+_ADMISSION_PIN_NODES = frozenset({
+    "pre.reverie_pin", "pre.reverie_pin_on_host", "check.lint_checks",
+})
+
+
+class AdmissionJsonObject(dict):
+    """Opt-in raw object pairs; ordinary dictionary/legacy views stay unchanged.
+
+    The pairs are transport evidence, not a second row or an authority flag.
+    Receipt readers preserve them until the present-claim checks have run.
+    """
+
+    def __init__(self, pairs):
+        self.pairs = tuple(pairs)
+        super().__init__(self.pairs)
+
+
+def _admission_pairs(value):
+    if isinstance(value, AdmissionJsonObject):
+        if dict(value.pairs) != value:
+            raise ValueError("raw admission object changed before validation")
+        return value.pairs
+    return tuple(value.items())
+
+
+def _contains_admission_claim(value):
+    if isinstance(value, dict):
+        return any(key == "admission_floor_evidence" or _contains_admission_claim(item)
+                   for key, item in _admission_pairs(value))
+    if isinstance(value, list):
+        return any(_contains_admission_claim(item) for item in value)
+    return False
+
+
+def admission_json_dumps(value, *, sort_keys=False):
+    """Transport original pairs within claimed rows, never normalize a claim.
+
+    This is not HistoryRow or context canonicalization. Legacy subtrees with
+    no admission claim keep json.dumps' existing last-value dictionary view.
+    Object-key sorting is stable so duplicate order remains observable.
+    """
+    def encode(item, within_claim=False):
+        if isinstance(item, dict):
+            claimed_row = "admission_floor_evidence" in item
+            keep = within_claim or claimed_row or _contains_admission_claim(item)
+            pairs = _admission_pairs(item) if keep else tuple(item.items())
+            if sort_keys:
+                pairs = sorted(pairs, key=lambda pair: pair[0])
+            return "{" + ",".join(
+                json.dumps(key) + ":" + encode(child, within_claim or claimed_row)
+                for key, child in pairs
+            ) + "}"
+        if isinstance(item, list):
+            return "[" + ",".join(encode(child, within_claim) for child in item) + "]"
+        return json.dumps(item, separators=(",", ":"))
+
+    return encode(value)
+
+
+def _admission_duplicate_keys(value):
+    if not isinstance(value, dict):
+        return set()
+    seen = set()
+    duplicates = set()
+    for key, _item in _admission_pairs(value):
+        if key in seen:
+            duplicates.add(key)
+        seen.add(key)
+    return duplicates
+
+
+def _admission_request_row(request):
+    # A duplicate wrapper row must not hide an earlier present claim. This is
+    # a malformed request, distinct from an ordinary row's admission refusal.
+    if "row" in _admission_duplicate_keys(request) and _contains_admission_claim(request):
+        raise ValueError("evidence request has duplicate row with admission claim")
+    return request["row"]
+
+
+def _admission_object(value, keys, label):
+    if _admission_duplicate_keys(value):
+        raise ValueError(f"{label}: duplicate admission field")
+    if not isinstance(value, dict) or set(value) != set(keys.split()):
+        raise ValueError(f"{label}: expected exactly {keys}")
+    return value
+
+
+def _admission_string(value, label):
+    if not isinstance(value, str) or not value.strip() or "\0" in value:
+        raise ValueError(f"{label}: expected a nonempty UTF-8 string without NUL")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError(f"{label}: unpaired surrogate") from error
+    return value
+
+
+def _admission_hex(value, length, label):
+    if not isinstance(value, str) or re.fullmatch(f"[0-9a-f]{{{length}}}", value) is None:
+        raise ValueError(f"{label}: expected {length} lowercase hex characters")
+
+
+def _admission_uint(value, maximum, minimum, label):
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise ValueError(f"{label}: expected integer in {minimum}..{maximum}")
+
+
+def _admission_timestamp(value, label):
+    _admission_string(value, label)
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value) is None:
+        raise ValueError(f"{label}: expected a UTC RFC3339 timestamp")
+    try:
+        datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as error:
+        raise ValueError(f"{label}: invalid timestamp") from error
+
+
+def admission_workspace_locator(value: Any) -> str:
+    """Validate a v2 logical name without normalizing its received identity."""
+    _admission_object(value, "scope path", "workspace locator")
+    path = _admission_string(value["path"], "workspace locator.path")
+    if (value["scope"] != "workspace" or "\\" in path
+            or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in path)
+            or any(part in ("", ".", "..") for part in path.split("/"))
+            or any(token in path for token in ("{{WORKSPACE_ROOT}}", "{{HOME}}", "/home/"))):
+        raise ValueError("workspace locator: expected a normalized relative POSIX path")
+    return path
+
+
+def _admission_no_tokens(value):
+    if isinstance(value, str):
+        if any(token in value for token in ("{{WORKSPACE_ROOT}}", "{{HOME}}")):
+            raise ValueError("v2 context contains a reserved ledger substitution token")
+        if "/home/" in value:
+            raise ValueError("v2 context contains a nonportable owner path")
+    elif isinstance(value, dict):
+        for key, child in _admission_pairs(value):
+            _admission_no_tokens(key)
+            _admission_no_tokens(child)
+    elif isinstance(value, list):
+        for child in value:
+            _admission_no_tokens(child)
+
+
+def admission_is_v2(row: dict) -> bool:
+    """Dispatch only; callers must still validate every present claim."""
+    evidence = row.get("admission_floor_evidence")
+    context = evidence.get("context") if isinstance(evidence, dict) else None
+    return isinstance(context, dict) and context.get("contract") == ADMISSION_CONTEXT_V2
+
+
+def admission_context_bytes(context: Any) -> bytes:
+    """Validate and encode the explicitly versioned admission byte contract.
+
+    This is compact, recursively sorted-key UTF-8 JSON, without a newline or
+    floats. It is deliberately unrelated to HistoryRow canonicalization. The
+    hashes establish self-consistency, not independent plan derivation or
+    cryptographic authentication of this same-UID producer.
+    """
+    version = context.get("contract") if isinstance(context, dict) else None
+    if version not in (ADMISSION_CONTEXT_CONTRACT, ADMISSION_CONTEXT_V2):
+        raise ValueError("context: unsupported admission contract")
+    log_key = "log_identity" if version == ADMISSION_CONTEXT_V2 else "log_file"
+    _admission_object(context, "contract observed_at target_sha target_tree host run_id "
+                      f"started_at {log_key} authority floor canonical_plan_sha256 "
+                      "execution_plan_sha256 pin_bindings", "context")
+    for key in ("observed_at", "started_at"):
+        _admission_timestamp(context[key], key)
+    for key in ("target_sha", "target_tree"):
+        _admission_hex(context[key], 40, key)
+    for key in ("host", "run_id"):
+        _admission_string(context[key], key)
+    if version == ADMISSION_CONTEXT_V2:
+        admission_workspace_locator(context["log_identity"])
+        _admission_no_tokens(context)
+    else:
+        _admission_string(context["log_file"], "log_file")
+        if not os.path.isabs(context["log_file"]):
+            raise ValueError("log_file: expected absolute retained path")
+    for key in ("canonical_plan_sha256", "execution_plan_sha256"):
+        _admission_hex(context[key], 64, key)
+    authority = _admission_object(context["authority"],
+        "slot kind target host owner_host owner_boot_id owner_pid owner_start_ticks "
+        "response_sha256", "authority")
+    _admission_uint(authority["slot"], U64_MAX, 0, "authority.slot")
+    _admission_uint(authority["owner_pid"], (1 << 32) - 1, 2, "authority.owner_pid")
+    _admission_uint(authority["owner_start_ticks"], U64_MAX, 1, "authority.owner_start_ticks")
+    _admission_string(authority["owner_boot_id"], "authority.owner_boot_id")
+    _admission_hex(authority["response_sha256"], 64, "authority.response_sha256")
+    if (authority["target"] != context["target_sha"]
+            or authority["host"] != context["host"]
+            or authority["owner_host"] != context["host"]):
+        raise ValueError("authority: target/host binding mismatch")
+    floor = _admission_object(context["floor"], "kind sha tree observed_main_sha", "floor")
+    for key in ("sha", "tree", "observed_main_sha"):
+        _admission_hex(floor[key], 40, f"floor.{key}")
+    if floor["kind"] == "current-main":
+        if authority["kind"] != "validate" or floor["sha"] != floor["observed_main_sha"]:
+            raise ValueError("floor: inconsistent current-main authority")
+    elif floor["kind"] == "frozen-target":
+        if (authority["kind"] != "frozen-validate"
+                or floor["sha"] != context["target_sha"]
+                or floor["tree"] != context["target_tree"]):
+            raise ValueError("floor: inconsistent frozen-target authority")
+    else:
+        raise ValueError("floor: unsupported kind")
+    bindings = context["pin_bindings"]
+    if not isinstance(bindings, list) or len(bindings) > len(_ADMISSION_PIN_NODES):
+        raise ValueError("pin_bindings: expected selected pin-node list")
+    seen = set()
+    for binding in bindings:
+        _admission_object(binding, "node base_sha canonical_command_sha256 "
+                          "execution_command_sha256", "pin binding")
+        node = binding["node"]
+        if not isinstance(node, str) or node not in _ADMISSION_PIN_NODES or node in seen:
+            raise ValueError("pin binding: unknown or duplicate node")
+        seen.add(node)
+        if binding["base_sha"] != floor["sha"]:
+            raise ValueError("pin binding: base differs from admission floor")
+        for key in ("canonical_command_sha256", "execution_command_sha256"):
+            _admission_hex(binding[key], 64, f"pin binding.{key}")
+        if binding["canonical_command_sha256"] == binding["execution_command_sha256"]:
+            raise ValueError("pin binding: execution command must contain the derived floor")
+    encoded = json.dumps(context, sort_keys=True, ensure_ascii=False,
+                         separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if len(encoded) > ADMISSION_CONTEXT_MAX_BYTES:
+        raise ValueError("admission context exceeds reader byte capacity")
+    return encoded
+
+
+def validate_admission_floor_evidence(evidence: Any, row: dict | None = None) -> bytes:
+    """Check inline integrity and, when supplied, the exact original row.
+
+    Public readers need no surviving host-local file. The finalizer separately
+    reads that file when consuming it. Neither path queries today's lock or
+    manufactures a historical run identity from the context itself.
+    """
+    _admission_object(evidence, "context artifact", "admission_floor_evidence")
+    encoded = admission_context_bytes(evidence["context"])
+    v2 = evidence["context"]["contract"] == ADMISSION_CONTEXT_V2
+    artifact = _admission_object(evidence["artifact"],
+        "locator sha256 bytes" if v2 else "path sha256 bytes", "artifact")
+    if v2:
+        admission_workspace_locator(artifact["locator"])
+    else:
+        _admission_string(artifact["path"], "artifact.path")
+        if not os.path.isabs(artifact["path"]):
+            raise ValueError("artifact.path: expected absolute retained path")
+    _admission_hex(artifact["sha256"], 64, "artifact.sha256")
+    _admission_uint(artifact["bytes"], U64_MAX, 1, "artifact.bytes")
+    if (artifact["bytes"] != len(encoded)
+            or artifact["sha256"] != hashlib.sha256(encoded).hexdigest()):
+        raise ValueError("artifact: inline context digest/length mismatch")
+    if row is not None:
+        bound_keys = {"admission_floor_evidence", "commit", "tree", "host", "run_id",
+                      "started_at", "log_file", "cell_results", "coverage", "test_results"}
+        if v2:
+            bound_keys.add("log_identity")
+        if _admission_duplicate_keys(row) & bound_keys:
+            raise ValueError("context: duplicate selected row binding field")
+        context = evidence["context"]
+        if v2:
+            admission_workspace_locator(row.get("log_identity"))
+        log_key = "log_identity" if v2 else "log_file"
+        for context_key, row_key in (
+            ("target_sha", "commit"), ("target_tree", "tree"), ("host", "host"),
+            ("run_id", "run_id"), ("started_at", "started_at"), (log_key, log_key),
+        ):
+            if context[context_key] != row.get(row_key):
+                raise ValueError(f"context: selected row {row_key} mismatch")
+        for key in ("cell_results", "coverage", "test_results"):
+            nested = row.get(key)
+            if "run_id" in _admission_duplicate_keys(nested):
+                raise ValueError(f"context: duplicate selected row {key}.run_id")
+            if isinstance(nested, dict) and "run_id" in nested and nested["run_id"] != context["run_id"]:
+                raise ValueError(f"context: selected row {key}.run_id mismatch")
+    return encoded
+
+
+def admission_transport_identity(row: dict) -> tuple[bytes, str, str]:
+    """Immutable v2 projection before/after ordinary ledger path rendering."""
+    if not admission_is_v2(row):
+        raise ValueError("portable admission transport requires v2")
+    evidence = row["admission_floor_evidence"]
+    encoded = validate_admission_floor_evidence(evidence, row)
+    return (encoded,
+            json.dumps(evidence["artifact"], sort_keys=True, ensure_ascii=False, separators=(",", ":")),
+            json.dumps(row["log_identity"], sort_keys=True, ensure_ascii=False, separators=(",", ":")))
+
 
 class BaseVerdict(Enum):
     """Typed outcome of recorded base evidence and final-boundary currency."""
@@ -1757,9 +2054,9 @@ def base_boundary_verdict(
         return BaseVerdict.POLICY_UNAVAILABLE
     recorded_base = row["base_sha"]
     try:
-        # The receipt's base names the historical commit against which the run
-        # was admitted.  Preserve that evidence by checking its tree at that
-        # exact commit; a later main tip must not rewrite what the receipt says.
+        # The legacy base is a post-run local-main merge-base observation, not
+        # admission provenance. Preserve its exact recorded tree; a later main
+        # tip must not rewrite what the receipt says.
         if row["base_tree"] != git_tree(repo_checkout, recorded_base):
             return BaseVerdict.BASE_TREE_MISMATCH
         receipt_commit = row.get("commit")
@@ -1863,6 +2160,13 @@ def admission_verdict(row: dict[str, Any], pred: dict[str, Any]) -> AdmissionVer
     sends the row plus the relevant predicate clauses to ``--evidence-only``
     and consumes this typed result; it does not restate these comparisons.
     """
+    if "admission_floor_evidence" in row:
+        try:
+            validate_admission_floor_evidence(row["admission_floor_evidence"], row)
+        except ValueError:
+            return AdmissionVerdict.ADMISSION_FLOOR_INVALID
+        if row["admission_floor_evidence"]["context"]["floor"]["kind"] == "frozen-target":
+            return AdmissionVerdict.ADMISSION_NONCANONICAL
     clause = pred.get("admission")
     if not isinstance(clause, dict):
         return AdmissionVerdict.POLICY_UNAVAILABLE
@@ -2304,7 +2608,7 @@ def _main(argv: list[str] | None, evidence_scopes: ExitStack) -> int:
         if args.sha is None or _SHA40.fullmatch(args.sha) is None:
             parser.error("--producer-definition-row requires --sha as 40 lowercase hex")
         try:
-            row = json.load(sys.stdin)
+            row = json.load(sys.stdin, object_pairs_hook=AdmissionJsonObject)
             if not isinstance(row, dict):
                 raise ValueError("ledger row is not an object")
             repositories = [args.repo_checkout] if args.repo_checkout else None
@@ -2357,9 +2661,10 @@ def _main(argv: list[str] | None, evidence_scopes: ExitStack) -> int:
         return 0
     if args.evidence_only or args.coverage_base_admission_only:
         try:
-            request = json.load(sys.stdin)
+            request = json.load(sys.stdin, object_pairs_hook=AdmissionJsonObject)
             if not isinstance(request, dict) or not isinstance(request.get("row"), dict):
                 raise ValueError("evidence request must contain an object-valued row")
+            _admission_request_row(request)
             pred = {
                 "admission": request.get("admission"),
                 "producer": request.get("producer"),
@@ -2442,7 +2747,7 @@ def _main(argv: list[str] | None, evidence_scopes: ExitStack) -> int:
         if missing:
             parser.error(f"--merge-boundary requires {', '.join(missing)}")
         try:
-            row = json.load(sys.stdin)
+            row = json.load(sys.stdin, object_pairs_hook=AdmissionJsonObject)
             if not isinstance(row, dict):
                 raise ValueError("ledger row is not an object")
             verdict = base_boundary_verdict(
@@ -2498,7 +2803,7 @@ def _main(argv: list[str] | None, evidence_scopes: ExitStack) -> int:
         print("qualifying-receipt: --sha must be 40 lowercase hex", file=sys.stderr)
         return 2
     try:
-        row = json.load(sys.stdin)
+        row = json.load(sys.stdin, object_pairs_hook=AdmissionJsonObject)
         if not isinstance(row, dict):
             raise ValueError("ledger row is not an object")
         pred = active()

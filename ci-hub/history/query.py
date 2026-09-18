@@ -967,7 +967,7 @@ def load_ledger_index(parent: str) -> dict[str, list[dict]]:
     """commit SHA -> rows from the canonical per-machine ledger union."""
     idx: dict[str, list[dict]] = {}
     try:
-        rows = canonical_ledger.rows(root=Path(parent))
+        rows = canonical_ledger.rows(root=Path(parent), preserve_admission=True)
     except (OSError, ValueError, json.JSONDecodeError):
         return idx
     for row in rows:

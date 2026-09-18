@@ -213,7 +213,7 @@ def test_load_rows_accepts_an_explicit_canonical_ledger_directory(
     monkeypatch.setattr(
         qr.canonical_ledger,
         "rows",
-        lambda *, root=None: seen.append(root) or [{"commit": "state-row"}],
+        lambda *, root=None, preserve_admission=False: seen.append(root) or [{"commit": "state-row"}],
     )
 
     rows, malformed = qr.load_rows(ledger)

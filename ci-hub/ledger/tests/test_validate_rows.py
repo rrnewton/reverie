@@ -1432,6 +1432,7 @@ def test_linked_worktree_cli_filters_exact_source_row_and_refuses_ambiguity(
         # exercising the behaviour under test.
         Path("ci-hub/lib/bounded_capture.py"),
         Path("ci-hub/qualifying_receipt.py"),
+        Path("ci-hub/admission_paths.py"),
         Path("ci-hub/series/series.py"),
         Path("ci-hub/validate/flake_class.py"),
         Path("ci-hub/validate/flaky_cells.py"),

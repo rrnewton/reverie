@@ -883,7 +883,7 @@ pub fn shared_base_boundary_outcome(
 fn shared_evidence_outcome(row: &HistoryRow, pred: &QualifyingPredicate) -> BoundaryOutcome {
     let root = resolve_root();
     let verifier = root.join("ci-hub/qualifying_receipt.py");
-    let request = serde_json::json!({
+    let mut request = serde_json::json!({
         "row": row,
         "admission": {
             "applies_at_schema_min": pred.admission.applies_at_schema_min,
@@ -912,6 +912,36 @@ fn shared_evidence_outcome(row: &HistoryRow, pred: &QualifyingPredicate) -> Boun
             "known": pred.producer.known,
         },
     });
+    // Decode-only raw IDs are omitted from historical canonical bytes.
+    // Restore each actual value (including null and duplicate sentinels) only
+    // in this request, so Python judges the original optional claim at its
+    // existing coverage -> base -> admission -> cells boundary.
+    if row.extra.contains_key("admission_floor_evidence") {
+        if let Some(run_id) = row
+            .coverage
+            .as_ref()
+            .and_then(|coverage| coverage.admission_run_id.as_ref())
+        {
+            request["row"]["coverage"]["run_id"] = run_id.clone();
+        }
+        if let Some(run_id) = row
+            .cell_results
+            .as_ref()
+            .and_then(|cells| cells.admission_run_id())
+        {
+            request["row"]["cell_results"]["run_id"] = run_id;
+        }
+        if let Some(run_id) = row
+            .test_results
+            .as_ref()
+            .and_then(|tests| tests.admission_run_id())
+        {
+            request["row"]["test_results"]["run_id"] = run_id;
+        }
+        if let Some(log_identity) = row.admission_log_identity() {
+            request["row"]["log_identity"] = log_identity;
+        }
+    }
     let Ok(request_bytes) = serde_json::to_vec(&request) else {
         return BoundaryOutcome::Indeterminate("verifier-request-undelivered");
     };
@@ -1069,6 +1099,19 @@ pub fn gate_accounting_complete(row: &HistoryRow) -> bool {
     }
 }
 
+/// Additional optional admission proof on positive paths that do not delegate
+/// to Python. Absence retains the old path; valid frozen evidence remains
+/// exportable history but cannot supply canonical admission.
+pub(crate) fn admission_floor_canonical_refusal(row: &HistoryRow) -> Option<&'static str> {
+    match row.admission_evidence() {
+        Err(_) => Some("admission admission-floor-invalid"),
+        Ok(Some(evidence)) if evidence.floor().kind == "frozen-target" => {
+            Some("admission admission-noncanonical")
+        }
+        Ok(_) => None,
+    }
+}
+
 /// The typed form of [`row_qualifies`]. Same decisions, but the outcome carries
 /// its condition so a caller can tell a demonstrated full green from one
 /// grandfathered through the count-only fallback with no coverage evidence.
@@ -1131,6 +1174,9 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
         // predates it; otherwise it must be present AND satisfied. `None` here
         // is a writer defect, and is refused rather than skipped.
         if !pred.coverage.per_node || schema < pred.coverage.applies_at_schema_min {
+            if let Some(reason) = admission_floor_canonical_refusal(row) {
+                return Qualification::refused(reason);
+            }
             return Qualification::FullCoverage;
         }
         match row.coverage.as_ref().map(coverage_verdict) {
@@ -1381,6 +1427,249 @@ mod tests {
             Qualification::Refused(reason) => reason.to_string(),
             other => panic!("expected a receipt refusal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn optional_admission_is_checked_on_both_early_full_coverage_paths() {
+        let sha = "b".repeat(40);
+        let legacy = serde_json::to_value(row_with_producer(
+            &sha,
+            "2026-08-08T09:00:00Z",
+            Some("hermit-validate-sh"),
+        ))
+        .unwrap();
+        for coverage_disabled in [true, false] {
+            let mut pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
+            pred.coverage.per_node = !coverage_disabled;
+            if !coverage_disabled {
+                pred.coverage.applies_at_schema_min = 6;
+            }
+            let absent: HistoryRow = serde_json::from_value(legacy.clone()).unwrap();
+            assert_eq!(
+                row_qualification(&absent, &sha, &pred),
+                Qualification::FullCoverage
+            );
+            let good = crate::tests::with_admission_context(legacy.clone(), false);
+            let good_row: HistoryRow = serde_json::from_value(good.clone()).unwrap();
+            assert_eq!(
+                row_qualification(&good_row, &sha, &pred),
+                Qualification::FullCoverage
+            );
+            for value in [
+                serde_json::json!("other-run"),
+                serde_json::Value::Null,
+                serde_json::json!(42),
+                serde_json::json!({}),
+                serde_json::json!([]),
+            ] {
+                let mut bad = good.clone();
+                bad["coverage"]["run_id"] = value;
+                let bad: HistoryRow = serde_json::from_value(bad).unwrap();
+                assert_eq!(
+                    refusal_reason(row_qualification(&bad, &sha, &pred)),
+                    "admission admission-floor-invalid"
+                );
+            }
+            let frozen: HistoryRow =
+                serde_json::from_value(crate::tests::with_admission_context(legacy.clone(), true))
+                    .unwrap();
+            assert_eq!(
+                refusal_reason(row_qualification(&frozen, &sha, &pred)),
+                "admission admission-noncanonical"
+            );
+            let mut dirty = good_row;
+            dirty.tree_dirty = Some(true);
+            dirty
+                .extra
+                .insert("admission_floor_evidence".into(), serde_json::Value::Null);
+            assert_eq!(
+                refusal_reason(row_qualification(&dirty, &sha, &pred)),
+                "tree_dirty"
+            );
+        }
+    }
+
+    #[test]
+    fn delegated_raw_nested_duplicates_preserve_admission_and_prior_refusals() {
+        use crate::validation_evidence::fixtures::{Fixture, Store};
+
+        const CHILD_STORE: &str = "CI_HUB_TEST_DUPLICATE_ADMISSION_STORE";
+        let Some(store) = std::env::var_os(CHILD_STORE) else {
+            let store = Store::new();
+            // Select the actual store only in this child, without changing the
+            // environment seen by other concurrently running libtest cases.
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "qualifying_receipt::tests::delegated_raw_nested_duplicates_preserve_admission_and_prior_refusals",
+                    "--nocapture",
+                ])
+                .env(CHILD_STORE, &store.0)
+                .env("DEV_HERMIT_PARENT", &store.0)
+                .bounded_output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+        let sha = "b".repeat(40);
+        let pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
+        let retained = Fixture::new(
+            "selected-attempt-v1/matched",
+            "admission-duplicates",
+            &sha,
+            1,
+        )
+        .write(Path::new(&store));
+        let retained = serde_json::to_value(retained).unwrap();
+        let mut original = serde_json::to_value(row_with_producer(
+            &sha,
+            "2026-08-08T09:00:00Z",
+            Some("hermit-validate-sh"),
+        ))
+        .unwrap();
+        for key in [
+            "schema_version",
+            "run_id",
+            "tree",
+            "constructed_plan",
+            "cell_results",
+            "test_results",
+            "executed_tests",
+            "passed_tests",
+            "filtered_tests",
+        ] {
+            original[key] = retained[key].clone();
+        }
+        original["coverage"]["planned_test_nodes"] = serde_json::json!(1);
+        original["coverage"]["executed_test_nodes"] = serde_json::json!(1);
+        let original = crate::tests::with_admission_context(original, false);
+        // Acceptance requires both the real Python coverage/base/admission
+        // boundary and verify_current_store's authenticated schema-10 files.
+        let run_id = original["run_id"].as_str().unwrap().to_string();
+        for field in ["coverage", "cell_results", "test_results"] {
+            let mut good = original.clone();
+            if !good[field].is_object() {
+                good[field] = serde_json::json!({});
+            }
+            good[field]["run_id"] = serde_json::json!(run_id);
+            let good_row: HistoryRow = serde_json::from_value(good.clone()).unwrap();
+            assert!(shared_evidence_outcome(&good_row, &pred).accepted());
+            for (first, second) in [
+                ("wrong", run_id.as_str()),
+                (run_id.as_str(), "wrong"),
+                (run_id.as_str(), run_id.as_str()),
+            ] {
+                let mut raw_value = good.clone();
+                raw_value[field]["run_id"] = serde_json::json!(first);
+                let nested = serde_json::to_string(&raw_value[field]).unwrap();
+                let duplicate = format!(
+                    "{},\"run_id\":{}}}",
+                    nested.strip_suffix('}').unwrap(),
+                    serde_json::to_string(second).unwrap()
+                );
+                let raw = serde_json::to_string(&raw_value).unwrap();
+                assert_eq!(raw.matches(&nested).count(), 1);
+                let bad: HistoryRow =
+                    serde_json::from_str(&raw.replace(&nested, &duplicate)).unwrap();
+                assert_eq!(
+                    shared_evidence_outcome(&bad, &pred).refusal_reason(),
+                    Some("admission admission-floor-invalid")
+                );
+                let mut earlier = bad;
+                earlier.extra.remove("base_sha");
+                assert_eq!(
+                    shared_evidence_outcome(&earlier, &pred).refusal_reason(),
+                    Some("base base-sha-missing")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn delegated_admission_preserves_hidden_ids_and_existing_refusal_precedence() {
+        let sha = "b".repeat(40);
+        let pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
+        let original = crate::tests::with_admission_context(
+            serde_json::to_value(row_with_producer(
+                &sha,
+                "2026-08-08T09:00:00Z",
+                Some("hermit-validate-sh"),
+            ))
+            .unwrap(),
+            false,
+        );
+        let valid: HistoryRow = serde_json::from_value(original.clone()).unwrap();
+        assert!(shared_evidence_outcome(&valid, &pred).accepted());
+        let mut invalid = original.clone();
+        invalid["coverage"]["run_id"] = serde_json::Value::Null;
+        let invalid_row: HistoryRow = serde_json::from_value(invalid.clone()).unwrap();
+        assert_eq!(
+            shared_evidence_outcome(&invalid_row, &pred).refusal_reason(),
+            Some("admission admission-floor-invalid")
+        );
+        for (field, value) in [
+            ("schema_version", serde_json::json!(4)),
+            ("base_sha", serde_json::Value::Null),
+        ] {
+            let mut earlier = original.clone();
+            earlier[field] = value.clone();
+            let earlier: HistoryRow = serde_json::from_value(earlier).unwrap();
+            let expected = shared_evidence_outcome(&earlier, &pred);
+            assert!(expected.refusal_reason().is_some());
+            let mut both = invalid.clone();
+            both[field] = value;
+            let both: HistoryRow = serde_json::from_value(both).unwrap();
+            assert_eq!(
+                shared_evidence_outcome(&both, &pred).refusal_reason(),
+                expected.refusal_reason()
+            );
+        }
+        for (field, value, expected) in [
+            ("tree_dirty", serde_json::json!(true), "tree_dirty"),
+            (
+                "result",
+                serde_json::json!("fail"),
+                "identity/result clause",
+            ),
+            (
+                "executed_tests",
+                serde_json::json!(0),
+                "executed_tests == 0",
+            ),
+        ] {
+            let mut both = invalid.clone();
+            both[field] = value;
+            let both: HistoryRow = serde_json::from_value(both).unwrap();
+            assert_eq!(
+                refusal_reason(row_qualification(&both, &sha, &pred)),
+                expected
+            );
+        }
+        let mut missing_cells = original.clone();
+        missing_cells["schema_version"] = serde_json::json!(6);
+        let missing_row: HistoryRow = serde_json::from_value(missing_cells.clone()).unwrap();
+        let cell_refusal = shared_evidence_outcome(&missing_row, &pred);
+        assert!(cell_refusal
+            .refusal_reason()
+            .is_some_and(|reason| reason.starts_with("cell_results ")));
+        missing_cells["coverage"]["run_id"] = serde_json::Value::Null;
+        let both: HistoryRow = serde_json::from_value(missing_cells).unwrap();
+        assert_eq!(
+            shared_evidence_outcome(&both, &pred).refusal_reason(),
+            Some("admission admission-floor-invalid")
+        );
+        let mut unknown = invalid;
+        unknown["producer"] = serde_json::json!("unknown-writer");
+        let unknown: HistoryRow = serde_json::from_value(unknown).unwrap();
+        assert_eq!(
+            refusal_reason(row_qualification(&unknown, &sha, &enforcing())),
+            "producer unknown-writer"
+        );
     }
 
     #[test]

@@ -801,7 +801,7 @@ class FakeRun:
                 rc=status_rc,
                 stdout=json.dumps(report),
             )
-        if len(command) >= 3 and command[-2].endswith("validate_rows.py") and command[-1] == "rows":
+        if len(command) >= 4 and command[-3].endswith("validate_rows.py") and command[-2:] == ["rows", "--preserve-admission"]:
             rows = self.ledger_rows
             if rows is None:
                 rows = [json.dumps(self.default_ledger_row())]
@@ -1459,16 +1459,21 @@ class StartUnitTest(unittest.TestCase):
         }
 
     def assert_canonical_readers_use_split_roots(self, tool_root: Path) -> None:
+        ledger_suffix = [
+            str(tool_root / "ci-hub/ledger/validate_rows.py"),
+            "rows",
+            "--preserve-admission",
+        ]
         readers = [
             (command, cwd)
             for command, cwd in self.fake.command_cwds
             if command[1:3] == ["validate-status", "--sha"]
-            or (len(command) >= 2 and command[-2].endswith("validate_rows.py"))
+            or command[-3:] == ledger_suffix
         ]
         self.assertEqual(2, len(readers))
         self.assertEqual(str(tool_root / "ci-hub/ci-hub"), readers[0][0][0])
         self.assertEqual(
-            str(tool_root / "ci-hub/ledger/validate_rows.py"), readers[1][0][-2]
+            ledger_suffix, readers[1][0][-3:]
         )
         self.assertEqual([self.root, self.root], [cwd for _, cwd in readers])
 
@@ -2288,6 +2293,7 @@ class StartUnitTest(unittest.TestCase):
                 self.assertEqual([{
                     "blocks_entry": False,
                     "checkout": str(checkout),
+                    **({"cleanup_failed": True} if unit_state == "query-error" else {}),
                     "reason": f"{expected_reason}; {storage_reason}",
                 }], report["retained"])
                 self.assertEqual(before, self.filesystem_snapshot(self.root))
@@ -9577,17 +9583,22 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("RECEIPT-CANONICAL", output)
         # The read must happen BEFORE the removal, or a missing row would be
         # indistinguishable from a deleted one.
+        ledger_suffix = [
+            str(self.root / "ci-hub/ledger/validate_rows.py"),
+            "rows",
+            "--preserve-admission",
+        ]
         kinds = [
             (
                 "status"
                 if command[1:3] == ["validate-status", "--sha"]
                 else "identity"
-                if len(command) >= 2 and command[-2].endswith("validate_rows.py")
+                if command[-3:] == ledger_suffix
                 else "remove"
             )
             for command in self.fake.commands
             if command[1:3] == ["validate-status", "--sha"]
-            or (len(command) >= 2 and command[-2].endswith("validate_rows.py"))
+            or command[-3:] == ledger_suffix
             or wrkslots_action(command, "remove")
         ]
         self.assertEqual(["status", "identity", "remove"], kinds)

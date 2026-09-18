@@ -28,7 +28,9 @@ from pathlib import Path
 from typing import Any, TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import git_env  # noqa: E402
+import qualifying_receipt
 import pane_owner
 import run_registry
 import tree_disposition
@@ -1056,6 +1058,15 @@ def row_is_selected_qualifying_receipt(
         "slot": "slot",
         "log_file": "log_file",
     }
+    if qualifying_receipt.admission_is_v2(row):
+        try:
+            qualifying_receipt.validate_admission_floor_evidence(row["admission_floor_evidence"], row)
+        except ValueError:
+            return False
+        # V2 carries the root-independent original log identity separately;
+        # the display path can legitimately differ between reader checkouts.
+        fields.pop("log_file")
+        fields["log_identity"] = "log_identity"
     for receipt in qualifying_receipts:
         if not isinstance(receipt, dict):
             continue
@@ -4063,6 +4074,7 @@ def assert_row_readable_from_canonical_ledger(
             sys.executable,
             str(tool_root / "ci-hub/ledger/validate_rows.py"),
             "rows",
+            "--preserve-admission",
         ],
         cwd=state_root,
         check=False,
@@ -4073,7 +4085,7 @@ def assert_row_readable_from_canonical_ledger(
     matched: list[tuple[str, Mapping[str, Any]]] = []
     for line in rows.stdout.splitlines():
         try:
-            row = json.loads(line)
+            row = json.loads(line, object_pairs_hook=qualifying_receipt.AdmissionJsonObject)
         except json.JSONDecodeError:
             continue
         if not isinstance(row, dict):
@@ -4093,10 +4105,20 @@ def assert_row_readable_from_canonical_ledger(
             "is readable from the canonical ledger; an older row cannot bind this run"
         )
     if verdict == "VALIDATED":
+        # A qualifying tuple does not authenticate a different raw row with
+        # that same tuple. Preserve the admission clause before copying green;
+        # diagnostic/failure rows below keep their original evidence unchanged.
+        predicate = qualifying_receipt.active()
         selected = [
             candidate
             for candidate in matched
-            if row_is_selected_qualifying_receipt(candidate[1], qualifying_receipts)
+            if (
+                "admission_floor_evidence" not in candidate[1]
+                or qualifying_receipt.admission_accepted(
+                    qualifying_receipt.admission_verdict(candidate[1], predicate)
+                )
+            )
+            and row_is_selected_qualifying_receipt(candidate[1], qualifying_receipts)
         ]
         if not selected:
             raise RuntimeError(

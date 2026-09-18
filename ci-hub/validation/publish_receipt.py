@@ -33,6 +33,7 @@ FOREIGN_HOST_TOKEN = "RECEIPT-ARTIFACT-FOREIGN-HOST"
 # check_outcome.py), one directory above this validation/ package.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import qualifying_receipt  # noqa: E402
+from admission_paths import read_admission_log  # noqa: E402
 
 
 RECEIPT_REPO = "rrnewton/dev-hermit"
@@ -70,7 +71,7 @@ def selected_record(
             f"expected {expected_digest}, got {actual_digest}"
         )
     try:
-        row = json.loads(canonical_record)
+        row = json.loads(canonical_record, object_pairs_hook=qualifying_receipt.AdmissionJsonObject)
     except json.JSONDecodeError as error:
         fail(f"selected canonical record is invalid JSON: {error}")
     if not isinstance(row, dict):
@@ -116,9 +117,17 @@ def short_hostname() -> str:
     return socket.gethostname().split(".", 1)[0]
 
 
-def preserve_log(evidence_dir: Path, sha: str, row: dict[str, Any]) -> Path:
+def preserve_log(evidence_dir: Path, sha: str, row: dict[str, Any], *, state_root=None) -> Path:
     source = Path(row["log_file"])
-    if not source.is_absolute() or not source.is_file():
+    portable_content = None
+    if qualifying_receipt.admission_is_v2(row):
+        if state_root is None:
+            fail("v2 log preservation requires an explicit state root")
+        try:
+            portable_content = read_admission_log(row, state_root)
+        except (OSError, ValueError) as error:
+            fail(f"v2 bound log is unavailable: {error}")
+    elif not source.is_absolute() or not source.is_file():
         # A receipt's ``log_file`` is recorded through a host-relative
         # ``{{WORKSPACE_ROOT}}`` token, which LOOKS portable but is not: the
         # artifact only exists on the machine that produced it.  Resolving it
@@ -141,7 +150,7 @@ def preserve_log(evidence_dir: Path, sha: str, row: dict[str, Any]) -> Path:
         fail(f"ledger log is not a readable absolute file: {source}")
     evidence_dir.mkdir(parents=True, exist_ok=True)
     started = "".join(ch for ch in row["started_at"] if ch.isalnum())
-    content = source.read_bytes()
+    content = portable_content if portable_content is not None else source.read_bytes()
     # A run log can legitimately grow after the canonical ledger row is
     # emitted: post-run receipt binding writes its own audit suffix.  SHA and
     # start time therefore do not uniquely identify immutable log bytes.  Key
@@ -409,7 +418,7 @@ def execute(args: argparse.Namespace, canonical_record: bytes) -> dict[str, Any]
         repo=args.repo,
     )
     evidence_dir = args.state_root / "ignored" / "validation-evidence"
-    durable_log = preserve_log(evidence_dir, args.sha, row)
+    durable_log = preserve_log(evidence_dir, args.sha, row, state_root=args.state_root)
     receipt, body, artifact_digest = build_receipt(
         args.repo,
         args.sha,

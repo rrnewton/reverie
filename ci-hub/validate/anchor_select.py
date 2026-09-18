@@ -168,7 +168,7 @@ def row_qualifies(row: dict, predicate: dict) -> tuple[bool, str]:
 
 def load_ledger(path: Path) -> tuple[list[dict], int]:
     if path.name == "ledger":
-        return canonical_ledger.rows(root=path.parent), 0
+        return canonical_ledger.rows(root=path.parent, preserve_admission=True), 0
     rows: list[dict] = []
     malformed = 0
     with open(path) as handle:
@@ -177,7 +177,7 @@ def load_ledger(path: Path) -> tuple[list[dict], int]:
             if not line:
                 continue
             try:
-                rows.append(json.loads(line))
+                rows.append(json.loads(line, object_pairs_hook=qualifying_receipt.AdmissionJsonObject))
             except json.JSONDecodeError:
                 malformed += 1
     return rows, malformed

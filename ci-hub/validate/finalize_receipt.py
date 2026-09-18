@@ -42,10 +42,13 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import fcntl
+import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -54,6 +57,7 @@ from pathlib import Path
 # history, publishing, and anchor selection. Do not restate schema-5 success.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import qualifying_receipt  # noqa: E402
+from admission_paths import AdmissionPaths  # noqa: E402
 
 # ONE extractor, not a second regex copy that could drift: per-node counting
 # lives solely in the remediation `nonzero_result` module (also imported by
@@ -120,7 +124,7 @@ def canonical_row_sha256(
         command.append("--require-canonical-qualifying")
     result = bounded_capture.capture(
         command,
-        input=json.dumps(row, separators=(",", ":")),
+        input=qualifying_receipt.admission_json_dumps(row),
     )
     digest = result.stdout.strip()
     if result.returncode != 0 or DIGEST_RE.fullmatch(digest) is None:
@@ -139,7 +143,7 @@ def _load_rows(handle) -> list[dict]:
         if not line.strip():
             continue
         try:
-            value = json.loads(line)
+            value = json.loads(line, object_pairs_hook=qualifying_receipt.AdmissionJsonObject)
         except json.JSONDecodeError:
             continue
         if isinstance(value, dict):
@@ -208,9 +212,11 @@ def build_base_evidence(
     fetched Hermit origin/main. It is historical evidence, not a mutable
     `current=true` assertion. Currency is checked only at the merge boundary.
     """
-    base_sha = _git(
-        hermit_checkout, "merge-base", sha, "refs/remotes/origin/main"
-    )
+    observed_main = _git(hermit_checkout, "rev-parse", "refs/remotes/origin/main^{commit}")
+    if SHA_RE.fullmatch(observed_main) is None:
+        raise RuntimeError("local Hermit main is not an exact lowercase 40-hex SHA")
+    observed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    base_sha = _git(hermit_checkout, "merge-base", sha, observed_main)
     if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
         raise RuntimeError("Hermit merge-base is not an exact lowercase 40-hex SHA")
     ancestor = subprocess.run(
@@ -235,7 +241,123 @@ def build_base_evidence(
         "base_tree": base_tree,
         "reverie_base_sha": reverie_base_sha,
         "reverie_base_tree": reverie_base_tree,
+        "base_observation": {
+            "contract": "post-run-local-main-merge-base/v1",
+            "observed_at": observed_at,
+            "observed_main_sha": observed_main,
+        },
     }
+
+
+def read_admission_context(path: str, expected_sha256: str, *, state_root=None) -> dict:
+    """Read one bounded regular file and retain its exact versioned bytes."""
+    if not isinstance(expected_sha256, str) or DIGEST_RE.fullmatch(expected_sha256) is None:
+        raise ValueError("admission context digest must be 64 lowercase hex")
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"admission context duplicate key: {key}")
+            result[key] = value
+        return result
+
+    def refuse_number(value):
+        raise ValueError(f"admission context forbids floating/nonfinite number: {value}")
+
+    try:
+        if state_root is not None:
+            with AdmissionPaths(state_root) as paths:
+                locator = paths.locator(path)
+                raw = paths.read(locator, maximum=qualifying_receipt.ADMISSION_CONTEXT_MAX_BYTES)
+        else:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            with os.fdopen(fd, "rb") as handle:
+                before = os.fstat(handle.fileno())
+                if not stat.S_ISREG(before.st_mode):
+                    raise ValueError("admission context is not a regular file")
+                raw = handle.read(qualifying_receipt.ADMISSION_CONTEXT_MAX_BYTES + 1)
+                after = os.fstat(handle.fileno())
+            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+                    after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+                raise ValueError("admission context changed while reading")
+    except OSError as error:
+        raise ValueError(f"cannot read admission context: {error}") from error
+    if len(raw) > qualifying_receipt.ADMISSION_CONTEXT_MAX_BYTES:
+        raise ValueError("admission context exceeds reader byte capacity")
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ValueError("admission context file digest mismatch")
+    try:
+        context = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object,
+                             parse_float=refuse_number, parse_constant=refuse_number)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
+        raise ValueError(f"malformed admission context JSON: {error}") from error
+    if qualifying_receipt.admission_context_bytes(context) != raw:
+        version = context["contract"].rsplit("/", 1)[-1]
+        raise ValueError(f"admission context bytes are not canonical {version} JSON")
+    v2 = context["contract"] == qualifying_receipt.ADMISSION_CONTEXT_V2
+    if v2 and state_root is None:
+        raise ValueError("v2 admission context requires an explicit state root")
+    if not v2 and state_root is not None:
+        raise ValueError("admission state root is only a v2 input")
+    evidence = {
+        "context": context,
+        "artifact": {**({"locator": locator} if v2 else {"path": path}),
+                     "sha256": expected_sha256, "bytes": len(raw)},
+    }
+    qualifying_receipt.validate_admission_floor_evidence(evidence)
+    return evidence
+
+
+def verify_admission_context_git(evidence: dict, hermit_checkout: str, sha: str, log: str,
+                                 *, state_root=None) -> None:
+    """Check available CLI/Git facts, without inventing host/run/start authority.
+
+    The driver must compare the returned structure with its original in-memory
+    proof. SHA/log/object checks here do not independently authenticate the
+    context's run identity or rederive its execution plan.
+    """
+    # Only this new contract uses immutable object reads. Do not incidentally
+    # alter the older base observation or landing policy helpers.
+    def git(*args):
+        return bounded_capture.git(
+            ["--no-replace-objects", *args],
+            cwd=hermit_checkout,
+            # Git reads GIT_GRAFT_FILE; core.graftFile is not its control.
+            # Scope this immutable view to the child, without changing ambient
+            # configuration or the older base/landing readers.
+            env={**os.environ, "GIT_GRAFT_FILE": os.devnull},
+        )
+
+    def tree(commit):
+        kind = git("cat-file", "-t", commit)
+        if kind.returncode != 0 or kind.stdout.strip() != "commit":
+            raise ValueError("admission object is not a stored commit")
+        result = git("rev-parse", "--verify", f"{commit}^{{tree}}")
+        if result.returncode != 0 or SHA_RE.fullmatch(result.stdout.strip()) is None:
+            raise ValueError("admission commit tree is unavailable")
+        return result.stdout.strip()
+
+    context = evidence["context"]
+    if context["target_sha"] != sha:
+        raise ValueError("admission context target/log differs from selected invocation")
+    if context["contract"] == qualifying_receipt.ADMISSION_CONTEXT_V2:
+        if state_root is None:
+            raise ValueError("v2 admission context requires an explicit state root")
+        with AdmissionPaths(state_root) as paths:
+            paths.require_log(context, log)
+    elif context["log_file"] != log:
+        raise ValueError("admission context target/log differs from selected invocation")
+    if tree(sha) != context["target_tree"]:
+        raise ValueError("admission context target tree mismatch")
+    floor = context["floor"]
+    if tree(floor["sha"]) != floor["tree"]:
+        raise ValueError("admission context floor tree mismatch")
+    ancestry = git("merge-base", "--is-ancestor", floor["sha"], sha)
+    if ancestry.returncode == 1:
+        raise ValueError("admission floor is not contained in target")
+    if ancestry.returncode != 0:
+        raise ValueError(f"admission ancestry unavailable: {ancestry.stderr.strip()}")
 
 
 def _canonical_full_test_producers(data: object) -> set[str]:
@@ -611,7 +733,7 @@ def select_candidate_sha256(ledger_path: str | None, sha: str) -> str:
     if SHA_RE.fullmatch(sha) is None:
         raise SelectedRowError("invalid-sha", "--sha must be exactly 40 lowercase hex")
     if ledger_path is None:
-        rows = canonical_ledger.rows()
+        rows = canonical_ledger.rows(preserve_admission=True)
     else:
         with _locked_ledger(ledger_path, exclusive=False) as handle:
             rows = _load_rows(handle)
@@ -680,7 +802,7 @@ def scan_and_finalize(
             / "reverie"
         )
     if ledger_path is None:
-        rows = canonical_ledger.rows()
+        rows = canonical_ledger.rows(preserve_admission=True)
         selected = dict(_resolve_selected_row(rows, sha, selected_row_sha256))
     else:
         with _locked_ledger(ledger_path, exclusive=True) as handle:
@@ -706,6 +828,29 @@ def scan_and_finalize(
             "appended": 0,
         }
 
+    if "admission_floor_evidence" in selected:
+        try:
+            evidence = selected["admission_floor_evidence"]
+            qualifying_receipt.validate_admission_floor_evidence(evidence, selected)
+            artifact = evidence["artifact"]
+            admission_root = None
+            artifact_path = artifact.get("path")
+            if qualifying_receipt.admission_is_v2(selected):
+                admission_root = canonical_ledger.repository_root().resolve()
+                with AdmissionPaths(admission_root) as paths:
+                    artifact_path = str(paths.path(artifact["locator"]))
+            retained = read_admission_context(artifact_path, artifact["sha256"],
+                                              state_root=admission_root)
+            if retained != evidence:
+                raise ValueError("selected admission evidence differs from retained artifact")
+            verify_admission_context_git(evidence, hermit_checkout, sha, selected["log_file"],
+                                         state_root=admission_root)
+        except (ValueError, RuntimeError, OSError) as error:
+            return {
+                "sha": sha, "satisfied": False, "reason": "invalid-admission-floor",
+                "detail": str(error), "exit_code": 1, "appended": 0,
+            }
+
     fields: dict = {}
     if not _has_complete_schema5_measurement(selected):
         log = selected.get("log_file")
@@ -717,8 +862,17 @@ def scan_and_finalize(
                 "exit_code": 1,
                 "appended": 0,
             }
-        with open(log, errors="replace") as log_handle:
-            log_text = log_handle.read()
+        if qualifying_receipt.admission_is_v2(selected):
+            try:
+                with AdmissionPaths(admission_root) as paths:
+                    log_text = paths.read(evidence["context"]["log_identity"]).decode(
+                        "utf-8", errors="replace")
+            except (ValueError, OSError) as error:
+                return {"sha": sha, "satisfied": False, "reason": "no-log",
+                        "detail": str(error), "exit_code": 1, "appended": 0}
+        else:
+            with open(log, errors="replace") as log_handle:
+                log_text = log_handle.read()
         try:
             planned = planned_test_nodes(hermit_checkout, sha)
         except RuntimeError as error:
@@ -796,7 +950,7 @@ def scan_and_finalize(
     # `already-finalized` success. A concurrent append can neither redirect the
     # request to another same-SHA row nor create a second clone of this source.
     if ledger_path is None:
-        rows = canonical_ledger.rows()
+        rows = canonical_ledger.rows(preserve_admission=True)
         _resolve_selected_row(rows, sha, selected_row_sha256)
         if _existing_finalization(rows, sha, selected_row_sha256) is not None:
             return {
@@ -879,11 +1033,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--emit-only", action="store_true",
                     help="print the schema-5 fields to stdout; do NOT touch a ledger")
+    ap.add_argument("--admission-context", help="retained versioned context file (emit-only)")
+    ap.add_argument("--admission-context-sha256", help="exact context byte digest (emit-only)")
+    ap.add_argument("--admission-state-root", help="explicit v2 state root (emit-only)")
     ap.add_argument("--scan", action="store_true",
                     help="APPEND-safe mint of one --sha/--selected-row-sha256 source")
     ap.add_argument("--dry-run", action="store_true",
                     help="with --scan: report what would be minted; do NOT write")
     args = ap.parse_args(argv)
+
+    if (args.admission_context is not None or args.admission_context_sha256 is not None
+            or args.admission_state_root is not None):
+        if (not args.emit_only or args.scan or args.select_candidate_sha256
+                or args.admission_context is None or args.admission_context_sha256 is None):
+            print("finalize_receipt: admission context requires both context flags and "
+                  "--emit-only, not scan/selection", file=sys.stderr)
+            return 2
 
     if args.ledger and os.environ.get("CI_HUB_LEDGER_FIXTURE_MODE") != "1":
         print("finalize_receipt: --ledger is test-fixture-only", file=sys.stderr)
@@ -958,10 +1123,35 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
 
+    admission_evidence = None
+    if args.admission_context is not None:
+        try:
+            if args.admission_state_root is not None:
+                # This is configuration agreement, not independent live
+                # authority. The driver holds that proof and checks our echo.
+                if Path(args.admission_state_root) != canonical_ledger.repository_root().resolve():
+                    raise ValueError("admission state root differs from canonical ledger state root")
+            admission_evidence = read_admission_context(
+                args.admission_context, args.admission_context_sha256,
+                state_root=args.admission_state_root,
+            )
+            verify_admission_context_git(
+                admission_evidence, args.hermit_checkout, args.sha, args.log,
+                state_root=args.admission_state_root,
+            )
+        except (ValueError, RuntimeError, OSError) as error:
+            print(f"finalize_receipt: invalid admission floor: {error}", file=sys.stderr)
+            return 2
+
     try:
-        with open(args.log, errors="replace") as fh:
-            log_text = fh.read()
-    except OSError as exc:
+        if admission_evidence and admission_evidence["context"]["contract"] == qualifying_receipt.ADMISSION_CONTEXT_V2:
+            with AdmissionPaths(args.admission_state_root) as paths:
+                log_text = paths.read(admission_evidence["context"]["log_identity"]).decode(
+                    "utf-8", errors="replace")
+        else:
+            with open(args.log, errors="replace") as fh:
+                log_text = fh.read()
+    except (OSError, ValueError) as exc:
         print(f"finalize_receipt: cannot read log {args.log!r}: {exc}", file=sys.stderr)
         return 2
 
@@ -981,6 +1171,9 @@ def main(argv: list[str] | None = None) -> int:
     except RuntimeError as exc:
         print(f"finalize_receipt: cannot record base evidence: {exc}", file=sys.stderr)
         return 2
+
+    if admission_evidence is not None:
+        fields["admission_floor_evidence"] = admission_evidence
 
     print(json.dumps({"commit": args.sha, **fields}, indent=2))
     return 0

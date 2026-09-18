@@ -220,6 +220,15 @@ impl PublishedValidationReceipt {
                 );
             }
         }
+        // Equality above intentionally preserves historical canonical bytes.
+        // Check both original rows before decode-only provenance can disappear;
+        // a valid selection must not authenticate a contradictory returned row.
+        selected_row.admission_evidence().map_err(|error| {
+            format!("selected HistoryRow admission floor evidence is invalid: {error}")
+        })?;
+        self.ledger_record.admission_evidence().map_err(|error| {
+            format!("publisher artifact admission floor evidence is invalid: {error}")
+        })?;
         Ok(())
     }
 }
@@ -227,6 +236,119 @@ impl PublishedValidationReceipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn publisher_readback_checks_both_original_rows_before_hidden_fields_disappear() {
+        let sha = "a".repeat(40);
+        let value = crate::tests::with_admission_context(
+            serde_json::json!({
+                "schema_version": 5,
+                "commit": sha,
+                "coverage": {
+                    "planned_test_nodes": 1, "executed_test_nodes": 1,
+                    "zero_executed_nodes": [], "absent_nodes": [],
+                },
+            }),
+            false,
+        );
+        let selected: HistoryRow = serde_json::from_value(value.clone()).unwrap();
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&selected).unwrap())
+        );
+        let wire = serde_json::json!({
+            "schema_version": 1, "repository": "rrnewton/hermit", "commit": sha,
+            "run_id": format!("{sha}@{}@{}", selected.started_at.as_deref().unwrap(),
+                              selected.host.as_deref().unwrap()),
+            "source_log_file": selected.log_file,
+            "durable_log_file": "/retained/receipt.log", "log_sha256": "e".repeat(64),
+            "producer": {
+                "definition": {"scripts/validate.rs": "d".repeat(40)},
+                "coverage_status": "legacy-selected-paths",
+                "paths": ["scripts/validate.rs"], "resolved_from": "/producer-checkout",
+            },
+            "selected_receipt_identity": {
+                "digest_algorithm": "sha256", "canonicalization": CANONICALIZATION,
+                "digest": digest,
+            },
+            "ledger_record": value,
+        });
+        let receipt: PublishedValidationReceipt = serde_json::from_value(wire.clone()).unwrap();
+        receipt
+            .validate(
+                "rrnewton/hermit",
+                &sha,
+                &selected,
+                &digest,
+                IdentityRequirement::Required,
+                None,
+            )
+            .unwrap();
+        for bad in [
+            serde_json::json!("other-run"),
+            serde_json::Value::Null,
+            serde_json::json!(42),
+            serde_json::json!({}),
+            serde_json::json!([]),
+        ] {
+            let mut returned = wire.clone();
+            returned["ledger_record"]["coverage"]["run_id"] = bad.clone();
+            let returned: PublishedValidationReceipt = serde_json::from_value(returned).unwrap();
+            // The existing canonical equality and identity both still agree;
+            // only the original-row proof can detect this contradiction.
+            assert_eq!(
+                serde_json::to_value(&returned.ledger_record).unwrap(),
+                serde_json::to_value(&selected).unwrap()
+            );
+            let error = returned
+                .validate(
+                    "rrnewton/hermit",
+                    &sha,
+                    &selected,
+                    &digest,
+                    IdentityRequirement::Required,
+                    None,
+                )
+                .unwrap_err();
+            assert!(
+                error.starts_with("publisher artifact admission floor evidence is invalid:"),
+                "{error}"
+            );
+            let mut invalid_selected = value.clone();
+            invalid_selected["coverage"]["run_id"] = bad;
+            let invalid_selected: HistoryRow = serde_json::from_value(invalid_selected).unwrap();
+            let error = receipt
+                .validate(
+                    "rrnewton/hermit",
+                    &sha,
+                    &invalid_selected,
+                    &digest,
+                    IdentityRequirement::Required,
+                    None,
+                )
+                .unwrap_err();
+            assert!(
+                error.starts_with("selected HistoryRow admission floor evidence is invalid:"),
+                "{error}"
+            );
+            let mut earlier = returned;
+            earlier.producer.definition.clear();
+            assert_eq!(
+                earlier
+                    .validate(
+                        "rrnewton/hermit",
+                        &sha,
+                        &selected,
+                        &digest,
+                        IdentityRequirement::Required,
+                        None
+                    )
+                    .unwrap_err(),
+                "published validation receipt producer definition is empty"
+            );
+        }
+    }
 
     #[test]
     fn newer_schema_is_identified_before_schema_one_shape() {

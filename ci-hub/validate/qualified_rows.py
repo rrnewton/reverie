@@ -25,6 +25,7 @@ from typing import Iterable, Mapping
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ledger"))
 import validate_rows as canonical_ledger  # noqa: E402
+import qualifying_receipt  # noqa: E402
 
 DEFAULT_LEDGER = Path(__file__).resolve().parents[2] / "ledger"
 
@@ -48,6 +49,12 @@ def event_time(row: Mapping[str, object]) -> dt.datetime | None:
 
 def is_qualified(row: Mapping[str, object]) -> bool:
     """Return whether ``row`` is a complete, nonempty PASS measurement."""
+    # Check original claimed fields before the timing view copies a row. Old
+    # absent-claim measurements retain their narrower historical population.
+    if "admission_floor_evidence" in row and not qualifying_receipt.admission_accepted(
+        qualifying_receipt.admission_verdict(row, qualifying_receipt.active())
+    ):
+        return False
     executed = row.get("executed_tests")
     # A SOFT (inherited) green is not a measurement AT THIS HEAD: validation ran
     # on an ancestor and is being speculatively trusted here. This view is the
@@ -85,9 +92,9 @@ def qualified_rows(rows: Iterable[Mapping[str, object]]) -> list[dict[str, objec
 
 def load_rows(path: Path) -> tuple[list[dict[str, object]], int]:
     if path.resolve() == DEFAULT_LEDGER.resolve():
-        return canonical_ledger.rows(), 0
+        return canonical_ledger.rows(preserve_admission=True), 0
     if path.is_dir():
-        return canonical_ledger.rows(root=path.resolve().parent), 0
+        return canonical_ledger.rows(root=path.resolve().parent, preserve_admission=True), 0
     rows: list[dict[str, object]] = []
     malformed = 0
     with path.open(errors="replace") as handle:
@@ -95,7 +102,7 @@ def load_rows(path: Path) -> tuple[list[dict[str, object]], int]:
             if not line.strip():
                 continue
             try:
-                value = json.loads(line)
+                value = json.loads(line, object_pairs_hook=qualifying_receipt.AdmissionJsonObject)
             except json.JSONDecodeError:
                 malformed += 1
                 continue
@@ -110,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args(argv)
     try:
-        rows = canonical_ledger.rows()
+        rows = canonical_ledger.rows(preserve_admission=True)
         malformed = 0
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"qualified-rows: canonical ledger union refused: {error}", file=sys.stderr)

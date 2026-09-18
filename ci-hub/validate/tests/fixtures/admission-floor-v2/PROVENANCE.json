@@ -1,0 +1,25 @@
+{
+  "contract": "ci-hub-admission-floor/v2",
+  "producer": "actual Rust admission_context_v2_bytes through cargo test",
+  "source_sha256": "27f7fdb49ecf0a1aadf8b6cd19a53046e77755c4faf0681faa1b38bfca2457ad",
+  "files": {
+    "basic.json": {
+      "sha256": "86e20786f269b4cb8928c19b470ea87e4b95c6a30341584c3acd7bd560fd80ab",
+      "bytes": 1344
+    },
+    "escaped.json": {
+      "sha256": "9bc56ad574dbfbb549c197485aa85be69ee40c64dca9ce7ce731487fee530574",
+      "bytes": 1383
+    },
+    "frozen.json": {
+      "sha256": "664c8c02e7c1f62fc98456647e1ee91bb0971c676a81fa67d9c59a61864d11c7",
+      "bytes": 1352
+    },
+    "large-u64.json": {
+      "sha256": "53bb4f91f3fb69ba6eb6a508e4d6bc52387f6ffc045f9458d7c2311159469fbf",
+      "bytes": 1387
+    }
+  },
+  "runtime_evidence": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/structured-results-obligation-audit-20260917/goal-continuation-20260918-0333/admission-floor-hermit-consumer-implementation-1/portable-context-shared-type-implementation-1/runtime",
+  "limitation": "Actual Rust serializer bytes from synthetic contexts; not live admission authority. Selected Rust tests only; full shared qualification pending."
+}

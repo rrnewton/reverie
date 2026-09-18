@@ -55,6 +55,7 @@ _PROCESS_GROUP_TERM_GRACE_SECONDS = 0.25
 _PROCESS_GROUP_POLL_SECONDS = 0.01
 _MAX_PROCESS_DETAIL_BYTES = 2_000
 _READER_PATHS = (
+    Path("ci-hub/admission_paths.py"),
     Path("ci-hub/ci-hub"),
     Path("ci-hub/ci-hub.rs"),
     Path("ci-hub/compatibility-website/export_inputs.py"),

@@ -1151,7 +1151,8 @@ pub fn cache_matches(
     ledger_modified_ns: u128,
     producer_definition_authority: &str,
 ) -> bool {
-    cache.schema_version == 8
+    // Version 9 binds the admission-aware original-row decoder policy.
+    cache.schema_version == 9
         && cache.branch == branch
         && cache.branch_ref == branch_ref
         && cache.branch_tip == branch_tip
@@ -2100,7 +2101,7 @@ mod tests {
             commits_with_records: 0,
         };
         let cache = NewestGreenCache {
-            schema_version: 8,
+            schema_version: 9,
             branch: "main".into(),
             branch_ref: "origin/main".into(),
             branch_tip: "tip-a".into(),
@@ -2125,6 +2126,18 @@ mod tests {
         ));
         let mut old_schema = cache.clone();
         old_schema.schema_version = 7;
+        assert!(!cache_matches(
+            &old_schema,
+            "main",
+            "origin/main",
+            "tip-a",
+            "floor",
+            path,
+            100,
+            200,
+            "producer-a"
+        ));
+        old_schema.schema_version = 8;
         assert!(!cache_matches(
             &old_schema,
             "main",

@@ -37,6 +37,8 @@ from nonzero_result import per_node_counts  # noqa: E402
 
 sys.path.insert(0, str(CI_HUB / "ledger"))
 import validate_rows as canonical_ledger  # noqa: E402
+import qualifying_receipt  # noqa: E402
+from admission_paths import read_admission_log  # noqa: E402
 
 
 DEFAULT_REGISTRY = Path(__file__).with_name("flaky-cells.json")
@@ -1190,7 +1192,7 @@ def row_failed_substeps(row: Mapping[str, object]) -> set[str]:
     return result
 
 
-def observed_failed_substeps(row: Mapping[str, object]) -> set[str]:
+def observed_failed_substeps(row: Mapping[str, object], *, state_root: Path | None = None) -> set[str]:
     """Read bound failure identities, or recover them from a surviving log.
 
     Rows written before failure classification was connected to the canonical
@@ -1199,9 +1201,22 @@ def observed_failed_substeps(row: Mapping[str, object]) -> set[str]:
     lets the first compliant solo rerun confirm an older wide/contended red;
     an absent or unreadable log remains unknown and cannot confirm anything.
     """
+    if qualifying_receipt.admission_is_v2(row):
+        try:
+            qualifying_receipt.validate_admission_floor_evidence(row["admission_floor_evidence"], row)
+        except ValueError:
+            return set()
     bound = row_failed_substeps(row)
     if bound:
         return bound
+    if qualifying_receipt.admission_is_v2(row):
+        if state_root is None:
+            return set()
+        try:
+            return set(failed_substeps(read_admission_log(row, state_root).decode(
+                "utf-8", errors="replace")))
+        except (OSError, ValueError):
+            return set()
     log_file = row.get("log_file")
     if not isinstance(log_file, str) or not log_file:
         return set()
@@ -1233,6 +1248,7 @@ def build_evidence(
     failed_nodes: list[str] | None = None,
     failure_classes: Mapping[str, tuple[str, str | None]] | None = None,
     comparison_observations: list[dict] | None = None,
+    state_root: Path | None = None,
 ) -> dict[str, object]:
     cells = (
         sorted(set(failed_nodes))
@@ -1280,7 +1296,7 @@ def build_evidence(
             for row in prior
             if str(row.get("commit") or "") == commit
             and prior_requires_rerun(row)
-            and not cell_set.isdisjoint(observed_failed_substeps(row))
+            and not cell_set.isdisjoint(observed_failed_substeps(row, state_root=state_root))
             and (
                 not exact_failed_set
                 or not exact_failed_set.isdisjoint(observed_failed_cells(row))
@@ -1352,13 +1368,15 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"failure_evidence: cannot load evidence: {error}", file=sys.stderr)
         return 2
+    state_root = canonical_ledger.repository_root().resolve()
     evidence = build_evidence(
         log_text=log_text,
         registry=registry,
-        prior=canonical_ledger.rows(),
+        prior=canonical_ledger.rows(root=state_root, preserve_admission=True),
         commit=args.commit,
         dag_jobs=args.dag_jobs,
         concurrent_validates=concurrent,
+        state_root=state_root,
     )
     print(json.dumps(evidence, separators=(",", ":"), sort_keys=True))
     return 0

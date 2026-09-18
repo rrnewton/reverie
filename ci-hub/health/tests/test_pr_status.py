@@ -1339,15 +1339,33 @@ class MechanismOverlapTests(unittest.TestCase):
         self.assertIn("#34", report)
 
 
+def _status_report(verdict="VALIDATED", *, repo="rrnewton/hermit", sha="a" * 40):
+    receipt = {"repo": repo, "sha": sha, "commit": sha, "tree": "b" * 40,
+               "finished_at": "2026-09-18T15:00:00Z", "host": "fixture-host",
+               "slot": "fixture-slot", "log_file": "/fixture/retained.log"}
+    receipt["receipt_identity"] = {
+        "digest_algorithm": "sha256", "canonicalization": "serde_json::to_vec(HistoryRow)-v1",
+        "digest": "c" * 64,
+        "tuple": {k: receipt[k] for k in ("repo", "sha", "tree", "finished_at", "host", "slot", "log_file")},
+    }
+    positive = verdict == "VALIDATED"
+    return {"schema_version": 3, "repo": repo, "sha": sha, "verdict": verdict,
+            "exit_code": {"VALIDATED": 0, "FAILED": 3}.get(verdict, 4),
+            "qualifying_count": int(positive), "qualifying_receipts": [receipt] if positive else [],
+            "newest_qualifying": receipt if positive else None,
+            "failed_record_count": int(verdict == "FAILED"), "unresolved_failure_obligations": [],
+            "ledger_freshness": None if positive else {"state": "current", "local_absence_is_authoritative": True}}
+
+
 class BankedGreenCommitsTests(unittest.TestCase):
     def test_successful_empty_ledger_is_authoritatively_empty(self) -> None:
         """POSITIVE BRACKET: a successful reader may truthfully return EMPTY."""
         completed = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
+            args=[], returncode=4, stdout=json.dumps(_status_report("NOT-VALIDATED")), stderr=""
         )
         with mock.patch("pr_status.subprocess.run", return_value=completed):
             commits = pr_status.banked_green_commits(
-                "rrnewton/hermit", ci_hub_bin=Path(__file__)
+                "rrnewton/hermit", ["a" * 40], ci_hub_bin=Path(__file__)
             )
         self.assertEqual(commits, frozenset())
 
@@ -1355,7 +1373,7 @@ class BankedGreenCommitsTests(unittest.TestCase):
         """NEGATIVE BRACKET: reader failure must not become evidence of absence."""
         failures = (
             OSError("cannot execute"),
-            subprocess.TimeoutExpired(cmd="qualified-rows", timeout=1.0),
+            subprocess.TimeoutExpired(cmd="validate-status", timeout=1.0),
             subprocess.CompletedProcess(
                 args=[], returncode=7, stdout="", stderr="ledger exploded"
             ),
@@ -1375,14 +1393,14 @@ class BankedGreenCommitsTests(unittest.TestCase):
                     "local validation ledger unavailable",
                 ):
                     pr_status.banked_green_commits(
-                        "rrnewton/hermit", ci_hub_bin=Path(__file__), timeout=1.0
+                        "rrnewton/hermit", ["a" * 40], ci_hub_bin=Path(__file__), timeout=1.0
                     )
 
         with tempfile.TemporaryDirectory() as directory:
             missing = Path(directory) / "missing-ci-hub"
             with self.assertRaisesRegex(pr_status.RepoUnavailable, "missing reader"):
                 pr_status.banked_green_commits(
-                    "rrnewton/hermit", ci_hub_bin=missing
+                    "rrnewton/hermit", ["a" * 40], ci_hub_bin=missing
                 )
 
     def test_malformed_ledger_answer_is_unavailable_not_empty(self) -> None:
@@ -1392,8 +1410,101 @@ class BankedGreenCommitsTests(unittest.TestCase):
         with mock.patch("pr_status.subprocess.run", return_value=completed):
             with self.assertRaisesRegex(pr_status.RepoUnavailable, "malformed JSON"):
                 pr_status.banked_green_commits(
-                    "rrnewton/hermit", ci_hub_bin=Path(__file__)
+                    "rrnewton/hermit", ["a" * 40], ci_hub_bin=Path(__file__)
                 )
+
+    def credit(self, report, *, raw=None):
+        completed = subprocess.CompletedProcess([], report["exit_code"] if raw is None else raw, json.dumps(report), "")
+        with mock.patch("pr_status.subprocess.run", return_value=completed):
+            return pr_status.banked_green_commits(report["repo"], [report["sha"]], ci_hub_bin=Path(__file__))
+
+    def test_canonical_positive_both_repositories_and_withheld_history(self):
+        for repo in pr_status.DEFAULT_REPOS:
+            report = _status_report(repo=repo)
+            report.update(disqualified_count=3, withheld_nonpass_record_count=2, no_result_count=1)
+            report["qualifying_receipts"][0].update(coverage_status="grandfathered-unknown", coverage_satisfied=None)
+            self.assertEqual(self.credit(report), frozenset({"a" * 40}))
+
+    def test_negative_aggregate_keeps_positive_receipt_without_credit(self):
+        for verdict, code in (("FAILED", 3), ("NEEDS-RERUN", 4)):
+            report = _status_report()
+            report.update(verdict=verdict, exit_code=code, failed_record_count=int(code == 3))
+            if verdict == "NEEDS-RERUN":
+                report["unresolved_failure_obligations"] = [{"resolution": "unresolved"}]
+            self.assertEqual(self.credit(report), frozenset())
+
+    def test_newest_allows_ties_and_does_not_depend_on_list_order(self):
+        report = _status_report()
+        older = json.loads(json.dumps(report["newest_qualifying"]))
+        older["finished_at"] = older["receipt_identity"]["tuple"]["finished_at"] = "2026-09-17T15:00:00Z"
+        report["qualifying_receipts"] += [older, json.loads(json.dumps(report["newest_qualifying"]))]
+        report["qualifying_count"] = 3
+        self.assertEqual(self.credit(report), frozenset({"a" * 40}))
+        report["newest_qualifying"] = older
+        with self.assertRaises(pr_status.RepoUnavailable):
+            self.credit(report)
+
+    def test_malformed_status_identity_and_coherence_are_unavailable(self):
+        changes = [
+            lambda r: r.update(schema_version=3.0),
+            lambda r: r.pop("ledger_freshness"),
+            lambda r: r.update(exit_code=False),
+            lambda r: r.update(qualifying_count=True),
+            lambda r: r.update(qualifying_count=1.0),
+            lambda r: r.update(qualifying_count=2),
+            lambda r: r.update(newest_qualifying=None),
+            lambda r: r.update(failed_record_count=1),
+            lambda r: r.update(failed_record_count=False),
+            lambda r: r.update(unresolved_failure_obligations=[{"resolution": "unresolved"}]),
+            lambda r: r["qualifying_receipts"][0].update(repo="rrnewton/reverie"),
+            lambda r: r["qualifying_receipts"][0].update(sha="d" * 40),
+            lambda r: r["qualifying_receipts"][0].update(tree="bad"),
+            lambda r: r["qualifying_receipts"][0]["receipt_identity"].update(digest="x" * 64),
+            lambda r: r["qualifying_receipts"][0]["receipt_identity"].update(canonicalization="unknown"),
+            lambda r: r["qualifying_receipts"][0]["receipt_identity"]["tuple"].update(log_file="/other"),
+        ]
+        for index, change in enumerate(changes):
+            with self.subTest(index=index):
+                report = _status_report(); change(report)
+                with self.assertRaises(pr_status.RepoUnavailable):
+                    self.credit(report)
+        for field, value in (("repo", "rrnewton/reverie"), ("sha", "d" * 40)):
+            report = _status_report(); report[field] = value
+            result = subprocess.CompletedProcess([], 0, json.dumps(report), "")
+            with self.assertRaises(pr_status.RepoUnavailable):
+                pr_status._banked_status_credit("rrnewton/hermit", "a" * 40, result)
+        with self.assertRaises(pr_status.RepoUnavailable):
+            self.credit(_status_report(), raw=4)
+
+    def test_unknown_absence_and_terminated_freshness_are_unavailable(self):
+        for verdict in ("NOT-VALIDATED", "TERMINATED", "LEDGER-LAGGING", "LEDGER-UNREADABLE"):
+            for state in ("unknown", "upstream-has-record", "local-record-unreadable"):
+                report = _status_report(verdict)
+                report["ledger_freshness"] = {"state": state, "local_absence_is_authoritative": False}
+                with self.subTest(verdict=verdict, state=state), self.assertRaises(pr_status.RepoUnavailable):
+                    self.credit(report)
+        self.assertEqual(self.credit(_status_report("TERMINATED")), frozenset())
+
+    def test_distinct_heads_share_one_deadline_and_empty_population_needs_no_reader(self):
+        with mock.patch("pr_status.subprocess.run") as run:
+            self.assertEqual(pr_status.banked_green_commits("rrnewton/hermit", [], ci_hub_bin=Path('/absent')), frozenset())
+            run.assert_not_called()
+        def respond(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, json.dumps(_status_report(sha=argv[3])), "")
+        with mock.patch("pr_status.subprocess.run", side_effect=respond) as run, mock.patch(
+                "pr_status.time.monotonic", side_effect=[100, 101, 103, 104, 109]):
+            actual = pr_status.banked_green_commits("rrnewton/hermit", ["a" * 40, "a" * 40, "d" * 40], ci_hub_bin=Path(__file__), timeout=10)
+        self.assertEqual(actual, frozenset({"a" * 40, "d" * 40}))
+        self.assertEqual([c.kwargs["timeout"] for c in run.call_args_list], [9, 6])
+        self.assertEqual(run.call_args_list[0].args[0][1:], ["validate-status", "--sha", "a" * 40, "--repo", "rrnewton/hermit", "--json"])
+        for clocks, expected_calls in (([100, 101, 110], 1), ([100, 101, 103, 110], 1), ([100, 101, 103, 104, 110], 2)):
+            with mock.patch("pr_status.subprocess.run", side_effect=respond) as run, mock.patch("pr_status.time.monotonic", side_effect=clocks):
+                with self.assertRaisesRegex(pr_status.RepoUnavailable, "deadline exhausted"):
+                    pr_status.banked_green_commits("rrnewton/hermit", ["a" * 40, "d" * 40], ci_hub_bin=Path(__file__), timeout=10)
+                self.assertEqual(run.call_count, expected_calls)
+        for heads in (["short"], [None]):
+            with self.assertRaises(pr_status.RepoUnavailable):
+                pr_status.banked_green_commits("rrnewton/hermit", heads, ci_hub_bin=Path(__file__))
 
 
 class GhEngineLoudFailureTests(unittest.TestCase):

@@ -965,85 +965,105 @@ def _mechanism_overlaps(raw: Sequence[object]) -> tuple[MechanismOverlap, ...]:
     return tuple(overlaps)
 
 
-def banked_green_commits(
-    repo: str, *, ci_hub_bin: Path = CI_HUB_BIN, timeout: float = 30.0
-) -> frozenset[str]:
-    """Full-green commit SHAs for ``repo`` from the LOCAL validate ledger.
+def _banked_status_credit(repo: str, sha: str, result: subprocess.CompletedProcess) -> bool:
+    """Check the canonical reader's response identity, not its row predicate."""
+    def refused(detail: str) -> RepoUnavailable:
+        return RepoUnavailable(f"{repo}: local validation ledger unavailable: validate-status {sha}: {detail}")
 
-    This is the second authority the every-tick GitHub view is blind to. GitHub
-    ``statusCheckRollup`` is the only index that feeds ``green``/``gate``; its
-    selected failed Actions checks may be refined by exact-job evidence. A PR
-    head can be red or pending on GitHub (e.g. the blanket self-hosted red) while
-    LOCAL ``scripts/validate.rs`` proved a complete, nonempty PASS at that exact SHA and
-    banked a receipt the merge gate honors. Without this cross-reference the tool
-    reports ``green=0`` even when banked greens exist — the local evidence and the
-    GitHub display never meet, which reads as "no validated work" when the truth is
-    "validated, just not reflected in a GitHub check".
-
-    Binding is by EXACT full commit SHA (an identity link, not a proxy). We do NOT
-    re-derive the green predicate here: we dereference the ONE canonical verifier,
-    ``ci-hub ledger qualified-rows`` (complete, nonempty PASS rows), and bucket by
-    repo. A successful query with no qualifying rows returns the empty set. A
-    missing, failed, timed-out, or malformed reader raises ``RepoUnavailable``:
-    an unavailable authority and an authoritative empty answer are different
-    facts, and callers must not silently degrade to a GitHub-only verdict.
-    """
-    name = repo.rsplit("/", 1)[-1]
-    if not Path(ci_hub_bin).exists():
-        raise RepoUnavailable(
-            f"{repo}: local validation ledger unavailable: missing reader {ci_hub_bin}"
-        )
     try:
-        result = subprocess.run(
-            [str(ci_hub_bin), "ledger", "qualified-rows"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as error:
-        raise RepoUnavailable(
-            f"{repo}: local validation ledger unavailable: qualified-rows "
-            f"exceeded {timeout:.1f}s"
-        ) from error
-    except OSError as error:
-        raise RepoUnavailable(
-            f"{repo}: local validation ledger unavailable: qualified-rows "
-            f"could not run: {error}"
-        ) from error
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "no diagnostic").strip()[:300]
-        raise RepoUnavailable(
-            f"{repo}: local validation ledger unavailable: qualified-rows "
-            f"exited {result.returncode}: {detail}"
-        )
+        report = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise refused(f"malformed JSON (exit {result.returncode})") from error
+    if not isinstance(report, dict) or type(report.get("schema_version")) is not int or report["schema_version"] != 3:
+        raise refused("unsupported status report")
+    if report.get("repo") != repo or report.get("sha") != sha:
+        raise refused("status identity mismatch")
+    exits = {"VALIDATED": 0, "FAILED": 3, "TRUNCATED": 4, "NEEDS-RERUN": 4,
+             "NO-RESULT": 4, "NOT-VALIDATED": 4, "TERMINATED": 4}
+    verdict = report.get("verdict")
+    expected_exit = exits.get(verdict) if isinstance(verdict, str) else None
+    if expected_exit is None:
+        raise refused(f"unavailable or unknown verdict {verdict!r}")
+    if type(report.get("exit_code")) is not int or report["exit_code"] != expected_exit or result.returncode != expected_exit:
+        raise refused("command/report/verdict exits disagree")
+    if "ledger_freshness" not in report:
+        raise refused("status report omits ledger freshness")
+    freshness = report["ledger_freshness"]
+    if freshness is not None and (
+        not isinstance(freshness, dict) or freshness.get("state") != "current"
+        or freshness.get("local_absence_is_authoritative") is not True
+    ):
+        raise refused("local ledger absence is not authoritative")
+    count, receipts = report.get("qualifying_count"), report.get("qualifying_receipts")
+    newest, obligations = report.get("newest_qualifying"), report.get("unresolved_failure_obligations")
+    if type(count) is not int or count < 0 or not isinstance(receipts, list) or count != len(receipts) or not isinstance(obligations, list):
+        raise refused("incoherent receipt count or obligation list")
+    for receipt in receipts:
+        if not isinstance(receipt, dict) or any(receipt.get(k) != v for k, v in (("repo", repo), ("sha", sha), ("commit", sha))):
+            raise refused("qualifying receipt identity mismatch")
+        tree = receipt.get("tree")
+        identity = receipt.get("receipt_identity")
+        if not isinstance(tree, str) or re.fullmatch(r"[0-9a-f]{40}", tree) is None or not isinstance(identity, dict):
+            raise refused("qualifying receipt has no tree or identity")
+        digest, canonicalization = identity.get("digest"), identity.get("canonicalization")
+        if identity.get("digest_algorithm") != "sha256" or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None or canonicalization != "serde_json::to_vec(HistoryRow)-v1":
+            raise refused("malformed qualifying receipt digest identity")
+        binding = identity.get("tuple")
+        if not isinstance(binding, dict) or any(binding.get(k) != receipt.get(k) for k in ("repo", "sha", "tree", "finished_at", "host", "slot", "log_file")):
+            raise refused("qualifying receipt tuple disagrees")
+        if any(not isinstance(receipt.get(k), str) or not receipt[k].strip() for k in ("finished_at", "host", "slot", "log_file")):
+            raise refused("qualifying receipt tuple is incomplete")
+    if count:
+        if newest not in receipts or newest["finished_at"] != max(r["finished_at"] for r in receipts):
+            raise refused("newest receipt is not a maximal member")
+    elif newest is not None:
+        raise refused("empty receipt list has a newest receipt")
+    if verdict != "VALIDATED":
+        # A genuine failure or unresolved obligation can override positive rows.
+        return False
+    if not count or obligations or type(report.get("failed_record_count")) is not int or report["failed_record_count"] != 0:
+        raise refused("validated verdict contradicts its receipt/failure evidence")
+    # Disqualified, withheld, and no-result history may coexist with VALIDATED.
+    return True
+
+
+def banked_green_commits(
+    repo: str, ready_heads: Sequence[str], *, ci_hub_bin: Path = CI_HUB_BIN,
+    timeout: float = 30.0,
+) -> frozenset[str]:
+    """Canonical local validation credit for the already-fetched ready heads.
+
+    The timing/concurrency population from ledger qualified-rows is deliberately
+    narrower in purpose. Only validate-status owns canonical receipt and
+    same-commit failure/obligation precedence, including repository policy.
+    One deadline covers all distinct heads. Unavailable is never an empty set.
+    """
+    if repo not in DEFAULT_REPOS or any(not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None for sha in ready_heads):
+        raise RepoUnavailable(f"{repo}: local validation ledger unavailable: expected supported repo and full ready-head SHAs")
+    heads = tuple(dict.fromkeys(ready_heads))
+    if not heads:
+        return frozenset()
+    if not Path(ci_hub_bin).exists():
+        raise RepoUnavailable(f"{repo}: local validation ledger unavailable: missing reader {ci_hub_bin}")
+    deadline = time.monotonic() + max(0.0, timeout)
     commits: set[str] = set()
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    for sha in heads:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RepoUnavailable(f"{repo}: local validation ledger unavailable: shared validate-status deadline exhausted")
         try:
-            row = json.loads(line)
-        except json.JSONDecodeError as error:
-            raise RepoUnavailable(
-                f"{repo}: local validation ledger unavailable: qualified-rows "
-                "returned malformed JSON"
-            ) from error
-        if not isinstance(row, dict) or row.get("result") != "pass":
-            raise RepoUnavailable(
-                f"{repo}: local validation ledger unavailable: qualified-rows "
-                "returned an unexpected row"
+            result = subprocess.run(
+                [str(ci_hub_bin), "validate-status", "--sha", sha, "--repo", repo, "--json"],
+                capture_output=True, text=True, check=False, timeout=remaining,
             )
-        cwd = str(row.get("cwd") or "")
-        row_repo = row.get("repo") or ("reverie" if "/reverie" in cwd else "hermit")
-        sha = row.get("commit")
-        if not isinstance(sha, str) or not sha:
-            raise RepoUnavailable(
-                f"{repo}: local validation ledger unavailable: qualified-rows "
-                "returned a row without a commit"
-            )
-        if row_repo == name:
+        except subprocess.TimeoutExpired as error:
+            raise RepoUnavailable(f"{repo}: local validation ledger unavailable: validate-status exceeded shared deadline") from error
+        except OSError as error:
+            raise RepoUnavailable(f"{repo}: local validation ledger unavailable: validate-status could not run: {error}") from error
+        if _banked_status_credit(repo, sha, result):
             commits.add(sha)
+        if time.monotonic() >= deadline:
+            raise RepoUnavailable(f"{repo}: local validation ledger unavailable: shared validate-status deadline exhausted")
     return frozenset(commits)
 
 
@@ -1720,9 +1740,9 @@ def fetch_repo_status_gh(
         )
     try:
         banked_green = (
-            banked_green_commits(repo)
+            banked_green_commits(repo, ready_heads)
             if ledger_timeout is None
-            else banked_green_commits(repo, timeout=ledger_timeout)
+            else banked_green_commits(repo, ready_heads, timeout=ledger_timeout)
         )
     except RepoUnavailable as error:
         # GitHub already answered the independent population question. Preserve

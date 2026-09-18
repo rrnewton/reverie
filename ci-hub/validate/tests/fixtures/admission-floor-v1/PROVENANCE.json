@@ -1,0 +1,80 @@
+{
+  "description": "Synthetic admission context bytes emitted by actual Rust admission::tests::emit_context_goldens through the production encoder; not live admission authority or a product receipt. Copied without byte changes.",
+  "source_evidence": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/structured-results-obligation-audit-20260917/goal-continuation-20260918-0333/admission-floor-hermit-consumer-implementation-1/context-golden-1",
+  "source_manifest_sha256": "37fe97efe850abdcf2003b53d2b26accd772571616553cde44be47bd0b840340",
+  "files": {
+    "basic.json": {
+      "sha256": "2d1a311cb8f50dfeea1ca9f1ee66faaa4cc0610dffbcd5b25567d5461888744e",
+      "bytes": 1306
+    },
+    "escaped.json": {
+      "sha256": "c83e6e2ac71391f36a73efcea2601a486044f839e32378ca67166ae2fb6194fd",
+      "bytes": 1360
+    },
+    "large-u64.json": {
+      "sha256": "db58dffa2780d5d496b46b368af80caf32b479487f54da5f1869f991d16919b7",
+      "bytes": 1349
+    },
+    "frozen.json": {
+      "sha256": "1cf26ce5910f0bddf744fcad229f8b6e7edd5176223f752ed3fac75c531efb04",
+      "bytes": 1314
+    }
+  },
+  "rust_source": {
+    "sha256": "518b328444072ad95fc6f7b78fe45256a0d9d3e2ad93bfb8870bacbd62e1a6fa",
+    "bytes": 16246
+  },
+  "runtime_command": {
+    "utc": "2026-09-18T15:59:31.258759+00:00",
+    "argv": [
+      "env",
+      "HERMIT_ADMISSION_GOLDEN_DIR=/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/structured-results-obligation-audit-20260917/goal-continuation-20260918-0333/admission-floor-hermit-consumer-implementation-1/context-golden-1",
+      "with-proxy",
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "hermit-manifest-plan",
+      "--lib",
+      "ledger::admission::tests",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-retry-fetch-fixtures-20260918",
+    "environment": {
+      "CARGO_HOME": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/structured-results-obligation-audit-20260917/goal-continuation-20260918-0333/admission-floor-hermit-consumer-implementation-1/allocation-2/runtime/cargo-home",
+      "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/structured-results-obligation-audit-20260917/goal-continuation-20260918-0333/admission-floor-hermit-consumer-implementation-1/runtime-1/target",
+      "XDG_CACHE_HOME": "/home/newton/work/dev-hermit/ignored/ci-hub/run1828-fix-forward-20260916/structured-results-obligation-audit-20260917/goal-continuation-20260918-0333/admission-floor-hermit-consumer-implementation-1/allocation-2/runtime/xdg-cache",
+      "TMPDIR": "/tmp/degraded-unresolved-admission-floor-consumer-runtime-1",
+      "CARGO_BUILD_JOBS": "2"
+    },
+    "limits": {
+      "cpu.max": "200000 100000",
+      "memory.max": "6442450944",
+      "memory.swap.max": "0",
+      "pids.max": "1024"
+    },
+    "cgroup": "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/app.slice/admission-floor-consumer-context-golden1-20260918.scope",
+    "cgroup_inode": 41521084,
+    "controller": {
+      "pid": 282941,
+      "ppid": 282853,
+      "start_ticks": 190609998
+    }
+  },
+  "runtime_result": {
+    "utc": "2026-09-18T16:00:23.450357+00:00",
+    "raw_exit": 0,
+    "seconds": 52.19134599203244,
+    "error": null,
+    "cgroup": "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/app.slice/admission-floor-consumer-context-golden1-20260918.scope",
+    "resources": {
+      "cpu.stat": "usage_usec 89703425\nuser_usec 77257285\nsystem_usec 12446139\nnice_usec 0\nnr_periods 523\nnr_throttled 167\nthrottled_usec 27766483\nnr_bursts 0\nburst_usec 0",
+      "memory.peak": "2063941632",
+      "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0",
+      "pids.peak": "38"
+    }
+  },
+  "encoding": "ci-hub-admission-floor/v1: recursively sorted object keys, compact UTF-8 JSON, no newline, no floats; independent of HistoryRow encoding"
+}

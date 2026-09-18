@@ -14,7 +14,7 @@
 //! hermit-manifest-plan = { path = "../hermit/ci/manifest-plan" }
 //! libc = "0.2"
 //! serde = { version = "1", features = ["derive"] }
-//! serde_json = "1"
+//! serde_json = { version = "1", features = ["raw_value"] }
 //! sha2 = "0.10"
 //! thiserror = "2"
 //! ```
@@ -3804,7 +3804,7 @@ struct ValidationRecordIdentity {
 #[derive(Debug, Deserialize)]
 struct CanonicalLedgerStatusInput {
     schema_version: u32,
-    rows: Vec<serde_json::Value>,
+    rows: Vec<Box<serde_json::value::RawValue>>,
     records: Vec<ValidationRecordIdentity>,
 }
 
@@ -3815,13 +3815,21 @@ struct LoadedValidationLedger {
 }
 
 fn parse_history_values(
-    values: &[serde_json::Value],
+    values: &[Box<serde_json::value::RawValue>],
 ) -> (Vec<HistoryRow>, Vec<validate_status::LedgerParseFailure>) {
     let mut jsonl = String::new();
     for value in values {
-        jsonl.push_str(
-            &serde_json::to_string(value).expect("a serde_json::Value is always serializable"),
-        );
+        let legacy: serde_json::Value =
+            serde_json::from_str(value.get()).expect("RawValue contains valid JSON");
+        if legacy.get("admission_floor_evidence").is_some() {
+            jsonl.push_str(value.get());
+        } else {
+            // Preserve the historical normalization of rows without a claim.
+            jsonl.push_str(
+                &serde_json::to_string(&legacy)
+                    .expect("a serde_json::Value is always serializable"),
+            );
+        }
         jsonl.push('\n');
     }
     validate_status::parse_ledger(&jsonl)
@@ -3867,6 +3875,7 @@ fn load_validation_ledger_reporting_with_tool(
         let output = Command::new("python3")
             .arg(tool_root.join("ci-hub/ledger/validate_rows.py"))
             .arg("status-input")
+            .arg("--preserve-admission")
             .current_dir(path.parent().unwrap_or_else(|| Path::new(".")))
             .env(
                 "DEV_HERMIT_PARENT",
@@ -4371,7 +4380,8 @@ pub(crate) fn current_validation_run_indices(rows: &[HistoryRow]) -> Result<Vec<
         .collect())
 }
 
-/// Return owned current rows for strict consumers such as immutable exports.
+/// Test convenience wrapper around the same strict production index selection.
+#[cfg(test)]
 fn strict_current_validation_run_rows(rows: Vec<HistoryRow>) -> Result<Vec<HistoryRow>, String> {
     let indices = current_validation_run_indices(&rows)?;
     Ok(indices
@@ -4564,9 +4574,13 @@ fn parse_failure_matches_validation_repo(
 }
 
 fn canonical_row_json_and_sha256(row: &HistoryRow) -> Option<(String, String)> {
+    // Check the original row before decode-only fields disappear. This proves
+    // consistency of a present claim, not that a failed/frozen run qualifies.
+    row.admission_evidence().ok()?;
     // Canonicalization contract v1: serde's struct field order, BTreeMap order
-    // for flattened extras, and original Vec order. Any parsed receipt field,
-    // gate, count, or unknown extension therefore changes this digest.
+    // for flattened extras, and original Vec order. Decode-only coverage.run_id
+    // remains omitted to preserve historical bytes; its optional binding was
+    // checked above. Serialized fields, gates, counts and extensions are hashed.
     let canonical_row_json = serde_json::to_string(row).ok()?;
     let digest = format!("{:x}", Sha256::digest(canonical_row_json.as_bytes()));
     Some((canonical_row_json, digest))
@@ -4580,27 +4594,88 @@ fn validation_row_report(
     if record_id.trim().is_empty() || run_id.trim().is_empty() {
         return Err("validation-row record_id and run_id must be nonempty".into());
     }
+    // This projection exists only to choose a terminal record. Skip the new
+    // admission claim until selection, forwarding every other original field
+    // occurrence directly to HistoryRow's decoder (including duplicate keys).
+    // Never export or qualify this projection: reparse the selected raw line.
+    struct SelectionOnly(HistoryRow);
+    impl<'de> Deserialize<'de> for SelectionOnly {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct SelectionVisitor;
+            impl<'de> serde::de::Visitor<'de> for SelectionVisitor {
+                type Value = SelectionOnly;
+                fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    formatter.write_str("a HistoryRow for terminal-record selection")
+                }
+                fn visit_map<M: serde::de::MapAccess<'de>>(
+                    self,
+                    map: M,
+                ) -> Result<Self::Value, M::Error> {
+                    struct WithoutAdmission<M>(M);
+                    impl<'de, M: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for WithoutAdmission<M> {
+                        type Error = M::Error;
+                        fn next_key_seed<K: serde::de::DeserializeSeed<'de>>(
+                            &mut self,
+                            seed: K,
+                        ) -> Result<Option<K::Value>, Self::Error> {
+                            while let Some(key) = self.0.next_key::<String>()? {
+                                if key == "admission_floor_evidence" {
+                                    self.0.next_value::<serde::de::IgnoredAny>()?;
+                                } else {
+                                    return seed
+                                        .deserialize(serde::de::value::StringDeserializer::new(key))
+                                        .map(Some);
+                                }
+                            }
+                            Ok(None)
+                        }
+                        fn next_value_seed<V: serde::de::DeserializeSeed<'de>>(
+                            &mut self,
+                            seed: V,
+                        ) -> Result<V::Value, Self::Error> {
+                            self.0.next_value_seed(seed)
+                        }
+                    }
+                    HistoryRow::deserialize(serde::de::value::MapAccessDeserializer::new(
+                        WithoutAdmission(map),
+                    ))
+                    .map(SelectionOnly)
+                }
+                fn visit_seq<S: serde::de::SeqAccess<'de>>(
+                    self,
+                    sequence: S,
+                ) -> Result<Self::Value, S::Error> {
+                    HistoryRow::deserialize(serde::de::value::SeqAccessDeserializer::new(sequence))
+                        .map(SelectionOnly)
+                }
+            }
+            deserializer.deserialize_any(SelectionVisitor)
+        }
+    }
     let mut rows = Vec::new();
+    let mut original_lines = Vec::new();
     for (index, line) in input.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
-        let row = serde_json::from_str::<HistoryRow>(line).map_err(|error| {
+        let row = serde_json::from_str::<SelectionOnly>(line).map_err(|error| {
             format!(
                 "validation-row input line {} is not a HistoryRow: {error}",
                 index + 1
             )
         })?;
-        rows.push(row);
+        rows.push(row.0);
+        original_lines.push(line);
     }
     if rows.is_empty() {
         return Err("validation-row input contains no HistoryRow values".into());
     }
     let input_row_count = rows.len();
-    let terminal = strict_current_validation_run_rows(rows)?;
+    let terminal = current_validation_run_indices(&rows)?;
     let matches = terminal
-        .iter()
-        .filter(|row| {
+        .into_iter()
+        .filter(|index| {
+            let row = &rows[*index];
             extra_str(row, "record_id") == Some(record_id) && row.run_id.as_deref() == Some(run_id)
         })
         .collect::<Vec<_>>();
@@ -4610,7 +4685,10 @@ fn validation_row_report(
             matches.len()
         ));
     }
-    let row = matches[0];
+    let row = serde_json::from_str::<HistoryRow>(original_lines[matches[0]]).map_err(|error| {
+        format!("validation-row cannot canonicalize the selected HistoryRow: {error}")
+    })?;
+    let row = &row;
     if !row_matches_validation_repo(row, CANONICAL_VALIDATE_REPO) {
         return Err("validation-row selected row is not a Hermit validation row".into());
     }
@@ -4892,7 +4970,7 @@ fn receipt_digest_raw_count_type_refusal(
     qualifying_receipt::raw_current_schema_count_type_refusal(row, pred)
 }
 
-fn history_row_from_ledger_event(event: &LedgerEvent) -> Result<HistoryRow, String> {
+fn history_row_from_ledger_event(event: &LedgerEvent, input: &str) -> Result<HistoryRow, String> {
     event.validate()?;
     match event.event_type {
         ledger_event::EventType::RunResult => {}
@@ -4913,7 +4991,21 @@ fn history_row_from_ledger_event(event: &LedgerEvent) -> Result<HistoryRow, Stri
     ) {
         return Err(reason.to_string());
     }
-    let row: HistoryRow = serde_json::from_value(value).map_err(|error| {
+    // LedgerEvent intentionally keeps historical correction rows as Value.
+    // A present admission claim needs the original nested object so duplicate
+    // fields reach HistoryRow's decoder before Value can discard them.
+    let row: HistoryRow = if value.get("admission_floor_evidence").is_some() {
+        #[derive(Deserialize)]
+        struct RawEventRow<'a> {
+            #[serde(borrow)]
+            legacy_row: &'a serde_json::value::RawValue,
+        }
+        serde_json::from_str::<RawEventRow<'_>>(input)
+            .and_then(|raw| serde_json::from_str(raw.legacy_row.get()))
+    } else {
+        serde_json::from_value(value)
+    }
+    .map_err(|error| {
         format!("receipt-digest run.result legacy_row is not a HistoryRow: {error}")
     })?;
     if event.commit.as_deref() != row.commit.as_deref() {
@@ -4965,7 +5057,7 @@ fn run_receipt_digest(args: ReceiptDigestArgs) -> Result<i32, CiHubError> {
     let row: HistoryRow = if let Some(receipt) = &published {
         receipt.ledger_record.clone()
     } else if let Some(event) = &ledger_event {
-        history_row_from_ledger_event(event).map_err(CiHubError::ValidateStatus)?
+        history_row_from_ledger_event(event, &input).map_err(CiHubError::ValidateStatus)?
     } else {
         serde_json::from_str(&input).map_err(|error| {
             CiHubError::ValidateStatus(format!("receipt-digest input is not a HistoryRow: {error}"))
@@ -5265,6 +5357,9 @@ fn reverie_safe_ci_step_cgroup(cgroup: &str, step: &str) -> bool {
 /// diagnostics but never qualify: only the central runner can carry both a
 /// live validate-lock ancestry proof and observed safe-ci step containment.
 fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingReceipt> {
+    if qualifying_receipt::admission_floor_canonical_refusal(row).is_some() {
+        return None;
+    }
     // Preserve every immutable historical contract. v4 adds three distinct
     // owned-public-instruction gates to v3 and counts its execution gate.
     // v5 adds backend maturity to v3; maturity is not a libtest count source.
@@ -5648,7 +5743,7 @@ fn describe_receipt(receipt: &QualifyingReceipt) -> serde_json::Value {
         .as_deref()
         .and_then(canonical_validation_repo)
         .unwrap_or(CANONICAL_VALIDATE_REPO);
-    serde_json::json!({
+    let mut report = serde_json::json!({
         "schema_version": row.schema_version,
         "repo": repo,
         "sha": row.commit,
@@ -5710,7 +5805,23 @@ fn describe_receipt(receipt: &QualifyingReceipt) -> serde_json::Value {
             },
         },
         "producer_definition": receipt.producer_definition,
-    })
+    });
+    if row
+        .extra
+        .get("admission_floor_evidence")
+        .and_then(|evidence| evidence.get("context"))
+        .and_then(|context| context.get("contract"))
+        .and_then(serde_json::Value::as_str)
+        == Some("ci-hub-admission-floor/v2")
+    {
+        // Qualification above checked this original v2 identity. Keep the
+        // existing display path and all legacy report bytes unchanged.
+        if let Some(identity) = row.extra.get("log_identity") {
+            report["log_identity"] = identity.clone();
+            report["receipt_identity"]["tuple"]["log_identity"] = identity.clone();
+        }
+    }
+    report
 }
 
 fn history_repo_path(root: &Path, path: &Path) -> PathBuf {
@@ -6332,7 +6443,7 @@ fn run_newest_green(root: &Path, args: NewestGreenArgs) -> Result<i32, CiHubErro
         ) {
         NewestGreenOutcome::Found(report) => {
             let cache = NewestGreenCache {
-                schema_version: 8,
+                schema_version: 9,
                 branch: report.branch.clone(),
                 branch_ref: report.branch_ref.clone(),
                 branch_tip: report.branch_tip.clone(),
@@ -11480,6 +11591,54 @@ fn to_exit_code(code: i32) -> ExitCode {
 mod tests {
     use std::os::fd::AsRawFd;
 
+    /// Synthetic proof for caller controls, starting with actual Rust encoder
+    /// bytes. It proves transport/binding only, never live admission authority.
+    pub(crate) fn with_admission_context(
+        mut row: serde_json::Value,
+        frozen: bool,
+    ) -> serde_json::Value {
+        let mut context: records::AdmissionContextV1 = serde_json::from_str(include_str!(
+            "validate/tests/fixtures/admission-floor-v1/basic.json"
+        ))
+        .unwrap();
+        context.target_sha = row["commit"].as_str().unwrap().to_owned();
+        for (key, field) in [
+            ("tree", &mut context.target_tree),
+            ("host", &mut context.host),
+            ("run_id", &mut context.run_id),
+            ("started_at", &mut context.started_at),
+            ("log_file", &mut context.log_file),
+        ] {
+            if let Some(value) = row[key].as_str() {
+                *field = value.to_owned();
+            } else {
+                row[key] = serde_json::json!(field);
+            }
+        }
+        context.authority.target = context.target_sha.clone();
+        context.authority.host = context.host.clone();
+        context.authority.owner_host = context.host.clone();
+        if frozen {
+            context.authority.kind = "frozen-validate".into();
+            context.floor.kind = "frozen-target".into();
+            context.floor.sha = context.target_sha.clone();
+            context.floor.tree = context.target_tree.clone();
+            for binding in &mut context.pin_bindings {
+                binding.base_sha = context.floor.sha.clone();
+            }
+        }
+        let bytes = records::admission_context_bytes(&context).unwrap();
+        row["admission_floor_evidence"] = serde_json::json!({
+            "context": context,
+            "artifact": {
+                "path": "/synthetic-caller-fixture/context.json",
+                "sha256": records::admission_sha256(&bytes),
+                "bytes": bytes.len(),
+            },
+        });
+        row
+    }
+
     #[test]
     fn raw_gh_command_refuses_fleet_identity_flags() {
         let root = Path::new("/tmp/ci-hub-raw-gh-guard");
@@ -13703,6 +13862,30 @@ mod tests {
     }
 
     #[test]
+    fn validation_row_checks_only_the_selected_original_admission_binding() {
+        let mut selected = with_admission_context(
+            validation_row_value("selected-record", "selected-run"),
+            false,
+        );
+        selected["result"] = serde_json::json!("fail");
+        selected["failures"] = serde_json::json!(1);
+        let mut other =
+            with_admission_context(validation_row_value("other-record", "other-run"), false);
+        other["admission_floor_evidence"]["artifact"]["bytes"] = serde_json::json!(1);
+        let input = format!("{other}\n{selected}\n");
+        let report = validation_row_report(&input, "selected-record", "selected-run").unwrap();
+        assert_eq!(report["row"]["result"], "fail");
+        assert_eq!(report["row"]["failures"], 1);
+        assert_eq!(report["row"]["cell_results"], selected["cell_results"]);
+        assert_eq!(report["input"]["row_count"], 2);
+        let error = validation_row_report(&input, "other-record", "other-run").unwrap_err();
+        assert!(
+            error.contains("cannot canonicalize the selected HistoryRow"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn validation_row_refuses_an_absent_identity_pair() {
         let input = validation_row_line("present-record", "present-run");
 
@@ -13754,6 +13937,19 @@ mod tests {
             error.contains("input line 2 is not a HistoryRow"),
             "{error}"
         );
+        // Selection must not normalize escaped duplicate ordinary fields,
+        // even when their repeated values happen to be equal.
+        let other = validation_row_line("other-record", "other-run");
+        for duplicate in [r#""schema_\u0076ersion":7"#, r#""run_\u0069d":"other-run""#] {
+            let raw = format!("{},{duplicate}}}", other.strip_suffix('}').unwrap());
+            let input = format!("{raw}\n{selected}\n");
+            let error =
+                validation_row_report(&input, "selected-record", "selected-run").unwrap_err();
+            assert!(
+                error.contains("input line 1 is not a HistoryRow"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
@@ -16232,6 +16428,125 @@ mod tests {
     }
 
     #[test]
+    fn canonical_output_checks_hidden_admission_ids_without_changing_historical_bytes() {
+        let legacy = schema5_receipt_value(0);
+        let legacy_row = history_row(legacy.clone());
+        let legacy_json = serde_json::to_string(&legacy_row).unwrap();
+        assert_eq!(
+            canonical_row_json_and_sha256(&legacy_row).unwrap(),
+            (
+                legacy_json.clone(),
+                format!("{:x}", Sha256::digest(legacy_json.as_bytes()))
+            )
+        );
+        let value = with_admission_context(legacy, false);
+        let row = history_row(value.clone());
+        let expected = canonical_row_json_and_sha256(&row).unwrap();
+        let mut matching = value.clone();
+        matching["coverage"]["run_id"] = matching["run_id"].clone();
+        assert_eq!(
+            canonical_row_json_and_sha256(&history_row(matching)).unwrap(),
+            expected
+        );
+        for bad in [
+            serde_json::json!("other-run"),
+            serde_json::Value::Null,
+            serde_json::json!(42),
+            serde_json::json!({}),
+            serde_json::json!([]),
+        ] {
+            let mut malformed = value.clone();
+            malformed["coverage"]["run_id"] = bad;
+            assert!(canonical_row_json_and_sha256(&history_row(malformed)).is_none());
+        }
+        let mut failed = with_admission_context(schema5_receipt_value(0), true);
+        failed["result"] = serde_json::json!("fail");
+        failed["failures"] = serde_json::json!(1);
+        let failed = history_row(failed);
+        assert!(canonical_row_json_and_sha256(&failed).is_some());
+        assert!(qualify_canonical_receipt(&failed, RECEIPT_SHA).is_none());
+    }
+
+    #[test]
+    fn reverie_canonical_selector_refuses_frozen_or_malformed_optional_admission() {
+        let legacy = reverie_receipt_value();
+        assert!(qualify_reverie_receipt(&history_row(legacy.clone()), RECEIPT_SHA).is_some());
+        let current = with_admission_context(legacy.clone(), false);
+        assert!(qualify_reverie_receipt(&history_row(current.clone()), RECEIPT_SHA).is_some());
+        let frozen = with_admission_context(legacy, true);
+        assert!(canonical_row_json_and_sha256(&history_row(frozen.clone())).is_some());
+        assert!(qualify_reverie_receipt(&history_row(frozen), RECEIPT_SHA).is_none());
+        let mut malformed = current;
+        malformed["coverage"]["run_id"] = serde_json::Value::Null;
+        assert!(qualify_reverie_receipt(&history_row(malformed), RECEIPT_SHA).is_none());
+    }
+
+    #[test]
+    fn malformed_apparent_pass_cannot_discharge_a_recorded_failure() {
+        let mut failed = schema5_receipt_value(0);
+        failed["finished_at"] = serde_json::json!("2026-08-01T12:00:30Z");
+        failed["result"] = serde_json::json!("fail");
+        failed["raw_result"] = serde_json::json!("fail");
+        failed["exit_code"] = serde_json::json!(1);
+        failed["failures"] = serde_json::json!(1);
+        failed["dag_jobs"] = serde_json::json!(4);
+        failed["concurrent_validates"] = serde_json::json!(0);
+        failed["known_flaky_failure"] = serde_json::json!(false);
+        failed["solo_rerun_confirmation"] = serde_json::json!(false);
+        failed["gates"] = serde_json::json!([
+            {
+                "name": "fmt",
+                "result": "pass",
+                "exit_code": 0,
+                "real_seconds": 5.0
+            },
+            {
+                "name": "test",
+                "result": "fail",
+                "exit_code": 1,
+                "real_seconds": 30.0,
+                "failure_origin": "outer_gate",
+                "failed_substeps": []
+            }
+        ]);
+        let failed = history_row(failed);
+        let failed_alone = assess_canonical_receipts(
+            Path::new("/unused-same-sha-fixture"),
+            std::slice::from_ref(&failed),
+            RECEIPT_SHA,
+            CANONICAL_VALIDATE_REPO,
+        )
+        .unwrap();
+        assert_eq!(
+            failed_alone.verdict,
+            validate_status::Verdict::FailedOnRecord
+        );
+        assert_eq!(failed_alone.failed_records, 1);
+        let mut apparent_pass = with_admission_context(schema5_receipt_value(0), false);
+        assert!(
+            qualify_canonical_receipt(&history_row(apparent_pass.clone()), RECEIPT_SHA).is_some()
+        );
+        apparent_pass["coverage"]["run_id"] = serde_json::Value::Null;
+        let apparent_pass = history_row(apparent_pass);
+        assert!(qualify_canonical_receipt(&apparent_pass, RECEIPT_SHA).is_none());
+        let rows = [failed, apparent_pass];
+        let assessment = assess_canonical_receipts(
+            Path::new("/unused-same-sha-fixture"),
+            &rows,
+            RECEIPT_SHA,
+            CANONICAL_VALIDATE_REPO,
+        )
+        .unwrap();
+        assert_eq!(assessment.verdict, validate_status::Verdict::FailedOnRecord);
+        assert!(assessment.qualifying.is_empty());
+        assert_eq!(assessment.disqualified.len(), 2);
+        assert_eq!(
+            validate_status::assess(&rows, RECEIPT_SHA).verdict,
+            validate_status::Verdict::FailedOnRecord
+        );
+    }
+
+    #[test]
     fn receipt_digest_raw_boundary_names_malformed_counts_in_all_input_shapes() {
         let pred = qualifying_receipt::QualifyingPredicate::parse(
             qualifying_receipt::EMBEDDED,
@@ -16343,13 +16658,18 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let parsed = history_row_from_ledger_event(&event).unwrap();
+        let parsed =
+            history_row_from_ledger_event(&event, &serde_json::to_string(&event).unwrap()).unwrap();
         assert_eq!(positive_executed_tests(&parsed), Some(786));
 
         let mut wrong_commit = event.clone();
         wrong_commit.commit = Some("f".repeat(40));
         assert_eq!(
-            history_row_from_ledger_event(&wrong_commit).unwrap_err(),
+            history_row_from_ledger_event(
+                &wrong_commit,
+                &serde_json::to_string(&wrong_commit).unwrap()
+            )
+            .unwrap_err(),
             "receipt-digest ledger event commit disagrees with legacy_row commit"
         );
 
@@ -16357,7 +16677,11 @@ mod tests {
         wrong_kind.event_type = ledger_event::EventType::RunStart;
         wrong_kind.event_id = wrong_kind.run_id.clone();
         assert_eq!(
-            history_row_from_ledger_event(&wrong_kind).unwrap_err(),
+            history_row_from_ledger_event(
+                &wrong_kind,
+                &serde_json::to_string(&wrong_kind).unwrap()
+            )
+            .unwrap_err(),
             "receipt-digest ledger event is not run.result"
         );
     }
@@ -17451,7 +17775,7 @@ from pathlib import Path
 
 assert Path.cwd() == Path(os.environ["DEV_HERMIT_PARENT"])
 assert Path(__file__).parents[2] == Path(os.environ["DEV_HERMIT_TOOL_ROOT"])
-assert sys.argv[1:] == ["status-input"]
+assert sys.argv[1:] == ["status-input", "--preserve-admission"]
 print('{"schema_version":1,"rows":[],"records":[]}')
 "#,
         )
