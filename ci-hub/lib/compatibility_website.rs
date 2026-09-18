@@ -2989,7 +2989,7 @@ mod tests {
         assert_eq!(attempt["status"], 125);
         assert_eq!(
             value["product_results"]["event-container-failed"],
-            "crash-error"
+            "product_failure"
         );
     }
 
