@@ -4490,9 +4490,8 @@ fn write(
     args: &[u64; 6],
     output: Option<&mut CapturedOutput>,
 ) -> i64 {
-    let Ok(fd) = i32::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux write consumes the low 32 descriptor bits, as vectored I/O does.
+    let fd = args[0] as libc::c_int;
     let Ok(requested_length) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
@@ -6761,8 +6760,11 @@ fn virtual_signalfd_write_error(
         }
         _ => return None,
     };
-    let Ok(fd) = libc::c_int::try_from(args[0]) else {
-        return None;
+    let fd = if number == libc::SYS_write as u64 {
+        // Match scalar write before it can reach the private eventfd carrier.
+        args[0] as libc::c_int
+    } else {
+        libc::c_int::try_from(args[0]).ok()?
     };
     signalfd_mask(state, fd).map(|_| negative_errno(errno))
 }
@@ -29251,6 +29253,18 @@ mod tests {
             ),
             negative_errno(libc::EINVAL),
         );
+        for fd in [signal_fd, alias] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_write,
+                    [(1_u64 << 32) | fd as u64, DATA, 8, 0, 0, 0],
+                ),
+                negative_errno(libc::EINVAL),
+                "upper descriptor bits must not expose the signalfd carrier",
+            );
+        }
         memory.write(DATA + 8, &2_u64.to_ne_bytes()).unwrap();
         let vectors = [
             libc::iovec {

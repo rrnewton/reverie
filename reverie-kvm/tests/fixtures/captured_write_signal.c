@@ -54,12 +54,13 @@ int main(int argc, char **argv) {
     data = large;
   }
   unsigned long raw_fd = (unsigned long)fd;
-  if (mode == 17) raw_fd += 1UL << 32;
+  if (mode == 17 || mode == 19) raw_fd += 1UL << 32;
+  if (mode == 18) raw_fd = (1UL << 32) | UINT32_MAX;
   errno = 0;
   long result = syscall(mode == 9 ? SYS_getpid : SYS_write,
                         raw_fd, data, length, 0x63617077UL, mode, 0x9876UL);
-  // Mode 17 records KVM scalar-write EBADF; Linux uses the low 32 fd bits.
-  if (mode == 6 || mode == 17) {
+  // Upper bits are ignored for lookup; mode 18 still names the invalid fd -1.
+  if (mode == 6 || mode == 18) {
     if (result != -1 || errno != EBADF) return 9;
   } else if (mode == 13) {
     if (result != -1 || errno != EFAULT) return 10;
@@ -68,7 +69,7 @@ int main(int argc, char **argv) {
   } else if (mode == 9) {
     if (result != getpid()) return 12;
   } else if (result != 3) return 13;
-  int published = mode <= 3 || (mode >= 11 && mode <= 16);
+  int published = mode <= 3 || (mode >= 11 && mode <= 17);
   if (mode == 15) {
     if (handled || sigprocmask(SIG_UNBLOCK, &blocked, NULL)) return 14;
   }
