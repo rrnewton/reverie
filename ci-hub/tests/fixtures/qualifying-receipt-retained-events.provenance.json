@@ -1,0 +1,72 @@
+{
+  "contract": "verbatim original event lines; canonical ingestion required; no inferred receipt identities",
+  "source_commit": "bf5a4507a7e93345a9322a5c4bd80f8e7124ca5c",
+  "events_sha256": "da810060bfd59a1844f26c25c220f4c90ab833ae25137e79e41d50be1dfe86f4",
+  "events": [
+    {
+      "source_commit": "bf5a4507a7e93345a9322a5c4bd80f8e7124ca5c",
+      "path": "ledger/hermit/devbig014/2026-08.jsonl",
+      "line": 142,
+      "source_file_sha256": "5ac696906d77f15ea2f4cda8c83ea83a315af50a25857251fc8809919ca558c8",
+      "raw_line_sha256": "9319c7ea0d407a88a8670848616857e515fc760dd549ccbc5be9be5fff36ae7b",
+      "bytes": 1151,
+      "event_id": "legacy-000141-000",
+      "event_run_id": "legacy-000141",
+      "receipt_commit": "a4d20fa841019bba10368503d26f884d6f945a34",
+      "receipt_run_id": null,
+      "receipt_record_id": null
+    },
+    {
+      "source_commit": "bf5a4507a7e93345a9322a5c4bd80f8e7124ca5c",
+      "path": "ledger/hermit/devbig014/2026-08.jsonl",
+      "line": 386,
+      "source_file_sha256": "5ac696906d77f15ea2f4cda8c83ea83a315af50a25857251fc8809919ca558c8",
+      "raw_line_sha256": "edf2837de63dd9f4e5cb181ef7c5b855e114308a0f3776fd911a9856065366a6",
+      "bytes": 1508,
+      "event_id": "legacy-000347-000",
+      "event_run_id": "legacy-000347",
+      "receipt_commit": "781a5f752f04ac4ed9107716b5c4ea2dc72f0441",
+      "receipt_run_id": null,
+      "receipt_record_id": null
+    },
+    {
+      "source_commit": "bf5a4507a7e93345a9322a5c4bd80f8e7124ca5c",
+      "path": "ledger/hermit/devbig014/2026-08.jsonl",
+      "line": 1621,
+      "source_file_sha256": "5ac696906d77f15ea2f4cda8c83ea83a315af50a25857251fc8809919ca558c8",
+      "raw_line_sha256": "ee82f70ae501b0d439dc4700c481023dce61cd83c062a0135b0abed325f8a171",
+      "bytes": 3244,
+      "event_id": "devbig014-1787001578-449161",
+      "event_run_id": "devbig014-1787001578-449161",
+      "receipt_commit": "87f2f558301956985d6c874f527cae99e3ab05a9",
+      "receipt_run_id": null,
+      "receipt_record_id": "devbig014-1787001578-449161"
+    },
+    {
+      "source_commit": "bf5a4507a7e93345a9322a5c4bd80f8e7124ca5c",
+      "path": "ledger/hermit/devbig014/2026-08.jsonl",
+      "line": 1946,
+      "source_file_sha256": "5ac696906d77f15ea2f4cda8c83ea83a315af50a25857251fc8809919ca558c8",
+      "raw_line_sha256": "51ea75f93175d62de17da7b2928f9617bf67f8b0b79451c154466199009c3ac7",
+      "bytes": 3140,
+      "event_id": "devbig014-1787796150-correction-01",
+      "event_run_id": "devbig014-1787001578-449161",
+      "receipt_commit": "87f2f558301956985d6c874f527cae99e3ab05a9",
+      "receipt_run_id": null,
+      "receipt_record_id": "devbig014-1787001578-449161"
+    },
+    {
+      "source_commit": "bf5a4507a7e93345a9322a5c4bd80f8e7124ca5c",
+      "path": "ledger/hermit/devbig014/2026-08.jsonl",
+      "line": 2021,
+      "source_file_sha256": "5ac696906d77f15ea2f4cda8c83ea83a315af50a25857251fc8809919ca558c8",
+      "raw_line_sha256": "dd6e66b00cb5d5f24422ad417781e7653b35c1ca50f149b66d84fb13585cae24",
+      "bytes": 338599,
+      "event_id": "devbig014-1788031035-961893",
+      "event_run_id": "validate-mega-lander-f2be3d81c9cb-1788029440105392158-943353-05df4e6f",
+      "receipt_commit": "f2be3d81c9cb609443bd34c4611683e2bfccf728",
+      "receipt_run_id": "validate-mega-lander-f2be3d81c9cb-1788029440105392158-943353-05df4e6f",
+      "receipt_record_id": "devbig014-1788031035-961893"
+    }
+  ]
+}
