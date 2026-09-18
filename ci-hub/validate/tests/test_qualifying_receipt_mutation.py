@@ -816,7 +816,9 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             ).stdout.strip()
             # Since 341f043979a3e5bdd2e1e827b422871716765e57, local
             # authority follows the completed run, not registered file hashes.
-            # Immutable receipt publication/verification retain that registry.
+            # The publisher checks the registered producer map. The verifier
+            # uses pinned PRODUCER_REPO, which lacks this clone's new commit;
+            # its required False does not establish a producer-map mismatch.
             # Keep every leg explicit: neither policy may silently absorb the
             # other (see validation/test_local_producer_authority.py).
             expected = {
@@ -845,6 +847,8 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                     "passed_tests": row["executed_tests"] - 1,
                 },
                 "unadmitted-run": {"admission": "none"},
+                # Schema-5 admission's require_registered_producer is active
+                # independently of the unset producer-provenance epoch.
                 "unknown-writer": {"producer": "unregistered-forged-writer"},
             }
             for condition, fields in mutations.items():
