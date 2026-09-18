@@ -3502,6 +3502,68 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual("failed", record["ledger_mirror"]["state"])
         self.assertIn("remote push refused", record["ledger_mirror"]["detail"])
 
+    def test_ledger_mirror_real_subprocess_records_success_after_red_validate(self) -> None:
+        self._ledger_mirror_real_subprocess(exit_code=0)
+
+    def test_ledger_mirror_real_subprocess_records_failure_after_red_validate(self) -> None:
+        self._ledger_mirror_real_subprocess(exit_code=7)
+
+    def _ledger_mirror_real_subprocess(self, *, exit_code: int) -> None:
+        # A synthetic terminal record isolates bookkeeping from validation
+        # admission. The mirror is a REAL Python child reached through the
+        # production finalize_ledger_mirror -> run_command boundary.
+        mirror = self.root / "ci-hub/series/mirror.py"
+        mirror.parent.mkdir(parents=True)
+        report = {
+            "state": "published", "commit": "d" * 40,
+            "source_commit": "e" * 40, "source_tree": "f" * 40, "rows": 17,
+        }
+        mirror.write_text(
+            "import json, sys\n"
+            f"print(json.dumps({report!r}))\n"
+            "print('synthetic mirror diagnostic', file=sys.stderr)\n"
+            f"sys.exit({exit_code})\n"
+        )
+        record_path = self.root / "mirror-fixture.json"
+        record = {
+            "schema_version": run_registry.SCHEMA_VERSION,
+            "producer": "synthetic-mirror-boundary-control",
+            "repo": "rrnewton/hermit", "checkout": str(self.checkout),
+            "target": SHA, "canonical_verdict": "FAILED",
+            "wrapper_exit_code": start_unit.EXIT_FAILED,
+        }
+        run_registry.write_record(record_path, record)
+        calls = []
+
+        def run(command, **kwargs):
+            self.assertEqual(str(mirror), command[1])
+            calls.append((command, kwargs))
+            return start_unit.run_command(command, **kwargs)
+
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            result = start_unit.finalize_ledger_mirror(
+                self.root, self.root, record_path, record=record, run=run,
+            )
+
+        error = errors.getvalue()
+        self.assertEqual(1, len(calls))
+        self.assertIs(False, calls[0][1]["check"])
+        self.assertEqual(1800, calls[0][1]["timeout"])
+        record = start_unit.run_registry.read_record(record_path)
+        self.assertEqual(record, result)
+        self.assertEqual("FAILED", record["canonical_verdict"])
+        self.assertEqual(start_unit.EXIT_FAILED, record["wrapper_exit_code"])
+        if exit_code == 0:
+            self.assertEqual("published", record["ledger_mirror"]["state"])
+            self.assertEqual(17, record["ledger_mirror"]["rows"])
+            self.assertIn("LEDGER MIRROR PUBLISHED", error)
+        else:
+            self.assertEqual("failed", record["ledger_mirror"]["state"])
+            self.assertIn("exit 7", record["ledger_mirror"]["detail"])
+            self.assertIn("synthetic mirror diagnostic", record["ledger_mirror"]["detail"])
+            self.assertIn("LEDGER MIRROR FAILED", error)
+
     def test_successful_publication_is_not_repeated_on_reentry(self) -> None:
         rc, _output, error = self.invoke()
         self.assertEqual(0, rc, error)
@@ -10033,6 +10095,89 @@ class RunCommandCheckKwarg(unittest.TestCase):
             ["printf", "hello"], run=start_unit.run_command, purpose="probe"
         )
         self.assertEqual("hello", text)
+
+
+class RunCommandTimeout(unittest.TestCase):
+    """Exercise subprocess.run's timeout contract with real child processes."""
+
+    def test_timeout_success_retains_both_streams(self):
+        command = [sys.executable, "-B", "-c", "import os; os.write(1,b'out'); os.write(2,b'err')"]
+        result = start_unit.run_command(command, check=True, timeout=5)
+        self.assertEqual((0, "out", "err"), (result.returncode, result.stdout, result.stderr))
+        self.assertEqual(command, result.args)
+
+    def test_timeout_none_preserves_unbounded_wait(self):
+        result = start_unit.run_command([sys.executable, "-B", "-c", "pass"], timeout=None)
+        self.assertEqual(0, result.returncode)
+
+    def test_timeout_nonzero_preserves_check_false_and_true(self):
+        command = [sys.executable, "-B", "-c", "import os; os.write(1,b'out'); os.write(2,b'err'); raise SystemExit(7)"]
+        result = start_unit.run_command(command, check=False, timeout=5)
+        self.assertEqual((7, "out", "err"), (result.returncode, result.stdout, result.stderr))
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            start_unit.run_command(command, check=True, timeout=5)
+        self.assertEqual(7, caught.exception.returncode)
+        self.assertEqual(command, caught.exception.cmd)
+        self.assertEqual("out", caught.exception.stdout)
+        self.assertEqual("err", caught.exception.stderr)
+
+    def test_timeout_kills_reaps_and_retains_raw_diagnostics(self):
+        self._timeout_kills_reaps_and_retains_raw_diagnostics(check=False)
+
+    def test_timeout_with_check_true_remains_timeout(self):
+        self._timeout_kills_reaps_and_retains_raw_diagnostics(check=True)
+
+    def _timeout_kills_reaps_and_retains_raw_diagnostics(self, *, check):
+        command = [sys.executable, "-B", "-c", "import os,time; os.write(1,b'out\\xff'); os.write(2,b'err\\xfe'); time.sleep(30)"]
+        real_popen = subprocess.Popen
+        children = []
+
+        def spawn(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        try:
+            with mock.patch.object(start_unit.subprocess, "Popen", side_effect=spawn):
+                with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                    start_unit.run_command(command, check=check, timeout=1)
+            self.assertEqual(command, caught.exception.cmd)
+            self.assertEqual(1, caught.exception.timeout)
+            # Like subprocess.run, TimeoutExpired retains bytes even
+            # though completed calls return decoded text.
+            self.assertEqual(b"out\xff", caught.exception.output)
+            self.assertEqual(b"out\xff", caught.exception.stdout)
+            self.assertEqual(b"err\xfe", caught.exception.stderr)
+            self.assertEqual(1, len(children))
+            self.assertEqual(-9, children[0].returncode)
+            with self.assertRaises(ChildProcessError):
+                os.waitpid(children[0].pid, os.WNOHANG)
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                child.wait()
+
+    def test_success_waits_for_child_not_inherited_output_descriptors(self):
+        read_fd, write_fd = os.pipe()
+        # The grandchild holds stdout/stderr open until the test releases it.
+        # Waiting on EOF cannot satisfy this test; only direct-child exit can.
+        code = (
+            "import os,sys; child=os.fork(); "
+            f"os.read({read_fd},1) if child == 0 else None; "
+            "os._exit(0) if child == 0 else None; "
+            "print('direct child exited', flush=True)"
+        )
+        try:
+            result = start_unit.run_command(
+                [sys.executable, "-B", "-c", code], timeout=1, pass_fds=(read_fd,)
+            )
+            self.assertEqual(0, result.returncode)
+            self.assertEqual("direct child exited\n", result.stdout)
+            self.assertEqual("", result.stderr)
+        finally:
+            os.close(write_fd)
+            os.close(read_fd)
 
 
 class CleanupRecordAdmissionTests(unittest.TestCase):

@@ -1125,13 +1125,27 @@ def run_command(command: Sequence[str], **kwargs: object) -> subprocess.Complete
     # prepare_fresh_checkout, where a failed `wrkslots create` must raise instead
     # of yielding an empty tree that validates fast and green.
     check = bool(kwargs.pop("check", False))
+    # Like check, timeout belongs to subprocess.run, not Popen. It bounds the
+    # direct child's execution without changing the regular-file capture above.
+    timeout = kwargs.pop("timeout", None)
     if kwargs.get("env") is None:
         kwargs["env"] = git_env.sanitized_git_env()
     with tempfile.TemporaryFile("w+b") as out, tempfile.TemporaryFile("w+b") as err:
         process = subprocess.Popen(
             list(command), stdout=out, stderr=err, stdin=subprocess.DEVNULL, **kwargs
         )
-        code = process.wait()
+        try:
+            code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            process.kill()
+            process.wait()
+            out.seek(0)
+            err.seek(0)
+            # subprocess.run keeps TimeoutExpired diagnostics as bytes, even
+            # for text callers. Reap before raising and preserve both streams.
+            error.output = out.read()
+            error.stderr = err.read()
+            raise
         out.seek(0)
         err.seek(0)
         completed = subprocess.CompletedProcess(
