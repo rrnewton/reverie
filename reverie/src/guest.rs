@@ -92,6 +92,18 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         self.is_root_process() && self.is_main_thread()
     }
 
+    /// Whether this task is still executing the launcher for a spawned Command.
+    ///
+    /// This is logging provenance, not a guest identity or execution-mode test.
+    /// A backend may return true only for its Command-launch root before the
+    /// first successful exec replaces the inherited launcher address space.
+    /// Function tests, attached tasks, descendants and post-exec guest tasks
+    /// must return false. Callers must additionally establish the type of any
+    /// value before formatting a launch-image pointer as a host address.
+    fn is_command_bootstrap(&self) -> bool {
+        false
+    }
+
     /// Reads and returns the auxv table for this process.
     fn auxv(&self) -> Auxv {
         Auxv::new(self.pid()).expect("failed to read auxv table")
@@ -441,6 +453,10 @@ where
 
     fn ppid(&self) -> Option<Pid> {
         self.inner.ppid()
+    }
+
+    fn is_command_bootstrap(&self) -> bool {
+        self.inner.is_command_bootstrap()
     }
 
     fn is_main_thread(&self) -> bool {

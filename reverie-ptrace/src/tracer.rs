@@ -2503,6 +2503,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             gref.clone(),
             config,
             TracedTaskOptions {
+                command_bootstrap: true,
                 events: &events,
                 injected_syscall_trap: self.injected_syscall_trap,
                 liteinst_runtime: self.liteinst_runtime,
@@ -2654,6 +2655,7 @@ where
                 gref.clone(),
                 config,
                 TracedTaskOptions {
+                    command_bootstrap: false,
                     events: &events,
                     injected_syscall_trap: None,
                     liteinst_runtime: None,
@@ -2684,6 +2686,123 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[derive(Default)]
+    struct CommandBootstrapTool;
+
+    #[reverie::tool]
+    impl Tool for CommandBootstrapTool {
+        type GlobalState = ();
+        type ThreadState = (usize, usize);
+
+        fn subscriptions(_config: &()) -> Subscription {
+            [Sysno::execve].into_iter().collect()
+        }
+
+        async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
+            assert!(guest.is_command_bootstrap());
+            Ok(())
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            assert_eq!(syscall.number(), Sysno::execve);
+            assert_eq!(guest.is_command_bootstrap(), guest.thread_state().0 == 0);
+            guest.thread_state_mut().0 += 1;
+            guest.tail_inject(syscall).await
+        }
+
+        async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+            assert!(!guest.is_command_bootstrap());
+            guest.thread_state_mut().1 += 1;
+            Ok(())
+        }
+
+        async fn on_exit_thread<G: reverie::GlobalRPC<Self::GlobalState>>(
+            &self,
+            _tid: reverie::Tid,
+            _global: &G,
+            state: Self::ThreadState,
+            status: ExitStatus,
+        ) -> Result<(), Error> {
+            assert_eq!(state, (2, 2), "both initial and guest exec must complete");
+            assert_eq!(status, ExitStatus::Exited(0));
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn command_bootstrap_ends_before_post_exec_and_later_guest_exec() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "exec /bin/true"]);
+        let tracer = TracerBuilder::<CommandBootstrapTool>::new(command)
+            .spawn()
+            .await
+            .expect("spawn two-exec command");
+        let (status, ()) = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
+            .await
+            .expect("two-exec command hung")
+            .expect("two-exec tracing failed");
+        assert_eq!(status, ExitStatus::Exited(0));
+    }
+
+    #[derive(Default)]
+    struct FunctionBootstrapTool;
+
+    #[reverie::tool]
+    impl Tool for FunctionBootstrapTool {
+        type GlobalState = ();
+        type ThreadState = usize;
+
+        fn subscriptions(_config: &()) -> Subscription {
+            [Sysno::getpid].into_iter().collect()
+        }
+
+        async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
+            assert!(!guest.is_command_bootstrap());
+            Ok(())
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            assert!(!guest.is_command_bootstrap());
+            assert_eq!(syscall.number(), Sysno::getpid);
+            *guest.thread_state_mut() += 1;
+            Ok(guest.inject(syscall).await?)
+        }
+
+        async fn on_exit_thread<G: reverie::GlobalRPC<Self::GlobalState>>(
+            &self,
+            _tid: reverie::Tid,
+            _global: &G,
+            state: Self::ThreadState,
+            status: ExitStatus,
+        ) -> Result<(), Error> {
+            assert_eq!(state, 1, "function guest must reach its syscall");
+            assert_eq!(status, ExitStatus::Exited(0));
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_fn_never_has_command_bootstrap_provenance() {
+        let tracer = spawn_fn::<FunctionBootstrapTool, _>(|| {
+            assert!(unsafe { libc::syscall(libc::SYS_getpid) } > 0);
+        })
+        .await
+        .expect("spawn function provenance control");
+        let (status, ()) = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
+            .await
+            .expect("function control hung")
+            .expect("function tracing failed");
+        assert_eq!(status, ExitStatus::Exited(0));
+    }
+
     use reverie::Guest;
     use reverie::syscalls::Syscall;
     use reverie::syscalls::SyscallInfo;

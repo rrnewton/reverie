@@ -908,8 +908,46 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
     }
 }
 
+/// A raw argument remains exact unless both its type and launch ownership are known.
+struct SyscallArgsForLog {
+    nr: Sysno,
+    args: SyscallArgs,
+    command_bootstrap: bool,
+}
+
+struct CommandBootstrapAddress(usize);
+
+impl fmt::Debug for CommandBootstrapAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0 == 0 {
+            f.write_str("0")
+        } else {
+            write!(f, "<hostaddr {:#x}>", self.0)
+        }
+    }
+}
+
+impl fmt::Debug for SyscallArgsForLog {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.command_bootstrap || self.nr != Sysno::execve {
+            return fmt::Debug::fmt(&self.args, f);
+        }
+        // Command::do_exec passes pathname, argv and envp pointers from the
+        // inherited launcher image. The ABI-unused registers are still raw.
+        f.debug_struct("SyscallArgs")
+            .field("arg0", &CommandBootstrapAddress(self.args.arg0))
+            .field("arg1", &CommandBootstrapAddress(self.args.arg1))
+            .field("arg2", &CommandBootstrapAddress(self.args.arg2))
+            .field("arg3", &self.args.arg3)
+            .field("arg4", &self.args.arg4)
+            .field("arg5", &self.args.arg5)
+            .finish()
+    }
+}
+
 /// Event configuration supplied when a traced task is created.
 pub(crate) struct TracedTaskOptions<'a> {
+    pub(crate) command_bootstrap: bool,
     pub(crate) events: &'a Subscription,
     pub(crate) injected_syscall_trap: Option<InjectedSyscallTrap>,
     pub(crate) liteinst_runtime: Option<LiteinstRuntimeConfig>,
@@ -937,6 +975,10 @@ pub struct TracedTask<L: Tool> {
 
     /// Global state. This is shared among all threads in a process tree.
     global_state: GlobalState<L::GlobalState>,
+
+    /// True only for TracerBuilder::spawn's Command root until successful exec.
+    /// Descendants and spawn_fn never inherit this logging provenance.
+    command_bootstrap: bool,
 
     /// True if we can intercept CPUID, false otherwise.
     has_cpuid_interception: bool,
@@ -1120,6 +1162,7 @@ impl<L: Tool> TracedTask<L> {
             thread_state,
             process_state,
             global_state,
+            command_bootstrap: options.command_bootstrap,
             has_cpuid_interception: false,
             pending_syscall: None,
             pending_syscall_already_skipped: false,
@@ -1180,6 +1223,7 @@ impl<L: Tool> TracedTask<L> {
             thread_state,
             process_state,
             global_state,
+            command_bootstrap: false,
             has_cpuid_interception: self.has_cpuid_interception,
             pending_syscall: None,
             pending_syscall_already_skipped: false,
@@ -1237,6 +1281,7 @@ impl<L: Tool> TracedTask<L> {
             thread_state,
             process_state,
             global_state: self.global_state.clone(),
+            command_bootstrap: false,
             has_cpuid_interception: self.has_cpuid_interception,
             pending_syscall: None,
             pending_syscall_already_skipped: false,
@@ -2824,6 +2869,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         former_tid: Pid,
     ) -> Result<Wait, TraceError> {
+        // PTRACE_EVENT_EXEC proves replacement succeeded. Clear before any
+        // post-exec Tool callback; failed exec attempts retain launch provenance.
+        self.command_bootstrap = false;
         if self.global_state.liteinst_runtime.is_some() {
             if former_tid != self.tid() {
                 return Err(self.reject_liteinst_nonleader_exec(former_tid));
@@ -4031,7 +4079,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             "syscall.intercept",
             tid = %tid,
             syscall = %nr,
-            args = ?args,
+            args = ?SyscallArgsForLog {
+                nr,
+                args,
+                command_bootstrap: self.command_bootstrap,
+            },
         );
 
         async {
@@ -5962,6 +6014,10 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
         self.ppid
     }
 
+    fn is_command_bootstrap(&self) -> bool {
+        self.command_bootstrap
+    }
+
     fn memory(&self) -> Self::Memory {
         self.assume_stopped()
     }
@@ -6143,6 +6199,40 @@ impl<'a, G: GlobalTool> GlobalRPC<G> for WrappedFrom<'a, G> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn command_bootstrap_arguments_preserve_types_and_raw_tail() {
+        let args = super::SyscallArgs::new(0x1000, 0x2000, 0, 41, 0x3000, 43);
+        let render = |nr, command_bootstrap| {
+            format!(
+                "{:?}",
+                super::SyscallArgsForLog {
+                    nr,
+                    args,
+                    command_bootstrap,
+                }
+            )
+        };
+        assert_eq!(
+            render(super::Sysno::execve, true),
+            "SyscallArgs { arg0: <hostaddr 0x1000>, arg1: <hostaddr 0x2000>, arg2: 0, arg3: 41, arg4: 12288, arg5: 43 }"
+        );
+        for nr in [
+            super::Sysno::execve,
+            super::Sysno::write,
+            super::Sysno::execveat,
+        ] {
+            assert_eq!(render(nr, false), format!("{args:?}"));
+        }
+        assert_eq!(render(super::Sysno::write, true), format!("{args:?}"));
+        assert_eq!(render(super::Sysno::execveat, true), format!("{args:?}"));
+        let aliased = super::SyscallArgsForLog {
+            nr: super::Sysno::execve,
+            args: super::SyscallArgs::new(0x1000, 0x1000, 0, 41, 0x3000, 43),
+            command_bootstrap: true,
+        };
+        assert_ne!(format!("{aliased:?}"), render(super::Sysno::execve, true));
+    }
+
     use super::*;
 
     #[cfg(target_arch = "x86_64")]
