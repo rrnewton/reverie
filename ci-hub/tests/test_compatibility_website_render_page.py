@@ -4341,7 +4341,9 @@ def test_recorded_evidence_fragment_scrolls_the_requested_occurrence_into_view(
     data, cell = _cell_with_many_evidence_rows(60)
     files = render_page.render_site(_build(data), data)
     model = render_page._site_model(_build(data), data, wording="fixture")
-    target_event = "event-bulk-0059"
+    # Newest-first ordering puts event 59 through event 10 on page 1, making
+    # event 9 the first occurrence on page 2 just like the reported live URL.
+    target_event = "event-bulk-0009"
     fragment = render_page._fragment("event", target_event)
 
     page = chromium_browser.new_page(viewport={"width": 1440, "height": 900})
@@ -4350,52 +4352,70 @@ def test_recorded_evidence_fragment_scrolls_the_requested_occurrence_into_view(
     _wait_for_verified_data(page)
     page.wait_for_selector(f"#{fragment}")
 
-    measured = page.evaluate(
-        "fragment => {"
-        "  const target = document.getElementById(fragment);"
-        "  const box = target.getBoundingClientRect();"
-        "  return {"
-        "    documentTop: Math.round(box.top + window.scrollY),"
-        "    scrollY: Math.round(window.scrollY),"
-        "    viewportTop: Math.round(box.top),"
-        "    viewportHeight: window.innerHeight,"
-        "  };"
-        "}",
-        fragment,
-    )
-    page.close()
+    def position() -> dict[str, int]:
+        return page.evaluate(
+            "fragment => {"
+            "  const target = document.getElementById(fragment);"
+            "  const box = target.getBoundingClientRect();"
+            "  return {"
+            "    documentTop: Math.round(box.top + window.scrollY),"
+            "    scrollY: Math.round(window.scrollY),"
+            "    viewportTop: Math.round(box.top),"
+            "    viewportHeight: window.innerHeight,"
+            "  };"
+            "}",
+            fragment,
+        )
 
-    # The row must genuinely be far down the document, or this test would pass
-    # against the defect for the wrong reason.
+    measured = position()
+
+    assert "recorded_evidence_page" not in urlsplit(page.url).query
+    assert "Showing 51–61 of 61; page 2 of 2." in page.locator(
+        "[aria-label='recorded evidence rows pages']"
+    ).inner_text()
     assert measured["documentTop"] > measured["viewportHeight"]
     assert measured["scrollY"] > 0, "the occurrence was never scrolled into view"
     assert 0 <= measured["viewportTop"] < measured["viewportHeight"]
 
+    page.evaluate("() => { history.scrollRestoration = 'manual'; scrollTo(0, 0); }")
+    page.reload()
+    _wait_for_verified_data(page)
+    page.wait_for_selector(f"#{fragment}")
+    reloaded = position()
+    page.close()
 
-def test_a_fragment_for_another_list_does_not_move_this_one(
+    assert reloaded["scrollY"] > 0, "reload did not restore the occurrence"
+    assert 0 <= reloaded["viewportTop"] < reloaded["viewportHeight"]
+
+
+def test_an_evidence_occurrence_from_another_cell_fails_explicitly(
     chromium_browser: Any,
 ) -> None:
-    """Detail pages carry several independent paged lists.
-
-    A fragment naming a row none of this list's records own must leave it alone,
-    otherwise adding the scroll above would make unrelated lists fight over one
-    fragment.
-    """
+    """A plausible but absent occurrence must not leave the wrong cell visible."""
     data, cell = _cell_with_many_evidence_rows(60)
     files = render_page.render_site(_build(data), data)
     model = render_page._site_model(_build(data), data, wording="fixture")
+    fragment = render_page._fragment("event", "event-from-another-cell")
 
     page = chromium_browser.new_page(viewport={"width": 1440, "height": 900})
     _browser_route(page, files)
     page.goto(
         f"http://127.0.0.1/{model.cell_paths[cell['cell']]}"
-        "#event-this-identity-is-not-in-any-record"
+        f"#{fragment}"
     )
-    _wait_for_verified_data(page)
-    scroll_y = page.evaluate("() => Math.round(window.scrollY)")
-    page.close()
+    status = page.locator("[data-load-status]")
+    page.wait_for_function(
+        "document.querySelector('[data-load-status]').dataset.loadState === 'error'"
+    )
 
-    assert scroll_y == 0
+    assert status.get_attribute("data-load-state") == "error"
+    assert status.inner_text() == (
+        "Requested evidence occurrence was not found on this cell. "
+        "No cell detail is shown."
+    )
+    assert page.locator("[data-detail-content]").is_hidden()
+    assert page.locator(f"#{fragment}").count() == 0
+    page.close()
 
 
 def test_ordinary_words_are_not_broken_mid_word(chromium_browser: Any) -> None:

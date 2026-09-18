@@ -2385,49 +2385,6 @@
         draw('push');
       });
     }
-    // BRING THE REQUESTED OCCURRENCE INTO VIEW.
-    //
-    // The fragment already chooses the right page above, but nothing ever
-    // scrolled to the row. The browser performs its own fragment scroll while
-    // the document is still the server-rendered shell, at which point this list
-    // has not been drawn and the target element does not exist yet; by the time
-    // `draw` creates it the navigation is over and the browser will not retry.
-    // Measured on the published 2026-09-11 site: loading a cell URL whose only
-    // state is an `event-...` fragment left scrollY at 0 with the target at
-    // y=8904. The link resolved to the correct row and simply did not go there.
-    //
-    // Scoped to this collection on purpose. A detail page carries several
-    // independent paged lists, and a fragment naming a row in one of them must
-    // not make the others scroll; `records.some` is what keeps a list that does
-    // not own the fragment from acting on it.
-    const revealFragmentTarget = () => {
-      const fragment = decodeURIComponent(root.location.hash.slice(1));
-      if (!fragment) {
-        return;
-      }
-      if (!records.some(record => anchors(record).includes(fragment))) {
-        return;
-      }
-      // The list is populated BEFORE its section is attached to the document,
-      // so at this point the row usually exists only inside a detached subtree.
-      // `getElementById` cannot see it and `scrollIntoView` on a detached
-      // element silently does nothing -- which is the same "looks done, moved
-      // nothing" failure this whole change is fixing. Measured while building
-      // it: the row was present and matched, and the page still sat at
-      // scrollY 0. Wait for the frame after attachment instead, and give up
-      // after a bounded number of tries rather than spinning.
-      const attempt = remaining => {
-        const target = document.getElementById(fragment);
-        if (target !== null && target.isConnected) {
-          target.scrollIntoView();
-          return;
-        }
-        if (remaining > 0) {
-          root.requestAnimationFrame(() => attempt(remaining - 1));
-        }
-      };
-      attempt(5);
-    };
     root.addEventListener('popstate', () => {
       page = collectionPageFromLocation(
         collectionId,
@@ -2436,16 +2393,8 @@
         anchors,
       );
       draw(null);
-      // Back and forward restore a fragment URL too, and must land on the row
-      // for the same reason the initial load must.
-      revealFragmentTarget();
     });
     draw(null);
-    // Only after the initial draw: the element cannot be scrolled to before it
-    // has been created. Not called from the Previous/Next handlers -- the reader
-    // is driving the list there, and yanking them to a stale fragment would
-    // fight the interaction they just performed.
-    revealFragmentTarget();
   }
 
   function derivedCellState(cell) {
@@ -3293,9 +3242,38 @@
   function markDataLoaded(status) {
     status.textContent = '';
     status.dataset.loadState = 'verified';
-    status.classList.remove('data-status-ok');
+    status.classList.remove('data-status-ok', 'data-status-error');
     status.setAttribute('aria-busy', 'false');
     status.hidden = true;
+  }
+
+  function revealRequestedEvidenceOccurrence(kind) {
+    const fragment = decodeURIComponent(root.location.hash.slice(1));
+    const detail = document.querySelector('[data-detail-content]');
+    const status = document.querySelector('[data-load-status]');
+    if (!detail || !status) {
+      return;
+    }
+    if (!/^event-[0-9a-f]{64}$/.test(fragment)) {
+      detail.hidden = false;
+      markDataLoaded(status);
+      return;
+    }
+    const target = document.getElementById(fragment);
+    if (target !== null && target.isConnected) {
+      detail.hidden = false;
+      markDataLoaded(status);
+      target.scrollIntoView();
+      return;
+    }
+    detail.hidden = true;
+    status.textContent =
+      `Requested evidence occurrence was not found on this ${kind}. ` +
+      `No ${kind} detail is shown.`;
+    status.dataset.loadState = 'error';
+    status.classList.add('data-status-error');
+    status.setAttribute('aria-busy', 'false');
+    status.hidden = false;
   }
 
   async function initializeVerifiedData() {
@@ -3361,6 +3339,10 @@
       );
     }
     markDataLoaded(status);
+    revealRequestedEvidenceOccurrence(expectedKind);
+    root.addEventListener('popstate', () => {
+      revealRequestedEvidenceOccurrence(expectedKind);
+    });
   }
 
   async function initialize() {
