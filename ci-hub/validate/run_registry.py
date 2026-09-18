@@ -93,6 +93,16 @@ class CommitStatusPublicationRecord(TypedDict, total=False):
     receipt_path: str
 
 
+class LedgerMirrorRecord(TypedDict, total=False):
+    state: str
+    recorded_at: str
+    commit: str
+    source_commit: str
+    source_tree: str
+    rows: int
+    detail: str
+
+
 class TerminationRequestRecord(TypedDict, total=False):
     requested_at: str
     agent: str
@@ -160,6 +170,7 @@ class RunRecord(TypedDict, total=False):
     canonical_verdict: str
     wrapper_exit_code: int
     commit_status_publication: CommitStatusPublicationRecord
+    ledger_mirror: LedgerMirrorRecord
     termination_requests: list[TerminationRequestRecord]
     measured_result: str
     checkout_removed_at: str
@@ -319,6 +330,7 @@ VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
         "canonical_verdict",
         "wrapper_exit_code",
         "commit_status_publication",
+        "ledger_mirror",
         "measured_result",
         "checkout_removed_at",
         "wrkslots_slot",
@@ -438,6 +450,41 @@ def _commit_status_publication(value: Any) -> None:
         )
     for field in required - common:
         _required_text(value, field)
+
+
+def _ledger_mirror(value: Any) -> None:
+    if not isinstance(value, dict):
+        raise _error("ledger_mirror", "must be an object")
+    state = value.get("state")
+    if state in {"published", "unchanged"}:
+        required = {
+            "state",
+            "recorded_at",
+            "commit",
+            "source_commit",
+            "source_tree",
+            "rows",
+        }
+    elif state == "failed":
+        required = {"state", "recorded_at", "detail"}
+    else:
+        raise _error("ledger_mirror.state", f"unsupported value {state!r}")
+    if set(value) != required:
+        raise _error(
+            "ledger_mirror",
+            f"{state} must contain exactly {', '.join(sorted(required))}",
+        )
+    _timestamp(value, "recorded_at", error_field="ledger_mirror.recorded_at")
+    if state == "failed":
+        _required_text(value, "detail")
+        return
+    for field in ("commit", "source_commit", "source_tree"):
+        sha = _required_text(value, field)
+        if len(sha) != 40 or any(ch not in "0123456789abcdef" for ch in sha):
+            raise _error(f"ledger_mirror.{field}", "must be lowercase forty-hex")
+    rows = value.get("rows")
+    if not isinstance(rows, int) or isinstance(rows, bool) or rows < 0:
+        raise _error("ledger_mirror.rows", "must be a nonnegative integer")
 
 
 def _required_text(value: Mapping[str, Any], field: str) -> str:
@@ -772,6 +819,8 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
     branch = branch_value if isinstance(branch_value, str) else None
     if "commit_status_publication" in value:
         _commit_status_publication(value.get("commit_status_publication"))
+    if "ledger_mirror" in value:
+        _ledger_mirror(value.get("ledger_mirror"))
 
     if kind is not RunKind.BENCH:
         if value.get("pane_role") != "observer-only":

@@ -5541,6 +5541,7 @@ def publish_recorded_scorecard_handoff(
 
 
 COMMIT_STATUS_PUBLICATION_SUCCEEDED = frozenset({"published", "unchanged"})
+LEDGER_MIRROR_SUCCEEDED = frozenset({"published", "unchanged"})
 
 
 def finalize_commit_status_publication(
@@ -5757,6 +5758,108 @@ def bookkeep_record(
         return snapshot
 
 
+def finalize_ledger_mirror(
+    root: Path,
+    tool_root: Path,
+    record_path: Path,
+    *,
+    record: Mapping[str, Any],
+    run: Runner,
+) -> dict[str, Any]:
+    """Run the post-validation mirror without changing the validate result."""
+    existing = record.get("ledger_mirror")
+    if isinstance(existing, dict) and existing.get("state") in LEDGER_MIRROR_SUCCEEDED:
+        return dict(record)
+    if canonical_repo(str(record.get("repo", "rrnewton/hermit"))) != "rrnewton/hermit":
+        return dict(record)
+
+    recorded_at = datetime.now(timezone.utc).isoformat()
+    checkout_value = record.get("checkout") or record.get("source_checkout")
+    target = record.get("target")
+    if not all(isinstance(value, str) and value for value in (checkout_value, target)):
+        outcome: dict[str, Any] = {
+            "state": "failed",
+            "recorded_at": recorded_at,
+            "detail": "run handle omitted checkout or target",
+        }
+    else:
+        command = [
+            sys.executable,
+            str(tool_root / "ci-hub/series/mirror.py"),
+            "--parent",
+            str(root),
+            "--source-checkout",
+            str(checkout_value),
+            "--target",
+            str(target),
+        ]
+        try:
+            result = run(command, cwd=root, check=False, timeout=1800)
+        except (OSError, subprocess.SubprocessError) as error:
+            outcome = {
+                "state": "failed",
+                "recorded_at": recorded_at,
+                "detail": f"cannot launch ledger mirror: {error}",
+            }
+        else:
+            try:
+                report = json.loads(result.stdout.strip().splitlines()[-1])
+                state = report["state"]
+                if result.returncode != 0 or state not in LEDGER_MIRROR_SUCCEEDED:
+                    raise ValueError(f"exit {result.returncode}, state {state!r}")
+                commit = report["commit"]
+                source_commit = report["source_commit"]
+                source_tree = report["source_tree"]
+                rows = report["rows"]
+                valid_ids = all(
+                    isinstance(value, str) and SHA_RE.fullmatch(value)
+                    for value in (commit, source_commit, source_tree)
+                )
+                valid_rows = (
+                    isinstance(rows, int) and not isinstance(rows, bool) and rows >= 0
+                )
+                if not valid_ids or not valid_rows:
+                    raise ValueError(
+                        "success report has an invalid commit, tree, or row count"
+                    )
+                outcome = {
+                    "state": state,
+                    "recorded_at": recorded_at,
+                    "commit": commit,
+                    "source_commit": source_commit,
+                    "source_tree": source_tree,
+                    "rows": rows,
+                }
+            except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                detail = (result.stderr or result.stdout).strip()
+                if len(detail) > 4000:
+                    detail = detail[:4000] + " [truncated at 4000 characters]"
+                outcome = {
+                    "state": "failed",
+                    "recorded_at": recorded_at,
+                    "detail": f"{error}; output={detail!r}",
+                }
+
+    if outcome["state"] in LEDGER_MIRROR_SUCCEEDED:
+        print(
+            "validate-run: LEDGER MIRROR "
+            f"{str(outcome['state']).upper()} commit={outcome['commit']} "
+            f"rows={outcome['rows']}",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "validate-run: LEDGER MIRROR FAILED: "
+            f"{outcome['detail']}. The canonical validation verdict is unchanged.",
+            file=sys.stderr,
+        )
+    return bookkeep_record(
+        record_path,
+        base_record=record,
+        ledger_mirror=outcome,
+    )
+
+
 def handoff_scorecard_after_writeback(
     root: Path,
     record_path: Path,
@@ -5945,6 +6048,14 @@ def retire_unit_after_writeback(
         )
         return 0
 
+    record = finalize_ledger_mirror(
+        root,
+        tool_root,
+        record_path,
+        record=record,
+        run=run,
+    )
+
     checkout = Path(raw_checkout)
     scorecard_files = write_scorecard_from_results(
         checkout,
@@ -6119,6 +6230,13 @@ def attach(
         base_record=updated,
         canonical_verdict=canonical_verdict,
         wrapper_exit_code=canonical_exit,
+    )
+    updated = finalize_ledger_mirror(
+        root,
+        tool_root,
+        record_path,
+        record=updated,
+        run=run,
     )
     if not json_output:
         print(
@@ -7375,6 +7493,13 @@ def main(
         record_path,
         canonical_verdict=canonical_verdict,
         wrapper_exit_code=canonical_exit,
+    )
+    updated = finalize_ledger_mirror(
+        state_root,
+        tool_root,
+        record_path,
+        record=updated,
+        run=run,
     )
     if not args.json:
         print(

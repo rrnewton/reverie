@@ -101,6 +101,8 @@ class FakeRun:
         self.scorecard_rc = 0
         self.scorecard_stderr = ""
         self.scorecard_head_after_write: str | None = None
+        self.ledger_mirror_rc = 0
+        self.ledger_mirror_stderr = ""
         self.commit_status_action = "published"
         self.commit_status_rc = 0
         self.commit_status_stderr = ""
@@ -844,6 +846,26 @@ class FakeRun:
                     f"compatibility scorecard: generated files {state}\n"
                 ),
                 stderr=self.scorecard_stderr,
+            )
+        if len(command) > 1 and command[1].endswith("ci-hub/series/mirror.py"):
+            return completed(
+                command,
+                rc=self.ledger_mirror_rc,
+                stdout=(
+                    json.dumps(
+                        {
+                            "state": "published",
+                            "commit": "d" * 40,
+                            "source_commit": "e" * 40,
+                            "source_tree": "f" * 40,
+                            "rows": 17,
+                        }
+                    )
+                    + "\n"
+                    if self.ledger_mirror_rc == 0
+                    else ""
+                ),
+                stderr=self.ledger_mirror_stderr,
             )
         if command[0].endswith("preflight_validate.py"):
             return completed(
@@ -3440,6 +3462,45 @@ class StartUnitTest(unittest.TestCase):
             "cannot launch publisher: publisher executable unavailable",
             publication["detail"],
         )
+
+    def test_ledger_mirror_success_is_recorded(self) -> None:
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(0, rc, error)
+        self.assertIn("LEDGER MIRROR PUBLISHED", error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual(
+            {
+                "state": "published",
+                "commit": "d" * 40,
+                "source_commit": "e" * 40,
+                "source_tree": "f" * 40,
+                "rows": 17,
+            },
+            {
+                key: value
+                for key, value in record["ledger_mirror"].items()
+                if key != "recorded_at"
+            },
+        )
+
+    def test_ledger_mirror_failure_is_loud_without_changing_green_verdict(self) -> None:
+        self.fake.ledger_mirror_rc = 1
+        self.fake.ledger_mirror_stderr = "remote push refused"
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(0, rc)
+        self.assertIn("LEDGER MIRROR FAILED", error)
+        self.assertIn("remote push refused", error)
+        self.assertIn("canonical validation verdict is unchanged", error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual("failed", record["ledger_mirror"]["state"])
+        self.assertIn("remote push refused", record["ledger_mirror"]["detail"])
 
     def test_successful_publication_is_not_repeated_on_reentry(self) -> None:
         rc, _output, error = self.invoke()

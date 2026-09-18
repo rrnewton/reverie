@@ -445,6 +445,48 @@ class RunRegistryContractTests(unittest.TestCase):
                 )
             )
 
+    def test_ledger_mirror_result_is_typed_but_optional(self) -> None:
+        absent = run_registry.parse_current_record(validation_handle())
+        self.assertNotIn("ledger_mirror", absent.raw)
+
+        published = run_registry.parse_current_record(
+            validation_handle(
+                ledger_mirror={
+                    "state": "published",
+                    "recorded_at": "2026-09-18T03:00:00+00:00",
+                    "commit": "b" * 40,
+                    "source_commit": "c" * 40,
+                    "source_tree": "d" * 40,
+                    "rows": 76445,
+                }
+            )
+        )
+        self.assertEqual("published", published.raw["ledger_mirror"]["state"])
+
+        failed = run_registry.parse_current_record(
+            validation_handle(
+                ledger_mirror={
+                    "state": "failed",
+                    "recorded_at": "2026-09-18T03:00:00+00:00",
+                    "detail": "remote push refused",
+                }
+            )
+        )
+        self.assertEqual("failed", failed.raw["ledger_mirror"]["state"])
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "validation-run-handle-ledger_mirror: published must contain exactly",
+        ):
+            run_registry.parse_current_record(
+                validation_handle(
+                    ledger_mirror={
+                        "state": "published",
+                        "recorded_at": "2026-09-18T03:00:00+00:00",
+                    }
+                )
+            )
+
     def test_refused_admission_requires_reason_and_exit_by_name(self) -> None:
         with self.assertRaisesRegex(
             RuntimeError,

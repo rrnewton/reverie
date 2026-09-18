@@ -10,3 +10,7 @@
 	path = liteinst2
 	url = https://github.com/rrnewton/liteinst2.git
 	update = checkout
+[submodule "hermit_test_ledger"]
+	path = hermit_test_ledger
+	url = https://github.com/rrnewton/hermit_test_ledger.git
+	update = checkout

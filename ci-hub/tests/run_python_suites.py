@@ -77,7 +77,7 @@ DEFAULT_SUITES = (
     ("ci-hub/pin/tests", 34),
     ("ci-hub/main-metrics/tests", 29),
     ("ci-hub/ratchet/tests", 20),
-    ("ci-hub/series/tests", 27),
+    ("ci-hub/series/tests", 159),
     ("ci-hub/stranded/tests", 19),
     ("ci-hub/greentime/tests", 17),
     ("ci-hub/stress", 16),
