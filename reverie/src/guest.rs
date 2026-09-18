@@ -305,6 +305,27 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         None
     }
 
+    /// Authenticates the current original scalar write to backend-captured output.
+    ///
+    /// This read-only query returns the full callback identity only when `call`
+    /// is the exact unconsumed original syscall (including all raw arguments)
+    /// and its current descriptor aliases an enabled captured stdout/stderr
+    /// stream. It does not execute the write, publish or consume a signal,
+    /// validate the buffer, or promise a successful byte count.
+    ///
+    /// The caller must query again with the identical call immediately before
+    /// publication and require the same identity, without an intervening guest
+    /// operation or injection. KVM additionally requires its existing sole-live-
+    /// leader boundary, no prior injected execution, and no active observation
+    /// or checked-out stack. Ordinary files, pipes, sockets and uncaptured host
+    /// streams are not admitted. Unsupported backends return `None`.
+    fn captured_write_signal_site(
+        &self,
+        _call: crate::syscalls::Write,
+    ) -> Option<crate::CallbackSignalSite> {
+        None
+    }
+
     /// Active nested observation, available to the Tool's real signal-hook RPCs.
     fn signal_observation_lease(&self) -> Option<crate::ParkedObservationLease> {
         None
@@ -609,6 +630,12 @@ where
     }
     fn parked_signal_site(&self) -> Option<crate::CallbackSignalSite> {
         self.inner.parked_signal_site()
+    }
+    fn captured_write_signal_site(
+        &self,
+        call: crate::syscalls::Write,
+    ) -> Option<crate::CallbackSignalSite> {
+        self.inner.captured_write_signal_site(call)
     }
     fn signal_observation_lease(&self) -> Option<crate::ParkedObservationLease> {
         self.inner.signal_observation_lease()
