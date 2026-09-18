@@ -28,6 +28,8 @@ use reverie::GlobalRPC;
 use reverie::GlobalTool;
 use reverie::Guest;
 use reverie::Pid;
+use reverie::Rdtsc;
+use reverie::RdtscResult;
 use reverie::SignalEvent;
 use reverie::SignalTarget;
 use reverie::Stack;
@@ -3662,8 +3664,29 @@ fn kvm_available(test: &str) -> bool {
     }
 }
 
-fn assert_invalid_opcode(error: Error) {
+// The Tool completion API retains a lone fault in one shared ownership envelope.
+// Unwrap only that exact shape: cleanup, worker and signal-effect context must
+// still fail these fault-only assertions instead of being hidden by primary().
+fn unwrap_shared_guest_exception(error: Error) -> Error {
     match error {
+        Error::SharedFailure(cause) => match cause.as_ref() {
+            Error::GuestException {
+                vector,
+                instruction_pointer,
+                fault_address,
+            } => Error::GuestException {
+                vector: *vector,
+                instruction_pointer: *instruction_pointer,
+                fault_address: *fault_address,
+            },
+            _ => Error::SharedFailure(cause),
+        },
+        error => error,
+    }
+}
+
+fn assert_invalid_opcode(error: Error) {
+    match unwrap_shared_guest_exception(error) {
         Error::GuestException {
             vector,
             instruction_pointer,
@@ -3677,7 +3700,7 @@ fn assert_invalid_opcode(error: Error) {
 }
 
 fn assert_page_fault(error: Error) {
-    match error {
+    match unwrap_shared_guest_exception(error) {
         Error::GuestException {
             vector,
             instruction_pointer,
@@ -3692,7 +3715,7 @@ fn assert_page_fault(error: Error) {
 }
 
 fn assert_general_protection(error: Error) {
-    match error {
+    match unwrap_shared_guest_exception(error) {
         Error::GuestException {
             vector,
             instruction_pointer,
@@ -3703,6 +3726,74 @@ fn assert_general_protection(error: Error) {
         }
         error => panic!("expected general-protection exception, got {error}"),
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct FailingFaultExitTool;
+
+#[reverie::tool]
+impl Tool for FailingFaultExitTool {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+        &self,
+        _tid: Pid,
+        _global: &G,
+        _thread_state: Self::ThreadState,
+        _status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        Err(Errno::EIO.into())
+    }
+}
+
+#[test]
+fn fault_only_assertion_rejects_actual_tool_exit_cleanup_failure() {
+    if !kvm_available("fault_only_assertion_rejects_actual_tool_exit_cleanup_failure") {
+        return;
+    }
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf(&static_elf(&[0x0f, 0x0b]), "/bin/fault-with-cleanup")
+        .unwrap();
+    let error = match futures::executor::block_on(
+        backend.run_static_elf_with_tool::<FailingFaultExitTool>((), true),
+    ) {
+        Ok(_) => panic!("faulting guest and failing exit hook unexpectedly succeeded"),
+        Err(error) => error,
+    };
+    eprintln!("actual fault and exit-hook failure: {error:?}");
+    let Error::WithCleanup { primary, cleanup } = &error else {
+        panic!("expected execution fault with retained cleanup failure, got {error:?}");
+    };
+    let Error::SharedFailure(fault) = primary.as_ref() else {
+        panic!("expected the shared original execution fault, got {primary:?}");
+    };
+    assert!(matches!(
+        fault.as_ref(),
+        Error::GuestException {
+            vector: 6,
+            instruction_pointer: LOAD_ADDRESS,
+            ..
+        }
+    ));
+    assert_eq!(cleanup.len(), 1, "unexpected cleanup causes: {cleanup:?}");
+    let Error::SharedFailure(hook) = cleanup[0].as_ref() else {
+        panic!("expected the shared exit-hook failure, got {cleanup:?}");
+    };
+    assert!(matches!(
+        hook.as_ref(),
+        Error::Reverie(reverie::Error::Errno(errno)) if *errno == Errno::EIO
+    ));
+    // Only the assertion is caught. The actual run above must retain both
+    // failures, and the unchanged vector/RIP oracle is satisfied by its primary.
+    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_invalid_opcode(error);
+    }));
+    assert!(
+        rejected.is_err(),
+        "fault-only helper discarded cleanup failure"
+    );
 }
 
 #[test]
@@ -13922,3 +14013,860 @@ mod parked_signals;
 
 #[path = "support/captured_write_signals.rs"]
 mod captured_write_signals;
+
+#[path = "support/timestamp_terminal.rs"]
+mod timestamp_terminal;
+
+const RDTSC_SENTINEL: u64 = 0x1122_3344_5566_7788;
+const RDTSCP_SENTINEL: u64 = 0x99aa_bbcc_ddee_ff00;
+const RDTSCP_AUX_SENTINEL: u32 = 0x1357_9bdf;
+
+#[derive(Debug, Default)]
+struct TimestampLog {
+    calls: Mutex<Vec<(Pid, Rdtsc)>>,
+}
+
+impl TimestampLog {
+    fn calls(&self) -> Vec<(Pid, Rdtsc)> {
+        self.calls
+            .lock()
+            .expect("timestamp log lock poisoned")
+            .clone()
+    }
+}
+
+#[reverie::global_tool]
+impl GlobalTool for TimestampLog {
+    type Request = Rdtsc;
+    type Response = ();
+    type Config = bool;
+
+    async fn receive_rpc(&self, from: Pid, request: Rdtsc) {
+        self.calls
+            .lock()
+            .expect("timestamp log lock poisoned")
+            .push((from, request));
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct TimestampTool;
+
+#[reverie::tool]
+impl Tool for TimestampTool {
+    type GlobalState = TimestampLog;
+    type ThreadState = ();
+
+    fn subscriptions(enabled: &bool) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        if *enabled {
+            subscriptions.rdtsc();
+        }
+        subscriptions
+    }
+
+    async fn handle_rdtsc_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        request: Rdtsc,
+    ) -> Result<RdtscResult, Errno> {
+        guest.send_rpc(request).await;
+        Ok(match request {
+            Rdtsc::Tsc => RdtscResult {
+                tsc: RDTSC_SENTINEL,
+                aux: None,
+            },
+            Rdtsc::Tscp => RdtscResult {
+                tsc: RDTSCP_SENTINEL,
+                aux: Some(RDTSCP_AUX_SENTINEL),
+            },
+        })
+    }
+}
+
+fn append_jne_failure(code: &mut Vec<u8>, patches: &mut Vec<usize>) {
+    code.extend_from_slice(&[0x0f, 0x85]);
+    patches.push(code.len());
+    code.extend_from_slice(&0_i32.to_le_bytes());
+}
+
+fn timestamp_assertion_program() -> Vec<u8> {
+    let mut code = Vec::new();
+    let mut failure_patches = Vec::new();
+
+    code.extend_from_slice(&[0x0f, 0x31]); // rdtsc
+    code.push(0x3d); // cmp eax, imm32
+    code.extend_from_slice(&(RDTSC_SENTINEL as u32).to_le_bytes());
+    append_jne_failure(&mut code, &mut failure_patches);
+    code.extend_from_slice(&[0x81, 0xfa]); // cmp edx, imm32
+    code.extend_from_slice(&((RDTSC_SENTINEL >> 32) as u32).to_le_bytes());
+    append_jne_failure(&mut code, &mut failure_patches);
+
+    code.extend_from_slice(&[0x0f, 0x01, 0xf9]); // rdtscp
+    code.push(0x3d); // cmp eax, imm32
+    code.extend_from_slice(&(RDTSCP_SENTINEL as u32).to_le_bytes());
+    append_jne_failure(&mut code, &mut failure_patches);
+    code.extend_from_slice(&[0x81, 0xfa]); // cmp edx, imm32
+    code.extend_from_slice(&((RDTSCP_SENTINEL >> 32) as u32).to_le_bytes());
+    append_jne_failure(&mut code, &mut failure_patches);
+    code.extend_from_slice(&[0x81, 0xf9]); // cmp ecx, imm32
+    code.extend_from_slice(&RDTSCP_AUX_SENTINEL.to_le_bytes());
+    append_jne_failure(&mut code, &mut failure_patches);
+
+    code.extend_from_slice(&[
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+    ]);
+    let failure = code.len();
+    code.extend_from_slice(&[
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
+        0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1
+        0x0f, 0x05, // syscall
+    ]);
+
+    for patch in failure_patches {
+        let displacement = i32::try_from(failure).unwrap() - i32::try_from(patch + 4).unwrap();
+        code[patch..patch + 4].copy_from_slice(&displacement.to_le_bytes());
+    }
+    code
+}
+
+fn run_timestamp_probe(image: &[u8], subscribed: bool) -> (TimestampLog, i32) {
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf(image, "/bin/timestamp-probe")
+        .unwrap();
+    let (log, code, stdout, stderr) = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<TimestampTool>(subscribed, true),
+    )
+    .unwrap();
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    (log, code)
+}
+
+#[test]
+fn static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably() {
+    if !kvm_available("KVM timestamp dispatch test") {
+        return;
+    }
+
+    let image = static_elf(&timestamp_assertion_program());
+    for _ in 0..2 {
+        let (log, code) = run_timestamp_probe(&image, true);
+        assert_eq!(code, 0);
+        assert_eq!(
+            log.calls(),
+            vec![
+                (Pid::from_raw(1), Rdtsc::Tsc),
+                (Pid::from_raw(1), Rdtsc::Tscp)
+            ]
+        );
+    }
+}
+
+#[test]
+fn timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles() {
+    if !kvm_available("KVM timestamp lifecycle test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let source = format!(
+        r#"
+#include <pthread.h>
+#include <stdint.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static uint64_t read_tsc(void) {{
+    unsigned int low;
+    unsigned int high;
+    __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
+    return ((uint64_t)high << 32) | low;
+}}
+
+static void *thread_main(void *unused) {{
+    (void)unused;
+    return (void *)(uintptr_t)(read_tsc() != UINT64_C({RDTSC_SENTINEL}));
+}}
+
+int main(int argc, char **argv) {{
+    if (read_tsc() != UINT64_C({RDTSC_SENTINEL})) return 10;
+    if (argc > 1) return 0;
+
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, thread_main, NULL) != 0) return 11;
+    void *thread_result = NULL;
+    if (pthread_join(thread, &thread_result) != 0 || thread_result != NULL) return 12;
+
+    pid_t child = fork();
+    if (child < 0) return 13;
+    if (child == 0) {{
+        if (read_tsc() != UINT64_C({RDTSC_SENTINEL})) _exit(14);
+        execl(argv[0], argv[0], "post-exec", NULL);
+        _exit(15);
+    }}
+    int status = 0;
+    if (waitpid(child, &status, 0) != child) return 16;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 17;
+}}
+"#
+    );
+    let executable = compile_c_program(&directory.0, "timestamp-lifecycle", &source);
+    let image = std::fs::read(&executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable.to_str().unwrap()],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (log, code, stdout, stderr) =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<TimestampTool>(true, true))
+            .unwrap();
+    assert_eq!(code, 0, "stdout={stdout:?} stderr={stderr:?}");
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+
+    let calls = log.calls();
+    let mut senders = calls
+        .iter()
+        .map(|(sender, _)| sender.as_raw())
+        .collect::<Vec<_>>();
+    senders.sort_unstable();
+    senders.dedup();
+    assert!(
+        senders.len() >= 3,
+        "expected root, pthread, and fork-child timestamp senders; calls={calls:?}"
+    );
+    let child = *senders.iter().max().unwrap();
+    assert!(
+        calls
+            .iter()
+            .filter(|(sender, _)| sender.as_raw() == child)
+            .count()
+            >= 2,
+        "fork child must dispatch timestamps before and after exec; calls={calls:?}"
+    );
+}
+
+#[test]
+fn static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch() {
+    if !kvm_available("KVM unsubscribed RDTSC test") {
+        return;
+    }
+
+    let image = static_elf(&[
+        0x0f, 0x31, // rdtsc
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+    ]);
+    let (log, code) = run_timestamp_probe(&image, false);
+    assert_eq!(code, 0);
+    assert!(log.calls().is_empty());
+}
+
+#[test]
+fn subscribed_timestamp_dispatch_refuses_unrelated_exceptions() {
+    if !kvm_available("KVM timestamp exception refusal test") {
+        return;
+    }
+
+    let mut invalid_opcode_backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    invalid_opcode_backend
+        .install_static_elf(&static_elf(&[0x0f, 0x0b]), "/bin/fault")
+        .unwrap();
+    let error = futures::executor::block_on(
+        invalid_opcode_backend.run_static_elf_with_tool::<TimestampTool>(true, true),
+    )
+    .unwrap_err();
+    assert_invalid_opcode(error);
+
+    let mut general_protection_backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    general_protection_backend
+        .install_static_elf(&static_elf(&[0xed]), "/bin/fault")
+        .unwrap();
+    let error = futures::executor::block_on(
+        general_protection_backend.run_static_elf_with_tool::<TimestampTool>(true, true),
+    )
+    .unwrap_err();
+    assert_general_protection(error);
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct EvolvingTimestampTool;
+
+#[reverie::tool]
+impl Tool for EvolvingTimestampTool {
+    type GlobalState = TimestampLog;
+    type ThreadState = u64;
+
+    fn subscriptions(enabled: &bool) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        if *enabled {
+            subscriptions.rdtsc();
+        }
+        subscriptions
+    }
+
+    async fn handle_rdtsc_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        request: Rdtsc,
+    ) -> Result<RdtscResult, Errno> {
+        let ordinal = *guest.thread_state();
+        *guest.thread_state_mut() += 1;
+        guest.send_rpc(request).await;
+        Ok(RdtscResult {
+            tsc: RDTSC_SENTINEL + ordinal,
+            aux: (request == Rdtsc::Tscp).then_some(RDTSCP_AUX_SENTINEL + ordinal as u32),
+        })
+    }
+}
+
+fn evolving_timestamp_assertion_program() -> Vec<u8> {
+    let mut code = Vec::new();
+    let mut failure_patches = Vec::new();
+
+    for expected in [RDTSC_SENTINEL, RDTSC_SENTINEL + 1] {
+        code.extend_from_slice(&[0x0f, 0x31]); // rdtsc
+        code.push(0x3d); // cmp eax, imm32
+        code.extend_from_slice(&(expected as u32).to_le_bytes());
+        append_jne_failure(&mut code, &mut failure_patches);
+        code.extend_from_slice(&[0x81, 0xfa]); // cmp edx, imm32
+        code.extend_from_slice(&((expected >> 32) as u32).to_le_bytes());
+        append_jne_failure(&mut code, &mut failure_patches);
+    }
+
+    let rdtscp_expected = RDTSC_SENTINEL + 2;
+    code.extend_from_slice(&[0x0f, 0x01, 0xf9]); // rdtscp
+    code.push(0x3d); // cmp eax, imm32
+    code.extend_from_slice(&(rdtscp_expected as u32).to_le_bytes());
+    append_jne_failure(&mut code, &mut failure_patches);
+    code.extend_from_slice(&[0x81, 0xfa]); // cmp edx, imm32
+    code.extend_from_slice(&((rdtscp_expected >> 32) as u32).to_le_bytes());
+    append_jne_failure(&mut code, &mut failure_patches);
+    code.extend_from_slice(&[0x81, 0xf9]); // cmp ecx, imm32
+    code.extend_from_slice(&(RDTSCP_AUX_SENTINEL + 2).to_le_bytes());
+    append_jne_failure(&mut code, &mut failure_patches);
+
+    code.extend_from_slice(&[
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+    ]);
+    let failure = code.len();
+    code.extend_from_slice(&[
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
+        0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1
+        0x0f, 0x05, // syscall
+    ]);
+
+    for patch in failure_patches {
+        let displacement = i32::try_from(failure).unwrap() - i32::try_from(patch + 4).unwrap();
+        code[patch..patch + 4].copy_from_slice(&displacement.to_le_bytes());
+    }
+    code
+}
+
+#[test]
+fn repeated_timestamp_reads_evolve_once_per_instruction() {
+    if !kvm_available("KVM evolving timestamp test") {
+        return;
+    }
+
+    let image = static_elf(&evolving_timestamp_assertion_program());
+    for _ in 0..2 {
+        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+        backend
+            .install_static_elf(&image, "/bin/evolving-timestamp-probe")
+            .unwrap();
+        let (log, code, stdout, stderr) = futures::executor::block_on(
+            backend.run_static_elf_with_tool::<EvolvingTimestampTool>(true, true),
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        assert!(stdout.is_empty());
+        assert!(stderr.is_empty());
+        assert_eq!(
+            log.calls(),
+            vec![
+                (Pid::from_raw(1), Rdtsc::Tsc),
+                (Pid::from_raw(1), Rdtsc::Tsc),
+                (Pid::from_raw(1), Rdtsc::Tscp),
+            ]
+        );
+    }
+}
+
+#[test]
+fn static_elf_unsubscribed_rdtscp_remains_guest_exception() {
+    if !kvm_available("KVM unsubscribed RDTSCP test") {
+        return;
+    }
+
+    let image = static_elf(&[
+        0x0f, 0x01, 0xf9, // rdtscp
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+    ]);
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf(&image, "/bin/unsubscribed-rdtscp")
+        .unwrap();
+    let error =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<TimestampTool>(false, true))
+            .unwrap_err();
+    assert_invalid_opcode(error);
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ClockTimestampTool;
+
+#[reverie::tool]
+impl Tool for ClockTimestampTool {
+    type GlobalState = TimestampLog;
+    type ThreadState = (Option<u64>, u64);
+
+    fn subscriptions(enabled: &bool) -> Subscription {
+        TimestampTool::subscriptions(enabled)
+    }
+
+    async fn handle_rdtsc_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        request: Rdtsc,
+    ) -> Result<RdtscResult, Errno> {
+        let before = guest
+            .read_clock()
+            .expect("timestamp clock must be available");
+        let (previous, ordinal) = *guest.thread_state();
+        if let Some(previous) = previous {
+            assert!(
+                before > previous,
+                "actual guest assertion branches must retire between reads"
+            );
+        }
+        let pid = guest.pid().as_raw() as i64;
+        assert_eq!(
+            guest
+                .inject(Syscall::from_raw(
+                    Sysno::getpid,
+                    SyscallArgs::new(0, 0, 0, 0, 0, 0),
+                ))
+                .await?,
+            pid,
+        );
+        assert_eq!(guest.inject(Fork::new()).await, Err(Errno::ENOSYS));
+        assert_eq!(
+            guest
+                .inject(Syscall::from_raw(
+                    Sysno::execve,
+                    SyscallArgs::new(0, 0, 0, 0, 0, 0),
+                ))
+                .await,
+            Err(Errno::ENOSYS),
+        );
+        guest.send_rpc(request).await;
+        assert_eq!(
+            guest.read_clock().unwrap(),
+            before,
+            "RPC and returning/refused host injections are not guest branch time"
+        );
+        *guest.thread_state_mut() = (Some(before), ordinal + 1);
+        Ok(RdtscResult {
+            tsc: RDTSC_SENTINEL + ordinal,
+            aux: (request == Rdtsc::Tscp).then_some(RDTSCP_AUX_SENTINEL + ordinal as u32),
+        })
+    }
+}
+
+#[test]
+fn timestamp_callbacks_observe_retired_branches_without_counting_rpc_work() {
+    if !kvm_available("KVM timestamp callback clock test") {
+        return;
+    }
+    for _ in 0..2 {
+        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+        backend
+            .install_static_elf(
+                &static_elf(&evolving_timestamp_assertion_program()),
+                "/bin/timestamp-clock",
+            )
+            .unwrap();
+        let (log, status, stdout, stderr) = futures::executor::block_on(
+            backend.run_static_elf_with_tool::<ClockTimestampTool>(true, true),
+        )
+        .unwrap();
+        assert_eq!(status, 0);
+        assert!(stdout.is_empty());
+        assert!(stderr.is_empty());
+        assert_eq!(
+            log.calls(),
+            vec![
+                (Pid::from_raw(1), Rdtsc::Tsc),
+                (Pid::from_raw(1), Rdtsc::Tsc),
+                (Pid::from_raw(1), Rdtsc::Tscp)
+            ]
+        );
+    }
+}
+
+fn host_owned_timestamp_program() -> Vec<u8> {
+    fn append_root_read(code: &mut Vec<u8>, failures: &mut Vec<usize>) {
+        code.extend_from_slice(&[0x0f, 0x31]); // rdtsc
+        code.push(0x3d); // cmp eax, expected low word
+        code.extend_from_slice(&(RDTSC_SENTINEL as u32).to_le_bytes());
+        append_jne_failure(code, failures);
+        code.extend_from_slice(&[0x81, 0xfa]); // cmp edx, expected high word
+        code.extend_from_slice(&((RDTSC_SENTINEL >> 32) as u32).to_le_bytes());
+        append_jne_failure(code, failures);
+    }
+
+    const CHILD_TID: u64 = LOAD_ADDRESS + 0x1800;
+    const CHILD_RESULT: u64 = LOAD_ADDRESS + 0x1808;
+    const CHILD_DONE: u64 = LOAD_ADDRESS + 0x1810;
+    const CHILD_STACK: u64 = LOAD_ADDRESS + 0x1900;
+    const CHILD_STACK_SIZE: u64 = 0x600;
+    let flags = libc::CLONE_VM as u64
+        | libc::CLONE_FS as u64
+        | libc::CLONE_FILES as u64
+        | libc::CLONE_SIGHAND as u64
+        | libc::CLONE_THREAD as u64
+        | libc::CLONE_SYSVSEM as u64
+        | libc::CLONE_CHILD_SETTID as u64
+        | libc::CLONE_CHILD_CLEARTID as u64;
+    let mut code = Vec::new();
+    let mut failures = Vec::new();
+    append_root_read(&mut code, &mut failures);
+    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_tid
+    code.extend_from_slice(&CHILD_TID.to_le_bytes());
+    code.extend_from_slice(&[
+        0xc7, 0x01, 0xff, 0xff, 0xff, 0x7f, // mov [rcx], nonzero sentinel
+        0xb8, 0xb3, 0x01, 0x00, 0x00, // mov eax, SYS_clone3
+        0x48, 0xbf, // movabs rdi, clone_args
+    ]);
+    let clone_args_operand = code.len();
+    code.extend_from_slice(&0_u64.to_le_bytes());
+    code.extend_from_slice(&[
+        0xbe, 0x58, 0x00, 0x00, 0x00, // mov esi, sizeof(clone_args)
+        0x0f, 0x05, // syscall
+        0x85, 0xc0, // test eax, eax
+        0x0f, 0x84, 0, 0, 0, 0, // jz child
+    ]);
+    let child_jump = code.len() - 4;
+    code.extend_from_slice(&[0x0f, 0x88]); // js failure: clone must succeed
+    failures.push(code.len());
+    code.extend_from_slice(&0_i32.to_le_bytes());
+    code.extend_from_slice(&[0x41, 0x89, 0xc5]); // mov r13d, returned child tid
+    code.extend_from_slice(&[0x48, 0xbf]); // movabs rdi, child_tid
+    code.extend_from_slice(&CHILD_TID.to_le_bytes());
+    let wait = code.len();
+    code.extend_from_slice(&[
+        0x8b, 0x17, // mov edx, [rdi]
+        0x85, 0xd2, // test edx, edx
+        0x0f, 0x84, 0, 0, 0, 0, // jz joined
+    ]);
+    let joined_jump = code.len() - 4;
+    code.extend_from_slice(&[
+        0x31, 0xf6, // xor esi, esi: FUTEX_WAIT, current nonzero value in edx
+        0x45, 0x31, 0xd2, // xor r10d, r10d: no timeout
+        0xb8, 0xca, 0x00, 0x00, 0x00, // mov eax, SYS_futex
+        0x0f, 0x05, // syscall
+    ]);
+    // A racing clear-TID may win before FUTEX_WAIT. Only Linux's normal
+    // successful wake, changed-value refusal or signal interruption can retry.
+    for result in [0_i32, -libc::EAGAIN, -libc::EINTR] {
+        code.push(0x3d); // cmp eax, result
+        code.extend_from_slice(&result.to_le_bytes());
+        code.extend_from_slice(&[0x0f, 0x84, 0, 0, 0, 0]); // je wait
+        let operand = code.len() - 4;
+        patch_stats_jump(&mut code, operand, wait);
+    }
+    code.push(0xe9); // jmp failure for any other futex result
+    failures.push(code.len());
+    code.extend_from_slice(&0_i32.to_le_bytes());
+    let joined = code.len();
+    patch_stats_jump(&mut code, joined_jump, joined);
+    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_result
+    code.extend_from_slice(&CHILD_RESULT.to_le_bytes());
+    code.extend_from_slice(&[0x44, 0x39, 0x29]); // cmp [rcx], r13d
+    append_jne_failure(&mut code, &mut failures);
+    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_done
+    code.extend_from_slice(&CHILD_DONE.to_le_bytes());
+    code.extend_from_slice(&[0x81, 0x39, 0x34, 0x12, 0x00, 0x00]); // cmp [rcx], 0x1234
+    append_jne_failure(&mut code, &mut failures);
+    append_root_read(&mut code, &mut failures);
+    append_stats_exit(&mut code, true);
+
+    let child = code.len();
+    patch_stats_jump(&mut code, child_jump, child);
+    code.extend_from_slice(&[
+        0x0f, 0x31, // actual Host-worker RDTSC: must retire without a Tool callback
+        0xb8, 0xba, 0x00, 0x00, 0x00, // mov eax, SYS_gettid
+        0x0f, 0x05, // syscall
+        0x48, 0xb9, // movabs rcx, child_result
+    ]);
+    code.extend_from_slice(&CHILD_RESULT.to_le_bytes());
+    code.extend_from_slice(&[0x89, 0x01]); // mov [rcx], eax
+    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_done
+    code.extend_from_slice(&CHILD_DONE.to_le_bytes());
+    code.extend_from_slice(&[0xc7, 0x01, 0x34, 0x12, 0x00, 0x00]); // mov [rcx], 0x1234
+    append_stats_exit(&mut code, false); // clear-TID and wake parent on real exit
+
+    let failure = code.len();
+    code.extend_from_slice(&[
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+        0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1
+        0x0f, 0x05, // syscall
+        0x0f, 0x0b, // ud2
+    ]);
+    for operand in failures {
+        patch_stats_jump(&mut code, operand, failure);
+    }
+    while !code.len().is_multiple_of(8) {
+        code.push(0);
+    }
+    let clone_args_address = LOAD_ADDRESS + code.len() as u64;
+    code[clone_args_operand..clone_args_operand + 8]
+        .copy_from_slice(&clone_args_address.to_le_bytes());
+    let mut clone_args = [0_u8; 88];
+    clone_args[0..8].copy_from_slice(&flags.to_le_bytes());
+    clone_args[16..24].copy_from_slice(&CHILD_TID.to_le_bytes());
+    clone_args[40..48].copy_from_slice(&CHILD_STACK.to_le_bytes());
+    clone_args[48..56].copy_from_slice(&CHILD_STACK_SIZE.to_le_bytes());
+    code.extend_from_slice(&clone_args);
+    assert!(
+        code.len() < 0x1000,
+        "code must not overlap the shared data page"
+    );
+    code
+}
+
+#[test]
+fn host_owned_timestamp_worker_keeps_native_execution() {
+    if !kvm_available("KVM Host-owned timestamp worker test") {
+        return;
+    }
+    // No dynamic loader: only the two root instructions belong to this exact
+    // callback oracle. The worker must execute its own RDTSC, publish its TID
+    // and completion marker, then clear child_tid before the root can finish.
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend.set_thread_ownership(ThreadOwnership::Host);
+    backend
+        .install_static_elf(
+            &static_elf(&host_owned_timestamp_program()),
+            "/bin/timestamp-host-worker",
+        )
+        .unwrap();
+    let (log, status, stdout, stderr) =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<TimestampTool>(true, true))
+            .unwrap();
+    assert_eq!(status, 0, "stdout={stdout:?} stderr={stderr:?}");
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    assert_eq!(
+        log.calls(),
+        vec![
+            (Pid::from_raw(1), Rdtsc::Tsc),
+            (Pid::from_raw(1), Rdtsc::Tsc)
+        ]
+    );
+}
+
+fn prefixed_timestamp_register_program(tsc_prefix: &[u8], tscp_prefix: &[u8]) -> Vec<u8> {
+    let mut code = Vec::new();
+    let mut failure_patches = Vec::new();
+    for (opcode, tsc, expected_rcx) in [
+        (&[0x0f, 0x31][..], RDTSC_SENTINEL, 0xdead_beef_fedc_ba98_u64),
+        (
+            &[0x0f, 0x01, 0xf9][..],
+            RDTSCP_SENTINEL,
+            u64::from(RDTSCP_AUX_SENTINEL),
+        ),
+    ] {
+        code.extend_from_slice(&[0x49, 0x89, 0xe4]); // mov r12, rsp
+        code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, preserved sentinel
+        code.extend_from_slice(&0xdead_beef_fedc_ba98_u64.to_le_bytes());
+        code.extend_from_slice(&[0x48, 0xb8]);
+        code.extend_from_slice(&u64::MAX.to_le_bytes());
+        code.extend_from_slice(&[0x48, 0xba]);
+        code.extend_from_slice(&u64::MAX.to_le_bytes());
+        code.extend_from_slice(&[0x68, 0xd7, 0x0e, 0x00, 0x00, 0x9d]); // push flags; popfq
+        code.extend_from_slice(if opcode.len() == 2 {
+            tsc_prefix
+        } else {
+            tscp_prefix
+        });
+        code.extend_from_slice(opcode);
+        code.extend_from_slice(&[0x9c, 0x41, 0x5b, 0xfc]); // pushfq; pop r11; cld
+        code.extend_from_slice(&[0x4c, 0x39, 0xe4]); // cmp rsp, r12
+        append_jne_failure(&mut code, &mut failure_patches);
+        code.extend_from_slice(&[0x41, 0x81, 0xfb, 0xd7, 0x0e, 0x00, 0x00]); // cmp r11d, flags
+        append_jne_failure(&mut code, &mut failure_patches);
+        for (value, compare) in [
+            (u64::from(tsc as u32), [0x4c, 0x39, 0xc0]), // cmp rax, r8
+            (tsc >> 32, [0x4c, 0x39, 0xc2]),             // cmp rdx, r8
+            (expected_rcx, [0x4c, 0x39, 0xc1]),          // cmp rcx, r8
+        ] {
+            code.extend_from_slice(&[0x49, 0xb8]); // movabs r8, expected full register
+            code.extend_from_slice(&value.to_le_bytes());
+            code.extend_from_slice(&compare);
+            append_jne_failure(&mut code, &mut failure_patches);
+        }
+    }
+    code.extend_from_slice(&[0xb8, 0x3c, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]);
+    let failure = code.len();
+    code.extend_from_slice(&[0xb8, 0x3c, 0, 0, 0, 0xbf, 1, 0, 0, 0, 0x0f, 0x05]);
+    for patch in failure_patches {
+        let displacement = i32::try_from(failure).unwrap() - i32::try_from(patch + 4).unwrap();
+        code[patch..patch + 4].copy_from_slice(&displacement.to_le_bytes());
+    }
+    code
+}
+
+#[test]
+fn prefixed_timestamp_instructions_preserve_registers_flags_and_stack() {
+    if !kvm_available("KVM prefixed timestamp register test") {
+        return;
+    }
+    let mut prefixes = vec![vec![], vec![0x4f, 0x66, 0x67, 0xf3], vec![0x66; 12]];
+    prefixes.extend(
+        [
+            0x66, 0x67, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x40, 0x4f,
+        ]
+        .into_iter()
+        .map(|prefix| vec![prefix]),
+    );
+    for prefix in prefixes {
+        let (log, status) = run_timestamp_probe(
+            &static_elf(&prefixed_timestamp_register_program(&prefix, &prefix)),
+            true,
+        );
+        assert_eq!(status, 0, "prefix={prefix:x?}");
+        assert_eq!(
+            log.calls(),
+            vec![
+                (Pid::from_raw(1), Rdtsc::Tsc),
+                (Pid::from_raw(1), Rdtsc::Tscp)
+            ]
+        );
+    }
+    let (log, status) = run_timestamp_probe(
+        &static_elf(&prefixed_timestamp_register_program(
+            &[0x66; 13],
+            &[0x66; 12],
+        )),
+        true,
+    );
+    assert_eq!(status, 0, "both maximum-length instructions must complete");
+    assert_eq!(
+        log.calls(),
+        vec![
+            (Pid::from_raw(1), Rdtsc::Tsc),
+            (Pid::from_raw(1), Rdtsc::Tscp)
+        ]
+    );
+}
+
+#[test]
+fn locked_and_overlength_timestamp_encodings_remain_faults() {
+    if !kvm_available("KVM timestamp fault-priority test") {
+        return;
+    }
+    for code in [vec![0xf0, 0x0f, 0x31], vec![0xf0, 0x0f, 0x01, 0xf9]] {
+        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+        backend
+            .install_static_elf(&static_elf(&code), "/bin/locked-timestamp")
+            .unwrap();
+        let completion = futures::executor::block_on(
+            backend.run_static_elf_with_tool_completion::<TimestampTool>(true, true),
+        )
+        .unwrap();
+        assert_invalid_opcode(completion.result.unwrap_err());
+        assert!(completion.global_state.calls().is_empty());
+    }
+    let mut code = vec![0x66; 14];
+    code.extend_from_slice(&[0x0f, 0x31]);
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf(&static_elf(&code), "/bin/overlength-timestamp")
+        .unwrap();
+    let completion = futures::executor::block_on(
+        backend.run_static_elf_with_tool_completion::<TimestampTool>(true, true),
+    )
+    .unwrap();
+    assert_general_protection(completion.result.unwrap_err());
+    assert!(completion.global_state.calls().is_empty());
+}
+
+#[test]
+fn timestamp_tool_preserves_results_with_host_supported_cpuid() {
+    if !kvm_available("KVM host-supported timestamp profile test") {
+        return;
+    }
+    let mut backend =
+        KvmBackend::new_with_cpuid_policy(MEMORY_SIZE, reverie_kvm::CpuidPolicy::host_supported())
+            .unwrap();
+    backend
+        .install_static_elf(
+            &static_elf(&timestamp_assertion_program()),
+            "/bin/host-profile-timestamp",
+        )
+        .unwrap();
+    let (log, status, stdout, stderr) =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<TimestampTool>(true, true))
+            .unwrap();
+    assert_eq!(status, 0);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    assert_eq!(
+        log.calls(),
+        vec![
+            (Pid::from_raw(1), Rdtsc::Tsc),
+            (Pid::from_raw(1), Rdtsc::Tscp)
+        ]
+    );
+}
+
+#[test]
+fn timestamp_single_step_reports_the_retired_instruction_boundary() {
+    if !kvm_available("KVM timestamp single-step boundary test") {
+        return;
+    }
+    for (opcode, request) in [
+        (&[0x0f, 0x31][..], Rdtsc::Tsc),
+        (&[0x66, 0x0f, 0x01, 0xf9][..], Rdtsc::Tscp),
+    ] {
+        // POPF's newly enabled TF takes effect after the following instruction.
+        let mut code = vec![0x68, 0x02, 0x03, 0x00, 0x00, 0x9d];
+        code.extend_from_slice(opcode);
+        let expected_ip = LOAD_ADDRESS + code.len() as u64;
+        code.push(0x90); // must not execute before the single-step boundary
+        code.extend_from_slice(&[0x0f, 0x0b]);
+        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+        backend
+            .install_static_elf(&static_elf(&code), "/bin/single-step-timestamp")
+            .unwrap();
+        let completion = futures::executor::block_on(
+            backend.run_static_elf_with_tool_completion::<TimestampTool>(true, true),
+        )
+        .unwrap();
+        let error = unwrap_shared_guest_exception(completion.result.unwrap_err());
+        assert!(
+            matches!(&error, Error::GuestException { vector: 1, instruction_pointer, .. }
+                if *instruction_pointer == expected_ip),
+            "expected #DB at {expected_ip:#x}, got {error:?}"
+        );
+        assert_eq!(
+            completion.global_state.calls(),
+            vec![(Pid::from_raw(1), request)]
+        );
+    }
+}

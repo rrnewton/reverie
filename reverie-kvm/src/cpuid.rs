@@ -402,6 +402,8 @@ mod tests {
         assert_eq!(leaf(0x8000_0000, 0).ebx, u32::from_le_bytes(*b"Genu"));
         assert_eq!(leaf(0x8000_0000, 0).ecx, u32::from_le_bytes(*b"ntel"));
         assert_eq!(leaf(0x8000_0000, 0).edx, u32::from_le_bytes(*b"ineI"));
+        // Unsubscribed RDTSCP must remain a genuine unsupported-instruction fault.
+        assert_eq!(leaf(0x8000_0001, 0).edx & bit(27), 0);
     }
 
     #[test]

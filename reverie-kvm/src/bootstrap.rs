@@ -106,6 +106,7 @@ const CR0_TS: u64 = 1 << 3;
 const CR0_ET: u64 = 1 << 4;
 const CR0_NE: u64 = 1 << 5;
 const CR0_PG: u64 = 1 << 31;
+const CR4_TSD: u64 = 1 << 2;
 const CR4_PAE: u64 = 1 << 5;
 const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
@@ -261,6 +262,19 @@ pub(crate) fn configure_long_mode_with_syscall_area(
 
     let regs = initial_guest_registers(entry_point, stack_pointer);
     vcpu.set_regs(&regs)?;
+    Ok(())
+}
+
+/// Set CPL3 timestamp interception only for the loop that owns its Tool callback.
+/// CR4 is updated in place; unrelated execution and paging bits are retained.
+pub(crate) fn set_userspace_rdtsc_interception(vcpu: &VcpuFd, enabled: bool) -> Result<()> {
+    let mut sregs = vcpu.get_sregs()?;
+    if enabled {
+        sregs.cr4 |= CR4_TSD;
+    } else {
+        sregs.cr4 &= !CR4_TSD;
+    }
+    vcpu.set_sregs(&sregs)?;
     Ok(())
 }
 

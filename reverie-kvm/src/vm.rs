@@ -119,6 +119,29 @@ struct StaticElfException {
     rflags: u64,
 }
 
+pub(crate) struct TimestampBoundary {
+    pub(crate) registers: kvm_regs,
+    pub(crate) instruction: crate::timestamp::TimestampInstruction,
+    special_registers: kvm_bindings::kvm_sregs,
+    code_segment: u16,
+    stack_segment: u16,
+}
+
+impl TimestampBoundary {
+    pub(crate) fn user_registers(&self) -> libc::user_regs_struct {
+        let mut registers = crate::runtime::kvm_registers(self.registers, u64::MAX);
+        registers.cs = self.code_segment.into();
+        registers.ss = self.stack_segment.into();
+        registers.ds = self.special_registers.ds.selector.into();
+        registers.es = self.special_registers.es.selector.into();
+        registers.fs = self.special_registers.fs.selector.into();
+        registers.gs = self.special_registers.gs.selector.into();
+        registers.fs_base = self.special_registers.fs.base;
+        registers.gs_base = self.special_registers.gs.base;
+        registers
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct PageZeroFault {
     pub(crate) registers: kvm_regs,
@@ -942,6 +965,9 @@ pub struct KvmBackend {
     // regardless of the tool (set via `set_thread_ownership` /
     // `unmonitored_threads`), and survives run-entry resolution.
     thread_ownership_override: Option<ThreadOwnership>,
+    // Set by the active execution consumer, never copied to a new vCPU. A
+    // Host-owned worker has no Tool dispatcher and must retain native TSC.
+    intercept_rdtsc: bool,
     pub(crate) static_elf: Option<LoadedStaticElf>,
     stdin: Option<File>,
     pub(crate) root_pid: i32,
@@ -1121,6 +1147,7 @@ impl KvmBackend {
             thread_ownership: ThreadOwnership::Host,
             // No explicit caller override: follow the tool at run entry.
             thread_ownership_override: None,
+            intercept_rdtsc: false,
             static_elf: None,
             stdin,
             root_pid: 1,
@@ -2607,6 +2634,117 @@ impl KvmBackend {
         }))
     }
 
+    pub(crate) fn set_rdtsc_interception(&mut self, enabled: bool) -> Result<()> {
+        crate::bootstrap::set_userspace_rdtsc_interception(&self.vcpu, enabled)?;
+        self.intercept_rdtsc = enabled;
+        Ok(())
+    }
+
+    pub(crate) fn timestamp_counter_exception(&self) -> Result<Option<TimestampBoundary>> {
+        // This guard precedes even reading the fault frame: an unsubscribed
+        // RDTSCP #UD is a genuine guest fault, not an unsolicited callback.
+        if !self.intercept_rdtsc {
+            return Ok(None);
+        }
+        let Some(exception) = self.static_elf_exception()? else {
+            return Ok(None);
+        };
+        if !matches!(exception.vector, 6 | 13) {
+            return Ok(None);
+        }
+        let halted = self.vcpu.get_regs()?;
+        let special = self.vcpu.get_sregs()?;
+        if special.cr0 & (1 << 31) == 0
+            || special.efer & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
+            || special.cr4 & (1 << 12) != 0
+            || special.cr4 & (1 << 2) == 0
+        {
+            return Ok(None);
+        }
+        let mut frame = [0; 6 * 8];
+        let words = if exception.vector == 13 { 6 } else { 5 };
+        self.memory.read_raw(halted.rsp, &mut frame[..words * 8])?;
+        let word = |index: usize| {
+            u64::from_le_bytes(
+                frame[index * 8..index * 8 + 8]
+                    .try_into()
+                    .expect("exception frame word"),
+            )
+        };
+        let first = usize::from(exception.vector == 13);
+        let cs = word(first + 1);
+        let ss = word(first + 4);
+        if (exception.vector == 13 && word(0) != 0)
+            || cs != u64::from(crate::signal::USER_CODE_SELECTOR)
+            || ![
+                u64::from(crate::signal::USER_DATA_SELECTOR),
+                u64::from(crate::signal::USER_DATA_SELECTOR & !3),
+            ]
+            .contains(&ss)
+        {
+            return Ok(None);
+        }
+        let Some(instruction) = crate::timestamp::decode(|offset| {
+            let address = exception
+                .instruction_pointer
+                .checked_add(u64::from(offset))?;
+            crate::timestamp::fetch_user_byte(&self.memory, special.cr3, address)
+        }) else {
+            return Ok(None);
+        };
+        // RDTSC is enabled by every supported CPUID policy. Only RDTSCP may
+        // fault as #UD (the deterministic policy does not expose that feature).
+        if exception.vector == 6 && instruction.request != reverie::Rdtsc::Tscp {
+            return Ok(None);
+        }
+        let mut registers = halted;
+        registers.rip = exception.instruction_pointer;
+        registers.rsp = exception.stack_pointer;
+        registers.rflags = exception.rflags;
+        Ok(Some(TimestampBoundary {
+            registers,
+            instruction,
+            special_registers: special,
+            code_segment: cs as u16,
+            stack_segment: ss as u16,
+        }))
+    }
+
+    pub(crate) fn resume_timestamp_counter(
+        &mut self,
+        boundary: TimestampBoundary,
+        result: reverie::RdtscResult,
+    ) -> Result<()> {
+        let registers =
+            crate::timestamp::result_registers(boundary.registers, boundary.instruction, result)
+                .ok_or_else(|| Error::UnexpectedVcpuExit("timestamp RIP overflow".to_owned()))?;
+        // Exception stubs preserve every GPR. Returning host-side injections
+        // cannot supply a replacement user register file. Preserve the saved
+        // instruction state, and any intentional injected FS/GS-base effect.
+        let previous = self.vcpu.get_sregs()?;
+        configure_user_segments(&self.vcpu)?;
+        let mut special = self.vcpu.get_sregs()?;
+        special.cs.selector = boundary.code_segment;
+        special.ss.selector = boundary.stack_segment;
+        special.ds = previous.ds;
+        special.es = previous.es;
+        special.fs = previous.fs;
+        special.gs = previous.gs;
+        self.vcpu.set_sregs(&special)?;
+        self.vcpu.set_regs(&registers)?;
+        if registers.rflags & (1 << 8) != 0 {
+            // The timestamp has now retired. Preserve this backend's existing
+            // typed #DB boundary here, before another guest instruction can
+            // run; resuming with TF would report the following instruction.
+            return Err(Error::GuestException {
+                vector: 1,
+                instruction_pointer: registers.rip,
+                fault_address: special.cr2,
+            });
+        }
+        Ok(())
+    }
+
     pub(crate) fn capture_page_zero_fault(
         &self,
         executor: &ElfExecutor,
@@ -3058,6 +3196,8 @@ impl KvmBackend {
         &mut self,
         executor: &mut ElfExecutor,
     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+        // This loop never dispatches Tool events, including Host-owned workers.
+        self.set_rdtsc_interception(false)?;
         let _registration = self.register_guest_thread()?;
         if self.is_guest_thread {
             let entry_registers = self.vcpu.get_regs()?;
@@ -3421,6 +3561,7 @@ impl KvmBackend {
     where
         F: FnMut(Syscall, &GuestMemory) -> i64,
     {
+        self.set_rdtsc_interception(false)?;
         loop {
             let vcpu_exit = self.vcpu.run()?;
             Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
@@ -6235,6 +6376,135 @@ mod tests {
         put_u64(&mut image, 112, 0x1000);
         image[CODE_OFFSET..].copy_from_slice(code);
         image
+    }
+
+    #[test]
+    fn timestamp_boundary_respects_hardware_instruction_fetch_fault_priority() {
+        const BOUNDARY: u64 = 0x40_0000;
+        for rdtscp in [false, true] {
+            let mut backend = match KvmBackend::new(16 * 1024 * 1024) {
+                Ok(backend) => backend,
+                Err(Error::Kvm(error))
+                    if matches!(error.errno(), libc::ENOENT | libc::EACCES | libc::EPERM) =>
+                {
+                    assert!(
+                        std::env::var_os("REVERIE_REQUIRE_KVM").is_none(),
+                        "timestamp boundary requires KVM: {error}"
+                    );
+                    eprintln!("skipping timestamp boundary: KVM unavailable: {error}");
+                    return;
+                }
+                Err(error) => panic!("timestamp boundary setup failed: {error}"),
+            };
+            let opcode = if rdtscp {
+                &[0x0f, 0x01, 0xf9][..]
+            } else {
+                &[0x0f, 0x31][..]
+            };
+            let mut code = vec![0x90; 0x20_0000 - 2];
+            code.extend_from_slice(opcode);
+            let mut image = minimal_test_elf(&code);
+            image[24..32].copy_from_slice(&(BOUNDARY - 2).to_le_bytes());
+            image[104..112].copy_from_slice(&(code.len() as u64).to_le_bytes());
+            backend
+                .install_static_elf(&image, "/bin/timestamp-fetch-boundary")
+                .unwrap();
+            // The next 2 MiB page is present/user but NX in the actual guest
+            // page tables, not merely denied by a host-side test fetch closure.
+            backend
+                .memory
+                .write_raw(
+                    0x4000 + 2 * 8,
+                    &(BOUNDARY | 0x87 | (1_u64 << 63)).to_le_bytes(),
+                )
+                .unwrap();
+            backend.set_rdtsc_interception(true).unwrap();
+            assert!(matches!(backend.vcpu.run().unwrap(), VcpuExit::Hlt));
+            let fault = backend.static_elf_exception().unwrap().unwrap();
+            assert_eq!(fault.instruction_pointer, BOUNDARY - 2);
+            assert_eq!(fault.vector, if rdtscp { 14 } else { 13 });
+            let timestamp = backend.timestamp_counter_exception().unwrap();
+            if rdtscp {
+                assert!(
+                    timestamp.is_none(),
+                    "inaccessible third byte must not dispatch"
+                );
+            } else {
+                let timestamp = timestamp.expect("two-byte instruction must not fetch next page");
+                assert_eq!(timestamp.instruction.request, reverie::Rdtsc::Tsc);
+                assert_eq!(timestamp.instruction.length, 2);
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct NonElfTimestampTool;
+
+    #[reverie::tool]
+    impl Tool for NonElfTimestampTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_: &()) -> reverie::Subscription {
+            let mut subscriptions = reverie::Subscription::none();
+            subscriptions.rdtsc();
+            subscriptions
+        }
+
+        async fn handle_rdtsc_event<G: reverie::Guest<Self>>(
+            &self,
+            _guest: &mut G,
+            _request: reverie::Rdtsc,
+        ) -> std::result::Result<reverie::RdtscResult, reverie::syscalls::Errno> {
+            panic!("the public non-ELF loop has no timestamp dispatch contract");
+        }
+    }
+
+    #[test]
+    fn non_elf_tool_loop_disarms_prior_timestamp_interception() {
+        for prior_interception in [true, false] {
+            let mut backend = match KvmBackend::new(16 * 1024 * 1024) {
+                Ok(backend) => backend,
+                Err(Error::Kvm(error))
+                    if matches!(error.errno(), libc::ENOENT | libc::EACCES | libc::EPERM) =>
+                {
+                    assert!(
+                        std::env::var_os("REVERIE_REQUIRE_KVM").is_none(),
+                        "non-ELF timestamp ownership requires KVM: {error}"
+                    );
+                    eprintln!("skipping non-ELF timestamp ownership: KVM unavailable: {error}");
+                    return;
+                }
+                Err(error) => panic!("non-ELF timestamp ownership setup failed: {error}"),
+            };
+            // Establish real hardware CR4.TSD plus the matching backend bit.
+            // This tests entry-state ownership; it is not an ELF-image reuse test.
+            backend.set_rdtsc_interception(prior_interception).unwrap();
+            let request = SyscallRequest::new(libc::SYS_getpid as u64, [0; 6]);
+            backend.install_syscall(0x1002, 0x2000, request).unwrap();
+            backend.memory.write(0x1000, &[0x0f, 0x31]).unwrap();
+            let mut registers = backend.vcpu.get_regs().unwrap();
+            registers.rip = 0x1000;
+            backend.vcpu.set_regs(&registers).unwrap();
+            assert_eq!(backend.intercept_rdtsc, prior_interception);
+            assert_eq!(
+                backend.vcpu.get_sregs().unwrap().cr4 & (1 << 2) != 0,
+                prior_interception
+            );
+            let mut calls = 0;
+            futures::executor::block_on(backend.run_with_tool::<NonElfTimestampTool, _>(
+                (),
+                |actual: &SyscallRequest, _: &GuestMemory| {
+                    assert_eq!(*actual, request);
+                    calls += 1;
+                    41
+                },
+            ))
+            .unwrap();
+            assert_eq!(calls, 1, "RDTSC must reach the following real vmcall");
+            assert!(!backend.intercept_rdtsc);
+            assert_eq!(backend.vcpu.get_sregs().unwrap().cr4 & (1 << 2), 0);
+        }
     }
 
     fn backend_at_completed_tool_boundary()
