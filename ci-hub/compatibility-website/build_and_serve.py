@@ -101,6 +101,7 @@ GENERATOR_PATHS = (
     "ci-hub/validate/qualifying-receipt.json",
 )
 STAGE_1_READER_PATHS = (
+    "ci-hub/ci-hub",
     "ci-hub/ci-hub.rs",
     "ci-hub/compatibility-website/export_inputs.py",
     "ci-hub/ledger/check-ledger-parses.rs",
@@ -123,6 +124,7 @@ STAGE_1_READER_PATHS = (
     "ci-hub/lib/validate_lock.rs",
     "ci-hub/lib/validate_run_handle.rs",
     "ci-hub/lib/validate_status.rs",
+    "ci-hub/lib/validation_evidence.rs",
     "ci-hub/qualifying_receipt.py",
     "ci-hub/series/check-series-rows.rs",
     "ci-hub/series/series.py",

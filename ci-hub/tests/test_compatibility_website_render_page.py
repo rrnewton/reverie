@@ -95,6 +95,7 @@ def _policy_cell(source: dict[str, Any], identity: str) -> dict[str, Any]:
                 "category",
                 "current_reproducer",
                 "current_reproducer_unavailable_reason",
+                "cpu_timeout_seconds",
                 "guest_args",
                 "lane",
                 "not_applicable_reason",

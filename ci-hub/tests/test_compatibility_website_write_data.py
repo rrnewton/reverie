@@ -161,6 +161,7 @@ def build_data_value() -> dict[str, Any]:
         },
         "selected_by_full": True,
         "state": "green",
+        "cpu_timeout_seconds": 60,
         "timeout_seconds": 60,
         "workdir": None,
     }

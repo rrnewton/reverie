@@ -98,6 +98,7 @@ def manifest_metadata(*cells: str) -> dict[str, Any]:
                 "not_applicable_reason": None,
                 "not_selected_by_full_reason": None,
                 "selected_by_full": True,
+                "cpu_timeout_seconds": 60,
                 "timeout_seconds": 60,
                 "workdir": None,
             }

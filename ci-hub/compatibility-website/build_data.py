@@ -133,7 +133,7 @@ _STAGE1_POLICY_CELL_KEYS = frozenset(
     "backend category cell current_reproducer "
     "current_reproducer_unavailable_reason guest_args lane mode "
     "not_applicable_reason not_selected_by_full_reason selected_by_full test "
-    "timeout_seconds workdir".split()
+    "cpu_timeout_seconds timeout_seconds workdir".split()
 )
 _STAGE1_PERSISTED_TEST_KEYS = frozenset(
     "build category cells description direct id lane observation occasional "
@@ -1207,6 +1207,11 @@ def _stage1_policy_cell(value: Any, label: str) -> dict[str, Any]:
                     f"{label}.not_selected_by_full_reason.result is unsupported"
                 )
         policy["not_selected_by_full_reason"] = dict(reason)
+    _integer(
+        policy["cpu_timeout_seconds"],
+        f"{label}.cpu_timeout_seconds",
+        minimum=1,
+    )
     _integer(policy["timeout_seconds"], f"{label}.timeout_seconds", minimum=1)
     for index, argument in enumerate(
         _array(policy["guest_args"], f"{label}.guest_args")
