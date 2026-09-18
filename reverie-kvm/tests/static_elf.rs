@@ -14017,6 +14017,12 @@ mod captured_write_signals;
 #[path = "support/timestamp_terminal.rs"]
 mod timestamp_terminal;
 
+#[path = "support/cpuid_dispatch.rs"]
+mod cpuid_dispatch;
+
+#[path = "support/cpuid_terminal.rs"]
+mod cpuid_terminal;
+
 const RDTSC_SENTINEL: u64 = 0x1122_3344_5566_7788;
 const RDTSCP_SENTINEL: u64 = 0x99aa_bbcc_ddee_ff00;
 const RDTSCP_AUX_SENTINEL: u32 = 0x1357_9bdf;

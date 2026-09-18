@@ -119,15 +119,37 @@ struct StaticElfException {
     rflags: u64,
 }
 
-pub(crate) struct TimestampBoundary {
+pub(crate) struct InstructionBoundary<I> {
     pub(crate) registers: kvm_regs,
-    pub(crate) instruction: crate::timestamp::TimestampInstruction,
+    pub(crate) instruction: I,
     special_registers: kvm_bindings::kvm_sregs,
     code_segment: u16,
     stack_segment: u16,
 }
 
-impl TimestampBoundary {
+pub(crate) type TimestampBoundary = InstructionBoundary<crate::timestamp::TimestampInstruction>;
+pub(crate) type CpuidBoundary = InstructionBoundary<crate::cpuid_instruction::Instruction>;
+
+pub(crate) enum ToolInstructionBoundary {
+    Timestamp(TimestampBoundary),
+    Cpuid(CpuidBoundary),
+}
+
+pub(crate) enum ToolInstructionResult {
+    Timestamp(reverie::RdtscResult),
+    Cpuid(reverie::CpuIdResult),
+}
+
+impl ToolInstructionBoundary {
+    pub(crate) fn user_registers(&self) -> libc::user_regs_struct {
+        match self {
+            Self::Timestamp(boundary) => boundary.user_registers(),
+            Self::Cpuid(boundary) => boundary.user_registers(),
+        }
+    }
+}
+
+impl<I> InstructionBoundary<I> {
     pub(crate) fn user_registers(&self) -> libc::user_regs_struct {
         let mut registers = crate::runtime::kvm_registers(self.registers, u64::MAX);
         registers.cs = self.code_segment.into();
@@ -968,6 +990,7 @@ pub struct KvmBackend {
     // Set by the active execution consumer, never copied to a new vCPU. A
     // Host-owned worker has no Tool dispatcher and must retain native TSC.
     intercept_rdtsc: bool,
+    cpuid_interception: crate::cpuid_instruction::Interception,
     pub(crate) static_elf: Option<LoadedStaticElf>,
     stdin: Option<File>,
     pub(crate) root_pid: i32,
@@ -1148,6 +1171,7 @@ impl KvmBackend {
             // No explicit caller override: follow the tool at run entry.
             thread_ownership_override: None,
             intercept_rdtsc: false,
+            cpuid_interception: crate::cpuid_instruction::Interception::default(),
             static_elf: None,
             stdin,
             root_pid: 1,
@@ -2640,6 +2664,86 @@ impl KvmBackend {
         Ok(())
     }
 
+    pub(crate) fn set_cpuid_interception(&mut self, enabled: bool) -> Result<()> {
+        self.cpuid_interception.configure(&self.vcpu, enabled)
+    }
+
+    pub(crate) fn has_cpuid_interception(&self) -> bool {
+        self.cpuid_interception.enabled()
+    }
+
+    pub(crate) fn tool_instruction_exception(&self) -> Result<Option<ToolInstructionBoundary>> {
+        if let Some(boundary) = self.cpuid_instruction_exception()? {
+            return Ok(Some(ToolInstructionBoundary::Cpuid(boundary)));
+        }
+        Ok(self
+            .timestamp_counter_exception()?
+            .map(ToolInstructionBoundary::Timestamp))
+    }
+
+    fn cpuid_instruction_exception(&self) -> Result<Option<CpuidBoundary>> {
+        if !self.cpuid_interception.enabled() {
+            return Ok(None);
+        }
+        let Some(exception) = self.static_elf_exception()? else {
+            return Ok(None);
+        };
+        // CPUID is never an emulated #UD. LOCK and unrelated faults retain
+        // their genuine exception, even when this Tool subscribes to CPUID.
+        if exception.vector != 13 {
+            return Ok(None);
+        }
+        self.cpuid_interception.verify(&self.vcpu)?;
+        let halted = self.vcpu.get_regs()?;
+        let special = self.vcpu.get_sregs()?;
+        if special.cr0 & (1 << 31) == 0
+            || special.efer & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
+            || special.cr4 & (1 << 12) != 0
+        {
+            return Ok(None);
+        }
+        let mut frame = [0; 6 * 8];
+        self.memory.read_raw(halted.rsp, &mut frame)?;
+        let word = |index: usize| {
+            u64::from_le_bytes(
+                frame[index * 8..index * 8 + 8]
+                    .try_into()
+                    .expect("exception frame word"),
+            )
+        };
+        let cs = word(2);
+        let ss = word(5);
+        if word(0) != 0
+            || cs != u64::from(crate::signal::USER_CODE_SELECTOR)
+            || ![
+                u64::from(crate::signal::USER_DATA_SELECTOR),
+                u64::from(crate::signal::USER_DATA_SELECTOR & !3),
+            ]
+            .contains(&ss)
+        {
+            return Ok(None);
+        }
+        let Some(instruction) = crate::cpuid_instruction::decode(|offset| {
+            let address = exception
+                .instruction_pointer
+                .checked_add(u64::from(offset))?;
+            crate::timestamp::fetch_user_byte(&self.memory, special.cr3, address)
+        }) else {
+            return Ok(None);
+        };
+        let mut registers = halted;
+        registers.rip = exception.instruction_pointer;
+        registers.rsp = exception.stack_pointer;
+        registers.rflags = exception.rflags;
+        Ok(Some(CpuidBoundary {
+            registers,
+            instruction,
+            special_registers: special,
+            code_segment: cs as u16,
+            stack_segment: ss as u16,
+        }))
+    }
+
     pub(crate) fn timestamp_counter_exception(&self) -> Result<Option<TimestampBoundary>> {
         // This guard precedes even reading the fault frame: an unsubscribed
         // RDTSCP #UD is a genuine guest fault, not an unsolicited callback.
@@ -2718,6 +2822,39 @@ impl KvmBackend {
         let registers =
             crate::timestamp::result_registers(boundary.registers, boundary.instruction, result)
                 .ok_or_else(|| Error::UnexpectedVcpuExit("timestamp RIP overflow".to_owned()))?;
+        self.resume_instruction_registers(boundary, registers)
+    }
+
+    pub(crate) fn resume_tool_instruction(
+        &mut self,
+        boundary: ToolInstructionBoundary,
+        result: ToolInstructionResult,
+    ) -> Result<()> {
+        match (boundary, result) {
+            (
+                ToolInstructionBoundary::Timestamp(boundary),
+                ToolInstructionResult::Timestamp(result),
+            ) => self.resume_timestamp_counter(boundary, result),
+            (ToolInstructionBoundary::Cpuid(boundary), ToolInstructionResult::Cpuid(result)) => {
+                let registers = crate::cpuid_instruction::result_registers(
+                    boundary.registers,
+                    boundary.instruction,
+                    result,
+                )
+                .ok_or_else(|| Error::UnexpectedVcpuExit("CPUID RIP overflow".to_owned()))?;
+                self.resume_instruction_registers(boundary, registers)
+            }
+            _ => Err(Error::UnexpectedVcpuExit(
+                "instruction callback result kind changed".to_owned(),
+            )),
+        }
+    }
+
+    fn resume_instruction_registers<I>(
+        &mut self,
+        boundary: InstructionBoundary<I>,
+        registers: kvm_regs,
+    ) -> Result<()> {
         // Exception stubs preserve every GPR. Returning host-side injections
         // cannot supply a replacement user register file. Preserve the saved
         // instruction state, and any intentional injected FS/GS-base effect.
@@ -2733,7 +2870,7 @@ impl KvmBackend {
         self.vcpu.set_sregs(&special)?;
         self.vcpu.set_regs(&registers)?;
         if registers.rflags & (1 << 8) != 0 {
-            // The timestamp has now retired. Preserve this backend's existing
+            // The instruction has now retired. Preserve this backend's existing
             // typed #DB boundary here, before another guest instruction can
             // run; resuming with TF would report the following instruction.
             return Err(Error::GuestException {
@@ -3198,6 +3335,7 @@ impl KvmBackend {
     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
         // This loop never dispatches Tool events, including Host-owned workers.
         self.set_rdtsc_interception(false)?;
+        self.set_cpuid_interception(false)?;
         let _registration = self.register_guest_thread()?;
         if self.is_guest_thread {
             let entry_registers = self.vcpu.get_regs()?;
@@ -3562,6 +3700,7 @@ impl KvmBackend {
         F: FnMut(Syscall, &GuestMemory) -> i64,
     {
         self.set_rdtsc_interception(false)?;
+        self.set_cpuid_interception(false)?;
         loop {
             let vcpu_exit = self.vcpu.run()?;
             Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
@@ -3670,6 +3809,8 @@ fn supported_hypercall_instruction(cpuid: &CpuId) -> Result<[u8; 3]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    include!("cpuid_runtime_tests.rs");
 
     mod initialization_tests {
         use std::io::Seek;
