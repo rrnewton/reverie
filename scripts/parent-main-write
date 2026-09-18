@@ -1198,7 +1198,7 @@ usage() {
 usage:
   scripts/parent-main-write commit -m MESSAGE [--audit-reason REASON] -- PATH...
   scripts/parent-main-write publish [--audit-reason REASON] [REV]
-  scripts/parent-main-write sync [--automatic | --preserve-dirty]
+  scripts/parent-main-write sync [--automatic | --preserve-dirty] [--expect-target FULL_SHA]
   scripts/parent-main-write reconcile
 
 Hooks use: verify-commit, verify-ref OLD NEW, verify-push REMOTE OLD NEW.
@@ -1217,16 +1217,37 @@ case "$command" in
   sync)
     automatic=0
     preserve_dirty=0
-    case "${1:-}" in
-      --automatic) automatic=1; shift ;;
-      --preserve-dirty) preserve_dirty=1; shift ;;
-    esac
-    [ "$#" -eq 0 ] || usage
+    expected_target=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --automatic|--preserve-dirty)
+          [ "$automatic" = 0 ] && [ "$preserve_dirty" = 0 ] || usage
+          if [ "$1" = --automatic ]; then automatic=1; else preserve_dirty=1; fi
+          shift
+          ;;
+        --expect-target)
+          [ "$#" -ge 2 ] && [ -z "$expected_target" ] || usage
+          [[ "$2" =~ ^[0-9a-f]{40}$ ]] ||
+            die "--expect-target requires a full lowercase 40-character commit SHA"
+          expected_target=$2
+          shift 2
+          ;;
+        *) usage ;;
+      esac
+    done
     root=$(repo_root)
     HERMIT_PARENT_MAIN_MODE=sync
     export HERMIT_PARENT_MAIN_MODE
     acquire_lock
     fetch_expected "$root"
+    sync_target=refs/remotes/origin/main
+    if [ -n "$expected_target" ]; then
+      [ "$HERMIT_PARENT_MAIN_EXPECT" = "$expected_target" ] ||
+        die "sync expected target $expected_target but freshly fetched origin/main is $HERMIT_PARENT_MAIN_EXPECT; checkout and index were not modified"
+      # Bind the eventual merge to the checked object, even if an unrelated
+      # fetch later updates the local tracking ref while this lock is held.
+      sync_target=$expected_target
+    fi
     [ "$(git -C "$root" branch --show-current)" = main ] || die "sync requires local main"
     guard_reconcile_journal "$root" "sync"
     head=$(git -C "$root" rev-parse HEAD)
@@ -1251,7 +1272,7 @@ case "$command" in
       verify_automatic_sync_boundary "$root" HEAD "$HERMIT_PARENT_MAIN_EXPECT"
     fi
     apply_published_residue "$root" "$HERMIT_PARENT_MAIN_EXPECT"
-    git -C "$root" merge --ff-only refs/remotes/origin/main
+    git -C "$root" merge --ff-only "$sync_target"
     printf 'PARENT_MAIN_WRITE sync old=%s new=%s fast-forward=1/1\n' \
       "$head" "$HERMIT_PARENT_MAIN_EXPECT"
     ;;

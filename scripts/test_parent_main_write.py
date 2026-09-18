@@ -378,6 +378,109 @@ class PublishedResidueTests(ParentMainWriteTests):
         git(other, "push", "-q", "origin", "HEAD:main")
         return git(other, "rev-parse", "HEAD").stdout.strip()
 
+    def test_expected_target_sync_advances_to_the_exact_fetched_commit(self) -> None:
+        target = self.advance_remote_only()
+
+        result = self.writer("sync", "--expect-target", target)
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+
+    def test_expected_target_automatic_sync_accepts_either_option_order(self) -> None:
+        target = self.advance_remote_only()
+
+        result = self.writer("sync", "--expect-target", target, "--automatic")
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertIn("automatic-boundary dirty=0", result.stdout)
+
+    def test_expected_target_preserve_dirty_sync_keeps_unrelated_work(self) -> None:
+        target = self.advance_remote_only()
+        (self.repo / "notes.md").write_text("unrelated local work\n")
+        (self.repo / "staged.md").write_text("staged local work\n")
+        git(self.repo, "add", "staged.md")
+        staged_before = git(self.repo, "diff", "--cached", "--binary").stdout
+
+        result = self.writer("sync", "--preserve-dirty", "--expect-target", target)
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual("unrelated local work\n", (self.repo / "notes.md").read_text())
+        self.assertEqual("staged local work\n", (self.repo / "staged.md").read_text())
+        self.assertEqual(staged_before, git(self.repo, "diff", "--cached", "--binary").stdout)
+        self.assertNotIn("residue adopted=", result.stdout + result.stderr)
+
+    def test_expected_target_sync_refuses_a_moved_remote_before_checkout_changes(self) -> None:
+        expected = git(self.repo, "rev-parse", "refs/remotes/origin/main").stdout.strip()
+        actual = self.advance_remote_only()
+        self.assertNotEqual(expected, actual)
+        # The caller's last observation is stale; only the writer's real fetch
+        # discovers the remote commit. Neither tracking-ref input nor a shim
+        # stands in for that fetch.
+        self.assertEqual(expected, git(self.repo, "rev-parse", "refs/remotes/origin/main").stdout.strip())
+        (self.repo / "notes.md").write_text("unstaged foreign work\n")
+        (self.repo / "staged.md").write_text("staged foreign work\n")
+        git(self.repo, "add", "staged.md")
+        (self.repo / "HANDOFF.md").write_text("unread foreign handoff\n")
+        before_head = git(self.repo, "rev-parse", "HEAD").stdout
+        before_index = git(self.repo, "ls-files", "--stage", "-z").stdout
+        before_status = git(self.repo, "status", "--porcelain=v1", "--untracked-files=all").stdout
+        # A journal that would independently refuse sync must not obscure the
+        # target mismatch or be reconciled before the exact-target check.
+        journal = self.repo / ".git" / "parent-main-write-reconcile"
+        journal.write_text(f"old={actual}\ntarget={self.seed}\n")
+        before_bytes = {name: (self.repo / name).read_bytes()
+                        for name in ("notes.md", "staged.md", "HANDOFF.md",
+                                     ".git/parent-main-write-reconcile")}
+
+        for mode in ((), ("--automatic",), ("--preserve-dirty",)):
+            with self.subTest(mode=mode):
+                result = self.writer("sync", *mode, "--expect-target", expected)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(f"sync expected target {expected}", result.stderr)
+                self.assertIn(f"freshly fetched origin/main is {actual}", result.stderr)
+                self.assertEqual(actual, git(self.repo, "rev-parse", "refs/remotes/origin/main").stdout.strip())
+                self.assertEqual(before_head, git(self.repo, "rev-parse", "HEAD").stdout)
+                self.assertEqual(before_index, git(self.repo, "ls-files", "--stage", "-z").stdout)
+                self.assertEqual(before_status, git(self.repo, "status", "--porcelain=v1", "--untracked-files=all").stdout)
+                for name, data in before_bytes.items():
+                    self.assertEqual(data, (self.repo / name).read_bytes())
+                self.assertFalse((self.repo / "remote-only.md").exists())
+
+    def test_expected_target_match_does_not_allow_dirty_overlap(self) -> None:
+        target = self.advance_remote_only("notes.md", "published content\n")
+        (self.repo / "notes.md").write_text("foreign staged content\n")
+        git(self.repo, "add", "notes.md")
+        (self.repo / "notes.md").write_text("foreign unstaged content\n")
+        before_index = git(self.repo, "ls-files", "--stage", "-z").stdout
+
+        result = self.writer("sync", "--expect-target", target, "--preserve-dirty")
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("state=skipped reason=path-overlap", result.stdout + result.stderr)
+        self.assertEqual(self.seed, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(before_index, git(self.repo, "ls-files", "--stage", "-z").stdout)
+        self.assertEqual("foreign unstaged content\n", (self.repo / "notes.md").read_text())
+        self.assertNotIn("residue adopted=", result.stdout + result.stderr)
+
+    def test_expected_target_sync_refuses_malformed_or_duplicate_options(self) -> None:
+        before_index = git(self.repo, "ls-files", "--stage", "-z").stdout
+        for args in (
+            ("--expect-target",),
+            ("--expect-target", ""),
+            ("--expect-target", self.seed[:12]),
+            ("--expect-target", "g" * 40),
+            ("--expect-target", self.seed, "--expect-target", self.seed),
+            ("--expect-target", self.seed, "--automatic", "--preserve-dirty"),
+            ("--preserve-dirty", "--preserve-dirty", "--expect-target", self.seed),
+        ):
+            with self.subTest(args=args):
+                result = self.writer("sync", *args)
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual(self.seed, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+                self.assertEqual(before_index, git(self.repo, "ls-files", "--stage", "-z").stdout)
+
     def test_automatic_sync_advances_a_clean_ahead_zero_parent(self) -> None:
         target = self.advance_remote_only()
         self.assertEqual("", git(self.repo, "status", "--short").stdout)
