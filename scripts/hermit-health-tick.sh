@@ -2488,9 +2488,11 @@ PY
             ;;
     esac
 
+    # Git may print cold submodule checkout progress on stdout. Keep setup
+    # diagnostics separate from the requested tool's machine-readable response.
     materialize_current_tool_root \
         "$requested_parent_sha" "$expected_state_identity" \
-        "$expected_target_identity" || return $?
+        "$expected_target_identity" >&2 || return $?
     local tool_root=$TOOL_ROOT_RESULT
     local tool_path="$tool_root/$tool_relative"
     local resolved_tool_root resolved_tool_path
