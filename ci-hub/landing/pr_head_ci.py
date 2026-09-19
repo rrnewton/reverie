@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validate"))
 import bounded_capture  # noqa: E402
 import git_env  # noqa: E402
+from immutable_tool_authority import read_executing_tool_authority  # noqa: E402
 import service_result  # noqa: E402
 
 
@@ -140,67 +141,78 @@ def immutable_tool_launch(
 ) -> ImmutableToolLaunch:
     """Describe one exact-parent tool launch over the canonical mutable state."""
 
-    git_environment = git_env.sanitized_git_env(environment)
-    common = run(
-        [
-            "git",
-            "--no-optional-locks",
-            "--no-replace-objects",
-            "-C",
-            str(ROOT),
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-common-dir",
-        ],
-        check=False,
-        env=git_environment,
-    )
-    if common.returncode != 0:
-        detail = common.stderr.strip() or common.stdout.strip() or f"exit {common.returncode}"
-        raise RuntimeError(f"cannot resolve canonical parent state root: {detail}")
-    common_dir = Path(common.stdout.strip())
-    if common_dir.name != ".git" or not common_dir.is_absolute():
-        raise RuntimeError(
-            f"canonical parent Git directory is not an absolute .git path: {common_dir}"
-        )
-    canonical_state_root = common_dir.parent.resolve()
-    raw_state_root = environment.get("DEV_HERMIT_PARENT", "")
-    state_root = Path(raw_state_root).resolve() if raw_state_root else canonical_state_root
-    if state_root != canonical_state_root:
-        raise RuntimeError(
-            f"DEV_HERMIT_PARENT {state_root} is not canonical Git root {canonical_state_root}"
-        )
     try:
-        metadata = state_root.stat()
-    except OSError as error:
-        raise RuntimeError(f"cannot inspect canonical parent state root: {error}") from error
-    state_identity = f"{metadata.st_dev}:{metadata.st_ino}"
-
-    requested_parent_sha = environment.get("DEV_HERMIT_TOOL_PARENT_SHA", "")
-    if requested_parent_sha and not full_sha(requested_parent_sha):
-        raise RuntimeError("DEV_HERMIT_TOOL_PARENT_SHA is not an exact lowercase 40-hex SHA")
-    result = run(
-        [
-            "git",
-            "--no-optional-locks",
-            "--no-replace-objects",
-            "-C",
-            str(ROOT),
-            "rev-parse",
-            "--verify",
-            "HEAD^{commit}",
-        ],
-        check=False,
-        env=git_environment,
-    )
-    parent_sha = result.stdout.strip().lower()
-    if result.returncode != 0 or not full_sha(parent_sha):
-        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
-        raise RuntimeError(f"cannot bind validation tooling to the current parent SHA: {detail}")
-    if requested_parent_sha and requested_parent_sha != parent_sha:
-        raise RuntimeError(
-            "DEV_HERMIT_TOOL_PARENT_SHA does not match the executing helper's exact parent SHA"
+        authority = read_executing_tool_authority(
+            ROOT, Path(environment.get("DEV_HERMIT_PARENT") or ROOT), environment
         )
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"cannot authenticate executing validation helper: {error}") from error
+    if authority is not None:
+        state_root = authority.state_root
+        state_identity = f"{authority.state_dev}:{authority.state_ino}"
+        parent_sha = authority.parent_sha
+    else:
+        git_environment = git_env.sanitized_git_env(environment)
+        common = run(
+            [
+                "git",
+                "--no-optional-locks",
+                "--no-replace-objects",
+                "-C",
+                str(ROOT),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            check=False,
+            env=git_environment,
+        )
+        if common.returncode != 0:
+            detail = common.stderr.strip() or common.stdout.strip() or f"exit {common.returncode}"
+            raise RuntimeError(f"cannot resolve canonical parent state root: {detail}")
+        common_dir = Path(common.stdout.strip())
+        if common_dir.name != ".git" or not common_dir.is_absolute():
+            raise RuntimeError(
+                f"canonical parent Git directory is not an absolute .git path: {common_dir}"
+            )
+        canonical_state_root = common_dir.parent.resolve()
+        raw_state_root = environment.get("DEV_HERMIT_PARENT", "")
+        state_root = Path(raw_state_root).resolve() if raw_state_root else canonical_state_root
+        if state_root != canonical_state_root:
+            raise RuntimeError(
+                f"DEV_HERMIT_PARENT {state_root} is not canonical Git root {canonical_state_root}"
+            )
+        try:
+            metadata = state_root.stat()
+        except OSError as error:
+            raise RuntimeError(f"cannot inspect canonical parent state root: {error}") from error
+        state_identity = f"{metadata.st_dev}:{metadata.st_ino}"
+
+        requested_parent_sha = environment.get("DEV_HERMIT_TOOL_PARENT_SHA", "")
+        if requested_parent_sha and not full_sha(requested_parent_sha):
+            raise RuntimeError("DEV_HERMIT_TOOL_PARENT_SHA is not an exact lowercase 40-hex SHA")
+        result = run(
+            [
+                "git",
+                "--no-optional-locks",
+                "--no-replace-objects",
+                "-C",
+                str(ROOT),
+                "rev-parse",
+                "--verify",
+                "HEAD^{commit}",
+            ],
+            check=False,
+            env=git_environment,
+        )
+        parent_sha = result.stdout.strip().lower()
+        if result.returncode != 0 or not full_sha(parent_sha):
+            detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+            raise RuntimeError(f"cannot bind validation tooling to the current parent SHA: {detail}")
+        if requested_parent_sha and requested_parent_sha != parent_sha:
+            raise RuntimeError(
+                "DEV_HERMIT_TOOL_PARENT_SHA does not match the executing helper's exact parent SHA"
+            )
 
     home = environment.get("HOME", "")
     if not home or not Path(home).is_absolute():

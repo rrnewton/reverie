@@ -4548,6 +4548,8 @@ def build_systemd_command(
                     "ci-hub/validate/reverie_safe_ci.py",
                     "--root",
                     str(root),
+                    "--state-root",
+                    str(state_root),
                     "--checkout",
                     str(checkout),
                     "--target",
@@ -4565,6 +4567,8 @@ def build_systemd_command(
                     '"$DEV_HERMIT_TOOL_ROOT/ci-hub/validate/reverie_safe_ci.py" '
                     '--root "$DEV_HERMIT_TOOL_ROOT" "$@"',
                     sys.executable,
+                    "--state-root",
+                    str(state_root),
                     "--checkout",
                     str(checkout),
                     "--target",

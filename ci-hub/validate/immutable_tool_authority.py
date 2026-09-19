@@ -429,3 +429,57 @@ def read_immutable_tool_authority(
             f"{observed_digest}, expected {authority.content_sha256}"
         )
     return authority
+
+
+def read_executing_tool_authority(
+    executing_root: Path,
+    state_root: Path,
+    environment: Mapping[str, str],
+    *,
+    tool_root: Path | None = None,
+) -> ImmutableToolAuthority | None:
+    """Authenticate an installed caller, or leave ordinary Git checks to it.
+
+    Partial descriptor claims must not fall back to ordinary pathname/Git
+    authority. The parent SHA alone is also used by ordinary linked worktrees.
+    """
+    raw_root = environment.get("DEV_HERMIT_TOOL_ROOT")
+    fd_bindings = (
+        TOOL_AUTHORITY_ENV,
+        TOOL_CONTENT_SHA256_ENV,
+        TOOL_HERMIT_SHA_ENV,
+        TOOL_AGENT_UTILS_SHA_ENV,
+        TOOL_BOOTSTRAP_SHA256_ENV,
+    )
+    fd_context = any(name in environment for name in fd_bindings) or any(
+        str(root).startswith("/proc/")
+        for root in (raw_root, tool_root)
+        if root is not None
+    )
+    if raw_root is not None and (not raw_root or not Path(raw_root).is_absolute()):
+        raise ValueError("DEV_HERMIT_TOOL_ROOT must be a nonempty absolute path")
+    raw_state = environment.get("DEV_HERMIT_PARENT")
+    if raw_state is not None and (
+        not raw_state
+        or not Path(raw_state).is_absolute()
+        or state_root.resolve() != Path(raw_state).resolve()
+    ):
+        raise ValueError("state root does not match DEV_HERMIT_PARENT")
+    if not fd_context:
+        if tool_root is not None and not tool_root.samefile(executing_root):
+            raise ValueError("--root does not name the executing helper")
+        if raw_root is not None and not Path(raw_root).samefile(executing_root):
+            raise ValueError("DEV_HERMIT_TOOL_ROOT does not name the executing helper")
+        return None
+
+    if not raw_root:
+        raise ValueError("immutable tool context has no DEV_HERMIT_TOOL_ROOT")
+    if tool_root is not None and str(tool_root) != raw_root:
+        raise ValueError("--root does not match DEV_HERMIT_TOOL_ROOT capability")
+    if raw_state is None:
+        raise ValueError("immutable tool context requires absolute DEV_HERMIT_PARENT")
+    authority = read_immutable_tool_authority(Path(raw_root), state_root, environment)
+    metadata = executing_root.stat()
+    if (metadata.st_dev, metadata.st_ino) != (authority.root_dev, authority.root_ino):
+        raise ValueError("immutable tool authority does not name the executing helper")
+    return authority

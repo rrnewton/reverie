@@ -22,6 +22,7 @@ import reverie_node
 import reverie_safe_ci
 import service_result
 import start_unit
+from test_immutable_tool_authority import ExecutingAuthorityFixture
 
 
 DEFAULT_PASSED = object()
@@ -50,7 +51,11 @@ class ReverieValidateTest(unittest.TestCase):
 
         stdout = StringIO()
         stderr = StringIO()
-        with mock.patch.object(reverie_safe_ci.subprocess, "run", side_effect=fake_run):
+        with (
+            mock.patch.object(reverie_safe_ci.subprocess, "run", side_effect=fake_run),
+            mock.patch.object(reverie_safe_ci, "ROOT", root),
+            mock.patch.dict(os.environ, {}, clear=True),
+        ):
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 rc = reverie_safe_ci.main(
                     [
@@ -239,6 +244,171 @@ class ReverieValidateTest(unittest.TestCase):
         self.assertNotIn("--unsafe-no-cgroups", joined)
         self.assertNotIn("scripts/validate.rs", joined)
 
+    def test_systemd_both_shapes_pass_state_separately_from_code(self) -> None:
+        root = Path("/immutable/code")
+        state = Path("/canonical/state")
+        for prefix in (None, ["/installed/operational-tool", "--run-current-tool"]):
+            with self.subTest(prefix=prefix):
+                command = start_unit.build_systemd_command(
+                    root=root, state_root=state, checkout=Path("/product/checkout"),
+                    target="a" * 40, agent="agent", unit="validate-test",
+                    record=state / "record.json", log=state / "validate.log", pr=597,
+                    validate_args=[], wait=60, hold=60, child_deadline=8000,
+                    environment={"HOME": "/home/test", "PATH": "/usr/bin:/bin"},
+                    repo="rrnewton/reverie", unit_tool_prefix=prefix,
+                )
+                self.assertIn(f"DEV_HERMIT_PARENT={state}", command)
+                self.assertEqual(str(state), command[command.index("--state-root") + 1])
+                if prefix is None:
+                    self.assertEqual(str(root), command[command.index("--root") + 1])
+                    self.assertIn(str(root / "ci-hub/validate/reverie_safe_ci.py"), command)
+                else:
+                    self.assertIn(
+                        'exec "$0" "$DEV_HERMIT_TOOL_ROOT/ci-hub/validate/reverie_safe_ci.py" '
+                        '--root "$DEV_HERMIT_TOOL_ROOT" "$@"', command,
+                    )
+                    self.assertNotIn(str(root / "ci-hub/validate/reverie_safe_ci.py"), command)
+                self.assertNotIn("--allow-cgroup-failure", command)
+                self.assertNotIn("--unsafe-no-cgroups", command)
+
+    def test_safe_ci_separates_authenticated_code_state_and_checkout(self) -> None:
+        for installed in (False, True):
+            with self.subTest(installed=installed), ExecutingAuthorityFixture() as fixture:
+                checkout = fixture.base / "checkout"
+                checkout.mkdir()
+                root = fixture.tool_root if installed else fixture.code
+                environment = fixture.environment() if installed else {}
+                observed = []
+
+                def fake_run(command, **kwargs):
+                    observed.append(command)
+                    self.assertEqual(checkout, kwargs["cwd"])
+                    self.assertEqual(str(fixture.state_root), kwargs["env"]["DEV_HERMIT_PARENT"])
+                    self.assertEqual(str(root / "ci-hub/bin/agent-tool"), command[0])
+                    self.assertEqual("1", command[command.index("--max-steps") + 1])
+                    self.assertEqual("8", command[command.index("--max-cpus") + 1])
+                    self.assertEqual("7500", command[command.index("--run-timeout") + 1])
+                    self.assertEqual(
+                        str(fixture.state_root / "ignored/validate/reverie-safe-ci-profiles"),
+                        command[command.index("--perf-dir") + 1],
+                    )
+                    dag_path = Path(command[command.index("--dag") + 1])
+                    self.assertEqual(fixture.state_root / "ignored/validate", dag_path.parent)
+                    dag = json.loads(dag_path.read_text())
+                    self.assertEqual(7200, dag["default_step_timeout"])
+                    self.assertEqual(1, len(dag["steps"]))
+                    step = dag["steps"][0]
+                    self.assertEqual((7200, 14400), (step["timeout"], step["cpu_timeout"]))
+                    self.assertEqual(8, step["hint"]["preferred_inner_jobs"])
+                    self.assertEqual(34359738368, step["hint"]["hard_mem_max_bytes"])
+                    node = shlex.split(step["cmd"])
+                    self.assertEqual(str(root / "ci-hub/validate/reverie_node.py"), node[1])
+                    self.assertEqual(str(root), node[node.index("--root") + 1])
+                    status = Path(node[node.index("--status-file") + 1])
+                    self.assertEqual(dag_path.parent, status.parent)
+                    self.assertNotIn("--allow-cgroup-failure", command)
+                    self.assertNotIn("--unsafe-no-cgroups", command)
+                    status.write_text("FINAL_VALIDATE_STATUS: PASSED\n")
+                    return subprocess.CompletedProcess(command, 0)
+
+                output = StringIO()
+                with (
+                    mock.patch.object(reverie_safe_ci, "ROOT", fixture.code),
+                    mock.patch.dict(os.environ, environment, clear=True),
+                    mock.patch.object(reverie_safe_ci.subprocess, "run", side_effect=fake_run),
+                    redirect_stdout(output),
+                ):
+                    result = reverie_safe_ci.main([
+                        "--root", str(root), "--state-root", str(fixture.state_root),
+                        "--checkout", str(checkout), "--target", "b" * 40,
+                        "--log", str(fixture.state_root / "log"),
+                    ])
+                self.assertEqual(0, result)
+                self.assertEqual("FINAL_VALIDATE_STATUS: PASSED\n", output.getvalue())
+                self.assertEqual(1, len(observed))
+                self.assertFalse((fixture.code / "ignored").exists())
+                self.assertEqual([], list((fixture.state_root / "ignored/validate").iterdir()))
+
+    def test_safe_ci_refuses_wrong_or_partial_authority_before_artifacts(self) -> None:
+        cases = (
+            "foreign-executing-root", "foreign-argument-root", "missing-authority", "unsealed",
+            "missing-tool-root", "empty-authority", "malformed-tool-root", "replaced-state",
+            "state-disagreement", "missing-state-argument", "ordinary-state-disagreement",
+            "ordinary-foreign-argument-root",
+        )
+        for case in cases:
+            with self.subTest(case=case), ExecutingAuthorityFixture(sealed=case != "unsealed") as fixture:
+                environment = fixture.environment()
+                root = fixture.tool_root
+                executing = fixture.code
+                state = fixture.state_root
+                if case == "foreign-executing-root":
+                    executing = fixture.state_root
+                elif case == "foreign-argument-root":
+                    root = fixture.state_root
+                elif case == "missing-authority":
+                    environment.pop("DEV_HERMIT_TOOL_AUTHORITY")
+                elif case == "missing-tool-root":
+                    environment.pop("DEV_HERMIT_TOOL_ROOT")
+                elif case == "empty-authority":
+                    environment["DEV_HERMIT_TOOL_AUTHORITY"] = ""
+                elif case == "malformed-tool-root":
+                    environment["DEV_HERMIT_TOOL_ROOT"] = "/proc/self/fd/nope"
+                elif case == "replaced-state":
+                    state.rename(fixture.base / "old-state")
+                    state.mkdir()
+                elif case == "state-disagreement":
+                    state = fixture.base
+                elif case == "ordinary-state-disagreement":
+                    root = fixture.code
+                    environment = {"DEV_HERMIT_PARENT": str(fixture.base)}
+                elif case == "ordinary-foreign-argument-root":
+                    root = fixture.state_root
+                    environment = {}
+                arguments = [
+                    "--root", str(root), "--checkout", str(fixture.base),
+                    "--target", "b" * 40, "--log", str(state / "log"),
+                ]
+                if case != "missing-state-argument":
+                    arguments += ["--state-root", str(state)]
+                output, errors = StringIO(), StringIO()
+                with (
+                    mock.patch.object(reverie_safe_ci, "ROOT", executing),
+                    mock.patch.dict(os.environ, environment, clear=True),
+                    mock.patch.object(reverie_safe_ci.subprocess, "run") as run,
+                    mock.patch.object(reverie_safe_ci.tempfile, "mkstemp") as temporary,
+                    mock.patch.object(Path, "mkdir") as mkdir,
+                    redirect_stdout(output), redirect_stderr(errors),
+                ):
+                    result = reverie_safe_ci.main(arguments)
+                self.assertEqual(75, result)
+                self.assertEqual("FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n", output.getvalue())
+                self.assertIn("could not prepare validation", errors.getvalue())
+                run.assert_not_called()
+                temporary.assert_not_called()
+                mkdir.assert_not_called()
+
+    def test_safe_ci_unwritable_state_is_no_result_without_dagrun(self) -> None:
+        with ExecutingAuthorityFixture() as fixture:
+            fixture.state_root.chmod(0o555)
+            output, errors = StringIO(), StringIO()
+            with (
+                mock.patch.object(reverie_safe_ci, "ROOT", fixture.code),
+                mock.patch.dict(os.environ, fixture.environment(), clear=True),
+                mock.patch.object(reverie_safe_ci.subprocess, "run") as run,
+                redirect_stdout(output), redirect_stderr(errors),
+            ):
+                result = reverie_safe_ci.main([
+                    "--root", str(fixture.tool_root), "--state-root", str(fixture.state_root),
+                    "--checkout", str(fixture.base), "--target", "b" * 40,
+                    "--log", str(fixture.state_root / "log"),
+                ])
+            self.assertEqual(75, result)
+            self.assertEqual("FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n", output.getvalue())
+            self.assertIn("Permission denied", errors.getvalue())
+            self.assertFalse((fixture.state_root / "ignored").exists())
+            run.assert_not_called()
+
     def test_safe_ci_launcher_has_no_unboxed_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -359,10 +529,14 @@ class ReverieValidateTest(unittest.TestCase):
             checkout.mkdir()
             stdout = StringIO()
             stderr = StringIO()
-            with mock.patch.object(
-                reverie_safe_ci.tempfile,
-                "mkstemp",
-                side_effect=OSError("fixture setup failure"),
+            with (
+                mock.patch.object(
+                    reverie_safe_ci.tempfile,
+                    "mkstemp",
+                    side_effect=OSError("fixture setup failure"),
+                ),
+                mock.patch.object(reverie_safe_ci, "ROOT", root),
+                mock.patch.dict(os.environ, {}, clear=True),
             ):
                 with redirect_stdout(stdout), redirect_stderr(stderr):
                     rc = reverie_safe_ci.main(

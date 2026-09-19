@@ -22,6 +22,9 @@ P = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = P
 SPEC.loader.exec_module(P)
 
+sys.path.insert(0, str(P.ROOT / "ci-hub/validate/tests"))
+from test_immutable_tool_authority import ExecutingAuthorityFixture
+
 OLD = "1" * 40
 NEW = "2" * 40
 PARENT = "3" * 40
@@ -354,6 +357,104 @@ class PrHeadCiTest(unittest.TestCase):
         self.assertEqual(P.ROOT, launch.state_root)
         self.assertEqual(f"{metadata.st_dev}:{metadata.st_ino}", launch.state_identity)
         self.assertEqual(PARENT, launch.parent_sha)
+
+    def test_installed_launch_uses_sealed_state_and_code_identity(self):
+        with ExecutingAuthorityFixture() as fixture, mock.patch.object(P, "ROOT", fixture.code):
+            run = mock.Mock(side_effect=AssertionError("FD authority must not infer state from Git"))
+            launch = P.immutable_tool_launch(environment=fixture.environment(), run=run)
+            self.assertNotEqual(fixture.code_head, fixture.state_head)
+            self.assertEqual(fixture.code_head, launch.parent_sha)
+            self.assertEqual(fixture.state_root, launch.state_root)
+            self.assertEqual(
+                f"{fixture.record['state_dev']}:{fixture.record['state_ino']}",
+                launch.state_identity,
+            )
+            command = P.validate_command(
+                "rrnewton/reverie", 597, OLD, Path("/checkout"), "agent", launch=launch
+            )
+            self.assertEqual(str(fixture.state_root), command[command.index("--state-root") + 1])
+            self.assertEqual(launch.state_identity, command[command.index("--state-identity") + 1])
+            self.assertEqual(fixture.code_head, command[command.index("--tool-parent-sha") + 1])
+            self.assertEqual(
+                str(fixture.base / "home/.local/libexec/dev-hermit/operational-tool"), command[0]
+            )
+            self.assertIn("--materialize-target", command)
+            run.assert_not_called()
+
+    def test_installed_launch_refuses_partial_or_changed_authority_without_validation(self):
+        cases = (
+            "foreign-executing-root", "missing-authority", "empty-authority", "malformed-authority",
+            "missing-tool-root", "empty-tool-root", "malformed-tool-root", "missing-state",
+            "replaced-state", "parent-mismatch", "changed-content", "unsealed",
+            "content-only", "root-only", "relative-home",
+        )
+        for case in cases:
+            with self.subTest(case=case), ExecutingAuthorityFixture(sealed=case != "unsealed") as fixture:
+                environment = fixture.environment()
+                executing = fixture.code
+                if case == "foreign-executing-root":
+                    executing = fixture.state_root
+                elif case == "missing-authority":
+                    environment.pop("DEV_HERMIT_TOOL_AUTHORITY")
+                elif case == "empty-authority":
+                    environment["DEV_HERMIT_TOOL_AUTHORITY"] = ""
+                elif case == "malformed-authority":
+                    environment["DEV_HERMIT_TOOL_AUTHORITY"] = "/proc/self/fd/nope"
+                elif case == "missing-tool-root":
+                    environment.pop("DEV_HERMIT_TOOL_ROOT")
+                elif case == "empty-tool-root":
+                    environment["DEV_HERMIT_TOOL_ROOT"] = ""
+                elif case == "malformed-tool-root":
+                    environment["DEV_HERMIT_TOOL_ROOT"] = "/proc/self/fd/nope"
+                elif case == "missing-state":
+                    environment.pop("DEV_HERMIT_PARENT")
+                elif case == "replaced-state":
+                    fixture.state_root.rename(fixture.base / "old-state")
+                    fixture.state_root.mkdir()
+                elif case == "parent-mismatch":
+                    environment["DEV_HERMIT_TOOL_PARENT_SHA"] = fixture.state_head
+                elif case == "changed-content":
+                    marker = fixture.code / "marker"
+                    marker.chmod(0o644)
+                    marker.write_text("different bytes")
+                    marker.chmod(0o444)
+                elif case == "content-only":
+                    environment = {"HOME": str(fixture.base), "DEV_HERMIT_TOOL_CONTENT_SHA256": ""}
+                elif case == "root-only":
+                    environment = {"HOME": str(fixture.base), "DEV_HERMIT_TOOL_ROOT": str(fixture.tool_root)}
+                elif case == "relative-home":
+                    environment["HOME"] = "relative"
+                run = FakeRun()
+                stdout = io.StringIO()
+                with mock.patch.object(P, "ROOT", executing), redirect_stdout(stdout):
+                    rc = P.main(self.args("--execute", "--json"), run=run, environment=environment)
+                self.assertEqual(2, rc)
+                row = json.loads(stdout.getvalue())
+                self.assertEqual("UNKNOWN", row["state"])
+                self.assertFalse(row["acquirable"])
+                self.assertFalse(any("validate-run" in cmd for cmd in run.commands))
+                self.assertFalse(any(cmd[0] == "git" for cmd in run.commands))
+
+    def test_ordinary_linked_worktree_keeps_common_git_state_and_exact_head(self):
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            canonical = base / "canonical"
+            head = create_repo(canonical, "canonical")
+            linked = base / "linked"
+            git(canonical, "worktree", "add", "--detach", linked, head, capture=True)
+            environment = {
+                "HOME": "/home/tester", "DEV_HERMIT_PARENT": str(canonical),
+                "DEV_HERMIT_TOOL_PARENT_SHA": head, "DEV_HERMIT_TOOL_ROOT": str(linked),
+            }
+            with mock.patch.object(P, "ROOT", linked):
+                launch = P.immutable_tool_launch(environment=environment, run=P.run_command)
+                self.assertEqual(canonical, launch.state_root)
+                self.assertEqual(head, launch.parent_sha)
+                with self.assertRaisesRegex(RuntimeError, "does not name the executing helper"):
+                    P.immutable_tool_launch(
+                        environment=dict(environment, DEV_HERMIT_TOOL_ROOT=str(canonical)),
+                        run=P.run_command,
+                    )
 
     def test_launch_descriptor_refuses_noncanonical_state_root(self):
         environment = dict(TEST_ENVIRONMENT, DEV_HERMIT_PARENT="/different/root")

@@ -139,6 +139,61 @@ class AuthorityFixture:
                 pass
 
 
+class ExecutingAuthorityFixture(AuthorityFixture):
+    """Real distinct Git code/state roots for installed-caller regressions."""
+
+    def __init__(self, *, sealed: bool = True) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="executing-tool-authority-")
+        self.base = Path(self.temporary.name).resolve()
+        self.code = self.base / "executable"
+        state = self.base / "state"
+        heads = []
+        for path, marker in ((self.code, "code"), (state, "mutable state")):
+            path.mkdir()
+            (path / "marker").write_text(marker)
+            for arguments in (
+                ["init", "-b", "main"],
+                ["config", "user.name", "Authority Fixture"],
+                ["config", "user.email", "fixture@example.com"],
+                ["add", "marker"],
+                ["commit", "-m", marker],
+            ):
+                subprocess.run(
+                    ["git", "-C", str(path), *arguments],
+                    check=True, capture_output=True, text=True,
+                )
+            heads.append(subprocess.run(
+                ["git", "-C", str(path), "rev-parse", "HEAD^{commit}"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip())
+        self.code_head, self.state_head = heads
+        target = self.base / "cache/trees" / self.code_head
+        target.mkdir(parents=True)
+        make_tree_read_only(self.code)
+        make_tree_read_only(target)
+        super().__init__(
+            self.code, state, target, bootstrap_sha256="d" * 64,
+            sealed=sealed, update={"parent_sha": self.code_head},
+        )
+
+    def environment(self) -> dict[str, str]:
+        return dict(
+            super().environment(),
+            HOME=str(self.base / "home"),
+            DEV_HERMIT_TOOL_ROOT=str(self.tool_root),
+            DEV_HERMIT_PARENT=str(self.state_root),
+        )
+
+    def __enter__(self) -> ExecutingAuthorityFixture:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+        for directory, _children, _files in os.walk(self.base):
+            Path(directory).chmod(0o755)
+        self.temporary.cleanup()
+
+
 class ImmutableToolAuthorityTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="immutable-tool-authority-")

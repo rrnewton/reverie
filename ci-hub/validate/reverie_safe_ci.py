@@ -12,12 +12,17 @@ import sys
 import tempfile
 from pathlib import Path
 
+from immutable_tool_authority import read_executing_tool_authority
+
 from final_validate_status import (
     FINAL_VALIDATE_STATUS_EXIT_CODES,
     FINAL_VALIDATE_STATUS_PREFIX,
     FinalValidateStatusError,
     read_final_validate_status,
 )
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def read_final_status(path: Path, dag_exit: int) -> tuple[str, int]:
@@ -60,6 +65,7 @@ def read_final_status(path: Path, dag_exit: int) -> tuple[str, int]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--state-root", type=Path)
     parser.add_argument("--checkout", type=Path, required=True)
     parser.add_argument("--target", required=True)
     parser.add_argument("--log", type=Path, required=True)
@@ -70,9 +76,18 @@ def main(argv: list[str] | None = None) -> int:
     dag_path: Path | None = None
     status_path: Path | None = None
     try:
-        root = args.root.resolve()
+        state_root = (args.state_root or args.root).resolve()
+        authority = read_executing_tool_authority(
+            ROOT, state_root, os.environ, tool_root=args.root
+        )
+        if authority is not None and args.state_root is None:
+            raise ValueError("immutable tool context requires explicit --state-root")
+        child_environment = dict(os.environ, DEV_HERMIT_PARENT=str(state_root))
+        # Preserve the retained capability for code; only mutable artifacts use
+        # canonical state. Authentication above must precede any artifact writes.
+        root = args.root if authority is not None else args.root.resolve()
         checkout = args.checkout.resolve()
-        dag_dir = root / "ignored/validate"
+        dag_dir = state_root / "ignored/validate"
         dag_dir.mkdir(parents=True, exist_ok=True)
         status_fd, status_name = tempfile.mkstemp(
             prefix="reverie-final-status-", dir=dag_dir
@@ -139,18 +154,20 @@ def main(argv: list[str] | None = None) -> int:
             "--run-timeout",
             "7500",
             "--perf-dir",
-            str(root / "ignored/validate/reverie-safe-ci-profiles"),
+            str(state_root / "ignored/validate/reverie-safe-ci-profiles"),
             "--no-profile-feedback",
             "-v",
         ]
         # Deliberately no --allow-cgroup-failure and no --unsafe-no-cgroups.
         try:
-            dag_exit = subprocess.run(command, cwd=checkout, check=False).returncode
+            dag_exit = subprocess.run(
+                command, cwd=checkout, check=False, env=child_environment
+            ).returncode
         except OSError as error:
             print(f"reverie-safe-ci: could not run dagrun: {error}", file=sys.stderr)
         else:
             status, exit_code = read_final_status(status_path, dag_exit)
-    except OSError as error:
+    except (OSError, ValueError) as error:
         print(f"reverie-safe-ci: could not prepare validation: {error}", file=sys.stderr)
     finally:
         if dag_path is not None:
