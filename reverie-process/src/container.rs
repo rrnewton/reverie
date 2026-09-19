@@ -2676,6 +2676,17 @@ mod tests {
         }
     }
 
+    fn owned_test_pidfd_link(path: &Path) -> bool {
+        let Some(link) = path.to_str() else {
+            return false;
+        };
+        link == "anon_inode:[pidfd]"
+            || link
+                .strip_prefix("pidfd:[")
+                .and_then(|suffix| suffix.strip_suffix(']'))
+                .is_some_and(|inode| !inode.is_empty() && inode.bytes().all(|b| b.is_ascii_digit()))
+    }
+
     #[test]
     fn owned_startup_atomic_identity_and_complete_decode() {
         use std::os::fd::AsFd;
@@ -2688,6 +2699,12 @@ mod tests {
                     actual_child = Some(context.child_pid());
                     assert_ne!(context.child_pid(), parent);
                     let fd = context.child_pidfd().as_raw_fd();
+                    let pidfd_link = std::fs::read_link(format!("/proc/self/fd/{fd}")).unwrap();
+                    assert!(
+                        owned_test_pidfd_link(&pidfd_link),
+                        "live pidfd: {pidfd_link:?}"
+                    );
+                    eprintln!("owned pidfd anchor: {pidfd_link:?}");
                     assert_ne!(
                         unsafe { libc::fcntl(fd, libc::F_GETFD) } & libc::FD_CLOEXEC,
                         0
@@ -2705,8 +2722,9 @@ mod tests {
                         .unwrap()
                         .filter_map(Result::ok)
                         .filter_map(|e| std::fs::read_link(e.path()).ok())
-                        .filter(|p| p.as_os_str() == "anon_inode:[pidfd]")
+                        .filter(|p| owned_test_pidfd_link(p))
                         .count();
+                    eprintln!("owned child inherited pidfd aliases: {aliases}");
                     let file = std::fs::File::open("/proc/self/stat").unwrap();
                     context.transfer_fd(file.as_fd().try_clone_to_owned().unwrap())?;
                     Ok((Pid::this(), aliases))
@@ -2723,6 +2741,89 @@ mod tests {
         assert_eq!(result.status(), ExitStatus::Exited(0));
         assert_eq!(result.decode().unwrap(), (pid, 0));
         assert_reaped(pid);
+    }
+
+    #[test]
+    fn owned_parent_callback_unwind_reaps_child_and_retains_factory() {
+        struct FactoryCapture {
+            shared: *mut SharedDropState,
+            parent: Pid,
+        }
+        impl Drop for FactoryCapture {
+            fn drop(&mut self) {
+                assert!(
+                    !unsafe { &*self.shared }
+                        .finished
+                        .swap(true, Ordering::SeqCst)
+                );
+                assert_eq!(Pid::this(), self.parent, "factory capture belongs to O");
+            }
+        }
+
+        let (mapping, shared) = new_shared_drop_state();
+        let capture = FactoryCapture {
+            shared,
+            parent: Pid::this(),
+        };
+        let actual_child = std::cell::Cell::new(None);
+        let original_pidfd = std::cell::Cell::new(None);
+        let observer_pidfd = std::cell::RefCell::new(None);
+        let child_ref = &actual_child;
+        let original_ref = &original_pidfd;
+        let observer_ref = &observer_pidfd;
+        let mut parent_start = move |context: ParentStartContext<'_>| -> Result<(), StartupError> {
+            let _keep = &capture;
+            child_ref.set(Some(context.child_pid()));
+            original_ref.set(Some(context.child_pidfd().as_raw_fd()));
+            // This duplicate observes actual exit; it never reaps or cancels C.
+            *observer_ref.borrow_mut() = Some(context.child_pidfd().try_clone_to_owned().unwrap());
+            panic!("owned startup parent panic");
+        };
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Container::new().run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut parent_start,
+                &mut |_| Ok(()),
+                &mut |()| {
+                    unsafe { &*shared }.started.store(true, Ordering::Release);
+                    ((), ())
+                },
+            )
+        }));
+        let panic = match caught {
+            Err(panic) => panic,
+            Ok(_) => panic!("the borrowed parent callback must unwind through the API"),
+        };
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"owned startup parent panic")
+        );
+        let pid = actual_child
+            .get()
+            .expect("real child recorded before panic");
+        let fd = original_pidfd.get().unwrap();
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+        assert_eq!(Errno::last(), Errno::EBADF, "library pidfd must be closed");
+        let observer = observer_pidfd.borrow_mut().take().unwrap();
+        let mut poll = libc::pollfd {
+            fd: observer.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut poll, 1, 0) }, 1);
+        assert_ne!(poll.revents & (libc::POLLIN | libc::POLLHUP), 0);
+        assert_eq!(poll.revents & libc::POLLNVAL, 0);
+        assert_reaped(pid);
+        assert!(!unsafe { &*shared }.started.load(Ordering::Acquire));
+        assert!(!unsafe { &*shared }.finished.load(Ordering::Acquire));
+        eprintln!(
+            "owned parent unwind: child={pid} exit_events={} reaped=true library_pidfd_closed=true factory_retained=true workload_started=false",
+            poll.revents
+        );
+        drop(parent_start);
+        assert!(unsafe { &*shared }.finished.load(Ordering::Acquire));
+        drop(observer);
+        unsafe { unmap_shared_drop_state(mapping, shared) };
     }
 
     #[test]
