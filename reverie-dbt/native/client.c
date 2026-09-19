@@ -306,6 +306,7 @@ static _Atomic uint64_t stdin_read_count;
 static _Atomic uint64_t pending_thread_starts;
 static _Atomic int32_t runtime_background_state;
 static _Atomic uint64_t image_generation;
+static _Atomic bool runtime_backend_failure;
 static int thread_state_index;
 static int compat_gateway_index;
 static ptr_uint_t cpuid_marker_note;
@@ -316,6 +317,8 @@ static bool test_wait_for_background;
 static bool test_kill_announced_child;
 static bool test_thread_exit_evidence;
 static bool test_leave_process_clone_result_pending;
+static bool test_backend_failure;
+static bool test_backend_failure_sender_lookup_miss;
 // Typed backend-statistics sink path. When the launcher passes
 // `-stats_path <path>`, each real runtime image appends exactly one fixed-size
 // binary record to this file at `event_exit`, using DynamoRIO's own
@@ -357,6 +360,7 @@ static process_id_t runtime_owner_pid;
 static bool has_copied_runtime(void);
 static bool is_copied_vfork_process(void);
 static void finalize_runtime_process(void);
+static void mark_backend_failure(void);
 static void complete_runtime_thread_exit(prototype_counters_t *counters,
                                          void *drcontext,
                                          bool explicit_exit);
@@ -364,6 +368,7 @@ static void complete_runtime_thread_exit(prototype_counters_t *counters,
 // TODO-HUMAN-REVIEW(PR-84): Review isolation-aware process-group termination.
 static process_id_t runtime_process_group;
 static void exit_runtime_tree(int exit_code) {
+  mark_backend_failure();
   // A copied child cannot kill its own process group and then run DynamoRIO
   // cleanup. Kill the launch-group leader instead; the out-of-group launcher reaps it and
   // terminates the remaining isolated group after preserving its exit status.
@@ -388,10 +393,12 @@ static void exit_runtime_tree(int exit_code) {
 #define EVIDENCE_FRAME_FINAL 5
 #define EVIDENCE_FRAME_ERROR 6
 #define EVIDENCE_FRAME_CHILD 7
+#define EVIDENCE_FINAL_GUEST_COMPLETED 0
+#define EVIDENCE_FINAL_BACKEND_FAILURE 1
 #define EVIDENCE_CONFIG_PAGE_SIZE 4096
 
 static const unsigned char evidence_channel_magic[8] = {'R', 'V', 'D', 'B',
-                                                        'T', 'E', '2', 0};
+                                                        'T', 'E', '3', 0};
 typedef union {
   struct {
     unsigned char enabled;
@@ -444,6 +451,7 @@ typedef struct {
   bool transport_failed;
   bool finalization_started;
   bool finalized;
+  bool backend_failure;
   bool initialization_record_sent;
   uint32_t active_threads;
 } evidence_sender_state_t;
@@ -694,6 +702,26 @@ static evidence_sender_state_t *evidence_sender_locked(void) {
   return empty;
 }
 
+static void mark_backend_failure(void) {
+  evidence_sender_state_t *sender;
+  // Make the failure sticky before the sender lookup: that lookup reads procfs
+  // and can fail transiently. Cleanup must never recover the lookup and emit a
+  // normal FINAL after an internal failure.
+  atomic_store_explicit(&runtime_backend_failure, true, memory_order_release);
+  if (!evidence_is_enabled() || evidence_lock == NULL)
+    return;
+  if (test_backend_failure_sender_lookup_miss) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: skipped backend failure sender lookup for testing\n");
+    return;
+  }
+  dr_mutex_lock(evidence_lock);
+  sender = evidence_sender_locked();
+  if (sender != NULL)
+    sender->backend_failure = true;
+  dr_mutex_unlock(evidence_lock);
+}
+
 static bool evidence_flush_locked(evidence_sender_state_t *sender,
                                   unsigned char terminal_kind) {
   if (sender == NULL || sender->finalized)
@@ -717,7 +745,20 @@ static bool evidence_flush_locked(evidence_sender_state_t *sender,
     evidence_buffer_length = 0;
   }
   if (terminal_kind != 0) {
-    if (!evidence_send_frame(terminal_kind, NULL, 0, sender->sequence++))
+    unsigned char final_outcome = EVIDENCE_FINAL_GUEST_COMPLETED;
+    const unsigned char *payload = NULL;
+    size_t payload_length = 0;
+    if (terminal_kind == EVIDENCE_FRAME_FINAL) {
+      sender->backend_failure |= atomic_load_explicit(
+          &runtime_backend_failure, memory_order_acquire);
+      final_outcome = sender->backend_failure
+                          ? EVIDENCE_FINAL_BACKEND_FAILURE
+                          : EVIDENCE_FINAL_GUEST_COMPLETED;
+      payload = &final_outcome;
+      payload_length = sizeof(final_outcome);
+    }
+    if (!evidence_send_frame(terminal_kind, payload, payload_length,
+                             sender->sequence++))
       return false;
     if (terminal_kind == EVIDENCE_FRAME_EXEC)
       sender->exec_pending = true;
@@ -3783,6 +3824,12 @@ static bool pre_syscall(void *drcontext, int sysnum) {
   while (!reverie_dbt_runtime_ready(
       atomic_load_explicit(&image_generation, memory_order_acquire)))
     dr_sleep(1);
+  if (test_backend_failure) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: requested backend failure for testing\n");
+    exit_runtime_tree(101);
+    return false;
+  }
   uint64_t clone_flags = 0;
   uint64_t clone_ctid = 0;
   if (thread_clone_metadata(drcontext, sysnum, &clone_flags, &clone_ctid)) {
@@ -4221,7 +4268,7 @@ static void ensure_runtime_background(void) {
     atomic_store_explicit(&runtime_background_state, 0, memory_order_release);
     dr_fprintf(diagnostic_file,
                "reverie-dbt: failed to start background client thread\n");
-    dr_exit_process(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
+    exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
   }
 }
 
@@ -4252,6 +4299,11 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     else if (strcmp(argv[i],
                     "-test-leave-process-clone-result-pending") == 0)
       test_leave_process_clone_result_pending = true;
+    else if (strcmp(argv[i], "-test-backend-failure") == 0)
+      test_backend_failure = true;
+    else if (strcmp(argv[i],
+                    "-test-backend-failure-sender-lookup-miss") == 0)
+      test_backend_failure_sender_lookup_miss = true;
     else if (strcmp(argv[i], "-diagnostic_fd") == 0) {
       int fd;
       DR_ASSERT(++i < argc);
@@ -4359,7 +4411,10 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
              strcmp(argv[i], "-test-kill-announced-child") == 0 ||
              strcmp(argv[i], "-test-thread-exit-evidence") == 0 ||
              strcmp(argv[i],
-                    "-test-leave-process-clone-result-pending") == 0) {
+                    "-test-leave-process-clone-result-pending") == 0 ||
+             strcmp(argv[i], "-test-backend-failure") == 0 ||
+             strcmp(argv[i],
+                    "-test-backend-failure-sender-lookup-miss") == 0) {
       /* Used only by native lifecycle regression tests. */
     }
     else if (strcmp(argv[i], "-isolated-process-group") == 0)

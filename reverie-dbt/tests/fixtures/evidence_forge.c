@@ -40,7 +40,7 @@
 #define ADDRESS_LEN 16
 
 static const unsigned char channel_magic[8] = {'R', 'V', 'D', 'B',
-                                                'T', 'E', '2', 0};
+                                                'T', 'E', '3', 0};
 static sigjmp_buf direct_store_jump;
 static volatile sig_atomic_t direct_store_faulted;
 
