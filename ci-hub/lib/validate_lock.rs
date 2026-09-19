@@ -99,7 +99,8 @@ const EMPTY_DOMAIN_SETTLE_POLL_MILLIS: u64 = 20;
 /// ownership refusal: a refusal, not a crash.
 const STALE_BASE_EXIT_CODE: i32 = 3;
 /// TEST-BUILD-ONLY override of the composite validation-admission command
-/// (space-split argv). The target head is appended as `--head <sha>`.
+/// (space-split argv). The target and product checkout are appended as
+/// `--head <sha> --repo-checkout <path>`.
 /// Production always runs the in-tree `ci-hub/validate/preflight_validate.py`,
 /// which checks the immutable producer and merge-gate floors. See
 /// [`test_only_override`] for why the name is compiled into BOTH builds while
@@ -2452,7 +2453,13 @@ pub fn execute(
         ValidateLockCommand::RetirePriority(args) => lock.retire_priority(args),
         ValidateLockCommand::Acquire(args) => {
             reject_bad_acquire_max(args.max)?;
-            base_admission_check(tool_root, &args.target, args.kind, args.skip_base_check)?;
+            base_admission_check(
+                tool_root,
+                BaseAdmissionCheckout::StateProduct(state_root),
+                &args.target,
+                args.kind,
+                args.skip_base_check,
+            )?;
             let yield_status =
                 lock.wait_for_owner_watch_yield(&args.agent, args.wait, args.wait == 0)?;
             if yield_status != 0 {
@@ -2557,9 +2564,13 @@ pub fn execute(
                     "kind-is-not-validation",
                     "admission-status reports validation admission only",
                 )
-            } else if let Err(error) =
-                base_admission_check(tool_root, &args.target, args.kind, false)
-            {
+            } else if let Err(error) = base_admission_check(
+                tool_root,
+                BaseAdmissionCheckout::StateProduct(state_root),
+                &args.target,
+                args.kind,
+                false,
+            ) {
                 ImmediateAdmissionStatus::not_admissible(
                     &args,
                     if error.to_string().contains("UNRESOLVED")
@@ -2679,6 +2690,29 @@ fn is_full_sha(target: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
+/// Fixed-floor callers do not share a working-directory contract. Health and
+/// bare Acquire run from the parent; supervised Run owns an exact product cwd.
+/// This selector is identical in production and tests, with no cfg(test) path
+/// substitution. The supplied cwd result is resolved only after early refusals.
+enum BaseAdmissionCheckout<'a> {
+    StateProduct(&'a Path),
+    Supervised(std::io::Result<PathBuf>),
+}
+
+impl BaseAdmissionCheckout<'_> {
+    fn resolve(self) -> Result<PathBuf, ValidateLockError> {
+        match self {
+            // Only Hermit kinds reach the fixed-floor repository lookup.
+            Self::StateProduct(state_root) => Ok(state_root.join("hermit")),
+            Self::Supervised(checkout) => checkout.map_err(|error| {
+                ValidateLockError::StaleBase(format!(
+                    "validate-lock: validation source checkout is UNRESOLVED ({error}); fixed-floor ancestry cannot be established."
+                ))
+            }),
+        }
+    }
+}
+
 /// Refuse to admit a validation unless its exact head satisfies its repository
 /// boundary. Hermit must contain every immutable
 /// producer and merge-gate floor. Mutable origin/main currency is intentionally
@@ -2703,7 +2737,8 @@ fn is_full_sha(target: &str) -> bool {
 /// unresolved) both become `StaleBase`. An admission gate that admitted on "I
 /// couldn't check" would be advisory, not mechanical.
 fn base_admission_check(
-    root: &Path,
+    tool_root: &Path,
+    checkout: BaseAdmissionCheckout<'_>,
     target: &str,
     kind: Kind,
     skip: bool,
@@ -2731,6 +2766,12 @@ fn base_admission_check(
         return Ok(());
     }
 
+    // Policy and floors remain in the immutable tool tree. Parent-facing
+    // admission uses the state product, while Run passes its exact service cwd.
+    // Resolve only after the existing early decisions above: a missing service
+    // cwd must not replace a named skip/nonhex refusal or gate Bench/Reverie.
+    let repository = checkout.resolve()?;
+
     let override_argv = test_only_override(ADMIT_PREFLIGHT_CMD_ENV)
         .map(|cmd| cmd.to_string_lossy().into_owned())
         .filter(|cmd| !cmd.trim().is_empty())
@@ -2742,12 +2783,15 @@ fn base_admission_check(
     let mut argv: Vec<OsString> = override_argv.unwrap_or_else(|| {
         vec![
             OsString::from("python3"),
-            root.join("ci-hub/validate/preflight_validate.py")
+            tool_root
+                .join("ci-hub/validate/preflight_validate.py")
                 .into_os_string(),
         ]
     });
     argv.push(OsString::from("--head"));
     argv.push(OsString::from(target));
+    argv.push(OsString::from("--repo-checkout"));
+    argv.push(repository.into_os_string());
 
     let (program, rest) = argv.split_first().expect("argv is never empty");
     let output = match Command::new(program).args(rest).bounded_output() {
@@ -5813,9 +5857,13 @@ impl ValidateLock {
         // Refuse immutable-floor and current-main violations BEFORE this run
         // enters the box-global queue. A stale head must not wait for scarce
         // validation time it can never consume usefully.
-        if let Err(error) =
-            base_admission_check(tool_root, &args.target, args.kind, args.skip_base_check)
-        {
+        if let Err(error) = base_admission_check(
+            tool_root,
+            BaseAdmissionCheckout::Supervised(env::current_dir()),
+            &args.target,
+            args.kind,
+            args.skip_base_check,
+        ) {
             return stale_base_refusal_with_record(tool_root, &attribution, error);
         }
         if let Err(error) = current_main_freshness_check(state_root, &args.target, args.kind) {
@@ -10416,7 +10464,13 @@ exit 0
         let observed = test_only_override(ADMIT_PREFLIGHT_CMD_ENV);
         // `/nonexistent` has no preflight_validate.py, so an admitted verdict
         // proves the STUB ran, not the default authority.
-        let res = base_admission_check(Path::new("/nonexistent"), HEX_SHA, Kind::Validate, false);
+        let res = base_admission_check(
+            Path::new("/nonexistent"),
+            BaseAdmissionCheckout::StateProduct(Path::new("/nonexistent")),
+            HEX_SHA,
+            Kind::Validate,
+            false,
+        );
         env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
         let after = test_only_override(ADMIT_PREFLIGHT_CMD_ENV);
         let _ = fs::remove_file(&stub);
@@ -11509,7 +11563,13 @@ exit 0
              validating/landing.'\nexit 2\n",
         );
         env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
-        let res = base_admission_check(Path::new("/nonexistent"), HEX_SHA, Kind::Validate, false);
+        let res = base_admission_check(
+            Path::new("/nonexistent"),
+            BaseAdmissionCheckout::StateProduct(Path::new("/nonexistent")),
+            HEX_SHA,
+            Kind::Validate,
+            false,
+        );
         env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
         let _ = fs::remove_file(&stub);
         match res {
@@ -11528,7 +11588,13 @@ exit 0
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let stub = write_stub("ok", "#!/bin/sh\necho OK\nexit 0\n");
         env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
-        let res = base_admission_check(Path::new("/nonexistent"), HEX_SHA, Kind::Validate, false);
+        let res = base_admission_check(
+            Path::new("/nonexistent"),
+            BaseAdmissionCheckout::StateProduct(Path::new("/nonexistent")),
+            HEX_SHA,
+            Kind::Validate,
+            false,
+        );
         env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
         let _ = fs::remove_file(&stub);
         assert!(
@@ -11551,7 +11617,13 @@ exit 0
                 if message.contains("does not contain freshly fetched origin/main")
         ));
         assert!(matches!(
-            base_admission_check(&root, "not-a-sha", Kind::ReverieValidate, false),
+            base_admission_check(
+                &root,
+                BaseAdmissionCheckout::StateProduct(&root),
+                "not-a-sha",
+                Kind::ReverieValidate,
+                false
+            ),
             Err(ValidateLockError::StaleBase(_))
         ));
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
@@ -11667,7 +11739,13 @@ exit 0
         // for the frozen kind exactly as it is for the landing kind.
         assert!(
             matches!(
-                base_admission_check(&root, "not-a-sha", Kind::FrozenValidate, false),
+                base_admission_check(
+                    &root,
+                    BaseAdmissionCheckout::StateProduct(&root),
+                    "not-a-sha",
+                    Kind::FrozenValidate,
+                    false
+                ),
                 Err(ValidateLockError::StaleBase(_))
             ),
             "a genuinely bad target must still be REFUSED for the frozen kind; \
@@ -12897,7 +12975,13 @@ exit 0
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let stub = write_stub("err", "#!/bin/sh\necho boom >&2\nexit 3\n");
         env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
-        let res = base_admission_check(Path::new("/nonexistent"), HEX_SHA, Kind::Validate, false);
+        let res = base_admission_check(
+            Path::new("/nonexistent"),
+            BaseAdmissionCheckout::StateProduct(Path::new("/nonexistent")),
+            HEX_SHA,
+            Kind::Validate,
+            false,
+        );
         env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
         let _ = fs::remove_file(&stub);
         match res {
@@ -12927,12 +13011,34 @@ exit 0
         fs::create_dir_all(state_preflight.parent().unwrap()).unwrap();
         fs::write(
             &tool_preflight,
-            "from pathlib import Path\nPath(__file__).parents[2].joinpath('tool-preflight-ran').write_text('ok')\n",
+            "import json, sys\nfrom pathlib import Path\nPath(__file__).parents[2].joinpath('tool-preflight-ran').write_text(json.dumps(sys.argv[1:]))\n",
         )
         .unwrap();
         fs::write(&state_preflight, "raise SystemExit(2)\n").unwrap();
 
-        let result = base_admission_check(&tool_root, HEX_SHA, Kind::Validate, false);
+        let result = base_admission_check(
+            &tool_root,
+            BaseAdmissionCheckout::StateProduct(&state_root),
+            HEX_SHA,
+            Kind::Validate,
+            false,
+        );
+        let arguments: Vec<String> =
+            serde_json::from_slice(&fs::read(tool_root.join("tool-preflight-ran")).unwrap())
+                .unwrap();
+        fs::write(&tool_preflight, "raise SystemExit(2)\n").unwrap();
+        fs::write(
+            &state_preflight,
+            "from pathlib import Path\nPath(__file__).parents[2].joinpath('tool-preflight-ran').write_text('untrusted')\n",
+        )
+        .unwrap();
+        let refused = base_admission_check(
+            &tool_root,
+            BaseAdmissionCheckout::StateProduct(&state_root),
+            HEX_SHA,
+            Kind::Validate,
+            false,
+        );
 
         if let Some(value) = prior_override {
             env::set_var(ADMIT_PREFLIGHT_CMD_ENV, value);
@@ -12943,6 +13049,359 @@ exit 0
         );
         assert!(tool_root.join("tool-preflight-ran").is_file());
         assert!(!state_root.join("tool-preflight-ran").exists());
+        assert_eq!(
+            arguments,
+            vec![
+                "--head".to_string(),
+                HEX_SHA.to_string(),
+                "--repo-checkout".to_string(),
+                state_root.join("hermit").display().to_string(),
+            ]
+        );
+        assert!(matches!(refused, Err(ValidateLockError::StaleBase(_))));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn base_admission_selects_parent_product_and_exact_service_checkout() {
+        let parent = Path::new("/synthetic-parent");
+        let service = Path::new("/synthetic-service/hermit-target");
+        let product = BaseAdmissionCheckout::StateProduct(parent)
+            .resolve()
+            .unwrap();
+        let supervised = BaseAdmissionCheckout::Supervised(Ok(service.into()))
+            .resolve()
+            .unwrap();
+        assert_eq!(product, parent.join("hermit"));
+        assert_eq!(supervised, service);
+        assert_ne!(product, parent);
+        assert_ne!(supervised, product);
+        let unavailable = || {
+            BaseAdmissionCheckout::Supervised(Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "service cwd is unavailable",
+            )))
+        };
+        assert!(
+            matches!(unavailable().resolve(), Err(ValidateLockError::StaleBase(message))
+            if message.contains("UNRESOLVED") && message.contains("service cwd is unavailable"))
+        );
+        // The resolution failure cannot preempt the established early results.
+        for kind in [Kind::Bench, Kind::ReverieValidate] {
+            assert!(base_admission_check(parent, unavailable(), HEX_SHA, kind, false).is_ok());
+        }
+        for (target, skip, expected) in [
+            ("not-a-sha", false, "not an exact lowercase"),
+            (HEX_SHA, true, "--skip-base-check"),
+        ] {
+            assert!(
+                matches!(base_admission_check(parent, unavailable(), target, Kind::Validate, skip),
+                Err(ValidateLockError::StaleBase(message)) if message.contains(expected))
+            );
+        }
+    }
+
+    #[test]
+    fn base_admission_resolves_unpublished_local_objects_with_trusted_floors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        struct RestoreOverride(Option<OsString>);
+        impl Drop for RestoreOverride {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(value) => env::set_var(ADMIT_PREFLIGHT_CMD_ENV, value),
+                    None => env::remove_var(ADMIT_PREFLIGHT_CMD_ENV),
+                }
+            }
+        }
+        let _restore = RestoreOverride(env::var_os(ADMIT_PREFLIGHT_CMD_ENV));
+        env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
+        let root = env::temp_dir().join(format!(
+            "ci-hub-local-floor-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let tool_root = root.join("tool");
+        let state_root = root.join("state");
+        let checkout = state_root.join("hermit");
+        let authority = tool_root.join("ci-hub/validate");
+        fs::create_dir_all(&authority).unwrap();
+        fs::create_dir_all(&checkout).unwrap();
+        git_success(
+            None,
+            &[
+                "init",
+                "--quiet",
+                "--initial-branch=main",
+                state_root.to_str().unwrap(),
+            ],
+        );
+        git_success(
+            None,
+            &[
+                "init",
+                "--quiet",
+                "--initial-branch=main",
+                checkout.to_str().unwrap(),
+            ],
+        );
+        git_success(Some(&checkout), &["config", "user.name", "Test"]);
+        git_success(
+            Some(&checkout),
+            &["config", "user.email", "test@example.invalid"],
+        );
+        for content in ["below-floor", "floor"] {
+            fs::write(checkout.join("version"), content).unwrap();
+            git_success(Some(&checkout), &["add", "version"]);
+            git_success(Some(&checkout), &["commit", "--quiet", "-m", content]);
+        }
+        let below = git_success(Some(&checkout), &["rev-parse", "HEAD^"]);
+        let floor = git_success(Some(&checkout), &["rev-parse", "HEAD"]);
+        let tool_checkout = tool_root.join("hermit");
+        git_success(
+            None,
+            &[
+                "clone",
+                "--quiet",
+                checkout.to_str().unwrap(),
+                tool_checkout.to_str().unwrap(),
+            ],
+        );
+        let service_checkout = root.join("exact-service-checkout");
+        git_success(
+            None,
+            &[
+                "clone",
+                "--quiet",
+                tool_checkout.to_str().unwrap(),
+                service_checkout.to_str().unwrap(),
+            ],
+        );
+        git_success(Some(&service_checkout), &["config", "user.name", "Test"]);
+        git_success(
+            Some(&service_checkout),
+            &["config", "user.email", "test@example.invalid"],
+        );
+        git_success(Some(&service_checkout), &["remote", "remove", "origin"]);
+        fs::write(service_checkout.join("version"), "service-only-descendant").unwrap();
+        git_success(Some(&service_checkout), &["add", "version"]);
+        git_success(
+            Some(&service_checkout),
+            &["commit", "--quiet", "-m", "service-only target"],
+        );
+        let service_target = git_success(Some(&service_checkout), &["rev-parse", "HEAD"]);
+        let service_tree = git_success(Some(&service_checkout), &["rev-parse", "HEAD^{tree}"]);
+        let service_diverged = git_success(
+            Some(&service_checkout),
+            &[
+                "commit-tree",
+                &service_tree,
+                "-p",
+                &below,
+                "-m",
+                "service divergent target",
+            ],
+        );
+        fs::write(checkout.join("version"), "unpublished-descendant").unwrap();
+        git_success(Some(&checkout), &["add", "version"]);
+        git_success(
+            Some(&checkout),
+            &["commit", "--quiet", "-m", "unpublished target"],
+        );
+        let target = git_success(Some(&checkout), &["rev-parse", "HEAD"]);
+        let target_tree = git_success(Some(&checkout), &["rev-parse", "HEAD^{tree}"]);
+        let diverged = git_success(
+            Some(&checkout),
+            &[
+                "commit-tree",
+                &target_tree,
+                "-p",
+                &below,
+                "-m",
+                "diverged target",
+            ],
+        );
+        assert!(git_success(Some(&checkout), &["remote"]).is_empty());
+        let absent = Command::new("git")
+            .arg("-C")
+            .arg(&tool_checkout)
+            .args([
+                "rev-parse",
+                "--verify",
+                "-q",
+                &format!("{target}^{{commit}}"),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            !absent.status.success(),
+            "target must be absent from the tool checkout"
+        );
+
+        for (repository, missing) in [
+            (&state_root, &target),
+            (&state_root, &service_target),
+            (&tool_checkout, &service_target),
+            (&checkout, &service_target),
+            (&service_checkout, &target),
+        ] {
+            let absent = Command::new("git")
+                .arg("-C")
+                .arg(repository)
+                .args([
+                    "rev-parse",
+                    "--verify",
+                    "-q",
+                    &format!("{missing}^{{commit}}"),
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                !absent.status.success(),
+                "target must be absent from opposing checkout {}",
+                repository.display()
+            );
+        }
+        assert!(git_success(Some(&service_checkout), &["remote"]).is_empty());
+
+        fs::write(
+            authority.join("preflight_validate_actual.py"),
+            include_str!("../validate/preflight_validate.py"),
+        )
+        .unwrap();
+        fs::write(
+            authority.join("preflight_anchor.py"),
+            include_str!("../validate/preflight_anchor.py"),
+        )
+        .unwrap();
+        fs::write(
+            authority.join("rebase-base-floors.json"),
+            serde_json::to_vec(&serde_json::json!({"anchors": [{
+                "sha": floor.as_str(),
+                "field": "local-object-fixture",
+                "reason": "required fixture floor"
+            }]}))
+            .unwrap(),
+        )
+        .unwrap();
+        // Only the child fixture's network command is substituted. The real
+        // Python predicate, local Git queries and default floor location run
+        // unchanged; no parent PATH mutation or accepting override is used.
+        let network_bin = authority.join("network-bin");
+        fs::create_dir(&network_bin).unwrap();
+        let proxy = network_bin.join("with-proxy");
+        fs::write(
+            &proxy,
+            "#!/bin/sh\nprintf 'attempted\\n' >> \"$0.called\"\nprintf 'offline compare refused by fixture\\n' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&proxy, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(
+            authority.join("preflight_validate.py"),
+            "import os, runpy\nfrom pathlib import Path\np = Path(__file__).parent\nos.environ['PATH'] = str(p / 'network-bin') + os.pathsep + os.environ.get('PATH', '')\nrunpy.run_path(str(p / 'preflight_validate_actual.py'), run_name='__main__')\n",
+        )
+        .unwrap();
+        for untrusted_root in [&state_root, &checkout, &service_checkout] {
+            let untrusted = untrusted_root.join("ci-hub/validate");
+            fs::create_dir_all(&untrusted).unwrap();
+            fs::write(
+                untrusted.join("preflight_validate.py"),
+                "from pathlib import Path\nPath(__file__).parents[2].joinpath('untrusted-ran').write_text('bad')\n",
+            )
+            .unwrap();
+            fs::write(
+                untrusted.join("rebase-base-floors.json"),
+                "{\"anchors\": []}\n",
+            )
+            .unwrap();
+        }
+        let compare_marker = network_bin.join("with-proxy.called");
+        for kind in [Kind::Validate, Kind::FrozenValidate] {
+            let allowed = base_admission_check(
+                &tool_root,
+                BaseAdmissionCheckout::StateProduct(&state_root),
+                &target,
+                kind,
+                false,
+            );
+            assert!(
+                allowed.is_ok(),
+                "unpublished descendant must resolve locally: {allowed:?}"
+            );
+            for stale in [&below, &diverged] {
+                let refused = base_admission_check(
+                    &tool_root,
+                    BaseAdmissionCheckout::StateProduct(&state_root),
+                    stale,
+                    kind,
+                    false,
+                );
+                assert!(matches!(refused, Err(ValidateLockError::StaleBase(message))
+                    if message.contains("local-object-fixture") && message.contains(&floor[..12])));
+            }
+        }
+        for kind in [Kind::Validate, Kind::FrozenValidate] {
+            let allowed = base_admission_check(
+                &tool_root,
+                BaseAdmissionCheckout::Supervised(Ok(service_checkout.clone())),
+                &service_target,
+                kind,
+                false,
+            );
+            assert!(
+                allowed.is_ok(),
+                "service-only unpublished target must resolve in exact checkout: {allowed:?}"
+            );
+            for stale in [&below, &service_diverged] {
+                let refused = base_admission_check(
+                    &tool_root,
+                    BaseAdmissionCheckout::Supervised(Ok(service_checkout.clone())),
+                    stale,
+                    kind,
+                    false,
+                );
+                assert!(matches!(refused, Err(ValidateLockError::StaleBase(message))
+                    if message.contains("local-object-fixture") && message.contains(&floor[..12])));
+            }
+        }
+        assert!(
+            !compare_marker.exists(),
+            "decisive local ancestry must not invoke the network"
+        );
+        let unresolved = base_admission_check(
+            &tool_root,
+            BaseAdmissionCheckout::StateProduct(&state_root),
+            HEX_SHA,
+            Kind::Validate,
+            false,
+        );
+        assert!(
+            matches!(unresolved, Err(ValidateLockError::StaleBase(message))
+            if message.contains("did not resolve") && message.contains("offline compare refused by fixture"))
+        );
+        assert_eq!(fs::read_to_string(&compare_marker).unwrap(), "attempted\n");
+        let unresolved = base_admission_check(
+            &tool_root,
+            BaseAdmissionCheckout::Supervised(Ok(service_checkout.clone())),
+            HEX_SHA,
+            Kind::Validate,
+            false,
+        );
+        assert!(
+            matches!(unresolved, Err(ValidateLockError::StaleBase(message))
+            if message.contains("did not resolve") && message.contains("offline compare refused by fixture"))
+        );
+        assert_eq!(
+            fs::read_to_string(compare_marker).unwrap(),
+            "attempted\nattempted\n"
+        );
+        assert!(!service_checkout.join("untrusted-ran").exists());
+        assert!(!state_root.join("untrusted-ran").exists());
+        assert!(!checkout.join("untrusted-ran").exists());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -12958,7 +13417,14 @@ exit 0
         env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
         let r = Path::new("/nonexistent");
         assert!(
-            base_admission_check(r, HEX_SHA, Kind::Bench, false).is_ok(),
+            base_admission_check(
+                r,
+                BaseAdmissionCheckout::StateProduct(r),
+                HEX_SHA,
+                Kind::Bench,
+                false
+            )
+            .is_ok(),
             "bench is never floor-gated"
         );
         env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
@@ -12972,8 +13438,20 @@ exit 0
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let r = Path::new("/nonexistent");
         for result in [
-            base_admission_check(r, "sha-3", Kind::Validate, false),
-            base_admission_check(r, HEX_SHA, Kind::Validate, true),
+            base_admission_check(
+                r,
+                BaseAdmissionCheckout::StateProduct(r),
+                "sha-3",
+                Kind::Validate,
+                false,
+            ),
+            base_admission_check(
+                r,
+                BaseAdmissionCheckout::StateProduct(r),
+                HEX_SHA,
+                Kind::Validate,
+                true,
+            ),
         ] {
             assert!(
                 matches!(result, Err(ValidateLockError::StaleBase(_))),
